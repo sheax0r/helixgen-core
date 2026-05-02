@@ -75,3 +75,46 @@ class Library:
                 if candidate.exists():
                     return Block.from_dict(json.loads(candidate.read_text()))
         raise KeyError(f"No block with model_id {model_id!r} in library at {self.root}")
+
+    def list_blocks(self, category: str | None = None) -> list[Block]:
+        """Return all blocks, optionally filtered to one category."""
+        if not self.blocks_dir.exists():
+            return []
+        results: list[Block] = []
+        category_dirs = (
+            [self.blocks_dir / category] if category else list(self.blocks_dir.iterdir())
+        )
+        for cat_dir in category_dirs:
+            if not cat_dir.is_dir():
+                continue
+            for entry in cat_dir.glob("*.json"):
+                results.append(Block.from_dict(json.loads(entry.read_text())))
+        return results
+
+    def find_block(self, name_or_id: str) -> Block:
+        """Resolve a display name, alias, or model_id to a single Block.
+
+        Raises KeyError if no match. Raises LookupError if multiple matches.
+        """
+        all_blocks = self.list_blocks()
+        # Exact model_id match wins over name match, since model_id is unique.
+        for block in all_blocks:
+            if block.model_id == name_or_id:
+                return block
+        # Then collect all blocks whose display_name or aliases match.
+        matches = [
+            b for b in all_blocks
+            if b.display_name == name_or_id or name_or_id in b.aliases
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            ids = ", ".join(b.model_id for b in matches)
+            raise LookupError(
+                f"Block name {name_or_id!r} matches multiple library entries: {ids}. "
+                f"Use the model_id explicitly."
+            )
+        raise KeyError(
+            f"Block {name_or_id!r} not found in library at {self.root}. "
+            f"Try `helixgen ingest <export.hlx>` or `helixgen bootstrap`."
+        )
