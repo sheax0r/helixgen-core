@@ -4,8 +4,15 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+class IngestStatus(Enum):
+    NEW = "new"
+    MATCH = "match"
+    CONFLICT = "conflict"
 
 
 def default_library_path() -> Path:
@@ -155,3 +162,34 @@ class Library:
                 f"No chassis at {self.chassis_path}. Run `helixgen ingest <export.hlx>` first."
             )
         return json.loads(self.chassis_path.read_text())
+
+    def save_block_with_dedup(self, block: Block) -> IngestStatus:
+        """Save a block, deduplicating by model_id and detecting conflicts."""
+        path = self.block_path(block.model_id, block.category)
+        if not path.exists():
+            self.save_block(block)
+            return IngestStatus.NEW
+
+        existing = Block.from_dict(json.loads(path.read_text()))
+        if _schemas_match(existing.params, block.params):
+            return IngestStatus.MATCH
+
+        v = 2
+        while True:
+            conflict_path = path.with_name(f"{block.model_id}.v{v}.json")
+            if not conflict_path.exists():
+                conflict_path.write_text(
+                    json.dumps(block.to_dict(), indent=2, sort_keys=False)
+                )
+                return IngestStatus.CONFLICT
+            v += 1
+
+
+def _schemas_match(a: dict[str, dict[str, Any]], b: dict[str, dict[str, Any]]) -> bool:
+    """Two schemas match iff they have the same param keys and the same types per key."""
+    if set(a.keys()) != set(b.keys()):
+        return False
+    for key in a:
+        if a[key].get("type") != b[key].get("type"):
+            return False
+    return True

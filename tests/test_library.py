@@ -212,3 +212,50 @@ def test_load_chassis_missing_raises(tmp_library):
     lib = Library(tmp_library)
     with pytest.raises(FileNotFoundError):
         lib.load_chassis()
+
+
+from helixgen.library import IngestStatus
+
+
+def test_save_block_first_time_returns_new(tmp_library):
+    lib = Library(tmp_library)
+    status = lib.save_block_with_dedup(make_block())
+    assert status == IngestStatus.NEW
+
+
+def test_save_block_same_schema_returns_match(tmp_library):
+    lib = Library(tmp_library)
+    lib.save_block_with_dedup(make_block())
+    block_v2 = make_block(
+        exemplar={"@model": "HD2_AmpBrit2204Custom", "Drive": 0.99},
+    )
+    status = lib.save_block_with_dedup(block_v2)
+    assert status == IngestStatus.MATCH
+
+
+def test_save_block_different_schema_writes_v2_file(tmp_library):
+    lib = Library(tmp_library)
+    lib.save_block_with_dedup(make_block())
+    new_params = {
+        "Drive": {"type": "float", "default": 0.5, "observed_range": [0, 1]},
+        "NewParam": {"type": "float", "default": 0.0, "observed_range": [0, 1]},
+    }
+    block_changed = make_block(params=new_params)
+    status = lib.save_block_with_dedup(block_changed)
+    assert status == IngestStatus.CONFLICT
+    v2_path = tmp_library / "blocks" / "amp" / "HD2_AmpBrit2204Custom.v2.json"
+    assert v2_path.exists()
+
+
+def test_save_block_third_conflict_writes_v3(tmp_library):
+    lib = Library(tmp_library)
+    lib.save_block_with_dedup(make_block())
+    lib.save_block_with_dedup(make_block(params={
+        "Drive": {"type": "float", "default": 0.5, "observed_range": [0, 1]},
+        "NewParam": {"type": "float", "default": 0.0, "observed_range": [0, 1]},
+    }))
+    lib.save_block_with_dedup(make_block(params={
+        "TotallyDifferent": {"type": "float", "default": 0.0, "observed_range": [0, 1]},
+    }))
+    v3_path = tmp_library / "blocks" / "amp" / "HD2_AmpBrit2204Custom.v3.json"
+    assert v3_path.exists()
