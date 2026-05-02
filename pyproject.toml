@@ -1,0 +1,27 @@
+[project]
+name = "helixgen"
+version = "0.1.0"
+description = "Generate Line 6 Helix .hlx preset files from JSON tone specs."
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
+[project.scripts]
+helixgen = "helixgen.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
