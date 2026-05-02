@@ -121,3 +121,39 @@ def extract_schema(raw_block: dict[str, Any]) -> dict[str, dict[str, Any]]:
             entry["observed_range"] = [value, value]
         schema[key] = entry
     return schema
+
+
+def extract_blocks_from_preset(preset: dict[str, Any]) -> list[dict[str, Any]]:
+    """Walk dsp0 + dsp1 blocks and return a flat list of raw block dicts in order."""
+    tone = preset.get("data", {}).get("tone", {})
+    blocks: list[dict[str, Any]] = []
+    for dsp_key in PRESET_DSP_KEYS:
+        dsp = tone.get(dsp_key, {})
+        for block in dsp.get(PRESET_BLOCKS_KEY, {}).values():
+            blocks.append(block)
+    return blocks
+
+
+def extract_block_from_single(raw: dict[str, Any]) -> dict[str, Any]:
+    """A single-block JSON file is already a raw block; return it."""
+    return raw
+
+
+from helixgen.library import Block
+
+
+def block_from_raw(raw: dict[str, Any], source_info: dict[str, str]) -> Block:
+    """Build a Block dataclass from a single raw block dict + source provenance."""
+    model_id = raw[RAW_BLOCK_MODEL_KEY]
+    category = raw.get(RAW_BLOCK_CATEGORY_KEY) or infer_category(model_id)
+    display_name = raw.get(RAW_BLOCK_NAME_KEY) or humanize_model_id(model_id)
+    params = extract_schema(raw)
+    return Block(
+        model_id=model_id,
+        category=category,
+        display_name=display_name,
+        aliases=[],
+        params=params,
+        exemplar=raw,
+        first_seen=dict(source_info),
+    )
