@@ -137,3 +137,106 @@ def test_block_from_raw_prefers_explicit_category_field():
     raw = {"@model": "HD2_TotallyNewThing", "@category": "amp", "Drive": 0.5}
     block = block_from_raw(raw, {"preset": "x.hlx", "firmware": "3.71", "date": "2026-05-01"})
     assert block.category == "amp"
+
+
+import json
+from pathlib import Path
+
+from helixgen.ingest import IngestSummary, ingest_file
+from helixgen.library import Library
+
+
+def test_ingest_file_full_preset(tmp_library, sample_serial_preset, tmp_path):
+    preset_path = tmp_path / "preset.hlx"
+    preset_path.write_text(json.dumps(sample_serial_preset))
+    lib = Library(tmp_library)
+
+    summary = ingest_file(preset_path, lib)
+
+    assert summary.new == 4
+    assert summary.matched == 0
+    assert summary.conflicted == 0
+    assert len(lib.list_blocks()) == 4
+
+
+def test_ingest_file_single_block(tmp_library, sample_amp_block, tmp_path):
+    block_path = tmp_path / "amp.json"
+    block_path.write_text(json.dumps(sample_amp_block))
+    lib = Library(tmp_library)
+
+    summary = ingest_file(block_path, lib)
+
+    assert summary.new == 1
+    assert len(lib.list_blocks()) == 1
+
+
+def test_ingest_file_idempotent(tmp_library, sample_serial_preset, tmp_path):
+    preset_path = tmp_path / "preset.hlx"
+    preset_path.write_text(json.dumps(sample_serial_preset))
+    lib = Library(tmp_library)
+
+    first = ingest_file(preset_path, lib)
+    second = ingest_file(preset_path, lib)
+
+    assert first.new == 4
+    assert second.new == 0
+    assert second.matched == 4
+
+
+def test_ingest_file_unparseable_returns_skipped(tmp_library, tmp_path):
+    bad_path = tmp_path / "bad.hlx"
+    bad_path.write_text("not json {{{")
+    lib = Library(tmp_library)
+
+    summary = ingest_file(bad_path, lib)
+    assert summary.skipped == 1
+    assert summary.new == 0
+
+
+def test_ingest_file_unknown_shape_returns_skipped(tmp_library, tmp_path):
+    weird = tmp_path / "weird.json"
+    weird.write_text(json.dumps({"foo": "bar"}))
+    lib = Library(tmp_library)
+
+    summary = ingest_file(weird, lib)
+    assert summary.skipped == 1
+
+
+def test_ingest_extracts_chassis_on_first_full_preset(
+    tmp_library, sample_serial_preset, tmp_path
+):
+    preset_path = tmp_path / "preset.hlx"
+    preset_path.write_text(json.dumps(sample_serial_preset))
+    lib = Library(tmp_library)
+
+    assert not lib.has_chassis()
+    summary = ingest_file(preset_path, lib)
+
+    assert summary.chassis_extracted is True
+    assert lib.has_chassis()
+    chassis = lib.load_chassis()
+    assert chassis["data"]["tone"]["dsp0"]["blocks"] == {}
+
+
+def test_ingest_does_not_re_extract_chassis(
+    tmp_library, sample_serial_preset, tmp_path
+):
+    preset_path = tmp_path / "preset.hlx"
+    preset_path.write_text(json.dumps(sample_serial_preset))
+    lib = Library(tmp_library)
+
+    ingest_file(preset_path, lib)
+    second = ingest_file(preset_path, lib)
+    assert second.chassis_extracted is False
+
+
+def test_ingest_single_block_does_not_extract_chassis(
+    tmp_library, sample_amp_block, tmp_path
+):
+    block_path = tmp_path / "amp.json"
+    block_path.write_text(json.dumps(sample_amp_block))
+    lib = Library(tmp_library)
+
+    summary = ingest_file(block_path, lib)
+    assert summary.chassis_extracted is False
+    assert not lib.has_chassis()

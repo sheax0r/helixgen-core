@@ -157,3 +157,84 @@ def block_from_raw(raw: dict[str, Any], source_info: dict[str, str]) -> Block:
         exemplar=raw,
         first_seen=dict(source_info),
     )
+
+
+import datetime
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from helixgen.library import IngestStatus, Library
+
+
+@dataclass
+class IngestSummary:
+    new: int = 0
+    matched: int = 0
+    conflicted: int = 0
+    skipped: int = 0
+    chassis_extracted: bool = False
+    skipped_files: list[str] = field(default_factory=list)
+
+    def add(self, other: "IngestSummary") -> None:
+        self.new += other.new
+        self.matched += other.matched
+        self.conflicted += other.conflicted
+        self.skipped += other.skipped
+        self.chassis_extracted = self.chassis_extracted or other.chassis_extracted
+        self.skipped_files.extend(other.skipped_files)
+
+
+def _today() -> str:
+    return datetime.date.today().isoformat()
+
+
+def _firmware(preset: dict[str, Any]) -> str:
+    return preset.get("data", {}).get("device", {}).get("fw", "unknown")
+
+
+def ingest_file(path: Path, library: Library) -> IngestSummary:
+    """Ingest a single file: parse, detect shape, extract blocks, write to library."""
+    summary = IngestSummary()
+
+    try:
+        data = json.loads(Path(path).read_text())
+    except (json.JSONDecodeError, OSError):
+        summary.skipped += 1
+        summary.skipped_files.append(str(path))
+        return summary
+
+    shape = detect_shape(data)
+    if shape == Shape.UNKNOWN:
+        summary.skipped += 1
+        summary.skipped_files.append(str(path))
+        return summary
+
+    if shape == Shape.PRESET:
+        raw_blocks = extract_blocks_from_preset(data)
+        firmware = _firmware(data)
+        if not library.has_chassis():
+            from helixgen.chassis import extract_chassis
+            library.save_chassis(extract_chassis(data))
+            summary.chassis_extracted = True
+    else:
+        raw_blocks = [extract_block_from_single(data)]
+        firmware = "unknown"
+
+    source_info = {
+        "preset": str(path),
+        "firmware": firmware,
+        "date": _today(),
+    }
+
+    for raw in raw_blocks:
+        block = block_from_raw(raw, source_info)
+        status = library.save_block_with_dedup(block)
+        if status == IngestStatus.NEW:
+            summary.new += 1
+        elif status == IngestStatus.MATCH:
+            summary.matched += 1
+        elif status == IngestStatus.CONFLICT:
+            summary.conflicted += 1
+
+    return summary
