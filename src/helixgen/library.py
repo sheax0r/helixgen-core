@@ -1,8 +1,23 @@
 """Helix block library: filesystem read/write, indexing, lookup."""
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
+
+
+def default_library_path() -> Path:
+    """Return the library path, honoring HELIXGEN_LIBRARY env var."""
+    env = os.environ.get("HELIXGEN_LIBRARY")
+    if env:
+        return Path(env)
+    return Path(os.environ["HOME"]) / ".helixgen" / "library"
+
+
+def default_cache_path() -> Path:
+    """Return the cache path used for cloned upstream repos."""
+    return Path(os.environ["HOME"]) / ".helixgen" / ".cache"
 
 
 @dataclass

@@ -1,4 +1,9 @@
-from helixgen.library import Block
+import os
+from pathlib import Path
+
+import pytest
+
+from helixgen.library import Block, default_library_path
 
 
 def test_block_round_trips_through_dict():
@@ -19,3 +24,14 @@ def test_block_round_trips_through_dict():
     assert as_dict["aliases"] == ["JCM800"]
     restored = Block.from_dict(as_dict)
     assert restored == block
+
+
+def test_default_library_path_uses_home(monkeypatch):
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+    monkeypatch.setenv("HOME", "/tmp/fake-home")
+    assert default_library_path() == Path("/tmp/fake-home/.helixgen/library")
+
+
+def test_default_library_path_honors_env_var(monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LIBRARY", "/custom/lib")
+    assert default_library_path() == Path("/custom/lib")
