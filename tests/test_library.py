@@ -192,3 +192,23 @@ def test_rebuild_index_on_empty_library(tmp_library):
     lib.rebuild_index()
     index = json.loads((tmp_library / "index.json").read_text())
     assert index == {"names": {}, "categories": {}}
+
+
+def test_chassis_save_load_round_trip(tmp_library):
+    lib = Library(tmp_library)
+    chassis = {
+        "version": 6,
+        "schema": "L6Preset",
+        "data": {"meta": {"name": ""}, "tone": {"dsp0": {"blocks": {}}}},
+        "_helixgen": {"position_keys": {"dsp0": ["dsp0_block_0"], "dsp1": []}},
+    }
+    assert not lib.has_chassis()
+    lib.save_chassis(chassis)
+    assert lib.has_chassis()
+    assert lib.load_chassis() == chassis
+
+
+def test_load_chassis_missing_raises(tmp_library):
+    lib = Library(tmp_library)
+    with pytest.raises(FileNotFoundError):
+        lib.load_chassis()

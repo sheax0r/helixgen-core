@@ -136,3 +136,22 @@ class Library:
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.write_text(json.dumps(index, indent=2, sort_keys=True))
         return index
+
+    @property
+    def chassis_path(self) -> Path:
+        return self.root / "chassis.json"
+
+    def has_chassis(self) -> bool:
+        return self.chassis_path.exists()
+
+    def save_chassis(self, chassis: dict[str, Any]) -> Path:
+        self.chassis_path.parent.mkdir(parents=True, exist_ok=True)
+        self.chassis_path.write_text(json.dumps(chassis, indent=2))
+        return self.chassis_path
+
+    def load_chassis(self) -> dict[str, Any]:
+        if not self.chassis_path.exists():
+            raise FileNotFoundError(
+                f"No chassis at {self.chassis_path}. Run `helixgen ingest <export.hlx>` first."
+            )
+        return json.loads(self.chassis_path.read_text())
