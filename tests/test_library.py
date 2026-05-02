@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -134,3 +135,60 @@ def test_find_block_ambiguous_raises_with_candidates(tmp_library):
     msg = str(excinfo.value)
     assert "HD2_RvbPlate" in msg
     assert "HD2_LegacyPlateReverb" in msg
+
+
+def test_rebuild_index_writes_json(tmp_library):
+    lib = Library(tmp_library)
+    lib.save_block(make_block(
+        model_id="HD2_AmpBrit2204Custom",
+        display_name="Brit 2204",
+        aliases=["JCM800"],
+        category="amp",
+    ))
+    lib.save_block(make_block(
+        model_id="HD2_Cab4x12Greenback25",
+        category="cab",
+        display_name="4x12 Greenback 25",
+    ))
+
+    lib.rebuild_index()
+
+    index_path = tmp_library / "index.json"
+    assert index_path.exists()
+    index = json.loads(index_path.read_text())
+
+    # name → model_id resolution
+    assert index["names"]["Brit 2204"] == ["HD2_AmpBrit2204Custom"]
+    assert index["names"]["JCM800"] == ["HD2_AmpBrit2204Custom"]
+    assert index["names"]["4x12 Greenback 25"] == ["HD2_Cab4x12Greenback25"]
+
+    # model_id → category
+    assert index["categories"]["HD2_AmpBrit2204Custom"] == "amp"
+    assert index["categories"]["HD2_Cab4x12Greenback25"] == "cab"
+
+
+def test_rebuild_index_records_ambiguity(tmp_library):
+    lib = Library(tmp_library)
+    lib.save_block(make_block(
+        model_id="HD2_RvbPlate", category="reverb", display_name="Plate Reverb"
+    ))
+    lib.save_block(make_block(
+        model_id="HD2_LegacyPlateReverb",
+        category="reverb",
+        display_name="Plate Reverb",
+    ))
+
+    lib.rebuild_index()
+
+    index = json.loads((tmp_library / "index.json").read_text())
+    assert sorted(index["names"]["Plate Reverb"]) == [
+        "HD2_LegacyPlateReverb",
+        "HD2_RvbPlate",
+    ]
+
+
+def test_rebuild_index_on_empty_library(tmp_library):
+    lib = Library(tmp_library)
+    lib.rebuild_index()
+    index = json.loads((tmp_library / "index.json").read_text())
+    assert index == {"names": {}, "categories": {}}

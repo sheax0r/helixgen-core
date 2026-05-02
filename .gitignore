@@ -21,3 +21,4 @@ htmlcov/
 # Venv
 .venv/
 venv/
+.claude/

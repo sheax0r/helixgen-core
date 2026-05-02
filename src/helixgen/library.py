@@ -118,3 +118,21 @@ class Library:
             f"Block {name_or_id!r} not found in library at {self.root}. "
             f"Try `helixgen ingest <export.hlx>` or `helixgen bootstrap`."
         )
+
+    def rebuild_index(self) -> dict[str, Any]:
+        """Re-derive index.json from the on-disk block files."""
+        names: dict[str, list[str]] = {}
+        categories: dict[str, str] = {}
+
+        for block in self.list_blocks():
+            categories[block.model_id] = block.category
+            for name in [block.display_name, *block.aliases]:
+                if not name:
+                    continue
+                names.setdefault(name, []).append(block.model_id)
+
+        index = {"names": names, "categories": categories}
+        index_path = self.root / "index.json"
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(json.dumps(index, indent=2, sort_keys=True))
+        return index
