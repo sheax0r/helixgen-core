@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from enum import Enum
 from typing import Any
 
 
@@ -68,3 +69,29 @@ def humanize_model_id(model_id: str) -> str:
             body = body[4:]
     spaced = _HUMANIZE_SPLIT_RE.sub(" ", body)
     return " ".join(spaced.split())
+
+
+class Shape(Enum):
+    PRESET = "preset"
+    SINGLE_BLOCK = "single_block"
+    UNKNOWN = "unknown"
+
+
+def detect_shape(data: Any) -> Shape:
+    """Detect whether a parsed JSON value is a full preset, a single block, or neither."""
+    if not isinstance(data, dict):
+        return Shape.UNKNOWN
+
+    if (
+        "version" in data
+        and "schema" in data
+        and isinstance(data.get("data"), dict)
+        and isinstance(data["data"].get("tone"), dict)
+        and any(dsp in data["data"]["tone"] for dsp in PRESET_DSP_KEYS)
+    ):
+        return Shape.PRESET
+
+    if RAW_BLOCK_MODEL_KEY in data:
+        return Shape.SINGLE_BLOCK
+
+    return Shape.UNKNOWN

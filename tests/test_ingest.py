@@ -38,3 +38,20 @@ def test_humanize_model_id(model_id, expected):
 )
 def test_infer_category(model_id, expected):
     assert infer_category(model_id) == expected
+
+
+from helixgen.ingest import Shape, detect_shape
+
+
+def test_detect_full_preset(sample_serial_preset):
+    assert detect_shape(sample_serial_preset) == Shape.PRESET
+
+
+def test_detect_single_block(sample_amp_block):
+    assert detect_shape(sample_amp_block) == Shape.SINGLE_BLOCK
+
+
+def test_detect_unknown_shape():
+    assert detect_shape({"foo": "bar"}) == Shape.UNKNOWN
+    assert detect_shape([]) == Shape.UNKNOWN
+    assert detect_shape("just a string") == Shape.UNKNOWN
