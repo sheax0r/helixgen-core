@@ -22,3 +22,6 @@ htmlcov/
 .venv/
 venv/
 .claude/
+
+# User-supplied preset exports (not for the repo)
+data/
