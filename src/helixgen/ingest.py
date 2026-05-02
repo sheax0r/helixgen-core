@@ -33,6 +33,7 @@ DSP_INFRASTRUCTURE_KEYS = frozenset(    # never catalog these as user blocks
 # ---------------------------------------------------------------------------
 # Category inference from model_id prefix.
 # Order matters: most specific first. Add new prefixes here as discovered.
+# Both HD2_ (older Helix) and HX2_ (Stadium) are observed in the wild.
 # ---------------------------------------------------------------------------
 _CATEGORY_PREFIXES: list[tuple[str, str]] = [
     ("HD2_Amp", "amp"),
@@ -47,6 +48,22 @@ _CATEGORY_PREFIXES: list[tuple[str, str]] = [
     ("HD2_Mod", "modulation"),
     ("HD2_Pitch", "pitch"),
     ("HD2_Wah", "filter"),
+    ("HX2_Amp", "amp"),
+    ("HX2_Cab", "cab"),
+    ("HX2_Drv", "drive"),
+    ("HX2_Dist", "drive"),
+    ("HX2_Rvb", "reverb"),
+    ("HX2_Reverb", "reverb"),
+    ("HX2_Dly", "delay"),
+    ("HX2_Delay", "delay"),
+    ("HX2_EQ", "eq"),
+    ("HX2_Gate", "dynamics"),
+    ("HX2_Comp", "dynamics"),
+    ("HX2_Dyn", "dynamics"),
+    ("HX2_Mod", "modulation"),
+    ("HX2_Pitch", "pitch"),
+    ("HX2_Wah", "filter"),
+    ("HX2_Filter", "filter"),
 ]
 
 
@@ -73,9 +90,11 @@ def humanize_model_id(model_id: str) -> str:
             body = body[len(prefix):]
             break
     else:
-        # No known prefix: also strip any leading "HD2_" if present
-        if body.startswith("HD2_"):
-            body = body[4:]
+        # No known prefix: also strip any leading "HD2_"/"HX2_"/"P35_" if present
+        for raw_prefix in ("HD2_", "HX2_", "P35_"):
+            if body.startswith(raw_prefix):
+                body = body[len(raw_prefix):]
+                break
     spaced = _HUMANIZE_SPLIT_RE.sub(" ", body)
     return " ".join(spaced.split())
 
@@ -250,12 +269,35 @@ def _firmware(preset: dict[str, Any]) -> str:
 
 
 def ingest_file(path: Path, library: Library) -> IngestSummary:
-    """Ingest a single file: parse, detect shape, extract blocks, write to library."""
+    """Ingest a single file: detect format (.hsp / .hlx / single block JSON),
+    extract blocks, write to library. .hsp ingest is block-only (no chassis).
+    """
     summary = IngestSummary()
 
     try:
-        data = json.loads(Path(path).read_text())
-    except (json.JSONDecodeError, OSError):
+        raw_bytes = Path(path).read_bytes()
+    except OSError:
+        summary.skipped += 1
+        summary.skipped_files.append(str(path))
+        return summary
+
+    # .hsp Stadium export: 8-byte ASCII magic header, then JSON.
+    from helixgen.hsp import is_hsp_bytes, read_hsp, extract_blocks_from_hsp
+    if is_hsp_bytes(raw_bytes):
+        try:
+            hsp_data = read_hsp(path)
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            summary.skipped += 1
+            summary.skipped_files.append(str(path))
+            return summary
+        raw_blocks = extract_blocks_from_hsp(hsp_data)
+        firmware = str(hsp_data.get("meta", {}).get("device_version", "unknown"))
+        return _ingest_blocks(path, raw_blocks, firmware, library, summary)
+
+    # .hlx / .json: plain JSON.
+    try:
+        data = json.loads(raw_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         summary.skipped += 1
         summary.skipped_files.append(str(path))
         return summary
@@ -277,13 +319,25 @@ def ingest_file(path: Path, library: Library) -> IngestSummary:
         raw_blocks = [extract_block_from_single(data)]
         firmware = "unknown"
 
+    return _ingest_blocks(path, raw_blocks, firmware, library, summary)
+
+
+def _ingest_blocks(
+    path: Path,
+    raw_blocks: list[dict[str, Any]],
+    firmware: str,
+    library: Library,
+    summary: IngestSummary,
+) -> IngestSummary:
+    """Catalog a list of raw block dicts into the library and tally outcomes."""
     source_info = {
         "preset": str(path),
         "firmware": firmware,
         "date": _today(),
     }
-
     for raw in raw_blocks:
+        if not isinstance(raw, dict) or RAW_BLOCK_MODEL_KEY not in raw:
+            continue
         block = block_from_raw(raw, source_info)
         status = library.save_block_with_dedup(block)
         if status == IngestStatus.NEW:
@@ -292,11 +346,10 @@ def ingest_file(path: Path, library: Library) -> IngestSummary:
             summary.matched += 1
         elif status == IngestStatus.CONFLICT:
             summary.conflicted += 1
-
     return summary
 
 
-INGEST_EXTENSIONS = {".hlx", ".json"}
+INGEST_EXTENSIONS = {".hlx", ".hsp", ".json"}
 
 
 def ingest_path(path: Path, library: Library) -> IngestSummary:
