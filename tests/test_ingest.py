@@ -55,3 +55,34 @@ def test_detect_unknown_shape():
     assert detect_shape({"foo": "bar"}) == Shape.UNKNOWN
     assert detect_shape([]) == Shape.UNKNOWN
     assert detect_shape("just a string") == Shape.UNKNOWN
+
+
+from helixgen.ingest import extract_schema
+
+
+def test_extract_schema_floats(sample_amp_block):
+    schema = extract_schema(sample_amp_block)
+    assert "Drive" in schema
+    assert schema["Drive"]["type"] == "float"
+    assert schema["Drive"]["default"] == 0.6
+    assert schema["Drive"]["observed_range"] == [0.6, 0.6]
+
+
+def test_extract_schema_skips_system_keys(sample_amp_block):
+    schema = extract_schema(sample_amp_block)
+    assert "@model" not in schema
+    assert "@enabled" not in schema
+
+
+def test_extract_schema_int_and_string(sample_cab_block):
+    schema = extract_schema(sample_cab_block)
+    assert schema["High Cut"]["type"] == "int"
+    assert schema["High Cut"]["default"] == 8000
+    assert schema["Mic"]["type"] == "str"
+    assert schema["Mic"]["default"] == "57 Dynamic"
+
+
+def test_extract_schema_handles_bool():
+    schema = extract_schema({"@model": "X", "Loop": True})
+    assert schema["Loop"]["type"] == "bool"
+    assert schema["Loop"]["default"] is True

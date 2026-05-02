@@ -95,3 +95,29 @@ def detect_shape(data: Any) -> Shape:
         return Shape.SINGLE_BLOCK
 
     return Shape.UNKNOWN
+
+
+def _value_type_name(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    return type(value).__name__
+
+
+def extract_schema(raw_block: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract a per-parameter schema from a raw block JSON."""
+    schema: dict[str, dict[str, Any]] = {}
+    for key, value in raw_block.items():
+        if isinstance(key, str) and key.startswith(RAW_BLOCK_SYSTEM_KEY_PREFIX):
+            continue
+        type_name = _value_type_name(value)
+        entry: dict[str, Any] = {"type": type_name, "default": value}
+        if type_name in ("int", "float"):
+            entry["observed_range"] = [value, value]
+        schema[key] = entry
+    return schema
