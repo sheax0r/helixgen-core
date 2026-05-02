@@ -240,3 +240,49 @@ def test_ingest_single_block_does_not_extract_chassis(
     summary = ingest_file(block_path, lib)
     assert summary.chassis_extracted is False
     assert not lib.has_chassis()
+
+
+from helixgen.ingest import ingest_path
+
+
+def test_ingest_path_directory(tmp_library, sample_serial_preset, sample_amp_block, tmp_path):
+    presets_dir = tmp_path / "presets"
+    presets_dir.mkdir()
+    (presets_dir / "preset.hlx").write_text(json.dumps(sample_serial_preset))
+    (presets_dir / "amp.json").write_text(json.dumps(sample_amp_block))
+    (presets_dir / "junk.txt").write_text("ignore me")
+
+    lib = Library(tmp_library)
+    summary = ingest_path(presets_dir, lib)
+
+    assert summary.new + summary.matched == 5
+    assert summary.skipped == 0
+
+
+def test_ingest_path_recurses(tmp_library, sample_serial_preset, tmp_path):
+    nested = tmp_path / "a" / "b" / "c"
+    nested.mkdir(parents=True)
+    (nested / "deep.hlx").write_text(json.dumps(sample_serial_preset))
+
+    lib = Library(tmp_library)
+    summary = ingest_path(tmp_path, lib)
+
+    assert summary.new == 4
+
+
+def test_ingest_path_single_file_arg(tmp_library, sample_serial_preset, tmp_path):
+    preset_path = tmp_path / "preset.hlx"
+    preset_path.write_text(json.dumps(sample_serial_preset))
+    lib = Library(tmp_library)
+
+    summary = ingest_path(preset_path, lib)
+    assert summary.new == 4
+
+
+def test_ingest_path_rebuilds_index(tmp_library, sample_serial_preset, tmp_path):
+    preset_path = tmp_path / "preset.hlx"
+    preset_path.write_text(json.dumps(sample_serial_preset))
+    lib = Library(tmp_library)
+
+    ingest_path(preset_path, lib)
+    assert (tmp_library / "index.json").exists()

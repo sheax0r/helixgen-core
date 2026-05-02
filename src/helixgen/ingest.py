@@ -238,3 +238,24 @@ def ingest_file(path: Path, library: Library) -> IngestSummary:
             summary.conflicted += 1
 
     return summary
+
+
+INGEST_EXTENSIONS = {".hlx", ".json"}
+
+
+def ingest_path(path: Path, library: Library) -> IngestSummary:
+    """Ingest a file or recursively all .hlx/.json files in a directory."""
+    path = Path(path)
+    summary = IngestSummary()
+
+    if path.is_file():
+        summary.add(ingest_file(path, library))
+    elif path.is_dir():
+        for entry in sorted(path.rglob("*")):
+            if entry.is_file() and entry.suffix.lower() in INGEST_EXTENSIONS:
+                summary.add(ingest_file(entry, library))
+    else:
+        raise FileNotFoundError(f"Path does not exist: {path}")
+
+    library.rebuild_index()
+    return summary
