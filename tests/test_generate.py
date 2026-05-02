@@ -114,7 +114,7 @@ def test_validate_params_lists_all_unknown_keys(tmp_library, sample_amp_block, s
 
 # ---- compose_preset ----
 
-def test_compose_preset_places_blocks_in_chassis_slots(
+def test_compose_preset_places_blocks_at_dsp_top_level(
     tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
 ):
     lib = Library(tmp_library)
@@ -129,15 +129,51 @@ def test_compose_preset_places_blocks_in_chassis_slots(
     }, source="t.json")
 
     preset = compose_preset(spec, lib, source="t.json")
+    dsp0 = preset["data"]["tone"]["dsp0"]
+    assert dsp0["block0"]["@model"] == "HD2_AmpBrit2204Custom"
+    assert dsp0["block0"]["Drive"] == 0.99
+    assert dsp0["block0"]["Bass"] == 0.5
+    assert dsp0["cab0"]["@model"] == "HD2_Cab4x12Greenback25"
+    # No stray block1 (only one non-cab block in the chain)
+    assert "block1" not in dsp0
 
-    blocks = preset["data"]["tone"]["dsp0"]["blocks"]
-    assert "dsp0_block_0" in blocks
-    assert "dsp0_block_1" in blocks
-    assert blocks["dsp0_block_0"]["@model"] == "HD2_AmpBrit2204Custom"
-    assert blocks["dsp0_block_0"]["Drive"] == 0.99
-    assert blocks["dsp0_block_0"]["Bass"] == 0.5
-    assert blocks["dsp0_block_1"]["@model"] == "HD2_Cab4x12Greenback25"
-    assert "dsp0_block_2" not in blocks
+
+def test_compose_preset_links_amp_to_paired_cab(
+    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
+):
+    """When an amp is followed by a cab, set the amp's @cab to the cab slot key."""
+    lib = Library(tmp_library)
+    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
+
+    spec = parse_spec({
+        "name": "Linked",
+        "paths": [{"blocks": [
+            {"block": "Brit 2204 Custom"},
+            {"block": "4x12 Greenback 25"},
+        ]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    dsp0 = preset["data"]["tone"]["dsp0"]
+    assert dsp0["block0"]["@cab"] == "cab0"
+
+
+def test_compose_preset_keeps_dsp_infrastructure(
+    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
+):
+    """Composed presets must keep inputA/outputA/split/join from the chassis."""
+    lib = Library(tmp_library)
+    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
+
+    spec = parse_spec({
+        "name": "Keep",
+        "paths": [{"blocks": [{"block": "Brit 2204 Custom"}]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    dsp0 = preset["data"]["tone"]["dsp0"]
+    for key in ("inputA", "inputB", "outputA", "outputB", "split", "join"):
+        assert key in dsp0, f"missing infrastructure key {key!r}"
 
 
 def test_compose_preset_sets_meta_name(
@@ -175,52 +211,6 @@ def test_compose_preset_writes_provenance(
     assert "generated_at" in prov
 
 
-def test_compose_preset_strips_internal_helixgen_field(
-    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
-):
-    lib = Library(tmp_library)
-    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
-
-    spec = parse_spec({
-        "name": "X",
-        "paths": [{"blocks": [{"block": "Brit 2204 Custom"}]}],
-    }, source="t.json")
-
-    preset = compose_preset(spec, lib, source="t.json")
-    assert "_helixgen" not in preset
-
-
-def test_compose_preset_too_many_blocks_raises(
-    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
-):
-    lib = Library(tmp_library)
-    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
-
-    spec = parse_spec({
-        "name": "X",
-        "paths": [{"blocks": [{"block": "Brit 2204 Custom"}] * 6}],
-    }, source="t.json")
-
-    with pytest.raises(GenerateError, match="more blocks"):
-        compose_preset(spec, lib, source="t.json")
-
-
-def test_compose_preset_overlay_io(
-    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
-):
-    lib = Library(tmp_library)
-    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
-
-    spec = parse_spec({
-        "name": "X",
-        "paths": [{"input": "USB 5/6", "output": "Multi", "blocks": [{"block": "Brit 2204 Custom"}]}],
-    }, source="t.json")
-
-    preset = compose_preset(spec, lib, source="t.json")
-    assert preset["data"]["tone"]["dsp0"]["input"] == "USB 5/6"
-    assert preset["data"]["tone"]["dsp0"]["output"] == "Multi"
-
-
 # ---- generate_preset ----
 
 def test_generate_preset_writes_file(
@@ -241,7 +231,6 @@ def test_generate_preset_writes_file(
     assert out_path.exists()
     content = json.loads(out_path.read_text())
     assert content["data"]["meta"]["name"] == "Disk Test"
-    assert "_helixgen" not in content
 
 
 def test_generate_preset_pretty_prints(
@@ -282,15 +271,23 @@ def test_goldfinger_generates_successfully(
     out = json.loads(out_path.read_text())
     assert out["data"]["meta"]["name"] == "Goldfinger Superman Rhythm"
     assert out["data"]["meta"]["author"] == "mike"
-    blocks = out["data"]["tone"]["dsp0"]["blocks"]
-    assert len(blocks) == 5
-    models = [blocks[k]["@model"] for k in sorted(blocks.keys())]
-    assert models == [
-        "HD2_DynamicsNoiseGate",
+    dsp0 = out["data"]["tone"]["dsp0"]
+    block_keys = sorted(k for k in dsp0 if k.startswith("block"))
+    cab_keys = sorted(k for k in dsp0 if k.startswith("cab"))
+    block_models = [dsp0[k]["@model"] for k in block_keys]
+    cab_models = [dsp0[k]["@model"] for k in cab_keys]
+    assert block_models == [
         "HD2_DrvScream808",
         "HD2_AmpBrit2204Custom",
-        "HD2_Cab4x12Greenback25",
+        "HD2_DlyDigital",
         "HD2_RvbPlate",
     ]
-    assert blocks[sorted(blocks.keys())[2]]["Mid"] == 0.75
-    assert blocks[sorted(blocks.keys())[4]]["Mix"] == 0.10
+    assert cab_models == ["HD2_Cab4x12Greenback25"]
+    # Amp param overlay survives
+    amp_slot = next(k for k in block_keys if dsp0[k]["@model"] == "HD2_AmpBrit2204Custom")
+    assert dsp0[amp_slot]["Mid"] == 0.75
+    # Reverb param overlay survives
+    rvb_slot = next(k for k in block_keys if dsp0[k]["@model"] == "HD2_RvbPlate")
+    assert dsp0[rvb_slot]["Mix"] == 0.10
+    # Amp got auto-linked to the cab placed after it
+    assert dsp0[amp_slot]["@cab"] == "cab0"

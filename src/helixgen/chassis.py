@@ -4,27 +4,30 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from helixgen.ingest import PRESET_BLOCKS_KEY, PRESET_DSP_KEYS
+from helixgen.ingest import (
+    PRESET_DSP_KEYS,
+    _is_cab_key,
+    _is_user_block_key,
+)
 
 
 def extract_chassis(preset: dict[str, Any]) -> dict[str, Any]:
-    """Return a chassis: a deep copy of `preset` with all blocks removed.
+    """Return a chassis: a deep copy of `preset` with all user blocks + cabs removed.
 
-    Records the original position keys (the keys of each dsp's `blocks` dict)
-    under `_helixgen.position_keys.{dsp0, dsp1}` so generation can reuse them.
+    Strips every `block*` and `cab*` slot from each dsp; preserves everything
+    else (inputA/inputB/outputA/outputB/split/join under each dsp; and at the
+    `tone` level, snapshot0..7, global, footswitch, controller). On
+    generation we copy this chassis and place new blocks/cabs back into the
+    cleared slots.
     """
     chassis = copy.deepcopy(preset)
     tone = chassis.setdefault("data", {}).setdefault("tone", {})
 
-    position_keys: dict[str, list[str]] = {}
     for dsp_key in PRESET_DSP_KEYS:
         dsp = tone.get(dsp_key)
-        if dsp is None:
-            position_keys[dsp_key] = []
+        if not isinstance(dsp, dict):
             continue
-        blocks = dsp.get(PRESET_BLOCKS_KEY, {})
-        position_keys[dsp_key] = list(blocks.keys())
-        dsp[PRESET_BLOCKS_KEY] = {}
+        for k in [k for k in dsp if _is_user_block_key(k) or _is_cab_key(k)]:
+            del dsp[k]
 
-    chassis.setdefault("_helixgen", {})["position_keys"] = position_keys
     return chassis

@@ -1,11 +1,15 @@
 {
   "@model": "HD2_AmpBrit2204Custom",
   "@enabled": true,
+  "@type": 3,
+  "@position": 3,
+  "@path": 0,
+  "@cab": "cab0",
   "Drive": 0.6,
   "Bass": 0.5,
   "Mid": 0.75,
   "Treble": 0.55,
   "Presence": 0.55,
   "Master": 0.6,
-  "Ch Vol": 0.5
+  "ChVol": 0.5
 }

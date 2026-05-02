@@ -2,60 +2,42 @@
   "version": 6,
   "schema": "L6Preset",
   "data": {
-    "device": { "name": "Helix", "fw": "3.71" },
-    "meta": { "name": "Sample Serial Preset", "author": "" },
+    "device": 2162689,
+    "device_version": 35717152,
+    "meta": {
+      "name": "Sample Serial Preset",
+      "author": "",
+      "song": "",
+      "band": "",
+      "application": "Helix",
+      "appversion": 35717120,
+      "modifieddate": 0,
+      "build_sha": "",
+      "tnid": 0
+    },
     "tone": {
       "dsp0": {
-        "input": "Multi",
-        "output": "Multi",
-        "blocks": {
-          "dsp0_block_0": {
-            "@model": "HD2_DynamicsNoiseGate",
-            "@enabled": true,
-            "Threshold": 0.4,
-            "Decay": 0.3
-          },
-          "dsp0_block_1": {
-            "@model": "HD2_DrvScream808",
-            "@enabled": true,
-            "Drive": 0.1,
-            "Tone": 0.5,
-            "Level": 0.6
-          },
-          "dsp0_block_2": {
-            "@model": "HD2_AmpBrit2204Custom",
-            "@enabled": true,
-            "Drive": 0.6,
-            "Bass": 0.5,
-            "Mid": 0.75,
-            "Treble": 0.55,
-            "Presence": 0.55,
-            "Master": 0.6,
-            "Ch Vol": 0.5
-          },
-          "dsp0_block_3": {
-            "@model": "HD2_Cab4x12Greenback25",
-            "@enabled": true,
-            "Mic": "57 Dynamic",
-            "Distance": 0.1,
-            "Axis": "12° off",
-            "High Cut": 8000,
-            "Low Cut": 80
-          },
-          "dsp0_block_4": {
-            "@model": "HD2_RvbPlate",
-            "@enabled": true,
-            "Mix": 0.1,
-            "Decay": 1.2,
-            "Pre-delay": 0.01
-          }
-        }
+        "inputA": {"@model": "HD2_AppDSPFlow1Input", "@input": 1, "noiseGate": false, "threshold": -48, "decay": 0.5},
+        "inputB": {"@model": "HD2_AppDSPFlow2Input", "@input": 0, "noiseGate": false, "threshold": -48, "decay": 0.5},
+        "outputA": {"@model": "HD2_AppDSPFlowOutput", "@output": 1, "gain": 0, "pan": 0.5},
+        "outputB": {"@model": "HD2_AppDSPFlowOutput", "@output": 1, "gain": 0, "pan": 0.5},
+        "split": {"@model": "HD2_AppDSPFlowSplitY", "@position": 0, "@enabled": true, "BalanceA": 0.5, "BalanceB": 0.5, "bypass": false},
+        "join": {"@model": "HD2_AppDSPFlowJoin", "@position": 8, "@enabled": true, "Level": 0, "A Level": 0, "A Pan": 0.5, "B Level": 0, "B Polarity": false, "B Pan": 0.5},
+        "block0": {"@model": "HD2_DrvScream808", "@enabled": true, "@type": 0, "@position": 1, "@path": 0, "Drive": 0.1, "Tone": 0.5, "Level": 0.6},
+        "block1": {"@model": "HD2_AmpBrit2204Custom", "@enabled": true, "@type": 3, "@position": 3, "@path": 0, "@cab": "cab0", "Drive": 0.6, "Bass": 0.5, "Mid": 0.75, "Treble": 0.55, "Presence": 0.55, "Master": 0.6, "ChVol": 0.5},
+        "block2": {"@model": "HD2_DlyDigital", "@enabled": true, "@type": 5, "@position": 5, "@path": 0, "Mix": 0.3, "Time": 0.4, "Feedback": 0.4},
+        "block3": {"@model": "HD2_RvbPlate", "@enabled": true, "@type": 6, "@position": 6, "@path": 0, "Mix": 0.1, "Decay": 1.2, "PreDelay": 0.01},
+        "cab0": {"@model": "HD2_Cab4x12Greenback25", "@enabled": true, "@mic": 0, "Distance": 3, "LowCut": 80, "HighCut": 8000, "Level": 0, "EarlyReflections": 0}
       },
       "dsp1": {
-        "input": "None",
-        "output": "Multi",
-        "blocks": {}
-      }
+        "inputA": {"@model": "HD2_AppDSPFlow1Input", "@input": 0, "noiseGate": false, "threshold": -48, "decay": 0.5},
+        "inputB": {"@model": "HD2_AppDSPFlow2Input", "@input": 0, "noiseGate": false, "threshold": -48, "decay": 0.5},
+        "outputA": {"@model": "HD2_AppDSPFlowOutput", "@output": 1, "gain": 0, "pan": 0.5},
+        "outputB": {"@model": "HD2_AppDSPFlowOutput", "@output": 1, "gain": 0, "pan": 0.5},
+        "split": {"@model": "HD2_AppDSPFlowSplitY", "@position": 0, "@enabled": true, "BalanceA": 0.5, "BalanceB": 0.5, "bypass": false},
+        "join": {"@model": "HD2_AppDSPFlowJoin", "@position": 8, "@enabled": true, "Level": 0, "A Level": 0, "A Pan": 0.5, "B Level": 0, "B Polarity": false, "B Pan": 0.5}
+      },
+      "global": {"@model": "@global_params", "@cursor_dsp": 0, "@current_snapshot": 0, "@tempo": 120, "@topology0": "A", "@topology1": "A"}
     }
   }
 }

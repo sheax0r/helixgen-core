@@ -1,9 +1,10 @@
 {
   "@model": "HD2_Cab4x12Greenback25",
   "@enabled": true,
-  "Mic": "57 Dynamic",
-  "Distance": 0.1,
-  "Axis": "12° off",
-  "High Cut": 8000,
-  "Low Cut": 80
+  "@mic": 0,
+  "Distance": 3,
+  "LowCut": 80,
+  "HighCut": 8000,
+  "Level": 0,
+  "EarlyReflections": 0
 }

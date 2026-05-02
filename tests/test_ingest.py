@@ -74,12 +74,12 @@ def test_extract_schema_skips_system_keys(sample_amp_block):
     assert "@enabled" not in schema
 
 
-def test_extract_schema_int_and_string(sample_cab_block):
+def test_extract_schema_int_and_float(sample_cab_block):
     schema = extract_schema(sample_cab_block)
-    assert schema["High Cut"]["type"] == "int"
-    assert schema["High Cut"]["default"] == 8000
-    assert schema["Mic"]["type"] == "str"
-    assert schema["Mic"]["default"] == "57 Dynamic"
+    assert schema["HighCut"]["type"] == "int"
+    assert schema["HighCut"]["default"] == 8000
+    assert schema["Distance"]["type"] == "int"
+    assert schema["Distance"]["default"] == 3
 
 
 def test_extract_schema_handles_bool():
@@ -99,11 +99,34 @@ def test_extract_blocks_from_preset(sample_serial_preset):
     blocks = extract_blocks_from_preset(sample_serial_preset)
     model_ids = [b["@model"] for b in blocks]
     assert model_ids == [
-        "HD2_DynamicsNoiseGate",
         "HD2_DrvScream808",
         "HD2_AmpBrit2204Custom",
-        "HD2_Cab4x12Greenback25",
+        "HD2_DlyDigital",
         "HD2_RvbPlate",
+        "HD2_Cab4x12Greenback25",
+    ]
+
+
+def test_extract_blocks_from_preset_skips_infrastructure(sample_serial_preset):
+    """inputA/outputA/split/join must never show up as user blocks."""
+    blocks = extract_blocks_from_preset(sample_serial_preset)
+    for b in blocks:
+        assert not b["@model"].startswith("HD2_AppDSPFlow"), b["@model"]
+
+
+def test_extract_blocks_from_preset_real_possum():
+    """Possum.hlx → 3 user blocks + 1 cab = 4 catalogued items in dsp0."""
+    import json as _json
+    from pathlib import Path as _Path
+    fixture = _Path(__file__).parent / "fixtures" / "presets" / "possum.hlx"
+    preset = _json.loads(fixture.read_text())
+    blocks = extract_blocks_from_preset(preset)
+    model_ids = [b["@model"] for b in blocks]
+    assert model_ids == [
+        "HD2_DistCompulsiveDrive",
+        "HD2_AmpBrit2204",
+        "HD2_VolPanVol",
+        "HD2_Cab4x121960T75",
     ]
 
 
@@ -216,7 +239,9 @@ def test_ingest_extracts_chassis_on_first_full_preset(
     assert summary.chassis_extracted is True
     assert lib.has_chassis()
     chassis = lib.load_chassis()
-    assert chassis["data"]["tone"]["dsp0"]["blocks"] == {}
+    dsp0 = chassis["data"]["tone"]["dsp0"]
+    assert not any(k.startswith("block") for k in dsp0)
+    assert not any(k.startswith("cab") for k in dsp0)
 
 
 def test_ingest_does_not_re_extract_chassis(

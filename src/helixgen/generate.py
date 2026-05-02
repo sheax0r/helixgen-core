@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from helixgen import __version__
-from helixgen.ingest import PRESET_DSP_KEYS
+from helixgen.ingest import (
+    DSP_BLOCK_KEY_PREFIX,
+    DSP_CAB_KEY_PREFIX,
+    PRESET_DSP_KEYS,
+    RAW_BLOCK_CAB_LINK_KEY,
+)
 from helixgen.library import Block, Library
 from helixgen.spec import Spec, parse_spec
 
@@ -48,8 +53,23 @@ def validate_params(block: Block, user_params: dict[str, Any]) -> None:
     )
 
 
+def _is_amp(block: Block) -> bool:
+    return block.category == "amp"
+
+
+def _is_cab(block: Block) -> bool:
+    return block.category == "cab"
+
+
 def compose_preset(spec: Spec, library: Library, *, source: str) -> dict[str, Any]:
-    """Build the final preset dict from a Spec + Library."""
+    """Build the final preset dict from a Spec + Library.
+
+    For each path in the spec, place chain entries into the matching dsp:
+    - Non-cab blocks go to sequential `block0`, `block1`, ... slots.
+    - Cab blocks go to sequential `cab0`, `cab1`, ... slots.
+    - When an amp is followed by a cab, the amp's `@cab` is set to the cab's
+      slot key so Stadium/Helix renders the pairing correctly.
+    """
     if not library.has_chassis():
         raise GenerateError(
             "Library has no chassis. Run `helixgen ingest <real-export.hlx>` first."
@@ -61,7 +81,7 @@ def compose_preset(spec: Spec, library: Library, *, source: str) -> dict[str, An
             validate_params(block, user_params)
 
     preset = copy.deepcopy(library.load_chassis())
-    position_keys = preset.get("_helixgen", {}).get("position_keys", {"dsp0": [], "dsp1": []})
+    tone = preset.setdefault("data", {}).setdefault("tone", {})
 
     for path_index, chain in enumerate(resolved):
         if path_index >= len(PRESET_DSP_KEYS):
@@ -69,28 +89,33 @@ def compose_preset(spec: Spec, library: Library, *, source: str) -> dict[str, An
                 f"Spec has {len(resolved)} paths but only {len(PRESET_DSP_KEYS)} DSPs available."
             )
         dsp_key = PRESET_DSP_KEYS[path_index]
-        slots = position_keys.get(dsp_key, [])
-        if len(chain) > len(slots):
-            raise GenerateError(
-                f"Path {path_index} has more blocks ({len(chain)}) than chassis "
-                f"slots on {dsp_key} ({len(slots)})."
-            )
+        dsp = tone.setdefault(dsp_key, {})
 
-        spec_path = spec.paths[path_index]
-        dsp = preset["data"]["tone"][dsp_key]
-        if spec_path.input is not None:
-            dsp["input"] = spec_path.input
-        if spec_path.output is not None:
-            dsp["output"] = spec_path.output
-
-        dsp["blocks"] = {}
-        for slot, (block, user_params) in zip(slots, chain):
+        block_index = 0
+        cab_index = 0
+        last_amp_slot: str | None = None
+        for block, user_params in chain:
             placed = copy.deepcopy(block.exemplar)
             for k, v in user_params.items():
                 placed[k] = v
-            dsp["blocks"][slot] = placed
 
-    meta = preset["data"].setdefault("meta", {})
+            if _is_cab(block):
+                slot = f"{DSP_CAB_KEY_PREFIX}{cab_index}"
+                cab_index += 1
+                dsp[slot] = placed
+                if last_amp_slot is not None:
+                    dsp[last_amp_slot][RAW_BLOCK_CAB_LINK_KEY] = slot
+                    last_amp_slot = None
+            else:
+                slot = f"{DSP_BLOCK_KEY_PREFIX}{block_index}"
+                block_index += 1
+                dsp[slot] = placed
+                if _is_amp(block):
+                    last_amp_slot = slot
+                else:
+                    last_amp_slot = None
+
+    meta = preset.setdefault("data", {}).setdefault("meta", {})
     meta["name"] = spec.name
     if spec.author is not None:
         meta["author"] = spec.author
@@ -100,7 +125,6 @@ def compose_preset(spec: Spec, library: Library, *, source: str) -> dict[str, An
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
-    preset.pop("_helixgen", None)
     return preset
 
 

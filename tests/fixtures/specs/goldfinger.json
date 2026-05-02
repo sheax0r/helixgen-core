@@ -3,14 +3,12 @@
   "author": "mike",
   "paths": [
     {
-      "input": "Multi",
-      "output": "Multi",
       "blocks": [
-        { "block": "Noise Gate",        "params": { "Threshold": 0.40, "Decay": 0.30 } },
         { "block": "Scream 808",        "params": { "Drive": 0.10, "Tone": 0.50, "Level": 0.60 } },
-        { "block": "Brit 2204 Custom",  "params": { "Drive": 0.60, "Bass": 0.50, "Mid": 0.75, "Treble": 0.55, "Presence": 0.55, "Master": 0.60, "Ch Vol": 0.50 } },
-        { "block": "4x12 Greenback 25", "params": { "Mic": "57 Dynamic", "Distance": 0.10, "Axis": "12° off", "High Cut": 8000, "Low Cut": 80 } },
-        { "block": "Plate",             "params": { "Mix": 0.10, "Decay": 1.2, "Pre-delay": 0.010 } }
+        { "block": "Brit 2204 Custom",  "params": { "Drive": 0.60, "Bass": 0.50, "Mid": 0.75, "Treble": 0.55, "Presence": 0.55, "Master": 0.60, "ChVol": 0.50 } },
+        { "block": "4x12 Greenback 25", "params": { "Distance": 3, "HighCut": 8000, "LowCut": 80 } },
+        { "block": "Digital",           "params": { "Mix": 0.30, "Time": 0.40, "Feedback": 0.40 } },
+        { "block": "Plate",             "params": { "Mix": 0.10, "Decay": 1.2, "PreDelay": 0.010 } }
       ]
     }
   ]

@@ -7,18 +7,27 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# DOCUMENTED ASSUMPTIONS about the Helix export wire format.
-# Verify against a real exported .hlx in Task 34. If the real shape differs,
-# update these constants and the synthetic fixtures together.
+# Wire-format constants for the real Helix .hlx export shape.
+# Confirmed against tests/fixtures/presets/possum.hlx (a real device export).
+# User blocks live as direct children of data.tone.dsp{0,1} keyed
+# `block0`, `block1`, ... and cabs as siblings keyed `cab0`, `cab1`, ...
+# Cabs are linked from amp blocks via the `@cab` metadata key.
+# Other dsp children are routing/endpoint infrastructure that we never
+# catalog as user blocks: inputA, inputB, outputA, outputB, split, join.
 # ---------------------------------------------------------------------------
 RAW_BLOCK_MODEL_KEY = "@model"          # block JSON: model identifier
 RAW_BLOCK_CATEGORY_KEY = "@category"    # block JSON: optional category override
 RAW_BLOCK_NAME_KEY = "@name"            # block JSON: optional human-readable name
+RAW_BLOCK_CAB_LINK_KEY = "@cab"         # amp block: name of paired cab sibling
 RAW_BLOCK_SYSTEM_KEY_PREFIX = "@"       # any key starting with this is metadata, not a param
 
 PRESET_TONE_KEY = ("data", "tone")      # full preset: path to dsp0/dsp1 root
 PRESET_DSP_KEYS = ("dsp0", "dsp1")
-PRESET_BLOCKS_KEY = "blocks"            # within each dsp, the block dict
+DSP_BLOCK_KEY_PREFIX = "block"          # user block sibling keys: block0, block1, ...
+DSP_CAB_KEY_PREFIX = "cab"              # cab sibling keys: cab0, cab1, ...
+DSP_INFRASTRUCTURE_KEYS = frozenset(    # never catalog these as user blocks
+    {"inputA", "inputB", "outputA", "outputB", "split", "join"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -123,14 +132,53 @@ def extract_schema(raw_block: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return schema
 
 
+def _is_user_block_key(key: str) -> bool:
+    """True if `key` is a user-block slot (`block0`, `block1`, ...)."""
+    return (
+        isinstance(key, str)
+        and key.startswith(DSP_BLOCK_KEY_PREFIX)
+        and key[len(DSP_BLOCK_KEY_PREFIX):].isdigit()
+    )
+
+
+def _is_cab_key(key: str) -> bool:
+    """True if `key` is a cab slot (`cab0`, `cab1`, ...)."""
+    return (
+        isinstance(key, str)
+        and key.startswith(DSP_CAB_KEY_PREFIX)
+        and key[len(DSP_CAB_KEY_PREFIX):].isdigit()
+    )
+
+
+def _slot_index(key: str, prefix: str) -> int:
+    return int(key[len(prefix):])
+
+
 def extract_blocks_from_preset(preset: dict[str, Any]) -> list[dict[str, Any]]:
-    """Walk dsp0 + dsp1 blocks and return a flat list of raw block dicts in order."""
+    """Walk dsp0 + dsp1 user-block + cab slots and return raw block dicts.
+
+    Order: for each dsp in PRESET_DSP_KEYS, return user blocks in slot-index
+    order, then cabs in slot-index order. Infrastructure (inputA/outputA/etc.)
+    is skipped — those are catalogued via the chassis, not the library.
+    """
     tone = preset.get("data", {}).get("tone", {})
     blocks: list[dict[str, Any]] = []
     for dsp_key in PRESET_DSP_KEYS:
-        dsp = tone.get(dsp_key, {})
-        for block in dsp.get(PRESET_BLOCKS_KEY, {}).values():
-            blocks.append(block)
+        dsp = tone.get(dsp_key)
+        if not isinstance(dsp, dict):
+            continue
+        block_keys = sorted(
+            (k for k in dsp.keys() if _is_user_block_key(k)),
+            key=lambda k: _slot_index(k, DSP_BLOCK_KEY_PREFIX),
+        )
+        cab_keys = sorted(
+            (k for k in dsp.keys() if _is_cab_key(k)),
+            key=lambda k: _slot_index(k, DSP_CAB_KEY_PREFIX),
+        )
+        for k in block_keys:
+            blocks.append(dsp[k])
+        for k in cab_keys:
+            blocks.append(dsp[k])
     return blocks
 
 
@@ -190,7 +238,15 @@ def _today() -> str:
 
 
 def _firmware(preset: dict[str, Any]) -> str:
-    return preset.get("data", {}).get("device", {}).get("fw", "unknown")
+    """Best-effort firmware/version stamp for provenance."""
+    data = preset.get("data", {})
+    version = data.get("device_version")
+    if version is not None:
+        return str(version)
+    device = data.get("device")
+    if isinstance(device, dict):
+        return str(device.get("fw", "unknown"))
+    return "unknown"
 
 
 def ingest_file(path: Path, library: Library) -> IngestSummary:
