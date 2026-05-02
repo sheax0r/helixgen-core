@@ -1,0 +1,54 @@
+{
+  "version": 6,
+  "schema": "L6Preset",
+  "data": {
+    "device": { "name": "Helix", "fw": "3.71" },
+    "meta": { "name": "Sample Serial Preset", "author": "" },
+    "tone": {
+      "dsp0": {
+        "input": "Multi",
+        "output": "Multi",
+        "blocks": {
+          "dsp0_block_0": {
+            "@model": "HD2_DynamicsNoiseGate",
+            "@enabled": true,
+            "Threshold": 0.4,
+            "Decay": 0.3
+          },
+          "dsp0_block_1": {
+            "@model": "HD2_DrvScream808",
+            "@enabled": true,
+            "Drive": 0.1,
+            "Tone": 0.5,
+            "Level": 0.6
+          },
+          "dsp0_block_2": {
+            "@model": "HD2_AmpBrit2204Custom",
+            "@enabled": true,
+            "Drive": 0.6,
+            "Bass": 0.5,
+            "Mid": 0.75,
+            "Treble": 0.55,
+            "Presence": 0.55,
+            "Master": 0.6,
+            "Ch Vol": 0.5
+          },
+          "dsp0_block_3": {
+            "@model": "HD2_Cab4x12Greenback25",
+            "@enabled": true,
+            "Mic": "57 Dynamic",
+            "Distance": 0.1,
+            "Axis": "12° off",
+            "High Cut": 8000,
+            "Low Cut": 80
+          }
+        }
+      },
+      "dsp1": {
+        "input": "None",
+        "output": "Multi",
+        "blocks": {}
+      }
+    }
+  }
+}

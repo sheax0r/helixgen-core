@@ -1,0 +1,11 @@
+{
+  "@model": "HD2_AmpBrit2204Custom",
+  "@enabled": true,
+  "Drive": 0.6,
+  "Bass": 0.5,
+  "Mid": 0.75,
+  "Treble": 0.55,
+  "Presence": 0.55,
+  "Master": 0.6,
+  "Ch Vol": 0.5
+}
