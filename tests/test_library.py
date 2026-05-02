@@ -259,3 +259,19 @@ def test_save_block_third_conflict_writes_v3(tmp_library):
     }))
     v3_path = tmp_library / "blocks" / "amp" / "HD2_AmpBrit2204Custom.v3.json"
     assert v3_path.exists()
+
+
+def test_list_blocks_excludes_conflict_variants(tmp_library):
+    """list_blocks must return one canonical entry per model_id, not the .vN.json siblings."""
+    lib = Library(tmp_library)
+    lib.save_block_with_dedup(make_block())
+    lib.save_block_with_dedup(make_block(params={
+        "Drive": {"type": "float", "default": 0.5, "observed_range": [0, 1]},
+        "NewParam": {"type": "float", "default": 0.0, "observed_range": [0, 1]},
+    }))
+    lib.save_block_with_dedup(make_block(params={
+        "TotallyDifferent": {"type": "float", "default": 0.0, "observed_range": [0, 1]},
+    }))
+    blocks = lib.list_blocks()
+    assert len(blocks) == 1
+    assert blocks[0].model_id == "HD2_AmpBrit2204Custom"

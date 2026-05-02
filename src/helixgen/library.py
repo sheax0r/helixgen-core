@@ -84,7 +84,11 @@ class Library:
         raise KeyError(f"No block with model_id {model_id!r} in library at {self.root}")
 
     def list_blocks(self, category: str | None = None) -> list[Block]:
-        """Return all blocks, optionally filtered to one category."""
+        """Return all canonical blocks, optionally filtered to one category.
+
+        Conflict variants (`<model_id>.vN.json`) are not returned — they are
+        an audit trail of schema divergence, not separate library entries.
+        """
         if not self.blocks_dir.exists():
             return []
         results: list[Block] = []
@@ -95,6 +99,8 @@ class Library:
             if not cat_dir.is_dir():
                 continue
             for entry in cat_dir.glob("*.json"):
+                if _is_conflict_variant(entry.stem):
+                    continue
                 results.append(Block.from_dict(json.loads(entry.read_text())))
         return results
 
@@ -193,3 +199,11 @@ def _schemas_match(a: dict[str, dict[str, Any]], b: dict[str, dict[str, Any]]) -
         if a[key].get("type") != b[key].get("type"):
             return False
     return True
+
+
+_CONFLICT_VARIANT_RE = __import__("re").compile(r"\.v\d+$")
+
+
+def _is_conflict_variant(stem: str) -> bool:
+    """True if `stem` (the file stem before `.json`) is a `<model>.vN` variant."""
+    return bool(_CONFLICT_VARIANT_RE.search(stem))
