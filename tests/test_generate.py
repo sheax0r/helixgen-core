@@ -198,7 +198,7 @@ def test_compose_preset_too_many_blocks_raises(
 
     spec = parse_spec({
         "name": "X",
-        "paths": [{"blocks": [{"block": "Brit 2204 Custom"}] * 5}],
+        "paths": [{"blocks": [{"block": "Brit 2204 Custom"}] * 6}],
     }, source="t.json")
 
     with pytest.raises(GenerateError, match="more blocks"):
@@ -261,3 +261,36 @@ def test_generate_preset_pretty_prints(
     text = out_path.read_text()
     assert "\n" in text
     assert text.startswith("{")
+
+
+from helixgen.ingest import ingest_path
+
+
+def test_goldfinger_generates_successfully(
+    tmp_library, sample_serial_preset, tmp_path
+):
+    """Acceptance test: generate the canonical Goldfinger preset from spec + library."""
+    preset_path = tmp_path / "seed.hlx"
+    preset_path.write_text(json.dumps(sample_serial_preset))
+    lib = Library(tmp_library)
+    ingest_path(preset_path, lib)
+
+    spec_path = Path("tests/fixtures/specs/goldfinger.json")
+    out_path = tmp_path / "goldfinger.hlx"
+    generate_preset(spec_path, out_path, lib)
+
+    out = json.loads(out_path.read_text())
+    assert out["data"]["meta"]["name"] == "Goldfinger Superman Rhythm"
+    assert out["data"]["meta"]["author"] == "mike"
+    blocks = out["data"]["tone"]["dsp0"]["blocks"]
+    assert len(blocks) == 5
+    models = [blocks[k]["@model"] for k in sorted(blocks.keys())]
+    assert models == [
+        "HD2_DynamicsNoiseGate",
+        "HD2_DrvScream808",
+        "HD2_AmpBrit2204Custom",
+        "HD2_Cab4x12Greenback25",
+        "HD2_RvbPlate",
+    ]
+    assert blocks[sorted(blocks.keys())[2]]["Mid"] == 0.75
+    assert blocks[sorted(blocks.keys())[4]]["Mix"] == 0.10

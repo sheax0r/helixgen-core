@@ -14,7 +14,7 @@ def test_roundtrip_serial_preset(tmp_library, sample_serial_preset, tmp_path):
     preset_path.write_text(json.dumps(sample_serial_preset))
     lib = Library(tmp_library)
     first_summary = ingest_path(preset_path, lib)
-    assert first_summary.new == 4
+    assert first_summary.new == 5
     assert first_summary.chassis_extracted
 
     initial_blocks = sorted(b.model_id for b in lib.list_blocks())
@@ -44,7 +44,7 @@ def test_roundtrip_serial_preset(tmp_library, sample_serial_preset, tmp_path):
 
     # 4. Re-ingest the generated file; library should be unchanged
     second_summary = ingest_path(out_path, lib)
-    assert second_summary.matched == 4
+    assert second_summary.matched == 5
     assert second_summary.new == 0
     assert second_summary.conflicted == 0
 

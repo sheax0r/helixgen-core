@@ -12,7 +12,13 @@ def test_extract_chassis_strips_blocks(sample_serial_preset):
 def test_extract_chassis_records_position_keys(sample_serial_preset):
     chassis = extract_chassis(sample_serial_preset)
     keys = chassis["_helixgen"]["position_keys"]
-    assert keys["dsp0"] == ["dsp0_block_0", "dsp0_block_1", "dsp0_block_2", "dsp0_block_3"]
+    assert keys["dsp0"] == [
+        "dsp0_block_0",
+        "dsp0_block_1",
+        "dsp0_block_2",
+        "dsp0_block_3",
+        "dsp0_block_4",
+    ]
     assert keys["dsp1"] == []
 
 

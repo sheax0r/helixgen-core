@@ -41,6 +41,13 @@
             "Axis": "12° off",
             "High Cut": 8000,
             "Low Cut": 80
+          },
+          "dsp0_block_4": {
+            "@model": "HD2_RvbPlate",
+            "@enabled": true,
+            "Mix": 0.1,
+            "Decay": 1.2,
+            "Pre-delay": 0.01
           }
         }
       },

@@ -25,7 +25,7 @@ def test_cli_ingest_full_preset(tmp_library, sample_serial_preset, tmp_path):
         ["ingest", str(preset_path), "--library", str(tmp_library)],
     )
     assert result.exit_code == 0
-    assert "+4 new blocks" in result.output or "new blocks" in result.output
+    assert "+5 new blocks" in result.output or "new blocks" in result.output
     blocks_dir = tmp_library / "blocks"
     assert blocks_dir.exists()
 

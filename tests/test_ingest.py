@@ -103,12 +103,13 @@ def test_extract_blocks_from_preset(sample_serial_preset):
         "HD2_DrvScream808",
         "HD2_AmpBrit2204Custom",
         "HD2_Cab4x12Greenback25",
+        "HD2_RvbPlate",
     ]
 
 
 def test_extract_blocks_from_preset_handles_empty_dsp1(sample_serial_preset):
     blocks = extract_blocks_from_preset(sample_serial_preset)
-    assert len(blocks) == 4
+    assert len(blocks) == 5
 
 
 def test_extract_block_from_single(sample_amp_block):
@@ -153,10 +154,10 @@ def test_ingest_file_full_preset(tmp_library, sample_serial_preset, tmp_path):
 
     summary = ingest_file(preset_path, lib)
 
-    assert summary.new == 4
+    assert summary.new == 5
     assert summary.matched == 0
     assert summary.conflicted == 0
-    assert len(lib.list_blocks()) == 4
+    assert len(lib.list_blocks()) == 5
 
 
 def test_ingest_file_single_block(tmp_library, sample_amp_block, tmp_path):
@@ -178,9 +179,9 @@ def test_ingest_file_idempotent(tmp_library, sample_serial_preset, tmp_path):
     first = ingest_file(preset_path, lib)
     second = ingest_file(preset_path, lib)
 
-    assert first.new == 4
+    assert first.new == 5
     assert second.new == 0
-    assert second.matched == 4
+    assert second.matched == 5
 
 
 def test_ingest_file_unparseable_returns_skipped(tmp_library, tmp_path):
@@ -255,7 +256,7 @@ def test_ingest_path_directory(tmp_library, sample_serial_preset, sample_amp_blo
     lib = Library(tmp_library)
     summary = ingest_path(presets_dir, lib)
 
-    assert summary.new + summary.matched == 5
+    assert summary.new + summary.matched == 6
     assert summary.skipped == 0
 
 
@@ -267,7 +268,7 @@ def test_ingest_path_recurses(tmp_library, sample_serial_preset, tmp_path):
     lib = Library(tmp_library)
     summary = ingest_path(tmp_path, lib)
 
-    assert summary.new == 4
+    assert summary.new == 5
 
 
 def test_ingest_path_single_file_arg(tmp_library, sample_serial_preset, tmp_path):
@@ -276,7 +277,7 @@ def test_ingest_path_single_file_arg(tmp_library, sample_serial_preset, tmp_path
     lib = Library(tmp_library)
 
     summary = ingest_path(preset_path, lib)
-    assert summary.new == 4
+    assert summary.new == 5
 
 
 def test_ingest_path_rebuilds_index(tmp_library, sample_serial_preset, tmp_path):
