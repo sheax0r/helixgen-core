@@ -21,7 +21,9 @@ htmlcov/
 # Venv
 .venv/
 venv/
-.claude/
+
+# Claude Code: ignore per-user settings, but track repo-scoped skills / agents
+.claude/settings.local.json
 
 # User-supplied preset exports (not for the repo)
 data/
