@@ -207,6 +207,12 @@ def _to_hsp_bnn(
     slot_inner["params"] = params
 
     bnn: dict[str, Any] = {
+        # bNN-level @enabled is the device's bypass switch. Real exports
+        # always carry it (sometimes wrapped in a controller block for
+        # footswitch assignments — we emit the plain form). Defaulting to
+        # True here means every block the user places in a spec loads
+        # enabled, which is what they almost always want.
+        "@enabled": {"value": True},
         "type": flat.get("@type", _hsp_type_for_block(block)),
         "position": position,
         "path": path_index,

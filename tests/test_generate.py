@@ -433,6 +433,31 @@ def test_compose_preset_hsp_places_blocks_in_sequential_bNN_slots(tmp_library, t
     assert "b00" in path0 and "b13" in path0
 
 
+def test_compose_preset_hsp_enables_placed_blocks_at_bnn_level(tmp_library, tmp_path):
+    """Real Stadium exports carry @enabled at the bNN level — that's the bypass
+    switch the device reads. If we emit only slot-level @enabled the block
+    loads as bypassed. Every block we place must be enabled by default.
+    """
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "Enabled",
+        "paths": [{"blocks": [
+            {"block": "Scream 808"},
+            {"block": "Brit 2204"},
+            {"block": "4x12 Greenback 25"},
+        ]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    path0 = preset["preset"]["flow"][0]
+    for key in ("b01", "b02", "b03"):
+        assert path0[key].get("@enabled") == {"value": True}, (
+            f"bNN-level @enabled missing/false on {key}"
+        )
+
+
 def test_compose_preset_hsp_wraps_params_in_value_envelope(tmp_library, tmp_path):
     lib = Library(tmp_library)
     _populate_hsp_library(lib, tmp_path)
