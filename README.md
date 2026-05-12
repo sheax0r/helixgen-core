@@ -22,11 +22,13 @@ pip install -e ".[dev]"
 
 ### A. With Claude Code (recommended)
 
-Open this repo in Claude Code, seed the library once (step 1 below), then type:
+Open this repo in Claude Code, seed the library once (step 1 below), then type something like:
 
-> `/tone make me a Plexi crunch with my Strat for the verses, push it for the lead`
+> `/tone Les Paul with stock humbuckers, classic rock / hard rock. Make me one preset with three snapshots: a clean intro, a Plexi crunch for verses, and a singing lead for solos — Slash / Joe Bonamassa territory.`
 
-The skill asks any missing questions (guitar / role / reference), drafts a spec, runs `helixgen generate`, and reports the chain plus guitar-side settings (pickup selector, volume, tone). Multi-part requests like "rhythm + lead in one preset" are handled with snapshots automatically.
+A good prompt usually includes (a) your guitar (model and pickup type are most useful), (b) the musical style or a band/song reference, and (c) the role(s) you need. The skill will ask you for anything missing.
+
+What the skill does: drafts a spec, runs `helixgen generate`, and reports back with the chain, your guitar-side knob/selector settings, the file path, and one suggested tweak after you load it. Multi-part requests ("rhythm + lead", "verse + chorus + solo") are bundled into snapshots automatically; fundamentally different sounds get split into separate presets.
 
 ### B. CLI directly
 
@@ -68,6 +70,23 @@ A tone spec is a JSON document. Minimal example:
 - `name` is the preset name shown in HX Edit.
 - `paths` contains 1 or 2 chains (mapping to dsp0 / dsp1).
 - Each block has a `block` (display name or model_id) and optional `params` (wire values: 0–1 floats for amp gain, integer Hz for cut frequencies, strings for enums like mic types).
+
+## Loading presets onto your device
+
+helixgen produces files — it does **not** talk to the hardware directly. To get a generated preset onto your Stadium / Helix you go through Line 6's official desktop app.
+
+**Default output location:**
+- The `helixgen generate` CLI requires `-o <path>` — it writes wherever you point it; there is no default.
+- The `/tone` Claude Code skill writes to `/tmp/<slug>.hsp` by default. Move it somewhere durable (e.g. `~/Documents/Helix Presets/`) before you reboot if you want to keep it.
+
+**To load on the device:**
+
+1. Connect your Stadium / Helix to your computer via USB.
+2. Open Line 6's **HX Edit** application (or whichever Helix management app matches your device — check Line 6's downloads page if unsure).
+3. Use the app's import / open command to load the `.hsp` (or `.hlx`) file.
+4. Save the loaded preset to a slot on the device.
+
+If HX Edit refuses to open the file, double-check that the chassis in your library matches your hardware (Stadium chassis → `.hsp`, legacy Helix chassis → `.hlx`).
 
 Full design: `docs/superpowers/specs/2026-05-01-helix-preset-generator-design.md`.
 
