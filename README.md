@@ -7,7 +7,7 @@ helixgen is **two things in one repo**:
 
 You can use either piece on its own. The skill is the easier surface; the CLI is what you reach for if you want to tweak specs by hand or wire helixgen into other tooling.
 
-> **Unofficial tool.** Not affiliated with or endorsed by Line 6 / Yamaha — see the [Trademark notice](#trademark-notice) below.
+> ⚠️ **Unofficial tool — use at your own risk.** Not affiliated with or endorsed by Line 6 / Yamaha (see the [Trademark notice](#trademark-notice) below). helixgen produces preset files that you import via HX Edit; loading any user-generated preset on your hardware carries non-zero risk — rejected loads, corrupted preset slots, on-device crashes, or other behavior we haven't seen. Review what you import. The MIT license under which helixgen is distributed disclaims all warranty; see [LICENSE](LICENSE).
 
 ## Install
 
@@ -106,9 +106,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or `HELIXGEN_LIBR
 
 ## Acknowledgments
 
-helixgen leans **heavily** on [**sensorium/phelix**](https://github.com/sensorium/phelix) — a community-maintained, hand-curated repository of Helix block JSON files. The `helixgen bootstrap` command clones phelix and ingests its `blocks/` directory; without that pre-extracted catalog the cold-start experience of this tool would be considerably worse, and a meaningful share of the block coverage you get out-of-the-box comes from their work.
-
-If you find helixgen useful, please give [sensorium/phelix](https://github.com/sensorium/phelix) a star, and if you find new blocks or schema corrections, contribute them back upstream first — that benefits everyone in the Helix tooling ecosystem, not just helixgen users.
+helixgen leans **heavily** on [**sensorium/phelix**](https://github.com/sensorium/phelix) — a community-maintained, hand-curated repository of Helix block JSON files. The `helixgen bootstrap` command clones phelix and ingests its `blocks/` directory; without that pre-extracted catalog the cold-start experience of this tool would be considerably worse.
 
 ## Trademark notice
 
