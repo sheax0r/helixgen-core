@@ -583,3 +583,161 @@ def test_generate_preset_writes_hsp_with_magic_header(tmp_library, tmp_path):
     parsed = read_hsp(out_path)
     assert parsed["meta"]["name"] == "Output Test"
     assert "b01" in parsed["preset"]["flow"][0]
+
+
+# ---------------------------------------------------------------------------
+# .hsp snapshots — Stadium scenes. Each spec snapshot is a delta from the
+# base path values (disable + param overrides). The generator emits 8
+# snapshot metadata slots in preset.snapshots, sets activesnapshot=0, and
+# inlines per-snapshot variation as `{"value": base, "snapshots": [...]}`
+# wrappers only where it actually varies.
+# ---------------------------------------------------------------------------
+
+
+def _spec_with_snapshots(snapshots):
+    return parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [
+            {"block": "Scream 808"},
+            {"block": "Brit 2204", "params": {"Drive": 0.5}},
+            {"block": "4x12 Greenback 25"},
+        ]}],
+        "snapshots": snapshots,
+    }, source="t.json")
+
+
+def test_compose_preset_hsp_no_snapshots_keeps_plain_value_wrappers(tmp_library, tmp_path):
+    """Spec with no snapshots: per-block values stay as plain {"value": x}."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [{"block": "Brit 2204"}]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    b01 = preset["preset"]["flow"][0]["b01"]
+    # bNN @enabled has no snapshots array
+    assert "snapshots" not in b01["@enabled"]
+    # No param has a snapshots array either
+    for v in b01["slot"][0]["params"].values():
+        assert "snapshots" not in v
+
+
+def test_compose_preset_hsp_emits_snapshot_metadata(tmp_library, tmp_path):
+    """preset.snapshots is an 8-entry list; user-named slots use spec names,
+    unused slots get auto names. All 8 are valid (so the device sees them).
+    """
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "Rhythm"},
+        {"name": "Lead"},
+        {"name": "Clean"},
+    ])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    snaps = preset["preset"]["snapshots"]
+    assert len(snaps) == 8
+    assert snaps[0]["name"] == "Rhythm"
+    assert snaps[1]["name"] == "Lead"
+    assert snaps[2]["name"] == "Clean"
+    # Unused slots get placeholder names but are still valid
+    assert snaps[3]["name"] == "Snap 4"
+    assert all(s.get("valid") is True for s in snaps)
+
+
+def test_compose_preset_hsp_sets_active_snapshot_to_zero(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([{"name": "Rhythm"}, {"name": "Lead"}])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    assert preset["preset"]["params"]["activesnapshot"] == 0
+
+
+def test_compose_preset_hsp_disable_emits_bnn_snapshots_array(tmp_library, tmp_path):
+    """A block disabled in snapshot N must emit @enabled with snapshots[N]=False."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "Rhythm"},
+        {"name": "Clean", "disable": ["Scream 808"]},
+        {"name": "Lead"},
+    ])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    drive_bnn = preset["preset"]["flow"][0]["b01"]
+    en = drive_bnn["@enabled"]
+    assert en["value"] is True
+    assert en["snapshots"] == [None, False, None, None, None, None, None, None]
+
+
+def test_compose_preset_hsp_undisabled_block_has_no_snapshots_array(tmp_library, tmp_path):
+    """Even if other blocks have snapshot variation, untouched blocks stay plain."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "Rhythm"},
+        {"name": "Clean", "disable": ["Scream 808"]},
+    ])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    amp_bnn = preset["preset"]["flow"][0]["b02"]
+    assert "snapshots" not in amp_bnn["@enabled"]
+
+
+def test_compose_preset_hsp_param_override_emits_snapshots_array(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "Rhythm"},
+        {"name": "Lead", "params": {"Brit 2204": {"Drive": 0.9}}},
+        {"name": "Clean", "params": {"Brit 2204": {"Drive": 0.3}}},
+    ])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    drive_param = preset["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]
+    assert drive_param["value"] == 0.5  # base from spec
+    assert drive_param["snapshots"] == [None, 0.9, 0.3, None, None, None, None, None]
+
+
+def test_compose_preset_hsp_param_without_override_stays_plain(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "Lead", "params": {"Brit 2204": {"Drive": 0.9}}},
+    ])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    master_param = preset["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Master"]
+    assert "snapshots" not in master_param
+
+
+def test_compose_preset_hsp_snapshot_disable_unknown_block_errors(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([{"name": "X", "disable": ["No Such Block"]}])
+    with pytest.raises(GenerateError, match="No Such Block"):
+        compose_preset(spec, lib, source="t.json")
+
+
+def test_compose_preset_hsp_snapshot_params_unknown_block_errors(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "X", "params": {"Nonexistent Block": {"Drive": 0.5}}},
+    ])
+    with pytest.raises(GenerateError, match="Nonexistent Block"):
+        compose_preset(spec, lib, source="t.json")
+
+
+def test_compose_preset_hsp_snapshot_params_unknown_param_errors(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "X", "params": {"Brit 2204": {"NotARealKnob": 0.5}}},
+    ])
+    with pytest.raises(ParamValidationError, match="NotARealKnob"):
+        compose_preset(spec, lib, source="t.json")

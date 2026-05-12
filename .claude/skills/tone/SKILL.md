@@ -29,7 +29,7 @@ When NOT to use: editing an existing `.hsp` (load and modify directly); ingestin
 Ask at most 3 short questions, and only the ones the request didn't already answer. Common gaps:
 
 - **Guitar** (single-coil / humbucker / acoustic / bass; specific model if mentioned)
-- **Role** (rhythm / lead / clean / pad / solo boost)
+- **Role** (rhythm / lead / clean / pad / solo boost) — OR multiple roles that imply a multi-snapshot preset (e.g. "I want rhythm and lead in one preset" → propose 2–3 snapshots, see step 6.5)
 - **Reference specifics** (which section of a song; live vs studio version)
 
 If the request implies an answer ("lead in X" → role known; "Strat" → single-coil known), skip that question.
@@ -98,6 +98,37 @@ Amp-EQ tweaks for the user's specific guitar (apply to whichever amp params actu
 | PRS / generic HB | balanced HB | midpoint of Strat and LP — start at amp defaults and adjust from ear |
 | Bass guitar | varies | more `Bass`, less `Mid`; back `Master` off to keep cab tight |
 
+### 5.5. Snapshots (when the user wants multiple scenes in one preset)
+
+Stadium presets support 8 snapshots — named scenes that override block bypass and param values without leaving the preset. Use them when the user asks for "rhythm + lead", "verse + chorus + solo", "clean + crunch + lead", etc.
+
+Spec extension (top-level `snapshots` array, up to 8 entries):
+
+```json
+"snapshots": [
+  {"name": "Rhythm"},
+  {"name": "Lead",  "params": {"Brit Plexi Brt": {"Drive": 0.85, "Master": 0.7},
+                               "Tape Echo Stereo": {"Mix": 0.30}}},
+  {"name": "Clean", "disable": ["Compulsive Drive"],
+                    "params": {"Brit Plexi Brt": {"Drive": 0.30}}}
+]
+```
+
+Rules:
+- Each snapshot is a *delta* from the base path values. Plain `{"name": "X"}` means "use all base values" — that's snapshot 1 typically.
+- `disable: [...]` bypasses a block in that snapshot (matched by display_name).
+- `params: {block: {p: v}}` overrides param values in that snapshot.
+- Snapshot 1 (index 0) is the one that loads on hardware boot.
+- Block names in `disable` / `params` must already exist in the path's `blocks`.
+- Param names in `params` are validated like base params — run `show-block` if unsure.
+
+Common patterns:
+- **Rhythm/Lead**: lead = higher amp `Drive` + `Master`, +0.10 reverb `Mix`, +0.15 delay `Mix`
+- **Clean/Crunch/Lead**: clean = `disable` drive(s), back amp `Drive` to ~0.25; crunch = base; lead = stack as above
+- **Verse/Chorus/Solo**: verse = light delay/verb; chorus = same; solo = boost (raise amp `Drive` 0.10–0.15 and delay `Mix` 0.20→0.35)
+
+If the user doesn't ask for snapshots, skip this section — `snapshots: []` (or omit the field) leaves the device's snapshot slots named "Snap 1..8" with no per-scene variation.
+
 ### 6. Pick guitar-side settings
 
 For the report (next step), specify the user's hands-on guitar settings to match the tone goal. Pickup choice and rolled-back knobs are part of the tone — telling them just the amp settings isn't enough.
@@ -131,9 +162,10 @@ If the validator errors with `Unknown param(s) [...]`, that's the signal to re-r
 
 Tell the user, in this order:
 1. **The chain** — one short line per block (position, model, the 2–3 settings that matter for this tone)
-2. **Guitar settings** — one line: `Selector: <position> · Volume: <0–10> · Tone: <0–10>` plus a one-clause note if the goal requires a non-obvious knob move (e.g. "roll volume to 7 for the verse, 10 for the chorus")
-3. **File path** (`/tmp/<slug>.hsp`)
-4. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
+2. **Snapshots** (only if the spec has them) — one line per snapshot summarizing what differs from base, e.g. `Lead: amp Drive 0.85, delay Mix 0.30; Clean: drive bypassed, amp Drive 0.30`
+3. **Guitar settings** — one line: `Selector: <position> · Volume: <0–10> · Tone: <0–10>` plus a one-clause note if the goal requires a non-obvious knob move (e.g. "roll volume to 7 for the verse, 10 for the chorus")
+4. **File path** (`/tmp/<slug>.hsp`)
+5. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
 
 Don't hedge with a list of 5 things to maybe try; pick one.
 
@@ -149,6 +181,8 @@ Don't hedge with a list of 5 things to maybe try; pick one.
 | Asking 5 clarifying questions | Cap at 3, only what's actually missing |
 | Reporting only amp settings, not guitar settings | The selector + volume + tone knobs are part of the tone; include them in the report |
 | Generic guitar advice that ignores the named guitar | If the user said "Strat", say "middle/position 4"; if "Les Paul", say "treble (bridge)" — match the actual switch language |
+| Forcing one preset per role when snapshots fit | If the user wants "rhythm and lead" or "verse/chorus/solo", build ONE preset with snapshots, not multiple `.hsp` files |
+| Snapshot referencing a block name that isn't in the path | `disable` / `params` only see blocks the path actually places; add the block to the path first (even if it'll be bypassed in some snapshots) |
 
 ## Quick Reference
 

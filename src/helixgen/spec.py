@@ -23,10 +23,24 @@ class PathEntry:
 
 
 @dataclass
+class Snapshot:
+    """One named snapshot (Stadium scene). Each snapshot is a delta from the
+    path's base block enabled-state and param values.
+    """
+    name: str
+    disable: list[str] = field(default_factory=list)
+    params: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass
 class Spec:
     name: str
     paths: list[PathEntry]
     author: str | None = None
+    snapshots: list[Snapshot] = field(default_factory=list)
+
+
+SNAPSHOT_MAX = 8  # Stadium hardware cap
 
 
 def _err(source: str, message: str) -> SpecError:
@@ -61,7 +75,52 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
     for i, path_raw in enumerate(paths_raw):
         paths.append(_parse_path(path_raw, source=f"{source} paths[{i}]"))
 
-    return Spec(name=name, paths=paths, author=author)
+    snapshots = _parse_snapshots(data.get("snapshots"), source=source)
+
+    return Spec(name=name, paths=paths, author=author, snapshots=snapshots)
+
+
+def _parse_snapshots(raw: Any, *, source: str) -> list[Snapshot]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise _err(source, '"snapshots" must be a list.')
+    if len(raw) > SNAPSHOT_MAX:
+        raise _err(
+            source,
+            f'"snapshots" has {len(raw)} entries; Stadium supports at most {SNAPSHOT_MAX}.',
+        )
+    return [
+        _parse_snapshot(entry, source=f"{source} snapshots[{i}]")
+        for i, entry in enumerate(raw)
+    ]
+
+
+def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
+    if not isinstance(data, dict):
+        raise _err(source, "must be an object.")
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name:
+        raise _err(source, '"name" is required and must be a non-empty string.')
+
+    disable_raw = data.get("disable", [])
+    if not isinstance(disable_raw, list) or not all(isinstance(x, str) for x in disable_raw):
+        raise _err(source, '"disable" must be a list of block-name strings.')
+
+    params_raw = data.get("params", {})
+    if not isinstance(params_raw, dict):
+        raise _err(source, '"params" must be an object if provided.')
+    params: dict[str, dict[str, Any]] = {}
+    for block_name, overrides in params_raw.items():
+        if not isinstance(overrides, dict):
+            raise _err(
+                f"{source} params[{block_name!r}]",
+                "must be an object mapping param names to values.",
+            )
+        params[block_name] = dict(overrides)
+
+    return Snapshot(name=name, disable=list(disable_raw), params=params)
 
 
 def _parse_path(data: Any, *, source: str) -> PathEntry:

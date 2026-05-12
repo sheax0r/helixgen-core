@@ -35,6 +35,23 @@ JSON tone specs. The library lives at `~/.helixgen/library/` (override with
 - `block` matches the display_name from `list-blocks` (e.g. "Brit Plexi Brt") — case-sensitive. If ambiguous, use the model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
 - `params` values are floats 0.0–1.0 for most knobs; some are ints/bools/Hz. Verify ranges with `show-block`.
 
+### Optional: snapshots (Stadium scenes)
+
+Add a top-level `snapshots` array (up to 8 entries) to define named scenes that override block bypass and param values within one preset:
+
+```json
+"snapshots": [
+  {"name": "Rhythm"},
+  {"name": "Lead",  "params": {"Brit Plexi Brt": {"Drive": 0.85}, "Tape Echo Stereo": {"Mix": 0.30}}},
+  {"name": "Clean", "disable": ["Compulsive Drive"], "params": {"Brit Plexi Brt": {"Drive": 0.30}}}
+]
+```
+
+- Each snapshot is a delta from path-level base values. Snapshot 0 (the first) is active on load.
+- `disable: [...]` bypasses those blocks in that snapshot; `params` overrides values.
+- Block references must resolve to a block already placed in `paths`.
+- Omit `snapshots` entirely to use the device's defaults (8 unnamed slots, no variation).
+
 ## Generation notes
 
 - The chassis is whatever was first ingested. A Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; a `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from the originating export is currently expected.

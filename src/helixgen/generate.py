@@ -173,6 +173,7 @@ def _compose_preset_hlx(
 # ---------------------------------------------------------------------------
 
 _HSP_BNN_RANGE = range(1, 13)  # b01..b12 are user-block slots
+HSP_SNAPSHOT_SLOTS = 8           # Stadium has 8 fixed snapshot slots per preset
 
 
 def _is_chassis_meta_key(key: str) -> bool:
@@ -180,12 +181,34 @@ def _is_chassis_meta_key(key: str) -> bool:
     return key.startswith("_helixgen_")
 
 
+def _wrap_value_with_snapshots(
+    base: Any, snapshot_overrides: list[Any] | None
+) -> dict[str, Any]:
+    """Wrap a value in the Stadium `{"value": x}` envelope, optionally with a
+    per-snapshot overrides array. The array is included only when at least
+    one slot has a non-None override (else the wrapper stays plain).
+    """
+    wrapped: dict[str, Any] = {"value": base}
+    if snapshot_overrides and any(o is not None for o in snapshot_overrides):
+        wrapped["snapshots"] = list(snapshot_overrides)
+    return wrapped
+
+
 def _to_hsp_bnn(
-    block: Block, user_params: dict[str, Any], *, position: int, path_index: int
+    block: Block,
+    user_params: dict[str, Any],
+    *,
+    position: int,
+    path_index: int,
+    enabled_overrides: list[bool | None] | None = None,
+    param_overrides: dict[str, list[Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one Stadium bNN dict from a library Block and user param overrides.
 
-    Returns the bNN-level shape `{type, position, path, slot: [{...}]}`.
+    `enabled_overrides` is a per-snapshot list (length HSP_SNAPSHOT_SLOTS) of
+    bool/None — None means "use the base @enabled value." `param_overrides`
+    maps param-name → per-snapshot value list. Either may be None / empty
+    when no snapshots touch this block.
     """
     flat = copy.deepcopy(block.exemplar)
     for k, v in user_params.items():
@@ -194,7 +217,7 @@ def _to_hsp_bnn(
     slot_inner: dict[str, Any] = {
         "model": translate_to_hsp(flat.get(RAW_BLOCK_MODEL_KEY, block.model_id)),
     }
-    # @enabled defaults to True if absent
+    # Slot-level @enabled: always plain (the bNN-level wraps snapshot variation).
     slot_inner["@enabled"] = {"value": flat.get("@enabled", True)}
     if "@version" in flat:
         slot_inner["version"] = flat["@version"]
@@ -203,7 +226,7 @@ def _to_hsp_bnn(
     for k, v in flat.items():
         if not isinstance(k, str) or k.startswith(RAW_BLOCK_SYSTEM_KEY_PREFIX):
             continue
-        params[k] = {"value": v}
+        params[k] = _wrap_value_with_snapshots(v, (param_overrides or {}).get(k))
     slot_inner["params"] = params
 
     bnn: dict[str, Any] = {
@@ -212,7 +235,7 @@ def _to_hsp_bnn(
         # footswitch assignments — we emit the plain form). Defaulting to
         # True here means every block the user places in a spec loads
         # enabled, which is what they almost always want.
-        "@enabled": {"value": True},
+        "@enabled": _wrap_value_with_snapshots(True, enabled_overrides),
         "type": flat.get("@type", _hsp_type_for_block(block)),
         "position": position,
         "path": path_index,
@@ -230,6 +253,97 @@ def _hsp_type_for_block(block: Block) -> str:
     return "fx"
 
 
+def _resolve_snapshot_block(
+    name_or_id: str, resolved: list[ResolvedPath]
+) -> tuple[int, int, Block]:
+    """Locate a block in the resolved spec chains by display_name or model_id.
+
+    Returns (path_index, chain_index, Block). Raises GenerateError if no match
+    or ambiguous match — snapshots can only target blocks that the spec
+    actually places.
+    """
+    matches: list[tuple[int, int, Block]] = []
+    for path_idx, chain in enumerate(resolved):
+        for chain_idx, (block, _) in enumerate(chain):
+            if block.model_id == name_or_id or block.display_name == name_or_id:
+                matches.append((path_idx, chain_idx, block))
+    if not matches:
+        raise GenerateError(
+            f"Snapshot references block {name_or_id!r} but no such block is "
+            f"in the spec's paths. Add it to a path first."
+        )
+    if len(matches) > 1:
+        raise GenerateError(
+            f"Snapshot block {name_or_id!r} matches multiple placed blocks. "
+            f"Use the model_id (in brackets in `list-blocks`) to disambiguate."
+        )
+    return matches[0]
+
+
+def _build_snapshot_overrides(
+    spec: Spec, resolved: list[ResolvedPath]
+) -> tuple[
+    dict[tuple[int, int], list[bool | None]],
+    dict[tuple[int, int], dict[str, list[Any]]],
+]:
+    """Resolve spec snapshots into per-(path, block_in_chain) override maps.
+
+    Returns:
+      - enabled_map: {(path_idx, chain_idx): [snap0_bool_or_None, ..., snap7_...]}
+      - param_map:   {(path_idx, chain_idx): {param_name: [snap0_val_or_None, ...]}}
+
+    Snapshots beyond what the spec defines are filled with None (use base).
+    Validates that referenced blocks exist and snapshot params are real
+    (delegates the latter to validate_params).
+    """
+    n_snaps = len(spec.snapshots)
+    enabled_map: dict[tuple[int, int], list[bool | None]] = {}
+    param_map: dict[tuple[int, int], dict[str, list[Any]]] = {}
+
+    for snap_idx, snap in enumerate(spec.snapshots):
+        # disable: turn off the named block in this snapshot
+        for name in snap.disable:
+            path_idx, chain_idx, _ = _resolve_snapshot_block(name, resolved)
+            key = (path_idx, chain_idx)
+            enabled_map.setdefault(key, [None] * HSP_SNAPSHOT_SLOTS)
+            enabled_map[key][snap_idx] = False
+
+        # params: override values for named block in this snapshot
+        for block_name, overrides in snap.params.items():
+            path_idx, chain_idx, block = _resolve_snapshot_block(block_name, resolved)
+            validate_params(block, overrides)
+            key = (path_idx, chain_idx)
+            block_params = param_map.setdefault(key, {})
+            for pname, pval in overrides.items():
+                arr = block_params.setdefault(pname, [None] * HSP_SNAPSHOT_SLOTS)
+                arr[snap_idx] = pval
+
+    return enabled_map, param_map
+
+
+def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
+    """Build the 8-entry preset.snapshots metadata list.
+
+    First N entries take their names from the spec; remaining slots are
+    filled with `Snap M` placeholders so the device sees all 8 as usable.
+    """
+    snaps: list[dict[str, Any]] = []
+    for i in range(HSP_SNAPSHOT_SLOTS):
+        if i < len(spec.snapshots):
+            name = spec.snapshots[i].name
+        else:
+            name = f"Snap {i + 1}"
+        snaps.append({
+            "name": name,
+            "color": "auto",
+            "expsw": 1 if i == 0 else -1,  # first snapshot owns the expression pedal
+            "source": 0,
+            "tempo": 120.0,
+            "valid": True,
+        })
+    return snaps
+
+
 def _compose_preset_hsp(
     spec: Spec, library: Library, *, source: str, chassis: dict[str, Any]
 ) -> dict[str, Any]:
@@ -238,6 +352,8 @@ def _compose_preset_hsp(
     for chain in resolved:
         for block, user_params in chain:
             validate_params(block, user_params)
+
+    enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
 
     preset = copy.deepcopy(chassis)
     # Strip private library annotations — these are not part of the wire format.
@@ -262,11 +378,22 @@ def _compose_preset_hsp(
                 f"Path {path_index} has {len(chain)} blocks; only "
                 f"{len(_HSP_BNN_RANGE)} user slots (b01..b12) available."
             )
-        for slot_index, (block, user_params) in enumerate(chain, start=1):
+        for chain_idx, (block, user_params) in enumerate(chain):
+            slot_index = chain_idx + 1
             key = f"b{slot_index:02d}"
             path_dict[key] = _to_hsp_bnn(
-                block, user_params, position=slot_index, path_index=path_index
+                block, user_params,
+                position=slot_index,
+                path_index=path_index,
+                enabled_overrides=enabled_map.get((path_index, chain_idx)),
+                param_overrides=param_map.get((path_index, chain_idx)),
             )
+
+    # Snapshot metadata + active-snapshot pointer. Always emitted (even when
+    # the spec defines none) so the chassis-carried snapshot names from the
+    # originating preset get replaced with something neutral.
+    preset["preset"]["snapshots"] = _build_snapshot_metadata(spec)
+    preset["preset"].setdefault("params", {})["activesnapshot"] = 0
 
     meta = preset.setdefault("meta", {})
     meta["name"] = spec.name
