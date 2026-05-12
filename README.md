@@ -1,6 +1,8 @@
 # helixgen
 
-Generate Line 6 Helix `.hlx` preset files from a strict JSON tone spec, and build up a reusable library of block schemas by ingesting real exports.
+Generate Line 6 Helix `.hsp` (Stadium) and `.hlx` (legacy) preset files from a strict JSON tone spec, and build up a reusable library of block schemas by ingesting real exports.
+
+> **Unofficial tool.** Not affiliated with or endorsed by Line 6 / Yamaha — see the [Trademark notice](#trademark-notice) below.
 
 ## Install
 
@@ -62,8 +64,20 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or `HELIXGEN_LIBR
 
 - Single serial chain per DSP; no parallel A/B routing yet (see `docs/features/parallel-paths.md`).
 - Wire values only — no display-value (0–10) translation.
-- No snapshot variation.
 - Output is not byte-identical to HX Edit's exports; it aims to load correctly.
+- Footswitch assignment is not generated; assign on-device after loading.
+
+## Acknowledgments
+
+helixgen leans **heavily** on [**sensorium/phelix**](https://github.com/sensorium/phelix) — a community-maintained, hand-curated repository of Helix block JSON files. The `helixgen bootstrap` command clones phelix and ingests its `blocks/` directory; without that pre-extracted catalog the cold-start experience of this tool would be considerably worse, and a meaningful share of the block coverage you get out-of-the-box comes from their work.
+
+If you find helixgen useful, please give [sensorium/phelix](https://github.com/sensorium/phelix) a star, and if you find new blocks or schema corrections, contribute them back upstream first — that benefits everyone in the Helix tooling ecosystem, not just helixgen users.
+
+## Trademark notice
+
+helixgen is an unofficial community project. **Line 6**, **Helix**, **HX**, and related product names are trademarks of **Yamaha Guitar Group, Inc.** helixgen is not affiliated with, endorsed by, or sponsored by Line 6 or Yamaha. References in this project to Line 6 hardware, file formats (`.hlx`, `.hsp`), and model identifiers are descriptive — helixgen generates files intended to be compatible with Line 6 Helix devices but is not a Line 6 product.
+
+If you are a representative of Line 6 / Yamaha and have concerns about this project's name or scope, please open an issue.
 
 ## Tests
 
