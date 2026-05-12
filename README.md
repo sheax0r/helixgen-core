@@ -1,13 +1,18 @@
 # helixgen
 
-Generate Line 6 Helix `.hsp` (Stadium) and `.hlx` (legacy) preset files from a strict JSON tone spec, and build up a reusable library of block schemas by ingesting real exports.
+helixgen is **two things in one repo**:
+
+1. A **Python CLI** that generates Line 6 Helix `.hsp` (Stadium) and `.hlx` (legacy) preset files from a strict JSON tone spec, and builds up a reusable library of block schemas by ingesting real exports.
+2. A **Claude Code skill** at `.claude/skills/tone/` that drives the CLI from natural-language tone descriptions ("make me a Plexi crunch for my Strat verses, push it for the lead") — it clarifies, surveys the library, drafts the spec, runs the generator, and reports back with guitar-side settings.
+
+You can use either piece on its own. The skill is the easier surface; the CLI is what you reach for if you want to tweak specs by hand or wire helixgen into other tooling.
 
 > **Unofficial tool.** Not affiliated with or endorsed by Line 6 / Yamaha — see the [Trademark notice](#trademark-notice) below.
 
 ## Install
 
 ```bash
-git clone https://github.com/<you>/helixgen
+git clone https://github.com/sheax0r/helixgen
 cd helixgen
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
@@ -15,20 +20,30 @@ pip install -e ".[dev]"
 
 ## Quickstart
 
-```bash
-# Seed the library from sensorium/phelix's pre-extracted blocks
-helixgen bootstrap
+### A. With Claude Code (recommended)
 
-# Or ingest your own exports
+Open this repo in Claude Code, seed the library once (step 1 below), then type:
+
+> `/tone make me a Plexi crunch with my Strat for the verses, push it for the lead`
+
+The skill asks any missing questions (guitar / role / reference), drafts a spec, runs `helixgen generate`, and reports the chain plus guitar-side settings (pickup selector, volume, tone). Multi-part requests like "rhythm + lead in one preset" are handled with snapshots automatically.
+
+### B. CLI directly
+
+```bash
+# 1. Seed the library — from your own exports (preferred for accuracy)
 helixgen ingest ~/MyPresets/
 
-# Browse the library
+# Or from the sensorium/phelix community catalog
+helixgen bootstrap
+
+# 2. Browse the library
 helixgen list-blocks
 helixgen list-blocks --category amp
 helixgen show-block "Brit 2204"
 
-# Generate a preset
-helixgen generate my-tone.json -o my-tone.hlx
+# 3. Generate a preset
+helixgen generate my-tone.json -o my-tone.hsp
 ```
 
 ## Spec format
