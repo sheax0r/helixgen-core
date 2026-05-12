@@ -291,3 +291,270 @@ def test_goldfinger_generates_successfully(
     assert dsp0[rvb_slot]["Mix"] == 0.10
     # Amp got auto-linked to the cab placed after it
     assert dsp0[amp_slot]["@cab"] == "cab0"
+
+
+# ---------------------------------------------------------------------------
+# .hsp (Stadium) chassis shape — shape-aware dispatch in compose_preset.
+# ---------------------------------------------------------------------------
+
+from helixgen.hsp import HSP_MAGIC, extract_blocks_from_hsp, read_hsp
+
+
+def _hsp_fixture_payload():
+    """A Stadium .hsp payload with 1 path holding a drive, an amp, and a cab.
+    Slot params are wrapped in {"value": ...} as the wire format requires.
+    """
+    return {
+        "meta": {"name": "Seed", "device_id": 0, "device_version": 38},
+        "preset": {
+            "flow": [
+                {
+                    "@enabled": True,
+                    "b00": {
+                        "type": "input",
+                        "position": 0,
+                        "path": 0,
+                        "slot": [{"model": "P35_InputInst1", "params": {}, "version": 0}],
+                    },
+                    "b01": {
+                        "type": "fx",
+                        "position": 1,
+                        "path": 0,
+                        "slot": [{
+                            "model": "HD2_DistScream808Mono",  # gets translated to HD2_DrvScream808
+                            "@enabled": {"value": True},
+                            "params": {
+                                "Gain": {"value": 0.4},
+                                "Tone": {"value": 0.5},
+                                "Level": {"value": 0.6},
+                            },
+                            "version": 0,
+                        }],
+                    },
+                    "b02": {
+                        "type": "amp",
+                        "position": 3,
+                        "path": 0,
+                        "slot": [{
+                            "model": "HD2_AmpBrit2204",
+                            "@enabled": {"value": True},
+                            "params": {
+                                "Drive": {"value": 0.62},
+                                "Master": {"value": 0.36},
+                            },
+                            "version": 0,
+                        }],
+                    },
+                    "b03": {
+                        "type": "cab",
+                        "position": 4,
+                        "path": 0,
+                        "slot": [{
+                            "model": "HD2_Cab4x12Greenback25",
+                            "@enabled": {"value": True},
+                            "params": {
+                                "LowCut": {"value": 80.0},
+                                "HighCut": {"value": 8000.0},
+                            },
+                            "version": 0,
+                        }],
+                    },
+                    "b13": {
+                        "type": "output",
+                        "position": 13,
+                        "path": 0,
+                        "slot": [{"model": "P35_OutputMatrix", "params": {}, "version": 0}],
+                    },
+                },
+                {  # empty second path
+                    "b00": {
+                        "type": "input",
+                        "position": 0,
+                        "path": 1,
+                        "slot": [{"model": "P35_InputNone", "params": {}}],
+                    },
+                    "b13": {
+                        "type": "output",
+                        "position": 13,
+                        "path": 1,
+                        "slot": [{"model": "P35_OutputMatrix", "params": {}}],
+                    },
+                },
+            ],
+        },
+    }
+
+
+def _populate_hsp_library(lib, tmp_path):
+    """Ingest the fixture .hsp into `lib` so it has a Stadium chassis + blocks."""
+    from helixgen.ingest import ingest_file
+    f = tmp_path / "seed.hsp"
+    f.write_bytes(HSP_MAGIC + json.dumps(_hsp_fixture_payload()).encode("utf-8"))
+    ingest_file(f, lib)
+    lib.rebuild_index()
+
+
+def test_compose_preset_hsp_returns_hsp_shape(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "HSP Test",
+        "paths": [{"blocks": [
+            {"block": "Scream 808"},
+            {"block": "Brit 2204"},
+            {"block": "4x12 Greenback 25"},
+        ]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    # .hsp shape: preset.flow exists, data.tone.dsp0 does not
+    assert "preset" in preset and "flow" in preset["preset"]
+    assert "data" not in preset or "tone" not in preset.get("data", {})
+
+
+def test_compose_preset_hsp_places_blocks_in_sequential_bNN_slots(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [
+            {"block": "Scream 808"},
+            {"block": "Brit 2204"},
+            {"block": "4x12 Greenback 25"},
+        ]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    path0 = preset["preset"]["flow"][0]
+    assert "b01" in path0 and "b02" in path0 and "b03" in path0
+    # Endpoints preserved from chassis
+    assert "b00" in path0 and "b13" in path0
+
+
+def test_compose_preset_hsp_wraps_params_in_value_envelope(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [{"block": "Brit 2204", "params": {"Drive": 0.9}}]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    slot = preset["preset"]["flow"][0]["b01"]["slot"][0]
+    # User override applied AND rewrapped
+    assert slot["params"]["Drive"] == {"value": 0.9}
+    # Exemplar params survive and are also wrapped
+    assert slot["params"]["Master"] == {"value": 0.36}
+    # @enabled also wrapped
+    assert slot["@enabled"] == {"value": True}
+
+
+def test_compose_preset_hsp_translates_library_id_back_to_stadium(tmp_library, tmp_path):
+    """Library stores HD2_DrvScream808 (the .hlx-normalized id); .hsp output
+    must use the Stadium-side id HD2_DistScream808Mono so the device loads it.
+    """
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [{"block": "Scream 808"}]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    slot = preset["preset"]["flow"][0]["b01"]["slot"][0]
+    assert slot["model"] == "HD2_DistScream808Mono"
+
+
+def test_compose_preset_hsp_strips_chassis_marker(tmp_library, tmp_path):
+    """The output .hsp must not carry the helixgen chassis-shape marker
+    (it's a private library annotation, not part of the wire format).
+    """
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [{"block": "Brit 2204"}]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    assert "_helixgen_chassis_shape" not in preset
+
+
+def test_compose_preset_hsp_sets_meta_name(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "My Stadium Preset",
+        "paths": [{"blocks": [{"block": "Brit 2204"}]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    assert preset["meta"]["name"] == "My Stadium Preset"
+
+
+def test_compose_preset_hsp_too_many_paths_errors(tmp_library, tmp_path):
+    """Spec has more paths than the .hsp chassis flow can hold → clean error."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    # The fixture chassis has 2 flow paths. Force a spec with 3? Spec parser
+    # caps at 2 — so use a chassis with 1 flow path and a 2-path spec instead.
+    # Simulate that by chopping the chassis's second flow entry.
+    chassis = lib.load_chassis()
+    chassis["preset"]["flow"] = chassis["preset"]["flow"][:1]
+    lib.save_chassis(chassis)
+
+    spec = parse_spec({
+        "name": "X",
+        "paths": [
+            {"blocks": [{"block": "Brit 2204"}]},
+            {"blocks": [{"block": "Brit 2204"}]},
+        ],
+    }, source="t.json")
+    with pytest.raises(GenerateError, match="paths"):
+        compose_preset(spec, lib, source="t.json")
+
+
+def test_compose_preset_unknown_chassis_shape_errors(tmp_library, tmp_path):
+    """Future-proofing: an unrecognized chassis shape must fail cleanly."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    chassis = lib.load_chassis()
+    chassis["_helixgen_chassis_shape"] = "future-shape"
+    lib.save_chassis(chassis)
+
+    spec = parse_spec({
+        "name": "X",
+        "paths": [{"blocks": [{"block": "Brit 2204"}]}],
+    }, source="t.json")
+    with pytest.raises(GenerateError, match="chassis shape"):
+        compose_preset(spec, lib, source="t.json")
+
+
+def test_generate_preset_writes_hsp_with_magic_header(tmp_library, tmp_path):
+    """When the chassis is .hsp shape, generate_preset must emit an .hsp file
+    (8-byte magic header + JSON body), readable by read_hsp.
+    """
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps({
+        "name": "Output Test",
+        "paths": [{"blocks": [{"block": "Brit 2204"}]}],
+    }))
+    out_path = tmp_path / "out.hsp"
+    generate_preset(spec_path, out_path, lib)
+
+    # File starts with the .hsp magic, and read_hsp can parse it.
+    raw = out_path.read_bytes()
+    assert raw.startswith(HSP_MAGIC)
+    parsed = read_hsp(out_path)
+    assert parsed["meta"]["name"] == "Output Test"
+    assert "b01" in parsed["preset"]["flow"][0]

@@ -49,6 +49,19 @@ HSP_TO_HLX_MODEL_ID: dict[str, str] = {
     "HD2_VolPanVolMono": "HD2_VolPanVol",
 }
 
+# Reverse mapping for generation (.hlx id → Stadium id). Derived from the
+# forward table; collisions in the inverse direction would be a programming
+# error and surface immediately when this dict is built.
+HLX_TO_HSP_MODEL_ID: dict[str, str] = {v: k for k, v in HSP_TO_HLX_MODEL_ID.items()}
+assert len(HLX_TO_HSP_MODEL_ID) == len(HSP_TO_HLX_MODEL_ID), (
+    "HSP→HLX translation table has duplicate values; reverse mapping is ambiguous."
+)
+
+
+def translate_to_hsp(model_id: str) -> str:
+    """Inverse of `_translate_model_id`: library id → Stadium id (if known)."""
+    return HLX_TO_HSP_MODEL_ID.get(model_id, model_id)
+
 
 def is_hsp_bytes(raw: bytes) -> bool:
     return raw[:HSP_MAGIC_LEN] == HSP_MAGIC
