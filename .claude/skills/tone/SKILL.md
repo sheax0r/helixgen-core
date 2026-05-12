@@ -187,6 +187,23 @@ Tell the user, in this order:
 
 Don't hedge with a list of 5 things to maybe try; pick one.
 
+### 9. Iterate on feedback (when the user loads it and says it's not quite right)
+
+After the user loads the preset and reports back ("the lead is too compressed", "verses are too dark", "swap that delay for something slappier", "clean snapshot needs a touch of reverb"), don't start over. Open the existing `/tmp/<slug>.json` spec, make the smallest edit that addresses the feedback, regenerate to the same `.hsp` path, and tell the user what changed in one line so they can A/B.
+
+Rules of thumb for translating ear-language to param moves:
+- **"Too compressed"** on a lead → back amp `Drive` off ~0.10, raise `Master`; or back drive pedal `Gain` off ~0.10
+- **"Too dark"** → raise `Treble` 0.05–0.10, raise `Presence` 0.05; or change to a brighter amp variant if the EQ is already at ceiling
+- **"Too bright / harsh"** → mirror of above (drop Treble/Presence), or pull cab `HighCut` down (e.g. 8000 → 6500)
+- **"Not enough body"** → raise `Bass` 0.05–0.10 or `Mid` 0.05; consider `LowCut` on cab 80 → 60
+- **"Boomy / flubby"** → raise cab `LowCut` (60 → 100), back `Bass` off
+- **"Lead doesn't sing / cut"** → raise `Mid` 0.05–0.10 in the lead snapshot, raise delay `Mix` 0.05
+- **"Delay is washy / too long"** → drop `Mix` 0.05 OR drop `Time` 0.05
+- **"Reverb feels too loud"** → drop `Mix` 0.03–0.05 (Stadium plates run hot, small moves matter)
+- **"Swap X for something Y"** → run `list-blocks --category <cat> | grep -i <kw>` to find candidates, `show-block` the chosen one, edit the spec, regenerate
+
+Keep the spec file intact between iterations so the user has a running history. If a change is big enough to warrant a new spec, save as `/tmp/<slug>-v2.json` and tell them — but small adjustments stay in place.
+
 ## Common Mistakes
 
 | Mistake | Fix |
