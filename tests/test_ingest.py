@@ -36,6 +36,33 @@ def test_humanize_model_id(model_id, expected):
         ("HX2_EQParametricMono", "eq"),
         ("HX2_AmpBrit2204Mono", "amp"),
         ("HX2_DistScream808Mono", "drive"),
+        # Line 6 legacy stompbox modelers — DL4/DM4/FM4/MM4 prefixes
+        ("HD2_DL4AnalogDelayStereo", "delay"),
+        ("HD2_DL4TapeEchoStereo", "delay"),
+        ("HD2_DL4LowResDelay", "delay"),
+        ("HD2_DL4AutoVolStereo", "volume"),
+        ("HD2_DM4ColorDrive", "drive"),
+        ("HD2_DM4JumboFuzz", "drive"),
+        ("HD2_DM4BassOctaver", "pitch"),
+        ("HD2_FM4Growler", "filter"),
+        ("HD2_FM4ObiWah", "filter"),
+        ("HD2_FM4SynthOMatic", "filter"),
+        ("HD2_FM4VoiceBox", "filter"),
+        ("HD2_MM4AnalogChorus", "modulation"),
+        ("HD2_MM4BarberpolePhaser", "modulation"),
+        ("HD2_MM4PitchVibrato", "modulation"),
+        # Stadium HX2_ comps
+        ("HX2_DM4BlueComp", "dynamics"),
+        ("HX2_DM4RedComp", "dynamics"),
+        ("HX2_DM4TubeComp", "dynamics"),
+        # Acoustic guitar simulators — shaping/filter family
+        ("L6SPB_AcousGtrSimMono", "filter"),
+        ("L6SPB_AcousGtrSimStereo", "filter"),
+        # VIC plate reverb (despite the "Dyn" in the name, it's a reverb)
+        ("VIC_DynPlateMono", "reverb"),
+        ("VIC_DynPlateStereo", "reverb"),
+        # Tape Eater is a saturation/drive effect
+        ("TapeEater", "drive"),
         ("HD2_TotallyNewThing", "uncategorized"),
         ("WeirdNoPrefix", "uncategorized"),
     ],
@@ -270,6 +297,60 @@ def test_ingest_single_block_does_not_extract_chassis(
     summary = ingest_file(block_path, lib)
     assert summary.chassis_extracted is False
     assert not lib.has_chassis()
+
+
+def _hsp_bytes_for(payload: dict) -> bytes:
+    from helixgen.hsp import HSP_MAGIC
+    return HSP_MAGIC + json.dumps(payload).encode("utf-8")
+
+
+def _minimal_hsp_payload() -> dict:
+    return {
+        "meta": {"name": "T", "device_version": 38},
+        "preset": {
+            "flow": [
+                {
+                    "b00": {"type": "input", "slot": [{"model": "P35_InputGuitar"}]},
+                    "b01": {
+                        "type": "fx",
+                        "slot": [{
+                            "model": "HD2_DrvScream808",
+                            "params": {"Gain": {"value": 0.5}},
+                        }],
+                    },
+                    "b13": {"type": "output", "slot": [{"model": "P35_OutputMain"}]},
+                },
+            ],
+        },
+    }
+
+
+def test_ingest_hsp_extracts_chassis_on_first_encounter(tmp_library, tmp_path):
+    hsp_path = tmp_path / "preset.hsp"
+    hsp_path.write_bytes(_hsp_bytes_for(_minimal_hsp_payload()))
+    lib = Library(tmp_library)
+
+    assert not lib.has_chassis()
+    summary = ingest_file(hsp_path, lib)
+
+    assert summary.chassis_extracted is True
+    assert lib.has_chassis()
+    chassis = lib.load_chassis()
+    assert chassis.get("_helixgen_chassis_shape") == "hsp"
+    # User block b01 stripped; endpoints retained.
+    path0 = chassis["preset"]["flow"][0]
+    assert "b01" not in path0
+    assert "b00" in path0 and "b13" in path0
+
+
+def test_ingest_hsp_does_not_re_extract_chassis(tmp_library, tmp_path):
+    hsp_path = tmp_path / "preset.hsp"
+    hsp_path.write_bytes(_hsp_bytes_for(_minimal_hsp_payload()))
+    lib = Library(tmp_library)
+
+    ingest_file(hsp_path, lib)
+    second = ingest_file(hsp_path, lib)
+    assert second.chassis_extracted is False
 
 
 from helixgen.ingest import ingest_path

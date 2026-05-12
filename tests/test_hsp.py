@@ -181,6 +181,56 @@ def test_extract_blocks_unwrap_handles_empty_flow():
     assert extract_blocks_from_hsp({}) == []
 
 
+def _payload_with_routing_in_mid_path() -> dict:
+    """A .hsp payload where mid-path slots (b02..b04) contain Stadium routing /
+    IO / looper models. These must be filtered out — they are chassis-level
+    infrastructure, not catalogable user effects.
+    """
+    return {
+        "meta": {"name": "Routing", "device_id": 0, "device_version": 0},
+        "preset": {
+            "flow": [
+                {
+                    "b00": {
+                        "type": "input",
+                        "slot": [{"model": "P35_InputGuitar", "params": {}}],
+                    },
+                    "b01": {
+                        "type": "fx",
+                        "slot": [{"model": "HD2_DrvScream808", "params": {}}],
+                    },
+                    "b02": {  # mid-path split — must NOT be cataloged
+                        "type": "split",
+                        "slot": [{"model": "P35_AppDSPSplitY", "params": {}}],
+                    },
+                    "b03": {  # mid-path looper — chassis-level, not a block
+                        "type": "looper",
+                        "slot": [{"model": "P35_LooperHelixMono", "params": {}}],
+                    },
+                    "b04": {  # mid-path output endpoint inside the flow
+                        "type": "output",
+                        "slot": [{"model": "P35_OutputMatrix", "params": {}}],
+                    },
+                    "b13": {
+                        "type": "output",
+                        "slot": [{"model": "P35_OutputMain", "params": {}}],
+                    },
+                },
+            ],
+        },
+    }
+
+
+def test_extract_blocks_skips_p35_routing_in_mid_path():
+    blocks = extract_blocks_from_hsp(_payload_with_routing_in_mid_path())
+    models = [b["@model"] for b in blocks]
+    # The real drive block is kept...
+    assert "HD2_DrvScream808" in models
+    # ...but no P35_* (input/output/split/join/looper) leaks through
+    for m in models:
+        assert not m.startswith("P35_"), f"P35_* model leaked into blocks: {m}"
+
+
 def test_read_hsp_blocks_end_to_end(tmp_path):
     f = tmp_path / "x.hsp"
     f.write_bytes(_make_hsp_bytes(_synthetic_hsp_payload()))

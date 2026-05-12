@@ -83,9 +83,24 @@ _CATEGORY_PREFIXES: list[tuple[str, str]] = [
     ("Agoura_Amp", "amp"),
     ("VIC_Amp", "amp"),
     ("VIC_Reverb", "reverb"),
+    ("VIC_DynPlate", "reverb"),   # plate reverbs; must precede any VIC_Dyn rule
     ("VIC_Delay", "delay"),
     ("VIC_Pitch", "pitch"),
     ("L6SPB_Poly", "pitch"),
+    ("L6SPB_AcousGtrSim", "filter"),
+    # Line 6 legacy stompbox modelers — DL4 (delay), DM4 (distortion), FM4
+    # (filter/synth), MM4 (modulation). Exceptions match before the family
+    # default: DL4AutoVol is a volume swell, DM4BassOctaver is a pitch effect.
+    ("HD2_DL4AutoVol", "volume"),
+    ("HD2_DL4", "delay"),
+    ("HD2_DM4BassOctaver", "pitch"),
+    ("HD2_DM4", "drive"),
+    ("HD2_FM4", "filter"),
+    ("HD2_MM4", "modulation"),
+    # Stadium repackages the DM4 compressor models under HX2_.
+    ("HX2_DM4", "dynamics"),
+    # Single-word legacy effects (no namespace prefix at all).
+    ("TapeEater", "drive"),
 ]
 
 
@@ -312,6 +327,10 @@ def ingest_file(path: Path, library: Library) -> IngestSummary:
             summary.skipped += 1
             summary.skipped_files.append(str(path))
             return summary
+        if not library.has_chassis():
+            from helixgen.chassis import extract_chassis_from_hsp
+            library.save_chassis(extract_chassis_from_hsp(hsp_data))
+            summary.chassis_extracted = True
         raw_blocks = extract_blocks_from_hsp(hsp_data)
         firmware = str(hsp_data.get("meta", {}).get("device_version", "unknown"))
         return _ingest_blocks(path, raw_blocks, firmware, library, summary)

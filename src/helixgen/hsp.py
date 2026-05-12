@@ -33,6 +33,13 @@ HSP_MAGIC_LEN = 8
 # Block keys to skip (input/output endpoints, not user blocks).
 ENDPOINT_KEYS = frozenset({"b00", "b13"})
 
+# Stadium chassis-level models that appear in `bNN` slots but are not
+# user-arrangeable effects: inputs, outputs, splits/joins, loopers, etc.
+# These are routing/IO infrastructure — they belong in the chassis, not the
+# block library. Any model_id starting with this prefix is filtered at
+# extraction time.
+CHASSIS_MODEL_PREFIX = "P35_"
+
 
 # Stadium model-id → Helix model-id translations we know about.
 # Add entries here as we observe new divergences during bulk ingest.
@@ -138,6 +145,8 @@ def extract_blocks_from_hsp(hsp_data: dict[str, Any]) -> list[dict[str, Any]]:
             block_meta = {k: v for k, v in raw_block.items() if k != "slot"}
             for slot in slots:
                 if not isinstance(slot, dict) or "model" not in slot:
+                    continue
+                if slot["model"].startswith(CHASSIS_MODEL_PREFIX):
                     continue
                 blocks.append(_slot_to_hlx_block(slot, block_meta))
 
