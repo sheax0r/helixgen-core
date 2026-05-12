@@ -29,10 +29,26 @@ When NOT to use: editing an existing `.hsp` (load and modify directly); ingestin
 Ask at most 3 short questions, and only the ones the request didn't already answer. Common gaps:
 
 - **Guitar** (single-coil / humbucker / acoustic / bass; specific model if mentioned)
-- **Role** (rhythm / lead / clean / pad / solo boost) — OR multiple roles that imply a multi-snapshot preset (e.g. "I want rhythm and lead in one preset" → propose 2–3 snapshots, see step 6.5)
+- **Role(s)** — single role (rhythm / lead / clean / pad / solo boost), or multiple. If multiple, **ask the family question** (see 1a below).
 - **Reference specifics** (which section of a song; live vs studio version)
 
 If the request implies an answer ("lead in X" → role known; "Strat" → single-coil known), skip that question.
+
+#### 1a. Multi-part disambiguation (only when there are 2+ roles/sections)
+
+When the user wants multiple parts of one song, multiple roles, or multiple sections, ask one focused question:
+
+> "Do these parts share an amp/cab family (e.g. all British crunch, just different gain/effects per part), or are they fundamentally different sounds (e.g. clean Fender for verse, high-gain Mesa for chorus)?"
+
+Then pick the path:
+
+| Answer | Approach |
+|--------|----------|
+| Same family | **One preset, multiple snapshots.** Pick a chain that fits all parts, vary gain/EQ/effect bypass per snapshot. (See 5.5.) |
+| Different families, OK to switch presets between parts | **Multiple presets** — generate one `.hsp` per part, name them clearly (e.g. `<song>-verse.hsp`, `<song>-chorus.hsp`). Switch presets on-device between parts. |
+| Different families, need instant switching mid-song | **One preset with layered amps + snapshot bypass.** Place both amps (and both cabs, if different) in the chain; each snapshot enables one amp+cab pair and bypasses the other. Limited by the 12-slot per-path cap — don't go past 2 amps + 2 cabs. |
+
+Default to "multiple presets" when the user says "different sounds" and doesn't specify needing instant switching — it's the simpler spec and the device's preset-switching is fast enough for between-song or between-section transitions in most material.
 
 ### 2. Sketch the chain in one line
 
@@ -126,6 +142,8 @@ Common patterns:
 - **Rhythm/Lead**: lead = higher amp `Drive` + `Master`, +0.10 reverb `Mix`, +0.15 delay `Mix`
 - **Clean/Crunch/Lead**: clean = `disable` drive(s), back amp `Drive` to ~0.25; crunch = base; lead = stack as above
 - **Verse/Chorus/Solo**: verse = light delay/verb; chorus = same; solo = boost (raise amp `Drive` 0.10–0.15 and delay `Mix` 0.20→0.35)
+
+**Need different amps across snapshots?** A single snapshot can't swap the amp model — only override knobs and bypass. If the user needs fundamentally different amps (clean Fender + hi-gain Mesa) AND wants to switch instantly without leaving the preset, place both amps (and matching cabs) in the chain and have each snapshot enable one amp+cab pair while bypassing the other. Keep this to 2 amp+cab pairs max so the chain stays under the 12-slot cap.
 
 If the user doesn't ask for snapshots, skip this section — `snapshots: []` (or omit the field) leaves the device's snapshot slots named "Snap 1..8" with no per-scene variation.
 
