@@ -98,7 +98,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or `HELIXGEN_LIBR
 
 ## Limitations (v1)
 
-- **Device validation:** `.hsp` output has been load-tested on a Helix **Stadium** and works. Helix **Stadium XL** uses the same `.hsp` format and should work but is **untested**. `.hlx` output is code-complete and round-trips through the parser and a real HX Edit export fixture, but has **never been loaded on a legacy Helix** (Floor / LT / Rack / Native) — treat it as plausibly-working-but-unverified until someone confirms.
+- **Device validation:** `.hsp` output has been load-tested on a Helix **Stadium XL** and works. The non-XL **Helix Stadium** uses the same `.hsp` format and should work but is **untested** — the chassis baked into your library carries the device_id of whichever Stadium variant first exported a preset into it, so a chassis built from XL exports might or might not load cleanly on a non-XL Stadium. `.hlx` output is code-complete and round-trips through the parser and a real HX Edit export fixture, but has **never been loaded on a legacy Helix** (Floor / LT / Rack / Native) — treat it as plausibly-working-but-unverified until someone confirms.
 - Single serial chain per DSP; no parallel A/B routing yet (see `docs/features/parallel-paths.md`).
 - Wire values only — no display-value (0–10) translation.
 - Output is not byte-identical to HX Edit's exports; it aims to load correctly.
