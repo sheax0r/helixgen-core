@@ -1,8 +1,12 @@
 [project]
 name = "helixgen"
 version = "0.1.0"
-description = "Generate Line 6 Helix .hlx preset files from JSON tone specs."
+description = "Generate Line 6 Helix .hsp / .hlx preset files from JSON tone specs."
 requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Mike Shea"},
+]
 dependencies = [
     "click>=8.1",
 ]
