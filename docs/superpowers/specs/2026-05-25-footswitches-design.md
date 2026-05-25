@@ -85,8 +85,13 @@ Two new optional top-level keys on the existing spec object:
 |---------|---------|----------|---------|-----------------------------------------------------------------------------|
 | `block` | str     | yes      | —       | Resolves to a placed block, same as `footswitches[i].block`.                |
 | `param` | str     | yes      | —       | Must exist on the target block's schema (same check the generator already does for `params` and snapshot overrides). |
-| `min`   | float   | no       | `0.0`   | Heel-down value, normalized 0..1.                                           |
+| `min`   | float   | no       | `0.0`   | Heel-down value, normalized 0..1 (same convention as `params` for knob-style values). |
 | `max`   | float   | no       | `1.0`   | Toe-down value, normalized 0..1. Must satisfy `min <= max`.                 |
+
+For params that aren't in 0..1 space (Hz frequencies, integer counts,
+booleans), v1 only supports EXP assignment to 0..1-style float params. If
+the spec targets a non-float param with EXP, the generator raises
+`GenerateError`. Hz/int/bool EXP targets are an out-of-scope follow-up.
 
 ### Interaction with `snapshots`
 
@@ -310,6 +315,22 @@ behave as specified. This is a separate step before declaring the feature
    We may need a small set of aliases that all map to `"stadium_xl"` in
    the table. Will be handled by the fallback warning until we see more
    variation in the data.
+
+4. **`EXPONBOARD` existence.** The XL ships with an onboard expression
+   pedal but it is unconfirmed whether it appears in `.hsp` exports under
+   a distinct logical source ID or shares one of `EXP1`/`EXP2`. If the
+   reference-preset script shows it shares an ID, `EXPONBOARD` becomes an
+   alias rather than a separate entry. If it doesn't appear at all in
+   `preset.flow` controllers (because routing is fixed in hardware), we
+   drop `EXPONBOARD` from the table entirely. Resolved during
+   implementation.
+
+5. **Snapshot + controller composition is untested.** A block that has
+   both per-snapshot variation and an FS assignment would emit
+   `{"value": True, "snapshots": [...], "controller": {...}}`. We have
+   not yet seen this exact combination in the user's exports; the
+   reference-preset helper script should generate one to confirm the
+   key ordering and shape are accepted by the device.
 
 ## Out-of-scope follow-ups
 
