@@ -29,6 +29,12 @@ input endpoint on each path.
   jacks and their combined "both" mode are exposed in v1.
 - Devices other than Helix Stadium XL. The architecture supports more
   device variants; only the XL table is populated initially.
+- `.hlx` (legacy Helix) chassis output. The feature applies only when the
+  active chassis is a Stadium `.hsp` chassis (`_helixgen_chassis_shape =
+  "hsp"`). When the chassis is `.hlx`, spec-level `input` values are
+  validated for shape (still must be one of the four legal strings) but
+  ignored during generation, with a one-line stderr warning ("input
+  routing is .hsp-only; ignored for .hlx chassis").
 
 ## Spec shape
 
@@ -121,11 +127,16 @@ but before the dict is serialized, a new pass rewrites the input
 endpoint on each path:
 
 ```python
+DEFAULT_INPUT_MODES = ("both", "none")  # by path index
+
 for path_index, path_entry in enumerate(spec.paths):
-    mode = path_entry.input or _default_input_mode(path_index)  # 0 → "both", 1 → "none"
+    mode = path_entry.input or DEFAULT_INPUT_MODES[path_index]
     target_model = controllers.resolve_input_model(device_id, mode)
     _rewrite_input_endpoint(flow[path_index], target_model)
 ```
+
+Both `DEFAULT_INPUT_MODES` and `_rewrite_input_endpoint` live in
+`generate.py` alongside the existing chassis-handling helpers.
 
 `_rewrite_input_endpoint(path_dict, target_model)`:
 
