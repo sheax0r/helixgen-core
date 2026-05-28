@@ -41,6 +41,7 @@ class Spec:
 
 
 SNAPSHOT_MAX = 8  # Stadium hardware cap
+VALID_INPUT_MODES = ("inst1", "inst2", "both", "none")
 
 
 def _err(source: str, message: str) -> SpecError:
@@ -128,8 +129,15 @@ def _parse_path(data: Any, *, source: str) -> PathEntry:
         raise _err(source, "must be an object.")
 
     inp = data.get("input")
-    if inp is not None and not isinstance(inp, str):
-        raise _err(source, '"input" must be a string if provided.')
+    if inp is not None:
+        if not isinstance(inp, str):
+            raise _err(source, '"input" must be a string if provided.')
+        if inp not in VALID_INPUT_MODES:
+            raise _err(
+                source,
+                f'"input" must be one of {list(VALID_INPUT_MODES)} '
+                f'(got "{inp}").',
+            )
     out = data.get("output")
     if out is not None and not isinstance(out, str):
         raise _err(source, '"output" must be a string if provided.')

@@ -30,12 +30,12 @@ def test_parse_with_author_and_io():
         "name": "X",
         "author": "mike",
         "paths": [
-            {"input": "Multi", "output": "Multi", "blocks": [{"block": "Y"}]}
+            {"input": "inst1", "output": "Multi", "blocks": [{"block": "Y"}]}
         ],
     }
     spec = parse_spec(data, source="t.json")
     assert spec.author == "mike"
-    assert spec.paths[0].input == "Multi"
+    assert spec.paths[0].input == "inst1"
     assert spec.paths[0].output == "Multi"
 
 
