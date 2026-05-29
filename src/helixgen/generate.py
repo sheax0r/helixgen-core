@@ -188,6 +188,27 @@ def _chassis_device_id(chassis: dict[str, Any]) -> str:
     return (chassis.get("meta") or {}).get("device_id") or "stadium_xl"
 
 
+def _build_exp_controller(source_id: int, min_val: float, max_val: float) -> dict[str, Any]:
+    """Build the controller dict that wraps a param value for an EXP assignment.
+
+    Shape derived from real Stadium XL exports (type=param, behavior=continuous,
+    numeric delay/goid/threshold).
+    """
+    return {
+        "behavior":   "continuous",
+        "bypassed":   False,
+        "curve":      "linear",
+        "delay":      0,
+        "goid":       0,
+        "max":        max_val,
+        "midisource": 0,
+        "min":        min_val,
+        "source":     source_id,
+        "threshold":  0.0,
+        "type":       "param",
+    }
+
+
 def _build_fs_controller(source_id: int, behavior: str) -> dict[str, Any]:
     """Build the controller dict that wraps @enabled for an FS assignment.
 
@@ -302,6 +323,7 @@ def _to_hsp_bnn(
     enabled_overrides: list[bool | None] | None = None,
     param_overrides: dict[str, list[Any]] | None = None,
     fs_controller: dict[str, Any] | None = None,
+    exp_controllers: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one Stadium bNN dict from a library Block and user param overrides.
 
@@ -328,7 +350,10 @@ def _to_hsp_bnn(
     for k, v in flat.items():
         if not isinstance(k, str) or k.startswith(RAW_BLOCK_SYSTEM_KEY_PREFIX):
             continue
-        params[k] = _wrap_value_with_snapshots(v, (param_overrides or {}).get(k))
+        wrapped = _wrap_value_with_snapshots(v, (param_overrides or {}).get(k))
+        if exp_controllers and k in exp_controllers:
+            wrapped["controller"] = exp_controllers[k]
+        params[k] = wrapped
     slot_inner["params"] = params
 
     enabled_wrapped = _wrap_value_with_snapshots(True, enabled_overrides)
@@ -431,6 +456,29 @@ def _build_fs_assignments(
     return fs_map, source_ids
 
 
+def _build_exp_assignments(
+    spec: Spec, resolved: list[ResolvedPath], device_id: str
+) -> tuple[dict[tuple[int, int, str], dict[str, Any]], set[int]]:
+    """Resolve EXP assignments to (path, chain, param) → controller dict + source IDs."""
+    exp_map: dict[tuple[int, int, str], dict[str, Any]] = {}
+    source_ids: set[int] = set()
+    for assignment in spec.expression:
+        source_id = controllers.resolve_controller_source(device_id, assignment.pedal)
+        for target in assignment.targets:
+            path_idx, chain_idx, block = _resolve_spec_block(target.block, resolved)
+            if target.param not in block.params:
+                raise GenerateError(
+                    f"EXP target {assignment.pedal} → "
+                    f"{target.block!r}.{target.param!r}: unknown param. "
+                    f"Known params: {sorted(block.params.keys())}."
+                )
+            exp_map[(path_idx, chain_idx, target.param)] = _build_exp_controller(
+                source_id, target.min, target.max,
+            )
+            source_ids.add(source_id)
+    return exp_map, source_ids
+
+
 def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
     """Build the 8-entry preset.snapshots metadata list.
 
@@ -466,6 +514,7 @@ def _compose_preset_hsp(
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
     device_id = _chassis_device_id(chassis)
     fs_map, fs_source_ids = _build_fs_assignments(spec, resolved, device_id)
+    exp_map, exp_source_ids = _build_exp_assignments(spec, resolved, device_id)
 
     preset = copy.deepcopy(chassis)
     # Strip private library annotations — these are not part of the wire format.
@@ -509,11 +558,17 @@ def _compose_preset_hsp(
                 enabled_overrides=enabled_map.get((path_index, chain_idx)),
                 param_overrides=param_map.get((path_index, chain_idx)),
                 fs_controller=fs_map.get((path_index, chain_idx)),
+                exp_controllers={
+                    pname: ctrl
+                    for (pi, ci, pname), ctrl in exp_map.items()
+                    if pi == path_index and ci == chain_idx
+                } or None,
             )
 
-    if fs_source_ids:
+    all_source_ids = fs_source_ids | exp_source_ids
+    if all_source_ids:
         sources = preset["preset"].setdefault("sources", {})
-        for sid in fs_source_ids:
+        for sid in all_source_ids:
             sources.setdefault(str(sid), {"bypass": False})
 
     # Snapshot metadata + active-snapshot pointer. Always emitted (even when
