@@ -22,6 +22,7 @@ from helixgen.ingest import (
     PRESET_DSP_KEYS,
     RAW_BLOCK_CAB_LINK_KEY,
     RAW_BLOCK_MODEL_KEY,
+    RAW_BLOCK_NON_PARAM_KEYS,
     RAW_BLOCK_SYSTEM_KEY_PREFIX,
 )
 from helixgen.ir import IR_MODEL_PREFIX
@@ -269,6 +270,8 @@ def _to_hsp_bnn(
     params: dict[str, Any] = {}
     for k, v in flat.items():
         if not isinstance(k, str) or k.startswith(RAW_BLOCK_SYSTEM_KEY_PREFIX):
+            continue
+        if k in RAW_BLOCK_NON_PARAM_KEYS:
             continue
         params[k] = _wrap_value_with_snapshots(v, (param_overrides or {}).get(k))
     slot_inner["params"] = params

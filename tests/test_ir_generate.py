@@ -56,6 +56,7 @@ def test_generate_uses_canonical_irhash_when_spec_omits_ir(stadium_library_with_
     generate_preset(spec, out, stadium_library_with_ir)
     body = _read_hsp_body(out)
     assert _first_ir_slot(body)["irhash"] == "ad8182e1ebe9fd95dffde5dd54b6d89c"
+    assert "irhash" not in _first_ir_slot(body).get("params", {})
 
 
 def test_generate_uses_spec_ir_field_by_basename(stadium_library_with_ir, tmp_path, monkeypatch):
