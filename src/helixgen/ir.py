@@ -98,3 +98,28 @@ class IrMapping:
             return str(wav_abs.relative_to(irs_abs))
         except ValueError:
             return str(wav_abs)
+
+
+IR_MODEL_PREFIX = "HX2_ImpulseResponse"
+
+
+def extract_ir_hashes(preset_body: dict) -> list[str]:
+    """Return slot-level irhash values from a .hsp body dict, in (path, position) order.
+
+    Blocks whose `slot[0].model` does not start with HX2_ImpulseResponse are ignored.
+    """
+    hashes: list[tuple[int, int, str]] = []
+    for path_obj in preset_body.get("preset", {}).get("flow", []):
+        if not isinstance(path_obj, dict):
+            continue
+        for v in path_obj.values():
+            if not isinstance(v, dict) or "slot" not in v:
+                continue
+            slot = v["slot"][0]
+            if not str(slot.get("model", "")).startswith(IR_MODEL_PREFIX):
+                continue
+            if "irhash" not in slot:
+                continue
+            hashes.append((int(v.get("path", 0)), int(v.get("position", 0)), slot["irhash"]))
+    hashes.sort()
+    return [h for _, _, h in hashes]
