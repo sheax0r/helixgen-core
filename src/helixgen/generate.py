@@ -23,6 +23,7 @@ from helixgen.ingest import (
     RAW_BLOCK_MODEL_KEY,
     RAW_BLOCK_SYSTEM_KEY_PREFIX,
 )
+from helixgen import controllers
 from helixgen.library import Block, Library
 from helixgen.spec import Spec, parse_spec
 
@@ -174,6 +175,7 @@ def _compose_preset_hlx(
 
 _HSP_BNN_RANGE = range(1, 13)  # b01..b12 are user-block slots
 HSP_SNAPSHOT_SLOTS = 8           # Stadium has 8 fixed snapshot slots per preset
+DEFAULT_INPUT_MODES = ("both", "none")  # by path index
 
 
 def _is_chassis_meta_key(key: str) -> bool:
@@ -242,6 +244,33 @@ def _reshape_input_params(
         else:
             out[k] = copy.deepcopy(v)
     return out
+
+
+def _chassis_device_id(chassis: dict[str, Any]) -> str:
+    """Return the chassis's device_id, or 'stadium_xl' if absent/unrecognized."""
+    return (chassis.get("meta") or {}).get("device_id") or "stadium_xl"
+
+
+def _rewrite_input_endpoint(path_dict: dict[str, Any], target_model: str) -> None:
+    """Rewrite path_dict['b00'] to use `target_model`, reshaping params as needed.
+
+    Mutates path_dict in place. Param values from the chassis are preserved
+    across the swap; only the model and (where mono/stereo differs) the param
+    wrapping shape change. Raises GenerateError if the path has no b00 slot.
+    """
+    b00 = path_dict.get("b00")
+    if not isinstance(b00, dict) or not b00.get("slot"):
+        raise GenerateError(
+            "Chassis path has no b00 input slot; cannot apply spec input mode."
+        )
+    slot = b00["slot"][0]
+    if slot.get("model") == target_model:
+        return
+    target_is_stereo = target_model.endswith("_2")
+    slot["params"] = _reshape_input_params(
+        slot.get("params") or {}, to_stereo=target_is_stereo
+    )
+    slot["model"] = target_model
 
 
 def _to_hsp_bnn(
@@ -411,6 +440,17 @@ def _compose_preset_hsp(
         del preset[k]
 
     flow = preset.setdefault("preset", {}).setdefault("flow", [])
+
+    device_id = _chassis_device_id(chassis)
+    for path_index, path_entry in enumerate(spec.paths):
+        if path_index >= len(flow):
+            break  # block-placement loop below will raise the proper error
+        path_dict = flow[path_index]
+        if not isinstance(path_dict, dict):
+            continue  # ditto
+        mode = path_entry.input or DEFAULT_INPUT_MODES[path_index]
+        target_model = controllers.resolve_input_model(device_id, mode)
+        _rewrite_input_endpoint(path_dict, target_model)
 
     for path_index, chain in enumerate(resolved):
         if path_index >= len(flow):
