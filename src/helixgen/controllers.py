@@ -40,6 +40,13 @@ CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
         "FS8":  0x01010107,
         "FS9":  0x01010108,
         "FS10": 0x01010109,
+        # Expression pedals (derived empirically from data/*.hsp);
+        # both wrap Pedal-position params with source IDs in the 0x010201NN
+        # range (distinct from the 0x010101NN FS range).
+        # 0x01020102 was seen in 2 files only — likely a 3rd EXP slot, out of
+        # scope for v1. EXPONBOARD was not observed in the scanned exports.
+        "EXP1": 0x01020100,
+        "EXP2": 0x01020101,
     },
 }
 

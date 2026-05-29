@@ -58,3 +58,18 @@ def test_resolve_controller_source_unknown_raises_with_valid_list():
     msg = str(exc_info.value)
     assert "FS99" in msg
     assert "FS1" in msg
+
+
+def test_controller_source_ids_has_exp1_exp2():
+    table = controllers.CONTROLLER_SOURCE_IDS["stadium_xl"]
+    assert "EXP1" in table
+    assert "EXP2" in table
+
+
+def test_exp_source_ids_distinct_from_fs():
+    table = controllers.CONTROLLER_SOURCE_IDS["stadium_xl"]
+    fs_values = {table[f"FS{n}"] for n in range(1, 11)}
+    exp_values = {table["EXP1"], table["EXP2"]}
+    assert fs_values.isdisjoint(exp_values), (
+        "EXP source IDs collide with FS IDs; check the table."
+    )
