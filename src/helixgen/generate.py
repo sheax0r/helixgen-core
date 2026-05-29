@@ -307,8 +307,10 @@ def _to_hsp_bnn(
 
     `enabled_overrides` is a per-snapshot list (length HSP_SNAPSHOT_SLOTS) of
     bool/None — None means "use the base @enabled value." `param_overrides`
-    maps param-name → per-snapshot value list. Either may be None / empty
-    when no snapshots touch this block.
+    maps param-name → per-snapshot value list. `fs_controller`, when provided,
+    attaches a footswitch bypass controller dict to the bNN-level `@enabled`
+    wrapper. Any may be None / empty when no snapshots or footswitches touch
+    this block.
     """
     flat = copy.deepcopy(block.exemplar)
     for k, v in user_params.items():
@@ -462,7 +464,8 @@ def _compose_preset_hsp(
             validate_params(block, user_params)
 
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
-    fs_map, fs_source_ids = _build_fs_assignments(spec, resolved, _chassis_device_id(chassis))
+    device_id = _chassis_device_id(chassis)
+    fs_map, fs_source_ids = _build_fs_assignments(spec, resolved, device_id)
 
     preset = copy.deepcopy(chassis)
     # Strip private library annotations — these are not part of the wire format.
@@ -470,8 +473,6 @@ def _compose_preset_hsp(
         del preset[k]
 
     flow = preset.setdefault("preset", {}).setdefault("flow", [])
-
-    device_id = _chassis_device_id(chassis)
     for path_index, path_entry in enumerate(spec.paths):
         if path_index >= len(flow):
             break  # block-placement loop below will raise the proper error
