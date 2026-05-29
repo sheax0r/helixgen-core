@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from helixgen import __version__
+from helixgen import controllers
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.hsp import HSP_MAGIC, translate_to_hsp
 from helixgen.ingest import (
@@ -23,7 +24,6 @@ from helixgen.ingest import (
     RAW_BLOCK_MODEL_KEY,
     RAW_BLOCK_SYSTEM_KEY_PREFIX,
 )
-from helixgen import controllers
 from helixgen.library import Block, Library
 from helixgen.spec import Spec, parse_spec
 
