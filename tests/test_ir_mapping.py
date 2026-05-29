@@ -59,10 +59,12 @@ def test_register_records_new_hash_relative_when_inside_irs_dir(tmp_path):
 
 
 def test_register_records_absolute_when_outside_irs_dir(tmp_path):
-    outside_wav = tmp_path.parent / "outside.wav"
-    outside_wav.write_bytes(b"riff")
     irs = tmp_path / "irs"
     irs.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_wav = outside_dir / "outside.wav"
+    outside_wav.write_bytes(b"riff")
     m = IrMapping(irs_dir=irs)
     m.register("abc123", outside_wav)
     assert m.entries == {"abc123": str(outside_wav.resolve())}
