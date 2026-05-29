@@ -75,6 +75,8 @@ add an optional `ir` field to load a registered user IR:
 - Register IRs first with `helixgen register-irs`; see `list-irs` for what's
   available.
 
+Stadium-only; ignored without warning for `.hlx` (legacy Helix) chassis output.
+
 ## Generation notes
 
 - The chassis is whatever was first ingested. A Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; a `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from the originating export is currently expected.
@@ -84,7 +86,7 @@ add an optional `ir` field to load a registered user IR:
 ## Project layout
 
 - `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec`, `generate`, `bootstrap`, `ir`
-- `tests/` — pytest suite (172 tests, run with `pytest`)
+- `tests/` — pytest suite (229 tests, run with `pytest`)
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports
 - `docs/superpowers/plans/` — implementation plan history

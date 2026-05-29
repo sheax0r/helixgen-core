@@ -5,6 +5,8 @@ import re
 from enum import Enum
 from typing import Any
 
+from helixgen.ir import IR_MODEL_PREFIX
+
 
 # ---------------------------------------------------------------------------
 # Wire-format constants for the real Helix .hlx export shape.
@@ -258,7 +260,7 @@ def block_from_raw(raw: dict[str, Any], source_info: dict[str, str]) -> Block:
     category = raw.get(RAW_BLOCK_CATEGORY_KEY) or infer_category(model_id)
     display_name = raw.get(RAW_BLOCK_NAME_KEY) or humanize_model_id(model_id)
     params = extract_schema(raw)
-    default_irhash = raw.get("irhash") if str(model_id).startswith("HX2_ImpulseResponse") else None
+    default_irhash = raw.get("irhash") if str(model_id).startswith(IR_MODEL_PREFIX) else None
     return Block(
         model_id=model_id,
         category=category,

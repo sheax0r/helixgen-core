@@ -33,7 +33,7 @@ from helixgen.spec import Spec, parse_spec
 _HASH_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
 
-def _resolve_irhash(block_default: str | None, spec_ir: str | None, irs) -> str:
+def _resolve_irhash(block_default: str | None, spec_ir: str | None, irs: "IrMapping") -> str:
     """Decide which irhash to emit on an IR slot.
 
     Priority: spec_ir (resolved via IrMapping) > block_default > error.
@@ -41,11 +41,6 @@ def _resolve_irhash(block_default: str | None, spec_ir: str | None, irs) -> str:
     from helixgen.ir import IrMapping, IrMappingError  # local import to avoid cycle
 
     if spec_ir is not None:
-        if irs is None:
-            raise GenerateError(
-                f"spec references IR {spec_ir!r} but no IRs are registered "
-                f"(see `helixgen register-irs`)"
-            )
         if _HASH_RE.fullmatch(spec_ir):
             try:
                 irs.resolve_by_hash(spec_ir.lower())
@@ -108,7 +103,7 @@ def _is_cab(block: Block) -> bool:
     return block.category == "cab"
 
 
-def compose_preset(spec: Spec, library: Library, *, source: str, irs=None) -> dict[str, Any]:
+def compose_preset(spec: Spec, library: Library, *, source: str, irs: "IrMapping | None" = None) -> dict[str, Any]:
     """Build a preset dict from spec + library. Shape-aware: dispatches by
     chassis shape so .hlx and .hsp libraries each produce native output.
     """
@@ -392,7 +387,7 @@ def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
 
 
 def _compose_preset_hsp(
-    spec: Spec, library: Library, *, source: str, chassis: dict[str, Any], irs=None
+    spec: Spec, library: Library, *, source: str, chassis: dict[str, Any], irs: "IrMapping | None" = None
 ) -> dict[str, Any]:
     """Compose a .hsp-shape preset. See module docstring for shape notes."""
     resolved = resolve_blocks(spec, library)
@@ -474,7 +469,7 @@ def generate_preset(
     spec_path: Path,
     output_path: Path,
     library: Library,
-    irs=None,
+    irs: "IrMapping | None" = None,
 ) -> Path:
     """Top-level: read spec from disk, compose, write output.
 

@@ -44,7 +44,7 @@ class IrMapping:
         os.replace(tmp, target)
 
     def register(self, hash_: str, wav_path: Path, *, force: bool = False) -> None:
-        """Bind hash → wav_path. Idempotent for same (hash, file); see Task 3 for conflicts."""
+        """Bind hash → wav_path. Idempotent for same (hash, file). Raises IrMappingError on conflict unless force=True."""
         wav_path = Path(wav_path)
         if not wav_path.is_file():
             raise FileNotFoundError(f"wav file not found: {wav_path}")
