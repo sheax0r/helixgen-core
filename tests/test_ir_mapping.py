@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from helixgen.ir import IrMapping, default_irs_path
+from helixgen.ir import IrMapping, IrMappingError, default_irs_path
 
 
 def test_default_irs_path_uses_home(monkeypatch):
@@ -83,3 +83,25 @@ def test_register_validates_wav_exists(tmp_path):
     m = IrMapping(irs_dir=tmp_path)
     with pytest.raises(FileNotFoundError, match="missing.wav"):
         m.register("abc123", tmp_path / "missing.wav")
+
+
+def test_register_conflict_raises(tmp_path):
+    wav1 = tmp_path / "a.wav"
+    wav2 = tmp_path / "b.wav"
+    wav1.write_bytes(b"a")
+    wav2.write_bytes(b"b")
+    m = IrMapping(irs_dir=tmp_path)
+    m.register("abc", wav1)
+    with pytest.raises(IrMappingError, match="already mapped"):
+        m.register("abc", wav2)
+
+
+def test_register_force_overwrites(tmp_path):
+    wav1 = tmp_path / "a.wav"
+    wav2 = tmp_path / "b.wav"
+    wav1.write_bytes(b"a")
+    wav2.write_bytes(b"b")
+    m = IrMapping(irs_dir=tmp_path)
+    m.register("abc", wav1)
+    m.register("abc", wav2, force=True)
+    assert m.entries == {"abc": "b.wav"}
