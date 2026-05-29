@@ -82,6 +82,17 @@ Cab pick matters a lot for "is this fizzy or musical":
 - Cab variants with a **ribbon mic** in the name (`R121`, `R84`, `121 Ribbon`, `160 Ribbon`) or with `Off-Axis` / `Edge` in the position are much smoother than the default `SM57 On-Axis Cap` rendering. Prefer them for anything that should sound polished.
 - The fine-grained Hi Cut / Low Cut / mic moves live in step 5 — picking the right cab here saves you from fighting it later.
 
+**Check the user's IR library first** (memory-gated). Run `helixgen list-irs`. If the output is non-empty AND a feedback memory says the user prefers IRs over stock cabs when available, look for an IR that matches the chain's tonal target:
+
+- Parse the wav filenames in the mapping — commercial IR packs encode cab + mic + position (e.g. `YA VX30 212 BLU Mix 01.wav` → Vox AC30-style 2x12 Blue, mix-position).
+- If a match exists, use an IR block instead of a stock cab:
+  ```json
+  {"block": "With Pan", "ir": "YA VX30 212 BLU Mix 01.wav",
+   "params": {"HighCut": 6500, "LowCut": 90, "Mix": 1.0}}
+  ```
+- Anti-fizz baseline (Hi Cut 6500–7000, Low Cut 80–100) still applies — set on the IR block itself.
+- New users (no preference memory) get stock cabs by default. The preference flips on when the user explicitly says "from now on, prefer IRs when I have them" (and you save a feedback memory).
+
 ### 4. Get exact param names — REQUIRED step
 
 For each chosen block:
