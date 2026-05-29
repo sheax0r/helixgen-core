@@ -21,6 +21,10 @@ RAW_BLOCK_NAME_KEY = "@name"            # block JSON: optional human-readable na
 RAW_BLOCK_CAB_LINK_KEY = "@cab"         # amp block: name of paired cab sibling
 RAW_BLOCK_SYSTEM_KEY_PREFIX = "@"       # any key starting with this is metadata, not a param
 
+# Slot-level metadata fields (not user-tunable params) that share the raw block dict
+# with the actual params. They must be filtered from extract_schema.
+RAW_BLOCK_NON_PARAM_KEYS = frozenset({"irhash"})
+
 PRESET_TONE_KEY = ("data", "tone")      # full preset: path to dsp0/dsp1 root
 PRESET_DSP_KEYS = ("dsp0", "dsp1")
 DSP_BLOCK_KEY_PREFIX = "block"          # user block sibling keys: block0, block1, ...
@@ -179,6 +183,8 @@ def extract_schema(raw_block: dict[str, Any]) -> dict[str, dict[str, Any]]:
     schema: dict[str, dict[str, Any]] = {}
     for key, value in raw_block.items():
         if isinstance(key, str) and key.startswith(RAW_BLOCK_SYSTEM_KEY_PREFIX):
+            continue
+        if key in RAW_BLOCK_NON_PARAM_KEYS:
             continue
         type_name = _value_type_name(value)
         entry: dict[str, Any] = {"type": type_name, "default": value}
