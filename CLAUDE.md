@@ -62,6 +62,23 @@ Add a top-level `snapshots` array (up to 8 entries) to define named scenes that 
 - Block references must resolve to a block already placed in `paths`.
 - Omit `snapshots` entirely to use the device's defaults (8 unnamed slots, no variation).
 
+### Optional: footswitches
+
+Assign blocks to physical footswitches on the device. Stadium XL exposes
+`FS1`..`FS10`.
+
+```json
+"footswitches": [
+  {"switch": "FS3", "block": "Compulsive Drive"},
+  {"switch": "FS4", "block": "Tape Echo Stereo", "behavior": "momentary"}
+]
+```
+
+- `switch` — `"FS1"`..`"FS10"`.
+- `block` — must reference a block placed in `paths`.
+- `behavior` — `"latching"` (default; toggle) or `"momentary"` (on while held).
+- One switch may be assigned at most one block; one block may be on at most one switch.
+
 ## Generation notes
 
 - The chassis is whatever was first ingested. A Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; a `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from the originating export is currently expected.
