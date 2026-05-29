@@ -188,6 +188,26 @@ def _chassis_device_id(chassis: dict[str, Any]) -> str:
     return (chassis.get("meta") or {}).get("device_id") or "stadium_xl"
 
 
+def _build_fs_controller(source_id: int, behavior: str) -> dict[str, Any]:
+    """Build the controller dict that wraps @enabled for an FS assignment.
+
+    Shape derived from real Stadium XL exports.
+    """
+    return {
+        "behavior":   behavior,
+        "bypassed":   False,
+        "curve":      "linear",
+        "delay":      None,
+        "goid":       None,
+        "max":        None,
+        "midisource": 0,
+        "min":        None,
+        "source":     source_id,
+        "threshold":  None,
+        "type":       "targetbypass",
+    }
+
+
 def _wrap_value_with_snapshots(
     base: Any, snapshot_overrides: list[Any] | None
 ) -> dict[str, Any]:
@@ -281,6 +301,7 @@ def _to_hsp_bnn(
     path_index: int,
     enabled_overrides: list[bool | None] | None = None,
     param_overrides: dict[str, list[Any]] | None = None,
+    fs_controller: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one Stadium bNN dict from a library Block and user param overrides.
 
@@ -308,13 +329,12 @@ def _to_hsp_bnn(
         params[k] = _wrap_value_with_snapshots(v, (param_overrides or {}).get(k))
     slot_inner["params"] = params
 
+    enabled_wrapped = _wrap_value_with_snapshots(True, enabled_overrides)
+    if fs_controller is not None:
+        enabled_wrapped["controller"] = fs_controller
+
     bnn: dict[str, Any] = {
-        # bNN-level @enabled is the device's bypass switch. Real exports
-        # always carry it (sometimes wrapped in a controller block for
-        # footswitch assignments — we emit the plain form). Defaulting to
-        # True here means every block the user places in a spec loads
-        # enabled, which is what they almost always want.
-        "@enabled": _wrap_value_with_snapshots(True, enabled_overrides),
+        "@enabled": enabled_wrapped,
         "type": flat.get("@type", _hsp_type_for_block(block)),
         "position": position,
         "path": path_index,
@@ -332,15 +352,10 @@ def _hsp_type_for_block(block: Block) -> str:
     return "fx"
 
 
-def _resolve_snapshot_block(
+def _resolve_spec_block(
     name_or_id: str, resolved: list[ResolvedPath]
 ) -> tuple[int, int, Block]:
-    """Locate a block in the resolved spec chains by display_name or model_id.
-
-    Returns (path_index, chain_index, Block). Raises GenerateError if no match
-    or ambiguous match — snapshots can only target blocks that the spec
-    actually places.
-    """
+    """Locate a block in the resolved spec chains by display_name or model_id."""
     matches: list[tuple[int, int, Block]] = []
     for path_idx, chain in enumerate(resolved):
         for chain_idx, (block, _) in enumerate(chain):
@@ -348,12 +363,12 @@ def _resolve_snapshot_block(
                 matches.append((path_idx, chain_idx, block))
     if not matches:
         raise GenerateError(
-            f"Snapshot references block {name_or_id!r} but no such block is "
+            f"Spec references block {name_or_id!r} but no such block is "
             f"in the spec's paths. Add it to a path first."
         )
     if len(matches) > 1:
         raise GenerateError(
-            f"Snapshot block {name_or_id!r} matches multiple placed blocks. "
+            f"Block {name_or_id!r} matches multiple placed blocks. "
             f"Use the model_id (in brackets in `list-blocks`) to disambiguate."
         )
     return matches[0]
@@ -382,14 +397,14 @@ def _build_snapshot_overrides(
     for snap_idx, snap in enumerate(spec.snapshots):
         # disable: turn off the named block in this snapshot
         for name in snap.disable:
-            path_idx, chain_idx, _ = _resolve_snapshot_block(name, resolved)
+            path_idx, chain_idx, _ = _resolve_spec_block(name, resolved)
             key = (path_idx, chain_idx)
             enabled_map.setdefault(key, [None] * HSP_SNAPSHOT_SLOTS)
             enabled_map[key][snap_idx] = False
 
         # params: override values for named block in this snapshot
         for block_name, overrides in snap.params.items():
-            path_idx, chain_idx, block = _resolve_snapshot_block(block_name, resolved)
+            path_idx, chain_idx, block = _resolve_spec_block(block_name, resolved)
             validate_params(block, overrides)
             key = (path_idx, chain_idx)
             block_params = param_map.setdefault(key, {})
@@ -398,6 +413,20 @@ def _build_snapshot_overrides(
                 arr[snap_idx] = pval
 
     return enabled_map, param_map
+
+
+def _build_fs_assignments(
+    spec: Spec, resolved: list[ResolvedPath], device_id: str
+) -> tuple[dict[tuple[int, int], dict[str, Any]], set[int]]:
+    """Resolve FS assignments to (path,chain) → controller-dict + source-id set."""
+    fs_map: dict[tuple[int, int], dict[str, Any]] = {}
+    source_ids: set[int] = set()
+    for fs in spec.footswitches:
+        path_idx, chain_idx, _ = _resolve_spec_block(fs.block, resolved)
+        source_id = controllers.resolve_controller_source(device_id, fs.switch)
+        fs_map[(path_idx, chain_idx)] = _build_fs_controller(source_id, fs.behavior)
+        source_ids.add(source_id)
+    return fs_map, source_ids
 
 
 def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
@@ -433,6 +462,7 @@ def _compose_preset_hsp(
             validate_params(block, user_params)
 
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
+    fs_map, fs_source_ids = _build_fs_assignments(spec, resolved, _chassis_device_id(chassis))
 
     preset = copy.deepcopy(chassis)
     # Strip private library annotations — these are not part of the wire format.
@@ -477,7 +507,13 @@ def _compose_preset_hsp(
                 path_index=path_index,
                 enabled_overrides=enabled_map.get((path_index, chain_idx)),
                 param_overrides=param_map.get((path_index, chain_idx)),
+                fs_controller=fs_map.get((path_index, chain_idx)),
             )
+
+    if fs_source_ids:
+        sources = preset["preset"].setdefault("sources", {})
+        for sid in fs_source_ids:
+            sources.setdefault(str(sid), {"bypass": False})
 
     # Snapshot metadata + active-snapshot pointer. Always emitted (even when
     # the spec defines none) so the chassis-carried snapshot names from the
