@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import datetime
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -111,6 +112,12 @@ def _compose_preset_hlx(
     - When an amp is followed by a cab, the amp's `@cab` is set to the cab's
       slot key so Stadium/Helix renders the pairing correctly.
     """
+    if any(p.input is not None for p in spec.paths) or spec.footswitches or spec.expression:
+        print(
+            "warning: input routing / footswitches / expression are Stadium-only; "
+            "ignored for .hlx chassis output.",
+            file=sys.stderr,
+        )
     resolved = resolve_blocks(spec, library)
     for chain in resolved:
         for block, user_params in chain:
@@ -417,7 +424,6 @@ def _build_snapshot_overrides(
     Validates that referenced blocks exist and snapshot params are real
     (delegates the latter to validate_params).
     """
-    n_snaps = len(spec.snapshots)
     enabled_map: dict[tuple[int, int], list[bool | None]] = {}
     param_map: dict[tuple[int, int], dict[str, list[Any]]] = {}
 

@@ -7,6 +7,8 @@ are the logical names the spec uses.
 """
 from __future__ import annotations
 
+import sys
+
 
 class ControllerError(ValueError):
     """Raised when a logical input/FS/EXP name cannot be resolved."""
@@ -51,6 +53,9 @@ CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
 }
 
 
+_warned_devices: set[str] = set()  # de-dup warnings within a single process
+
+
 def _resolve_device(device_id: str) -> str:
     """Pick the active device table key, falling back to stadium_xl.
 
@@ -59,8 +64,15 @@ def _resolve_device(device_id: str) -> str:
     resolve_input_model and resolve_controller_source — keep the outer
     keys of both tables in sync when adding new device support.
     """
-    if device_id in INPUT_MODELS:
+    if device_id in INPUT_MODELS and device_id in CONTROLLER_SOURCE_IDS:
         return device_id
+    if device_id and device_id != "stadium_xl" and device_id not in _warned_devices:
+        print(
+            f"warning: chassis device_id {device_id!r} not in controller tables; "
+            f"assuming stadium_xl.",
+            file=sys.stderr,
+        )
+        _warned_devices.add(device_id)
     return "stadium_xl"
 
 
