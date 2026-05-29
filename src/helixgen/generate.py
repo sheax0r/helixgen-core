@@ -183,6 +183,11 @@ def _is_chassis_meta_key(key: str) -> bool:
     return key.startswith("_helixgen_")
 
 
+def _chassis_device_id(chassis: dict[str, Any]) -> str:
+    """Return the chassis's device_id, or 'stadium_xl' if absent/unrecognized."""
+    return (chassis.get("meta") or {}).get("device_id") or "stadium_xl"
+
+
 def _wrap_value_with_snapshots(
     base: Any, snapshot_overrides: list[Any] | None
 ) -> dict[str, Any]:
@@ -244,11 +249,6 @@ def _reshape_input_params(
         else:
             out[k] = copy.deepcopy(v)
     return out
-
-
-def _chassis_device_id(chassis: dict[str, Any]) -> str:
-    """Return the chassis's device_id, or 'stadium_xl' if absent/unrecognized."""
-    return (chassis.get("meta") or {}).get("device_id") or "stadium_xl"
 
 
 def _rewrite_input_endpoint(path_dict: dict[str, Any], target_model: str) -> None:
