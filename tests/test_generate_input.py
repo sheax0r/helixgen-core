@@ -1,11 +1,9 @@
 """Round-trip tests: spec input mode → generated .hsp b00 model + param shape."""
-import json
 from pathlib import Path
 
 import pytest
 
 from helixgen.generate import compose_preset
-from helixgen.hsp import HSP_MAGIC
 from helixgen.library import Library
 
 
@@ -36,8 +34,11 @@ def _b00_params(preset: dict, path_index: int) -> dict:
 
 
 def _is_stereo(params: dict) -> bool:
-    sample = next(iter(v for k, v in params.items() if k != "StereoLink"), None)
-    return isinstance(sample, dict) and "1" in sample
+    return any(
+        isinstance(v, dict) and "1" in v and isinstance(v.get("1"), dict)
+        for k, v in params.items()
+        if k != "StereoLink"
+    )
 
 
 @pytest.mark.parametrize("mode,expected_model", [
