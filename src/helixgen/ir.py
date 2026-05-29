@@ -60,6 +60,36 @@ class IrMapping:
                 )
         self.entries[hash_] = canonical
 
+    def resolve_by_hash(self, hash_: str) -> Path:
+        """Return absolute Path for hash. Raises IrMappingError on miss."""
+        if hash_ not in self.entries:
+            raise IrMappingError(f"unknown IR hash {hash_}")
+        return self._absolute(self.entries[hash_])
+
+    def resolve_by_basename(self, basename: str) -> tuple[str, Path]:
+        """Return (hash, absolute_path) for unique basename match.
+
+        Case-sensitive. Raises IrMappingError on ambiguous or missing.
+        """
+        matches = [
+            (h, p) for h, p in self.entries.items() if os.path.basename(p) == basename
+        ]
+        if not matches:
+            raise IrMappingError(f"no registered IR matches basename {basename!r}")
+        if len(matches) > 1:
+            paths = ", ".join(p for _, p in matches)
+            raise IrMappingError(
+                f"ambiguous IR basename {basename!r}; matches: {paths}"
+            )
+        h, p = matches[0]
+        return h, self._absolute(p)
+
+    def _absolute(self, stored: str) -> Path:
+        p = Path(stored)
+        if p.is_absolute():
+            return p
+        return (self.irs_dir / p).resolve()
+
     def _canonical(self, wav_path: Path) -> str:
         """Return path relative to irs_dir if under it, else absolute."""
         wav_abs = wav_path.resolve()

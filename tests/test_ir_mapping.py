@@ -105,3 +105,52 @@ def test_register_force_overwrites(tmp_path):
     m.register("abc", wav1)
     m.register("abc", wav2, force=True)
     assert m.entries == {"abc": "b.wav"}
+
+
+def test_resolve_by_hash_returns_absolute_path(tmp_path):
+    wav = tmp_path / "foo.wav"
+    wav.write_bytes(b"r")
+    m = IrMapping(irs_dir=tmp_path)
+    m.register("abc", wav)
+    resolved = m.resolve_by_hash("abc")
+    assert resolved == wav.resolve()
+
+
+def test_resolve_by_hash_unknown_raises(tmp_path):
+    m = IrMapping(irs_dir=tmp_path)
+    with pytest.raises(IrMappingError, match="unknown IR hash"):
+        m.resolve_by_hash("does-not-exist")
+
+
+def test_resolve_by_basename_unique_returns_hash_and_path(tmp_path):
+    sub = tmp_path / "packA"
+    sub.mkdir()
+    wav = sub / "foo.wav"
+    wav.write_bytes(b"r")
+    m = IrMapping(irs_dir=tmp_path)
+    m.register("abc", wav)
+    hash_, path = m.resolve_by_basename("foo.wav")
+    assert hash_ == "abc"
+    assert path == wav.resolve()
+
+
+def test_resolve_by_basename_ambiguous_raises(tmp_path):
+    a = tmp_path / "packA"
+    b = tmp_path / "packB"
+    a.mkdir()
+    b.mkdir()
+    wav_a = a / "foo.wav"
+    wav_b = b / "foo.wav"
+    wav_a.write_bytes(b"a")
+    wav_b.write_bytes(b"b")
+    m = IrMapping(irs_dir=tmp_path)
+    m.register("h_a", wav_a)
+    m.register("h_b", wav_b)
+    with pytest.raises(IrMappingError, match="ambiguous"):
+        m.resolve_by_basename("foo.wav")
+
+
+def test_resolve_by_basename_missing_raises(tmp_path):
+    m = IrMapping(irs_dir=tmp_path)
+    with pytest.raises(IrMappingError, match="no registered IR matches"):
+        m.resolve_by_basename("nope.wav")
