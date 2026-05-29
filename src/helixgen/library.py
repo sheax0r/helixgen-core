@@ -39,9 +39,13 @@ class Block:
     exemplar: dict[str, Any]
     first_seen: dict[str, str]
     aliases: list[str] = field(default_factory=list)
+    default_irhash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        if self.default_irhash is None:
+            out.pop("default_irhash", None)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Block":
@@ -53,6 +57,7 @@ class Block:
             params=dict(data.get("params", {})),
             exemplar=dict(data.get("exemplar", {})),
             first_seen=dict(data.get("first_seen", {})),
+            default_irhash=data.get("default_irhash"),
         )
 
 
