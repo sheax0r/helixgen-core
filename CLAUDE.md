@@ -79,6 +79,33 @@ Assign blocks to physical footswitches on the device. Stadium XL exposes
 - `behavior` — `"latching"` (default; toggle) or `"momentary"` (on while held).
 - One switch may be assigned at most one block; one block may be on at most one switch.
 
+### Optional: expression pedal
+
+Sweep one or more parameters with the expression pedal(s). Stadium XL
+exposes `EXP1` and `EXP2`.
+
+```json
+"expression": [
+  {
+    "pedal": "EXP1",
+    "targets": [{"block": "Teardrop 310", "param": "Position"}]
+  },
+  {
+    "pedal": "EXP2",
+    "targets": [
+      {"block": "Brit Plexi Brt",   "param": "Master", "min": 0.0, "max": 0.7},
+      {"block": "Tape Echo Stereo", "param": "Mix",    "min": 0.0, "max": 0.4}
+    ]
+  }
+]
+```
+
+- `pedal` — `"EXP1"` or `"EXP2"`.
+- `targets` — non-empty list. Each target sweeps one param on one block.
+- `min`/`max` — normalized 0..1 floats; default `0.0`/`1.0`; must satisfy `min ≤ max`.
+- One pedal may have many targets. One `(block, param)` pair may be driven by at most one pedal.
+- v1 only sweeps 0..1-style float params (knob values). Hz/int/bool params are out of scope.
+
 ## Generation notes
 
 - The chassis is whatever was first ingested. A Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; a `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from the originating export is currently expected.
