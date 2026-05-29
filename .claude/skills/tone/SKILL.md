@@ -76,6 +76,12 @@ helixgen list-blocks --category drive   | grep -i "<keyword>"
 
 Prefer block display names that read closest to the reference gear. The library is built from the user's personal exports — what isn't there isn't available.
 
+Cab pick matters a lot for "is this fizzy or musical":
+
+- **V30-style cabs** (`4x12 V30`, `Cali V30`, etc.) are bright, aggressive, and great for tight modern rhythm — but harsh-by-default for cleans, leads, and classic-rock. **Greenback** or **Silver Bell** variants are smoother and feel more like "amp in the room." Prefer them for clean, blues, classic-rock, and lead chains when the library has them.
+- Cab variants with a **ribbon mic** in the name (`R121`, `R84`, `121 Ribbon`, `160 Ribbon`) or with `Off-Axis` / `Edge` in the position are much smoother than the default `SM57 On-Axis Cap` rendering. Prefer them for anything that should sound polished.
+- The fine-grained Hi Cut / Low Cut / mic moves live in step 5 — picking the right cab here saves you from fighting it later.
+
 ### 4. Get exact param names — REQUIRED step
 
 For each chosen block:
@@ -89,7 +95,19 @@ Skipping this is the #1 way to waste a generation cycle. Param names are case-se
 
 Save as `/tmp/<slug>.json` with the shape documented in CLAUDE.md.
 
-Tuning heuristics (good starting points, not laws):
+#### Anti-fizz baseline — bake these into nearly every preset
+
+The Helix gives raw modeling and trusts you to voice it. A Spark/JC-120/etc. sounds "nice" out of the box because it's doing fixed cab voicing, EQ-curve baking, and mild compression for you. Without those, default Helix presets sound fizzy and thin compared to a real amp pushing real air. The cab block is where you fix this — verify exact param names with `show-block` (older cabs may use `Hi Cut` / `Lo Cut`; newer ones `High Cut` / `Low Cut`).
+
+- **Cab `Hi Cut`** at **6500–7000 Hz** for amped tones; 7500–8000 Hz for sparkling cleans. Real V30s/Greenbacks have nothing above ~6 kHz; modeled cabs let fizz through to 10 kHz+. This single move kills ~70% of "modeller harshness."
+- **Cab `Low Cut`** at **80–100 Hz** to clear out flub (60 Hz for bass / 7-string).
+- **Mic choice** (cab `Mic` param): the default is usually `57 Dynamic` on-axis at the cap — engineered to slice through a live mix, not to sound pleasant solo. For "amp in the room" smoothness, prefer a ribbon (`121 Ribbon`, `160 Ribbon`) or any cab variant whose display name calls out a ribbon mic or an off-axis position.
+- **Optional Parametric EQ** cutting **2–4 dB around 3–4 kHz** (medium Q) if Hi Cut alone doesn't kill the "ice pick" zone. A small cut around 800 Hz–1 kHz helps with boxiness.
+- **Optional front-of-chain comp** (LA Studio Comp, light setting — only ~1–2 dB of gain reduction, **before** the amp) gives the "polished, baked-in" feel modeled presets often lack. Skip if the user wants pure raw dynamics.
+
+If the cab the user picked has no Hi/Low Cut params (rare on Stadium), do the cuts with a Simple EQ block placed right after the cab.
+
+#### Tuning heuristics (good starting points, not laws)
 
 | Knob | Range | Notes |
 |------|-------|-------|
@@ -97,10 +115,13 @@ Tuning heuristics (good starting points, not laws):
 | Drive `Gain` (pedal as distortion) | 0.60–0.85 | Drive does most of the work |
 | Amp `Drive` | 0.40–0.60 rhythm clean-edge, 0.60–0.80 crunch, 0.80+ lead | |
 | Amp `Master` | 0.40–0.60 | Higher = more power-amp sag |
-| Cab | usually no params (pre-baked IR) | |
+| Cab `Hi Cut` / `High Cut` | 6500–7000 Hz amped, 7500–8000 Hz clean | The single biggest anti-fizz move; see baseline above |
+| Cab `Low Cut` / `Lo Cut` | 80–100 Hz (60 for bass / 7-string) | Clears flub without thinning the body |
+| Cab `Mic` | ribbon for smooth, `57 Dynamic` for cut | Default 57 on-axis is the harshest sane choice |
 | Delay `Mix` | 0.10–0.20 rhythm, 0.20–0.35 lead | |
 | Delay `Feedback` | 0.20–0.35 | Higher = longer repeats |
-| Reverb `Mix` | 0.08–0.15 | Stadium plates sit louder than they look |
+| Reverb `Mix` | 0.08–0.15 (up to 0.20 for sterile DI-feel rescues) | Stadium plates sit louder than they look |
+| Comp before amp (optional) | ~1–2 dB gain reduction | Polished/Spark-like feel; skip for raw dynamics |
 
 Amp-EQ tweaks for the user's specific guitar (apply to whichever amp params actually exist — check `show-block` first):
 
@@ -194,9 +215,10 @@ After the user loads the preset and reports back ("the lead is too compressed", 
 Rules of thumb for translating ear-language to param moves:
 - **"Too compressed"** on a lead → back amp `Drive` off ~0.10, raise `Master`; or back drive pedal `Gain` off ~0.10
 - **"Too dark"** → raise `Treble` 0.05–0.10, raise `Presence` 0.05; or change to a brighter amp variant if the EQ is already at ceiling
-- **"Too bright / harsh"** → mirror of above (drop Treble/Presence), or pull cab `HighCut` down (e.g. 8000 → 6500)
-- **"Not enough body"** → raise `Bass` 0.05–0.10 or `Mid` 0.05; consider `LowCut` on cab 80 → 60
-- **"Boomy / flubby"** → raise cab `LowCut` (60 → 100), back `Bass` off
+- **"Too bright / harsh"** → mirror of above (drop Treble/Presence), or pull cab `Hi Cut` down (e.g. 8000 → 6500)
+- **"Fizzy / digital / not amp-in-the-room"** → most common Helix-vs-Spark complaint. In order: (1) cab `Hi Cut` to 6500–7000 and `Low Cut` to 80–100 if not already there; (2) switch the cab `Mic` to a ribbon variant or pick a smoother cab (V30 → Greenback / Silver Bell); (3) add a Parametric EQ cutting 2–4 dB at 3–4 kHz medium Q; (4) add a subtle comp (~1–2 dB GR) at the front of the chain. Apply in that order — usually step 1 alone fixes most of it
+- **"Not enough body"** → raise `Bass` 0.05–0.10 or `Mid` 0.05; consider cab `Low Cut` 80 → 60
+- **"Boomy / flubby"** → raise cab `Low Cut` (60 → 100), back `Bass` off
 - **"Lead doesn't sing / cut"** → raise `Mid` 0.05–0.10 in the lead snapshot, raise delay `Mix` 0.05
 - **"Delay is washy / too long"** → drop `Mix` 0.05 OR drop `Time` 0.05
 - **"Reverb feels too loud"** → drop `Mix` 0.03–0.05 (Stadium plates run hot, small moves matter)
@@ -212,6 +234,8 @@ Keep the spec file intact between iterations so the user has a running history. 
 | Recommending a block not in the user's library | Always verify with `list-blocks` first |
 | Stacking too much gain | Drive `Gain` + amp `Drive` compound; back one off |
 | Forgetting a cab | Output is dry/fizzy without one; place after the amp |
+| Cab with no `Hi Cut` / `Low Cut` set | Default modeled cabs let fizz through to 10 kHz+; set Hi Cut 6500–7000 and Low Cut 80–100 on nearly every preset (see step 5 anti-fizz baseline) |
+| Trusting the default cab mic (SM57 on-axis at the cap) | Engineered to slice a live mix, harsh solo; prefer ribbon-mic variants for smoothness |
 | Heavy reverb defaults | Stadium plates run hot; start at 0.10 |
 | Asking 5 clarifying questions | Cap at 3, only what's actually missing |
 | Reporting only amp settings, not guitar settings | The selector + volume + tone knobs are part of the tone; include them in the report |
