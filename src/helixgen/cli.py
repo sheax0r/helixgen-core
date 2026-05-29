@@ -186,3 +186,12 @@ def register_irs_cmd(
         raise click.ClickException(str(e)) from e
     mapping.save()
     click.echo(f"Registered {len(hashes)} IR(s) to {mapping.irs_dir / 'mapping.json'}")
+
+
+@cli.command(name="list-irs")
+@_irs_option
+def list_irs_cmd(irs_dir: Path | None) -> None:
+    """List registered IR hashes and their wav paths."""
+    mapping = _resolved_irs(irs_dir)
+    for hash_ in sorted(mapping.entries):
+        click.echo(f"{hash_}  {mapping.entries[hash_]}")

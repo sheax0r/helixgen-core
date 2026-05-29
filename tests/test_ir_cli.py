@@ -99,3 +99,23 @@ def test_register_irs_force_overwrites(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     mapping = json.loads((irs_dir / "mapping.json").read_text())
     assert mapping == {"hX": "new.wav"}
+
+
+def test_list_irs_empty_prints_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_IRS", str(tmp_path))
+    result = CliRunner().invoke(cli, ["list-irs"])
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_list_irs_prints_one_per_line_sorted(tmp_path, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_IRS", str(tmp_path))
+    mapping_file = tmp_path / "mapping.json"
+    mapping_file.write_text(json.dumps({
+        "bbb": "second.wav",
+        "aaa": "first.wav",
+    }))
+    result = CliRunner().invoke(cli, ["list-irs"])
+    assert result.exit_code == 0
+    # sorted by hash
+    assert result.output == "aaa  first.wav\nbbb  second.wav\n"
