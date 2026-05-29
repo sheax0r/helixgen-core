@@ -38,3 +38,23 @@ class IrMapping:
         tmp = target.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.entries, indent=2, sort_keys=True))
         os.replace(tmp, target)
+
+    def register(self, hash_: str, wav_path: Path, *, force: bool = False) -> None:
+        """Bind hash → wav_path. Idempotent for same (hash, file); see Task 3 for conflicts."""
+        wav_path = Path(wav_path)
+        if not wav_path.is_file():
+            raise FileNotFoundError(f"wav file not found: {wav_path}")
+        canonical = self._canonical(wav_path)
+        existing = self.entries.get(hash_)
+        if existing is not None and existing == canonical:
+            return  # idempotent
+        self.entries[hash_] = canonical
+
+    def _canonical(self, wav_path: Path) -> str:
+        """Return path relative to irs_dir if under it, else absolute."""
+        wav_abs = wav_path.resolve()
+        irs_abs = self.irs_dir.resolve()
+        try:
+            return str(wav_abs.relative_to(irs_abs))
+        except ValueError:
+            return str(wav_abs)
