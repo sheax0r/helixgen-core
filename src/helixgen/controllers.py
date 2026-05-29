@@ -53,20 +53,33 @@ CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
 }
 
 
-_warned_devices: set[str] = set()  # de-dup warnings within a single process
+# Observed `meta.device_id` values that identify Stadium XL hardware. Real
+# exports carry a numeric id (e.g. 2490368), not the canonical string —
+# this set lets us recognise those without warning. Add new values as they
+# are observed in the field.
+STADIUM_XL_DEVICE_IDS: frozenset = frozenset({"stadium_xl", 2490368})
 
 
-def _resolve_device(device_id: str) -> str:
+_warned_devices: set = set()  # de-dup warnings within a single process
+
+
+def _resolve_device(device_id) -> str:
     """Pick the active device table key, falling back to stadium_xl.
 
     Both INPUT_MODELS and CONTROLLER_SOURCE_IDS use the same outer keys
     (currently only "stadium_xl"). _resolve_device is shared by both
     resolve_input_model and resolve_controller_source — keep the outer
     keys of both tables in sync when adding new device support.
+
+    Accepts both the canonical string key and the numeric `meta.device_id`
+    values real chassis exports carry; numeric aliases for known hardware
+    are listed in STADIUM_XL_DEVICE_IDS.
     """
-    if device_id in INPUT_MODELS and device_id in CONTROLLER_SOURCE_IDS:
+    if isinstance(device_id, str) and device_id in INPUT_MODELS and device_id in CONTROLLER_SOURCE_IDS:
         return device_id
-    if device_id and device_id != "stadium_xl" and device_id not in _warned_devices:
+    if device_id in STADIUM_XL_DEVICE_IDS:
+        return "stadium_xl"
+    if device_id is not None and device_id not in _warned_devices:
         print(
             f"warning: chassis device_id {device_id!r} not in controller tables; "
             f"assuming stadium_xl.",
