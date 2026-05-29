@@ -51,3 +51,15 @@ def test_extract_ir_hashes_ignores_non_ir_blocks():
 
 def test_extract_ir_hashes_empty_preset():
     assert extract_ir_hashes({"preset": {"flow": [{}]}}) == []
+
+
+def test_extract_ir_hashes_skips_malformed_slot_shapes():
+    """A block with a malformed `slot` field is silently skipped, not an error."""
+    flow = {
+        "b00": {"path": 0, "position": 0, "slot": "not-a-list"},
+        "b01": {"path": 0, "position": 1, "slot": []},
+        "b02": {"path": 0, "position": 2, "slot": ["not-a-dict"]},
+        **dict([make_ir_block(0, 3, "real_hash")]),
+    }
+    preset = {"preset": {"flow": [flow]}}
+    assert extract_ir_hashes(preset) == ["real_hash"]

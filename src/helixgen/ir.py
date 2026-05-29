@@ -115,7 +115,10 @@ def extract_ir_hashes(preset_body: dict) -> list[str]:
         for v in path_obj.values():
             if not isinstance(v, dict) or "slot" not in v:
                 continue
-            slot = v["slot"][0]
+            slot_list = v["slot"]
+            if not isinstance(slot_list, list) or not slot_list or not isinstance(slot_list[0], dict):
+                continue
+            slot = slot_list[0]
             if not str(slot.get("model", "")).startswith(IR_MODEL_PREFIX):
                 continue
             if "irhash" not in slot:
