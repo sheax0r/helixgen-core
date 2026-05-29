@@ -33,15 +33,29 @@ class Snapshot:
 
 
 @dataclass
+class FootswitchAssignment:
+    """A single FS-to-block bypass assignment.
+
+    `switch` is a logical name (e.g. "FS3"); the chassis-specific source
+    ID is resolved at generate time.
+    """
+    switch: str
+    block: str
+    behavior: str = "latching"
+
+
+@dataclass
 class Spec:
     name: str
     paths: list[PathEntry]
     author: str | None = None
     snapshots: list[Snapshot] = field(default_factory=list)
+    footswitches: list[FootswitchAssignment] = field(default_factory=list)
 
 
 SNAPSHOT_MAX = 8  # Stadium hardware cap
 VALID_INPUT_MODES = ("inst1", "inst2", "both", "none")
+VALID_FS_BEHAVIORS = ("latching", "momentary")
 
 
 def _err(source: str, message: str) -> SpecError:
@@ -77,8 +91,11 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
         paths.append(_parse_path(path_raw, source=f"{source} paths[{i}]"))
 
     snapshots = _parse_snapshots(data.get("snapshots"), source=source)
-
-    return Spec(name=name, paths=paths, author=author, snapshots=snapshots)
+    footswitches = _parse_footswitches(data.get("footswitches"), source=source)
+    return Spec(
+        name=name, paths=paths, author=author,
+        snapshots=snapshots, footswitches=footswitches,
+    )
 
 
 def _parse_snapshots(raw: Any, *, source: str) -> list[Snapshot]:
@@ -122,6 +139,50 @@ def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
         params[block_name] = dict(overrides)
 
     return Snapshot(name=name, disable=list(disable_raw), params=params)
+
+
+def _parse_footswitches(raw: Any, *, source: str) -> list[FootswitchAssignment]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise _err(source, '"footswitches" must be a list.')
+    out: list[FootswitchAssignment] = []
+    seen_switches: set[str] = set()
+    seen_blocks: set[str] = set()
+    for i, entry in enumerate(raw):
+        fs = _parse_footswitch(entry, source=f"{source} footswitches[{i}]")
+        if fs.switch in seen_switches:
+            raise _err(
+                f"{source} footswitches[{i}]",
+                f"duplicate switch {fs.switch!r}; each switch may appear once.",
+            )
+        if fs.block in seen_blocks:
+            raise _err(
+                f"{source} footswitches[{i}]",
+                f"duplicate block {fs.block!r}; one block per footswitch.",
+            )
+        seen_switches.add(fs.switch)
+        seen_blocks.add(fs.block)
+        out.append(fs)
+    return out
+
+
+def _parse_footswitch(data: Any, *, source: str) -> FootswitchAssignment:
+    if not isinstance(data, dict):
+        raise _err(source, "must be an object.")
+    switch = data.get("switch")
+    if not isinstance(switch, str) or not switch:
+        raise _err(source, '"switch" is required and must be a non-empty string.')
+    block = data.get("block")
+    if not isinstance(block, str) or not block:
+        raise _err(source, '"block" is required and must be a non-empty string.')
+    behavior = data.get("behavior", "latching")
+    if behavior not in VALID_FS_BEHAVIORS:
+        raise _err(
+            source,
+            f'"behavior" must be one of {list(VALID_FS_BEHAVIORS)} (got {behavior!r}).',
+        )
+    return FootswitchAssignment(switch=switch, block=block, behavior=behavior)
 
 
 def _parse_path(data: Any, *, source: str) -> PathEntry:
