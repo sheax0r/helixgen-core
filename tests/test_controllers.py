@@ -32,3 +32,29 @@ def test_resolve_input_model_unknown_mode_raises_with_valid_list():
 def test_resolve_input_model_unknown_device_falls_back_to_stadium_xl():
     # Unknown device_id falls back; should resolve "both" via the XL table.
     assert controllers.resolve_input_model("future_device", "both") == "P35_InputInst1_2"
+
+
+def test_controller_source_ids_has_stadium_xl_fs_1_through_10():
+    table = controllers.CONTROLLER_SOURCE_IDS["stadium_xl"]
+    for n in range(1, 11):
+        assert f"FS{n}" in table, f"FS{n} missing from stadium_xl table"
+        assert isinstance(table[f"FS{n}"], int)
+
+
+def test_controller_source_ids_stadium_xl_fs_values_unique():
+    table = controllers.CONTROLLER_SOURCE_IDS["stadium_xl"]
+    fs_values = [table[f"FS{n}"] for n in range(1, 11)]
+    assert len(set(fs_values)) == len(fs_values), "FS source IDs are not unique"
+
+
+def test_resolve_controller_source_known_name():
+    sid = controllers.resolve_controller_source("stadium_xl", "FS1")
+    assert isinstance(sid, int)
+
+
+def test_resolve_controller_source_unknown_raises_with_valid_list():
+    with pytest.raises(controllers.ControllerError) as exc_info:
+        controllers.resolve_controller_source("stadium_xl", "FS99")
+    msg = str(exc_info.value)
+    assert "FS99" in msg
+    assert "FS1" in msg

@@ -22,8 +22,36 @@ INPUT_MODELS: dict[str, dict[str, str]] = {
 }
 
 
+# Empirically derived from the user's real .hsp exports (see
+# scripts/derive_controller_table.py). FS1..FS10 are Stadium XL's 10
+# physical stomp-mode footswitches; their source IDs follow 0x010101NN.
+# FS6 (0x01010105) had no assignments in the scanned exports but the
+# contiguous pattern is unambiguous. A source ID 0x0101010a was observed
+# in data (an 11th stomp / MODE-switch context) but is out of scope for v1.
+CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
+    "stadium_xl": {
+        "FS1":  0x01010100,
+        "FS2":  0x01010101,
+        "FS3":  0x01010102,
+        "FS4":  0x01010103,
+        "FS5":  0x01010104,
+        "FS6":  0x01010105,
+        "FS7":  0x01010106,
+        "FS8":  0x01010107,
+        "FS9":  0x01010108,
+        "FS10": 0x01010109,
+    },
+}
+
+
 def _resolve_device(device_id: str) -> str:
-    """Pick the active device table key, falling back to stadium_xl."""
+    """Pick the active device table key, falling back to stadium_xl.
+
+    Both INPUT_MODELS and CONTROLLER_SOURCE_IDS use the same outer keys
+    (currently only "stadium_xl"). _resolve_device is shared by both
+    resolve_input_model and resolve_controller_source — keep the outer
+    keys of both tables in sync when adding new device support.
+    """
     if device_id in INPUT_MODELS:
         return device_id
     return "stadium_xl"
@@ -40,3 +68,17 @@ def resolve_input_model(device_id: str, mode: str) -> str:
             f"Unknown input mode {mode!r}. Valid modes: {sorted(table.keys())}."
         )
     return table[mode]
+
+
+def resolve_controller_source(device_id: str, logical_name: str) -> int:
+    """Look up a controller source ID for a logical FS/EXP name.
+
+    Raises ControllerError listing valid names if the logical name is unknown.
+    """
+    table = CONTROLLER_SOURCE_IDS[_resolve_device(device_id)]
+    if logical_name not in table:
+        raise ControllerError(
+            f"Unknown controller name {logical_name!r}. "
+            f"Valid names: {sorted(table.keys())}."
+        )
+    return table[logical_name]
