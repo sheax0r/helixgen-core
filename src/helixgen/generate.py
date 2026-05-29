@@ -194,6 +194,56 @@ def _wrap_value_with_snapshots(
     return wrapped
 
 
+def _is_stereo_param(value: Any) -> bool:
+    """True if a slot-param value uses the stereo `{"1": ..., "2": ...}` shape."""
+    return (
+        isinstance(value, dict)
+        and "1" in value
+        and isinstance(value["1"], dict)
+        and "value" in value["1"]
+    )
+
+
+def _reshape_input_params(
+    params: dict[str, Any], *, to_stereo: bool
+) -> dict[str, Any]:
+    """Convert input-endpoint params between mono and stereo shapes.
+
+    Mono shape:   {"<name>": {"value": x}, ...}
+    Stereo shape: {"<name>": {"1": {"value": x}, "2": {"value": y}}, ...,
+                   "StereoLink": {"value": False}}
+
+    Going mono → stereo wraps each scalar value into per-channel entries
+    (both channels start equal) and adds `StereoLink: false`. Going stereo
+    → mono takes channel 1 (channel 2 is discarded) and drops StereoLink.
+    Identity transforms (already in target shape) return the input
+    unchanged.
+    """
+    currently_stereo = any(_is_stereo_param(v) for v in params.values())
+    if currently_stereo == to_stereo:
+        return dict(params)
+
+    if to_stereo:
+        out: dict[str, Any] = {}
+        for k, v in params.items():
+            if k == "StereoLink":
+                continue
+            out[k] = {"1": dict(v), "2": dict(v)}
+        out["StereoLink"] = {"value": False}
+        return out
+
+    # stereo → mono
+    out = {}
+    for k, v in params.items():
+        if k == "StereoLink":
+            continue
+        if _is_stereo_param(v):
+            out[k] = dict(v["1"])
+        else:
+            out[k] = dict(v)
+    return out
+
+
 def _to_hsp_bnn(
     block: Block,
     user_params: dict[str, Any],
