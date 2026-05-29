@@ -33,8 +33,8 @@ def test_save_then_reload_round_trips(tmp_path):
     assert reloaded.entries == {"abc": "foo.wav"}
 
 
-def test_save_is_atomic(tmp_path):
-    """If save crashes mid-write, mapping.json must not be partial."""
+def test_save_leaves_no_tmp_file_on_success(tmp_path):
+    """A successful save must not leave mapping.json.tmp on disk."""
     m = IrMapping(irs_dir=tmp_path, entries={"abc": "foo.wav"})
     m.save()
     # Verify no .tmp file is left behind on a successful save
