@@ -1,6 +1,7 @@
 """CLI entry points for helixgen."""
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import click
 
 from helixgen.bootstrap import bootstrap
 from helixgen.generate import GenerateError, ParamValidationError, generate_preset
+from helixgen.hsp import HSP_MAGIC, HSP_MAGIC_LEN
 from helixgen.ingest import IngestSummary, ingest_path
 from helixgen.ir import IrMapping, IrMappingError, default_irs_path, extract_ir_hashes
 from helixgen.library import Library, default_library_path
@@ -165,13 +167,10 @@ def register_irs_cmd(
     irs_dir: Path | None,
 ) -> None:
     """Bind irhash values from a .hsp registration preset to local .wav files (in block order)."""
-    import json as _json
-    from helixgen.hsp import HSP_MAGIC, HSP_MAGIC_LEN
-
     raw = preset_path.read_bytes()
     if not raw.startswith(HSP_MAGIC):
         raise click.ClickException(f"{preset_path} is not a Stadium .hsp file")
-    body = _json.loads(raw[HSP_MAGIC_LEN:])
+    body = json.loads(raw[HSP_MAGIC_LEN:])
     hashes = extract_ir_hashes(body)
 
     if len(hashes) != len(wav_paths):

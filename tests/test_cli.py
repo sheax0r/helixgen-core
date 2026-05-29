@@ -12,7 +12,7 @@ from helixgen.library import Library
 def test_cli_help_lists_subcommands():
     result = CliRunner().invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for cmd in ["ingest", "generate", "list-blocks", "show-block", "bootstrap"]:
+    for cmd in ["ingest", "generate", "list-blocks", "show-block", "bootstrap", "register-irs"]:
         assert cmd in result.output
 
 
