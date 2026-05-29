@@ -35,6 +35,16 @@ JSON tone specs. The library lives at `~/.helixgen/library/` (override with
 - `block` matches the display_name from `list-blocks` (e.g. "Brit Plexi Brt") — case-sensitive. If ambiguous, use the model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
 - `params` values are floats 0.0–1.0 for most knobs; some are ints/bools/Hz. Verify ranges with `show-block`.
 
+### Optional: per-path input routing
+
+Each path entry may carry an optional `"input"` field with one of:
+- `"inst1"` — Instrument 1 jack only
+- `"inst2"` — Instrument 2 jack only
+- `"both"` — both jacks (stereo) — **default on paths[0]**
+- `"none"` — input disabled — **default on paths[1]**
+
+Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
+
 ### Optional: snapshots (Stadium scenes)
 
 Add a top-level `snapshots` array (up to 8 entries) to define named scenes that override block bypass and param values within one preset:
