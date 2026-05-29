@@ -228,7 +228,7 @@ def _reshape_input_params(
         for k, v in params.items():
             if k == "StereoLink":
                 continue
-            out[k] = {"1": dict(v), "2": dict(v)}
+            out[k] = {"1": copy.deepcopy(v), "2": copy.deepcopy(v)}
         out["StereoLink"] = {"value": False}
         return out
 
@@ -238,9 +238,9 @@ def _reshape_input_params(
         if k == "StereoLink":
             continue
         if _is_stereo_param(v):
-            out[k] = dict(v["1"])
+            out[k] = copy.deepcopy(v["1"])
         else:
-            out[k] = dict(v)
+            out[k] = copy.deepcopy(v)
     return out
 
 
