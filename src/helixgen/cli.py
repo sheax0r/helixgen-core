@@ -88,11 +88,18 @@ def ingest_cmd(path: Path, library_path: Path | None) -> None:
 @click.argument("spec_path", type=click.Path(exists=True, path_type=Path))
 @click.option("-o", "--output", "output_path", type=click.Path(path_type=Path), required=True)
 @_library_option
-def generate_cmd(spec_path: Path, output_path: Path, library_path: Path | None) -> None:
-    """Generate a .hlx preset from a JSON tone spec."""
+@_irs_option
+def generate_cmd(
+    spec_path: Path,
+    output_path: Path,
+    library_path: Path | None,
+    irs_dir: Path | None,
+) -> None:
+    """Generate a .hsp/.hlx preset from a JSON tone spec."""
     library = _resolved_library(library_path)
+    irs = _resolved_irs(irs_dir)
     try:
-        generate_preset(spec_path, output_path, library)
+        generate_preset(spec_path, output_path, library, irs=irs)
     except (KeyError, LookupError, SpecError, ParamValidationError, GenerateError, FileNotFoundError) as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"Wrote {output_path}")
