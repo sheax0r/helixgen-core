@@ -1,0 +1,218 @@
+{
+  "model_id": "Agoura_AmpEssexTB30CC",
+  "category": "amp",
+  "display_name": "Essex TB30 CC",
+  "params": {
+    "AmpCabPeak2Fc": {
+      "type": "float",
+      "default": 1000.0,
+      "observed_range": [
+        1000.0,
+        1000.0
+      ]
+    },
+    "AmpCabPeak2G": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "AmpCabPeak2Q": {
+      "type": "float",
+      "default": 0.7070000171661377,
+      "observed_range": [
+        0.7070000171661377,
+        0.7070000171661377
+      ]
+    },
+    "AmpCabPeakFc": {
+      "type": "float",
+      "default": 100.0,
+      "observed_range": [
+        100.0,
+        100.0
+      ]
+    },
+    "AmpCabPeakG": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "AmpCabPeakQ": {
+      "type": "float",
+      "default": 0.7070000171661377,
+      "observed_range": [
+        0.7070000171661377,
+        0.7070000171661377
+      ]
+    },
+    "AmpCabShelfF": {
+      "type": "float",
+      "default": 1000.0,
+      "observed_range": [
+        1000.0,
+        1000.0
+      ]
+    },
+    "AmpCabShelfG": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "AmpCabZFir": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "AmpCabZUpdate": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "Bass": {
+      "type": "float",
+      "default": 0.5699999928474426,
+      "observed_range": [
+        0.5699999928474426,
+        0.5699999928474426
+      ]
+    },
+    "BrtDrv": {
+      "type": "float",
+      "default": 0.3799999952316284,
+      "observed_range": [
+        0.3799999952316284,
+        0.3799999952316284
+      ]
+    },
+    "Channel": {
+      "type": "int",
+      "default": 1,
+      "observed_range": [
+        1,
+        1
+      ]
+    },
+    "HighCut": {
+      "type": "float",
+      "default": 0.28999999165534973,
+      "observed_range": [
+        0.28999999165534973,
+        0.28999999165534973
+      ]
+    },
+    "Hype": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": -12.300000190734863,
+      "observed_range": [
+        -12.300000190734863,
+        -12.300000190734863
+      ]
+    },
+    "Master": {
+      "type": "float",
+      "default": 0.7900000214576721,
+      "observed_range": [
+        0.7900000214576721,
+        0.7900000214576721
+      ]
+    },
+    "NrmDrv": {
+      "type": "float",
+      "default": 0.28999999165534973,
+      "observed_range": [
+        0.28999999165534973,
+        0.28999999165534973
+      ]
+    },
+    "Ripple": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Sag": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.6200000047683716,
+      "observed_range": [
+        0.6200000047683716,
+        0.6200000047683716
+      ]
+    },
+    "ZPrePost": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "Agoura_AmpEssexTB30CC",
+    "@enabled": true,
+    "@type": "amp",
+    "@position": 6,
+    "@path": 0,
+    "AmpCabPeak2Fc": 1000.0,
+    "AmpCabPeak2G": 0.0,
+    "AmpCabPeak2Q": 0.7070000171661377,
+    "AmpCabPeakFc": 100.0,
+    "AmpCabPeakG": 0.0,
+    "AmpCabPeakQ": 0.7070000171661377,
+    "AmpCabShelfF": 1000.0,
+    "AmpCabShelfG": 0.0,
+    "AmpCabZFir": 0,
+    "AmpCabZUpdate": 0,
+    "Bass": 0.5699999928474426,
+    "BrtDrv": 0.3799999952316284,
+    "Channel": 1,
+    "HighCut": 0.28999999165534973,
+    "Hype": 0.0,
+    "Level": -12.300000190734863,
+    "Master": 0.7900000214576721,
+    "NrmDrv": 0.28999999165534973,
+    "Ripple": 0.0,
+    "Sag": 0.0,
+    "Treble": 0.6200000047683716,
+    "ZPrePost": 1.0
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

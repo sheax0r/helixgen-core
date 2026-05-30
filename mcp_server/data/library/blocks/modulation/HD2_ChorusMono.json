@@ -1,0 +1,97 @@
+{
+  "model_id": "HD2_ChorusMono",
+  "category": "modulation",
+  "display_name": "Mono",
+  "params": {
+    "Depth": {
+      "type": "float",
+      "default": 0.61,
+      "observed_range": [
+        0.61,
+        0.61
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Predelay": {
+      "type": "float",
+      "default": 0.32,
+      "observed_range": [
+        0.32,
+        0.32
+      ]
+    },
+    "Speed": {
+      "type": "float",
+      "default": 0.25,
+      "observed_range": [
+        0.25,
+        0.25
+      ]
+    },
+    "SyncSelect1": {
+      "type": "int",
+      "default": 6,
+      "observed_range": [
+        6,
+        6
+      ]
+    },
+    "TempoSync1": {
+      "type": "bool",
+      "default": false
+    },
+    "Tone": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "WaveShape": {
+      "type": "int",
+      "default": 2,
+      "observed_range": [
+        2,
+        2
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_ChorusMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 4,
+    "@path": 0,
+    "Depth": 0.61,
+    "Level": 0.0,
+    "Mix": 0.5,
+    "Predelay": 0.32,
+    "Speed": 0.25,
+    "SyncSelect1": 6,
+    "TempoSync1": false,
+    "Tone": 0.5,
+    "WaveShape": 2
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

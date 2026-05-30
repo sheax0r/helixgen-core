@@ -1,0 +1,169 @@
+{
+  "model_id": "VIC_DelayGlitchStereo",
+  "category": "delay",
+  "display_name": "Glitch Stereo",
+  "params": {
+    "Delay Div": {
+      "type": "int",
+      "default": 4,
+      "observed_range": [
+        4,
+        4
+      ]
+    },
+    "Feedback": {
+      "type": "float",
+      "default": 0.24539999663829803,
+      "observed_range": [
+        0.24539999663829803,
+        0.24539999663829803
+      ]
+    },
+    "High Cut": {
+      "type": "float",
+      "default": 13138.5,
+      "observed_range": [
+        13138.5,
+        13138.5
+      ]
+    },
+    "Interval 1": {
+      "type": "int",
+      "default": 12,
+      "observed_range": [
+        12,
+        12
+      ]
+    },
+    "Interval 2": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Low Cut": {
+      "type": "float",
+      "default": 68.28099822998047,
+      "observed_range": [
+        68.28099822998047,
+        68.28099822998047
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.29979994893074036,
+      "observed_range": [
+        0.29979994893074036,
+        0.29979994893074036
+      ]
+    },
+    "Pitch": {
+      "type": "float",
+      "default": 0.10870003700256348,
+      "observed_range": [
+        0.10870003700256348,
+        0.10870003700256348
+      ]
+    },
+    "Reverse": {
+      "type": "float",
+      "default": 0.8883000016212463,
+      "observed_range": [
+        0.8883000016212463,
+        0.8883000016212463
+      ]
+    },
+    "Seq Drift": {
+      "type": "float",
+      "default": 0.2638999819755554,
+      "observed_range": [
+        0.2638999819755554,
+        0.2638999819755554
+      ]
+    },
+    "Shuffle": {
+      "type": "float",
+      "default": 0.48180001974105835,
+      "observed_range": [
+        0.48180001974105835,
+        0.48180001974105835
+      ]
+    },
+    "SliceFdbk": {
+      "type": "float",
+      "default": 0.21830002963542938,
+      "observed_range": [
+        0.21830002963542938,
+        0.21830002963542938
+      ]
+    },
+    "Smoothing": {
+      "type": "float",
+      "default": 0.2096000611782074,
+      "observed_range": [
+        0.2096000611782074,
+        0.2096000611782074
+      ]
+    },
+    "SyncSelect1": {
+      "type": "int",
+      "default": 6,
+      "observed_range": [
+        6,
+        6
+      ]
+    },
+    "TempoSync1": {
+      "type": "bool",
+      "default": true
+    },
+    "Time": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "VIC_DelayGlitchStereo",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 6,
+    "@path": 0,
+    "Delay Div": 4,
+    "Feedback": 0.24539999663829803,
+    "High Cut": 13138.5,
+    "Interval 1": 12,
+    "Interval 2": 0,
+    "Level": 0.0,
+    "Low Cut": 68.28099822998047,
+    "Mix": 0.29979994893074036,
+    "Pitch": 0.10870003700256348,
+    "Reverse": 0.8883000016212463,
+    "Seq Drift": 0.2638999819755554,
+    "Shuffle": 0.48180001974105835,
+    "SliceFdbk": 0.21830002963542938,
+    "Smoothing": 0.2096000611782074,
+    "SyncSelect1": 6,
+    "TempoSync1": true,
+    "Time": 1.0
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

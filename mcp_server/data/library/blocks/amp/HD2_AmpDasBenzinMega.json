@@ -1,0 +1,128 @@
+{
+  "model_id": "HD2_AmpDasBenzinMega",
+  "category": "amp",
+  "display_name": "Das Benzin Mega",
+  "params": {
+    "Bass": {
+      "type": "float",
+      "default": 0.58,
+      "observed_range": [
+        0.58,
+        0.58
+      ]
+    },
+    "Bias": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "BiasX": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "ChVol": {
+      "type": "float",
+      "default": 0.85,
+      "observed_range": [
+        0.85,
+        0.85
+      ]
+    },
+    "Deep": {
+      "type": "float",
+      "default": 0.4,
+      "observed_range": [
+        0.4,
+        0.4
+      ]
+    },
+    "Drive": {
+      "type": "float",
+      "default": 0.65,
+      "observed_range": [
+        0.65,
+        0.65
+      ]
+    },
+    "Master": {
+      "type": "float",
+      "default": 0.52,
+      "observed_range": [
+        0.52,
+        0.52
+      ]
+    },
+    "Mid": {
+      "type": "float",
+      "default": 0.59,
+      "observed_range": [
+        0.59,
+        0.59
+      ]
+    },
+    "Presence": {
+      "type": "float",
+      "default": 0.78,
+      "observed_range": [
+        0.78,
+        0.78
+      ]
+    },
+    "Ripple": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Sag": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.67,
+      "observed_range": [
+        0.67,
+        0.67
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_AmpDasBenzinMega",
+    "@enabled": true,
+    "@type": "amp",
+    "@position": 1,
+    "@path": 0,
+    "Bass": 0.58,
+    "Bias": 0.5,
+    "BiasX": 0.5,
+    "ChVol": 0.85,
+    "Deep": 0.4,
+    "Drive": 0.65,
+    "Master": 0.52,
+    "Mid": 0.59,
+    "Presence": 0.78,
+    "Ripple": 0.5,
+    "Sag": 0.5,
+    "Treble": 0.67
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

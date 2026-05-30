@@ -1,0 +1,83 @@
+{
+  "model_id": "HD2_DistKWBMono",
+  "category": "drive",
+  "display_name": "KWBMono",
+  "params": {
+    "Asym": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Bass": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Gain": {
+      "type": "float",
+      "default": 0.67,
+      "observed_range": [
+        0.67,
+        0.67
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.692,
+      "observed_range": [
+        0.692,
+        0.692
+      ]
+    },
+    "PullDiode": {
+      "type": "int",
+      "default": 1,
+      "observed_range": [
+        1,
+        1
+      ]
+    },
+    "PushDiode": {
+      "type": "int",
+      "default": 3,
+      "observed_range": [
+        3,
+        3
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_DistKWBMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 5,
+    "@path": 0,
+    "Asym": 0.0,
+    "Bass": 0.0,
+    "Gain": 0.67,
+    "Level": 0.692,
+    "PullDiode": 1,
+    "PushDiode": 3,
+    "Treble": 0.0
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

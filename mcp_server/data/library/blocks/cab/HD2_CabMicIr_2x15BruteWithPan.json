@@ -1,0 +1,110 @@
+{
+  "model_id": "HD2_CabMicIr_2x15BruteWithPan",
+  "category": "cab",
+  "display_name": "Mic Ir_2x15 Brute With Pan",
+  "params": {
+    "Angle": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Delay": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Distance": {
+      "type": "float",
+      "default": 7.25,
+      "observed_range": [
+        7.25,
+        7.25
+      ]
+    },
+    "HighCut": {
+      "type": "float",
+      "default": 11500.0,
+      "observed_range": [
+        11500.0,
+        11500.0
+      ]
+    },
+    "IrData": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 4.0,
+      "observed_range": [
+        4.0,
+        4.0
+      ]
+    },
+    "LowCut": {
+      "type": "float",
+      "default": 25.0,
+      "observed_range": [
+        25.0,
+        25.0
+      ]
+    },
+    "Mic": {
+      "type": "int",
+      "default": 10,
+      "observed_range": [
+        10,
+        10
+      ]
+    },
+    "Pan": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Position": {
+      "type": "float",
+      "default": 0.3100000023841858,
+      "observed_range": [
+        0.3100000023841858,
+        0.3100000023841858
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_CabMicIr_2x15BruteWithPan",
+    "@enabled": true,
+    "@type": "cab",
+    "@position": 10,
+    "@path": 0,
+    "Angle": 0.0,
+    "Delay": 0.0,
+    "Distance": 7.25,
+    "HighCut": 11500.0,
+    "IrData": 0,
+    "Level": 4.0,
+    "LowCut": 25.0,
+    "Mic": 10,
+    "Pan": 0.5,
+    "Position": 0.3100000023841858
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

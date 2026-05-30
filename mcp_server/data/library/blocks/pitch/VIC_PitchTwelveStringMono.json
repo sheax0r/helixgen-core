@@ -1,0 +1,65 @@
+{
+  "model_id": "VIC_PitchTwelveStringMono",
+  "category": "pitch",
+  "display_name": "Twelve String Mono",
+  "params": {
+    "Bass": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Blend": {
+      "type": "float",
+      "default": 0.75,
+      "observed_range": [
+        0.75,
+        0.75
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "OnsetThresh": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "VIC_PitchTwelveStringMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 1,
+    "@path": 0,
+    "Bass": 0.5,
+    "Blend": 0.75,
+    "Level": 0.0,
+    "OnsetThresh": 0,
+    "Treble": 0.5
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

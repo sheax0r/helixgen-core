@@ -1,0 +1,124 @@
+{
+  "model_id": "HD2_DelayVintageDigitalStereoV2",
+  "category": "delay",
+  "display_name": "Vintage Digital Stereo V2",
+  "params": {
+    "BitDepth": {
+      "type": "int",
+      "default": 7,
+      "observed_range": [
+        7,
+        7
+      ]
+    },
+    "Depth": {
+      "type": "float",
+      "default": 0.20000000298023224,
+      "observed_range": [
+        0.20000000298023224,
+        0.20000000298023224
+      ]
+    },
+    "Feedback": {
+      "type": "float",
+      "default": 0.5699999928474426,
+      "observed_range": [
+        0.5699999928474426,
+        0.5699999928474426
+      ]
+    },
+    "Headroom": {
+      "type": "float",
+      "default": 3.0999999046325684,
+      "observed_range": [
+        3.0999999046325684,
+        3.0999999046325684
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.3700000047683716,
+      "observed_range": [
+        0.3700000047683716,
+        0.3700000047683716
+      ]
+    },
+    "Rate": {
+      "type": "float",
+      "default": 0.6000000238418579,
+      "observed_range": [
+        0.6000000238418579,
+        0.6000000238418579
+      ]
+    },
+    "SampleRate": {
+      "type": "int",
+      "default": 3,
+      "observed_range": [
+        3,
+        3
+      ]
+    },
+    "Scale": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "SyncSelect1": {
+      "type": "int",
+      "default": 8,
+      "observed_range": [
+        8,
+        8
+      ]
+    },
+    "TempoSync1": {
+      "type": "bool",
+      "default": true
+    },
+    "Time": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_DelayVintageDigitalStereoV2",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 6,
+    "@path": 0,
+    "BitDepth": 7,
+    "Depth": 0.20000000298023224,
+    "Feedback": 0.5699999928474426,
+    "Headroom": 3.0999999046325684,
+    "Level": 0.0,
+    "Mix": 0.3700000047683716,
+    "Rate": 0.6000000238418579,
+    "SampleRate": 3,
+    "Scale": 1.0,
+    "SyncSelect1": 8,
+    "TempoSync1": true,
+    "Time": 0.5
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

@@ -1,0 +1,160 @@
+{
+  "model_id": "VIC_ReverbShimmerStereo",
+  "category": "reverb",
+  "display_name": "Shimmer Stereo",
+  "params": {
+    "Balance": {
+      "type": "float",
+      "default": 0.800000011920929,
+      "observed_range": [
+        0.800000011920929,
+        0.800000011920929
+      ]
+    },
+    "Damping": {
+      "type": "float",
+      "default": 4900.0,
+      "observed_range": [
+        4900.0,
+        4900.0
+      ]
+    },
+    "Decay": {
+      "type": "float",
+      "default": 10.0,
+      "observed_range": [
+        10.0,
+        10.0
+      ]
+    },
+    "Diffusion": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "Feedback": {
+      "type": "float",
+      "default": 0.8999999761581421,
+      "observed_range": [
+        0.8999999761581421,
+        0.8999999761581421
+      ]
+    },
+    "HighCut": {
+      "type": "float",
+      "default": 6800.0,
+      "observed_range": [
+        6800.0,
+        6800.0
+      ]
+    },
+    "Intensity": {
+      "type": "float",
+      "default": 0.5299999713897705,
+      "observed_range": [
+        0.5299999713897705,
+        0.5299999713897705
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "LowCut": {
+      "type": "float",
+      "default": 136.0,
+      "observed_range": [
+        136.0,
+        136.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.5299999713897705,
+      "observed_range": [
+        0.5299999713897705,
+        0.5299999713897705
+      ]
+    },
+    "Mode": {
+      "type": "bool",
+      "default": false
+    },
+    "Motion": {
+      "type": "float",
+      "default": 0.33000001311302185,
+      "observed_range": [
+        0.33000001311302185,
+        0.33000001311302185
+      ]
+    },
+    "Predelay": {
+      "type": "float",
+      "default": 0.1589999943971634,
+      "observed_range": [
+        0.1589999943971634,
+        0.1589999943971634
+      ]
+    },
+    "RoomSize": {
+      "type": "int",
+      "default": 2,
+      "observed_range": [
+        2,
+        2
+      ]
+    },
+    "Shift1": {
+      "type": "float",
+      "default": 12.0,
+      "observed_range": [
+        12.0,
+        12.0
+      ]
+    },
+    "Shift2": {
+      "type": "float",
+      "default": -12.0,
+      "observed_range": [
+        -12.0,
+        -12.0
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "VIC_ReverbShimmerStereo",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 11,
+    "@path": 0,
+    "Balance": 0.800000011920929,
+    "Damping": 4900.0,
+    "Decay": 10.0,
+    "Diffusion": 1.0,
+    "Feedback": 0.8999999761581421,
+    "HighCut": 6800.0,
+    "Intensity": 0.5299999713897705,
+    "Level": 0.0,
+    "LowCut": 136.0,
+    "Mix": 0.5299999713897705,
+    "Mode": false,
+    "Motion": 0.33000001311302185,
+    "Predelay": 0.1589999943971634,
+    "RoomSize": 2,
+    "Shift1": 12.0,
+    "Shift2": -12.0
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

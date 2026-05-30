@@ -1,0 +1,93 @@
+{
+  "model_id": "HD2_FlangerCourtesanFlangeMono",
+  "category": "modulation",
+  "display_name": "Courtesan Flange Mono",
+  "params": {
+    "Color": {
+      "type": "float",
+      "default": 0.348895,
+      "observed_range": [
+        0.348895,
+        0.348895
+      ]
+    },
+    "FilterMatrix": {
+      "type": "bool",
+      "default": false
+    },
+    "Headroom": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.370278,
+      "observed_range": [
+        0.370278,
+        0.370278
+      ]
+    },
+    "Range": {
+      "type": "float",
+      "default": 0.71,
+      "observed_range": [
+        0.71,
+        0.71
+      ]
+    },
+    "Rate": {
+      "type": "float",
+      "default": 0.199929,
+      "observed_range": [
+        0.199929,
+        0.199929
+      ]
+    },
+    "SyncSelect1": {
+      "type": "int",
+      "default": 6,
+      "observed_range": [
+        6,
+        6
+      ]
+    },
+    "TempoSync1": {
+      "type": "bool",
+      "default": false
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_FlangerCourtesanFlangeMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 1,
+    "@path": 0,
+    "Color": 0.348895,
+    "FilterMatrix": false,
+    "Headroom": 0.0,
+    "Level": 0.0,
+    "Mix": 0.370278,
+    "Range": 0.71,
+    "Rate": 0.199929,
+    "SyncSelect1": 6,
+    "TempoSync1": false
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

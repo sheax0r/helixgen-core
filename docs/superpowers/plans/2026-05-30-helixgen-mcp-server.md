@@ -21,7 +21,8 @@
 | `mcp_server/tools.py`                      | **new**  | Pure handlers: `list_blocks_handler`, `show_block_handler`, `generate_preset_handler`. Each takes a `Library` + args and returns plain Python (str or dict). No MCP types here. |
 | `mcp_server/server.py`                     | **new**  | `FastMCP("helixgen")` app, three tools registered via decorators, each delegating to the corresponding `tools.py` handler. |
 | `mcp_server/__main__.py`                   | **new**  | Entry point: reads `PORT` env, runs `app` with Streamable HTTP transport. |
-| `mcp_server/data/chassis.json`             | **new**  | Scrubbed Stadium chassis. Committed binary-equivalent JSON, ~5 KB.       |
+| `mcp_server/data/library/chassis.json`             | **new**  | Scrubbed Stadium chassis. Committed binary-equivalent JSON, ~5 KB.       |
+| `mcp_server/data/library/blocks/<cat>/*.json` | **new**  | Scrubbed block catalog (~330 blocks) bundled at build time. `first_seen.preset` cleared per block.                          |
 | `mcp_server/data/__init__.py`              | **new**  | Empty marker so `importlib.resources` works against `mcp_server.data`.  |
 | `render.yaml`                              | **new**  | Render service definition (native Python, build cmd, start cmd).        |
 | `mcp_server/DEPLOY.md`                     | **new**  | User-facing setup: Render deploy + claude.ai connector wiring.          |
@@ -897,6 +898,13 @@ on the streamable-http transport — no extra config.
 
 ## Task 9 — `render.yaml` deployment config
 
+**Note:** This task originally called `helixgen bootstrap` in the build,
+but phelix's blocks/ directory uses a schema that ingest_file doesn't
+recognize (369 files skipped on a fresh deploy). The corrected approach
+bundles a scrubbed library catalog under `mcp_server/data/library/` and
+copies it into place at build time. See the chassis-bundling pattern
+established in Task 2 — same shape, more files.
+
 **Files:**
 - Create: `render.yaml`
 
@@ -911,9 +919,9 @@ services:
     pythonVersion: "3.11"
     buildCommand: |
       pip install -e .[mcp]
-      helixgen bootstrap
-      mkdir -p "$HOME/.helixgen/library"
-      cp mcp_server/data/chassis.json "$HOME/.helixgen/library/chassis.json"
+      mkdir -p "$HOME/.helixgen"
+      cp -r mcp_server/data/library "$HOME/.helixgen/library"
+      python -c "from helixgen.library import Library, default_library_path; Library(default_library_path()).rebuild_index()"
     startCommand: python -m mcp_server
     healthCheckPath: /mcp
 ```
@@ -922,22 +930,23 @@ services:
 
 ```bash
 SCRATCH=$(mktemp -d)
-HELIXGEN_LIBRARY="$SCRATCH/library" helixgen bootstrap 2>&1 | tail -3
-mkdir -p "$SCRATCH/library"
-cp mcp_server/data/chassis.json "$SCRATCH/library/chassis.json"
-HELIXGEN_LIBRARY="$SCRATCH/library" python -c "
-from helixgen.library import Library
-lib = Library('$SCRATCH/library')
+mkdir -p "$SCRATCH/.helixgen"
+cp -r mcp_server/data/library "$SCRATCH/.helixgen/library"
+HELIXGEN_LIBRARY="$SCRATCH/.helixgen/library" python -c "
+from helixgen.library import Library, default_library_path
+import os
+lib = Library(os.environ['HELIXGEN_LIBRARY'])
+lib.rebuild_index()
 assert lib.has_chassis()
 blocks = lib.list_blocks()
-print(f'ok: {len(blocks)} blocks, chassis present')
+amps = lib.list_blocks(category='amp')
+cabs = lib.list_blocks(category='cab')
+print(f'ok: {len(blocks)} total, {len(amps)} amps, {len(cabs)} cabs, chassis present')
 "
 rm -rf "$SCRATCH"
 ```
 
-Expected: `ok: <N> blocks, chassis present` (N typically 200-400 depending on what phelix has at HEAD).
-
-If the bootstrap fails (e.g. network issue), the same failure would happen on Render — investigate before continuing.
+Expected: `ok: <N> total, <A> amps, <C> cabs, chassis present` — N should be in the low hundreds (~330), A and C should both be > 0.
 
 - [ ] **Step 9.3: Commit.**
 

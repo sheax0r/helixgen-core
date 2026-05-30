@@ -1,0 +1,119 @@
+{
+  "model_id": "HD2_ReverbPlateauxStereo",
+  "category": "reverb",
+  "display_name": "Plateaux Stereo",
+  "params": {
+    "Cents1": {
+      "type": "float",
+      "default": -2.4000000953674316,
+      "observed_range": [
+        -2.4000000953674316,
+        -2.4000000953674316
+      ]
+    },
+    "Cents2": {
+      "type": "float",
+      "default": 2.0,
+      "observed_range": [
+        2.0,
+        2.0
+      ]
+    },
+    "Decay": {
+      "type": "float",
+      "default": 0.699999988079071,
+      "observed_range": [
+        0.699999988079071,
+        0.699999988079071
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Modulation": {
+      "type": "float",
+      "default": 0.5799999833106995,
+      "observed_range": [
+        0.5799999833106995,
+        0.5799999833106995
+      ]
+    },
+    "Pitch1": {
+      "type": "int",
+      "default": 12,
+      "observed_range": [
+        12,
+        12
+      ]
+    },
+    "Pitch2": {
+      "type": "int",
+      "default": 12,
+      "observed_range": [
+        12,
+        12
+      ]
+    },
+    "PitchMix": {
+      "type": "float",
+      "default": 0.2800000011920929,
+      "observed_range": [
+        0.2800000011920929,
+        0.2800000011920929
+      ]
+    },
+    "Predelay": {
+      "type": "float",
+      "default": 0.07999999821186066,
+      "observed_range": [
+        0.07999999821186066,
+        0.07999999821186066
+      ]
+    },
+    "Tone": {
+      "type": "float",
+      "default": 0.699999988079071,
+      "observed_range": [
+        0.699999988079071,
+        0.699999988079071
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_ReverbPlateauxStereo",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 8,
+    "@path": 0,
+    "Cents1": -2.4000000953674316,
+    "Cents2": 2.0,
+    "Decay": 0.699999988079071,
+    "Level": 0.0,
+    "Mix": 0.5,
+    "Modulation": 0.5799999833106995,
+    "Pitch1": 12,
+    "Pitch2": 12,
+    "PitchMix": 0.2800000011920929,
+    "Predelay": 0.07999999821186066,
+    "Tone": 0.699999988079071
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

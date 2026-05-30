@@ -1,0 +1,133 @@
+{
+  "model_id": "HD2_AmpANGLMeteor",
+  "category": "amp",
+  "display_name": "ANGLMeteor",
+  "params": {
+    "Bass": {
+      "type": "float",
+      "default": 0.3,
+      "observed_range": [
+        0.3,
+        0.3
+      ]
+    },
+    "Bias": {
+      "type": "float",
+      "default": 0.5599999,
+      "observed_range": [
+        0.5599999,
+        0.5599999
+      ]
+    },
+    "BiasX": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "ChVol": {
+      "type": "float",
+      "default": 0.7965631,
+      "observed_range": [
+        0.7965631,
+        0.7965631
+      ]
+    },
+    "Drive": {
+      "type": "float",
+      "default": 0.6603236,
+      "observed_range": [
+        0.6603236,
+        0.6603236
+      ]
+    },
+    "Hum": {
+      "type": "float",
+      "default": 0.27,
+      "observed_range": [
+        0.27,
+        0.27
+      ]
+    },
+    "Master": {
+      "type": "float",
+      "default": 0.62,
+      "observed_range": [
+        0.62,
+        0.62
+      ]
+    },
+    "Mid": {
+      "type": "float",
+      "default": 0.42,
+      "observed_range": [
+        0.42,
+        0.42
+      ]
+    },
+    "MidBoost": {
+      "type": "bool",
+      "default": false
+    },
+    "Presence": {
+      "type": "float",
+      "default": 0.6819222,
+      "observed_range": [
+        0.6819222,
+        0.6819222
+      ]
+    },
+    "Ripple": {
+      "type": "float",
+      "default": 0.53,
+      "observed_range": [
+        0.53,
+        0.53
+      ]
+    },
+    "Sag": {
+      "type": "float",
+      "default": 0.5799999,
+      "observed_range": [
+        0.5799999,
+        0.5799999
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.64,
+      "observed_range": [
+        0.64,
+        0.64
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_AmpANGLMeteor",
+    "@enabled": true,
+    "@type": "amp",
+    "@position": 3,
+    "@path": 0,
+    "Bass": 0.3,
+    "Bias": 0.5599999,
+    "BiasX": 0.5,
+    "ChVol": 0.7965631,
+    "Drive": 0.6603236,
+    "Hum": 0.27,
+    "Master": 0.62,
+    "Mid": 0.42,
+    "MidBoost": false,
+    "Presence": 0.6819222,
+    "Ripple": 0.53,
+    "Sag": 0.5799999,
+    "Treble": 0.64
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

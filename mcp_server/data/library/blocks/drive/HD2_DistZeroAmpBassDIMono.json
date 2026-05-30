@@ -1,0 +1,74 @@
+{
+  "model_id": "HD2_DistZeroAmpBassDIMono",
+  "category": "drive",
+  "display_name": "Zero Amp Bass DIMono",
+  "params": {
+    "Bass": {
+      "type": "float",
+      "default": 0.5099999904632568,
+      "observed_range": [
+        0.5099999904632568,
+        0.5099999904632568
+      ]
+    },
+    "Blend": {
+      "type": "float",
+      "default": 0.6600000262260437,
+      "observed_range": [
+        0.6600000262260437,
+        0.6600000262260437
+      ]
+    },
+    "Drive": {
+      "type": "float",
+      "default": 0.9300000071525574,
+      "observed_range": [
+        0.9300000071525574,
+        0.9300000071525574
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.44999998807907104,
+      "observed_range": [
+        0.44999998807907104,
+        0.44999998807907104
+      ]
+    },
+    "Presence": {
+      "type": "float",
+      "default": 0.6600000262260437,
+      "observed_range": [
+        0.6600000262260437,
+        0.6600000262260437
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.4699999988079071,
+      "observed_range": [
+        0.4699999988079071,
+        0.4699999988079071
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_DistZeroAmpBassDIMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 2,
+    "@path": 0,
+    "Bass": 0.5099999904632568,
+    "Blend": 0.6600000262260437,
+    "Drive": 0.9300000071525574,
+    "Level": 0.44999998807907104,
+    "Presence": 0.6600000262260437,
+    "Treble": 0.4699999988079071
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

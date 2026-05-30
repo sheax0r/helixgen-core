@@ -1,0 +1,83 @@
+{
+  "model_id": "HD2_ReverbHxSpringStereo",
+  "category": "reverb",
+  "display_name": "Hx Spring Stereo",
+  "params": {
+    "Drip": {
+      "type": "int",
+      "default": 1,
+      "observed_range": [
+        1,
+        1
+      ]
+    },
+    "Dwell": {
+      "type": "float",
+      "default": 0.6200000047683716,
+      "observed_range": [
+        0.6200000047683716,
+        0.6200000047683716
+      ]
+    },
+    "HighCut": {
+      "type": "float",
+      "default": 3900.0,
+      "observed_range": [
+        3900.0,
+        3900.0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "LowCut": {
+      "type": "float",
+      "default": 186.0,
+      "observed_range": [
+        186.0,
+        186.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.23000000417232513,
+      "observed_range": [
+        0.23000000417232513,
+        0.23000000417232513
+      ]
+    },
+    "Spring Count": {
+      "type": "float",
+      "default": 1.7999999523162842,
+      "observed_range": [
+        1.7999999523162842,
+        1.7999999523162842
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_ReverbHxSpringStereo",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 10,
+    "@path": 0,
+    "Drip": 1,
+    "Dwell": 0.6200000047683716,
+    "HighCut": 3900.0,
+    "Level": 0.0,
+    "LowCut": 186.0,
+    "Mix": 0.23000000417232513,
+    "Spring Count": 1.7999999523162842
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

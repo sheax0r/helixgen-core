@@ -6,8 +6,8 @@ services:
     pythonVersion: "3.11"
     buildCommand: |
       pip install -e .[mcp]
-      helixgen bootstrap
-      mkdir -p "$HOME/.helixgen/library"
-      cp mcp_server/data/chassis.json "$HOME/.helixgen/library/chassis.json"
+      mkdir -p "$HOME/.helixgen"
+      cp -r mcp_server/data/library "$HOME/.helixgen/library"
+      python -c "from helixgen.library import Library, default_library_path; Library(default_library_path()).rebuild_index()"
     startCommand: python -m mcp_server
     healthCheckPath: /mcp

@@ -1,0 +1,84 @@
+{
+  "model_id": "HD2_PhaserUbiquitousVibeMono",
+  "category": "modulation",
+  "display_name": "Ubiquitous Vibe Mono",
+  "params": {
+    "Intensity": {
+      "type": "float",
+      "default": 0.28999999165534973,
+      "observed_range": [
+        0.28999999165534973,
+        0.28999999165534973
+      ]
+    },
+    "LampBias": {
+      "type": "float",
+      "default": 0.44999998807907104,
+      "observed_range": [
+        0.44999998807907104,
+        0.44999998807907104
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Mode": {
+      "type": "bool",
+      "default": true
+    },
+    "Rate": {
+      "type": "float",
+      "default": 0.1599999964237213,
+      "observed_range": [
+        0.1599999964237213,
+        0.1599999964237213
+      ]
+    },
+    "SyncSelect1": {
+      "type": "int",
+      "default": 6,
+      "observed_range": [
+        6,
+        6
+      ]
+    },
+    "TempoSync1": {
+      "type": "bool",
+      "default": false
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_PhaserUbiquitousVibeMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 5,
+    "@path": 0,
+    "Intensity": 0.28999999165534973,
+    "LampBias": 0.44999998807907104,
+    "Level": 0.0,
+    "Mix": 0.5,
+    "Mode": true,
+    "Rate": 0.1599999964237213,
+    "SyncSelect1": 6,
+    "TempoSync1": false
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

@@ -1,0 +1,217 @@
+{
+  "model_id": "HX2_EQParametricMono",
+  "category": "eq",
+  "display_name": "Parametric Mono",
+  "params": {
+    "HighCut": {
+      "type": "float",
+      "default": 20000.0,
+      "observed_range": [
+        20000.0,
+        20000.0
+      ]
+    },
+    "HighCutEnable": {
+      "type": "bool",
+      "default": true
+    },
+    "HighCutSlope": {
+      "type": "int",
+      "default": 2,
+      "observed_range": [
+        2,
+        2
+      ]
+    },
+    "HighEnable": {
+      "type": "bool",
+      "default": true
+    },
+    "HighFreq": {
+      "type": "float",
+      "default": 8000.0,
+      "observed_range": [
+        8000.0,
+        8000.0
+      ]
+    },
+    "HighGain": {
+      "type": "float",
+      "default": 0.6,
+      "observed_range": [
+        0.6,
+        0.6
+      ]
+    },
+    "HighQ": {
+      "type": "float",
+      "default": 0.6324555320336759,
+      "observed_range": [
+        0.6324555320336759,
+        0.6324555320336759
+      ]
+    },
+    "HighShelfEnable": {
+      "type": "bool",
+      "default": true
+    },
+    "HighShelfFreq": {
+      "type": "float",
+      "default": 8000.0,
+      "observed_range": [
+        8000.0,
+        8000.0
+      ]
+    },
+    "HighShelfGain": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.719999,
+      "observed_range": [
+        0.719999,
+        0.719999
+      ]
+    },
+    "LowCut": {
+      "type": "float",
+      "default": 20.0,
+      "observed_range": [
+        20.0,
+        20.0
+      ]
+    },
+    "LowCutEnable": {
+      "type": "bool",
+      "default": true
+    },
+    "LowCutSlope": {
+      "type": "int",
+      "default": 2,
+      "observed_range": [
+        2,
+        2
+      ]
+    },
+    "LowEnable": {
+      "type": "bool",
+      "default": true
+    },
+    "LowFreq": {
+      "type": "float",
+      "default": 80.0,
+      "observed_range": [
+        80.0,
+        80.0
+      ]
+    },
+    "LowGain": {
+      "type": "float",
+      "default": -1.04,
+      "observed_range": [
+        -1.04,
+        -1.04
+      ]
+    },
+    "LowQ": {
+      "type": "float",
+      "default": 0.8408329203831163,
+      "observed_range": [
+        0.8408329203831163,
+        0.8408329203831163
+      ]
+    },
+    "LowShelfEnable": {
+      "type": "bool",
+      "default": true
+    },
+    "LowShelfFreq": {
+      "type": "float",
+      "default": 80.0,
+      "observed_range": [
+        80.0,
+        80.0
+      ]
+    },
+    "LowShelfGain": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "MidEnable": {
+      "type": "bool",
+      "default": true
+    },
+    "MidFreq": {
+      "type": "float",
+      "default": 2000.0,
+      "observed_range": [
+        2000.0,
+        2000.0
+      ]
+    },
+    "MidGain": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "MidQ": {
+      "type": "float",
+      "default": 0.8408329203831163,
+      "observed_range": [
+        0.8408329203831163,
+        0.8408329203831163
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HX2_EQParametricMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 1,
+    "@path": 0,
+    "HighCut": 20000.0,
+    "HighCutEnable": true,
+    "HighCutSlope": 2,
+    "HighEnable": true,
+    "HighFreq": 8000.0,
+    "HighGain": 0.6,
+    "HighQ": 0.6324555320336759,
+    "HighShelfEnable": true,
+    "HighShelfFreq": 8000.0,
+    "HighShelfGain": 0.0,
+    "Level": 0.719999,
+    "LowCut": 20.0,
+    "LowCutEnable": true,
+    "LowCutSlope": 2,
+    "LowEnable": true,
+    "LowFreq": 80.0,
+    "LowGain": -1.04,
+    "LowQ": 0.8408329203831163,
+    "LowShelfEnable": true,
+    "LowShelfFreq": 80.0,
+    "LowShelfGain": 0.0,
+    "MidEnable": true,
+    "MidFreq": 2000.0,
+    "MidGain": 1.0,
+    "MidQ": 0.8408329203831163
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

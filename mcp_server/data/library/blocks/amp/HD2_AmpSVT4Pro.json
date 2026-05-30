@@ -1,0 +1,193 @@
+{
+  "model_id": "HD2_AmpSVT4Pro",
+  "category": "amp",
+  "display_name": "SVT4 Pro",
+  "params": {
+    "150Hz": {
+      "type": "float",
+      "default": 0.3780001401901245,
+      "observed_range": [
+        0.3780001401901245,
+        0.3780001401901245
+      ]
+    },
+    "2kHz": {
+      "type": "float",
+      "default": -0.6970000267028809,
+      "observed_range": [
+        -0.6970000267028809,
+        -0.6970000267028809
+      ]
+    },
+    "300Hz": {
+      "type": "float",
+      "default": 0.1250000149011612,
+      "observed_range": [
+        0.1250000149011612,
+        0.1250000149011612
+      ]
+    },
+    "33Hz": {
+      "type": "float",
+      "default": -0.3429999351501465,
+      "observed_range": [
+        -0.3429999351501465,
+        -0.3429999351501465
+      ]
+    },
+    "5kHz": {
+      "type": "float",
+      "default": -0.5799999833106995,
+      "observed_range": [
+        -0.5799999833106995,
+        -0.5799999833106995
+      ]
+    },
+    "600Hz": {
+      "type": "float",
+      "default": 0.23500001430511475,
+      "observed_range": [
+        0.23500001430511475,
+        0.23500001430511475
+      ]
+    },
+    "80Hz": {
+      "type": "float",
+      "default": 0.2550000250339508,
+      "observed_range": [
+        0.2550000250339508,
+        0.2550000250339508
+      ]
+    },
+    "8kHz": {
+      "type": "float",
+      "default": -0.8319997787475586,
+      "observed_range": [
+        -0.8319997787475586,
+        -0.8319997787475586
+      ]
+    },
+    "900Hz": {
+      "type": "float",
+      "default": -0.6340000629425049,
+      "observed_range": [
+        -0.6340000629425049,
+        -0.6340000629425049
+      ]
+    },
+    "Bass": {
+      "type": "float",
+      "default": 0.5169999599456787,
+      "observed_range": [
+        0.5169999599456787,
+        0.5169999599456787
+      ]
+    },
+    "Bright": {
+      "type": "bool",
+      "default": false
+    },
+    "ChVol": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "Drive": {
+      "type": "float",
+      "default": 0.36149999499320984,
+      "observed_range": [
+        0.36149999499320984,
+        0.36149999499320984
+      ]
+    },
+    "EQ": {
+      "type": "bool",
+      "default": true
+    },
+    "EQLevel": {
+      "type": "float",
+      "default": 0.5899999737739563,
+      "observed_range": [
+        0.5899999737739563,
+        0.5899999737739563
+      ]
+    },
+    "Master": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "Mid": {
+      "type": "float",
+      "default": 0.3499999940395355,
+      "observed_range": [
+        0.3499999940395355,
+        0.3499999940395355
+      ]
+    },
+    "MidFreq": {
+      "type": "int",
+      "default": 1,
+      "observed_range": [
+        1,
+        1
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.47349998354911804,
+      "observed_range": [
+        0.47349998354911804,
+        0.47349998354911804
+      ]
+    },
+    "UltraHi": {
+      "type": "bool",
+      "default": false
+    },
+    "UltraLo": {
+      "type": "bool",
+      "default": false
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_AmpSVT4Pro",
+    "@enabled": true,
+    "@type": "amp",
+    "@position": 8,
+    "@path": 0,
+    "150Hz": 0.3780001401901245,
+    "2kHz": -0.6970000267028809,
+    "300Hz": 0.1250000149011612,
+    "33Hz": -0.3429999351501465,
+    "5kHz": -0.5799999833106995,
+    "600Hz": 0.23500001430511475,
+    "80Hz": 0.2550000250339508,
+    "8kHz": -0.8319997787475586,
+    "900Hz": -0.6340000629425049,
+    "Bass": 0.5169999599456787,
+    "Bright": false,
+    "ChVol": 1.0,
+    "Drive": 0.36149999499320984,
+    "EQ": true,
+    "EQLevel": 0.5899999737739563,
+    "Master": 1.0,
+    "Mid": 0.3499999940395355,
+    "MidFreq": 1,
+    "Treble": 0.47349998354911804,
+    "UltraHi": false,
+    "UltraLo": false
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}
