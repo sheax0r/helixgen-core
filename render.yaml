@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: helixgen-mcp
+    runtime: python
+    plan: free
+    pythonVersion: "3.11"
+    buildCommand: |
+      pip install -e .[mcp]
+      helixgen bootstrap
+      mkdir -p "$HOME/.helixgen/library"
+      cp mcp_server/data/chassis.json "$HOME/.helixgen/library/chassis.json"
+    startCommand: python -m mcp_server
+    healthCheckPath: /mcp
