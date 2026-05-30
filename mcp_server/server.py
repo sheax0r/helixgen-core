@@ -52,11 +52,20 @@ def generate_preset(spec: dict[str, Any]) -> EmbeddedResource:
 
     The spec follows the helixgen schema (see https://github.com/sheax0r/helixgen):
     a `name`, optional `author`, 1-2 `paths` each with `blocks`, and optional
-    `snapshots` / `footswitches` / `expression`. The `ir` field on IR blocks
-    is accepted but ignored server-side (no IR registry in this deployment).
+    `snapshots` / `footswitches` / `expression`.
 
-    Returns an MCP `EmbeddedResource` whose `resource.blob` is the
-    base64-encoded `.hsp` bytes; `resource.uri` is `file:///<sanitized-name>.hsp`.
+    **IR caveat:** the `With Pan` family of blocks (model_id prefix
+    `HX2_ImpulseResponse*`) requires a user-IR registry that this deploy
+    does not ship — they will error. Use a `Mic Ir_*` cab block instead
+    (those carry canonical factory IRs and work fine).
+
+    **On param errors:** if the error message says `Unknown param(s)`, call
+    `show_block` with the offending block name to retrieve the correct param
+    names, then retry `generate_preset` with the corrected spec. Param
+    names are case-sensitive.
+
+    Returns an MCP `EmbeddedResource` whose `resource.blob` is the base64-
+    encoded `.hsp` bytes; `resource.uri` is `file:///<sanitized-name>.hsp`.
     """
     result = _tools.generate_preset_handler(_resolve_library(), spec=spec)
     return EmbeddedResource(

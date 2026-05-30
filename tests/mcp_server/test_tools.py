@@ -136,3 +136,63 @@ def test_generate_preset_handler_sanitizes_filename(mcp_library):
     assert "\\" not in result["name"]
     assert ".." not in result["name"]
     assert result["name"].endswith(".hsp")
+
+
+def test_show_block_handler_ambiguous_name_raises_lookuperror(monkeypatch, mcp_library):
+    """Ambiguous block name surfaces the underlying LookupError unchanged."""
+    import pytest as _pytest
+    from mcp_server.tools import show_block_handler
+
+    def _raise_lookup(name_or_id):
+        raise LookupError(f"Block {name_or_id!r} matches multiple library entries")
+
+    monkeypatch.setattr(mcp_library, "find_block", _raise_lookup)
+
+    with _pytest.raises(LookupError):
+        show_block_handler(mcp_library, name_or_id="Anything")
+
+
+def test_generate_preset_handler_rejects_malformed_spec(mcp_library):
+    """A spec missing required keys surfaces SpecError."""
+    import pytest as _pytest
+    from helixgen.spec import SpecError
+    from mcp_server.tools import generate_preset_handler
+
+    # Missing 'paths' is a structural failure caught by parse_spec.
+    spec = {"name": "no paths here"}
+    with _pytest.raises(SpecError):
+        generate_preset_handler(mcp_library, spec=spec)
+
+
+def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
+    """Using a HX2_ImpulseResponse* block without an IR mapping raises GenerateError.
+
+    The deploy ships no user IR registry, so With-Pan-style blocks have no
+    canonical irhash and no spec mapping to resolve to.
+    """
+    import pytest as _pytest
+    from helixgen.generate import GenerateError
+    from mcp_server.tools import generate_preset_handler
+
+    # Find a With-Pan-style block in the library, if present.
+    with_pan_blocks = [
+        b for b in mcp_library.list_blocks()
+        if b.model_id.startswith("HX2_ImpulseResponse")
+    ]
+    if not with_pan_blocks:
+        import pytest as _pytest_mod
+        _pytest_mod.skip("library has no HX2_ImpulseResponse* blocks to test against")
+
+    # Need an amp too so the path is otherwise valid.
+    amps = mcp_library.list_blocks(category="amp")
+    assert amps
+
+    spec = {
+        "name": "needs IR",
+        "paths": [{"blocks": [
+            {"block": amps[0].display_name},
+            {"block": with_pan_blocks[0].display_name},
+        ]}],
+    }
+    with _pytest.raises(GenerateError):
+        generate_preset_handler(mcp_library, spec=spec)
