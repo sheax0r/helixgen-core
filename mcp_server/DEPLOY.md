@@ -42,6 +42,30 @@ time — the bundled catalog is the source of truth for the deployed server.
    `https://helixgen-mcp-xxxx.onrender.com`. Your MCP endpoint is that
    URL + `/mcp`.
 
+### Required env vars (set in the Render dashboard, not in `render.yaml`)
+
+The MCP SDK ships with DNS-rebinding protection that rejects requests
+whose Host or Origin header isn't on an allow-list. Set these on your
+service before the first request, otherwise every call returns
+`Invalid Host header`:
+
+- `MCP_ALLOWED_HOSTS` — comma-separated public hostnames that should
+  reach the server. Examples:
+  - `helixgen-mcp-xxxx.onrender.com` (default Render hostname)
+  - `mcp.example.com` (your custom domain)
+  - `helixgen-mcp-xxxx.onrender.com,mcp.example.com` (both, while you
+    transition)
+- `MCP_ALLOWED_ORIGINS` — comma-separated origins (with scheme) that
+  may call the server. For claude.ai connector use:
+  - `https://claude.ai`
+
+Render → your service → **Environment** → **Add Environment Variable**
+for each. Save; Render redeploys.
+
+These live as env vars (not in the committed `render.yaml`) so the repo
+stays neutral — anyone deploying their own instance fills in their own
+hostnames.
+
 ## Step 2: Add as a custom connector in claude.ai
 
 1. claude.ai → **Settings** → **Connectors** → **Add custom connector**.
