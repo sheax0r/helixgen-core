@@ -26,5 +26,5 @@ venv/
 .claude/settings.local.json
 
 # User-supplied preset exports (not for the repo)
-data/
+/data/
 irs/**/*
