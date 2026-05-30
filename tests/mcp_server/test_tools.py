@@ -66,3 +66,73 @@ def test_show_block_handler_unknown_name_raises_keyerror(mcp_library):
     from mcp_server.tools import show_block_handler
     with _pytest.raises(KeyError):
         show_block_handler(mcp_library, name_or_id="ThisBlockDoesNotExist")
+
+
+def test_generate_preset_handler_returns_base64_hsp(mcp_library):
+    """Returns a dict with mimeType, name, and base64 blob whose bytes start with HSP_MAGIC."""
+    import base64
+    from helixgen.hsp import HSP_MAGIC
+    from mcp_server.tools import generate_preset_handler
+
+    # Pick the first amp and first cab from the library to build a minimal spec.
+    amps = mcp_library.list_blocks(category="amp")
+    cabs = mcp_library.list_blocks(category="cab")
+    assert amps and cabs, "fixture library missing amps/cabs"
+
+    spec = {
+        "name": "MCP Test Preset",
+        "paths": [
+            {
+                "blocks": [
+                    {"block": amps[0].display_name},
+                    {"block": cabs[0].display_name},
+                ]
+            }
+        ],
+    }
+
+    result = generate_preset_handler(mcp_library, spec=spec)
+
+    assert isinstance(result, dict)
+    assert result["mimeType"] == "application/octet-stream"
+    assert result["name"].endswith(".hsp")
+    decoded = base64.b64decode(result["blob"])
+    assert decoded.startswith(HSP_MAGIC), (
+        f"expected HSP_MAGIC prefix; got {decoded[:8]!r}"
+    )
+
+
+def test_generate_preset_handler_rejects_unknown_param(mcp_library):
+    """Bad spec surfaces ParamValidationError unchanged."""
+    import pytest as _pytest
+    from helixgen.generate import ParamValidationError
+    from mcp_server.tools import generate_preset_handler
+
+    amps = mcp_library.list_blocks(category="amp")
+    assert amps
+    spec = {
+        "name": "broken",
+        "paths": [
+            {"blocks": [{"block": amps[0].display_name, "params": {"NoSuchParam": 0.5}}]}
+        ],
+    }
+    with _pytest.raises(ParamValidationError):
+        generate_preset_handler(mcp_library, spec=spec)
+
+
+def test_generate_preset_handler_sanitizes_filename(mcp_library):
+    """Spec names with path separators or unsafe chars yield safe filenames."""
+    from mcp_server.tools import generate_preset_handler
+
+    amps = mcp_library.list_blocks(category="amp")
+    cabs = mcp_library.list_blocks(category="cab")
+    spec = {
+        "name": "../../etc/passwd",
+        "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
+    }
+    result = generate_preset_handler(mcp_library, spec=spec)
+    # No path traversal, no slashes, no null bytes.
+    assert "/" not in result["name"]
+    assert "\\" not in result["name"]
+    assert ".." not in result["name"]
+    assert result["name"].endswith(".hsp")

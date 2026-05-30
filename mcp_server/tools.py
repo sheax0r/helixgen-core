@@ -3,7 +3,18 @@ registration time. Importable + directly testable.
 """
 from __future__ import annotations
 
+import base64
+import json
+import re
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from helixgen.generate import generate_preset
 from helixgen.library import Library
+
+
+_FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def list_blocks_handler(library: Library, category: str | None = None) -> str:
@@ -54,3 +65,39 @@ def show_block_handler(library: Library, name_or_id: str) -> str:
             meta_bits.append(f"values={schema['values']}")
         lines.append(f"  {name}  ({', '.join(meta_bits)})")
     return "\n".join(lines)
+
+
+def _safe_filename(name: str) -> str:
+    """Convert an arbitrary preset name to a safe basename for the .hsp blob.
+
+    Strips path separators, collapses unsafe characters to underscores,
+    and falls back to 'preset' when the result would be empty.
+    """
+    cleaned = _FILENAME_SAFE.sub("_", name).strip("._-")
+    return f"{cleaned or 'preset'}.hsp"
+
+
+def generate_preset_handler(library: Library, spec: dict[str, Any]) -> dict[str, Any]:
+    """Generate a Helix Stadium .hsp from an inline spec dict.
+
+    Returns a dict suitable for an MCP EmbeddedResource:
+      - mimeType: application/octet-stream
+      - name:     safe basename ending in .hsp
+      - blob:     base64-encoded .hsp bytes (magic header + JSON body)
+
+    Underlying SpecError / ParamValidationError / GenerateError propagate;
+    the MCP server boundary translates them to protocol errors.
+    """
+    with tempfile.TemporaryDirectory(prefix="helixgen-mcp-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        spec_path = tmp / "spec.json"
+        out_path = tmp / "preset.hsp"
+        spec_path.write_text(json.dumps(spec))
+        generate_preset(spec_path, out_path, library)
+        raw = out_path.read_bytes()
+
+    return {
+        "mimeType": "application/octet-stream",
+        "name":     _safe_filename(spec.get("name", "preset")),
+        "blob":     base64.b64encode(raw).decode("ascii"),
+    }
