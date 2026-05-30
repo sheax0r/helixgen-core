@@ -27,3 +27,4 @@ venv/
 
 # User-supplied preset exports (not for the repo)
 data/
+irs/**/*
