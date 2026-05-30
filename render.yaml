@@ -3,7 +3,6 @@ services:
     name: helixgen-mcp
     runtime: python
     plan: free
-    pythonVersion: "3.11"
     buildCommand: |
       pip install -e .[mcp]
       mkdir -p "$HOME/.helixgen"
