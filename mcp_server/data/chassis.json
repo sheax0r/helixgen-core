@@ -9,8 +9,8 @@
   "preset": {
     "clip": {
       "end": 10.25,
-      "filename": "2 Guitar Rig",
-      "path": "FACTORY CLIPS",
+      "filename": "",
+      "path": "",
       "start": 0.0
     },
     "cursor": {
@@ -197,7 +197,7 @@
       {
         "color": "white",
         "expsw": 1,
-        "name": "Base tone",
+        "name": "Snap 1",
         "source": 0,
         "tempo": 120.0,
         "valid": true
@@ -205,7 +205,7 @@
       {
         "color": "white",
         "expsw": -1,
-        "name": "LIGHT ODS",
+        "name": "Snap 2",
         "source": 0,
         "tempo": 120.0,
         "valid": true
@@ -213,7 +213,7 @@
       {
         "color": "white",
         "expsw": -1,
-        "name": "GAINZZ",
+        "name": "Snap 3",
         "source": 0,
         "tempo": 120.0,
         "valid": true
@@ -221,7 +221,7 @@
       {
         "color": "white",
         "expsw": 1,
-        "name": "Gain Delay",
+        "name": "Snap 4",
         "source": 0,
         "tempo": 120.0,
         "valid": true
@@ -229,7 +229,7 @@
       {
         "color": "white",
         "expsw": -1,
-        "name": "Clean slap",
+        "name": "Snap 5",
         "source": 0,
         "tempo": 120.0,
         "valid": true
@@ -237,21 +237,21 @@
       {
         "color": "white",
         "expsw": -1,
-        "name": "OD Delays",
+        "name": "Snap 6",
         "source": 0,
         "tempo": 120.0,
         "valid": true
       },
       {
         "expsw": -1,
-        "name": "SNAPSHOT 7",
+        "name": "Snap 7",
         "source": 0,
         "tempo": 120.0,
         "valid": false
       },
       {
         "expsw": -1,
-        "name": "SNAPSHOT 8",
+        "name": "Snap 8",
         "source": 0,
         "tempo": 120.0,
         "valid": false
@@ -261,7 +261,7 @@
       "16843008": {
         "bypass": false,
         "fs_color": "auto",
-        "fs_label": "GTR1->",
+        "fs_label": "",
         "fs_topidx": 0
       },
       "16843009": {
@@ -285,7 +285,7 @@
       "16843012": {
         "bypass": false,
         "fs_color": "red",
-        "fs_label": "G1 Solo",
+        "fs_label": "",
         "fs_topidx": 0
       },
       "16843013": {
@@ -296,7 +296,7 @@
       "16843014": {
         "bypass": false,
         "fs_color": "auto",
-        "fs_label": "GTR2->",
+        "fs_label": "",
         "fs_topidx": 0
       },
       "16843015": {
@@ -320,7 +320,7 @@
       "16843018": {
         "bypass": false,
         "fs_color": "red",
-        "fs_label": "G2 Solo",
+        "fs_label": "",
         "fs_topidx": 0
       },
       "16843019": {
