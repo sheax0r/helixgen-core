@@ -4,25 +4,23 @@ expected content shapes. Does not exercise the HTTP transport.
 """
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 
 def _get_tool_names(server) -> set[str]:
     """Best-effort extraction of registered tool names from a FastMCP app.
 
-    The FastMCP API exposes tools via several paths depending on SDK version;
-    try the common ones in order.
+    Prefer the synchronous `_tool_manager.list_tools()` accessor; fall back
+    to `server.list_tools()` only if it's a regular function (not a coroutine
+    function — calling an async method synchronously would emit an unawaited-
+    coroutine warning).
     """
-    if hasattr(server, "list_tools"):
-        # Most current FastMCP versions: synchronous accessor.
-        try:
-            return {t.name for t in server.list_tools()}
-        except TypeError:
-            pass
-    if hasattr(server, "_tool_manager"):
-        tm = server._tool_manager
-        if hasattr(tm, "list_tools"):
-            return {t.name for t in tm.list_tools()}
+    if hasattr(server, "_tool_manager") and hasattr(server._tool_manager, "list_tools"):
+        return {t.name for t in server._tool_manager.list_tools()}
+    if hasattr(server, "list_tools") and not inspect.iscoroutinefunction(server.list_tools):
+        return {t.name for t in server.list_tools()}
     raise AssertionError(
         "Could not locate registered tools on the FastMCP server — check SDK version."
     )
@@ -72,3 +70,35 @@ def test_list_blocks_via_server(mcp_library, monkeypatch):
 
     assert isinstance(result, str)
     assert result  # non-empty
+
+
+def test_generate_preset_via_server_returns_embedded_resource(mcp_library, monkeypatch):
+    """Server-level generate_preset returns an MCP EmbeddedResource, not a raw dict.
+
+    This is the protocol-correctness check. The raw handler returns a plain
+    dict (tested in test_tools.py); the server wraps it so FastMCP's content
+    conversion produces a binary blob, not a JSON-in-text block.
+    """
+    import base64
+    from mcp.types import EmbeddedResource, BlobResourceContents
+    from helixgen.hsp import HSP_MAGIC
+    from mcp_server import server as srv
+
+    monkeypatch.setattr(srv, "_resolve_library", lambda: mcp_library)
+
+    amps = mcp_library.list_blocks(category="amp")
+    cabs = mcp_library.list_blocks(category="cab")
+    spec = {
+        "name": "Protocol Test",
+        "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
+    }
+
+    tool = srv.app._tool_manager.get_tool("generate_preset")
+    result = tool.fn(spec=spec)
+
+    assert isinstance(result, EmbeddedResource), f"got {type(result).__name__}"
+    assert isinstance(result.resource, BlobResourceContents)
+    assert result.resource.mimeType == "application/octet-stream"
+    assert str(result.resource.uri).endswith(".hsp")
+    decoded = base64.b64decode(result.resource.blob)
+    assert decoded.startswith(HSP_MAGIC)

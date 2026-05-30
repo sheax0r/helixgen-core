@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import BlobResourceContents, EmbeddedResource
 
 from helixgen.library import Library, default_library_path
 from mcp_server import tools as _tools
@@ -46,7 +47,7 @@ def show_block(name_or_id: str) -> str:
 
 
 @app.tool()
-def generate_preset(spec: dict[str, Any]) -> dict[str, Any]:
+def generate_preset(spec: dict[str, Any]) -> EmbeddedResource:
     """Generate a Helix Stadium .hsp preset from an inline JSON spec.
 
     The spec follows the helixgen schema (see https://github.com/sheax0r/helixgen):
@@ -54,7 +55,15 @@ def generate_preset(spec: dict[str, Any]) -> dict[str, Any]:
     `snapshots` / `footswitches` / `expression`. The `ir` field on IR blocks
     is accepted but ignored server-side (no IR registry in this deployment).
 
-    Returns a dict with `mimeType` (application/octet-stream), `name`
-    (safe filename ending in .hsp), and `blob` (base64-encoded .hsp bytes).
+    Returns an MCP `EmbeddedResource` whose `resource.blob` is the
+    base64-encoded `.hsp` bytes; `resource.uri` is `file:///<sanitized-name>.hsp`.
     """
-    return _tools.generate_preset_handler(_resolve_library(), spec=spec)
+    result = _tools.generate_preset_handler(_resolve_library(), spec=spec)
+    return EmbeddedResource(
+        type="resource",
+        resource=BlobResourceContents(
+            uri=f"file:///{result['name']}",
+            mimeType=result["mimeType"],
+            blob=result["blob"],
+        ),
+    )
