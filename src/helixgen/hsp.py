@@ -120,6 +120,8 @@ def _slot_to_hlx_block(
         out["@path"] = block_meta["path"]
     if "version" in slot and slot["version"] not in (None, 0):
         out["@version"] = slot["version"]
+    if "irhash" in slot:
+        out["irhash"] = slot["irhash"]
 
     for name, wrapped in (slot.get("params") or {}).items():
         out[name] = _unwrap_value(wrapped)

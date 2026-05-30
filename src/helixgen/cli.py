@@ -1,6 +1,7 @@
 """CLI entry points for helixgen."""
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 
@@ -8,7 +9,9 @@ import click
 
 from helixgen.bootstrap import bootstrap
 from helixgen.generate import GenerateError, ParamValidationError, generate_preset
+from helixgen.hsp import HSP_MAGIC, HSP_MAGIC_LEN
 from helixgen.ingest import IngestSummary, ingest_path
+from helixgen.ir import IrMapping, IrMappingError, default_irs_path, extract_ir_hashes
 from helixgen.library import Library, default_library_path
 from helixgen.spec import SpecError
 
@@ -26,6 +29,21 @@ def _library_option(f):
 
 def _resolved_library(library_path: Path | None) -> Library:
     return Library(library_path or default_library_path())
+
+
+def _irs_option(f):
+    return click.option(
+        "--irs-dir",
+        "irs_dir",
+        envvar="HELIXGEN_IRS",
+        type=click.Path(file_okay=False, path_type=Path),
+        default=None,
+        help="IRs directory. Defaults to ~/.helixgen/irs/ or $HELIXGEN_IRS.",
+    )(f)
+
+
+def _resolved_irs(irs_dir: Path | None) -> IrMapping:
+    return IrMapping.load(irs_dir if irs_dir is not None else default_irs_path())
 
 
 def _format_summary(summary: IngestSummary, library: Library) -> str:
@@ -70,11 +88,18 @@ def ingest_cmd(path: Path, library_path: Path | None) -> None:
 @click.argument("spec_path", type=click.Path(exists=True, path_type=Path))
 @click.option("-o", "--output", "output_path", type=click.Path(path_type=Path), required=True)
 @_library_option
-def generate_cmd(spec_path: Path, output_path: Path, library_path: Path | None) -> None:
-    """Generate a .hlx preset from a JSON tone spec."""
+@_irs_option
+def generate_cmd(
+    spec_path: Path,
+    output_path: Path,
+    library_path: Path | None,
+    irs_dir: Path | None,
+) -> None:
+    """Generate a .hsp/.hlx preset from a JSON tone spec."""
     library = _resolved_library(library_path)
+    irs = _resolved_irs(irs_dir)
     try:
-        generate_preset(spec_path, output_path, library)
+        generate_preset(spec_path, output_path, library, irs=irs)
     except (KeyError, LookupError, SpecError, ParamValidationError, GenerateError, FileNotFoundError) as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"Wrote {output_path}")
@@ -135,3 +160,45 @@ def bootstrap_cmd(ref: str, library_path: Path | None) -> None:
     except FileNotFoundError as e:
         raise click.ClickException(str(e)) from e
     click.echo(_format_summary(summary, library))
+
+
+@cli.command(name="register-irs")
+@click.argument("preset_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("wav_paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--force", is_flag=True, default=False, help="Overwrite existing hash mappings.")
+@_irs_option
+def register_irs_cmd(
+    preset_path: Path,
+    wav_paths: tuple[Path, ...],
+    force: bool,
+    irs_dir: Path | None,
+) -> None:
+    """Bind irhash values from a .hsp registration preset to local .wav files (in block order)."""
+    raw = preset_path.read_bytes()
+    if not raw.startswith(HSP_MAGIC):
+        raise click.ClickException(f"{preset_path} is not a Stadium .hsp file")
+    body = json.loads(raw[HSP_MAGIC_LEN:])
+    hashes = extract_ir_hashes(body)
+
+    if len(hashes) != len(wav_paths):
+        raise click.ClickException(
+            f"preset has {len(hashes)} IR blocks, got {len(wav_paths)} wav arg(s)"
+        )
+
+    mapping = _resolved_irs(irs_dir)
+    try:
+        for h, wav in zip(hashes, wav_paths):
+            mapping.register(h, wav, force=force)
+    except IrMappingError as e:
+        raise click.ClickException(str(e)) from e
+    mapping.save()
+    click.echo(f"Registered {len(hashes)} IR(s) to {mapping.irs_dir / 'mapping.json'}")
+
+
+@cli.command(name="list-irs")
+@_irs_option
+def list_irs_cmd(irs_dir: Path | None) -> None:
+    """List registered IR hashes and their wav paths."""
+    mapping = _resolved_irs(irs_dir)
+    for hash_ in sorted(mapping.entries):
+        click.echo(f"{hash_}  {mapping.entries[hash_]}")

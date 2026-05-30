@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import datetime
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,10 +24,42 @@ from helixgen.ingest import (
     PRESET_DSP_KEYS,
     RAW_BLOCK_CAB_LINK_KEY,
     RAW_BLOCK_MODEL_KEY,
+    RAW_BLOCK_NON_PARAM_KEYS,
     RAW_BLOCK_SYSTEM_KEY_PREFIX,
 )
+from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.library import Block, Library
 from helixgen.spec import Spec, parse_spec
+
+
+_HASH_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+
+
+def _resolve_irhash(block_default: str | None, spec_ir: str | None, irs: "IrMapping") -> str:
+    """Decide which irhash to emit on an IR slot.
+
+    Priority: spec_ir (resolved via IrMapping) > block_default > error.
+    """
+    from helixgen.ir import IrMapping, IrMappingError  # local import to avoid cycle
+
+    if spec_ir is not None:
+        if _HASH_RE.fullmatch(spec_ir):
+            try:
+                irs.resolve_by_hash(spec_ir.lower())
+            except IrMappingError as e:
+                raise GenerateError(str(e)) from e
+            return spec_ir.lower()
+        try:
+            h, _ = irs.resolve_by_basename(spec_ir)
+            return h
+        except IrMappingError as e:
+            raise GenerateError(str(e)) from e
+    if block_default is not None:
+        return block_default
+    raise GenerateError(
+        "IR block requires an `ir` field (no canonical irhash available); "
+        "see `helixgen list-irs`"
+    )
 
 
 ResolvedPath = list[tuple[Block, dict[str, Any]]]
@@ -72,7 +105,7 @@ def _is_cab(block: Block) -> bool:
     return block.category == "cab"
 
 
-def compose_preset(spec: Spec, library: Library, *, source: str) -> dict[str, Any]:
+def compose_preset(spec: Spec, library: Library, *, source: str, irs: "IrMapping | None" = None) -> dict[str, Any]:
     """Build a preset dict from spec + library. Shape-aware: dispatches by
     chassis shape so .hlx and .hsp libraries each produce native output.
     """
@@ -87,7 +120,7 @@ def compose_preset(spec: Spec, library: Library, *, source: str) -> dict[str, An
     if shape == "hlx":
         return _compose_preset_hlx(spec, library, source=source, chassis=chassis)
     if shape == "hsp":
-        return _compose_preset_hsp(spec, library, source=source, chassis=chassis)
+        return _compose_preset_hsp(spec, library, source=source, chassis=chassis, irs=irs)
     raise GenerateError(
         f"Unknown chassis shape {shape!r}. Re-ingest from a real export."
     )
@@ -331,6 +364,7 @@ def _to_hsp_bnn(
     param_overrides: dict[str, list[Any]] | None = None,
     fs_controller: dict[str, Any] | None = None,
     exp_controllers: dict[str, dict[str, Any]] | None = None,
+    irhash: str | None = None,
 ) -> dict[str, Any]:
     """Build one Stadium bNN dict from a library Block and user param overrides.
 
@@ -338,8 +372,10 @@ def _to_hsp_bnn(
     bool/None — None means "use the base @enabled value." `param_overrides`
     maps param-name → per-snapshot value list. `fs_controller`, when provided,
     attaches a footswitch bypass controller dict to the bNN-level `@enabled`
-    wrapper. Any may be None / empty when no snapshots or footswitches touch
-    this block.
+    wrapper. `exp_controllers`, when provided, attaches per-param expression-
+    pedal controller dicts onto matching param values. For IR blocks, `irhash`
+    is emitted directly onto the slot dict. Any may be None / empty when not
+    relevant.
     """
     flat = copy.deepcopy(block.exemplar)
     for k, v in user_params.items():
@@ -353,9 +389,15 @@ def _to_hsp_bnn(
     if "@version" in flat:
         slot_inner["version"] = flat["@version"]
 
+    # IR blocks carry a slot-level irhash identifying the loaded impulse response.
+    if irhash is not None:
+        slot_inner["irhash"] = irhash
+
     params: dict[str, Any] = {}
     for k, v in flat.items():
         if not isinstance(k, str) or k.startswith(RAW_BLOCK_SYSTEM_KEY_PREFIX):
+            continue
+        if k in RAW_BLOCK_NON_PARAM_KEYS:
             continue
         wrapped = _wrap_value_with_snapshots(v, (param_overrides or {}).get(k))
         if exp_controllers and k in exp_controllers:
@@ -509,13 +551,22 @@ def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
 
 
 def _compose_preset_hsp(
-    spec: Spec, library: Library, *, source: str, chassis: dict[str, Any]
+    spec: Spec, library: Library, *, source: str, chassis: dict[str, Any], irs: "IrMapping | None" = None
 ) -> dict[str, Any]:
     """Compose a .hsp-shape preset. See module docstring for shape notes."""
     resolved = resolve_blocks(spec, library)
     for chain in resolved:
         for block, user_params in chain:
             validate_params(block, user_params)
+
+    # Validate: reject `ir` field on non-IR blocks.
+    for path_entry, chain in zip(spec.paths, resolved):
+        for block_entry, (block, _) in zip(path_entry.blocks, chain):
+            if block_entry.ir is not None and not block.model_id.startswith(IR_MODEL_PREFIX):
+                raise GenerateError(
+                    f"block {block.display_name!r} is not an IR block; "
+                    f"remove the 'ir' field or change the block"
+                )
 
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
     device_id = _chassis_device_id(chassis)
@@ -554,9 +605,19 @@ def _compose_preset_hsp(
                 f"Path {path_index} has {len(chain)} blocks; only "
                 f"{len(_HSP_BNN_RANGE)} user slots (b01..b12) available."
             )
+        path_entry = spec.paths[path_index]
         for chain_idx, (block, user_params) in enumerate(chain):
             slot_index = chain_idx + 1
             key = f"b{slot_index:02d}"
+            block_entry = path_entry.blocks[chain_idx]
+            # Resolve irhash for IR blocks: spec.ir > canonical > error.
+            resolved_irhash: str | None = None
+            if block.model_id.startswith(IR_MODEL_PREFIX):
+                resolved_irhash = _resolve_irhash(
+                    block_default=block.default_irhash,
+                    spec_ir=block_entry.ir,
+                    irs=irs,
+                )
             path_dict[key] = _to_hsp_bnn(
                 block, user_params,
                 position=slot_index,
@@ -569,6 +630,7 @@ def _compose_preset_hsp(
                     for (pi, ci, pname), ctrl in exp_map.items()
                     if pi == path_index and ci == chain_idx
                 } or None,
+                irhash=resolved_irhash,
             )
 
     all_source_ids = fs_source_ids | exp_source_ids
@@ -591,18 +653,28 @@ def _compose_preset_hsp(
     return preset
 
 
-def generate_preset(spec_path: Path, output_path: Path, library: Library) -> Path:
+def generate_preset(
+    spec_path: Path,
+    output_path: Path,
+    library: Library,
+    irs: "IrMapping | None" = None,
+) -> Path:
     """Top-level: read spec from disk, compose, write output.
 
     Output format follows the chassis shape: .hlx → pretty JSON; .hsp →
     8-byte magic header + compact JSON (so a Stadium can re-read it).
     """
+    from helixgen.ir import IrMapping  # local import to avoid cycle
+
     spec_path = Path(spec_path)
     output_path = Path(output_path)
 
+    if irs is None:
+        irs = IrMapping.load()  # default location; returns empty mapping if no file
+
     raw = json.loads(spec_path.read_text())
     spec = parse_spec(raw, source=str(spec_path))
-    preset = compose_preset(spec, library, source=str(spec_path))
+    preset = compose_preset(spec, library, source=str(spec_path), irs=irs)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shape = library.load_chassis().get(CHASSIS_SHAPE_KEY, "hlx")

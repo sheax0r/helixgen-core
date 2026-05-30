@@ -5,6 +5,8 @@ import re
 from enum import Enum
 from typing import Any
 
+from helixgen.ir import IR_MODEL_PREFIX
+
 
 # ---------------------------------------------------------------------------
 # Wire-format constants for the real Helix .hlx export shape.
@@ -20,6 +22,10 @@ RAW_BLOCK_CATEGORY_KEY = "@category"    # block JSON: optional category override
 RAW_BLOCK_NAME_KEY = "@name"            # block JSON: optional human-readable name
 RAW_BLOCK_CAB_LINK_KEY = "@cab"         # amp block: name of paired cab sibling
 RAW_BLOCK_SYSTEM_KEY_PREFIX = "@"       # any key starting with this is metadata, not a param
+
+# Slot-level metadata fields (not user-tunable params) that share the raw block dict
+# with the actual params. They must be filtered from extract_schema.
+RAW_BLOCK_NON_PARAM_KEYS = frozenset({"irhash"})
 
 PRESET_TONE_KEY = ("data", "tone")      # full preset: path to dsp0/dsp1 root
 PRESET_DSP_KEYS = ("dsp0", "dsp1")
@@ -180,6 +186,8 @@ def extract_schema(raw_block: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for key, value in raw_block.items():
         if isinstance(key, str) and key.startswith(RAW_BLOCK_SYSTEM_KEY_PREFIX):
             continue
+        if key in RAW_BLOCK_NON_PARAM_KEYS:
+            continue
         type_name = _value_type_name(value)
         entry: dict[str, Any] = {"type": type_name, "default": value}
         if type_name in ("int", "float"):
@@ -252,6 +260,7 @@ def block_from_raw(raw: dict[str, Any], source_info: dict[str, str]) -> Block:
     category = raw.get(RAW_BLOCK_CATEGORY_KEY) or infer_category(model_id)
     display_name = raw.get(RAW_BLOCK_NAME_KEY) or humanize_model_id(model_id)
     params = extract_schema(raw)
+    default_irhash = raw.get("irhash") if str(model_id).startswith(IR_MODEL_PREFIX) else None
     return Block(
         model_id=model_id,
         category=category,
@@ -260,6 +269,7 @@ def block_from_raw(raw: dict[str, Any], source_info: dict[str, str]) -> Block:
         params=params,
         exemplar=raw,
         first_seen=dict(source_info),
+        default_irhash=default_irhash,
     )
 
 

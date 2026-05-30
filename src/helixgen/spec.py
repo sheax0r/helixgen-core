@@ -13,6 +13,7 @@ class SpecError(ValueError):
 class BlockEntry:
     block: str
     params: dict[str, Any] = field(default_factory=dict)
+    ir: str | None = None
 
 
 @dataclass
@@ -316,4 +317,8 @@ def _parse_block_entry(data: Any, *, source: str) -> BlockEntry:
     if not isinstance(params, dict):
         raise _err(source, '"params" must be an object if provided.')
 
-    return BlockEntry(block=name, params=dict(params))
+    ir = data.get("ir")
+    if ir is not None and not isinstance(ir, str):
+        raise _err(source, '"ir" must be a string if provided.')
+
+    return BlockEntry(block=name, params=dict(params), ir=ir)
