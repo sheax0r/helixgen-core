@@ -139,6 +139,11 @@ This is a one-off data-prep step. The chassis is mechanical (path layout, defaul
 
 - [ ] **Step 2.1: Run the scrub script as a one-liner.**
 
+The chassis carries user-attributable strings in *four* places that all need
+scrubbing, not just `meta`. A real ingest captures snapshot names,
+footswitch labels, and the source preset's clip filename — all of which
+must be replaced with generic / empty values before publishing.
+
 ```bash
 python -c "
 import json
@@ -148,9 +153,22 @@ src = Path.home() / '.helixgen' / 'library' / 'chassis.json'
 dst = Path('mcp_server/data/chassis.json')
 
 chassis = json.loads(src.read_text())
+
 chassis['meta']['name'] = ''
 chassis['meta']['info'] = ''
 chassis['meta'].pop('author', None)
+
+for i, snap in enumerate(chassis.get('preset', {}).get('snapshots', [])):
+    snap['name'] = f'Snap {i + 1}'
+
+for src_entry in chassis.get('preset', {}).get('sources', {}).values():
+    if isinstance(src_entry, dict) and 'fs_label' in src_entry:
+        src_entry['fs_label'] = ''
+
+clip = chassis.get('preset', {}).get('clip')
+if isinstance(clip, dict):
+    clip['filename'] = ''
+    clip['path'] = ''
 
 dst.parent.mkdir(parents=True, exist_ok=True)
 dst.write_text(json.dumps(chassis, indent=2))
@@ -158,7 +176,7 @@ print(f'wrote {dst} ({dst.stat().st_size} bytes)')
 "
 ```
 
-Expected output: `wrote mcp_server/data/chassis.json (5000-6000 bytes)` (size will vary slightly).
+Expected output: `wrote mcp_server/data/chassis.json (<size> bytes)` — size varies (~8-10 KB typical).
 
 - [ ] **Step 2.2: Verify the scrubbed file has the right shape.**
 
@@ -168,11 +186,26 @@ python -c "
 import json
 from pathlib import Path
 c = json.loads(Path('mcp_server/data/chassis.json').read_text())
+
 assert c['meta']['name'] == '', f'name not scrubbed: {c[\"meta\"][\"name\"]!r}'
 assert c['meta']['info'] == '', f'info not scrubbed: {c[\"meta\"][\"info\"]!r}'
 assert 'author' not in c['meta'], 'author still present'
 assert c['_helixgen_chassis_shape'] == 'hsp', 'wrong chassis shape'
 assert c['meta'].get('device_id'), 'device_id missing — FS/EXP wiring will fail'
+
+snaps = c.get('preset', {}).get('snapshots', [])
+for i, s in enumerate(snaps):
+    assert s['name'] == f'Snap {i + 1}', f'snapshot {i}: {s[\"name\"]!r}'
+
+for sid, entry in c.get('preset', {}).get('sources', {}).items():
+    if isinstance(entry, dict) and 'fs_label' in entry:
+        assert entry['fs_label'] == '', f'source {sid} fs_label: {entry[\"fs_label\"]!r}'
+
+clip = c.get('preset', {}).get('clip')
+if isinstance(clip, dict):
+    assert clip.get('filename', '') == ''
+    assert clip.get('path', '') == ''
+
 print('ok')
 "
 ```
