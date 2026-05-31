@@ -1,4 +1,4 @@
-"""Protocol-level smoke tests: verify the FastMCP server registers the three
+"""Protocol-level smoke tests: verify the FastMCP server registers the four
 tools with the right names + arg schemas, and that calling them returns the
 expected content shapes. Does not exercise the HTTP transport.
 """
@@ -26,12 +26,12 @@ def _get_tool_names(server) -> set[str]:
     )
 
 
-def test_server_registers_three_tools():
-    """The server registers exactly the three documented tools."""
+def test_server_registers_four_tools():
+    """The server registers exactly the four documented tools."""
     from mcp_server.server import app
 
     names = _get_tool_names(app)
-    assert names == {"list_blocks", "show_block", "generate_preset"}, (
+    assert names == {"list_blocks", "show_block", "generate_preset", "list_irs"}, (
         f"unexpected tool set: {names}"
     )
 

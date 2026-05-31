@@ -1,4 +1,4 @@
-"""FastMCP server wiring: registers the three helixgen tools.
+"""FastMCP server wiring: registers the four helixgen tools.
 
 Each tool delegates to the corresponding pure-Python handler in
 `mcp_server.tools`. The library is resolved per-request via the standard
@@ -76,3 +76,17 @@ def generate_preset(spec: dict[str, Any]) -> EmbeddedResource:
             blob=result["blob"],
         ),
     )
+
+
+@app.tool()
+def list_irs() -> str:
+    """List user impulse responses (IRs) registered with helixgen.
+
+    Returns text with one line per IR: `<hash>  <wav-path>`, or an empty
+    string when no IRs are registered. **On the public claude.ai deployment
+    this is always empty** — IRs are local-only. Call this before deciding
+    between an IR cab (`With Pan` + `ir`) vs. a stock cab (`Mic Ir_*`):
+    empty result → use a stock cab; non-empty → an IR is available and can
+    be referenced by basename (e.g. `"YA VX30 212 BLU Mix 01.wav"`).
+    """
+    return _tools.list_irs_handler()

@@ -196,3 +196,28 @@ def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
     }
     with _pytest.raises(GenerateError):
         generate_preset_handler(mcp_library, spec=spec)
+
+
+def test_list_irs_handler_empty_when_no_mapping(tmp_path):
+    """An IRs dir with no mapping.json returns empty string."""
+    from mcp_server.tools import list_irs_handler
+    assert list_irs_handler(irs_dir=tmp_path) == ""
+
+
+def test_list_irs_handler_returns_sorted_lines(tmp_path):
+    """When entries exist, returns one `<hash>  <path>` line per entry, sorted."""
+    import json
+    from mcp_server.tools import list_irs_handler
+
+    mapping = {
+        "ffffffffffffffffffffffffffffffff": "z_last.wav",
+        "00000000000000000000000000000000": "a_first.wav",
+    }
+    (tmp_path / "mapping.json").write_text(json.dumps(mapping))
+
+    result = list_irs_handler(irs_dir=tmp_path)
+    lines = result.splitlines()
+    assert lines == [
+        "00000000000000000000000000000000  a_first.wav",
+        "ffffffffffffffffffffffffffffffff  z_last.wav",
+    ]

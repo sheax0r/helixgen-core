@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from helixgen.generate import generate_preset
+from helixgen.ir import IrMapping
 from helixgen.library import Library
 
 
@@ -101,3 +102,18 @@ def generate_preset_handler(library: Library, spec: dict[str, Any]) -> dict[str,
         "name":     _safe_filename(spec.get("name", "preset")),
         "blob":     base64.b64encode(raw).decode("ascii"),
     }
+
+
+def list_irs_handler(irs_dir: Path | None = None) -> str:
+    """Return registered user IRs as text, matching `helixgen list-irs`.
+
+    One line per IR: `<hash>  <wav-path>`, sorted by hash. Empty string when
+    no IRs are registered or the mapping file is absent — callers branch on
+    truthiness to decide whether to use IRs vs. stock cabs.
+    """
+    mapping = IrMapping.load(irs_dir)
+    if not mapping.entries:
+        return ""
+    return "\n".join(
+        f"{h}  {mapping.entries[h]}" for h in sorted(mapping.entries)
+    )

@@ -1,13 +1,15 @@
 """Entry point for `python -m mcp_server`.
 
-Binds the FastMCP app over Streamable HTTP on 0.0.0.0:$PORT (Render injects
-PORT at runtime; defaults to 10000 locally). In mcp 1.27.2 the host/port live
-on app.settings (not on app.run()), so we mutate the settings before run().
+Two transports, picked by the MCP_TRANSPORT env var:
 
-The MCP SDK enables DNS-rebinding protection by default, which rejects any
-request whose Host or Origin header isn't on an allow-list. For public
-deployments behind a custom domain, set MCP_ALLOWED_HOSTS (CSV) and
-MCP_ALLOWED_ORIGINS (CSV) env vars; unset values keep the SDK defaults.
+- `stdio` (Claude Code spawning the server as a subprocess) — no host/port,
+  no allow-list config. The harness pipes JSON-RPC over stdin/stdout.
+- `streamable-http` (default; the Render deploy) — binds 0.0.0.0:$PORT, with
+  DNS-rebinding protection configurable via MCP_ALLOWED_HOSTS (CSV) and
+  MCP_ALLOWED_ORIGINS (CSV).
+
+In mcp 1.27.2 the host/port live on app.settings (not on app.run()), so we
+mutate the settings before run().
 """
 from __future__ import annotations
 
@@ -24,6 +26,12 @@ def _csv_env(name: str) -> list[str]:
 
 
 def main() -> None:
+    transport = os.environ.get("MCP_TRANSPORT", "streamable-http")
+
+    if transport == "stdio":
+        app.run(transport="stdio")
+        return
+
     app.settings.host = "0.0.0.0"
     app.settings.port = int(os.environ.get("PORT", "10000"))
 
