@@ -218,6 +218,8 @@ def _format_for_subtype(subtype: int) -> int:
 
 
 def _next_pow2(n: int) -> int:
+    if n <= 1:
+        return 1
     p = 1
     while p < n:
         p *= 2
@@ -234,38 +236,51 @@ def compute_stadium_irhash(wav_path: Path | str) -> str:
 
     Currently supports 48 kHz sources (the fast path Stadium takes for
     most IR libraries). Non-48 kHz sources go through libsamplerate in
-    Stadium and are not yet supported here.
+    Stadium and are not yet supported here. Stereo input is reduced to
+    the left channel, matching Stadium's import behavior.
     """
     sf = _load_libsndfile()
     wav_path = Path(wav_path)
     if not wav_path.is_file():
         raise FileNotFoundError(f"wav file not found: {wav_path}")
 
-    src_info = _SF_INFO()
-    src = sf.sf_open(str(wav_path).encode(), _SFM_READ, ctypes.byref(src_info))
-    if not src:
-        raise RuntimeError(f"libsndfile failed to open {wav_path}")
-    if src_info.samplerate != 48000:
-        sf.sf_close(src)
-        raise NotImplementedError(
-            f"only 48 kHz sources are supported (got {src_info.samplerate} Hz); "
-            "Stadium uses libsamplerate for other rates, not yet ported"
-        )
-    src_subtype = src_info.format & 0xFFFF
-    src_channels = src_info.channels
-    out_format = _format_for_subtype(src_subtype)
-
     tmp1 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp1.close()
     tmp2 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp2.close()
+    open_handles: list = []  # libsndfile handles to close on any exit path
+
+    def _close_all():
+        for h in open_handles:
+            try:
+                sf.sf_close(h)
+            except Exception:
+                pass
+        open_handles.clear()
+
     try:
         # --- Phase 1: stream-copy source floats to tmp1 as same bit depth ---
+        src_info = _SF_INFO()
+        src = sf.sf_open(str(wav_path).encode(), _SFM_READ, ctypes.byref(src_info))
+        if not src:
+            raise RuntimeError(
+                f"libsndfile could not read {wav_path} (not a valid WAV?)"
+            )
+        open_handles.append(src)
+        if src_info.samplerate != 48000:
+            raise NotImplementedError(
+                f"only 48 kHz sources are supported (got {src_info.samplerate} Hz); "
+                "resample to 48 kHz (e.g. `sox in.wav -r 48000 out.wav`) and retry"
+            )
+        src_subtype = src_info.format & 0xFFFF
+        src_channels = src_info.channels
+        out_format = _format_for_subtype(src_subtype)
+
         t1_info = _SF_INFO(0, 48000, src_channels, out_format, 0, 0)
         t1 = sf.sf_open(tmp1.name.encode(), _SFM_WRITE, ctypes.byref(t1_info))
         if not t1:
-            sf.sf_close(src)
             raise RuntimeError("libsndfile failed to open tmp1 for write")
+        open_handles.append(t1)
         sf.sf_command(t1, _SFC_SET_ADD_PEAK_CHUNK, None, 0)
         chunk = (ctypes.c_float * (1024 * src_channels))()
         while True:
@@ -273,19 +288,19 @@ def compute_stadium_irhash(wav_path: Path | str) -> str:
             if n <= 0:
                 break
             sf.sf_writef_float(t1, chunk, n)
-        sf.sf_close(src)
-        sf.sf_close(t1)
+        _close_all()
 
         # --- Phase 2: re-read tmp1, pick left channel, truncate/pad, fade ---
         rd_info = _SF_INFO()
         rd = sf.sf_open(tmp1.name.encode(), _SFM_READ, ctypes.byref(rd_info))
         if not rd:
             raise RuntimeError("libsndfile failed to reopen tmp1 for read")
+        open_handles.append(rd)
         n_frames = rd_info.frames
         n_ch = rd_info.channels
         all_buf = (ctypes.c_float * (n_frames * n_ch))()
         sf.sf_readf_float(rd, all_buf, n_frames)
-        sf.sf_close(rd)
+        _close_all()
 
         # left channel only when stereo (Stadium deinterleaves and discards R)
         mono = (ctypes.c_float * n_frames)()
@@ -301,7 +316,7 @@ def compute_stadium_irhash(wav_path: Path | str) -> str:
         elif (n_frames & (n_frames - 1)) == 0 and n_frames > 0:
             out_len = n_frames
         else:
-            out_len = _next_pow2(max(n_frames, 1))
+            out_len = _next_pow2(n_frames)
 
         out = (ctypes.c_float * out_len)()
         copy_n = min(n_frames, out_len)
@@ -318,9 +333,10 @@ def compute_stadium_irhash(wav_path: Path | str) -> str:
         t2 = sf.sf_open(tmp2.name.encode(), _SFM_WRITE, ctypes.byref(t2_info))
         if not t2:
             raise RuntimeError("libsndfile failed to open tmp2 for write")
+        open_handles.append(t2)
         sf.sf_command(t2, _SFC_SET_ADD_PEAK_CHUNK, None, 0)
         sf.sf_writef_float(t2, out, out_len)
-        sf.sf_close(t2)
+        _close_all()
 
         # --- Phase 4: MD5 of tmp2's data chunk content ---
         with open(tmp2.name, "rb") as f:
@@ -331,6 +347,7 @@ def compute_stadium_irhash(wav_path: Path | str) -> str:
         sz = struct.unpack("<I", raw[di + 4:di + 8])[0]
         return hashlib.md5(raw[di + 8:di + 8 + sz]).hexdigest()
     finally:
+        _close_all()
         for p in (tmp1.name, tmp2.name):
             try:
                 os.unlink(p)

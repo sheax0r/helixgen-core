@@ -17,25 +17,45 @@ def _libsndfile_available() -> bool:
         from helixgen.ir import _load_libsndfile
         _load_libsndfile()
         return True
-    except Exception:
+    except (OSError, RuntimeError):
         return False
 
 
-def _write_synth_wav(path: Path, n_frames: int = 64) -> Path:
-    """Write a tiny PCM_24 48 kHz mono WAV with a single non-zero sample.
+def _write_synth_wav(
+    path: Path,
+    n_frames: int = 64,
+    *,
+    sr: int = 48000,
+    channels: int = 1,
+    bps: int = 24,
+    samples_per_channel: list[list[int]] | None = None,
+) -> Path:
+    """Write a tiny WAV. Defaults: PCM_24 48 kHz mono, single non-zero sample.
 
     Synthetic so we never need to ship copyrighted IR fixtures.
+
+    `samples_per_channel`: optional [[ch0_s0, ch0_s1, ...], [ch1_s0, ...]] to
+    set specific sample values per channel (used by stereo tests).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    sr, ch, bps = 48000, 1, 24
-    block_align = ch * bps // 8
+    block_align = channels * bps // 8
     byte_rate = sr * block_align
+    bytes_per_samp = bps // 8
+
     data = bytearray(n_frames * block_align)
-    # one non-zero sample at index 0: int24 value 0x123456 (= 1193046)
-    data[0:3] = b"\x56\x34\x12"
+    if samples_per_channel is None:
+        # default: int24 value 0x123456 at channel 0, frame 0
+        data[0:bytes_per_samp] = (0x123456).to_bytes(bytes_per_samp, "little", signed=True)
+    else:
+        for frame_i in range(n_frames):
+            for ch_i in range(channels):
+                v = samples_per_channel[ch_i][frame_i] if frame_i < len(samples_per_channel[ch_i]) else 0
+                off = frame_i * block_align + ch_i * bytes_per_samp
+                data[off:off + bytes_per_samp] = v.to_bytes(bytes_per_samp, "little", signed=True)
+
     fmt_chunk = (
         b"fmt " + struct.pack("<I", 16) +
-        struct.pack("<HHIIHH", 1, ch, sr, byte_rate, block_align, bps)
+        struct.pack("<HHIIHH", 1, channels, sr, byte_rate, block_align, bps)
     )
     data_chunk = b"data" + struct.pack("<I", len(data)) + bytes(data)
     body = b"WAVE" + fmt_chunk + data_chunk
@@ -170,6 +190,73 @@ def test_register_irs_auto_handles_multiple_wavs(tmp_path, monkeypatch):
     mapping = json.loads((irs_dir / "mapping.json").read_text())
     assert mapping[h1] == str(wav1)
     assert mapping[h2] == str(wav2)
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_compute_stadium_irhash_stereo_reduces_to_left_channel(tmp_path):
+    """Stereo input: only left channel is hashed (matches Stadium import)."""
+    from helixgen.ir import compute_stadium_irhash
+
+    # stereo: L = [0x123456, 0, 0, ...], R = [0x654321, 0, 0, ...]
+    # if Stadium picked R or summed L+R, the hash would differ
+    stereo = _write_synth_wav(
+        tmp_path / "stereo.wav",
+        n_frames=64,
+        channels=2,
+        samples_per_channel=[[0x123456], [0x654321]],
+    )
+    mono_left = _write_synth_wav(
+        tmp_path / "mono_left.wav",
+        n_frames=64,
+        channels=1,
+        samples_per_channel=[[0x123456]],
+    )
+    assert compute_stadium_irhash(stereo) == compute_stadium_irhash(mono_left)
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_compute_stadium_irhash_truncates_to_8192_with_fade(tmp_path):
+    """For >8191-frame source: output is 8192 samples with exp fade on tail."""
+    from helixgen.ir import compute_stadium_irhash
+
+    # 10000-frame input → truncated to 8192. Make samples 8064..8191 non-zero
+    # so the fade actually changes them — that proves the fade ran.
+    samples = [0] * 8064 + [0x400000] * (10000 - 8064)
+    long_wav = _write_synth_wav(
+        tmp_path / "long.wav",
+        n_frames=10000,
+        samples_per_channel=[samples],
+    )
+    # And a control file with same first 8064 samples but zeros in the fade
+    # region — its hash should differ because fade was applied above.
+    samples_no_tail = [0] * 8064 + [0] * (10000 - 8064)
+    control = _write_synth_wav(
+        tmp_path / "control.wav",
+        n_frames=10000,
+        samples_per_channel=[samples_no_tail],
+    )
+    assert compute_stadium_irhash(long_wav) != compute_stadium_irhash(control)
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_compute_stadium_irhash_rejects_non_48k(tmp_path):
+    """Non-48k sources raise NotImplementedError with an actionable message."""
+    from helixgen.ir import compute_stadium_irhash
+
+    wav = _write_synth_wav(tmp_path / "wrong_sr.wav", n_frames=64, sr=44100)
+    with pytest.raises(NotImplementedError, match="48 kHz"):
+        compute_stadium_irhash(wav)
+
+
+def test_register_irs_rejects_non_wav_after_first(tmp_path, monkeypatch):
+    """Auto-compute branch rejects non-.wav args with a friendly error."""
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    wav = _write_wav(tmp_path / "a.wav")
+    weird = _write_wav(tmp_path / "b.hsp")  # has hsp suffix but raw bytes
+    result = CliRunner().invoke(cli, ["register-irs", str(wav), str(weird)])
+    assert result.exit_code != 0
+    assert "non-wav arg" in result.output
 
 
 def test_list_irs_empty_prints_nothing(tmp_path, monkeypatch):

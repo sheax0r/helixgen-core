@@ -182,7 +182,7 @@ def register_irs_cmd(
     force: bool,
     irs_dir: Path | None,
 ) -> None:
-    """Register user IRs into the mapping.
+    """Register user impulse-response WAVs so generated presets can reference them.
 
     Two forms:
 
@@ -190,7 +190,8 @@ def register_irs_cmd(
     - register-irs <preset.hsp> <wav1> <wav2> ...   bind preset's irhash slots
                                                     to the given wavs in order
     - register-irs <wav1> <wav2> ...                compute each wav's Stadium
-                                                    hash directly and register it
+                                                    hash directly (no device export
+                                                    needed) and register it
     """
     paths_list = list(paths)
     first_ext = paths_list[0].suffix.lower()
@@ -211,6 +212,12 @@ def register_irs_cmd(
             )
     else:
         wav_paths = paths_list
+        for p in wav_paths:
+            if p.suffix.lower() != ".wav":
+                raise click.ClickException(
+                    f"unexpected non-wav arg: {p} "
+                    "(only the first arg may be .hsp/.hlx)"
+                )
         try:
             hashes = [compute_stadium_irhash(w) for w in wav_paths]
         except (RuntimeError, NotImplementedError, FileNotFoundError) as e:
