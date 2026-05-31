@@ -1,8 +1,14 @@
 """User-IR registration: maps Helix `irhash` slot values to local .wav paths."""
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import hashlib
 import json
+import math
 import os
+import struct
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -101,6 +107,235 @@ class IrMapping:
 
 
 IR_MODEL_PREFIX = "HX2_ImpulseResponse"
+
+
+# -- compute_stadium_irhash -------------------------------------------------
+#
+# Reproduces the IR hash Helix Stadium assigns to a WAV during import.
+# Algorithm reverse-engineered from the Mac app binary (see
+# memory/project_irhash_algorithm_cracked.md):
+#
+#   1. libsndfile float-read of source → PCM_24 write to tmp1     (first quant)
+#   2. re-read tmp1 as float
+#   3. for stereo source, take left channel only
+#   4. truncate or zero-pad to next-power-of-2, capped at 8192
+#   5. if truncating, apply expf(i * -1/25.6) to the last 128 samples
+#   6. write to tmp2 as PCM_24 / 48 kHz / mono                    (second quant)
+#   7. MD5 of tmp2's data chunk content → the irhash
+#
+# The double float→PCM_24 round-trip is load-bearing: libsndfile-1.2.2's
+# float-to-PCM_24 quantization introduces a tiny rounding error on certain
+# samples, and Stadium's pipeline incurs it twice. Calling libsndfile via
+# ctypes hits that path; Python's soundfile wrapper takes a different,
+# lossless path that would NOT reproduce Stadium's bytes.
+
+
+_SFM_READ = 0x10
+_SFM_WRITE = 0x20
+_SF_FORMAT_WAV = 0x010000
+_SF_FORMAT_PCM_S8 = 0x0001
+_SF_FORMAT_PCM_16 = 0x0002
+_SF_FORMAT_PCM_24 = 0x0003
+_SF_FORMAT_PCM_32 = 0x0004
+_SFC_SET_ADD_PEAK_CHUNK = 0x1050
+
+_FADE_K = -1.0 / 25.6            # DAT_1011ee7f0 in the binary
+_TRUNC_LEN = 0x2000              # 8192
+_TRUNC_THRESH = 0x1FFF           # 8191
+_FADE_LEN = 128
+
+
+class _SF_INFO(ctypes.Structure):
+    _fields_ = [
+        ("frames", ctypes.c_int64),
+        ("samplerate", ctypes.c_int),
+        ("channels", ctypes.c_int),
+        ("format", ctypes.c_int),
+        ("sections", ctypes.c_int),
+        ("seekable", ctypes.c_int),
+    ]
+
+
+_libsndfile = None
+_libsndfile_attempted = False
+
+
+def _load_libsndfile():
+    """Locate and bind libsndfile via ctypes. Returns the CDLL or raises."""
+    global _libsndfile, _libsndfile_attempted
+    if _libsndfile_attempted:
+        if _libsndfile is None:
+            raise RuntimeError(
+                "libsndfile shared library not found; install it "
+                "(macOS: `brew install libsndfile`; "
+                "Debian/Ubuntu: `apt install libsndfile1`)"
+            )
+        return _libsndfile
+    _libsndfile_attempted = True
+    # search the usual places; ctypes.util.find_library returns None on miss
+    candidates = [
+        ctypes.util.find_library("sndfile"),
+        "/opt/homebrew/opt/libsndfile/lib/libsndfile.dylib",
+        "/usr/local/opt/libsndfile/lib/libsndfile.dylib",
+        "libsndfile.so.1",
+        "libsndfile.dylib",
+    ]
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            lib = ctypes.CDLL(path)
+        except OSError:
+            continue
+        lib.sf_open.restype = ctypes.c_void_p
+        lib.sf_open.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(_SF_INFO)]
+        lib.sf_close.argtypes = [ctypes.c_void_p]
+        lib.sf_close.restype = ctypes.c_int
+        lib.sf_readf_float.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int64]
+        lib.sf_readf_float.restype = ctypes.c_int64
+        lib.sf_writef_float.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int64]
+        lib.sf_writef_float.restype = ctypes.c_int64
+        lib.sf_command.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+        lib.sf_command.restype = ctypes.c_int
+        _libsndfile = lib
+        return lib
+    raise RuntimeError(
+        "libsndfile shared library not found; install it "
+        "(macOS: `brew install libsndfile`; "
+        "Debian/Ubuntu: `apt install libsndfile1`)"
+    )
+
+
+def _format_for_subtype(subtype: int) -> int:
+    """Match Stadium's source-subtype → output-format mapping."""
+    if subtype == _SF_FORMAT_PCM_16:
+        return _SF_FORMAT_WAV | _SF_FORMAT_PCM_16
+    if subtype == _SF_FORMAT_PCM_S8:
+        return _SF_FORMAT_WAV | _SF_FORMAT_PCM_S8
+    if subtype == _SF_FORMAT_PCM_24:
+        return _SF_FORMAT_WAV | _SF_FORMAT_PCM_24
+    return _SF_FORMAT_WAV | _SF_FORMAT_PCM_32
+
+
+def _next_pow2(n: int) -> int:
+    p = 1
+    while p < n:
+        p *= 2
+    return p
+
+
+def compute_stadium_irhash(wav_path: Path | str) -> str:
+    """Return the 32-char hex IR hash Helix Stadium would assign to this WAV.
+
+    Reproduces Stadium's import-time preprocessing pipeline (see module
+    comments for the full algorithm) and computes MD5 of the resulting
+    data chunk content. Output is the same hash that appears in `.hsp`
+    presets in the slot's `irhash` field.
+
+    Currently supports 48 kHz sources (the fast path Stadium takes for
+    most IR libraries). Non-48 kHz sources go through libsamplerate in
+    Stadium and are not yet supported here.
+    """
+    sf = _load_libsndfile()
+    wav_path = Path(wav_path)
+    if not wav_path.is_file():
+        raise FileNotFoundError(f"wav file not found: {wav_path}")
+
+    src_info = _SF_INFO()
+    src = sf.sf_open(str(wav_path).encode(), _SFM_READ, ctypes.byref(src_info))
+    if not src:
+        raise RuntimeError(f"libsndfile failed to open {wav_path}")
+    if src_info.samplerate != 48000:
+        sf.sf_close(src)
+        raise NotImplementedError(
+            f"only 48 kHz sources are supported (got {src_info.samplerate} Hz); "
+            "Stadium uses libsamplerate for other rates, not yet ported"
+        )
+    src_subtype = src_info.format & 0xFFFF
+    src_channels = src_info.channels
+    out_format = _format_for_subtype(src_subtype)
+
+    tmp1 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp1.close()
+    tmp2 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp2.close()
+    try:
+        # --- Phase 1: stream-copy source floats to tmp1 as same bit depth ---
+        t1_info = _SF_INFO(0, 48000, src_channels, out_format, 0, 0)
+        t1 = sf.sf_open(tmp1.name.encode(), _SFM_WRITE, ctypes.byref(t1_info))
+        if not t1:
+            sf.sf_close(src)
+            raise RuntimeError("libsndfile failed to open tmp1 for write")
+        sf.sf_command(t1, _SFC_SET_ADD_PEAK_CHUNK, None, 0)
+        chunk = (ctypes.c_float * (1024 * src_channels))()
+        while True:
+            n = sf.sf_readf_float(src, chunk, 1024)
+            if n <= 0:
+                break
+            sf.sf_writef_float(t1, chunk, n)
+        sf.sf_close(src)
+        sf.sf_close(t1)
+
+        # --- Phase 2: re-read tmp1, pick left channel, truncate/pad, fade ---
+        rd_info = _SF_INFO()
+        rd = sf.sf_open(tmp1.name.encode(), _SFM_READ, ctypes.byref(rd_info))
+        if not rd:
+            raise RuntimeError("libsndfile failed to reopen tmp1 for read")
+        n_frames = rd_info.frames
+        n_ch = rd_info.channels
+        all_buf = (ctypes.c_float * (n_frames * n_ch))()
+        sf.sf_readf_float(rd, all_buf, n_frames)
+        sf.sf_close(rd)
+
+        # left channel only when stereo (Stadium deinterleaves and discards R)
+        mono = (ctypes.c_float * n_frames)()
+        if n_ch == 1:
+            ctypes.memmove(mono, all_buf, n_frames * ctypes.sizeof(ctypes.c_float))
+        else:
+            for i in range(n_frames):
+                mono[i] = all_buf[i * n_ch]
+
+        # output length: truncate >8191 to 8192, else next pow-2 (with pad)
+        if n_frames > _TRUNC_THRESH:
+            out_len = _TRUNC_LEN
+        elif (n_frames & (n_frames - 1)) == 0 and n_frames > 0:
+            out_len = n_frames
+        else:
+            out_len = _next_pow2(max(n_frames, 1))
+
+        out = (ctypes.c_float * out_len)()
+        copy_n = min(n_frames, out_len)
+        ctypes.memmove(out, mono, copy_n * ctypes.sizeof(ctypes.c_float))
+
+        # exp fade-out applies only when source filled the buffer (truncation
+        # / exact pow-2 cases); when zero-padding, the fade is skipped.
+        if n_frames >= out_len:
+            for i in range(_FADE_LEN):
+                out[out_len - _FADE_LEN + i] *= math.exp(i * _FADE_K)
+
+        # --- Phase 3: write tmp2 as same bit depth / 48k / mono ---
+        t2_info = _SF_INFO(0, 48000, 1, out_format, 0, 0)
+        t2 = sf.sf_open(tmp2.name.encode(), _SFM_WRITE, ctypes.byref(t2_info))
+        if not t2:
+            raise RuntimeError("libsndfile failed to open tmp2 for write")
+        sf.sf_command(t2, _SFC_SET_ADD_PEAK_CHUNK, None, 0)
+        sf.sf_writef_float(t2, out, out_len)
+        sf.sf_close(t2)
+
+        # --- Phase 4: MD5 of tmp2's data chunk content ---
+        with open(tmp2.name, "rb") as f:
+            raw = f.read()
+        di = raw.find(b"data")
+        if di < 0:
+            raise RuntimeError("no data chunk in tmp2 output")
+        sz = struct.unpack("<I", raw[di + 4:di + 8])[0]
+        return hashlib.md5(raw[di + 8:di + 8 + sz]).hexdigest()
+    finally:
+        for p in (tmp1.name, tmp2.name):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
 
 
 def extract_ir_hashes(preset_body: dict) -> list[str]:

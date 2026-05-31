@@ -11,7 +11,13 @@ from helixgen.bootstrap import bootstrap
 from helixgen.generate import GenerateError, ParamValidationError, generate_preset
 from helixgen.hsp import HSP_MAGIC, HSP_MAGIC_LEN
 from helixgen.ingest import IngestSummary, ingest_path
-from helixgen.ir import IrMapping, IrMappingError, default_irs_path, extract_ir_hashes
+from helixgen.ir import (
+    IrMapping,
+    IrMappingError,
+    compute_stadium_irhash,
+    default_irs_path,
+    extract_ir_hashes,
+)
 from helixgen.library import Library, default_library_path
 from helixgen.spec import SpecError
 
@@ -163,27 +169,52 @@ def bootstrap_cmd(ref: str, library_path: Path | None) -> None:
 
 
 @cli.command(name="register-irs")
-@click.argument("preset_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.argument("wav_paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument(
+    "paths",
+    nargs=-1,
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
 @click.option("--force", is_flag=True, default=False, help="Overwrite existing hash mappings.")
 @_irs_option
 def register_irs_cmd(
-    preset_path: Path,
-    wav_paths: tuple[Path, ...],
+    paths: tuple[Path, ...],
     force: bool,
     irs_dir: Path | None,
 ) -> None:
-    """Bind irhash values from a .hsp registration preset to local .wav files (in block order)."""
-    raw = preset_path.read_bytes()
-    if not raw.startswith(HSP_MAGIC):
-        raise click.ClickException(f"{preset_path} is not a Stadium .hsp file")
-    body = json.loads(raw[HSP_MAGIC_LEN:])
-    hashes = extract_ir_hashes(body)
+    """Register user IRs into the mapping.
 
-    if len(hashes) != len(wav_paths):
-        raise click.ClickException(
-            f"preset has {len(hashes)} IR blocks, got {len(wav_paths)} wav arg(s)"
-        )
+    Two forms:
+
+    \b
+    - register-irs <preset.hsp> <wav1> <wav2> ...   bind preset's irhash slots
+                                                    to the given wavs in order
+    - register-irs <wav1> <wav2> ...                compute each wav's Stadium
+                                                    hash directly and register it
+    """
+    paths_list = list(paths)
+    first_ext = paths_list[0].suffix.lower()
+
+    if first_ext in {".hsp", ".hlx"}:
+        preset_path = paths_list[0]
+        wav_paths = paths_list[1:]
+        if not wav_paths:
+            raise click.ClickException("at least one wav arg required after preset")
+        raw = preset_path.read_bytes()
+        if not raw.startswith(HSP_MAGIC):
+            raise click.ClickException(f"{preset_path} is not a Stadium .hsp file")
+        body = json.loads(raw[HSP_MAGIC_LEN:])
+        hashes = extract_ir_hashes(body)
+        if len(hashes) != len(wav_paths):
+            raise click.ClickException(
+                f"preset has {len(hashes)} IR blocks, got {len(wav_paths)} wav arg(s)"
+            )
+    else:
+        wav_paths = paths_list
+        try:
+            hashes = [compute_stadium_irhash(w) for w in wav_paths]
+        except (RuntimeError, NotImplementedError, FileNotFoundError) as e:
+            raise click.ClickException(str(e)) from e
 
     mapping = _resolved_irs(irs_dir)
     try:
