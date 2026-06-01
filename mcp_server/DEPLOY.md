@@ -3,19 +3,39 @@
 Public, unauthenticated MCP server wrapping the helixgen CLI. Hosts on
 Render's free tier; integrates with claude.ai as a custom connector.
 
+> For a side-by-side of the three ways to use helixgen (bare CLI / local
+> Claude Code with auto-spawned MCP / this hosted deploy), see
+> [`docs/usage-modes.md`](../docs/usage-modes.md).
+
 ## What you get
 
-Three tools exposed to any Claude client that connects to your server URL:
+Six tools exposed to any Claude client that connects to your server URL.
+**Every tool takes a required `model` parameter** (`"stadium"` or
+`"stadium_xl"`) — a soft device-confirmation gate; the
+`using-helixgen` skill is what actually confirms the model with the user
+per session.
 
-- `list_blocks(category?)` — browse the block catalog.
-- `show_block(name_or_id)` — inspect a block's params.
-- `generate_preset(spec)` — turn an inline JSON tone spec into a `.hsp`
-  Stadium preset, returned as a binary `EmbeddedResource`.
+- `list_blocks(model, category?)` — browse the block catalog.
+- `show_block(model, name_or_id)` — inspect a block's params.
+- `generate_preset(model, spec)` — turn an inline JSON tone spec into a
+  `.hsp` Stadium preset, returned as a binary `EmbeddedResource`.
+- `list_irs(model)` — list registered user IRs. On this hosted deploy
+  always empty (the registry is local-only).
+- `compute_irhash(model, wav_b64)` — compute the Stadium IR hash for a
+  base64-encoded WAV (size ≤ 2 MB, RIFF/WAVE validated). Returns
+  `{irhash, reminder}`. Drag-and-drop friendly for claude.ai users.
+- `discover_irs(model, ir_directory)` — walk a server-side filesystem
+  path and return per-file hashes. **Refused on hosted** (the hosted
+  deploy has no access to the user's filesystem); the tool returns a
+  clear error directing the agent to `compute_irhash` instead.
 
 The full spec schema is in `CLAUDE.md` at the repo root (paths, snapshots,
-footswitches, expression). The `ir` field on IR blocks is ignored
-server-side — this deployment ships only canonical IRs from the bundled
-chassis, no user-IR registry.
+footswitches, expression). The `ir` field on IR blocks **accepts a
+literal 32-char hex hash** in addition to a basename — so hosted users
+can call `compute_irhash` on a dragged WAV and embed the returned hash
+directly into a subsequent `generate_preset` call. (The basename path
+requires a server-side registry, which the hosted deploy does not have;
+basenames will not resolve.)
 
 ## What's bundled
 
@@ -41,6 +61,16 @@ time — the bundled catalog is the source of truth for the deployed server.
 6. Once **Live**, copy the URL — something like
    `https://helixgen-mcp-xxxx.onrender.com`. Your MCP endpoint is that
    URL + `/mcp`.
+
+### Bundled in `render.yaml` (committed)
+
+These ship with the repo and don't need dashboard configuration:
+
+- `aptPackages: [libsndfile1]` — required by `compute_irhash`, which
+  loads libsndfile via `ctypes` to run Stadium's preprocessing pipeline.
+  Without this the tool raises a "libsndfile not found" error.
+- `envVars.HELIXGEN_HOSTED=1` — read by `discover_irs` to refuse
+  filesystem-walk requests on the hosted deploy.
 
 ### Required env vars (set in the Render dashboard, not in `render.yaml`)
 
@@ -72,7 +102,7 @@ hostnames.
 2. Name: `helixgen`. URL: `https://helixgen-mcp-xxxx.onrender.com/mcp`
    (your URL from Step 1).
 3. Save. Claude should report the connector handshake succeeded and list
-   three available tools.
+   six available tools.
 
 ## Step 3: Smoke test
 
@@ -101,8 +131,15 @@ renders it as a downloadable file.
 - **Cold starts.** Render free tier suspends after 15 min of idle; first
   request takes 30–60s to wake. Mitigations (UptimeRobot keepalive,
   upgrading off free tier) are out of scope for v1.
-- **No IR support.** The `ir` field in specs is silently ignored. IR
-  blocks use whatever canonical hash the bundled library carries.
+- **User IRs require per-session drag-and-drop.** Hosted has no
+  persistent IR registry — IR resolution works via `compute_irhash` on
+  a dragged WAV, then embedding the returned hex hash in the spec's
+  `ir` field. There's no cross-session memory; the user re-drags IRs
+  each conversation. (Local-Claude-Code users get a persistent
+  `mapping.json` cache via `helixgen ir-scan`.)
+- **`compute_irhash` is 48 kHz-only.** Same limitation as the local
+  primitive — non-48 kHz sources raise an error. Stadium itself uses
+  libsamplerate for resampling; porting that bit-exactly isn't done.
 - **Stateless.** Every generate call rebuilds the library handle. No
   per-user storage, no preset history.
 - **Library is a snapshot.** New blocks added to the maintainer's local

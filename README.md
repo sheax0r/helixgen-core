@@ -7,6 +7,8 @@ helixgen is **two things in one repo**:
 
 You can use either piece on its own. The skill is the easier surface; the CLI is what you reach for if you want to tweak specs by hand or wire helixgen into other tooling.
 
+There are three usage modes — bare CLI, local Claude Code with an auto-spawned MCP server, and a hosted MCP deploy on Render that integrates with claude.ai. They share the same library, spec, and output; they differ in driver and persistence. See [`docs/usage-modes.md`](docs/usage-modes.md) for a side-by-side and when to pick which.
+
 > ⚠️ **Unofficial tool — use at your own risk.** Not affiliated with or endorsed by Line 6 / Yamaha (see the [Trademark notice](#trademark-notice) below). helixgen produces preset files that you import via HX Edit; loading any user-generated preset on your hardware carries non-zero risk — rejected loads, corrupted preset slots, on-device crashes, or other behavior we haven't seen. Review what you import. The MIT license under which helixgen is distributed disclaims all warranty; see [LICENSE](LICENSE).
 
 ## Install
@@ -72,6 +74,34 @@ A tone spec is a JSON document. Minimal example:
 - `name` is the preset name shown in HX Edit.
 - `paths` contains 1 or 2 chains (mapping to dsp0 / dsp1).
 - Each block has a `block` (display name or model_id) and optional `params` (wire values: 0–1 floats for amp gain, integer Hz for cut frequencies, strings for enums like mic types).
+
+## Impulse Responses (IRs)
+
+helixgen supports user IRs in Stadium presets — `With Pan` blocks (and the rest of the `HX2_ImpulseResponse*` family) can reference a `.wav` file by basename, and helixgen will resolve it to the 32-character `irhash` the device expects.
+
+Stadium identifies user IRs by a content-derived hash, not by filename or slot. helixgen reproduces that hash bit-identically without any device round-trip, so you can register an entire IR library locally and reference IRs by name in your specs.
+
+```bash
+# 1. Cache hashes for an IR library in one pass (recurses; ~1 ms per IR after warm-up).
+helixgen ir-scan ~/path/to/IRs/
+helixgen list-irs | wc -l   # verify
+
+# 2. Reference IRs by basename in a spec:
+#   {"block": "With Pan",
+#    "ir": "YA MRSH 412 T75 Mix 03.wav",
+#    "params": {"HighCut": 6800, "LowCut": 90, "Mix": 1.0}}
+helixgen generate my-tone.json -o my-tone.hsp
+```
+
+**Caveat:** for the `irhash` in a generated preset to actually resolve on the device, the matching WAV must also be loaded onto the device via the Helix Stadium app's **Librarian → Cab IRs → Import**. helixgen only handles the preset side; importing IRs onto the device is the Stadium app's job. If a slot displays "No Model" on the device after loading a preset, that IR wasn't imported.
+
+**Limitations:**
+- **48 kHz sources only** at the moment. Non-48 kHz raises a clear error with a `sox in.wav -r 48000 out.wav` suggestion. Stadium itself uses libsamplerate (`SRC_SINC_BEST_QUALITY`) for other rates; porting that bit-exactly is a separate project.
+- Stereo input is reduced to the **left channel** (matches Stadium's own import behavior).
+
+See [`docs/ir-hash-algorithm.md`](docs/ir-hash-algorithm.md) for the algorithm helixgen uses to compute the hash, including the load-bearing libsndfile detail and the field-validated reference implementation.
+
+The CLI also provides `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — the original preset-binding form that predates the offline hash computation. Still the only way to register IRs that aren't 48 kHz, since for those you need to round-trip through a registration preset.
 
 ## Loading presets onto your device
 
