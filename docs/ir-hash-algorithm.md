@@ -113,3 +113,52 @@ preset → device displayed the correct IR name in the block slot).
   helixgen deployment.
 - Test suite: `tests/test_ir_cli.py` exercises the full pipeline with
   synthesized WAVs (no paid IR fixtures shipped).
+
+## ELI5
+
+Helix Stadium needs a way to recognize the same IR file regardless of its
+filename or which slot it lives in. So it assigns each IR a **fingerprint**:
+a 32-character code computed from the audio data itself. When you import an
+IR onto the device, Stadium computes the fingerprint and remembers it.
+Presets reference IRs by fingerprint — so when you load a preset, the
+device scans its loaded IRs, finds one whose fingerprint matches, and uses
+that one. Rename or move the WAV on disk, doesn't matter: same audio,
+same fingerprint.
+
+helixgen's job is to compute that exact same fingerprint **without** the
+device, so a preset can be generated for an IR you haven't (yet)
+round-tripped through the Helix Stadium app.
+
+**What does Stadium actually do?** Roughly:
+
+1. Read the WAV file as floating-point audio samples.
+2. Write those floats to a temp WAV as 24-bit integers. **This rounds a few
+   samples by 1 bit.**
+3. Read the temp file back. Cut to 8192 samples. Fade the tail to silence
+   with a specific exponential curve.
+4. Write that out as a *second* temp WAV. **Rounds the same samples again.**
+5. Take the MD5 hash of the audio bytes in step 4's file. That's the
+   fingerprint.
+
+**Why the float-to-int rounding matters.** The float → int24 conversion in
+steps 2 and 4 is slightly lossy — a handful of high-amplitude samples shift
+by 1 bit each time. Stadium runs the conversion twice, so the error stacks
+to about 2 bits on those samples. helixgen has to reproduce that exact
+behavior, or its fingerprint won't match Stadium's.
+
+That detail is why the reference implementation talks to libsndfile
+directly via `ctypes`. The friendlier Python wrapper (`soundfile`) takes a
+"smarter" code path internally that avoids the rounding — which sounds
+great in isolation, but produces the *wrong* fingerprint here because
+Stadium itself takes the rounding path. Matching the wrong abstraction
+would silently give you the wrong answer.
+
+**The payoff.** Before this work, knowing an IR's fingerprint required
+round-tripping the file through the device: import it via the Helix Stadium
+app, export a preset that references it, then parse the preset to recover
+the fingerprint. That works for one IR at a time but is tedious for whole
+libraries. Now `helixgen ir-scan ~/IRs/` does the whole library in one
+pass at about a millisecond per file. You can generate presets referencing
+IRs the device has never seen, and as long as you later import those WAVs
+into the device through the Librarian, the fingerprints line up and the
+preset loads correctly.
