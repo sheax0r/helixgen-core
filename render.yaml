@@ -3,9 +3,19 @@ services:
     name: helixgen-mcp
     runtime: python
     plan: free
+    # libsndfile1 is required by compute_irhash (ctypes binding loads it).
+    # If absent, compute_irhash will raise a "libsndfile not found" error.
+    aptPackages:
+      - libsndfile1
     buildCommand: |
       pip install -e .[mcp]
       mkdir -p "$HOME/.helixgen"
       cp -r mcp_server/data/library "$HOME/.helixgen/library"
       python -c "from helixgen.library import Library, default_library_path; Library(default_library_path()).rebuild_index()"
     startCommand: python -m mcp_server
+    envVars:
+      # Marks this deploy as hosted. The discover_irs MCP tool refuses to walk
+      # the filesystem when this is set, redirecting the agent to compute_irhash
+      # for per-file lookups.
+      - key: HELIXGEN_HOSTED
+        value: "1"

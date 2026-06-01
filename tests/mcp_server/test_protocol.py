@@ -26,14 +26,20 @@ def _get_tool_names(server) -> set[str]:
     )
 
 
-def test_server_registers_four_tools():
-    """The server registers exactly the four documented tools."""
+def test_server_registers_documented_tools():
+    """The server registers exactly the six documented tools."""
     from mcp_server.server import app
 
     names = _get_tool_names(app)
-    assert names == {"list_blocks", "show_block", "generate_preset", "list_irs"}, (
-        f"unexpected tool set: {names}"
-    )
+    expected = {
+        "list_blocks",
+        "show_block",
+        "generate_preset",
+        "list_irs",
+        "compute_irhash",
+        "discover_irs",
+    }
+    assert names == expected, f"unexpected tool set: {names}"
 
 
 def test_server_tools_have_descriptions():
@@ -62,11 +68,11 @@ def test_list_blocks_via_server(mcp_library, monkeypatch):
     # Get the registered handler. FastMCP exposes via tool_manager.get_tool.
     if hasattr(srv.app, "_tool_manager"):
         tool = srv.app._tool_manager.get_tool("list_blocks")
-        result = tool.fn(category=None)
+        result = tool.fn(model="stadium_xl", category=None)
     else:
         # Fallback: import the underlying handler directly.
         from mcp_server.tools import list_blocks_handler
-        result = list_blocks_handler(mcp_library, category=None)
+        result = list_blocks_handler(mcp_library, "stadium_xl", category=None)
 
     assert isinstance(result, str)
     assert result  # non-empty
@@ -95,7 +101,7 @@ def test_generate_preset_via_server_returns_embedded_resource(mcp_library, monke
 
     if hasattr(srv.app, "_tool_manager"):
         tool = srv.app._tool_manager.get_tool("generate_preset")
-        result = tool.fn(spec=spec)
+        result = tool.fn(model="stadium_xl", spec=spec)
     else:
         import pytest as _pytest_inner
         _pytest_inner.skip("FastMCP._tool_manager not available on this SDK version")
