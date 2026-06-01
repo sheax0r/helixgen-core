@@ -1,0 +1,47 @@
+{
+  "model_id": "HX2_CompressorRedSqueezeMono",
+  "category": "dynamics",
+  "display_name": "ressor Red Squeeze Mono",
+  "params": {
+    "Level": {
+      "type": "float",
+      "default": 5.4,
+      "observed_range": [
+        5.4,
+        5.4
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.6,
+      "observed_range": [
+        0.6,
+        0.6
+      ]
+    },
+    "Sensitivity": {
+      "type": "float",
+      "default": 0.44,
+      "observed_range": [
+        0.44,
+        0.44
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HX2_CompressorRedSqueezeMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 1,
+    "@path": 0,
+    "Level": 5.4,
+    "Mix": 0.6,
+    "Sensitivity": 0.44
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

@@ -1,0 +1,65 @@
+{
+  "model_id": "HD2_WahWeeperMono",
+  "category": "filter",
+  "display_name": "Weeper Mono",
+  "params": {
+    "FcHigh": {
+      "type": "float",
+      "default": 1901.0,
+      "observed_range": [
+        1901.0,
+        1901.0
+      ]
+    },
+    "FcLow": {
+      "type": "float",
+      "default": 435.0,
+      "observed_range": [
+        435.0,
+        435.0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "Pedal": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_WahWeeperMono",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 2,
+    "@path": 0,
+    "FcHigh": 1901.0,
+    "FcLow": 435.0,
+    "Level": 0.0,
+    "Mix": 1.0,
+    "Pedal": 1.0
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

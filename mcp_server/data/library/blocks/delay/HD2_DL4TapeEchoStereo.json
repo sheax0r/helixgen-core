@@ -1,0 +1,93 @@
+{
+  "model_id": "HD2_DL4TapeEchoStereo",
+  "category": "delay",
+  "display_name": "Tape Echo Stereo",
+  "params": {
+    "Bass": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "DryThru": {
+      "type": "bool",
+      "default": false
+    },
+    "Feedback": {
+      "type": "float",
+      "default": 0.220000028610229,
+      "observed_range": [
+        0.220000028610229,
+        0.220000028610229
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.159999966621399,
+      "observed_range": [
+        0.159999966621399,
+        0.159999966621399
+      ]
+    },
+    "SyncSelect1": {
+      "type": "int",
+      "default": 6,
+      "observed_range": [
+        6,
+        6
+      ]
+    },
+    "TempoSync1": {
+      "type": "bool",
+      "default": false
+    },
+    "Time": {
+      "type": "float",
+      "default": 0.279000043869019,
+      "observed_range": [
+        0.279000043869019,
+        0.279000043869019
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_DL4TapeEchoStereo",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 3,
+    "@path": 0,
+    "Bass": 0.5,
+    "DryThru": false,
+    "Feedback": 0.220000028610229,
+    "Level": 0.0,
+    "Mix": 0.159999966621399,
+    "SyncSelect1": 6,
+    "TempoSync1": false,
+    "Time": 0.279000043869019,
+    "Treble": 0.5
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

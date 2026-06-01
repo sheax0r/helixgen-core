@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "helixgen": {
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "env": {
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}

@@ -1,0 +1,227 @@
+{
+  "model_id": "Agoura_AmpMatchstick30",
+  "category": "amp",
+  "display_name": "Matchstick 30",
+  "params": {
+    "AmpCabPeak2Fc": {
+      "type": "float",
+      "default": 1000.0,
+      "observed_range": [
+        1000.0,
+        1000.0
+      ]
+    },
+    "AmpCabPeak2G": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "AmpCabPeak2Q": {
+      "type": "float",
+      "default": 0.7070000171661377,
+      "observed_range": [
+        0.7070000171661377,
+        0.7070000171661377
+      ]
+    },
+    "AmpCabPeakFc": {
+      "type": "float",
+      "default": 100.0,
+      "observed_range": [
+        100.0,
+        100.0
+      ]
+    },
+    "AmpCabPeakG": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "AmpCabPeakQ": {
+      "type": "float",
+      "default": 0.7070000171661377,
+      "observed_range": [
+        0.7070000171661377,
+        0.7070000171661377
+      ]
+    },
+    "AmpCabShelfF": {
+      "type": "float",
+      "default": 1000.0,
+      "observed_range": [
+        1000.0,
+        1000.0
+      ]
+    },
+    "AmpCabShelfG": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "AmpCabZFir": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "AmpCabZUpdate": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "Bass": {
+      "type": "float",
+      "default": 0.36000001430511475,
+      "observed_range": [
+        0.36000001430511475,
+        0.36000001430511475
+      ]
+    },
+    "Ch1Drv": {
+      "type": "float",
+      "default": 0.4300000071525574,
+      "observed_range": [
+        0.4300000071525574,
+        0.4300000071525574
+      ]
+    },
+    "Ch2Drv": {
+      "type": "float",
+      "default": 0.4399999976158142,
+      "observed_range": [
+        0.4399999976158142,
+        0.4399999976158142
+      ]
+    },
+    "Ch2Tone": {
+      "type": "int",
+      "default": 3,
+      "observed_range": [
+        3,
+        3
+      ]
+    },
+    "Channel": {
+      "type": "int",
+      "default": 0,
+      "observed_range": [
+        0,
+        0
+      ]
+    },
+    "HighCut": {
+      "type": "float",
+      "default": 0.3199999928474426,
+      "observed_range": [
+        0.3199999928474426,
+        0.3199999928474426
+      ]
+    },
+    "Hype": {
+      "type": "float",
+      "default": 0.27000001072883606,
+      "observed_range": [
+        0.27000001072883606,
+        0.27000001072883606
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": -7.0,
+      "observed_range": [
+        -7.0,
+        -7.0
+      ]
+    },
+    "Master": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "Ripple": {
+      "type": "float",
+      "default": -0.23999999463558197,
+      "observed_range": [
+        -0.23999999463558197,
+        -0.23999999463558197
+      ]
+    },
+    "Sag": {
+      "type": "float",
+      "default": 0.6399999856948853,
+      "observed_range": [
+        0.6399999856948853,
+        0.6399999856948853
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.6800000071525574,
+      "observed_range": [
+        0.6800000071525574,
+        0.6800000071525574
+      ]
+    },
+    "ZPrePost": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "Agoura_AmpMatchstick30",
+    "@enabled": true,
+    "@type": "amp",
+    "@position": 7,
+    "@path": 0,
+    "AmpCabPeak2Fc": 1000.0,
+    "AmpCabPeak2G": 0.0,
+    "AmpCabPeak2Q": 0.7070000171661377,
+    "AmpCabPeakFc": 100.0,
+    "AmpCabPeakG": 0.0,
+    "AmpCabPeakQ": 0.7070000171661377,
+    "AmpCabShelfF": 1000.0,
+    "AmpCabShelfG": 0.0,
+    "AmpCabZFir": 0,
+    "AmpCabZUpdate": 0,
+    "Bass": 0.36000001430511475,
+    "Ch1Drv": 0.4300000071525574,
+    "Ch2Drv": 0.4399999976158142,
+    "Ch2Tone": 3,
+    "Channel": 0,
+    "HighCut": 0.3199999928474426,
+    "Hype": 0.27000001072883606,
+    "Level": -7.0,
+    "Master": 1.0,
+    "Ripple": -0.23999999463558197,
+    "Sag": 0.6399999856948853,
+    "Treble": 0.6800000071525574,
+    "ZPrePost": 1.0
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

@@ -15,6 +15,9 @@ dependencies = [
 dev = [
     "pytest>=7.4",
 ]
+mcp = [
+    "mcp>=1.0,<2.0",
+]
 
 [project.scripts]
 helixgen = "helixgen.cli:cli"
@@ -24,7 +27,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["helixgen*", "mcp_server*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

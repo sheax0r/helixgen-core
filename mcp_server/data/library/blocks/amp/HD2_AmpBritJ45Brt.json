@@ -1,0 +1,128 @@
+{
+  "model_id": "HD2_AmpBritJ45Brt",
+  "category": "amp",
+  "display_name": "Brit J45 Brt",
+  "params": {
+    "Bass": {
+      "type": "float",
+      "default": 0.8,
+      "observed_range": [
+        0.8,
+        0.8
+      ]
+    },
+    "Bias": {
+      "type": "float",
+      "default": 0.7,
+      "observed_range": [
+        0.7,
+        0.7
+      ]
+    },
+    "BiasX": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "ChVol": {
+      "type": "float",
+      "default": 0.6,
+      "observed_range": [
+        0.6,
+        0.6
+      ]
+    },
+    "Drive": {
+      "type": "float",
+      "default": 0.28,
+      "observed_range": [
+        0.28,
+        0.28
+      ]
+    },
+    "Hum": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Master": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "Mid": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "Presence": {
+      "type": "float",
+      "default": 0.75,
+      "observed_range": [
+        0.75,
+        0.75
+      ]
+    },
+    "Ripple": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Sag": {
+      "type": "float",
+      "default": 0.5,
+      "observed_range": [
+        0.5,
+        0.5
+      ]
+    },
+    "Treble": {
+      "type": "float",
+      "default": 0.8,
+      "observed_range": [
+        0.8,
+        0.8
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_AmpBritJ45Brt",
+    "@enabled": true,
+    "@type": "amp",
+    "@position": 3,
+    "@path": 0,
+    "Bass": 0.8,
+    "Bias": 0.7,
+    "BiasX": 0.5,
+    "ChVol": 0.6,
+    "Drive": 0.28,
+    "Hum": 0.5,
+    "Master": 1.0,
+    "Mid": 1.0,
+    "Presence": 0.75,
+    "Ripple": 0.5,
+    "Sag": 0.5,
+    "Treble": 0.8
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

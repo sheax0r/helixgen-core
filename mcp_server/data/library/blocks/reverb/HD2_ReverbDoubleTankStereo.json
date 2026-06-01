@@ -1,0 +1,92 @@
+{
+  "model_id": "HD2_ReverbDoubleTankStereo",
+  "category": "reverb",
+  "display_name": "Double Tank Stereo",
+  "params": {
+    "Decay": {
+      "type": "float",
+      "default": 0.190000057220459,
+      "observed_range": [
+        0.190000057220459,
+        0.190000057220459
+      ]
+    },
+    "HighCut": {
+      "type": "float",
+      "default": 6000.0,
+      "observed_range": [
+        6000.0,
+        6000.0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "LowCut": {
+      "type": "float",
+      "default": 110.0,
+      "observed_range": [
+        110.0,
+        110.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.269999980926514,
+      "observed_range": [
+        0.269999980926514,
+        0.269999980926514
+      ]
+    },
+    "Modulation": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Predelay": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Rate": {
+      "type": "float",
+      "default": 0.25,
+      "observed_range": [
+        0.25,
+        0.25
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_ReverbDoubleTankStereo",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 5,
+    "@path": 0,
+    "Decay": 0.190000057220459,
+    "HighCut": 6000.0,
+    "Level": 0.0,
+    "LowCut": 110.0,
+    "Mix": 0.269999980926514,
+    "Modulation": 0.0,
+    "Predelay": 0.0,
+    "Rate": 0.25
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}

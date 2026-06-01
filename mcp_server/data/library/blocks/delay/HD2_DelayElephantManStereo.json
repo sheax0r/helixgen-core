@@ -1,0 +1,120 @@
+{
+  "model_id": "HD2_DelayElephantManStereo",
+  "category": "delay",
+  "display_name": "Elephant Man Stereo",
+  "params": {
+    "Depth": {
+      "type": "float",
+      "default": 0.129999995231628,
+      "observed_range": [
+        0.129999995231628,
+        0.129999995231628
+      ]
+    },
+    "Feedback": {
+      "type": "float",
+      "default": 0.279999971389771,
+      "observed_range": [
+        0.279999971389771,
+        0.279999971389771
+      ]
+    },
+    "Headroom": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Level": {
+      "type": "float",
+      "default": 0.0,
+      "observed_range": [
+        0.0,
+        0.0
+      ]
+    },
+    "Mix": {
+      "type": "float",
+      "default": 0.389999985694885,
+      "observed_range": [
+        0.389999985694885,
+        0.389999985694885
+      ]
+    },
+    "Mode": {
+      "type": "bool",
+      "default": false
+    },
+    "Noise": {
+      "type": "float",
+      "default": 0.100000023841858,
+      "observed_range": [
+        0.100000023841858,
+        0.100000023841858
+      ]
+    },
+    "Scale": {
+      "type": "float",
+      "default": 0.950000047683716,
+      "observed_range": [
+        0.950000047683716,
+        0.950000047683716
+      ]
+    },
+    "Spread": {
+      "type": "float",
+      "default": 1.0,
+      "observed_range": [
+        1.0,
+        1.0
+      ]
+    },
+    "SyncSelect1": {
+      "type": "int",
+      "default": 6,
+      "observed_range": [
+        6,
+        6
+      ]
+    },
+    "TempoSync1": {
+      "type": "bool",
+      "default": true
+    },
+    "Time": {
+      "type": "float",
+      "default": 0.375,
+      "observed_range": [
+        0.375,
+        0.375
+      ]
+    }
+  },
+  "exemplar": {
+    "@model": "HD2_DelayElephantManStereo",
+    "@enabled": true,
+    "@type": "fx",
+    "@position": 3,
+    "@path": 0,
+    "Depth": 0.129999995231628,
+    "Feedback": 0.279999971389771,
+    "Headroom": 0.0,
+    "Level": 0.0,
+    "Mix": 0.389999985694885,
+    "Mode": false,
+    "Noise": 0.100000023841858,
+    "Scale": 0.950000047683716,
+    "Spread": 1.0,
+    "SyncSelect1": 6,
+    "TempoSync1": true,
+    "Time": 0.375
+  },
+  "first_seen": {
+    "preset": "",
+    "firmware": "318833973",
+    "date": "2026-05-11"
+  },
+  "aliases": []
+}
