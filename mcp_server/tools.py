@@ -5,20 +5,52 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from helixgen.generate import generate_preset
-from helixgen.ir import IrMapping
+from helixgen.ir import IrMapping, compute_stadium_irhash
 from helixgen.library import Library
 
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
+# Required `model` parameter on every tool. Allow-list; everything else errors.
+# Soft gate (agents can misreport); the using-helixgen skill is the real gate.
+_SUPPORTED_MODELS = frozenset({"stadium", "stadium_xl"})
 
-def list_blocks_handler(library: Library, category: str | None = None) -> str:
+# 2 MB cap on incoming WAV bytes for compute_irhash. Real IRs are ≤200 KB
+# typically; the cap is well above realistic usage and well below
+# MCP/JSON-RPC per-message budgets.
+_WAV_BYTES_LIMIT = 2 * 1024 * 1024
+
+# Upload-to-device reminder returned alongside every computed irhash.
+_UPLOAD_REMINDER = (
+    "This hash will only resolve on the device if the same WAV is loaded "
+    "onto your Helix Stadium via the Librarian's Cab IRs → Import. "
+    "Drag it in if you haven't already."
+)
+
+
+def _validate_model(model: str) -> None:
+    """Reject any model outside the supported allow-list with an actionable error.
+
+    FastMCP translates ValueError into an MCP `isError` text content block.
+    The message tells the agent what to do (ask the user) — necessary
+    because the param is a soft gate: a confused agent can still pass an
+    allowed value for the wrong device.
+    """
+    if model not in _SUPPORTED_MODELS:
+        raise ValueError(
+            f"unsupported model: {model!r}. helixgen currently supports only "
+            f"{sorted(_SUPPORTED_MODELS)}. Ask the user to confirm their device."
+        )
+
+
+def list_blocks_handler(library: Library, model: str, category: str | None = None) -> str:
     """Return library blocks grouped by category, matching `helixgen list-blocks`.
 
     Format mirrors the CLI: one `<category>:` header per category, followed
@@ -26,6 +58,7 @@ def list_blocks_handler(library: Library, category: str | None = None) -> str:
     Unknown category returns an empty string (not an error) so callers can
     distinguish "no such category" from "library empty."
     """
+    _validate_model(model)
     blocks = library.list_blocks(category=category)
     if not blocks:
         return ""
@@ -42,7 +75,7 @@ def list_blocks_handler(library: Library, category: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def show_block_handler(library: Library, name_or_id: str) -> str:
+def show_block_handler(library: Library, model: str, name_or_id: str) -> str:
     """Return a block's schema (params, defaults, ranges) as text.
 
     Format mirrors `helixgen show-block`: header, category, aliases (if any),
@@ -50,6 +83,7 @@ def show_block_handler(library: Library, name_or_id: str) -> str:
     or values where present. KeyError / LookupError propagate to the caller
     (FastMCP translates these to MCP errors at the registration boundary).
     """
+    _validate_model(model)
     block = library.find_block(name_or_id)
 
     lines: list[str] = []
@@ -78,7 +112,7 @@ def _safe_filename(name: str) -> str:
     return f"{cleaned or 'preset'}.hsp"
 
 
-def generate_preset_handler(library: Library, spec: dict[str, Any]) -> dict[str, Any]:
+def generate_preset_handler(library: Library, model: str, spec: dict[str, Any]) -> dict[str, Any]:
     """Generate a Helix Stadium .hsp from an inline spec dict.
 
     Returns a dict suitable for an MCP EmbeddedResource:
@@ -89,6 +123,7 @@ def generate_preset_handler(library: Library, spec: dict[str, Any]) -> dict[str,
     Underlying SpecError / ParamValidationError / GenerateError propagate;
     the MCP server boundary translates them to protocol errors.
     """
+    _validate_model(model)
     with tempfile.TemporaryDirectory(prefix="helixgen-mcp-") as tmp_dir:
         tmp = Path(tmp_dir)
         spec_path = tmp / "spec.json"
@@ -104,16 +139,96 @@ def generate_preset_handler(library: Library, spec: dict[str, Any]) -> dict[str,
     }
 
 
-def list_irs_handler(irs_dir: Path | None = None) -> str:
+def list_irs_handler(model: str, irs_dir: Path | None = None) -> str:
     """Return registered user IRs as text, matching `helixgen list-irs`.
 
     One line per IR: `<hash>  <wav-path>`, sorted by hash. Empty string when
     no IRs are registered or the mapping file is absent — callers branch on
     truthiness to decide whether to use IRs vs. stock cabs.
     """
+    _validate_model(model)
     mapping = IrMapping.load(irs_dir)
     if not mapping.entries:
         return ""
     return "\n".join(
         f"{h}  {mapping.entries[h]}" for h in sorted(mapping.entries)
     )
+
+
+def compute_irhash_handler(model: str, wav_b64: str) -> dict[str, str]:
+    """Compute Stadium's IR hash for a base64-encoded WAV file.
+
+    Stateless. Decodes the bytes, validates the size and WAV magic, writes
+    to a NamedTemporaryFile, and calls `compute_stadium_irhash`. Returns the
+    32-char hex hash plus an upload-to-device reminder.
+
+    Validation (defense in depth — libsndfile has had CVEs):
+      1. Model in the supported allow-list
+      2. Decoded size ≤ 2 MB (config: `_WAV_BYTES_LIMIT`)
+      3. First 4 bytes = `RIFF`, bytes 8–12 = `WAVE` (basic magic check
+         before libsndfile sees the input)
+
+    Returns: `{"irhash": "<hex>", "reminder": "<upload-to-device message>"}`.
+    Raises ValueError on any validation failure; FastMCP translates to an
+    `isError` text content block.
+    """
+    _validate_model(model)
+    try:
+        data = base64.b64decode(wav_b64, validate=True)
+    except (ValueError, base64.binascii.Error) as e:
+        raise ValueError(f"wav_b64 is not valid base64: {e}") from e
+    if len(data) > _WAV_BYTES_LIMIT:
+        raise ValueError(
+            f"WAV is {len(data)} bytes; max {_WAV_BYTES_LIMIT} (2 MB). "
+            "Real IRs are typically under 200 KB."
+        )
+    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError(
+            "WAV bytes don't look valid (missing RIFF/WAVE magic). "
+            "Make sure the user dragged a .wav file, not another format."
+        )
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        tf.write(data)
+        tmp_path = tf.name
+    try:
+        irhash = compute_stadium_irhash(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    return {"irhash": irhash, "reminder": _UPLOAD_REMINDER}
+
+
+def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
+    """Walk a server-side filesystem path and return (hash, path, basename) for each WAV.
+
+    Local-only by design. When `HELIXGEN_HOSTED=1` is set in the environment
+    (the hosted Render deploy), this handler refuses with a clear error
+    directing the agent to `compute_irhash` for per-file lookups.
+
+    Returns: list of `{"hash", "path", "basename"}` dicts, sorted by basename.
+    Files that fail to hash (non-48 kHz, libsndfile errors) are skipped with
+    no error — callers get the successful subset. Returns an empty list if
+    the directory has no WAVs.
+    """
+    _validate_model(model)
+    if os.environ.get("HELIXGEN_HOSTED") == "1":
+        raise ValueError(
+            "discover_irs requires a local helixgen MCP server. The hosted "
+            "deploy has no access to your filesystem. Drag IRs into the "
+            "conversation and use compute_irhash per file instead."
+        )
+    root = Path(ir_directory).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"not a directory: {ir_directory}")
+    out: list[dict[str, str]] = []
+    for wav in sorted(root.rglob("*")):
+        if not wav.is_file() or wav.suffix.lower() != ".wav":
+            continue
+        try:
+            h = compute_stadium_irhash(wav)
+        except (NotImplementedError, RuntimeError, FileNotFoundError):
+            continue
+        out.append({"hash": h, "path": str(wav), "basename": wav.name})
+    return out

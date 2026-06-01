@@ -12,7 +12,7 @@ def test_list_blocks_handler_returns_grouped_text(mcp_library):
     """Returns text grouped by category, one block per line."""
     from mcp_server.tools import list_blocks_handler
 
-    result = list_blocks_handler(mcp_library, category=None)
+    result = list_blocks_handler(mcp_library, "stadium_xl", category=None)
 
     assert isinstance(result, str)
     assert result.strip()
@@ -28,7 +28,7 @@ def test_list_blocks_handler_filters_by_category(mcp_library):
     """When category given, only blocks from that category appear."""
     from mcp_server.tools import list_blocks_handler
 
-    result = list_blocks_handler(mcp_library, category="amp")
+    result = list_blocks_handler(mcp_library, "stadium_xl", category="amp")
     lines = result.splitlines()
     headers = [line[:-1] for line in lines if line.endswith(":")]
     assert headers == ["amp"], f"expected only 'amp:' header, got {headers}"
@@ -37,7 +37,7 @@ def test_list_blocks_handler_filters_by_category(mcp_library):
 def test_list_blocks_handler_unknown_category_returns_empty(mcp_library):
     """An unknown category returns an empty string, not an error."""
     from mcp_server.tools import list_blocks_handler
-    assert list_blocks_handler(mcp_library, category="nonexistent") == ""
+    assert list_blocks_handler(mcp_library, "stadium_xl", category="nonexistent") == ""
 
 
 def test_show_block_handler_returns_schema_text(mcp_library):
@@ -49,7 +49,7 @@ def test_show_block_handler_returns_schema_text(mcp_library):
     assert amps, "fixture library has no amps to show"
     target = amps[0]
 
-    result = show_block_handler(mcp_library, name_or_id=target.model_id)
+    result = show_block_handler(mcp_library, "stadium_xl", name_or_id=target.model_id)
 
     assert isinstance(result, str)
     lines = result.splitlines()
@@ -65,7 +65,7 @@ def test_show_block_handler_unknown_name_raises_keyerror(mcp_library):
     import pytest as _pytest
     from mcp_server.tools import show_block_handler
     with _pytest.raises(KeyError):
-        show_block_handler(mcp_library, name_or_id="ThisBlockDoesNotExist")
+        show_block_handler(mcp_library, "stadium_xl", name_or_id="ThisBlockDoesNotExist")
 
 
 def test_generate_preset_handler_returns_base64_hsp(mcp_library):
@@ -91,7 +91,7 @@ def test_generate_preset_handler_returns_base64_hsp(mcp_library):
         ],
     }
 
-    result = generate_preset_handler(mcp_library, spec=spec)
+    result = generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
 
     assert isinstance(result, dict)
     assert result["mimeType"] == "application/octet-stream"
@@ -117,7 +117,7 @@ def test_generate_preset_handler_rejects_unknown_param(mcp_library):
         ],
     }
     with _pytest.raises(ParamValidationError):
-        generate_preset_handler(mcp_library, spec=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
 
 
 def test_generate_preset_handler_sanitizes_filename(mcp_library):
@@ -130,7 +130,7 @@ def test_generate_preset_handler_sanitizes_filename(mcp_library):
         "name": "../../etc/passwd",
         "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
     }
-    result = generate_preset_handler(mcp_library, spec=spec)
+    result = generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
     # No path traversal, no slashes, no null bytes.
     assert "/" not in result["name"]
     assert "\\" not in result["name"]
@@ -149,7 +149,7 @@ def test_show_block_handler_ambiguous_name_raises_lookuperror(monkeypatch, mcp_l
     monkeypatch.setattr(mcp_library, "find_block", _raise_lookup)
 
     with _pytest.raises(LookupError):
-        show_block_handler(mcp_library, name_or_id="Anything")
+        show_block_handler(mcp_library, "stadium_xl", name_or_id="Anything")
 
 
 def test_generate_preset_handler_rejects_malformed_spec(mcp_library):
@@ -161,7 +161,7 @@ def test_generate_preset_handler_rejects_malformed_spec(mcp_library):
     # Missing 'paths' is a structural failure caught by parse_spec.
     spec = {"name": "no paths here"}
     with _pytest.raises(SpecError):
-        generate_preset_handler(mcp_library, spec=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
 
 
 def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
@@ -195,13 +195,13 @@ def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
         ]}],
     }
     with _pytest.raises(GenerateError):
-        generate_preset_handler(mcp_library, spec=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
 
 
 def test_list_irs_handler_empty_when_no_mapping(tmp_path):
     """An IRs dir with no mapping.json returns empty string."""
     from mcp_server.tools import list_irs_handler
-    assert list_irs_handler(irs_dir=tmp_path) == ""
+    assert list_irs_handler("stadium_xl", irs_dir=tmp_path) == ""
 
 
 def test_list_irs_handler_returns_sorted_lines(tmp_path):
@@ -215,9 +215,181 @@ def test_list_irs_handler_returns_sorted_lines(tmp_path):
     }
     (tmp_path / "mapping.json").write_text(json.dumps(mapping))
 
-    result = list_irs_handler(irs_dir=tmp_path)
+    result = list_irs_handler("stadium_xl", irs_dir=tmp_path)
     lines = result.splitlines()
     assert lines == [
         "00000000000000000000000000000000  a_first.wav",
         "ffffffffffffffffffffffffffffffff  z_last.wav",
     ]
+
+
+# -- model validation ----------------------------------------------------
+
+
+import pytest as _pytest_top  # noqa: E402
+
+
+def _libsndfile_available() -> bool:
+    try:
+        from helixgen.ir import _load_libsndfile
+        _load_libsndfile()
+        return True
+    except (OSError, RuntimeError):
+        return False
+
+
+def test_validate_model_rejects_non_stadium():
+    """The model param refuses anything outside stadium / stadium_xl."""
+    from mcp_server.tools import _validate_model
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        _validate_model("helix_floor")
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        _validate_model("")
+
+
+def test_validate_model_accepts_stadium_and_xl():
+    from mcp_server.tools import _validate_model
+    _validate_model("stadium")
+    _validate_model("stadium_xl")
+
+
+def test_list_blocks_handler_rejects_bad_model(mcp_library):
+    from mcp_server.tools import list_blocks_handler
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        list_blocks_handler(mcp_library, "hx_stomp")
+
+
+def test_list_irs_handler_rejects_bad_model(tmp_path):
+    from mcp_server.tools import list_irs_handler
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        list_irs_handler("not_a_model", irs_dir=tmp_path)
+
+
+# -- compute_irhash ------------------------------------------------------
+
+
+import base64 as _b64  # noqa: E402
+import struct as _struct  # noqa: E402
+
+
+def _synth_wav_bytes(n_frames: int = 64, *, sr: int = 48000) -> bytes:
+    """Minimal PCM_24 mono WAV. One non-zero sample (0x123456) at frame 0."""
+    block_align = 3
+    byte_rate = sr * block_align
+    data = bytearray(n_frames * block_align)
+    data[0:3] = (0x123456).to_bytes(3, "little", signed=True)
+    fmt_chunk = (
+        b"fmt " + _struct.pack("<I", 16)
+        + _struct.pack("<HHIIHH", 1, 1, sr, byte_rate, block_align, 24)
+    )
+    data_chunk = b"data" + _struct.pack("<I", len(data)) + bytes(data)
+    body = b"WAVE" + fmt_chunk + data_chunk
+    return b"RIFF" + _struct.pack("<I", len(body)) + body
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_compute_irhash_returns_hash_and_reminder():
+    """Happy path: synth WAV → 32-char hex hash + non-empty reminder."""
+    from mcp_server.tools import compute_irhash_handler
+    wav_b64 = _b64.b64encode(_synth_wav_bytes()).decode("ascii")
+    result = compute_irhash_handler("stadium_xl", wav_b64)
+    assert set(result.keys()) == {"irhash", "reminder"}
+    assert len(result["irhash"]) == 32
+    assert all(c in "0123456789abcdef" for c in result["irhash"])
+    assert "Librarian" in result["reminder"]  # the upload-to-device reminder
+
+
+def test_compute_irhash_rejects_bad_model():
+    """Bad model → ValueError; we never reach libsndfile."""
+    from mcp_server.tools import compute_irhash_handler
+    wav_b64 = _b64.b64encode(_synth_wav_bytes()).decode("ascii")
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        compute_irhash_handler("helix_floor", wav_b64)
+
+
+def test_compute_irhash_rejects_oversize():
+    """Decoded size > 2 MB → ValueError before libsndfile."""
+    from mcp_server.tools import compute_irhash_handler
+    oversize = b"\x00" * (3 * 1024 * 1024)
+    wav_b64 = _b64.b64encode(oversize).decode("ascii")
+    with _pytest_top.raises(ValueError, match=r"max .*2 MB"):
+        compute_irhash_handler("stadium_xl", wav_b64)
+
+
+def test_compute_irhash_rejects_non_riff():
+    """Bytes without RIFF/WAVE magic → ValueError before libsndfile."""
+    from mcp_server.tools import compute_irhash_handler
+    fake = b"NOT A WAVE FILE AT ALL" + b"\x00" * 100
+    wav_b64 = _b64.b64encode(fake).decode("ascii")
+    with _pytest_top.raises(ValueError, match="RIFF/WAVE magic"):
+        compute_irhash_handler("stadium_xl", wav_b64)
+
+
+def test_compute_irhash_rejects_invalid_base64():
+    """Garbage in wav_b64 → ValueError (not a crash)."""
+    from mcp_server.tools import compute_irhash_handler
+    with _pytest_top.raises(ValueError, match="valid base64"):
+        compute_irhash_handler("stadium_xl", "this is not base64 at all!!!")
+
+
+# -- discover_irs --------------------------------------------------------
+
+
+def _write_synth_wav_file(path, n_frames: int = 64, sr: int = 48000) -> None:
+    """Write a synth WAV to a Path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_synth_wav_bytes(n_frames, sr=sr))
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_discover_irs_walks_directory_and_returns_hashes(tmp_path):
+    """Local invocation: walks the dir, hashes each WAV, returns list of dicts."""
+    from mcp_server.tools import discover_irs_handler
+    _write_synth_wav_file(tmp_path / "a.wav", n_frames=64)
+    _write_synth_wav_file(tmp_path / "sub" / "b.wav", n_frames=128)
+    # non-WAV file is ignored
+    (tmp_path / "readme.txt").write_text("not a wav")
+
+    result = discover_irs_handler("stadium_xl", str(tmp_path))
+    assert isinstance(result, list)
+    assert len(result) == 2
+    for entry in result:
+        assert set(entry.keys()) == {"hash", "path", "basename"}
+        assert len(entry["hash"]) == 32
+    basenames = sorted(e["basename"] for e in result)
+    assert basenames == ["a.wav", "b.wav"]
+
+
+def test_discover_irs_refuses_when_hosted(tmp_path, monkeypatch):
+    """HELIXGEN_HOSTED=1 → refuse with a clear redirect to compute_irhash."""
+    monkeypatch.setenv("HELIXGEN_HOSTED", "1")
+    from mcp_server.tools import discover_irs_handler
+    with _pytest_top.raises(ValueError, match="hosted deploy"):
+        discover_irs_handler("stadium_xl", str(tmp_path))
+
+
+def test_discover_irs_rejects_bad_model(tmp_path):
+    from mcp_server.tools import discover_irs_handler
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        discover_irs_handler("hx_stomp", str(tmp_path))
+
+
+def test_discover_irs_rejects_non_directory(tmp_path):
+    """Path that isn't a directory → ValueError."""
+    f = tmp_path / "afile.txt"
+    f.write_text("not a dir")
+    from mcp_server.tools import discover_irs_handler
+    with _pytest_top.raises(ValueError, match="not a directory"):
+        discover_irs_handler("stadium_xl", str(f))
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_discover_irs_skips_unhashable_files(tmp_path):
+    """Non-48k files are skipped silently; valid ones still returned."""
+    from mcp_server.tools import discover_irs_handler
+    _write_synth_wav_file(tmp_path / "good.wav", n_frames=64, sr=48000)
+    _write_synth_wav_file(tmp_path / "bad.wav", n_frames=64, sr=44100)
+    result = discover_irs_handler("stadium_xl", str(tmp_path))
+    basenames = [e["basename"] for e in result]
+    assert "good.wav" in basenames
+    assert "bad.wav" not in basenames
