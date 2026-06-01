@@ -16,9 +16,10 @@ file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
 - `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg. Use `--force` to overwrite existing mappings.
 - `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash directly (no device export needed) and register. Requires libsndfile (`brew install libsndfile` on macOS). Only 48 kHz sources supported; non-48 kHz raises an error suggesting `sox`. Stereo WAVs are reduced to the left channel (matches Stadium's import).
+- `helixgen ir-scan <dir>... [--rescan] [--remove <basename>]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache. Files already cached are skipped by absolute path unless `--rescan`. Per-file failures (non-48 kHz, libsndfile errors) print a stderr warning and the scan continues. `--remove <basename>` forgets a single entry. Use this to bulk-register a whole IR library at once; use `register-irs` for one-off binding from a preset.
 - `helixgen list-irs` — print `<hash>  <wav-path>` for every registered IR.
 
-Example: `helixgen register-irs ~/IRs/cabs/*.wav && helixgen list-irs`.
+Example: `helixgen ir-scan ~/IRs && helixgen list-irs | wc -l`.
 
 ## spec.json shape
 
