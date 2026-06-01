@@ -1,14 +1,14 @@
 # IR workflow refactor — design
 
-**Date:** 2026-05-31
-**Status:** Draft (for review)
+**Date:** 2026-05-31 (revised after review)
+**Status:** Draft (revised; for second-pass review)
 **Source brief:** conversation 2026-05-31 (after `compute_stadium_irhash` landed in `!1`)
 
 ## Goal
 
 Now that helixgen can compute Stadium IR hashes directly from any WAV file,
-rework the IR-registration story so the same code path serves three users
-cleanly:
+rework the IR-registration story so that all three user contexts get a
+coherent IR workflow, even when their constraints differ:
 
 - **Local Claude Code** users with an IR library at a known path on disk
 - **claude.ai web** users who drag IR files into the chat
@@ -16,38 +16,50 @@ cleanly:
 
 The current `helixgen register-irs` command was designed when computing the
 hash required a Stadium device round-trip. With the hash now computable
-offline, "registration" reduces to two simpler concerns: a cache of
-(hash, path) pairs for the local CLI, and a stateless WAV → hash conversion
-endpoint usable from anywhere.
+offline for 48 kHz IRs, "registration" reduces to: a cache of (hash, path)
+pairs for the local CLI, a stateless WAV → hash conversion endpoint for
+hosted use, and a preset-binding fallback for IRs we still can't hash offline
+(non-48 kHz, until libsamplerate is ported).
 
-This spec also addresses two adjacent problems surfaced in the same
+This spec also addresses three adjacent problems surfaced in the same
 conversation:
 
 1. The MCP server's `generate_preset` tool currently has no way to verify the
    user is on a Stadium device (vs. legacy Helix Floor / LT / Stomp). It just
    generates and hopes.
-2. The Claude agent has no enforced workflow for asking the user up-front
-   what model they have, where their IRs live, or what each IR is good for.
+2. The Claude agent has no encoded workflow for asking the user up-front what
+   model they have, where their IRs live, or what each IR is good for.
+3. Hosted Claude users (claude.ai) have no IR registry today — they cannot
+   meaningfully use `With Pan` IR blocks in generated presets, even after `!1`,
+   because there's no place to put a (hash, file) mapping the device side can
+   resolve.
 
 ## Non-goals
 
 - **libsamplerate path for non-48 kHz IRs.** Stadium uses
   `SRC_SINC_BEST_QUALITY` for resampling; porting that to Python is its own
   reverse-engineering project. For now we keep raising
-  `NotImplementedError` with the `sox` suggestion.
+  `NotImplementedError` with the `sox` suggestion. The preset-binding form of
+  `register-irs` (below) is the workaround.
 - **Legacy Helix (.hlx) IR support.** Hashes don't exist there — IRs are
   identified by slot number — and the slot model is a separate problem.
 - **A web UI for managing the IR cache.** CLI + MCP are sufficient.
 - **Importing IRs onto the device from helixgen.** The user still does that
   via the Helix Stadium app's Librarian. Helixgen only deals with the
-  preset-side hash references.
+  preset-side hash references; the device side is the user's responsibility.
 - **Research crawling.** We do not pre-fetch tonal descriptions for the
   user's entire IR library on startup. We only research on demand.
+- **Cross-session IR memory on hosted Claude.** A WAV dragged into one
+  claude.ai conversation does not persist to the next. Each session needs
+  IRs re-dragged. Acceptable trade-off; the alternative is per-user storage
+  this server doesn't have.
 
 ## Status quo (after !1)
 
-- `compute_stadium_irhash(wav_path) -> str` — the core primitive. ctypes →
-  libsndfile. 48 kHz only. ~1 ms per IR. Validated against 27 known
+- `compute_stadium_irhash(wav_path: Path | str) -> str` — the core primitive,
+  in `src/helixgen/ir.py`. **Takes a filesystem path only** (calls libsndfile
+  via ctypes which needs a path); does not accept raw bytes. Stateless.
+  48 kHz sources only. ~1 ms per IR. Validated against 27 known
   (hash, wav) pairs.
 - `helixgen register-irs <preset.hsp> <wavs...>` — original form. Binds each
   preset slot's irhash to a wav path. Used when the user has a preset
@@ -55,72 +67,63 @@ conversation:
 - `helixgen register-irs <wavs...>` — new auto-compute form. Computes each
   WAV's hash via `compute_stadium_irhash` and registers.
 - `helixgen list-irs` — prints the mapping.
-- MCP server: `list_blocks`, `show_block`, `generate_preset`, `list_irs`
-  (read-only). No write-side IR tool. No model parameter on any tool.
+- MCP server (4 tools): `list_blocks`, `show_block`, `generate_preset`,
+  `list_irs` (read-only). No write-side IR tool. No model parameter on any
+  tool. `list_irs` on the hosted deploy is always empty.
 
 ## Proposed shape
 
-### Three layers
+### Layer 1 — `compute_stadium_irhash` (unchanged)
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ Layer 1: compute_stadium_irhash() — pure primitive       │
-│   already exists; stateless; bytes-or-path in, hash out  │
-└──────────────────────────────────────────────────────────┘
-            │                            │
-            ▼                            ▼
-┌──────────────────────────┐  ┌──────────────────────────┐
-│ Layer 2: CLI cache       │  │ Layer 2: MCP tools       │
-│   helixgen ir-scan       │  │   compute_irhash()       │
-│   helixgen list-irs      │  │   discover_irs()         │
-│   mapping.json as cache  │  │   model: required        │
-└──────────────────────────┘  └──────────────────────────┘
-            │                            │
-            ▼                            ▼
-┌──────────────────────────┐  ┌──────────────────────────┐
-│ Layer 3: helixgen CLI    │  │ Layer 3: Claude (CC/web) │
-│   helixgen generate      │  │   guided by skill +      │
-│   reads mapping for ir   │  │   memory; sends bytes    │
-│   lookup by basename     │  │   or paths to MCP        │
-└──────────────────────────┘  └──────────────────────────┘
-```
-
-### Layer-1 stays as-is.
-
-Already shipped in `!1`. No changes proposed.
+Stays path-based. The MCP handler for `compute_irhash` (Layer 2) writes
+incoming base64 bytes to a `tempfile.NamedTemporaryFile` and calls the
+existing function on the temp path. We do **not** add a bytes-accepting
+variant; the temp-file route is fine for the 200 KB scale of typical IRs
+and avoids duplicating the byte-management logic.
 
 ### Layer 2 — CLI changes
 
-#### Rename `register-irs` → `ir-scan`
-
-The new mental model is "scan a directory and cache the hashes I find,"
-not "register these specific files." The user points at their IR library
-once; helixgen walks it.
+#### Add `ir-scan` (recursive cache builder)
 
 ```
 helixgen ir-scan <directory>...           # recurse and cache hashes
 helixgen ir-scan --rescan <directory>...  # recompute even if cached
 helixgen ir-scan --remove <basename>      # forget one entry
-helixgen list-irs                          # unchanged
 ```
 
 Behavior:
 - Recursively finds `*.wav` (case-insensitive) under each given directory.
 - For each file: computes hash, registers (path, hash) into `mapping.json`.
 - Skips files already in the cache by absolute path *unless* `--rescan`.
-- Skips files that raise `NotImplementedError` (non-48k) with a per-file
+- Skips files that raise `NotImplementedError` (non-48 kHz) with a per-file
   stderr warning; does not abort the whole scan.
 - Skips files that fail libsndfile open with a warning.
 
-Keep the old `helixgen register-irs` syntax as a deprecation alias for one
-release cycle; print a "use `ir-scan` instead" notice on stderr. Remove
-after.
+#### Keep `register-irs` (both forms)
+
+The `register-irs <preset.hsp> <wavs...>` form **remains** because it solves
+the non-48 kHz case `ir-scan` cannot: when the user has a non-48 kHz IR they
+re-exported from a device into a preset, the preset still has the hash —
+just bind from the preset.
+
+The `register-irs <wavs...>` form is functionally equivalent to running
+`ir-scan` on the parent directory of each WAV, but we keep it for
+discoverability and because it's a strict subset of the new behavior.
+
+No deprecation alias. Pre-1.0; the original commands continue to work.
 
 #### `mapping.json` is now explicitly a *cache*
 
-Same on-disk format as today. Comment update in the schema; no migration
-needed. Add a `helixgen ir-purge` command for "drop the whole cache and
-start over" — useful if the user moves their IR library.
+Same on-disk format for now. **`--rescan` is required to detect user-edited
+files**; we do not add an mtime field in this iteration (would be a real
+schema change, and the rescan flag is good enough until we observe pain).
+
+#### Test/doc ripple
+
+The CLI rename adds an alias rather than replacing — so the existing
+`register-irs` invocations in tests and docs don't need to change. New tests
+cover `ir-scan` specifically. Documentation gets one new bullet for `ir-scan`
+and a sentence calling out when to use which form.
 
 ### Layer 2 — MCP tools
 
@@ -137,30 +140,34 @@ def compute_irhash(model: str, wav_b64: str) -> dict[str, str]:
 
 @app.tool()
 def discover_irs(model: str, ir_directory: str) -> list[dict[str, str]]:
-    """Walk a directory, return [{path, hash, basename}, ...].
-    Local-only (path must exist on the server's filesystem). Errors on hosted."""
     ...
 ```
 
-Validation: `model` must be `"stadium"` or `"stadium_xl"`. Anything else
-returns a structured error:
+**Validation:** `model` must be `"stadium"` or `"stadium_xl"`. Anything else
+raises `ValueError` (FastMCP translates this to an MCP `isError` content
+block — there is no "structured error" type to return).
 
-```
-unsupported model: 'helix_floor'. helixgen currently supports only
-'stadium' and 'stadium_xl'. Ask the user to confirm their device.
-```
+**Honest accounting of what this enforces:**
 
-The structured error gives Claude actionable text — it knows to ask the user
-again.
+The `model` param is a **soft gate**, not a hard one. A misinformed agent
+can fill in `"stadium_xl"` on behalf of an HX Stomp user; the tool will run
+and silently produce a preset that won't load on the user's device. The
+value of the param is twofold:
 
-Adding the param to existing tools is technically a breaking change for
-the deployed server. Acceptable since it's pre-1.0 and currently has very
-few consumers.
+1. It forces the question into the agent's tool-call planning. An agent
+   that's never seen the user mention a model has to either ask or guess;
+   the required arg makes "ask" the path of least resistance.
+2. It is the verification *hook* the `using-helixgen` skill uses. The skill
+   confirms the device per session (not just per user) before allowing the
+   agent to call any of these tools. The param is what the skill checks.
+
+The skill is the real gate. The param is what the skill enforces against.
+We acknowledge this is partial.
 
 #### Add `compute_irhash`
 
-Stateless. Takes base64-encoded WAV bytes (drag-and-drop friendly). Returns
-the hash plus the upload-to-device reminder embedded in the response.
+Stateless. Takes base64-encoded WAV bytes. Returns the hash plus a
+`reminder` field:
 
 ```json
 {
@@ -169,186 +176,216 @@ the hash plus the upload-to-device reminder embedded in the response.
 }
 ```
 
-Errors structurally on non-48k, libsndfile-open-failure, or `len(wav_b64)`
-above a sanity limit (e.g. 10 MB).
+**Input validation (security):** the handler must (a) decode base64, (b)
+size-check the decoded bytes (reject > 2 MB, well above any realistic IR),
+(c) verify the first 4 bytes are `RIFF` and bytes 8–12 are `WAVE` before
+handing to libsndfile. libsndfile has had CVEs; treating arbitrary internet
+bytes as trusted input is unsafe. The size limit lives below the MCP
+transport's per-message budget rather than at any specific number — 2 MB
+of WAV → ~2.7 MB of base64, comfortably within JSON-RPC limits.
 
-#### Add `discover_irs` (local MCP only)
+#### Add `discover_irs` (local-only)
 
-Walks a path on the server's filesystem, returns the (hash, path) pairs
-without touching `mapping.json`. Hosted deploys reject this with
-`"discover_irs requires a local helixgen MCP server; the hosted deploy
-has no access to your filesystem"`. Local deploys use it freely.
+Walks a server-side filesystem path and returns `[{path, hash, basename}, ...]`
+without touching `mapping.json`.
 
-This is the bridge to "the agent looks up the user's IR library when
-generating a preset." The skill (next section) tells the agent when to
-call it.
+**Hosted gating:** the handler checks `os.environ.get("HELIXGEN_HOSTED") == "1"`
+(set in `render.yaml` on the hosted deploy). When set, the handler raises
+`ValueError` with the text:
+
+> `discover_irs` requires a local helixgen MCP server. The hosted deploy
+> has no access to your filesystem. Drag IRs into the conversation and use
+> `compute_irhash` per file instead.
+
+Local deploys (env var unset) walk the directory freely.
+
+#### Hosted IR resolution workflow (the critical gap)
+
+This is the explicit answer to "how does a hosted user's preset get IR
+hashes": the agent does **the binding in conversation**, not on the server.
+
+1. User drags IR file(s) into chat. Claude has the bytes.
+2. Agent calls `compute_irhash(model, wav_b64)` per file. Receives
+   `{irhash, reminder}` per file.
+3. Agent builds the preset spec inline. For each `With Pan`-style block,
+   the agent puts the **32-char hex hash** in the slot's `ir` field
+   (CLAUDE.md documents that `ir` accepts a hex hash *or* a basename).
+4. Agent calls `generate_preset(model, spec)`. The hosted server resolves
+   the `ir` field by accepting the hash literal (no mapping lookup
+   needed — the hash IS what gets emitted into the `.hsp` file).
+5. Agent surfaces the per-IR `reminder` to the user before returning the
+   `.hsp`: "Before loading this preset, import these IRs onto the device
+   via the Librarian: [list]."
+
+What this requires on the implementation side:
+
+- `helixgen generate` must accept a literal 32-char hex hash in the `ir`
+  field without needing a mapping entry. Verify this is already true; if
+  not, add a code path.
+- The agent has to remember the hash within a single conversation. That's
+  free — it's in tool-call history.
+- The agent has to re-drag IRs if the conversation restarts. Documented as
+  a non-goal above; we don't try to persist hosted state.
 
 ### Layer 3 — the `using-helixgen` skill
 
 Ship a Claude Code skill at `.claude/skills/using-helixgen/SKILL.md`.
 
-The skill encodes a workflow that's hard to enforce purely via tool
-schemas:
+**Frontmatter:** `name: using-helixgen`, `description:` covering "Helix
+preset design / IR registration / preset generation." Combined frontmatter
+≤ 1024 chars (existing project skill convention; verified via the `tone`
+skill).
+
+**Skill body (revised after review):**
 
 ```markdown
----
-name: using-helixgen
-description: Use when the user wants to design, generate, or modify a
-  Helix preset (.hsp / .hlx). Establishes device model, IR library
-  location, and tonal preferences before generating.
----
-
 ## Before generating any preset
 
-In order:
+In order, every session that involves generating or modifying a preset:
 
-1. **Confirm the device model.** Check memory for `helix_device.md`. If
-   absent, ask: "Which Helix do you have? Stadium, Stadium XL, or
-   something else?" Record the answer. If it's not Stadium or Stadium XL,
-   tell the user this skill only supports Stadium-family devices for now.
+1. **Confirm the device model.** Look up the existing user memory
+   `user_device.md`. If absent, ask: "Which Helix do you have? Stadium,
+   Stadium XL, or something else?" If older than ~3 months, confirm: "Still
+   on Stadium XL?" Record/update. If the answer is *not* Stadium or
+   Stadium XL, tell the user this project supports the Stadium family only
+   for now.
 
 2. **Locate IR library if applicable.** If the user mentions IRs or
-   `With Pan` blocks, check memory for `helix_ir_directory.md`. If
-   absent, ask: "Where do your impulse responses live? (Provide a
-   directory path.)" Record. Skip this step if the user is on hosted
-   Claude — they'll drag IRs into the chat instead.
+   `With Pan` blocks, check memory for `user_ir_directory.md`. If absent
+   and the user is on local Claude Code, ask: "Where do your impulse
+   responses live? (Provide a directory path.)" Record. Skip on hosted —
+   ask the user to drag IRs into the chat instead, per
+   `compute_irhash` workflow.
 
-3. **Recall IR preferences.** Check memory for `helix_ir_notes.md`
-   (one entry per IR the user has discussed). Use these when choosing
-   which IR to suggest.
+3. **Recall IR preferences.** Check memory for `project_ir_notes.md`.
+   Use these when choosing which IR to suggest.
+
+4. **Check `feedback_no_paid_irs_in_repo.md`** to remember the user's IR
+   collection includes commercial packs that must never be committed or
+   pasted into fixtures.
 
 ## When the user mentions an IR you haven't seen before
 
-1. **Try web research.** If the basename looks like a known commercial
-   pack (`YA ` = York Audio, `OH ` = Ownhammer, `3SP ` = 3 Sigma, etc.),
-   web-search `<pack name> <ir basename> tonal description` to find what
-   amp/cab/mic combination it models and its character.
+1. **Try web research only on basenames matching a known commercial pack
+   prefix** (`YA ` = York Audio, `OH ` = Ownhammer, `3SP ` = 3 Sigma, etc.).
+   Search `<pack name> <basename> tonal description`.
 
-2. **If web research fails, ask the user.** "What's `<basename>` meant
-   for? Any specific tones you reach for it for?"
+2. **Never invent tonal descriptions from basename pattern-matching.** If
+   web research returns nothing high-confidence, do *not* describe the IR
+   from the filename. Ask the user: "What's `<basename>` meant for? Any
+   specific tones you reach for it for?"
 
-3. **Record findings.** Add a one-line entry to `helix_ir_notes.md`
-   keyed by basename: `- YA DXVB 112 Mix 03 — vintage Marshall-leaning,
-   bright top end; user reaches for it on clean tones`.
+3. **Record findings.** Add a one-line entry to `project_ir_notes.md`
+   keyed by basename.
+
+## Interaction with the `tone` skill
+
+`tone` covers tone-design choices (anti-fizz preferences, drive stacking,
+etc.). This skill covers metadata and workflow. When both trigger,
+`using-helixgen` runs first (verify model + IR setup), then `tone` informs
+the actual block choices.
 
 ## After generating a preset that uses user IRs
 
 Tell the user, in one sentence: "Make sure these IRs are loaded on your
 Stadium via the Librarian → Cab IRs → Import before you load this preset,
-or the IR block will show 'No Model'."
+or the IR block will show 'No Model'." List the IR basenames involved.
 
-List the IR basenames in the preset so the user can verify.
+## What this skill does NOT enforce
+
+This skill is advisory; the agent can technically skip these steps if the
+user pushes for speed ("just generate it"). The `model` MCP param backs
+the device check; otherwise this is goodwill. Do not promise the user
+something this skill cannot deliver.
 ```
 
-Two important properties of this skill:
+**Hosted users do not load Claude Code skills.** The workflow guidance for
+hosted users comes through the MCP tool errors and the `reminder` field
+on `compute_irhash`. We do *not* try to duplicate the skill body into tool
+descriptions — descriptions are seen only during tool selection, not as
+standing instructions, and stuffing them is wasted tokens. The hosted
+tools' error messages and reminder fields are the only persistent guidance
+the hosted agent gets.
 
-- **It is a Skills file, not a workflow stored in the MCP server.** Skills
-  load into Claude Code's context before the agent acts. The user doesn't
-  have to configure anything.
-- **Claude.ai web doesn't load Claude Code skills.** For hosted users, the
-  same logic is repeated in the MCP tool descriptions. The downside is
-  duplication; the upside is each interface gets the guidance it needs.
+### Memory schema (revised)
 
-### Memory schema
+The skill names three memory files, using existing project conventions
+(`user_`, `project_`, `feedback_` prefixes; see existing memory at
+`~/.claude/projects/-Users-michael-shea-git-helixgen/memory/`):
 
-The skill names three memory files:
+| File                       | Type     | Holds                              |
+|----------------------------|----------|------------------------------------|
+| `user_device.md`           | user     | "Stadium" / "Stadium XL"           |
+| `user_ir_directory.md`     | user     | one directory path                 |
+| `project_ir_notes.md`      | project  | one bullet per IR the user uses    |
 
-| File                       | Type    | Holds                                |
-|----------------------------|---------|--------------------------------------|
-| `helix_device.md`          | user    | "Stadium" / "Stadium XL"             |
-| `helix_ir_directory.md`    | user    | one directory path                   |
-| `helix_ir_notes.md`        | project | one bullet per IR the user uses      |
+`user_device.md` already exists — the skill reads and updates it; it does
+not create a parallel `helix_device.md`. The "confirm if older than
+~3 months" rule above handles device upgrades without forcing the user to
+edit memory by hand.
 
-We already have `helix_device.md`-ish memory in the user's profile (the
-existing `user_device.md`). The skill should look there first; only ask if
-absent.
+For users who own multiple Stadium devices (one Stadium + one Stadium XL
+in different rigs), `user_device.md` can hold either a single string or a
+list — the skill normalizes. We do *not* try to track per-device IR
+libraries; if it matters in practice we revisit.
 
-`helix_ir_notes.md` is a single growing file. It is the right size for
-memory: a few dozen entries at most, each one line. For users with 800 IRs
-who only care about 20, we never write the other 780. This is the
-"on-demand research" property the user explicitly called out.
+The skill should also read `feedback_no_paid_irs_in_repo.md` (already
+present in this user's memory) so it knows IR fixtures are gitignored and
+test fixtures must be synthetic or freely licensed.
+
+## Hosted deploy requirements
+
+The hosted MCP server runs on Render. To make `compute_irhash` work there:
+
+1. **`render.yaml` must install `libsndfile`** via `aptPackages: [libsndfile1]`.
+   The current `render.yaml` does not, so `compute_irhash` would 500 on first
+   call. The implementation MR adds this.
+2. **`HELIXGEN_HOSTED=1` environment variable** set in `render.yaml`. Used
+   by `discover_irs` to refuse the call (see Layer 2 above).
+3. **`compute_irhash` payload size limit** enforced before base64 decode
+   (2 MB cap), then format validation (`RIFF`/`WAVE` magic bytes) before
+   libsndfile call.
 
 ## Migration
 
-### CLI
+This is a **breaking change for the hosted MCP server** (`model` becomes
+required on `generate_preset` and `list_irs`). Acceptable: the deployed
+server has very few consumers and is pre-1.0. The MR that adds `model`
+also bumps the server's version string.
 
-| Before                              | After                          |
-|-------------------------------------|--------------------------------|
-| `register-irs <preset.hsp> <wavs>`  | unchanged; deprecation notice  |
-| `register-irs <wavs>`               | `ir-scan <wavs>` (deprecation alias keeps old form) |
-| (nothing)                           | `ir-scan <dir>` — recursive    |
-| `list-irs`                          | unchanged                      |
-| (nothing)                           | `ir-purge`                     |
-
-One release cycle of deprecation, then remove `register-irs` entirely.
-
-### MCP
-
-This is a breaking change for the deployed server (the `model` param is
-required, no default). Bump the server version and update the connector
-docs. Existing in-flight conversations using the old tool shape will get a
-clear error.
-
-### Mapping file
-
-No schema change. The same `mapping.json` is now a cache rather than a
-registration source-of-truth. The CLI documentation gets a sentence to that
-effect; the file itself doesn't move or change shape.
+The CLI does not break: existing `register-irs` invocations continue to
+work. The new `ir-scan` is additive.
 
 ## Open questions
 
-1. **Cache invalidation.** Do we mtime-check WAVs on `ir-scan` to detect
-   user-edited files? Or always trust the existing hash unless `--rescan`?
-   Argument for mtime check: it's cheap and silently does the right thing
-   if the user re-exports a WAV. Argument against: complicates the cache
-   format. *Recommendation: mtime check; add an `mtime` field to mapping.json
-   entries (back-compat: missing mtime = always rescan).*
+1. **`compute_irhash` payload form.** Spec proposes base64. Some MCP
+   transports might support binary blobs natively; investigate before
+   the implementation MR. If binary is supported, prefer it.
 
-2. **Should the deprecation alias survive longer than one release?** It's
-   a low-cost compatibility shim. *Recommendation: keep it through 0.x,
-   remove only at 1.0.*
+2. **`ir-scan` concurrency.** Two concurrent `ir-scan` runs on overlapping
+   directories race on `mapping.json`. Cheap fix: lockfile via
+   `fcntl.flock` around the read-modify-write. Implementer's call.
 
-3. **Hosted MCP — do we expose a `discover_irs` no-op that returns a
-   helpful error, or omit the tool entirely on hosted?** *Recommendation:
-   expose it; the error text teaches the agent what's possible.*
-
-4. **`model` granularity.** Stadium vs Stadium XL differs in 6 vs 10
-   footswitches and 1 vs 2 expression pedals. The generator already
-   handles both. Should `model` accept just `"stadium_xl"` or distinguish
-   sub-variants? *Recommendation: accept `"stadium"` and `"stadium_xl"` as
-   distinct values; the generator routes accordingly. Reject everything
-   else.*
-
-5. **IR notes memory — what if the user has 50+ IRs they actually use?**
-   The memory budget caps `MEMORY.md` (the index) at ~200 lines, but
-   `helix_ir_notes.md` itself can be larger since it's only loaded when
-   the skill requests it. *Recommendation: don't pre-cap; if it ever
-   exceeds 500 lines, split by pack name.*
-
-## Implementation order
-
-1. **MCP `model` param + `compute_irhash` + `discover_irs`** — small,
-   self-contained, unblocks the hosted use case
-2. **`using-helixgen` skill** — drops in alongside; no code changes
-   needed elsewhere
-3. **CLI rename + deprecation alias** — purely cosmetic; can land any
-   time
-4. **`ir-scan --rescan` and mtime cache field** — quality-of-life; last
-
-Each is its own MR. (1) and (2) ship together since the skill references
-the new tools.
+3. **Multi-device memory shape.** Single string vs. list in
+   `user_device.md`. Spec recommends list-of-strings; revisit if real
+   ergonomic pain shows up.
 
 ## Test plan
 
-- **MCP unit tests** for the `model` param: stadium / stadium_xl accepted,
-  everything else returns the structured error
-- **`compute_irhash` MCP test** using the existing `_write_synth_wav`
-  helper, base64-encoded
-- **`discover_irs` MCP test** against a tmp dir of synth wavs
-- **CLI deprecation alias** test: `register-irs` still works, prints
-  deprecation warning to stderr
-- **`ir-scan` integration test** using a tmp dir tree of synth wavs
-- **Skill linting** — the skill should be loadable by Claude Code (basic
-  frontmatter check)
-- Manual: run a full session in Claude Code with the new skill installed
-  and verify the agent asks for model + IR dir before generating
+- **CLI:** `ir-scan` on a tmp tree of synthesized 48 kHz WAVs; verifies
+  recursion, `--rescan`, non-48 kHz warning behavior, and `mapping.json`
+  shape. Existing `register-irs` tests stay green.
+- **MCP unit tests:** `model` param accepts `stadium`/`stadium_xl`,
+  rejects anything else with the expected `ValueError`.
+- **`compute_irhash` tests:** synthetic base64 WAV → expected hash; size
+  cap rejects oversize; non-RIFF rejects with a clear error.
+- **`discover_irs` tests:** local works, hosted (`HELIXGEN_HOSTED=1`)
+  refuses with the documented message.
+- **Skill frontmatter test:** a tiny pytest parses `SKILL.md` and asserts
+  `name` and `description` are present and combined frontmatter is
+  ≤ 1024 chars. (No existing linter; ~10 lines of pytest.)
+- **Manual:** real Claude Code session with the skill installed; verify
+  the agent asks model + IR-dir before generating.
+- **Manual on hosted:** drag a real IR, confirm `compute_irhash` returns
+  a hash matching `compute_stadium_irhash` on the same WAV locally;
+  confirm `discover_irs` errors helpfully.
