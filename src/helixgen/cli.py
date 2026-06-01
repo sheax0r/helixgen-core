@@ -233,6 +233,102 @@ def register_irs_cmd(
     click.echo(f"Registered {len(hashes)} IR(s) to {mapping.irs_dir / 'mapping.json'}")
 
 
+@cli.command(name="ir-scan")
+@click.argument(
+    "directories",
+    nargs=-1,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+)
+@click.option(
+    "--rescan",
+    is_flag=True,
+    default=False,
+    help="Recompute hashes even for files already in the cache.",
+)
+@click.option(
+    "--remove",
+    "remove_basename",
+    type=str,
+    default=None,
+    help="Forget one entry by wav basename and exit.",
+)
+@_irs_option
+def ir_scan_cmd(
+    directories: tuple[Path, ...],
+    rescan: bool,
+    remove_basename: str | None,
+    irs_dir: Path | None,
+) -> None:
+    """Recursively scan directories for .wav files and cache their Stadium hashes.
+
+    Skips files already cached (by absolute path) unless --rescan. Skips files
+    that can't be hashed (non-48 kHz, libsndfile errors) with a stderr warning;
+    does not abort the scan.
+
+    Use --remove <basename> to forget a single entry (no directory args).
+    """
+    mapping = _resolved_irs(irs_dir)
+
+    if remove_basename is not None:
+        if directories:
+            raise click.ClickException("--remove takes no directory arguments")
+        hits = [h for h, p in mapping.entries.items() if Path(p).name == remove_basename]
+        if not hits:
+            raise click.ClickException(f"no entry with basename {remove_basename!r}")
+        if len(hits) > 1:
+            paths = ", ".join(mapping.entries[h] for h in hits)
+            raise click.ClickException(
+                f"basename {remove_basename!r} matches multiple entries: {paths}"
+            )
+        del mapping.entries[hits[0]]
+        mapping.save()
+        click.echo(f"Removed {remove_basename}")
+        return
+
+    if not directories:
+        raise click.ClickException(
+            "at least one directory required (or use --remove <basename>)"
+        )
+
+    cached_paths = {Path(p).resolve() for p in mapping.entries.values() if Path(p).is_absolute()}
+    cached_paths |= {(mapping.irs_dir / p).resolve() for p in mapping.entries.values()
+                     if not Path(p).is_absolute()}
+
+    scanned = 0
+    added = 0
+    skipped_cached = 0
+    skipped_error = 0
+    for root in directories:
+        for wav in sorted(root.rglob("*")):
+            if not wav.is_file() or wav.suffix.lower() != ".wav":
+                continue
+            scanned += 1
+            wav_abs = wav.resolve()
+            if not rescan and wav_abs in cached_paths:
+                skipped_cached += 1
+                continue
+            try:
+                h = compute_stadium_irhash(wav)
+            except (NotImplementedError, RuntimeError, FileNotFoundError) as e:
+                click.echo(f"skip {wav}: {e}", err=True)
+                skipped_error += 1
+                continue
+            try:
+                mapping.register(h, wav, force=rescan)
+            except IrMappingError as e:
+                click.echo(f"skip {wav}: {e}", err=True)
+                skipped_error += 1
+                continue
+            cached_paths.add(wav_abs)
+            added += 1
+
+    mapping.save()
+    click.echo(
+        f"Scanned {scanned} wav(s): {added} added, "
+        f"{skipped_cached} already cached, {skipped_error} skipped (errors)"
+    )
+
+
 @cli.command(name="list-irs")
 @_irs_option
 def list_irs_cmd(irs_dir: Path | None) -> None:

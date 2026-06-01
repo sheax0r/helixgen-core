@@ -277,3 +277,128 @@ def test_list_irs_prints_one_per_line_sorted(tmp_path, monkeypatch):
     assert result.exit_code == 0
     # sorted by hash
     assert result.output == "aaa  first.wav\nbbb  second.wav\n"
+
+
+# -- ir-scan -----------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_recurses_and_caches(tmp_path, monkeypatch):
+    """ir-scan walks subdirectories and caches each WAV's hash."""
+    from helixgen.ir import compute_stadium_irhash
+
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+
+    src_dir = tmp_path / "library"
+    a = _write_synth_wav(src_dir / "a.wav", n_frames=64)
+    b = _write_synth_wav(src_dir / "sub" / "b.wav", n_frames=128)
+    h_a = compute_stadium_irhash(a)
+    h_b = compute_stadium_irhash(b)
+
+    result = CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    assert result.exit_code == 0, result.output
+    assert "2 wav(s)" in result.output and "2 added" in result.output
+
+    mapping = json.loads((irs_dir / "mapping.json").read_text())
+    assert mapping[h_a] == str(a)
+    assert mapping[h_b] == str(b)
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_skips_already_cached(tmp_path, monkeypatch):
+    """Second invocation skips files already in the cache."""
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_dir = tmp_path / "library"
+    _write_synth_wav(src_dir / "a.wav", n_frames=64)
+
+    CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    result = CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    assert result.exit_code == 0, result.output
+    assert "1 already cached" in result.output
+    assert "0 added" in result.output
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_rescan_forces_recompute(tmp_path, monkeypatch):
+    """--rescan recomputes and overwrites even for cached files."""
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_dir = tmp_path / "library"
+    _write_synth_wav(src_dir / "a.wav", n_frames=64)
+
+    CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    result = CliRunner().invoke(cli, ["ir-scan", "--rescan", str(src_dir)])
+    assert result.exit_code == 0, result.output
+    assert "1 added" in result.output  # rescan reports as added
+    assert "0 already cached" in result.output
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_warns_on_non_48k_but_continues(tmp_path, monkeypatch, capfd):
+    """Non-48k file produces a stderr warning; other files still get cached."""
+    from helixgen.ir import compute_stadium_irhash
+
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_dir = tmp_path / "library"
+    good = _write_synth_wav(src_dir / "good.wav", n_frames=64)
+    _write_synth_wav(src_dir / "bad.wav", n_frames=64, sr=44100)
+    h_good = compute_stadium_irhash(good)
+
+    result = CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    assert result.exit_code == 0, result.output
+    assert "1 added" in result.output and "1 skipped (errors)" in result.output
+    # click 8.x CliRunner merges stderr into result.output
+    assert "bad.wav" in result.output
+    mapping = json.loads((irs_dir / "mapping.json").read_text())
+    assert mapping == {h_good: str(good)}
+
+
+def test_ir_scan_remove_drops_entry_by_basename(tmp_path, monkeypatch):
+    """--remove forgets an entry without needing libsndfile."""
+    irs_dir = tmp_path / "irs"
+    irs_dir.mkdir()
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    (irs_dir / "mapping.json").write_text(json.dumps({
+        "h1": "/x/a.wav",
+        "h2": "/y/b.wav",
+    }))
+    result = CliRunner().invoke(cli, ["ir-scan", "--remove", "a.wav"])
+    assert result.exit_code == 0, result.output
+    mapping = json.loads((irs_dir / "mapping.json").read_text())
+    assert mapping == {"h2": "/y/b.wav"}
+
+
+def test_ir_scan_remove_rejects_ambiguous(tmp_path, monkeypatch):
+    """--remove errors when basename matches multiple entries."""
+    irs_dir = tmp_path / "irs"
+    irs_dir.mkdir()
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    (irs_dir / "mapping.json").write_text(json.dumps({
+        "h1": "/x/a.wav",
+        "h2": "/y/a.wav",
+    }))
+    result = CliRunner().invoke(cli, ["ir-scan", "--remove", "a.wav"])
+    assert result.exit_code != 0
+    assert "multiple entries" in result.output
+
+
+def test_ir_scan_requires_directory_or_remove(tmp_path, monkeypatch):
+    """Bare `ir-scan` with no args is an error."""
+    monkeypatch.setenv("HELIXGEN_IRS", str(tmp_path / "irs"))
+    result = CliRunner().invoke(cli, ["ir-scan"])
+    assert result.exit_code != 0
+    assert "directory required" in result.output
+
+
+def test_ir_scan_remove_with_directory_arg_errors(tmp_path, monkeypatch):
+    """--remove combined with a directory arg is an error."""
+    irs_dir = tmp_path / "irs"
+    irs_dir.mkdir()
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    (irs_dir / "mapping.json").write_text("{}")
+    result = CliRunner().invoke(cli, ["ir-scan", "--remove", "a.wav", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "takes no directory" in result.output
