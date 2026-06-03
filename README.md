@@ -16,10 +16,10 @@ helixgen is a Claude Code plugin backed by a Python package. You need both:
 ```
 
 ```bash
-pip install helixgen
+pip install git+https://github.com/sheax0r/helixgen.git@stable
 ```
 
-The plugin contributes the `/tone` skill, the `using-helixgen` setup skill, and an MCP server. The pip package is the actual generator the MCP server invokes; without it the MCP tools can't import their handler module.
+The plugin contributes the `/tone` skill, a `setup` skill, and an MCP server. The pip package is the actual generator the MCP server invokes; without it the MCP tools can't import their handler module. The pip install pins to the same `stable` branch the plugin install does, so the two always agree on version.
 
 ## Use it
 
@@ -32,8 +32,6 @@ A good prompt usually includes (a) your guitar (model and pickup type are most u
 What the skill does: drafts a spec, runs the generator, and reports back with the chain, your guitar-side knob/selector settings, the file path, and one suggested tweak after you load it. Multi-part requests ("rhythm + lead", "verse + chorus + solo") are bundled into snapshots automatically; fundamentally different sounds get split into separate presets.
 
 **Iterate on the tone.** Generation is the start, not the end. After you load the preset on your device, come back to the same Claude Code session and describe what's off — *"the lead is too compressed,"* *"verses are too dark, more sparkle,"* *"swap the delay for something shorter and slappier,"* *"clean snapshot needs a touch of room reverb."* Claude will adjust the spec, regenerate, and tell you what changed so you can A/B against the previous version. Same `.hsp` filename by default, so you just re-import.
-
-There are also two other usage modes — the project-mode form (clone this repo and open it in Claude Code) and the hosted MCP deploy on Render that integrates with claude.ai. See [`docs/usage-modes.md`](docs/usage-modes.md) for a side-by-side and when to pick which.
 
 ## Impulse Responses (IRs)
 

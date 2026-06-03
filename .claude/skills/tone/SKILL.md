@@ -1,6 +1,6 @@
 ---
 name: tone
-description: Use when the user asks for a guitar/bass tone targeted at a specific artist, song, genre, or feel (e.g. "lead in White Limo by Foo Fighters", "warm jazz clean", "thrash rhythm"). Works wherever the helixgen MCP server is connected — Claude Code (auto-spawned via .mcp.json) or claude.ai (custom connector at the deployed URL).
+description: Use when the user asks for a guitar/bass tone targeted at a specific artist, song, genre, or feel (e.g. "lead in White Limo by Foo Fighters", "warm jazz clean", "thrash rhythm"). Drives the helixgen MCP server (auto-spawned via the plugin's bundled `.mcp.json`) to design and generate a Helix Stadium `.hsp` preset.
 ---
 
 # Tone
@@ -19,7 +19,7 @@ When NOT to use: editing an existing `.hsp` (load and modify directly outside th
 
 ## Prerequisites
 
-- A helixgen MCP server is reachable. In Claude Code this is auto-spawned via the repo's `.mcp.json` (runs `python -m mcp_server` over stdio); in claude.ai web/desktop the user adds a custom connector pointing at the deployed URL. Either way, the same four tools are available: `list_blocks`, `show_block`, `generate_preset`, `list_irs`.
+- A helixgen MCP server is reachable. The plugin's bundled `.mcp.json` spawns it via `python -m mcp_server` over stdio, which requires the `helixgen` Python package to be importable in that Python env (see the `setup` skill's verify-installed step).
 - The server's library must be populated. Verify quickly with `list_blocks(category="amp")` — empty result means no blocks ingested and the server's deployer needs to fix that before tone work is possible.
 
 ## MCP tool surface
@@ -90,7 +90,6 @@ Cab pick matters a lot for "is this fizzy or musical":
    "params": {"HighCut": 6500, "LowCut": 90, "Mix": 1.0}}
   ```
 - Anti-fizz baseline (Hi Cut 6500–7000, Low Cut 80–100) still applies — set on the IR block itself.
-- On the public claude.ai deploy `list_irs()` always returns empty; the With-Pan-style blocks aren't usable there. Use a `Mic Ir_*` stock cab instead.
 - New users (no preference memory) get stock cabs by default. The preference flips on when the user explicitly says "from now on, prefer IRs when I have them" (and you save a feedback memory).
 
 ### 4. Get exact param names — REQUIRED step
@@ -233,7 +232,6 @@ open('/tmp/<slug>.hsp', 'wb').write(base64.b64decode(b64))
 "
 ```
 
-In claude.ai web/desktop the `EmbeddedResource` is presented to the user as a downloadable file directly; no extraction step needed on your side.
 
 ### 8. Report back
 
@@ -241,9 +239,7 @@ Tell the user, in this order:
 1. **The chain** — one short line per block (position, model, the 2–3 settings that matter for this tone)
 2. **Snapshots** (only if the spec has them) — one line per snapshot summarizing what differs from base, e.g. `Lead: amp Drive 0.85, delay Mix 0.30; Clean: drive bypassed, amp Drive 0.30`
 3. **Guitar settings** — one line: `Selector: <position> · Volume: <0–10> · Tone: <0–10>` plus a one-clause note if the goal requires a non-obvious knob move (e.g. "roll volume to 7 for the verse, 10 for the chorus")
-4. **The file**:
-   - Claude Code: `/tmp/<slug>.hsp` saved locally — *"Open Line 6's HX Edit, connect your device via USB, and import that file."* (Per user preference, run `open -R "/tmp/<slug>.hsp"` so it's pre-selected in Finder.)
-   - claude.ai web/desktop: *"Download the `.hsp` from the message above, then open HX Edit, connect your device via USB, and import."*
+4. **The file** — `/tmp/<slug>.hsp` saved locally. *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "/tmp/<slug>.hsp"` so it's pre-selected in Finder.
 5. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
 
 Don't hedge with a list of 5 things to maybe try; pick one.
@@ -280,4 +276,3 @@ Rules of thumb for translating ear-language to param moves:
 | Generic guitar advice that ignores the named guitar | If the user said "Strat", say "middle/position 4"; if "Les Paul", say "treble (bridge)" — match the actual switch language |
 | Forcing one preset per role when snapshots fit | If the user wants "rhythm and lead" or "verse/chorus/solo", build ONE preset with snapshots, not multiple files |
 | Snapshot referencing a block name that isn't in the path | `disable` / `params` only see blocks the path actually places; add the block to the path first (even if it'll be bypassed in some snapshots) |
-| Trying a `With Pan` IR block on claude.ai web | Public deploy has no IR registry; use a `Mic Ir_*` stock cab instead. Local Claude Code with registered IRs is fine. |

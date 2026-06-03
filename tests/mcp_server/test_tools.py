@@ -360,14 +360,6 @@ def test_discover_irs_walks_directory_and_returns_hashes(tmp_path):
     assert basenames == ["a.wav", "b.wav"]
 
 
-def test_discover_irs_refuses_when_hosted(tmp_path, monkeypatch):
-    """HELIXGEN_HOSTED=1 → refuse with a clear redirect to compute_irhash."""
-    monkeypatch.setenv("HELIXGEN_HOSTED", "1")
-    from mcp_server.tools import discover_irs_handler
-    with _pytest_top.raises(ValueError, match="hosted deploy"):
-        discover_irs_handler("stadium_xl", str(tmp_path))
-
-
 def test_discover_irs_rejects_bad_model(tmp_path):
     from mcp_server.tools import discover_irs_handler
     with _pytest_top.raises(ValueError, match="unsupported model"):
@@ -417,16 +409,6 @@ def test_register_ir_writes_mapping(tmp_path):
     assert mapping_path.exists()
     mapping = _j.loads(mapping_path.read_text())
     assert mapping[result["hash"]] == result["path"]
-
-
-def test_register_ir_refuses_when_hosted(tmp_path, monkeypatch):
-    """HELIXGEN_HOSTED=1 → refuse with a clear redirect to compute_irhash."""
-    monkeypatch.setenv("HELIXGEN_HOSTED", "1")
-    from mcp_server.tools import register_ir_handler
-    wav = tmp_path / "any.wav"
-    wav.write_bytes(b"placeholder")
-    with _pytest_top.raises(ValueError, match="hosted deploy"):
-        register_ir_handler("stadium_xl", str(wav), irs_dir=tmp_path)
 
 
 def test_register_ir_rejects_bad_model(tmp_path):
@@ -513,14 +495,6 @@ def test_register_irs_walks_directory_and_persists(tmp_path):
     assert result["failed"] == []
     mapping = _j.loads((irs_dir / "mapping.json").read_text())
     assert len(mapping) == 2
-
-
-def test_register_irs_refuses_when_hosted(tmp_path, monkeypatch):
-    """HELIXGEN_HOSTED=1 → refuse with redirect to compute_irhash."""
-    monkeypatch.setenv("HELIXGEN_HOSTED", "1")
-    from mcp_server.tools import register_irs_handler
-    with _pytest_top.raises(ValueError, match="hosted deploy"):
-        register_irs_handler("stadium_xl", str(tmp_path), irs_dir=tmp_path)
 
 
 def test_register_irs_rejects_bad_model(tmp_path):

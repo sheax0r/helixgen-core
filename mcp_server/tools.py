@@ -19,7 +19,7 @@ from helixgen.library import Library
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 # Required `model` parameter on every tool. Allow-list; everything else errors.
-# Soft gate (agents can misreport); the using-helixgen skill is the real gate.
+# Soft gate (agents can misreport); the setup skill is the real gate.
 _SUPPORTED_MODELS = frozenset({"stadium", "stadium_xl"})
 
 # 2 MB cap on incoming WAV bytes for compute_irhash. Real IRs are ≤200 KB
@@ -209,20 +209,10 @@ def register_ir_handler(
 ) -> dict[str, str]:
     """Compute the Stadium hash for `wav_path` and persist it to `mapping.json`.
 
-    Local-only by design. When `HELIXGEN_HOSTED=1` is set in the environment
-    (the hosted Render deploy), this handler refuses with a clear error
-    directing the agent to `compute_irhash` for stateless per-file lookups.
-
     Returns: `{"hash": "<hex>", "path": "<canonical>", "reminder": "<upload-to-device message>"}`.
-    Raises ValueError on hosted / bad model / missing file / mapping conflict.
+    Raises ValueError on bad model / missing file / mapping conflict.
     """
     _validate_model(model)
-    if os.environ.get("HELIXGEN_HOSTED") == "1":
-        raise ValueError(
-            "register_ir requires a local helixgen MCP server. The hosted "
-            "deploy has no access to your filesystem. Use compute_irhash "
-            "for stateless per-file hashing instead."
-        )
     wav = Path(wav_path).expanduser().resolve()
     if not wav.is_file():
         raise ValueError(f"wav file not found: {wav_path}")
@@ -243,8 +233,6 @@ def register_irs_handler(
 ) -> dict[str, list]:
     """Walk a directory, hash every WAV, batch-register all to `mapping.json`.
 
-    Local-only by design — see `register_ir_handler` for the rationale.
-
     Returns a summary dict::
 
         {
@@ -261,12 +249,6 @@ def register_irs_handler(
     aborting the bulk run — the partial successful subset is still persisted.
     """
     _validate_model(model)
-    if os.environ.get("HELIXGEN_HOSTED") == "1":
-        raise ValueError(
-            "register_irs requires a local helixgen MCP server. The hosted "
-            "deploy has no access to your filesystem. Use compute_irhash "
-            "for stateless per-file hashing instead."
-        )
     root = Path(ir_directory).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"not a directory: {ir_directory}")
@@ -311,22 +293,12 @@ def register_irs_handler(
 def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
     """Walk a server-side filesystem path and return (hash, path, basename) for each WAV.
 
-    Local-only by design. When `HELIXGEN_HOSTED=1` is set in the environment
-    (the hosted Render deploy), this handler refuses with a clear error
-    directing the agent to `compute_irhash` for per-file lookups.
-
     Returns: list of `{"hash", "path", "basename"}` dicts, sorted by basename.
     Files that fail to hash (non-48 kHz, libsndfile errors) are skipped with
     no error — callers get the successful subset. Returns an empty list if
     the directory has no WAVs.
     """
     _validate_model(model)
-    if os.environ.get("HELIXGEN_HOSTED") == "1":
-        raise ValueError(
-            "discover_irs requires a local helixgen MCP server. The hosted "
-            "deploy has no access to your filesystem. Drag IRs into the "
-            "conversation and use compute_irhash per file instead."
-        )
     root = Path(ir_directory).expanduser().resolve()
     if not root.is_dir():
         raise ValueError(f"not a directory: {ir_directory}")

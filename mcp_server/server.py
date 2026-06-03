@@ -6,8 +6,8 @@ Each tool delegates to the corresponding pure-Python handler in
 
 All tools take a required `model` parameter — `"stadium"` or `"stadium_xl"`.
 Anything else raises `ValueError` (FastMCP renders this as an MCP isError
-text content block). The param is a soft gate; the `using-helixgen` skill
-is the real guarantee that the device is confirmed per session.
+text content block). The param is a soft gate; the `setup` skill is
+the real guarantee that the device is confirmed per session.
 """
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def generate_preset(model: str, spec: dict[str, Any]) -> EmbeddedResource:
     """Generate a Helix Stadium .hsp preset from an inline JSON spec.
 
     Required `model`: `"stadium"` or `"stadium_xl"`. Confirm the user's
-    device before calling — see the `using-helixgen` skill.
+    device before calling — see the `setup` skill.
 
     The spec follows the helixgen schema (see https://github.com/sheax0r/helixgen):
     a `name`, optional `author`, 1-2 `paths` each with `blocks`, and optional
@@ -69,9 +69,7 @@ def generate_preset(model: str, spec: dict[str, Any]) -> EmbeddedResource:
 
     **IR usage:** `With Pan` blocks accept an `ir` field with either a
     basename (resolved via the local IR mapping) or a 32-char hex hash
-    (used literally). On the hosted deploy, use `compute_irhash` first to
-    convert a dragged WAV into a hex hash, then embed that in the `ir`
-    field. Otherwise use a `Mic Ir_*` cab block (canonical factory IRs).
+    (used literally). For factory IRs, use a `Mic Ir_*` cab block.
 
     **After generating with user IRs:** remind the user the IRs must be
     loaded onto the device via the Helix Stadium app's Librarian (Cab IRs →
@@ -103,11 +101,10 @@ def list_irs(model: str) -> str:
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
     Returns text with one line per IR: `<hash>  <wav-path>`, or an empty
-    string when no IRs are registered. **On the public claude.ai deployment
-    this is always empty** — IRs are local-only. Call this before deciding
-    between an IR cab (`With Pan` + `ir`) vs. a stock cab (`Mic Ir_*`):
-    empty result → use a stock cab; non-empty → an IR is available and can
-    be referenced by basename (e.g. `"YA VX30 212 BLU Mix 01.wav"`).
+    string when no IRs are registered. Call this before deciding between
+    an IR cab (`With Pan` + `ir`) vs. a stock cab (`Mic Ir_*`): empty
+    result → use a stock cab; non-empty → an IR is available and can be
+    referenced by basename (e.g. `"YA VX30 212 BLU Mix 01.wav"`).
     """
     return _tools.list_irs_handler(model)
 
@@ -144,10 +141,7 @@ def discover_irs(model: str, ir_directory: str) -> list[dict[str, str]]:
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    **Local-only.** This tool walks the server's filesystem and is rejected
-    with a clear error on the hosted claude.ai deployment (`HELIXGEN_HOSTED=1`).
-    Use it from a locally-running helixgen MCP server when the user has an
-    IR library on disk and wants the agent to enumerate it.
+    Walks the server's filesystem under `ir_directory` for `.wav` files.
 
     Returns a list of `{"hash", "path", "basename"}` dicts, sorted by
     basename. Files that fail to hash (non-48 kHz, libsndfile errors)
@@ -164,12 +158,8 @@ def register_ir(model: str, wav_path: str, force: bool = False) -> dict[str, str
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    **Local-only.** Writes to the server's `mapping.json` (under `$HELIXGEN_IRS`
-    or `~/.helixgen/irs/`); rejected with a clear error on the hosted
-    claude.ai deployment (`HELIXGEN_HOSTED=1`). The locally-running MCP
-    server is the only path that can persist user-IR mappings.
-
-    Idempotent for the same `(hash, canonical_path)` pair. If the hash is
+    Writes to the server's `mapping.json` (under `$HELIXGEN_IRS` or
+    `~/.helixgen/irs/`). Idempotent for the same `(hash, canonical_path)` pair. If the hash is
     already mapped to a different path, raises unless `force=True`.
 
     Equivalent to `helixgen register-irs <wav>` from the CLI. After this
@@ -189,10 +179,6 @@ def register_irs(model: str, ir_directory: str, force: bool = False) -> dict[str
     """Bulk-register every WAV under a local directory to `mapping.json`.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
-
-    **Local-only.** Walks the server's filesystem and writes to its
-    `mapping.json`; rejected with a clear error on the hosted claude.ai
-    deployment (`HELIXGEN_HOSTED=1`).
 
     Recursive. Reads each `*.wav` under `ir_directory`, computes its
     Stadium hash, and registers it. Single `mapping.json` write at the
