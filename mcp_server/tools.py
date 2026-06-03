@@ -234,6 +234,80 @@ def register_ir_handler(
     return {"hash": irhash, "path": canonical, "reminder": _UPLOAD_REMINDER}
 
 
+def register_irs_handler(
+    model: str,
+    ir_directory: str,
+    *,
+    force: bool = False,
+    irs_dir: Path | None = None,
+) -> dict[str, list]:
+    """Walk a directory, hash every WAV, batch-register all to `mapping.json`.
+
+    Local-only by design — see `register_ir_handler` for the rationale.
+
+    Returns a summary dict::
+
+        {
+          "registered":          ["new1.wav", "new2.wav", ...],
+          "already_registered":  ["was-here.wav", ...],
+          "conflicts":           ["dup.wav", ...],
+          "failed":              [{"basename": "bad.wav", "reason": "..."}, ...],
+        }
+
+    `conflicts` happens when a hash already maps to a different canonical path
+    and `force=False`. With `force=True` those go into `registered`.
+
+    `failed` collects per-file errors (non-48 kHz, libsndfile error) without
+    aborting the bulk run — the partial successful subset is still persisted.
+    """
+    _validate_model(model)
+    if os.environ.get("HELIXGEN_HOSTED") == "1":
+        raise ValueError(
+            "register_irs requires a local helixgen MCP server. The hosted "
+            "deploy has no access to your filesystem. Use compute_irhash "
+            "for stateless per-file hashing instead."
+        )
+    root = Path(ir_directory).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"not a directory: {ir_directory}")
+
+    from helixgen.ir import IrMappingError
+
+    mapping = IrMapping.load(irs_dir)
+    registered: list[str] = []
+    already: list[str] = []
+    conflicts: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for wav in sorted(root.rglob("*")):
+        if not wav.is_file() or wav.suffix.lower() != ".wav":
+            continue
+        try:
+            h = compute_stadium_irhash(wav)
+        except (NotImplementedError, RuntimeError, FileNotFoundError) as e:
+            failed.append({"basename": wav.name, "reason": str(e)})
+            continue
+        existing = mapping.entries.get(h)
+        canonical = str(wav.resolve())
+        try:
+            mapping.register(h, wav, force=force)
+        except IrMappingError:
+            conflicts.append(wav.name)
+            continue
+        if existing == canonical:
+            already.append(wav.name)
+        else:
+            registered.append(wav.name)
+
+    mapping.save()
+    return {
+        "registered": registered,
+        "already_registered": already,
+        "conflicts": conflicts,
+        "failed": failed,
+    }
+
+
 def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
     """Walk a server-side filesystem path and return (hash, path, basename) for each WAV.
 

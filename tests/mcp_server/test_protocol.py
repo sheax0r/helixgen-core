@@ -27,7 +27,7 @@ def _get_tool_names(server) -> set[str]:
 
 
 def test_server_registers_documented_tools():
-    """The server registers exactly the seven documented tools."""
+    """The server registers exactly the eight documented tools."""
     from mcp_server.server import app
 
     names = _get_tool_names(app)
@@ -39,6 +39,7 @@ def test_server_registers_documented_tools():
         "compute_irhash",
         "discover_irs",
         "register_ir",
+        "register_irs",
     }
     assert names == expected, f"unexpected tool set: {names}"
 

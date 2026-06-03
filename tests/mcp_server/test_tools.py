@@ -490,3 +490,126 @@ def test_register_ir_overwrites_with_force(tmp_path):
     assert r2["hash"] == r1["hash"]
     assert r2["path"] != r1["path"]
     assert r2["path"].endswith("b.wav")
+
+
+# -- register_irs (bulk directory) ---------------------------------------
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_irs_walks_directory_and_persists(tmp_path):
+    """Happy path: bulk-register a directory → mapping.json gains one entry per WAV."""
+    import json as _j
+    from mcp_server.tools import register_irs_handler
+
+    _write_synth_wav_file(tmp_path / "src" / "a.wav", n_frames=64)
+    _write_synth_wav_file(tmp_path / "src" / "sub" / "b.wav", n_frames=128)
+    irs_dir = tmp_path / "irs"
+
+    result = register_irs_handler("stadium_xl", str(tmp_path / "src"), irs_dir=irs_dir)
+
+    assert sorted(result["registered"]) == ["a.wav", "b.wav"]
+    assert result["already_registered"] == []
+    assert result["conflicts"] == []
+    assert result["failed"] == []
+    mapping = _j.loads((irs_dir / "mapping.json").read_text())
+    assert len(mapping) == 2
+
+
+def test_register_irs_refuses_when_hosted(tmp_path, monkeypatch):
+    """HELIXGEN_HOSTED=1 → refuse with redirect to compute_irhash."""
+    monkeypatch.setenv("HELIXGEN_HOSTED", "1")
+    from mcp_server.tools import register_irs_handler
+    with _pytest_top.raises(ValueError, match="hosted deploy"):
+        register_irs_handler("stadium_xl", str(tmp_path), irs_dir=tmp_path)
+
+
+def test_register_irs_rejects_bad_model(tmp_path):
+    from mcp_server.tools import register_irs_handler
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        register_irs_handler("hx_stomp", str(tmp_path), irs_dir=tmp_path)
+
+
+def test_register_irs_rejects_non_directory(tmp_path):
+    """Path that isn't a directory → ValueError."""
+    f = tmp_path / "notadir.txt"
+    f.write_text("nope")
+    from mcp_server.tools import register_irs_handler
+    with _pytest_top.raises(ValueError, match="not a directory"):
+        register_irs_handler("stadium_xl", str(f), irs_dir=tmp_path)
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_irs_idempotent_for_same_directory(tmp_path):
+    """Second bulk call → everything in already_registered, nothing newly registered."""
+    from mcp_server.tools import register_irs_handler
+    _write_synth_wav_file(tmp_path / "src" / "a.wav", n_frames=64)
+    _write_synth_wav_file(tmp_path / "src" / "b.wav", n_frames=128)
+    irs_dir = tmp_path / "irs"
+
+    r1 = register_irs_handler("stadium_xl", str(tmp_path / "src"), irs_dir=irs_dir)
+    r2 = register_irs_handler("stadium_xl", str(tmp_path / "src"), irs_dir=irs_dir)
+
+    assert sorted(r1["registered"]) == ["a.wav", "b.wav"]
+    assert r2["registered"] == []
+    assert sorted(r2["already_registered"]) == ["a.wav", "b.wav"]
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_irs_records_conflicts_without_force(tmp_path):
+    """A WAV whose hash is already mapped to a different path lands in conflicts."""
+    import shutil
+    from mcp_server.tools import register_irs_handler
+    irs_dir = tmp_path / "irs"
+    src1 = tmp_path / "src1"
+    src2 = tmp_path / "src2"
+    _write_synth_wav_file(src1 / "shared.wav", n_frames=64)
+    shutil.copytree(str(src1), str(src2))
+    register_irs_handler("stadium_xl", str(src1), irs_dir=irs_dir)
+
+    r = register_irs_handler("stadium_xl", str(src2), irs_dir=irs_dir)
+    assert r["registered"] == []
+    assert r["conflicts"] == ["shared.wav"]
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_irs_force_overwrites_conflict(tmp_path):
+    """force=True moves conflicts into registered (new canonical path wins)."""
+    import shutil
+    from mcp_server.tools import register_irs_handler
+    irs_dir = tmp_path / "irs"
+    src1 = tmp_path / "src1"
+    src2 = tmp_path / "src2"
+    _write_synth_wav_file(src1 / "shared.wav", n_frames=64)
+    shutil.copytree(str(src1), str(src2))
+    register_irs_handler("stadium_xl", str(src1), irs_dir=irs_dir)
+
+    r = register_irs_handler("stadium_xl", str(src2), irs_dir=irs_dir, force=True)
+    assert r["registered"] == ["shared.wav"]
+    assert r["conflicts"] == []
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_irs_collects_failed_files(tmp_path):
+    """Per-file hashing errors land in `failed` without aborting the bulk run."""
+    from mcp_server.tools import register_irs_handler
+    _write_synth_wav_file(tmp_path / "src" / "good.wav", n_frames=64, sr=48000)
+    _write_synth_wav_file(tmp_path / "src" / "bad.wav", n_frames=64, sr=44100)
+    irs_dir = tmp_path / "irs"
+
+    r = register_irs_handler("stadium_xl", str(tmp_path / "src"), irs_dir=irs_dir)
+    assert r["registered"] == ["good.wav"]
+    failed_basenames = [e["basename"] for e in r["failed"]]
+    assert failed_basenames == ["bad.wav"]
+    assert "reason" in r["failed"][0]
+
+
+def test_register_irs_skips_non_wav_files(tmp_path):
+    """Non-WAV files in the directory are ignored entirely (not in any bucket)."""
+    from mcp_server.tools import register_irs_handler
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "readme.txt").write_text("not a wav")
+    (tmp_path / "src" / "notes.md").write_text("# also not a wav")
+    irs_dir = tmp_path / "irs"
+
+    r = register_irs_handler("stadium_xl", str(tmp_path / "src"), irs_dir=irs_dir)
+    assert r == {"registered": [], "already_registered": [], "conflicts": [], "failed": []}

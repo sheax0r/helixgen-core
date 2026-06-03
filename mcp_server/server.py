@@ -182,3 +182,38 @@ def register_ir(model: str, wav_path: str, force: bool = False) -> dict[str, str
     loaded onto their device's Cab IRs.
     """
     return _tools.register_ir_handler(model, wav_path, force=force)
+
+
+@app.tool()
+def register_irs(model: str, ir_directory: str, force: bool = False) -> dict[str, list]:
+    """Bulk-register every WAV under a local directory to `mapping.json`.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`.
+
+    **Local-only.** Walks the server's filesystem and writes to its
+    `mapping.json`; rejected with a clear error on the hosted claude.ai
+    deployment (`HELIXGEN_HOSTED=1`).
+
+    Recursive. Reads each `*.wav` under `ir_directory`, computes its
+    Stadium hash, and registers it. Single `mapping.json` write at the
+    end — far cheaper than calling `register_ir` per file when the
+    library is large.
+
+    Returns a per-category summary so the agent can report counts and
+    surface anything notable to the user::
+
+        {
+          "registered":          ["new1.wav", "new2.wav", ...],
+          "already_registered":  ["was-here.wav", ...],
+          "conflicts":           ["dup.wav", ...],
+          "failed":              [{"basename": "bad.wav", "reason": "..."}, ...],
+        }
+
+    `conflicts` is files whose hash already maps to a different path; with
+    `force=True` they go into `registered` instead. `failed` is per-file
+    hashing errors (non-48 kHz, libsndfile errors) — those don't abort the
+    bulk run, so the partial successful subset is still persisted.
+
+    Equivalent to `helixgen ir-scan <dir>` from the CLI.
+    """
+    return _tools.register_irs_handler(model, ir_directory, force=force)

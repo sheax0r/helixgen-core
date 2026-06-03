@@ -39,7 +39,7 @@ There are also two other usage modes — the project-mode form (clone this repo 
 
 helixgen supports user IRs in Stadium presets — `With Pan` blocks (and the rest of the `HX2_ImpulseResponse*` family) can reference a `.wav` file by basename, and helixgen will resolve it to the 32-character `irhash` the device expects. Stadium identifies user IRs by a content-derived hash, not by filename or slot. helixgen reproduces that hash bit-identically without any device round-trip, so you can register an entire IR library once and reference IRs by name in any spec the `/tone` skill writes.
 
-In Claude Code, ask the skill to register an IR — it will either drag-and-drop via the MCP `register_ir` tool (single file) or shell out to `helixgen ir-scan` (whole directory). Memory will remember your IR directory after the first time.
+In Claude Code, ask the skill to register an IR — it can call the MCP `register_ir` tool (one file) or `register_irs` (a whole directory, in one round-trip) without needing Bash permission. Memory will remember your IR directory after the first time.
 
 **Caveat:** for the `irhash` in a generated preset to actually resolve on the device, the matching WAV must also be loaded onto the device via the Helix Stadium app's **Librarian → Cab IRs → Import**. helixgen only handles the preset side; importing IRs onto the device is the Stadium app's job. If a slot displays "No Model" on the device after loading a preset, that IR wasn't imported.
 
