@@ -1,13 +1,6 @@
 # helixgen
 
-helixgen is **two things in one repo**:
-
-1. A **Python CLI** that generates Line 6 Helix `.hsp` (Stadium) and `.hlx` (legacy) preset files from a strict JSON tone spec, and builds up a reusable library of block schemas by ingesting real exports.
-2. A **Claude Code skill** at `.claude/skills/tone/` that drives the CLI from natural-language tone descriptions ("make me a Plexi crunch for my Strat verses, push it for the lead") — it clarifies, surveys the library, drafts the spec, runs the generator, and reports back with guitar-side settings.
-
-You can use either piece on its own. The skill is the easier surface; the CLI is what you reach for if you want to tweak specs by hand or wire helixgen into other tooling.
-
-There are three usage modes — bare CLI, local Claude Code with an auto-spawned MCP server, and a hosted MCP deploy on Render that integrates with claude.ai. They share the same library, spec, and output; they differ in driver and persistence. See [`docs/usage-modes.md`](docs/usage-modes.md) for a side-by-side and when to pick which.
+A Claude Code plugin that generates Line 6 Helix Stadium presets from natural-language tone descriptions. Ask in plain English — *"Plexi crunch for my Strat, push it for the lead"* — and get a working `.hsp` file you can drop onto your device.
 
 ![Demo: register an IR, ask Claude /tone for a U2 "Streets" rhythm clean, generate the .hsp](docs/demo.gif)
 
@@ -15,114 +8,48 @@ There are three usage modes — bare CLI, local Claude Code with an auto-spawned
 
 ## Install
 
-```bash
-git clone https://github.com/sheax0r/helixgen
-cd helixgen
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-## Quickstart
-
-### A. With Claude Code (recommended)
-
-Open this repo in Claude Code, seed the library once (step 1 below), then type something like:
-
-> `/tone Les Paul with stock humbuckers, classic rock / hard rock. Make me one preset with three snapshots: a clean intro, a Plexi crunch for verses, and a singing lead for solos — Slash / Joe Bonamassa territory.`
-
-A good prompt usually includes (a) your guitar (model and pickup type are most useful), (b) the musical style or a band/song reference, and (c) the role(s) you need. The skill will ask you for anything missing.
-
-What the skill does: drafts a spec, runs `helixgen generate`, and reports back with the chain, your guitar-side knob/selector settings, the file path, and one suggested tweak after you load it. Multi-part requests ("rhythm + lead", "verse + chorus + solo") are bundled into snapshots automatically; fundamentally different sounds get split into separate presets.
-
-**Iterate on the tone.** Generation is the start, not the end. After you load the preset on your device, come back to the same Claude Code session and describe what's off — *"the lead is too compressed,"* *"verses are too dark, more sparkle,"* *"swap the delay for something shorter and slappier,"* *"clean snapshot needs a touch of room reverb."* Claude will adjust the spec, regenerate, and tell you what changed so you can A/B against the previous version. Same `.hsp` filename by default, so you just re-import.
-
-### B. CLI directly
-
-```bash
-# 1. Seed the library — from your own exports (preferred for accuracy)
-helixgen ingest ~/MyPresets/
-
-# Or from the sensorium/phelix community catalog
-helixgen bootstrap
-
-# 2. Browse the library
-helixgen list-blocks
-helixgen list-blocks --category amp
-helixgen show-block "Brit 2204"
-
-# 3. Generate a preset
-helixgen generate my-tone.json -o my-tone.hsp
-```
-
-### C. As a Claude Code plugin
-
-If you'd rather use the `/tone` skill in *any* Claude Code session — not just inside a clone of this repo — install helixgen as a plugin:
+helixgen is a Claude Code plugin backed by a Python package. You need both:
 
 ```
 /plugin marketplace add sheax0r/helixgen
 /plugin install helixgen@helixgen
 ```
 
-You'll still need `pip install helixgen` in the Python env Claude Code launches MCP servers under, because the bundled `helixgen` MCP server is a thin wrapper around the installed Python package.
-
-## Spec format
-
-A tone spec is a JSON document. Minimal example:
-
-```json
-{
-  "name": "My Rhythm Tone",
-  "paths": [
-    {
-      "blocks": [
-        { "block": "Noise Gate", "params": { "Threshold": 0.4 } },
-        { "block": "Brit 2204",  "params": { "Drive": 0.6, "Bass": 0.5 } },
-        { "block": "4x12 Greenback 25" }
-      ]
-    }
-  ]
-}
+```bash
+pip install helixgen
 ```
 
-- `name` is the preset name shown in HX Edit.
-- `paths` contains 1 or 2 chains (mapping to dsp0 / dsp1).
-- Each block has a `block` (display name or model_id) and optional `params` (wire values: 0–1 floats for amp gain, integer Hz for cut frequencies, strings for enums like mic types).
+The plugin contributes the `/tone` skill, the `using-helixgen` setup skill, and an MCP server. The pip package is the actual generator the MCP server invokes; without it the MCP tools can't import their handler module.
+
+## Use it
+
+In any Claude Code session, type something like:
+
+> `/tone Les Paul with stock humbuckers, classic rock / hard rock. Make me one preset with three snapshots: a clean intro, a Plexi crunch for verses, and a singing lead for solos — Slash / Joe Bonamassa territory.`
+
+A good prompt usually includes (a) your guitar (model and pickup type are most useful), (b) the musical style or a band/song reference, and (c) the role(s) you need. The skill will ask you for anything missing.
+
+What the skill does: drafts a spec, runs the generator, and reports back with the chain, your guitar-side knob/selector settings, the file path, and one suggested tweak after you load it. Multi-part requests ("rhythm + lead", "verse + chorus + solo") are bundled into snapshots automatically; fundamentally different sounds get split into separate presets.
+
+**Iterate on the tone.** Generation is the start, not the end. After you load the preset on your device, come back to the same Claude Code session and describe what's off — *"the lead is too compressed,"* *"verses are too dark, more sparkle,"* *"swap the delay for something shorter and slappier,"* *"clean snapshot needs a touch of room reverb."* Claude will adjust the spec, regenerate, and tell you what changed so you can A/B against the previous version. Same `.hsp` filename by default, so you just re-import.
+
+There are also two other usage modes — the project-mode form (clone this repo and open it in Claude Code) and the hosted MCP deploy on Render that integrates with claude.ai. See [`docs/usage-modes.md`](docs/usage-modes.md) for a side-by-side and when to pick which.
 
 ## Impulse Responses (IRs)
 
-helixgen supports user IRs in Stadium presets — `With Pan` blocks (and the rest of the `HX2_ImpulseResponse*` family) can reference a `.wav` file by basename, and helixgen will resolve it to the 32-character `irhash` the device expects.
+helixgen supports user IRs in Stadium presets — `With Pan` blocks (and the rest of the `HX2_ImpulseResponse*` family) can reference a `.wav` file by basename, and helixgen will resolve it to the 32-character `irhash` the device expects. Stadium identifies user IRs by a content-derived hash, not by filename or slot. helixgen reproduces that hash bit-identically without any device round-trip, so you can register an entire IR library once and reference IRs by name in any spec the `/tone` skill writes.
 
-Stadium identifies user IRs by a content-derived hash, not by filename or slot. helixgen reproduces that hash bit-identically without any device round-trip, so you can register an entire IR library locally and reference IRs by name in your specs.
-
-```bash
-# 1. Cache hashes for an IR library in one pass (recurses; ~1 ms per IR after warm-up).
-helixgen ir-scan ~/path/to/IRs/
-helixgen list-irs | wc -l   # verify
-
-# 2. Reference IRs by basename in a spec:
-#   {"block": "With Pan",
-#    "ir": "YA MRSH 412 T75 Mix 03.wav",
-#    "params": {"HighCut": 6800, "LowCut": 90, "Mix": 1.0}}
-helixgen generate my-tone.json -o my-tone.hsp
-```
+In Claude Code, ask the skill to register an IR — it will either drag-and-drop via the MCP `register_ir` tool (single file) or shell out to `helixgen ir-scan` (whole directory). Memory will remember your IR directory after the first time.
 
 **Caveat:** for the `irhash` in a generated preset to actually resolve on the device, the matching WAV must also be loaded onto the device via the Helix Stadium app's **Librarian → Cab IRs → Import**. helixgen only handles the preset side; importing IRs onto the device is the Stadium app's job. If a slot displays "No Model" on the device after loading a preset, that IR wasn't imported.
 
-**Limitations:**
-- **48 kHz sources only** at the moment. Non-48 kHz raises a clear error with a `sox in.wav -r 48000 out.wav` suggestion. Stadium itself uses libsamplerate (`SRC_SINC_BEST_QUALITY`) for other rates; porting that bit-exactly is a separate project.
-- Stereo input is reduced to the **left channel** (matches Stadium's own import behavior).
-
-See [`docs/ir-hash-algorithm.md`](docs/ir-hash-algorithm.md) for the algorithm helixgen uses to compute the hash, including the load-bearing libsndfile detail and the field-validated reference implementation.
-
-The CLI also provides `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — the original preset-binding form that predates the offline hash computation. Still the only way to register IRs that aren't 48 kHz, since for those you need to round-trip through a registration preset.
+See [`docs/ir-hash-algorithm.md`](docs/ir-hash-algorithm.md) for the hash algorithm and the field-validated reference implementation.
 
 ## Loading presets onto your device
 
 helixgen produces files — it does **not** talk to the hardware directly. To get a generated preset onto your Stadium / Helix you go through Line 6's official desktop app.
 
-**Default output location:**
-- The `helixgen generate` CLI requires `-o <path>` — it writes wherever you point it; there is no default.
-- The `/tone` Claude Code skill writes to `/tmp/<slug>.hsp` by default. Move it somewhere durable (e.g. `~/Documents/Helix Presets/`) before you reboot if you want to keep it.
+The `/tone` skill writes to `/tmp/<slug>.hsp` by default. Move it somewhere durable (e.g. `~/Documents/Helix Presets/`) before you reboot if you want to keep it.
 
 **To load on the device:**
 
@@ -133,11 +60,11 @@ helixgen produces files — it does **not** talk to the hardware directly. To ge
 
 If HX Edit refuses to open the file, double-check that the chassis in your library matches your hardware (Stadium chassis → `.hsp`, legacy Helix chassis → `.hlx`).
 
-Full design: `docs/superpowers/specs/2026-05-01-helix-preset-generator-design.md`.
+## CLI
 
-## Library location
+helixgen ships a Python CLI for direct generation, library inspection, IR management, and ingesting your own preset exports to grow the block library. The Claude Code plugin uses the same code under the hood — most users won't need to reach for the CLI directly.
 
-Default: `~/.helixgen/library/`. Override with `--library DIR` or `HELIXGEN_LIBRARY` env var.
+See [`docs/CLI.md`](docs/CLI.md) for the full surface: install, spec format, all subcommands, IR registration, library location.
 
 ## Limitations (v1)
 
