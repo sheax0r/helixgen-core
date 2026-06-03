@@ -17,7 +17,9 @@ choose blocks.
 
 - User asks to design, generate, or modify a Helix preset
 - User mentions an IR (impulse response) by name
-- User wants to register IRs (`helixgen register-irs` / `ir-scan`)
+- User wants to register IRs (prefer the `register_irs` / `register_ir` MCP
+  tools; fall back to the `helixgen register-irs` / `ir-scan` CLI if MCP is
+  unavailable)
 - A previously generated preset isn't loading on the device correctly
 
 When NOT to use:
@@ -49,10 +51,17 @@ If the user mentions IRs or `With Pan`/IR cab blocks:
 
 - Check memory for `user_ir_directory.md`.
 - **If absent**, ask: "Where do your impulse responses live? (Provide a
-  directory path.)" Record. If the directory has many IRs (>50), suggest
-  `helixgen ir-scan <dir>` to bulk-cache hashes once.
+  directory path.)" Record. If the directory has many IRs (>50), bulk-cache
+  hashes in one round-trip via the `register_irs` MCP tool (or
+  `helixgen ir-scan <dir>` if MCP isn't available).
 - **If present**, proceed; don't re-ask. The user can edit the memory if
   they reorganize.
+
+### Registering a single IR mid-conversation
+
+If the user mentions one specific WAV (e.g. drags one in or names a file),
+prefer the `register_ir` MCP tool over `helixgen register-irs <wav>` — same
+result, one round-trip, no Bash permission prompt.
 
 (On the hosted claude.ai deployment in the future, this step is replaced by
 asking the user to drag IRs into the chat. That path doesn't run in local
