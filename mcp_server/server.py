@@ -156,3 +156,29 @@ def discover_irs(model: str, ir_directory: str) -> list[dict[str, str]]:
     not write to `mapping.json`).
     """
     return _tools.discover_irs_handler(model, ir_directory)
+
+
+@app.tool()
+def register_ir(model: str, wav_path: str, force: bool = False) -> dict[str, str]:
+    """Compute the Stadium hash for a local WAV and persist it to `mapping.json`.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`.
+
+    **Local-only.** Writes to the server's `mapping.json` (under `$HELIXGEN_IRS`
+    or `~/.helixgen/irs/`); rejected with a clear error on the hosted
+    claude.ai deployment (`HELIXGEN_HOSTED=1`). The locally-running MCP
+    server is the only path that can persist user-IR mappings.
+
+    Idempotent for the same `(hash, canonical_path)` pair. If the hash is
+    already mapped to a different path, raises unless `force=True`.
+
+    Equivalent to `helixgen register-irs <wav>` from the CLI. After this
+    call, the same WAV can be referenced by basename in a `generate_preset`
+    spec's `ir` field.
+
+    Returns `{"hash": "<32-char hex>", "path": "<canonical>",
+    "reminder": "<upload-to-device note>"}`. Always surface the `reminder`
+    text to the user — the mapping only matters if the same WAV is also
+    loaded onto their device's Cab IRs.
+    """
+    return _tools.register_ir_handler(model, wav_path, force=force)

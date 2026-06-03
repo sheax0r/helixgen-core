@@ -393,3 +393,100 @@ def test_discover_irs_skips_unhashable_files(tmp_path):
     basenames = [e["basename"] for e in result]
     assert "good.wav" in basenames
     assert "bad.wav" not in basenames
+
+
+# -- register_ir ---------------------------------------------------------
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_ir_writes_mapping(tmp_path):
+    """Happy path: register one WAV → mapping.json gains a hash→canonical-path entry."""
+    import json as _j
+    from mcp_server.tools import register_ir_handler
+
+    wav = tmp_path / "src" / "test.wav"
+    _write_synth_wav_file(wav, n_frames=64)
+    irs_dir = tmp_path / "irs"
+
+    result = register_ir_handler("stadium_xl", str(wav), irs_dir=irs_dir)
+
+    assert {"hash", "path", "reminder"} <= set(result.keys())
+    assert len(result["hash"]) == 32
+    assert all(c in "0123456789abcdef" for c in result["hash"])
+    mapping_path = irs_dir / "mapping.json"
+    assert mapping_path.exists()
+    mapping = _j.loads(mapping_path.read_text())
+    assert mapping[result["hash"]] == result["path"]
+
+
+def test_register_ir_refuses_when_hosted(tmp_path, monkeypatch):
+    """HELIXGEN_HOSTED=1 → refuse with a clear redirect to compute_irhash."""
+    monkeypatch.setenv("HELIXGEN_HOSTED", "1")
+    from mcp_server.tools import register_ir_handler
+    wav = tmp_path / "any.wav"
+    wav.write_bytes(b"placeholder")
+    with _pytest_top.raises(ValueError, match="hosted deploy"):
+        register_ir_handler("stadium_xl", str(wav), irs_dir=tmp_path)
+
+
+def test_register_ir_rejects_bad_model(tmp_path):
+    from mcp_server.tools import register_ir_handler
+    with _pytest_top.raises(ValueError, match="unsupported model"):
+        register_ir_handler("hx_stomp", str(tmp_path / "any.wav"), irs_dir=tmp_path)
+
+
+def test_register_ir_rejects_missing_wav(tmp_path):
+    """Wav path doesn't exist → ValueError before any libsndfile call."""
+    from mcp_server.tools import register_ir_handler
+    with _pytest_top.raises(ValueError, match="not found"):
+        register_ir_handler("stadium_xl", str(tmp_path / "missing.wav"), irs_dir=tmp_path)
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_ir_idempotent_for_same_file(tmp_path):
+    """Registering the same WAV twice → no error, mapping has one entry for that hash."""
+    import json as _j
+    from mcp_server.tools import register_ir_handler
+    wav = tmp_path / "test.wav"
+    _write_synth_wav_file(wav, n_frames=64)
+    irs_dir = tmp_path / "irs"
+
+    r1 = register_ir_handler("stadium_xl", str(wav), irs_dir=irs_dir)
+    r2 = register_ir_handler("stadium_xl", str(wav), irs_dir=irs_dir)
+    assert r1 == r2
+    mapping = _j.loads((irs_dir / "mapping.json").read_text())
+    assert list(mapping.keys()) == [r1["hash"]]
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_ir_refuses_conflict_without_force(tmp_path):
+    """Same hash, different canonical path → IrMappingError surfaces as ValueError."""
+    import shutil
+    from mcp_server.tools import register_ir_handler
+    irs_dir = tmp_path / "irs"
+    wav = tmp_path / "a.wav"
+    _write_synth_wav_file(wav, n_frames=64)
+    register_ir_handler("stadium_xl", str(wav), irs_dir=irs_dir)
+    moved = tmp_path / "elsewhere" / "b.wav"
+    moved.parent.mkdir()
+    shutil.copy(str(wav), str(moved))
+    with _pytest_top.raises(ValueError, match="already mapped"):
+        register_ir_handler("stadium_xl", str(moved), irs_dir=irs_dir)
+
+
+@_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_ir_overwrites_with_force(tmp_path):
+    """force=True replaces the canonical path for an already-mapped hash."""
+    import shutil
+    from mcp_server.tools import register_ir_handler
+    irs_dir = tmp_path / "irs"
+    wav = tmp_path / "a.wav"
+    _write_synth_wav_file(wav, n_frames=64)
+    r1 = register_ir_handler("stadium_xl", str(wav), irs_dir=irs_dir)
+    moved = tmp_path / "elsewhere" / "b.wav"
+    moved.parent.mkdir()
+    shutil.copy(str(wav), str(moved))
+    r2 = register_ir_handler("stadium_xl", str(moved), irs_dir=irs_dir, force=True)
+    assert r2["hash"] == r1["hash"]
+    assert r2["path"] != r1["path"]
+    assert r2["path"].endswith("b.wav")

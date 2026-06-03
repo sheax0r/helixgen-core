@@ -200,6 +200,40 @@ def compute_irhash_handler(model: str, wav_b64: str) -> dict[str, str]:
     return {"irhash": irhash, "reminder": _UPLOAD_REMINDER}
 
 
+def register_ir_handler(
+    model: str,
+    wav_path: str,
+    *,
+    force: bool = False,
+    irs_dir: Path | None = None,
+) -> dict[str, str]:
+    """Compute the Stadium hash for `wav_path` and persist it to `mapping.json`.
+
+    Local-only by design. When `HELIXGEN_HOSTED=1` is set in the environment
+    (the hosted Render deploy), this handler refuses with a clear error
+    directing the agent to `compute_irhash` for stateless per-file lookups.
+
+    Returns: `{"hash": "<hex>", "path": "<canonical>", "reminder": "<upload-to-device message>"}`.
+    Raises ValueError on hosted / bad model / missing file / mapping conflict.
+    """
+    _validate_model(model)
+    if os.environ.get("HELIXGEN_HOSTED") == "1":
+        raise ValueError(
+            "register_ir requires a local helixgen MCP server. The hosted "
+            "deploy has no access to your filesystem. Use compute_irhash "
+            "for stateless per-file hashing instead."
+        )
+    wav = Path(wav_path).expanduser().resolve()
+    if not wav.is_file():
+        raise ValueError(f"wav file not found: {wav_path}")
+    irhash = compute_stadium_irhash(wav)
+    mapping = IrMapping.load(irs_dir)
+    mapping.register(irhash, wav, force=force)
+    mapping.save()
+    canonical = mapping.entries[irhash]
+    return {"hash": irhash, "path": canonical, "reminder": _UPLOAD_REMINDER}
+
+
 def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
     """Walk a server-side filesystem path and return (hash, path, basename) for each WAV.
 
