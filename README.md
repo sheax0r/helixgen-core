@@ -59,7 +59,7 @@ helixgen generate my-tone.json -o my-tone.hsp
 If you'd rather use the `/tone` skill in *any* Claude Code session — not just inside a clone of this repo — install helixgen as a plugin:
 
 ```
-/plugin marketplace add github:sheax0r/helixgen
+/plugin marketplace add sheax0r/helixgen
 /plugin install helixgen@helixgen
 ```
 
