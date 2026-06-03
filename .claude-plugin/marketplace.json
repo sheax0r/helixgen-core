@@ -1,0 +1,29 @@
+{
+  "name": "helixgen",
+  "description": "Single-plugin marketplace for helixgen — natural-language → Line 6 Helix Stadium preset generation",
+  "owner": {
+    "name": "Michael Shea",
+    "email": "mike.shea@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "helixgen",
+      "description": "Generate Line 6 Helix Stadium .hsp presets from JSON or natural-language tone descriptions. Bundles the /tone skill and the helixgen MCP server. Requires `pip install helixgen`.",
+      "version": "0.1.0",
+      "source": "./",
+      "author": {
+        "name": "Michael Shea",
+        "email": "mike.shea@gmail.com"
+      },
+      "homepage": "https://github.com/sheax0r/helixgen",
+      "license": "MIT",
+      "keywords": [
+        "helix",
+        "line6",
+        "guitar",
+        "preset",
+        "tone"
+      ]
+    }
+  ]
+}

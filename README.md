@@ -54,6 +54,17 @@ helixgen show-block "Brit 2204"
 helixgen generate my-tone.json -o my-tone.hsp
 ```
 
+### C. As a Claude Code plugin
+
+If you'd rather use the `/tone` skill in *any* Claude Code session — not just inside a clone of this repo — install helixgen as a plugin:
+
+```
+/plugin marketplace add github:sheax0r/helixgen
+/plugin install helixgen@helixgen
+```
+
+You'll still need `pip install helixgen` in the Python env Claude Code launches MCP servers under, because the bundled `helixgen` MCP server is a thin wrapper around the installed Python package.
+
 ## Spec format
 
 A tone spec is a JSON document. Minimal example:
