@@ -741,3 +741,87 @@ def test_compose_preset_hsp_snapshot_params_unknown_param_errors(tmp_library, tm
     ])
     with pytest.raises(ParamValidationError, match="NotARealKnob"):
         compose_preset(spec, lib, source="t.json")
+
+
+# ---- numeric param type coercion ----
+#
+# Regression: the Stadium .hsp parser is type-sensitive. A param declared
+# `float` that gets written as a bare int (e.g. cab HighCut/LowCut passed as
+# 6500/90 instead of 6500.0/90.0) corrupts the block on-device and renders it
+# silent. Library exemplars store floats as floats; user JSON gives ints for
+# whole numbers. The generator must coerce user values to the declared type.
+
+def _cab_params_from_hsp(preset):
+    path0 = preset["preset"]["flow"][0]
+    for v in path0.values():
+        if isinstance(v, dict) and v.get("type") == "cab":
+            return v["slot"][0]["params"]
+    raise AssertionError("no cab block found in composed .hsp")
+
+
+def test_compose_preset_hsp_coerces_int_to_declared_float(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "Coerce",
+        "paths": [{"blocks": [
+            {"block": "4x12 Greenback 25", "params": {"HighCut": 6500, "LowCut": 90}},
+        ]}],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    params = _cab_params_from_hsp(preset)
+    hc, lc = params["HighCut"]["value"], params["LowCut"]["value"]
+    assert hc == 6500.0 and isinstance(hc, float)
+    assert lc == 90.0 and isinstance(lc, float)
+
+
+def test_compose_preset_hsp_coerces_snapshot_override_int_to_float(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+
+    spec = parse_spec({
+        "name": "CoerceSnap",
+        "paths": [{"blocks": [
+            {"block": "Scream 808"},
+            {"block": "Brit 2204", "params": {"Drive": 0.5}},
+            {"block": "4x12 Greenback 25"},
+        ]}],
+        "snapshots": [
+            {"name": "Base"},
+            {"name": "Dark", "params": {"4x12 Greenback 25": {"HighCut": 6000}}},
+        ],
+    }, source="t.json")
+
+    preset = compose_preset(spec, lib, source="t.json")
+    params = _cab_params_from_hsp(preset)
+    snap_vals = params["HighCut"]["snapshots"]
+    # The 2nd snapshot overrides HighCut with an int; it must be stored as float.
+    override = next(v for v in snap_vals if v is not None)
+    assert override == 6000.0 and isinstance(override, float)
+
+
+def test_coerce_param_value_passthrough_and_int_target():
+    from helixgen.generate import _coerce_param_value
+    from helixgen.library import Block
+
+    block = Block(
+        model_id="m", category="cab", display_name="d",
+        params={
+            "HighCut": {"type": "float"},
+            "Mic": {"type": "int"},
+            "Bypass": {"type": "bool"},
+        },
+        exemplar={}, first_seen={},
+    )
+    # float target: int -> float
+    v = _coerce_param_value(block, "HighCut", 6500)
+    assert v == 6500.0 and isinstance(v, float)
+    # int target: integral float -> int
+    assert _coerce_param_value(block, "Mic", 2.0) == 2 and isinstance(
+        _coerce_param_value(block, "Mic", 2.0), int)
+    # bool never coerced into a number even though bool is an int subclass
+    assert _coerce_param_value(block, "HighCut", True) is True
+    # unknown param: untouched
+    assert _coerce_param_value(block, "Nope", 5) == 5

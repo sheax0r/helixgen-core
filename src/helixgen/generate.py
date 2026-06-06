@@ -97,6 +97,33 @@ def validate_params(block: Block, user_params: dict[str, Any]) -> None:
     )
 
 
+def _coerce_param_value(block: Block, key: str, value: Any) -> Any:
+    """Coerce a user-supplied param value to the block schema's declared type.
+
+    The Stadium .hsp parser is type-sensitive: a numeric param declared `float`
+    that is written as an int (e.g. a cab `HighCut`/`LowCut` passed as `6500`
+    instead of `6500.0`) can corrupt the block on-device, rendering it silent.
+    Library exemplars always store floats as floats; user values arrive with
+    whatever JSON/Python type the caller used (JSON `6500` → int). Coerce to the
+    declared type so generated params match the exemplar encoding.
+
+    Only safe, lossless numeric coercions are applied; bools and non-numeric or
+    unknown-schema values pass through untouched.
+    """
+    schema = block.params.get(key)
+    if not schema:
+        return value
+    declared = schema.get("type")
+    # bool is a subclass of int — never coerce bools into numbers.
+    if isinstance(value, bool):
+        return value
+    if declared == "float" and isinstance(value, int):
+        return float(value)
+    if declared == "int" and isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
 def _is_amp(block: Block) -> bool:
     return block.category == "amp"
 
@@ -173,7 +200,7 @@ def _compose_preset_hlx(
         for block, user_params in chain:
             placed = copy.deepcopy(block.exemplar)
             for k, v in user_params.items():
-                placed[k] = v
+                placed[k] = _coerce_param_value(block, k, v)
 
             if _is_cab(block):
                 slot = f"{DSP_CAB_KEY_PREFIX}{cab_index}"
@@ -379,7 +406,7 @@ def _to_hsp_bnn(
     """
     flat = copy.deepcopy(block.exemplar)
     for k, v in user_params.items():
-        flat[k] = v
+        flat[k] = _coerce_param_value(block, k, v)
 
     slot_inner: dict[str, Any] = {
         "model": translate_to_hsp(flat.get(RAW_BLOCK_MODEL_KEY, block.model_id)),
@@ -399,7 +426,13 @@ def _to_hsp_bnn(
             continue
         if k in RAW_BLOCK_NON_PARAM_KEYS:
             continue
-        wrapped = _wrap_value_with_snapshots(v, (param_overrides or {}).get(k))
+        snap_overrides = (param_overrides or {}).get(k)
+        if snap_overrides is not None:
+            snap_overrides = [
+                o if o is None else _coerce_param_value(block, k, o)
+                for o in snap_overrides
+            ]
+        wrapped = _wrap_value_with_snapshots(v, snap_overrides)
         if exp_controllers and k in exp_controllers:
             wrapped["controller"] = exp_controllers[k]
         params[k] = wrapped
