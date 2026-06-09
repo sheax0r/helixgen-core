@@ -107,13 +107,21 @@ def _coerce_param_value(block: Block, key: str, value: Any) -> Any:
     whatever JSON/Python type the caller used (JSON `6500` → int). Coerce to the
     declared type so generated params match the exemplar encoding.
 
-    Only safe, lossless numeric coercions are applied; bools and non-numeric or
-    unknown-schema values pass through untouched.
+    Only safe, lossless coercions are applied; non-numeric or unknown-schema
+    values pass through untouched.
     """
     schema = block.params.get(key)
     if not schema:
         return value
     declared = schema.get("type")
+    # Target is bool: the device stores bools as JSON true/false, and a numeric
+    # 0/1 there corrupts the block the same way an int-for-float does. Convert
+    # the unambiguous 0/1 a caller might have used for false/true (JSON specs
+    # often write 1/0 for booleans). Leave bools and other numbers as-is.
+    if declared == "bool":
+        if not isinstance(value, bool) and isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        return value
     # bool is a subclass of int — never coerce bools into numbers.
     if isinstance(value, bool):
         return value

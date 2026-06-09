@@ -825,3 +825,13 @@ def test_coerce_param_value_passthrough_and_int_target():
     assert _coerce_param_value(block, "HighCut", True) is True
     # unknown param: untouched
     assert _coerce_param_value(block, "Nope", 5) == 5
+    # bool target: numeric 0/1 -> bool (device stores bools as true/false; an
+    # int in a bool slot corrupts the block, same class as int-for-float)
+    assert _coerce_param_value(block, "Bypass", 1) is True
+    assert _coerce_param_value(block, "Bypass", 0) is False
+    assert _coerce_param_value(block, "Bypass", 1.0) is True
+    # bool target: real bools pass through unchanged
+    assert _coerce_param_value(block, "Bypass", True) is True
+    assert _coerce_param_value(block, "Bypass", False) is False
+    # bool target: out-of-range number left alone (don't silently coerce to truthy)
+    assert _coerce_param_value(block, "Bypass", 2) == 2
