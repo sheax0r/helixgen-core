@@ -9,7 +9,7 @@
     {
       "name": "helixgen",
       "description": "Generate Line 6 Helix Stadium .hsp presets from JSON or natural-language tone descriptions. Bundles the /tone skill and the helixgen MCP server. Requires `pip install helixgen`.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "source": {
         "source": "url",
         "url": "https://github.com/sheax0r/helixgen.git",
