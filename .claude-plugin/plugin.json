@@ -1,7 +1,7 @@
 {
   "name": "helixgen",
-  "description": "Generate Line 6 Helix Stadium .hsp presets from JSON or natural-language tone descriptions. Bundles the /tone skill (drives the helixgen CLI from prompts like '/tone Foo Fighters White Limo lead') and the helixgen MCP server (list-blocks, show-block, list-irs, generate). Requires `pip install helixgen` for the underlying CLI and MCP server module.",
-  "version": "0.2.2",
+  "description": "Generate Line 6 Helix Stadium .hsp presets from JSON or natural-language tone descriptions. Bundles the /tone skill (drives prompts like '/tone Foo Fighters White Limo lead') and the helixgen MCP server (list-blocks, show-block, list-irs, generate). The helixgen + mcp_server code is bundled with the plugin and loaded from ${CLAUDE_PLUGIN_ROOT}; requires the `mcp` and `click` Python packages in your environment (`pip install mcp click`).",
+  "version": "0.2.3",
   "author": {
     "name": "Michael Shea",
     "email": "mike.shea@gmail.com"

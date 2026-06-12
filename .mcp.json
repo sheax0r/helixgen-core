@@ -4,7 +4,8 @@
       "command": "python",
       "args": ["-m", "mcp_server"],
       "env": {
-        "MCP_TRANSPORT": "stdio"
+        "MCP_TRANSPORT": "stdio",
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}:${CLAUDE_PLUGIN_ROOT}/src"
       }
     }
   }
