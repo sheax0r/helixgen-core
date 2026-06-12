@@ -154,3 +154,29 @@ Stadium-only; ignored without warning for `.hlx` (legacy Helix) chassis output.
 - TDD throughout: failing test first, then minimal implementation. See existing test files for the established pattern.
 - Pure stdlib + `click` for the CLI; no other runtime deps.
 - Real-export fixtures live in `tests/fixtures/presets/` and are loaded by tests under skip-if-not-present guards so the suite stays green on a clean clone.
+
+## Releasing (automated — do NOT move `stable` or push tags by hand)
+
+Releases are published by `.github/workflows/release.yml`, which fires when
+`.claude-plugin/plugin.json` or `.claude-plugin/marketplace.json` changes on
+`main`. The plugin is installed from the GitHub **`stable` branch**, so merging
+to `main` does NOT ship a release — only the version bump + workflow does.
+
+To cut a release:
+
+1. Bump the version in **both** `.claude-plugin/plugin.json` and
+   `.claude-plugin/marketplace.json` (the workflow fails the build if they
+   disagree). Conventionally also bump the lib version in `pyproject.toml` and
+   `src/helixgen/__init__.py` (separate `0.1.x` line; feeds preset `meta`).
+2. Commit `release X.Y.Z — …`, open a PR, merge to `main`.
+3. The workflow then auto-creates the annotated tag `helixgen--vX.Y.Z` and
+   fast-forwards `stable` to that commit. It is idempotent (no-op if the tag
+   exists) and refuses to force-push if `stable` diverged.
+
+Do **not** manually `git branch -f stable …`, push `stable`, or push a
+`helixgen--v*` tag — the workflow owns those refs. The release is live once the
+workflow has run; users then get it via `/plugin` update.
+
+The plugin's MCP server loads its **bundled** `helixgen` + `mcp_server` from
+`${CLAUDE_PLUGIN_ROOT}` (set via `PYTHONPATH` in `.mcp.json`), not a global
+`pip install`. Only the `mcp` SDK + `click` must exist in the environment.
