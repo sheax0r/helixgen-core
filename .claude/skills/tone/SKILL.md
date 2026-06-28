@@ -59,6 +59,22 @@ Then pick the path:
 
 Default to "multiple presets" when the user says "different sounds" and doesn't specify needing instant switching — it's the simpler spec and the device's preset-switching is fast enough for between-song or between-section transitions in most material.
 
+#### 1b. Research the reference sound — REQUIRED for artist/song/specific-gear targets
+
+When the target is a named artist, song, section, or specific piece of gear, **do web research before sketching the chain** (step 2). Don't rely on model memory alone — signature tones often hinge on one non-obvious detail (a specific pedal, an octave generator, an unusual amp pairing, a studio trick) that memory gets wrong or omits, and getting it wrong wastes the whole generation.
+
+Use `WebSearch` / `WebFetch` (or dispatch a research subagent for deep cases). Search for the rig and the *sound*, e.g. `"<artist> <song> guitar tone gear amp pedals"`. Extract and note:
+
+- **Amps / cabs** actually used (model + which channel if known)
+- **Pedals / effects** in the signal path — especially anything that defines the character (fuzz, octave/POG, Whammy, modulation)
+- **Guitar / pickups** if it shapes the tone (single-coil vs humbucker, specific instrument)
+- **Tonal adjectives** from how people describe it (bright/biting, woolly, scooped, saggy, etc.)
+- **Signature technique** that's part of the sound (palm-muting, octave riffing, heavy vibrato)
+
+State a one-line summary of what you found back to the user before committing to the chain, and **cite sources** (markdown links) so they can verify. Fold the findings into the chain sketch in step 2 and the IR/cab choice in step 3.
+
+**Skip research only when** there's nothing specific to research — a generic vibe target ("warm jazz clean", "thrash rhythm" with no artist) — or the user already named the exact gear/chain they want. When skipping, it's because the target is generic, not because you "probably know it."
+
 ### 2. Sketch the chain in one line
 
 Based on the reference AND the user's guitar, pick a slot shape. The guitar shapes choices upstream of EQ — e.g. a Strat into a Plexi needs less treble-pull at the amp than a Les Paul into the same Plexi.
@@ -133,6 +149,8 @@ The Helix gives raw modeling and trusts you to voice it. A Spark/JC-120/etc. sou
 - **Optional front-of-chain comp** (LA Studio Comp, light setting — only ~1–2 dB of gain reduction, **before** the amp) gives the "polished, baked-in" feel modeled presets often lack. Skip if the user wants pure raw dynamics.
 
 If the cab the user picked has no Hi/Low Cut params (rare on Stadium), do the cuts with a Simple EQ block placed right after the cab.
+
+**"It sounds fine while I play but harsh in the recording."** Common and not a patch-specific bug. Many interfaces (e.g. Focusrite 2i2) have a *direct monitor* that feeds the pre-A/D analog signal to the player's ears — it flatters and smooths the source. The recorded track is the honest signal; direct monitoring was hiding harshness that was always there. Don't chase it as a recording/DAW problem — **bake the fix into the patch**: apply the anti-fizz baseline (Hi Cut 6500–7000, prefer pre-balanced **Mix** IRs over Singles/Raw and over bright stock cabs), and judge by the recording, not the live monitor. A patch sitting at ~10 kHz Hi Cut with a stock V30 is the classic offender.
 
 #### Tuning heuristics (good starting points, not laws)
 
@@ -232,6 +250,22 @@ open('/tmp/<slug>.hsp', 'wb').write(base64.b64decode(b64))
 "
 ```
 
+#### 7a. Write a companion markdown description — REQUIRED
+
+Whenever you save a `.hsp`, also write a sibling markdown file at the same path with the same slug (`<dir>/<slug>.md` next to `<dir>/<slug>.hsp`). This is the durable, human-readable record of the tone so it stands alone without the chat. It's effectively the step-8 report, persisted. Include:
+
+- **Title + target** — the tone name and what it's aiming at (artist/song/section/genre/feel)
+- **Reference notes & sources** — the key findings from step 1b research, with the source links (omit if research was skipped because the target was generic)
+- **The chain** — one line per block: position, model, and the 2–3 settings that matter
+- **IRs referenced** — basenames, so the user knows what must be loaded on the device
+- **Snapshots** — one line each (only if the spec has them)
+- **Guitar settings** — selector / volume / tone
+- **Tweaks** — the one concrete tweak from step 8, plus any obvious alternates
+
+Keep it tight and scannable — it's reference material, not a transcript. If you regenerate/iterate on the preset (step 9), update this `.md` in place alongside the `.hsp`.
+
+> **Save location:** default to writing both files wherever the user's convention puts presets. If a project/user preference (memory or a stated rule) names a presets directory, write the `.hsp` **and** `.md` there; otherwise `/tmp/<slug>.{hsp,md}`. Reveal the `.hsp` in Finder per step 8.
+
 
 ### 8. Report back
 
@@ -239,7 +273,7 @@ Tell the user, in this order:
 1. **The chain** — one short line per block (position, model, the 2–3 settings that matter for this tone)
 2. **Snapshots** (only if the spec has them) — one line per snapshot summarizing what differs from base, e.g. `Lead: amp Drive 0.85, delay Mix 0.30; Clean: drive bypassed, amp Drive 0.30`
 3. **Guitar settings** — one line: `Selector: <position> · Volume: <0–10> · Tone: <0–10>` plus a one-clause note if the goal requires a non-obvious knob move (e.g. "roll volume to 7 for the verse, 10 for the chorus")
-4. **The file** — `/tmp/<slug>.hsp` saved locally. *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "/tmp/<slug>.hsp"` so it's pre-selected in Finder.
+4. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder.
 5. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
 
 Don't hedge with a list of 5 things to maybe try; pick one.
@@ -276,3 +310,5 @@ Rules of thumb for translating ear-language to param moves:
 | Generic guitar advice that ignores the named guitar | If the user said "Strat", say "middle/position 4"; if "Les Paul", say "treble (bridge)" — match the actual switch language |
 | Forcing one preset per role when snapshots fit | If the user wants "rhythm and lead" or "verse/chorus/solo", build ONE preset with snapshots, not multiple files |
 | Snapshot referencing a block name that isn't in the path | `disable` / `params` only see blocks the path actually places; add the block to the path first (even if it'll be bypassed in some snapshots) |
+| Building an artist/song tone from memory | Research the real rig from the web first (step 1b) — signature tones hinge on non-obvious details; cite sources |
+| Saving the `.hsp` without a description | Always write the companion `<slug>.md` (step 7a) next to the preset so the tone is documented standalone |
