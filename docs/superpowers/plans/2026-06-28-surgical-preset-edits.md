@@ -307,13 +307,7 @@ def _to_hsp_bnn(
             )
 ```
 
-```python
-# src/helixgen/generate.py — _compose_preset_hlx, inside the block loop (line ~210)
-# after `placed = copy.deepcopy(block.exemplar)`:
-            entry = path_entry_for_hlx  # see note below
-```
-
-For the `.hlx` path, set base enabled from the entry. Replace the `.hlx` inner loop (lines 197-227) header to carry the spec entry:
+For the `.hlx` path, set base enabled from the entry. Replace the `.hlx` inner loop header (line 208) so it carries the spec entry alongside the resolved block:
 
 ```python
 # src/helixgen/generate.py — _compose_preset_hlx, change the chain loop (line 208)

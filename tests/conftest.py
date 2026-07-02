@@ -87,3 +87,44 @@ def sample_serial_preset_hsp() -> dict:
             ],
         },
     }
+
+
+@pytest.fixture
+def hsp_library(tmp_path: Path, sample_serial_preset_hsp: dict):
+    """A Stadium (.hsp) Library: chassis from the hsp fixture + two synthetic
+    blocks (a drive `Tube Drive` and an amp `Brit Amp`). Exemplars are
+    .hlx-normalized (params unwrapped). Shared by decompile/patch/CLI/MCP tests.
+    """
+    from helixgen.hsp import HSP_MAGIC
+    from helixgen.ingest import ingest_path
+    from helixgen.library import Block, Library
+
+    chassis = tmp_path / "chassis.hsp"
+    chassis.write_bytes(HSP_MAGIC + json.dumps(sample_serial_preset_hsp).encode())
+    lib = Library(root=tmp_path / "lib")
+    ingest_path(chassis, lib)
+    lib.save_block(Block(
+        model_id="HD2_DistTube", category="drive", display_name="Tube Drive",
+        params={"Gain": {"type": "float"}, "Tone": {"type": "float"}},
+        exemplar={"@model": "HD2_DistTube", "@type": "fx", "@enabled": True,
+                  "Gain": 0.5, "Tone": 0.5},
+        first_seen={"preset": "_", "firmware": "_", "date": "2026-06-28"}))
+    lib.save_block(Block(
+        model_id="HD2_AmpBrit", category="amp", display_name="Brit Amp",
+        params={"Drive": {"type": "float"}, "Master": {"type": "float"}},
+        exemplar={"@model": "HD2_AmpBrit", "@type": "amp", "@enabled": True,
+                  "Drive": 0.5, "Master": 0.5},
+        first_seen={"preset": "_", "firmware": "_", "date": "2026-06-28"}))
+    return lib
+
+
+@pytest.fixture
+def strip_provenance():
+    """Return a function that deep-copies a preset and drops the volatile
+    `meta.helixgen.generated_at` stamp, so round-trip comparisons are stable.
+    """
+    def _strip(preset: dict) -> dict:
+        p = json.loads(json.dumps(preset))
+        p.get("meta", {}).get("helixgen", {}).pop("generated_at", None)
+        return p
+    return _strip
