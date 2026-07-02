@@ -4,6 +4,17 @@ The fidelity bar is *round-trip stability*: composing the returned spec must
 reproduce the source preset body (modulo the generated_at provenance stamp).
 Only values that differ from the library exemplar are emitted, so specs stay
 minimal and readable.
+
+Limitations
+-----------
+* **Ambiguous display names**: when a block's display_name matches multiple
+  library entries the emitted reference is the ``model_id`` instead, so the
+  spec regenerates unambiguously.
+* **Orphan IR hash**: if an IR slot's ``irhash`` is neither registered in the
+  IR mapping *nor* equal to the block's ingest-time ``default_irhash``, the
+  raw 32-hex hash is emitted as the ``ir`` field.  Regenerating that spec will
+  fail with ``IrMappingError`` until the IR is registered via
+  ``helixgen register-irs``.
 """
 from __future__ import annotations
 
@@ -130,10 +141,21 @@ def _recover_expression(body: dict, library: Library, device_id: Any) -> list[di
 
 
 def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[str, Any]:
-    """One slot dict → a spec block entry (block name + non-default params)."""
+    """One slot dict → a spec block entry (block name + non-default params).
+
+    The block reference is the display_name when it uniquely resolves back to
+    this block; otherwise the model_id is used so the spec regenerates without
+    ambiguity.
+    """
     model = _translate_model_id(slot.get("model", ""))
     block = library.load_block(model)
-    entry: dict[str, Any] = {"block": block.display_name}
+    name = block.display_name
+    try:
+        if library.find_block(name).model_id != block.model_id:
+            name = block.model_id
+    except (KeyError, LookupError):
+        name = block.model_id
+    entry: dict[str, Any] = {"block": name}
 
     params: dict[str, Any] = {}
     for name, wrapped in (slot.get("params") or {}).items():

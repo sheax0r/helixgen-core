@@ -271,17 +271,8 @@ def swap_model_cmd(preset_path, old, new, path_idx, index, library_path, irs_dir
     """Swap a block for another of the same category."""
     from helixgen import patch
     library = _resolved_library(library_path)
-    irs = _resolved_irs(irs_dir)
-    try:
-        warnings = _apply_and_save(
-            preset_path, library, irs,
-            lambda spec: patch.swap_model(spec, old, new, library, path=path_idx, index=index))
-    except (patch.PatchError, KeyError, LookupError, SpecError,
-            ParamValidationError, GenerateError) as e:
-        raise click.ClickException(str(e)) from e
-    for w in warnings:
-        click.echo(f"warning: {w}", err=True)
-    click.echo(f"Patched {preset_path}")
+    _run_patch(preset_path, library_path, irs_dir,
+               lambda spec: patch.swap_model(spec, old, new, library, path=path_idx, index=index))
 
 
 @cli.command(name="list-blocks")

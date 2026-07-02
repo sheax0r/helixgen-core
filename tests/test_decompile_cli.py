@@ -7,7 +7,7 @@ from helixgen.generate import compose_preset
 from helixgen.spec import parse_spec
 
 
-def test_decompile_cmd_writes_spec(tmp_path, hsp_library, monkeypatch):
+def test_decompile_cmd_writes_spec(tmp_path, hsp_library):
     preset = compose_preset(parse_spec(
         {"name": "CLI", "paths": [{"blocks": [{"block": "Tube Drive", "params": {"Gain": 0.9}}]}]}),
         hsp_library, source="t")
