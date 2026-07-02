@@ -205,8 +205,10 @@ def _compose_preset_hlx(
         block_index = 0
         cab_index = 0
         last_amp_slot: str | None = None
-        for block, user_params in chain:
+        for (block, user_params), block_entry in zip(chain, spec.paths[path_index].blocks):
             placed = copy.deepcopy(block.exemplar)
+            if block_entry.enabled is not None:
+                placed["@enabled"] = block_entry.enabled
             for k, v in user_params.items():
                 placed[k] = _coerce_param_value(block, k, v)
 
@@ -395,6 +397,7 @@ def _to_hsp_bnn(
     *,
     position: int,
     path_index: int,
+    enabled_base: bool | None = None,
     enabled_overrides: list[bool | None] | None = None,
     param_overrides: dict[str, list[Any]] | None = None,
     fs_controller: dict[str, Any] | None = None,
@@ -420,7 +423,8 @@ def _to_hsp_bnn(
         "model": translate_to_hsp(flat.get(RAW_BLOCK_MODEL_KEY, block.model_id)),
     }
     # Slot-level @enabled: always plain (the bNN-level wraps snapshot variation).
-    slot_inner["@enabled"] = {"value": flat.get("@enabled", True)}
+    base_enabled = enabled_base if enabled_base is not None else flat.get("@enabled", True)
+    slot_inner["@enabled"] = {"value": base_enabled}
     if "@version" in flat:
         slot_inner["version"] = flat["@version"]
 
@@ -663,6 +667,7 @@ def _compose_preset_hsp(
                 block, user_params,
                 position=slot_index,
                 path_index=path_index,
+                enabled_base=block_entry.enabled,
                 enabled_overrides=enabled_map.get((path_index, chain_idx)),
                 param_overrides=param_map.get((path_index, chain_idx)),
                 fs_controller=fs_map.get((path_index, chain_idx)),

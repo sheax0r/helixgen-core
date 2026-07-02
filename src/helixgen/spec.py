@@ -14,6 +14,7 @@ class BlockEntry:
     block: str
     params: dict[str, Any] = field(default_factory=dict)
     ir: str | None = None
+    enabled: bool | None = None
 
 
 @dataclass
@@ -321,4 +322,8 @@ def _parse_block_entry(data: Any, *, source: str) -> BlockEntry:
     if ir is not None and not isinstance(ir, str):
         raise _err(source, '"ir" must be a string if provided.')
 
-    return BlockEntry(block=name, params=dict(params), ir=ir)
+    enabled = data.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        raise _err(source, '"enabled" must be a boolean if provided.')
+
+    return BlockEntry(block=name, params=dict(params), ir=ir, enabled=enabled)

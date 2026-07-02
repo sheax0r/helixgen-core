@@ -169,3 +169,25 @@ def test_snapshots_must_be_list():
     bad = {**VALID, "snapshots": {"Rhythm": {}}}
     with pytest.raises(SpecError, match='"snapshots" must be a list'):
         parse_spec(bad, source="t.json")
+
+
+# ---------------------------------------------------------------------------
+# BlockEntry.enabled — optional base-level bypass flag
+# ---------------------------------------------------------------------------
+
+
+def test_block_entry_enabled_parsed():
+    spec = parse_spec({"name": "n", "paths": [
+        {"blocks": [{"block": "X", "enabled": False}]}]})
+    assert spec.paths[0].blocks[0].enabled is False
+
+
+def test_block_entry_enabled_defaults_none():
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [{"block": "X"}]}]})
+    assert spec.paths[0].blocks[0].enabled is None
+
+
+def test_block_entry_enabled_must_be_bool():
+    with pytest.raises(SpecError):
+        parse_spec({"name": "n", "paths": [
+            {"blocks": [{"block": "X", "enabled": "yes"}]}]})

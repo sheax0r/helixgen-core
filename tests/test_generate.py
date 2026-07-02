@@ -835,3 +835,16 @@ def test_coerce_param_value_passthrough_and_int_target():
     assert _coerce_param_value(block, "Bypass", False) is False
     # bool target: out-of-range number left alone (don't silently coerce to truthy)
     assert _coerce_param_value(block, "Bypass", 2) == 2
+
+
+# ---------------------------------------------------------------------------
+# Base-level block enabled flag threaded through generate
+# ---------------------------------------------------------------------------
+
+
+def test_block_enabled_false_disables_slot(hsp_library):
+    spec = parse_spec({"name": "n", "paths": [
+        {"blocks": [{"block": "Tube Drive", "enabled": False}]}]})
+    preset = compose_preset(spec, hsp_library, source="t")
+    slot = preset["preset"]["flow"][0]["b01"]["slot"][0]
+    assert slot["@enabled"] == {"value": False}
