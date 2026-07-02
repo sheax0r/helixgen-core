@@ -133,6 +133,157 @@ def decompile_cmd(
     click.echo(f"Wrote {output_path}")
 
 
+def _coerce_cli_value(raw: str):
+    """Parse a CLI param value: bool, int, float, else string."""
+    low = raw.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    try:
+        return float(raw)
+    except ValueError:
+        return raw
+
+
+def _apply_and_save(preset_path: Path, library, irs, mutate) -> list[str]:
+    """Load spec (sidecar/decompile), apply mutate, persist spec + regen .hsp.
+
+    mutate(spec) must return (new_spec_dict, warnings_list).
+    """
+    import json as _json
+    from helixgen.preset_io import load_spec_for_preset
+
+    spec, spec_path = load_spec_for_preset(preset_path, library, irs=irs)
+    new_spec, warnings = mutate(spec)
+    spec_path.write_text(_json.dumps(new_spec, indent=2))
+    if Path(preset_path).suffix == ".hsp":
+        generate_preset(spec_path, Path(preset_path), library, irs=irs)
+    return warnings
+
+
+def _run_patch(preset_path, library_path, irs_dir, mutate):
+    """Resolve library/irs, call _apply_and_save, translate errors, echo warnings."""
+    from helixgen.patch import PatchError
+
+    library = _resolved_library(library_path)
+    irs = _resolved_irs(irs_dir)
+    try:
+        warnings = _apply_and_save(preset_path, library, irs, mutate)
+    except (PatchError, KeyError, LookupError, SpecError,
+            ParamValidationError, GenerateError) as e:
+        raise click.ClickException(str(e)) from e
+    for w in warnings:
+        click.echo(f"warning: {w}", err=True)
+    click.echo(f"Patched {preset_path}")
+
+
+@cli.command(name="set-param")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("block")
+@click.argument("param")
+@click.argument("value")
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--index", type=int, default=None)
+@_library_option
+@_irs_option
+def set_param_cmd(preset_path, block, param, value, path_idx, index, library_path, irs_dir):
+    """Set a block param: helixgen set-param preset.hsp "Brit Amp" Drive 0.85"""
+    from helixgen import patch
+    _run_patch(preset_path, library_path, irs_dir,
+               lambda spec: (patch.set_param(spec, block, param, _coerce_cli_value(value),
+                                             path=path_idx, index=index), []))
+
+
+@cli.command(name="enable")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("block")
+@click.option("--snapshot", default=None)
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--index", type=int, default=None)
+@_library_option
+@_irs_option
+def enable_cmd(preset_path, block, snapshot, path_idx, index, library_path, irs_dir):
+    """Enable (un-bypass) a block."""
+    from helixgen import patch
+    _run_patch(preset_path, library_path, irs_dir,
+               lambda spec: (patch.set_enabled(spec, block, True,
+                                               path=path_idx, index=index,
+                                               snapshot=snapshot), []))
+
+
+@cli.command(name="disable")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("block")
+@click.option("--snapshot", default=None)
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--index", type=int, default=None)
+@_library_option
+@_irs_option
+def disable_cmd(preset_path, block, snapshot, path_idx, index, library_path, irs_dir):
+    """Disable (bypass) a block."""
+    from helixgen import patch
+    _run_patch(preset_path, library_path, irs_dir,
+               lambda spec: (patch.set_enabled(spec, block, False,
+                                               path=path_idx, index=index,
+                                               snapshot=snapshot), []))
+
+
+@cli.command(name="add-block")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("block")
+@click.option("--path", "path_idx", type=int, default=0)
+@click.option("--after", default=None)
+@_library_option
+@_irs_option
+def add_block_cmd(preset_path, block, path_idx, after, library_path, irs_dir):
+    """Add a block to a path (optionally after another block)."""
+    from helixgen import patch
+    _run_patch(preset_path, library_path, irs_dir,
+               lambda spec: (patch.add_block(spec, block, path=path_idx, after=after), []))
+
+
+@cli.command(name="remove-block")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("block")
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--index", type=int, default=None)
+@_library_option
+@_irs_option
+def remove_block_cmd(preset_path, block, path_idx, index, library_path, irs_dir):
+    """Remove a block from a path."""
+    from helixgen import patch
+    _run_patch(preset_path, library_path, irs_dir,
+               lambda spec: (patch.remove_block(spec, block, path=path_idx, index=index), []))
+
+
+@cli.command(name="swap-model")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("old")
+@click.argument("new")
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--index", type=int, default=None)
+@_library_option
+@_irs_option
+def swap_model_cmd(preset_path, old, new, path_idx, index, library_path, irs_dir):
+    """Swap a block for another of the same category."""
+    from helixgen import patch
+    library = _resolved_library(library_path)
+    irs = _resolved_irs(irs_dir)
+    try:
+        warnings = _apply_and_save(
+            preset_path, library, irs,
+            lambda spec: patch.swap_model(spec, old, new, library, path=path_idx, index=index))
+    except (patch.PatchError, KeyError, LookupError, SpecError,
+            ParamValidationError, GenerateError) as e:
+        raise click.ClickException(str(e)) from e
+    for w in warnings:
+        click.echo(f"warning: {w}", err=True)
+    click.echo(f"Patched {preset_path}")
+
+
 @cli.command(name="list-blocks")
 @click.option("--category", default=None, help="Filter to one category.")
 @_library_option
