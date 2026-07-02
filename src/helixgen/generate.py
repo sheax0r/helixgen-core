@@ -727,6 +727,9 @@ def generate_preset(
     if shape == "hsp":
         body = json.dumps(preset, separators=(",", ":")).encode("utf-8")
         output_path.write_bytes(HSP_MAGIC + body)
+        # Sidecar spec beside the .hsp (source of truth for surgical edits).
+        sidecar = output_path.with_name(output_path.stem + ".spec.json")
+        sidecar.write_text(json.dumps(raw, indent=2))
     else:
         output_path.write_text(json.dumps(preset, indent=2))
     return output_path
