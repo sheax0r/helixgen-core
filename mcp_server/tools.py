@@ -11,9 +11,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from helixgen.decompile import decompile_body
 from helixgen.generate import generate_preset
+from helixgen.hsp import HSP_MAGIC
 from helixgen.ir import IrMapping, compute_stadium_irhash
 from helixgen.library import Library
+from helixgen import patch as _patch
 
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -312,3 +315,46 @@ def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
             continue
         out.append({"hash": h, "path": str(wav), "basename": wav.name})
     return out
+
+
+def decompile_preset_handler(library: Library, model: str, hsp_b64: str) -> dict:
+    """Decompile a base64-encoded .hsp blob into a spec dict."""
+    _validate_model(model)
+    raw = base64.b64decode(hsp_b64)
+    if raw[:len(HSP_MAGIC)] != HSP_MAGIC:
+        raise ValueError("payload is not a .hsp blob (missing magic header)")
+    body = json.loads(raw[len(HSP_MAGIC):].decode("utf-8"))
+    return decompile_body(body, library)
+
+
+_PATCH_OPS = {
+    "set_param": lambda lib, spec, o: (
+        _patch.set_param(spec, o["block"], o["param"], o["value"],
+                         path=o.get("path"), index=o.get("index")), []),
+    "set_enabled": lambda lib, spec, o: (
+        _patch.set_enabled(spec, o["block"], o["enabled"],
+                           path=o.get("path"), index=o.get("index"),
+                           snapshot=o.get("snapshot")), []),
+    "add_block": lambda lib, spec, o: (
+        _patch.add_block(spec, o["block"], path=o.get("path", 0),
+                         after=o.get("after"), params=o.get("params")), []),
+    "remove_block": lambda lib, spec, o: (
+        _patch.remove_block(spec, o["block"],
+                            path=o.get("path"), index=o.get("index")), []),
+    "swap_model": lambda lib, spec, o: _patch.swap_model(
+        spec, o["old"], o["new"], lib, path=o.get("path"), index=o.get("index")),
+}
+
+
+def patch_preset_handler(library: Library, model: str, spec: dict, operations: list) -> dict:
+    """Apply a sequence of patch ops to a spec dict. Returns {spec, warnings}."""
+    _validate_model(model)
+    warnings: list[str] = []
+    current = spec
+    for o in operations:
+        op = o.get("op")
+        if op not in _PATCH_OPS:
+            raise ValueError(f"unknown patch op {op!r}; valid: {sorted(_PATCH_OPS)}")
+        current, warns = _PATCH_OPS[op](library, current, o)
+        warnings.extend(warns)
+    return {"spec": current, "warnings": warnings}

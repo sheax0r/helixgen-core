@@ -203,3 +203,41 @@ def register_irs(model: str, ir_directory: str, force: bool = False) -> dict[str
     Equivalent to `helixgen ir-scan <dir>` from the CLI.
     """
     return _tools.register_irs_handler(model, ir_directory, force=force)
+
+
+@app.tool()
+def decompile_preset(model: str, hsp_b64: str) -> dict[str, Any]:
+    """Decompile a base64-encoded Stadium .hsp into an editable spec dict.
+
+    Use this to bring an orphan/ingested preset into the spec world before
+    applying surgical edits with patch_preset.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`.
+
+    `hsp_b64` is the base64-encoded bytes of a `.hsp` file (the same blob
+    returned by `generate_preset`'s `resource.blob`).
+
+    Returns a spec dict that can be passed directly to `patch_preset` or
+    `generate_preset`.
+    """
+    return _tools.decompile_preset_handler(_resolve_library(), model, hsp_b64)
+
+
+@app.tool()
+def patch_preset(model: str, spec: dict[str, Any], operations: list) -> dict[str, Any]:
+    """Apply surgical edits to a spec dict and return {spec, warnings}.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`.
+
+    `operations` is a list of `{"op": ...}` dicts. Supported ops:
+    - `set_param` — `{op, block, param, value, [path], [index]}`
+    - `set_enabled` — `{op, block, enabled, [path], [index], [snapshot]}`
+    - `add_block` — `{op, block, [path], [after], [params]}`
+    - `remove_block` — `{op, block, [path], [index]}`
+    - `swap_model` — `{op, old, new, [path], [index]}`
+
+    Regenerate the `.hsp` afterwards with `generate_preset(spec=<returned spec>)`.
+
+    Returns `{"spec": <updated spec dict>, "warnings": [<str>, ...]}`.
+    """
+    return _tools.patch_preset_handler(_resolve_library(), model, spec, operations)
