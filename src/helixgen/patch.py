@@ -9,6 +9,9 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from helixgen.ir import IR_MODEL_PREFIX
+from helixgen.library import Library
+
 
 class PatchError(ValueError):
     """A surgical edit could not be applied (bad address, etc.)."""
@@ -85,3 +88,42 @@ def remove_block(spec, block, *, path=None, index=None) -> dict:
     pi, bi = resolve_block(out, block, path, index)
     del out["paths"][pi]["blocks"][bi]
     return out
+
+
+def swap_model(spec, old, new, library: Library, *, path=None, index=None):
+    out = copy.deepcopy(spec)
+    pi, bi = resolve_block(out, old, path, index)
+    entry = out["paths"][pi]["blocks"][bi]
+
+    try:
+        old_block = library.find_block(old)
+        new_block = library.find_block(new)
+    except (KeyError, LookupError) as e:
+        raise PatchError(str(e)) from e
+
+    if old_block.category != new_block.category:
+        raise PatchError(
+            f"Cannot swap {old!r} ({old_block.category}) for {new!r} "
+            f"({new_block.category}): categories differ.")
+
+    warnings: list[str] = []
+    old_params = entry.get("params", {})
+    new_keys = set(new_block.params.keys())
+    carried = {k: v for k, v in old_params.items() if k in new_keys}
+    dropped = sorted(set(old_params) - new_keys)
+    if dropped:
+        warnings.append(
+            f"swap {old!r}→{new!r}: dropped param(s) {dropped} not on target.")
+
+    entry["block"] = new_block.display_name
+    if carried:
+        entry["params"] = carried
+    else:
+        entry.pop("params", None)
+
+    # Preserve IR ref only when the target is also an IR block.
+    if entry.get("ir") is not None and not new_block.model_id.startswith(IR_MODEL_PREFIX):
+        entry.pop("ir", None)
+        warnings.append(f"swap {old!r}→{new!r}: dropped 'ir' (target is not an IR block).")
+
+    return out, warnings
