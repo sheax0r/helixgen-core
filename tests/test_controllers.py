@@ -73,3 +73,23 @@ def test_exp_source_ids_distinct_from_fs():
     assert fs_values.isdisjoint(exp_values), (
         "EXP source IDs collide with FS IDs; check the table."
     )
+
+
+def test_input_mode_for_model_roundtrips():
+    for mode in ("inst1", "inst2", "both", "none"):
+        model = controllers.resolve_input_model("stadium_xl", mode)
+        assert controllers.input_mode_for_model("stadium_xl", model) == mode
+
+
+def test_input_mode_for_model_unknown_returns_none():
+    assert controllers.input_mode_for_model("stadium_xl", "P35_NotAnInput") is None
+
+
+def test_controller_name_for_source_roundtrips():
+    for name in ("FS1", "FS10", "EXP1", "EXP2"):
+        sid = controllers.resolve_controller_source("stadium_xl", name)
+        assert controllers.controller_name_for_source("stadium_xl", sid) == name
+
+
+def test_controller_name_for_source_unknown_returns_none():
+    assert controllers.controller_name_for_source("stadium_xl", 0xDEADBEEF) is None

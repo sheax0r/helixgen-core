@@ -114,3 +114,21 @@ def resolve_controller_source(device_id: str, logical_name: str) -> int:
             f"Valid names: {sorted(table.keys())}."
         )
     return table[logical_name]
+
+
+def input_mode_for_model(device_id, model: str) -> str | None:
+    """Reverse of resolve_input_model: Stadium input model_id → logical mode."""
+    table = INPUT_MODELS[_resolve_device(device_id)]
+    for mode, model_id in table.items():
+        if model_id == model:
+            return mode
+    return None
+
+
+def controller_name_for_source(device_id, source_id: int) -> str | None:
+    """Reverse of resolve_controller_source: source id → logical FS/EXP name."""
+    table = CONTROLLER_SOURCE_IDS[_resolve_device(device_id)]
+    for name, sid in table.items():
+        if sid == source_id:
+            return name
+    return None
