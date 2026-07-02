@@ -111,6 +111,28 @@ def generate_cmd(
     click.echo(f"Wrote {output_path}")
 
 
+@cli.command(name="decompile")
+@click.argument("hsp_path", type=click.Path(exists=True, path_type=Path))
+@click.option("-o", "--output", "output_path", type=click.Path(path_type=Path), required=True)
+@_library_option
+@_irs_option
+def decompile_cmd(
+    hsp_path: Path, output_path: Path, library_path: Path | None, irs_dir: Path | None
+) -> None:
+    """Reconstruct a spec.json from a Stadium .hsp preset."""
+    import json as _json
+    from helixgen.decompile import decompile
+    library = _resolved_library(library_path)
+    irs = _resolved_irs(irs_dir)
+    try:
+        spec = decompile(hsp_path, library, irs=irs)
+    except (KeyError, LookupError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(_json.dumps(spec, indent=2))
+    click.echo(f"Wrote {output_path}")
+
+
 @cli.command(name="list-blocks")
 @click.option("--category", default=None, help="Filter to one category.")
 @_library_option
