@@ -13,8 +13,8 @@ Limitations
 * **Orphan IR hash**: if an IR slot's ``irhash`` is neither registered in the
   IR mapping *nor* equal to the block's ingest-time ``default_irhash``, the
   raw 32-hex hash is emitted as the ``ir`` field.  Regenerating that spec will
-  fail with ``IrMappingError`` until the IR is registered via
-  ``helixgen register-irs``.
+  fail with ``GenerateError`` (wrapping the underlying ``IrMappingError``)
+  until the IR is registered via ``helixgen register-irs``.
 """
 from __future__ import annotations
 
