@@ -54,3 +54,37 @@ def test_remove_block():
     out = patch.remove_block(_spec(), "Tube Drive")
     names = [b["block"] for b in out["paths"][0]["blocks"]]
     assert names == ["Brit Amp"]
+
+
+def test_verbs_do_not_mutate_input():
+    import copy
+    s = _spec()
+    snapshot = copy.deepcopy(s)
+    patch.set_param(s, "Tube Drive", "Gain", 0.9)
+    patch.remove_block(s, "Brit Amp")
+    assert s == snapshot
+
+
+def test_set_enabled_reenable_in_snapshot():
+    s = _spec()
+    s["snapshots"] = [{"name": "Lead", "disable": ["Tube Drive"]}]
+    out = patch.set_enabled(s, "Tube Drive", True, snapshot="Lead")
+    assert "Tube Drive" not in out["snapshots"][0]["disable"]
+
+
+def test_set_enabled_missing_snapshot_raises():
+    with pytest.raises(patch.PatchError):
+        patch.set_enabled(_spec(), "Tube Drive", False, snapshot="Ghost")
+
+
+def test_add_block_after_scoped_to_path():
+    s = {"name": "P", "paths": [
+        {"blocks": [{"block": "A"}, {"block": "B"}]},
+        {"blocks": [{"block": "X"}, {"block": "Y"}]}]}
+    # "Y" lives only on path 1; adding after "Y" on path 0 must error, not
+    # silently insert at Y's index into path 0.
+    with pytest.raises(patch.PatchError):
+        patch.add_block(s, "Z", path=0, after="Y")
+    # after on the correct path inserts in the right place:
+    out = patch.add_block(s, "Z", path=1, after="X")
+    assert [b["block"] for b in out["paths"][1]["blocks"]] == ["X", "Z", "Y"]

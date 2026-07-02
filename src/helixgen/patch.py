@@ -69,8 +69,14 @@ def add_block(spec, block, *, path=0, after=None, params=None) -> dict:
     if after is None:
         blocks.append(entry)
     else:
-        _, bi = resolve_block(out, after, path, None)
-        blocks.insert(bi + 1, entry)
+        matches = [i for i, b in enumerate(blocks) if b.get("block") == after]
+        if not matches:
+            raise PatchError(f"Block {after!r} not found in path {path}.")
+        if len(matches) > 1:
+            raise PatchError(
+                f"Block {after!r} appears multiple times in path {path}; "
+                f"cannot choose an insertion point.")
+        blocks.insert(matches[0] + 1, entry)
     return out
 
 
