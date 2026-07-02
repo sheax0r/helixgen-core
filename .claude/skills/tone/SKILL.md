@@ -312,3 +312,24 @@ Rules of thumb for translating ear-language to param moves:
 | Snapshot referencing a block name that isn't in the path | `disable` / `params` only see blocks the path actually places; add the block to the path first (even if it'll be bypassed in some snapshots) |
 | Building an artist/song tone from memory | Research the real rig from the web first (step 1b) — signature tones hinge on non-obvious details; cite sources |
 | Saving the `.hsp` without a description | Always write the companion `<slug>.md` (step 7a) next to the preset so the tone is documented standalone |
+
+## Adjusting an existing tone (surgical edits)
+
+When the user asks to *tweak* a tone you already generated (e.g. "brighter
+cab", "swap to a Plexi", "more delay", "kill the reverb"), do NOT regenerate
+from a fresh description. Apply the narrowest surgical edit instead:
+
+1. If you still hold the spec dict, call `patch_preset(model, spec, operations)`
+   with the smallest op that expresses the change:
+   - "brighter" → `set_param` on the cab `HighCut` (raise it).
+   - "swap to a Plexi" → `swap_model` (old → new amp; same category required).
+   - "kill the reverb" → `set_enabled` with `enabled: false` on the reverb block.
+   - "add a delay" → `add_block` with the delay block, `after` the amp/cab.
+2. If you only have the `.hsp` (an orphan the user imported), first call
+   `decompile_preset(model, hsp_b64)` to recover the spec, then patch it.
+3. Regenerate by calling `generate_preset(model, spec=<patched spec>)`.
+4. Surface any `warnings` from `patch_preset` (e.g. dropped params on a swap)
+   to the user.
+
+Prefer one `patch_preset` call with multiple `operations` over several
+regenerations. The spec stays the source of truth; the `.hsp` is rebuilt from it.

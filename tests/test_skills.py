@@ -69,3 +69,12 @@ def test_skill_name_matches_directory(skill_path: Path) -> None:
         f"{skill_path}: frontmatter name {fm.get('name')!r} ≠ "
         f"directory name {skill_path.parent.name!r}"
     )
+
+
+def test_tone_skill_documents_patch_loop():
+    skill = Path(__file__).resolve().parent.parent / ".claude" / "skills" / "tone" / "SKILL.md"
+    text = skill.read_text()
+    assert "patch_preset" in text
+    assert "decompile" in text
+    # The skill must prefer surgical edits for adjustments.
+    assert "Adjusting an existing tone" in text
