@@ -42,13 +42,15 @@ def _models(b):
 
 @pytest.mark.xfail(
     reason=(
-        "Decompiler round-trip is known-incomplete for arbitrary real device "
-        "exports in v1. Unsupported constructs: parallel split/looper routing "
-        "(P35_* infrastructure blocks), duplicate same-model block instances "
-        "referenced by footswitch/expression/snapshot, expression min/max "
-        "outside [0,1], and IRs with no registered or default hash. As of "
-        "2026-07-02, ~65/211 of the author's exports round-trip. Tracked in "
-        "docs/superpowers/specs/2026-07-02-decompiler-real-preset-hardening.md."
+        "Decompiler round-trip is incomplete for arbitrary real device exports. "
+        "The parallel-routing + hardening effort (2026-07-03) raised the pass "
+        "rate from ~65/211 to ~124/211 (parallel splits, loopers, lane/pos "
+        "coordinates, native-unit expression). Remaining residual categories: "
+        "IR blocks decompiled without an `ir` field; duplicate-named blocks "
+        "referenced by snapshots (snapshot refs are not yet coordinate-aware); "
+        "P35 I/O routing endpoints on branch lanes; inverted (min>max) and "
+        "duplicate expression targets. Tracked in "
+        "docs/superpowers/specs/2026-07-03-parallel-routing-and-hardening-design.md."
     ),
     strict=False,
 )
