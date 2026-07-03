@@ -333,3 +333,17 @@ from a fresh description. Apply the narrowest surgical edit instead:
 
 Prefer one `patch_preset` call with multiple `operations` over several
 regenerations. The spec stays the source of truth; the `.hsp` is rebuilt from it.
+
+### Addressing duplicate blocks
+
+When a preset has two blocks with the same name (e.g. two IR "With Pan" blocks,
+one per lane, or a volume block per split lane), reference the specific one by
+its coordinate: add `"pos": N` (and `"lane": 0|1`, `"path": 0|1`) to the
+`patch_preset` operation or the snapshot/footswitch/expression reference. A bare
+name only works when it is unique in the preset.
+
+If `decompile_preset` refuses a preset (more than two parallel splits, or an
+unknown routing block), tell the user it's an unsupported routing shape rather
+than editing it blindly. If `generate_preset` warns that an IR hash was passed
+through unregistered, mention the user must `register-irs` that WAV to edit it
+locally.

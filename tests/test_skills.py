@@ -78,3 +78,9 @@ def test_tone_skill_documents_patch_loop():
     assert "decompile" in text
     # The skill must prefer surgical edits for adjustments.
     assert "Adjusting an existing tone" in text
+
+
+def test_tone_skill_documents_coordinates():
+    txt = (Path(__file__).resolve().parents[1] / ".claude" / "skills" / "tone" / "SKILL.md").read_text()
+    assert "lane" in txt and "pos" in txt
+    assert "duplicate" in txt.lower()
