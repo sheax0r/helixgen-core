@@ -727,52 +727,67 @@ Expected: FAIL — split/join entries are skipped (not emitted) after Task 6.
 
 Add a helper and call it after the block-placement loop, per path. Helper:
 
+**Region membership is by LIST ORDER, not position arithmetic.** Branch-lane
+positions restart at 1 and are independent of main-lane positions (a branch
+block at lane-1 pos 1 can sit under a split at main pos 6), so a branch block
+belongs to whichever split it is *listed between* in `path_entry.blocks`. Collect
+the lane-1 block keys that appear between a `SplitEntry` and its matching
+`JoinEntry` in list order; `split.branch` = first such key, `join.branch` = last
+(fallbacks: join key / split key when the branch is empty).
+
 ```python
 def _emit_splits(path_dict, path_entry) -> None:
     """Emit split/join bNN slots with computed branch/endpoint pointers.
 
-    Assumes plain BlockEntry blocks are already placed. Resolves each entry's
-    effective position (explicit pos, else its list order within its lane —
-    mirroring the auto-assignment in the placement loop).
+    Plain BlockEntry blocks are already placed by the caller. Effective
+    positions are recomputed the same way the placement loop does so keys match.
+    Region (branch-block) membership is determined by LIST ORDER: the lane-1
+    blocks listed between a split and its join belong to that split.
     """
     from helixgen.spec import SplitEntry, JoinEntry, BlockEntry
 
-    # Recompute effective positions per entry, matching the placement loop.
     next_pos = {0: 1, 1: 1}
-    eff = []  # (entry, lane, pos, key)
+    eff = []  # (entry, lane, pos, key) in list order
     for e in path_entry.blocks:
         lane = getattr(e, "lane", 0)
         pos = e.pos if e.pos is not None else next_pos[lane]
         next_pos[lane] = max(next_pos[lane], pos + 1)
-        eff.append((e, lane, pos, f"b{14*lane+pos:02d}"))
+        eff.append((e, lane, pos, f"b{14 * lane + pos:02d}"))
 
-    branch_blocks = [(pos, key) for (e, lane, pos, key) in eff
-                     if lane == 1 and isinstance(e, BlockEntry)]
-
-    # Pair splits with joins by list order (balanced, validated in spec).
-    stack = []
+    # Sequential (non-nested) split regions: collect lane-1 keys between each
+    # split and its join, in list order.
+    regions = []            # (s_entry, s_pos, s_key, j_entry, j_pos, j_key, [branch_keys])
+    open_split = None       # (s_entry, s_pos, s_key)
+    branch_keys: list[str] = []
     for (e, lane, pos, key) in eff:
         if isinstance(e, SplitEntry):
-            stack.append((e, pos, key))
+            open_split = (e, pos, key)
+            branch_keys = []
         elif isinstance(e, JoinEntry):
-            s_entry, s_pos, s_key = stack.pop()
-            region = sorted(bk for (bp, bk) in branch_blocks if s_pos < bp < pos)
-            first_b = region[0] if region else key
-            last_b = region[-1] if region else s_key
-            path_dict[s_key] = {
-                "@enabled": {"value": True},
-                "type": "split", "position": s_pos, "path": 0,
-                "branch": first_b, "endpoint": key,
-                "slot": [{"model": s_entry.model, "@enabled": {"value": True},
-                          "params": {k: {"value": v} for k, v in s_entry.params.items()}}],
-            }
-            path_dict[key] = {
-                "@enabled": {"value": True},
-                "type": "join", "position": pos, "path": 0,
-                "branch": last_b, "endpoint": s_key,
-                "slot": [{"model": e.model, "@enabled": {"value": True},
-                          "params": {k: {"value": v} for k, v in e.params.items()}}],
-            }
+            se, sp, sk = open_split
+            regions.append((se, sp, sk, e, pos, key, branch_keys))
+            open_split = None
+            branch_keys = []
+        elif lane == 1 and open_split is not None and isinstance(e, BlockEntry):
+            branch_keys.append(key)
+
+    for (se, sp, sk, je, jp, jk, bkeys) in regions:
+        first_b = bkeys[0] if bkeys else jk
+        last_b = bkeys[-1] if bkeys else sk
+        path_dict[sk] = {
+            "@enabled": {"value": True},
+            "type": "split", "position": sp, "path": 0,
+            "branch": first_b, "endpoint": jk,
+            "slot": [{"model": se.model, "@enabled": {"value": True},
+                      "params": {k: {"value": v} for k, v in se.params.items()}}],
+        }
+        path_dict[jk] = {
+            "@enabled": {"value": True},
+            "type": "join", "position": jp, "path": 0,
+            "branch": last_b, "endpoint": sk,
+            "slot": [{"model": je.model, "@enabled": {"value": True},
+                      "params": {k: {"value": v} for k, v in je.params.items()}}],
+        }
 ```
 
 Call it in `_compose_preset_hsp` after the per-path block-placement loop, inside the same `for path_index, chain in enumerate(resolved):` structure — but it needs the full `path_entry.blocks`, so call after placement using `spec.paths[path_index]`:
@@ -842,43 +857,74 @@ Expected: FAIL — decompile currently ignores split/join and lane metadata; rec
 
 Replace the per-path block loop in `decompile_body` with a call to `_reconstruct_path_blocks`, which walks all `bNN` (both lanes), emits split/join and lane/pos:
 
+**List order matters**: `_emit_splits` (Task 7) determines a branch block's
+region by the lane-1 blocks listed *between* a split and its join. So decompile
+must emit each region's branch blocks immediately after their split entry, not
+sorted to the end by slot number. Reconstruct region membership from the `.hsp`
+pointers: a split's branch blocks are the lane-1 slots whose key falls in
+`[split.branch … join.branch]` (inclusive, by slot number).
+
 ```python
+def _entry_for(key, bnn, library, irs):
+    """Build a spec entry dict (block/split/join) with explicit lane/pos."""
+    num = int(key[1:])
+    lane = 1 if num >= 14 else 0
+    pos = num - 14 * lane
+    typ = bnn.get("type")
+    slot = bnn["slot"][0]
+    if typ == "split":
+        entry = {"split": {"model": slot.get("model"),
+                           "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
+    elif typ == "join":
+        entry = {"join": {"model": slot.get("model"),
+                          "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
+    else:
+        entry = _block_entry(slot, library, irs)
+    entry["lane"] = lane
+    entry["pos"] = pos
+    return entry
+
+
 def _reconstruct_path_blocks(path_dict, library, irs):
-    """Return the ordered spec `blocks` list for one .hsp path, including
-    split/join entries and explicit lane/pos, sorted by (main-position)."""
-    entries = []  # (sort_key, entry_dict)
-    for key in sorted(path_dict, key=lambda x: (len(x), x)):
-        if not (isinstance(key, str) and key.startswith("b")
-                and key[1:].isdigit() and key not in _ENDPOINT_KEYS):
-            continue
-        bnn = path_dict[key]
-        if not isinstance(bnn, dict) or not bnn.get("slot"):
-            continue
-        num = int(key[1:])
-        lane = 1 if num >= 14 else 0
-        pos = num - 14 * lane
-        typ = bnn.get("type")
-        slot = bnn["slot"][0]
-        if typ == "split":
-            entry = {"split": {"model": slot.get("model"),
-                               "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
-        elif typ == "join":
-            entry = {"join": {"model": slot.get("model"),
-                              "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
-        else:
-            entry = _block_entry(slot, library, irs)
-        entry["lane"] = lane
-        entry["pos"] = pos
-        # sort: main lane by pos; branch blocks sort right after their region's
-        # split. Approximate by (pos for lane 0) / (split_pos for lane 1).
-        entries.append((num, entry))
-    # order: interleave so branch blocks follow their split. Sort by a key that
-    # places lane-1 blocks just after the lane-0 split at the same region.
-    entries.sort(key=lambda t: t[0])
-    return [e for _, e in entries]
+    """Ordered spec `blocks` list for one .hsp path: lane-0 blocks in position
+    order, with each split's branch (lane-1) blocks inserted right after the
+    split entry so region membership survives the round-trip."""
+    def user_keys():
+        return [k for k in path_dict
+                if isinstance(k, str) and k.startswith("b") and k[1:].isdigit()
+                and k not in _ENDPOINT_KEYS
+                and isinstance(path_dict[k], dict) and path_dict[k].get("slot")]
+
+    keys = user_keys()
+    lane0 = sorted((k for k in keys if int(k[1:]) < 14), key=lambda k: int(k[1:]))
+    lane1 = sorted((k for k in keys if int(k[1:]) >= 14), key=lambda k: int(k[1:]))
+
+    # region branch keys for each split: [split.branch .. join.branch] by number
+    def branch_span(bnn):
+        b0, b1 = bnn.get("branch"), path_dict.get(bnn.get("endpoint"), {}).get("branch")
+        if not b0 or not b1:
+            return []
+        lo, hi = sorted((int(b0[1:]), int(b1[1:])))
+        return [k for k in lane1 if lo <= int(k[1:]) <= hi]
+
+    out = []
+    for k in lane0:
+        bnn = path_dict[k]
+        out.append(_entry_for(k, bnn, library, irs))
+        if bnn.get("type") == "split":
+            for bk in branch_span(bnn):
+                out.append(_entry_for(bk, path_dict[bk], library, irs))
+    # any lane-1 blocks not claimed by a split (shouldn't happen for valid
+    # presets) are appended so nothing is silently dropped
+    claimed = {e_key for k in lane0 if path_dict[k].get("type") == "split"
+               for e_key in branch_span(path_dict[k])}
+    for bk in lane1:
+        if bk not in claimed:
+            out.append(_entry_for(bk, path_dict[bk], library, irs))
+    return out
 ```
 
-For clean round-trip the exact list order does not matter to the generator (it reads lane/pos, not order) — so sorting by slot number is sufficient and deterministic. In `decompile_body`, replace the inner block loop:
+In `decompile_body`, replace the inner block loop:
 
 ```python
     for path_dict in flow:
