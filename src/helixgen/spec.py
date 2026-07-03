@@ -165,21 +165,14 @@ def _parse_footswitches(raw: Any, *, source: str) -> list[FootswitchAssignment]:
     if not isinstance(raw, list):
         raise _err(source, '"footswitches" must be a list.')
     out: list[FootswitchAssignment] = []
-    seen_switches: set[str] = set()
     seen_blocks: set[str] = set()
     for i, entry in enumerate(raw):
         fs = _parse_footswitch(entry, source=f"{source} footswitches[{i}]")
-        if fs.switch in seen_switches:
-            raise _err(
-                f"{source} footswitches[{i}]",
-                f"duplicate switch {fs.switch!r}; each switch may appear once.",
-            )
         if fs.block in seen_blocks:
             raise _err(
                 f"{source} footswitches[{i}]",
                 f"duplicate block {fs.block!r}; one block per footswitch.",
             )
-        seen_switches.add(fs.switch)
         seen_blocks.add(fs.block)
         out.append(fs)
     return out

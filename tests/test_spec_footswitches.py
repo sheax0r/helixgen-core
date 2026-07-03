@@ -52,14 +52,6 @@ def test_footswitch_missing_block_rejected():
         parse_spec(_spec_with_footswitches({"switch": "FS1"}))
 
 
-def test_footswitch_duplicate_switch_rejected():
-    with pytest.raises(SpecError, match="duplicate"):
-        parse_spec(_spec_with_footswitches(
-            {"switch": "FS1", "block": "A"},
-            {"switch": "FS1", "block": "B"},
-        ))
-
-
 def test_footswitch_duplicate_block_rejected():
     with pytest.raises(SpecError, match="duplicate"):
         parse_spec(_spec_with_footswitches(
@@ -71,3 +63,21 @@ def test_footswitch_duplicate_block_rejected():
 def test_footswitches_must_be_list():
     with pytest.raises(SpecError, match='"footswitches" must be a list'):
         parse_spec({"name": "t", "paths": [{"blocks": []}], "footswitches": {}})
+
+
+def test_one_switch_may_drive_multiple_blocks():
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "A"}, {"block": "B"}]}],
+        "footswitches": [
+            {"switch": "FS1", "block": "A"},
+            {"switch": "FS1", "block": "B"}]})
+    assert [f.block for f in spec.footswitches] == ["A", "B"]
+    assert all(f.switch == "FS1" for f in spec.footswitches)
+
+
+def test_block_still_limited_to_one_switch():
+    with pytest.raises(SpecError):
+        parse_spec({"name": "n", "paths": [{"blocks": [{"block": "A"}]}],
+            "footswitches": [
+                {"switch": "FS1", "block": "A"},
+                {"switch": "FS2", "block": "A"}]})
