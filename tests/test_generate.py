@@ -848,3 +848,28 @@ def test_block_enabled_false_disables_slot(hsp_library):
     preset = compose_preset(spec, hsp_library, source="t")
     slot = preset["preset"]["flow"][0]["b01"]["slot"][0]
     assert slot["@enabled"] == {"value": False}
+
+
+# ---------------------------------------------------------------------------
+# Task 6: (lane, pos) slot key placement
+# ---------------------------------------------------------------------------
+
+
+def test_serial_output_unchanged_with_lane_pos_absent(hsp_library):
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "Tube Drive"}, {"block": "Brit Amp"}]}]})
+    preset = compose_preset(spec, hsp_library, source="t")
+    keys = [k for k in preset["preset"]["flow"][0] if k.startswith("b") and k[1:].isdigit()]
+    assert "b01" in keys and "b02" in keys  # serial keys unchanged
+
+
+def test_branch_lane_block_uses_b15(hsp_library):
+    # a lane-1 block at pos 1 must land at slot b15 with path:1
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "Tube Drive"},
+        {"block": "Brit Amp", "lane": 1, "pos": 1}]}]})
+    preset = compose_preset(spec, hsp_library, source="t")
+    path0 = preset["preset"]["flow"][0]
+    assert "b15" in path0
+    assert path0["b15"]["path"] == 1
+    assert path0["b15"]["slot"][0]["model"] == "HD2_AmpBrit"

@@ -85,11 +85,18 @@ class GenerateError(ValueError):
 
 
 def resolve_blocks(spec: Spec, library: Library) -> list[ResolvedPath]:
-    """Look up every block in the spec against the library."""
+    """Look up every block in the spec against the library.
+
+    Non-BlockEntry entries (SplitEntry, JoinEntry) are skipped here; the
+    placement loop handles them separately (Task 7).
+    """
+    from helixgen.spec import BlockEntry
     resolved: list[ResolvedPath] = []
     for path in spec.paths:
         chain: ResolvedPath = []
         for entry in path.blocks:
+            if not isinstance(entry, BlockEntry):
+                continue
             block = library.find_block(entry.block)
             chain.append((block, entry.params))
         resolved.append(chain)
@@ -616,8 +623,10 @@ def _compose_preset_hsp(
             validate_params(block, user_params)
 
     # Validate: reject `ir` field on non-IR blocks.
+    from helixgen.spec import BlockEntry as _BlockEntry
     for path_entry, chain in zip(spec.paths, resolved):
-        for block_entry, (block, _) in zip(path_entry.blocks, chain):
+        block_entries = [e for e in path_entry.blocks if isinstance(e, _BlockEntry)]
+        for block_entry, (block, _) in zip(block_entries, chain):
             if block_entry.ir is not None and not block.model_id.startswith(IR_MODEL_PREFIX):
                 raise GenerateError(
                     f"block {block.display_name!r} is not an IR block; "
@@ -661,11 +670,17 @@ def _compose_preset_hsp(
                 f"Path {path_index} has {len(chain)} blocks; only "
                 f"{len(_HSP_BNN_RANGE)} user slots (b01..b12) available."
             )
+        from helixgen.spec import BlockEntry as _BlockEntryPlacement
         path_entry = spec.paths[path_index]
+        block_entries = [e for e in path_entry.blocks if isinstance(e, _BlockEntryPlacement)]
+        next_pos = {0: 1, 1: 1}  # auto-assign counter per lane
         for chain_idx, (block, user_params) in enumerate(chain):
-            slot_index = chain_idx + 1
+            block_entry = block_entries[chain_idx]
+            lane = getattr(block_entry, "lane", 0)
+            pos = block_entry.pos if block_entry.pos is not None else next_pos[lane]
+            next_pos[lane] = max(next_pos[lane], pos + 1)
+            slot_index = 14 * lane + pos
             key = f"b{slot_index:02d}"
-            block_entry = path_entry.blocks[chain_idx]
             # Resolve irhash for IR blocks: spec.ir > canonical > error.
             resolved_irhash: str | None = None
             if block.model_id.startswith(IR_MODEL_PREFIX):
@@ -676,8 +691,8 @@ def _compose_preset_hsp(
                 )
             path_dict[key] = _to_hsp_bnn(
                 block, user_params,
-                position=slot_index,
-                path_index=path_index,
+                position=pos,
+                path_index=lane,
                 enabled_base=block_entry.enabled,
                 enabled_overrides=enabled_map.get((path_index, chain_idx)),
                 param_overrides=param_map.get((path_index, chain_idx)),
