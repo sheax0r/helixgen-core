@@ -1,12 +1,40 @@
 """Round-trip tests: spec footswitches → controller block on @enabled + preset.sources."""
 from pathlib import Path
 
+import json
 import pytest
 
 from helixgen.generate import compose_preset
-from helixgen.library import Library
+from helixgen.hsp import HSP_MAGIC
+from helixgen.ingest import ingest_path
+from helixgen.library import Block, Library
+from helixgen.spec import parse_spec
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+
+def _dup_ir_lib(tmp_path, sample_serial_preset_hsp):
+    chassis = tmp_path / "c.hsp"
+    chassis.write_bytes(HSP_MAGIC + json.dumps(sample_serial_preset_hsp).encode())
+    lib = Library(root=tmp_path / "lib")
+    ingest_path(chassis, lib)
+    lib.save_block(Block(model_id="HX2_ImpulseResponseWithPan", category="cab",
+        display_name="With Pan", params={"Mix": {"type": "float"}},
+        exemplar={"@model": "HX2_ImpulseResponseWithPan", "@type": "cab", "@enabled": True, "Mix": 1.0},
+        first_seen={"preset": "_", "firmware": "_", "date": "x"}, default_irhash="a"*32))
+    return lib
+
+
+def test_footswitch_targets_duplicate_block_by_coordinate(tmp_path, sample_serial_preset_hsp):
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1},
+        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 2}]}],
+        "footswitches": [{"switch": "FS1", "block": "With Pan", "pos": 2}]})
+    preset = compose_preset(spec, lib, source="t")
+    # the FS controller must be attached to the pos-2 slot (b02), not b01
+    assert "controller" in preset["preset"]["flow"][0]["b02"]["@enabled"]
+    assert "controller" not in preset["preset"]["flow"][0]["b01"]["@enabled"]
 
 
 def _library(tmp_path) -> Library:

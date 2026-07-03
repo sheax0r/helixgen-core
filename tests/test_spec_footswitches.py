@@ -81,3 +81,24 @@ def test_block_still_limited_to_one_switch():
             "footswitches": [
                 {"switch": "FS1", "block": "A"},
                 {"switch": "FS2", "block": "A"}]})
+
+
+def test_footswitch_optional_coordinate_fields_parse():
+    spec = parse_spec({"name": "t", "paths": [{"blocks": [{"block": "A"}]}],
+        "footswitches": [{"switch": "FS1", "block": "A", "pos": 2, "lane": 0, "path": 0}]})
+    fs = spec.footswitches[0]
+    assert fs.pos == 2
+    assert fs.lane == 0
+    assert fs.path == 0
+
+
+def test_footswitch_same_block_different_pos_allowed():
+    """Two FS entries for the same block name disambiguated by pos are valid at parse time."""
+    spec = parse_spec({"name": "t", "paths": [{"blocks": [{"block": "A"}, {"block": "A"}]}],
+        "footswitches": [
+            {"switch": "FS1", "block": "A", "pos": 1},
+            {"switch": "FS2", "block": "A", "pos": 2},
+        ]})
+    assert len(spec.footswitches) == 2
+    assert spec.footswitches[0].pos == 1
+    assert spec.footswitches[1].pos == 2

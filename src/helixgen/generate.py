@@ -29,7 +29,7 @@ from helixgen.ingest import (
 )
 from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.library import Block, Library
-from helixgen.spec import Spec, parse_spec
+from helixgen.spec import BlockEntry, JoinEntry, SplitEntry, Spec, parse_spec
 
 
 _HASH_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -90,7 +90,6 @@ def resolve_blocks(spec: Spec, library: Library) -> list[ResolvedPath]:
     Non-BlockEntry entries (SplitEntry, JoinEntry) are skipped here; the
     placement loop handles them separately (Task 7).
     """
-    from helixgen.spec import BlockEntry
     resolved: list[ResolvedPath] = []
     for path in spec.paths:
         chain: ResolvedPath = []
@@ -223,8 +222,7 @@ def _compose_preset_hlx(
         block_index = 0
         cab_index = 0
         last_amp_slot: str | None = None
-        from helixgen.spec import BlockEntry as _BlockEntryHlx
-        block_entries_hlx = [e for e in spec.paths[path_index].blocks if isinstance(e, _BlockEntryHlx)]
+        block_entries_hlx = [e for e in spec.paths[path_index].blocks if isinstance(e, BlockEntry)]
         for (block, user_params), block_entry in zip(chain, block_entries_hlx):
             placed = copy.deepcopy(block.exemplar)
             if block_entry.enabled is not None:
@@ -494,14 +492,42 @@ def _hsp_type_for_block(block: Block) -> str:
 
 
 def _resolve_spec_block(
-    name_or_id: str, resolved: list[ResolvedPath]
+    name_or_id: str,
+    resolved: list[ResolvedPath],
+    *,
+    spec: "Spec | None" = None,
+    path: "int | None" = None,
+    lane: "int | None" = None,
+    pos: "int | None" = None,
 ) -> tuple[int, int, Block]:
-    """Locate a block in the resolved spec chains by display_name or model_id."""
+    """Locate a block in the resolved spec chains by display_name or model_id.
+
+    When ``lane`` or ``pos`` is given, matches are filtered to only those whose
+    corresponding ``BlockEntry`` in ``spec`` carries matching coordinates.  A
+    bare name reference resolves only when it uniquely identifies one placed
+    block; otherwise ``GenerateError`` names the ambiguous candidates.
+    """
     matches: list[tuple[int, int, Block]] = []
     for path_idx, chain in enumerate(resolved):
+        if path is not None and path_idx != path:
+            continue
         for chain_idx, (block, _) in enumerate(chain):
             if block.model_id == name_or_id or block.display_name == name_or_id:
                 matches.append((path_idx, chain_idx, block))
+
+    if spec is not None and (lane is not None or pos is not None):
+        coord_matches: list[tuple[int, int, Block]] = []
+        for (pi, ci, block) in matches:
+            block_entries = [e for e in spec.paths[pi].blocks if isinstance(e, BlockEntry)]
+            if ci >= len(block_entries):
+                continue
+            entry = block_entries[ci]
+            e_lane = entry.lane  # defaults to 0
+            e_pos = entry.pos
+            if (lane is None or e_lane == lane) and (pos is None or e_pos == pos):
+                coord_matches.append((pi, ci, block))
+        matches = coord_matches
+
     if not matches:
         raise GenerateError(
             f"Spec references block {name_or_id!r} but no such block is "
@@ -509,8 +535,8 @@ def _resolve_spec_block(
         )
     if len(matches) > 1:
         raise GenerateError(
-            f"Block {name_or_id!r} matches multiple placed blocks. "
-            f"Use the model_id (in brackets in `list-blocks`) to disambiguate."
+            f"Block {name_or_id!r} matches multiple placed blocks; "
+            f"disambiguate with lane/pos."
         )
     return matches[0]
 
@@ -537,14 +563,14 @@ def _build_snapshot_overrides(
     for snap_idx, snap in enumerate(spec.snapshots):
         # disable: turn off the named block in this snapshot
         for name in snap.disable:
-            path_idx, chain_idx, _ = _resolve_spec_block(name, resolved)
+            path_idx, chain_idx, _ = _resolve_spec_block(name, resolved, spec=spec)
             key = (path_idx, chain_idx)
             enabled_map.setdefault(key, [None] * HSP_SNAPSHOT_SLOTS)
             enabled_map[key][snap_idx] = False
 
         # params: override values for named block in this snapshot
         for block_name, overrides in snap.params.items():
-            path_idx, chain_idx, block = _resolve_spec_block(block_name, resolved)
+            path_idx, chain_idx, block = _resolve_spec_block(block_name, resolved, spec=spec)
             validate_params(block, overrides)
             key = (path_idx, chain_idx)
             block_params = param_map.setdefault(key, {})
@@ -562,7 +588,9 @@ def _build_fs_assignments(
     fs_map: dict[tuple[int, int], dict[str, Any]] = {}
     source_ids: set[int] = set()
     for fs in spec.footswitches:
-        path_idx, chain_idx, _ = _resolve_spec_block(fs.block, resolved)
+        path_idx, chain_idx, _ = _resolve_spec_block(
+            fs.block, resolved, spec=spec, path=fs.path, lane=fs.lane, pos=fs.pos
+        )
         source_id = controllers.resolve_controller_source(device_id, fs.switch)
         fs_map[(path_idx, chain_idx)] = _build_fs_controller(source_id, fs.behavior)
         source_ids.add(source_id)
@@ -578,7 +606,9 @@ def _build_exp_assignments(
     for assignment in spec.expression:
         source_id = controllers.resolve_controller_source(device_id, assignment.pedal)
         for target in assignment.targets:
-            path_idx, chain_idx, block = _resolve_spec_block(target.block, resolved)
+            path_idx, chain_idx, block = _resolve_spec_block(
+                target.block, resolved, spec=spec, path=target.path, lane=target.lane, pos=target.pos
+            )
             if target.param not in block.params:
                 raise GenerateError(
                     f"EXP target {assignment.pedal} → "
@@ -623,8 +653,6 @@ def _emit_splits(path_dict: dict[str, Any], path_entry) -> None:
     Region (branch-block) membership is determined by LIST ORDER: the lane-1
     blocks listed between a split and its join belong to that split.
     """
-    from helixgen.spec import SplitEntry, JoinEntry, BlockEntry
-
     next_pos = {0: 1, 1: 1}
     eff = []  # (entry, lane, pos, key) in list order
     for e in path_entry.blocks:
@@ -679,9 +707,8 @@ def _compose_preset_hsp(
             validate_params(block, user_params)
 
     # Validate: reject `ir` field on non-IR blocks.
-    from helixgen.spec import BlockEntry as _BlockEntry
     for path_entry, chain in zip(spec.paths, resolved):
-        block_entries = [e for e in path_entry.blocks if isinstance(e, _BlockEntry)]
+        block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
         for block_entry, (block, _) in zip(block_entries, chain):
             if block_entry.ir is not None and not block.model_id.startswith(IR_MODEL_PREFIX):
                 raise GenerateError(
@@ -726,9 +753,8 @@ def _compose_preset_hsp(
                 f"Path {path_index} has {len(chain)} blocks; only "
                 f"{len(_HSP_BNN_RANGE)} user slots (b01..b12) available."
             )
-        from helixgen.spec import BlockEntry as _BlockEntryPlacement
         path_entry = spec.paths[path_index]
-        block_entries = [e for e in path_entry.blocks if isinstance(e, _BlockEntryPlacement)]
+        block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
         next_pos = {0: 1, 1: 1}  # auto-assign counter per lane
         for chain_idx, (block, user_params) in enumerate(chain):
             block_entry = block_entries[chain_idx]

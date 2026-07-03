@@ -57,11 +57,15 @@ class FootswitchAssignment:
     """A single FS-to-block bypass assignment.
 
     `switch` is a logical name (e.g. "FS3"); the chassis-specific source
-    ID is resolved at generate time.
+    ID is resolved at generate time.  Optional `path`/`lane`/`pos` disambiguate
+    when multiple placed blocks share the same display_name.
     """
     switch: str
     block: str
     behavior: str = "latching"
+    path: int | None = None
+    lane: int | None = None
+    pos: int | None = None
 
 
 @dataclass
@@ -70,6 +74,9 @@ class ExpressionTarget:
     param: str
     min: float = 0.0
     max: float = 1.0
+    path: int | None = None
+    lane: int | None = None
+    pos: int | None = None
 
 
 @dataclass
@@ -183,15 +190,16 @@ def _parse_footswitches(raw: Any, *, source: str) -> list[FootswitchAssignment]:
     if not isinstance(raw, list):
         raise _err(source, '"footswitches" must be a list.')
     out: list[FootswitchAssignment] = []
-    seen_blocks: set[str] = set()
+    seen_blocks: set[tuple] = set()
     for i, entry in enumerate(raw):
         fs = _parse_footswitch(entry, source=f"{source} footswitches[{i}]")
-        if fs.block in seen_blocks:
+        block_key = (fs.block, fs.path, fs.lane, fs.pos)
+        if block_key in seen_blocks:
             raise _err(
                 f"{source} footswitches[{i}]",
                 f"duplicate block {fs.block!r}; one block per footswitch.",
             )
-        seen_blocks.add(fs.block)
+        seen_blocks.add(block_key)
         out.append(fs)
     return out
 
@@ -211,7 +219,17 @@ def _parse_footswitch(data: Any, *, source: str) -> FootswitchAssignment:
             source,
             f'"behavior" must be one of {list(VALID_FS_BEHAVIORS)} (got {behavior!r}).',
         )
-    return FootswitchAssignment(switch=switch, block=block, behavior=behavior)
+    path = data.get("path")
+    if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
+        raise _err(source, '"path" must be a non-negative integer if provided.')
+    lane = data.get("lane")
+    if lane is not None and lane not in (0, 1):
+        raise _err(source, '"lane" must be 0 or 1 if provided.')
+    pos = data.get("pos")
+    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
+        raise _err(source, '"pos" must be a non-negative integer if provided.')
+    return FootswitchAssignment(switch=switch, block=block, behavior=behavior,
+                                path=path, lane=lane, pos=pos)
 
 
 def _parse_expression(raw: Any, *, source: str) -> list[ExpressionAssignment]:
@@ -276,7 +294,17 @@ def _parse_expression_target(data: Any, *, source: str) -> ExpressionTarget:
             raise _err(source, f'"{label}" must be a number.')
     if mn > mx:
         raise _err(source, f'"min" must be <= "max" (got min={mn}, max={mx}).')
-    return ExpressionTarget(block=block, param=param, min=float(mn), max=float(mx))
+    path = data.get("path")
+    if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
+        raise _err(source, '"path" must be a non-negative integer if provided.')
+    lane = data.get("lane")
+    if lane is not None and lane not in (0, 1):
+        raise _err(source, '"lane" must be 0 or 1 if provided.')
+    pos = data.get("pos")
+    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
+        raise _err(source, '"pos" must be a non-negative integer if provided.')
+    return ExpressionTarget(block=block, param=param, min=float(mn), max=float(mx),
+                            path=path, lane=lane, pos=pos)
 
 
 def _parse_lane_pos(data: dict, *, source: str) -> tuple[int, int | None]:
