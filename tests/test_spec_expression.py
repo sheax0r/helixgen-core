@@ -51,14 +51,6 @@ def test_expression_target_min_greater_than_max_rejected():
         })
 
 
-def test_expression_target_min_out_of_range_rejected():
-    with pytest.raises(SpecError, match="must be in"):
-        _spec({
-            "pedal": "EXP1",
-            "targets": [{"block": "X", "param": "Y", "min": -0.1}],
-        })
-
-
 def test_expression_multi_target():
     spec = _spec({
         "pedal": "EXP1",
@@ -94,3 +86,18 @@ def test_expression_empty_targets_rejected():
 def test_expression_missing_pedal_rejected():
     with pytest.raises(SpecError, match='"pedal" is required'):
         _spec({"targets": [{"block": "A", "param": "B"}]})
+
+
+def test_expression_accepts_native_unit_range():
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [{"block": "X"}]}],
+        "expression": [{"pedal": "EXP1", "targets": [
+            {"block": "X", "param": "Time", "min": -120.0, "max": 1800.0}]}]})
+    t = spec.expression[0].targets[0]
+    assert t.min == -120.0 and t.max == 1800.0
+
+
+def test_expression_still_requires_min_le_max():
+    with pytest.raises(SpecError):
+        parse_spec({"name": "n", "paths": [{"blocks": [{"block": "X"}]}],
+            "expression": [{"pedal": "EXP1", "targets": [
+                {"block": "X", "param": "Time", "min": 5.0, "max": 1.0}]}]})

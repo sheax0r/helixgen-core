@@ -263,8 +263,6 @@ def _parse_expression_target(data: Any, *, source: str) -> ExpressionTarget:
     for label, val in (("min", mn), ("max", mx)):
         if not isinstance(val, (int, float)) or isinstance(val, bool):
             raise _err(source, f'"{label}" must be a number.')
-        if val < 0.0 or val > 1.0:
-            raise _err(source, f'"{label}" must be in [0.0, 1.0] (got {val}).')
     if mn > mx:
         raise _err(source, f'"min" must be <= "max" (got min={mn}, max={mx}).')
     return ExpressionTarget(block=block, param=param, min=float(mn), max=float(mx))
