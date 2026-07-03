@@ -17,35 +17,48 @@ class PatchError(ValueError):
     """A surgical edit could not be applied (bad address, etc.)."""
 
 
-def resolve_block(spec: dict, name: str, path: int | None, index: int | None) -> tuple[int, int]:
+def resolve_block(
+    spec: dict,
+    name: str,
+    path: int | None,
+    index: int | None,
+    *,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> tuple[int, int]:
     matches: list[tuple[int, int]] = []
     for pi, p in enumerate(spec.get("paths", [])):
         for bi, b in enumerate(p.get("blocks", [])):
-            if b.get("block") == name:
-                matches.append((pi, bi))
+            if b.get("block") != name:
+                continue
+            if lane is not None and b.get("lane", 0) != lane:
+                continue
+            if pos is not None and b.get("pos") != pos:
+                continue
+            matches.append((pi, bi))
     if path is not None and index is not None:
         if (path, index) in matches:
             return (path, index)
         raise PatchError(f"No block {name!r} at path {path} index {index}.")
     if not matches:
-        raise PatchError(f"Block {name!r} is not in the spec. Placed blocks: "
+        raise PatchError(f"Block {name!r} is not in the spec (with the given lane/pos). Placed blocks: "
                          f"{[b.get('block') for p in spec.get('paths', []) for b in p.get('blocks', [])]}.")
     if len(matches) > 1:
         raise PatchError(f"Block {name!r} matches {len(matches)} placements; "
-                         f"disambiguate with --path/--index.")
+                         f"disambiguate with --lane/--path/--index.")
     return matches[0]
 
 
-def set_param(spec, block, param, value, *, path=None, index=None) -> dict:
+def set_param(spec, block, param, value, *, path=None, index=None, lane=None, pos=None) -> dict:
     out = copy.deepcopy(spec)
-    pi, bi = resolve_block(out, block, path, index)
+    pi, bi = resolve_block(out, block, path, index, lane=lane, pos=pos)
     out["paths"][pi]["blocks"][bi].setdefault("params", {})[param] = value
     return out
 
 
-def set_enabled(spec, block, enabled, *, path=None, index=None, snapshot=None) -> dict:
+def set_enabled(spec, block, enabled, *, path=None, index=None, lane=None, pos=None, snapshot=None) -> dict:
     out = copy.deepcopy(spec)
-    pi, bi = resolve_block(out, block, path, index)
+    pi, bi = resolve_block(out, block, path, index, lane=lane, pos=pos)
     if snapshot is None:
         out["paths"][pi]["blocks"][bi]["enabled"] = enabled
         return out
@@ -61,7 +74,7 @@ def set_enabled(spec, block, enabled, *, path=None, index=None, snapshot=None) -
     return out
 
 
-def add_block(spec, block, *, path=0, after=None, params=None) -> dict:
+def add_block(spec, block, *, path=0, after=None, params=None, lane=None, pos=None) -> dict:
     out = copy.deepcopy(spec)
     if path >= len(out.get("paths", [])):
         raise PatchError(f"No path {path} in spec.")
@@ -83,16 +96,16 @@ def add_block(spec, block, *, path=0, after=None, params=None) -> dict:
     return out
 
 
-def remove_block(spec, block, *, path=None, index=None) -> dict:
+def remove_block(spec, block, *, path=None, index=None, lane=None, pos=None) -> dict:
     out = copy.deepcopy(spec)
-    pi, bi = resolve_block(out, block, path, index)
+    pi, bi = resolve_block(out, block, path, index, lane=lane, pos=pos)
     del out["paths"][pi]["blocks"][bi]
     return out
 
 
-def swap_model(spec, old, new, library: Library, *, path=None, index=None):
+def swap_model(spec, old, new, library: Library, *, path=None, index=None, lane=None, pos=None):
     out = copy.deepcopy(spec)
-    pi, bi = resolve_block(out, old, path, index)
+    pi, bi = resolve_block(out, old, path, index, lane=lane, pos=pos)
     entry = out["paths"][pi]["blocks"][bi]
 
     try:

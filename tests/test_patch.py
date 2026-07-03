@@ -88,3 +88,21 @@ def test_add_block_after_scoped_to_path():
     # after on the correct path inserts in the right place:
     out = patch.add_block(s, "Z", path=1, after="X")
     assert [b["block"] for b in out["paths"][1]["blocks"]] == ["X", "Z", "Y"]
+
+
+def test_resolve_block_by_pos():
+    spec = {"name": "n", "paths": [{"blocks": [
+        {"block": "With Pan", "pos": 1}, {"block": "With Pan", "pos": 2}]}]}
+    assert patch.resolve_block(spec, "With Pan", None, None, pos=2) == (0, 1)
+    with pytest.raises(patch.PatchError):
+        patch.resolve_block(spec, "With Pan", None, None)  # ambiguous
+
+
+def test_resolve_block_by_lane():
+    spec = {"name": "n", "paths": [
+        {"blocks": [{"block": "Tube Drive", "lane": 0}]},
+        {"blocks": [{"block": "Tube Drive", "lane": 1}]},
+    ]}
+    assert patch.resolve_block(spec, "Tube Drive", None, None, lane=1) == (1, 0)
+    with pytest.raises(patch.PatchError):
+        patch.resolve_block(spec, "Tube Drive", None, None)  # ambiguous
