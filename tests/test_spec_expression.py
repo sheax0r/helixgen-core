@@ -43,12 +43,15 @@ def test_expression_target_with_custom_min_max():
     assert t.max == 0.8
 
 
-def test_expression_target_min_greater_than_max_rejected():
-    with pytest.raises(SpecError, match='"min" must be <='):
-        _spec({
-            "pedal": "EXP1",
-            "targets": [{"block": "X", "param": "Y", "min": 0.9, "max": 0.1}],
-        })
+def test_expression_target_inverted_range_accepted():
+    # FIX A: Real presets use inverted min/max (heel=high, toe=low). Must be accepted.
+    spec = _spec({
+        "pedal": "EXP1",
+        "targets": [{"block": "X", "param": "Y", "min": 0.85, "max": 0.67}],
+    })
+    t = spec.expression[0].targets[0]
+    assert t.min == 0.85
+    assert t.max == 0.67
 
 
 def test_expression_multi_target():
@@ -96,8 +99,43 @@ def test_expression_accepts_native_unit_range():
     assert t.min == -120.0 and t.max == 1800.0
 
 
-def test_expression_still_requires_min_le_max():
-    with pytest.raises(SpecError):
-        parse_spec({"name": "n", "paths": [{"blocks": [{"block": "X"}]}],
-            "expression": [{"pedal": "EXP1", "targets": [
-                {"block": "X", "param": "Time", "min": 5.0, "max": 1.0}]}]})
+def test_expression_inverted_range_with_wide_native_units_accepted():
+    # FIX A: Inverted native-unit range (e.g. ms / Hz sweeps reversed). Must be accepted.
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [{"block": "X"}]}],
+        "expression": [{"pedal": "EXP1", "targets": [
+            {"block": "X", "param": "Time", "min": 1800.0, "max": 5.0}]}]})
+    t = spec.expression[0].targets[0]
+    assert t.min == 1800.0 and t.max == 5.0
+
+
+# ---------------------------------------------------------------------------
+# FIX C — coordinate-aware duplicate-target check
+# ---------------------------------------------------------------------------
+
+def test_expression_same_name_different_pos_accepted():
+    """FIX C: two same-name blocks at different positions can each have an EXP target."""
+    spec = parse_spec({
+        "name": "dup-pos",
+        "paths": [{"blocks": [
+            {"block": "Tube Drive", "pos": 1},
+            {"block": "Tube Drive", "pos": 2},
+        ]}],
+        "expression": [{"pedal": "EXP1", "targets": [
+            {"block": "Tube Drive", "param": "Gain", "pos": 1},
+            {"block": "Tube Drive", "param": "Gain", "pos": 2},
+        ]}],
+    })
+    assert len(spec.expression[0].targets) == 2
+
+
+def test_expression_exact_same_coordinate_still_rejected():
+    """FIX C: exact same (block, param, pos) across the spec is still rejected."""
+    with pytest.raises(SpecError, match="duplicate"):
+        parse_spec({
+            "name": "dup-pos",
+            "paths": [{"blocks": [{"block": "Tube Drive", "pos": 1}]}],
+            "expression": [
+                {"pedal": "EXP1", "targets": [{"block": "Tube Drive", "param": "Gain", "pos": 1}]},
+                {"pedal": "EXP2", "targets": [{"block": "Tube Drive", "param": "Gain", "pos": 1}]},
+            ],
+        })

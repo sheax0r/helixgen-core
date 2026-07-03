@@ -239,7 +239,7 @@ def _parse_expression(raw: Any, *, source: str) -> list[ExpressionAssignment]:
         raise _err(source, '"expression" must be a list.')
     out: list[ExpressionAssignment] = []
     seen_pedals: set[str] = set()
-    seen_targets: set[tuple[str, str]] = set()
+    seen_targets: set[tuple] = set()
     for i, entry in enumerate(raw):
         assignment = _parse_expression_assignment(
             entry, source=f"{source} expression[{i}]"
@@ -251,11 +251,15 @@ def _parse_expression(raw: Any, *, source: str) -> list[ExpressionAssignment]:
             )
         seen_pedals.add(assignment.pedal)
         for j, t in enumerate(assignment.targets):
-            key = (t.block, t.param)
+            # Include coordinate fields so two same-name blocks at different
+            # positions can each carry an EXP target on the same param name
+            # (mirrors the coordinate-aware FS duplicate check from task 9).
+            key = (t.block, t.param, t.path, t.lane, t.pos)
             if key in seen_targets:
                 raise _err(
                     f"{source} expression[{i}] targets[{j}]",
-                    f"duplicate (block, param) {key!r}; one param per pedal across the spec.",
+                    f"duplicate (block, param, pos) {(t.block, t.param, t.pos)!r}; "
+                    f"one param per pedal per block-coordinate across the spec.",
                 )
             seen_targets.add(key)
         out.append(assignment)
@@ -292,8 +296,8 @@ def _parse_expression_target(data: Any, *, source: str) -> ExpressionTarget:
     for label, val in (("min", mn), ("max", mx)):
         if not isinstance(val, (int, float)) or isinstance(val, bool):
             raise _err(source, f'"{label}" must be a number.')
-    if mn > mx:
-        raise _err(source, f'"min" must be <= "max" (got min={mn}, max={mx}).')
+    # Inverted ranges (min > max) are valid: real presets use them for reverse
+    # heel-to-toe sweeps (e.g. min=0.85, max=0.67).
     path = data.get("path")
     if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
         raise _err(source, '"path" must be a non-negative integer if provided.')

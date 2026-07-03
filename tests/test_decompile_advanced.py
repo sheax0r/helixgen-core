@@ -102,14 +102,63 @@ def _make_ir_library(tmp_path, sample_serial_preset_hsp):
     return lib
 
 
-def test_ir_default_hash_emits_no_ir_field(tmp_path, sample_serial_preset_hsp):
-    """Decompiling an IR slot whose hash equals the block default emits no 'ir' key."""
+def test_ir_default_hash_always_emits_ir_field(tmp_path, sample_serial_preset_hsp):
+    """FIX B: Decompiling an IR slot always emits 'ir', even when hash == block default."""
     lib = _make_ir_library(tmp_path, sample_serial_preset_hsp)
     body = _make_ir_body(_DEFAULT_IRHASH)
     empty_irs = IrMapping(irs_dir=tmp_path / "irs")
     d = decompile_body(body, lib, irs=empty_irs)
     block_entry = d["paths"][0]["blocks"][0]
-    assert "ir" not in block_entry
+    # Always emit — even when the hash matches the library block's default_irhash.
+    assert block_entry.get("ir") == _DEFAULT_IRHASH
+
+
+def test_ir_block_no_default_hash_emits_raw_hash(tmp_path, sample_serial_preset_hsp):
+    """FIX B: IR block with default_irhash=None and unregistered slot irhash emits the raw hash."""
+    from helixgen.hsp import HSP_MAGIC
+    from helixgen.ingest import ingest_path
+    from helixgen.library import Block, Library
+
+    chassis = tmp_path / "chassis.hsp"
+    chassis.write_bytes(HSP_MAGIC + __import__("json").dumps(sample_serial_preset_hsp).encode())
+    lib = Library(root=tmp_path / "lib2")
+    ingest_path(chassis, lib)
+    _UNREGISTERED = "c" * 32
+    lib.save_block(Block(
+        model_id=f"{IR_MODEL_PREFIX}WithPan",
+        category="cab",
+        display_name="With Pan",
+        params={},
+        exemplar={"@model": f"{IR_MODEL_PREFIX}WithPan", "@type": "cab",
+                  "@enabled": True, "params": {}},
+        first_seen={"preset": "_", "firmware": "_", "date": "x"},
+        default_irhash=None,  # no default — the always-emit path must handle this
+    ))
+    body = {
+        "meta": {"name": "IR Test", "color": "auto", "device_id": 2490368,
+                 "device_version": 0, "info": ""},
+        "preset": {
+            "clip": {"end": 0.0, "filename": "", "path": "", "start": 0.0},
+            "cursor": {"flow": 0, "path": 0, "position": 0},
+            "flow": [{
+                "@enabled": True,
+                "b00": {"type": "input", "position": 0, "path": 0,
+                        "slot": [{"model": "P35_InputInst1", "params": {}, "version": 0}]},
+                "b01": {"type": "cab", "position": 1, "path": 0,
+                        "slot": [{"model": f"{IR_MODEL_PREFIX}WithPan",
+                                  "@enabled": True, "params": {}, "version": 0,
+                                  "irhash": _UNREGISTERED}]},
+                "b13": {"type": "output", "position": 13, "path": 0,
+                        "slot": [{"model": "P35_OutputMatrix", "params": {}, "version": 0}]},
+            }],
+        },
+    }
+    empty_irs = IrMapping(irs_dir=tmp_path / "irs")
+    d = decompile_body(body, lib, irs=empty_irs)
+    block_entry = d["paths"][0]["blocks"][0]
+    assert block_entry.get("ir") == _UNREGISTERED
+    # Round-trip must not raise — unregistered hex hash passes through with a warning.
+    compose_preset(parse_spec(d), lib, source="t", irs=empty_irs)
 
 
 def test_ir_orphan_hash_emits_raw_hash(tmp_path, sample_serial_preset_hsp):

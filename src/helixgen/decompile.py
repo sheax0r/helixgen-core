@@ -286,10 +286,11 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
                 if h == irhash:
                     basename = os.path.basename(p)
                     break
-        if basename is not None:
-            entry["ir"] = basename
-        elif irhash != getattr(block, "default_irhash", None):
-            entry["ir"] = irhash
+        # Always emit ir — registered basename if available, else raw 32-hex hash.
+        # Omitting ir when irhash == block.default_irhash caused regeneration to
+        # silently use the library default instead of the preset's actual hash,
+        # breaking the round-trip for presets whose default_irhash is None.
+        entry["ir"] = basename if basename is not None else irhash
 
     return entry
 
