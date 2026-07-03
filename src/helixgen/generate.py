@@ -223,7 +223,9 @@ def _compose_preset_hlx(
         block_index = 0
         cab_index = 0
         last_amp_slot: str | None = None
-        for (block, user_params), block_entry in zip(chain, spec.paths[path_index].blocks):
+        from helixgen.spec import BlockEntry as _BlockEntryHlx
+        block_entries_hlx = [e for e in spec.paths[path_index].blocks if isinstance(e, _BlockEntryHlx)]
+        for (block, user_params), block_entry in zip(chain, block_entries_hlx):
             placed = copy.deepcopy(block.exemplar)
             if block_entry.enabled is not None:
                 placed["@enabled"] = block_entry.enabled
@@ -613,6 +615,60 @@ def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
     return snaps
 
 
+def _emit_splits(path_dict: dict[str, Any], path_entry) -> None:
+    """Emit split/join bNN slots with computed branch/endpoint pointers.
+
+    Plain BlockEntry blocks are already placed by the caller. Effective
+    positions are recomputed the same way the placement loop does so keys match.
+    Region (branch-block) membership is determined by LIST ORDER: the lane-1
+    blocks listed between a split and its join belong to that split.
+    """
+    from helixgen.spec import SplitEntry, JoinEntry, BlockEntry
+
+    next_pos = {0: 1, 1: 1}
+    eff = []  # (entry, lane, pos, key) in list order
+    for e in path_entry.blocks:
+        lane = getattr(e, "lane", 0)
+        pos = e.pos if e.pos is not None else next_pos[lane]
+        next_pos[lane] = max(next_pos[lane], pos + 1)
+        eff.append((e, lane, pos, f"b{14 * lane + pos:02d}"))
+
+    # Sequential (non-nested) split regions: collect lane-1 keys between each
+    # split and its join, in list order.
+    regions = []            # (s_entry, s_pos, s_key, j_entry, j_pos, j_key, [branch_keys])
+    open_split = None       # (s_entry, s_pos, s_key)
+    branch_keys: list[str] = []
+    for (e, lane, pos, key) in eff:
+        if isinstance(e, SplitEntry):
+            open_split = (e, pos, key)
+            branch_keys = []
+        elif isinstance(e, JoinEntry):
+            se, sp, sk = open_split
+            regions.append((se, sp, sk, e, pos, key, branch_keys))
+            open_split = None
+            branch_keys = []
+        elif lane == 1 and open_split is not None and isinstance(e, BlockEntry):
+            branch_keys.append(key)
+
+    for (se, sp, sk, je, jp, jk, bkeys) in regions:
+        first_b = bkeys[0] if bkeys else jk
+        last_b = bkeys[-1] if bkeys else sk
+        path_dict[sk] = {
+            "@enabled": {"value": True},
+            "type": "split", "position": sp, "path": 0,
+            "branch": first_b, "endpoint": jk,
+            "slot": [{"model": se.model, "@enabled": {"value": True},
+                      "params": {k: {"value": v} for k, v in se.params.items()}}],
+        }
+        path_dict[jk] = {
+            "@enabled": {"value": True},
+            "type": "join", "position": jp, "path": 0,
+            "branch": last_b, "endpoint": sk,
+            "slot": [{"model": je.model, "@enabled": {"value": True},
+                      "params": {k: {"value": v} for k, v in je.params.items()}}],
+        }
+
+
 def _compose_preset_hsp(
     spec: Spec, library: Library, *, source: str, chassis: dict[str, Any], irs: "IrMapping | None" = None
 ) -> dict[str, Any]:
@@ -704,6 +760,7 @@ def _compose_preset_hsp(
                 } or None,
                 irhash=resolved_irhash,
             )
+        _emit_splits(path_dict, spec.paths[path_index])
 
     all_source_ids = fs_source_ids | exp_source_ids
     if all_source_ids:

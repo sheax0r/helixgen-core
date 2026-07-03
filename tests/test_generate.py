@@ -873,3 +873,24 @@ def test_branch_lane_block_uses_b15(hsp_library):
     assert "b15" in path0
     assert path0["b15"]["path"] == 1
     assert path0["b15"]["slot"][0]["model"] == "HD2_AmpBrit"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: split/join emission with branch/endpoint pointers
+# ---------------------------------------------------------------------------
+
+
+def test_split_join_pointers(hsp_library):
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "Tube Drive", "lane": 0, "pos": 5},
+        {"split": {"model": "P35_AppDSPSplitY", "params": {}}, "lane": 0, "pos": 6},
+        {"block": "Brit Amp", "lane": 1, "pos": 1},   # branch block → b15
+        {"join": {}, "lane": 0, "pos": 8}]}]})
+    path0 = compose_preset(spec, hsp_library, source="t")["preset"]["flow"][0]
+    assert path0["b06"]["type"] == "split"
+    assert path0["b06"]["branch"] == "b15"
+    assert path0["b06"]["endpoint"] == "b08"
+    assert path0["b08"]["type"] == "join"
+    assert path0["b08"]["branch"] == "b15"   # single branch block → first == last
+    assert path0["b08"]["endpoint"] == "b06"
+    assert path0["b06"]["slot"][0]["model"] == "P35_AppDSPSplitY"
