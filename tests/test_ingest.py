@@ -397,3 +397,21 @@ def test_ingest_path_rebuilds_index(tmp_library, sample_serial_preset, tmp_path)
 
     ingest_path(preset_path, lib)
     assert (tmp_library / "index.json").exists()
+
+
+def test_looper_is_catalogued(tmp_path, sample_serial_preset_hsp):
+    from helixgen.hsp import HSP_MAGIC
+    # inject a looper block into path 0
+    body = json.loads(json.dumps(sample_serial_preset_hsp))
+    body["preset"]["flow"][0]["b01"] = {
+        "type": "fx", "position": 1, "path": 0,
+        "slot": [{"model": "P35_LooperHelixStereo",
+                  "@enabled": {"value": True}, "params": {}}],
+    }
+    p = tmp_path / "loop.hsp"
+    p.write_bytes(HSP_MAGIC + json.dumps(body).encode())
+    lib = Library(root=tmp_path / "lib")
+    ingest_path(p, lib)
+    models = [b.model_id for b in lib.list_blocks()]
+    assert "P35_LooperHelixStereo" in models
+    assert infer_category("P35_LooperHelixStereo") == "looper"

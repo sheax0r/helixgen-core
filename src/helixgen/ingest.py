@@ -107,6 +107,7 @@ _CATEGORY_PREFIXES: list[tuple[str, str]] = [
     ("HX2_DM4", "dynamics"),
     # Single-word legacy effects (no namespace prefix at all).
     ("TapeEater", "drive"),
+    ("P35_LooperHelix", "looper"),
 ]
 
 

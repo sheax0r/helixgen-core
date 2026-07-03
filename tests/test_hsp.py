@@ -203,7 +203,7 @@ def _payload_with_routing_in_mid_path() -> dict:
                         "type": "split",
                         "slot": [{"model": "P35_AppDSPSplitY", "params": {}}],
                     },
-                    "b03": {  # mid-path looper — chassis-level, not a block
+                    "b03": {  # mid-path looper — real placeable block, must be catalogued
                         "type": "looper",
                         "slot": [{"model": "P35_LooperHelixMono", "params": {}}],
                     },
@@ -226,9 +226,12 @@ def test_extract_blocks_skips_p35_routing_in_mid_path():
     models = [b["@model"] for b in blocks]
     # The real drive block is kept...
     assert "HD2_DrvScream808" in models
-    # ...but no P35_* (input/output/split/join/looper) leaks through
+    # Looper is a real placeable block — it must now be catalogued
+    assert "P35_LooperHelixMono" in models
+    # ...but non-looper P35_* (input/output/split/join) must still be filtered
     for m in models:
-        assert not m.startswith("P35_"), f"P35_* model leaked into blocks: {m}"
+        if not m.startswith("P35_LooperHelix"):
+            assert not m.startswith("P35_"), f"P35_* routing model leaked into blocks: {m}"
 
 
 def test_read_hsp_blocks_end_to_end(tmp_path):
@@ -253,6 +256,7 @@ def test_real_goldfinger_hsp_extracts_blocks():
     models = [b["@model"] for b in blocks]
     # Goldfinger is amp-driven; we expect at least one amp model
     assert any("Amp" in m for m in models), f"no amp model found among: {models}"
-    # No endpoint models leaked through
+    # No routing/endpoint models leaked through (loopers are real blocks — allowed)
     for m in models:
-        assert not m.startswith("P35_"), f"endpoint leaked: {m}"
+        if not m.startswith("P35_LooperHelix"):
+            assert not m.startswith("P35_"), f"P35_* routing model leaked: {m}"

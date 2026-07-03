@@ -161,7 +161,8 @@ def extract_blocks_from_hsp(hsp_data: dict[str, Any]) -> list[dict[str, Any]]:
             for slot in slots:
                 if not isinstance(slot, dict) or "model" not in slot:
                     continue
-                if slot["model"].startswith(CHASSIS_MODEL_PREFIX):
+                model = slot["model"]
+                if model.startswith(CHASSIS_MODEL_PREFIX) and not model.startswith("P35_LooperHelix"):
                     continue
                 blocks.append(_slot_to_hlx_block(slot, block_meta))
 
