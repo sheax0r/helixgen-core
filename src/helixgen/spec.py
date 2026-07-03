@@ -15,11 +15,29 @@ class BlockEntry:
     params: dict[str, Any] = field(default_factory=dict)
     ir: str | None = None
     enabled: bool | None = None
+    lane: int = 0
+    pos: int | None = None
+
+
+@dataclass
+class SplitEntry:
+    model: str
+    params: dict[str, Any] = field(default_factory=dict)
+    lane: int = 0
+    pos: int | None = None
+
+
+@dataclass
+class JoinEntry:
+    model: str = "P35_AppDSPJoin"
+    params: dict[str, Any] = field(default_factory=dict)
+    lane: int = 0
+    pos: int | None = None
 
 
 @dataclass
 class PathEntry:
-    blocks: list[BlockEntry]
+    blocks: list
     input: str | None = None
     output: str | None = None
 
@@ -261,6 +279,16 @@ def _parse_expression_target(data: Any, *, source: str) -> ExpressionTarget:
     return ExpressionTarget(block=block, param=param, min=float(mn), max=float(mx))
 
 
+def _parse_lane_pos(data: dict, *, source: str) -> tuple[int, int | None]:
+    lane = data.get("lane", 0)
+    if lane not in (0, 1):
+        raise _err(source, f'"lane" must be 0 or 1 (got {lane!r}).')
+    pos = data.get("pos")
+    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
+        raise _err(source, f'"pos" must be a non-negative integer if provided (got {pos!r}).')
+    return lane, pos
+
+
 def _parse_path(data: Any, *, source: str) -> PathEntry:
     if not isinstance(data, dict):
         raise _err(source, "must be an object.")
@@ -283,38 +311,60 @@ def _parse_path(data: Any, *, source: str) -> PathEntry:
     if not isinstance(blocks_raw, list):
         raise _err(source, '"blocks" must be an array.')
 
-    blocks: list[BlockEntry] = []
-    for i, b in enumerate(blocks_raw):
-        blocks.append(_parse_block_entry(b, source=f"{source} blocks[{i}]"))
-
+    blocks = [_parse_path_entry(b, source=f"{source} blocks[{i}]")
+              for i, b in enumerate(blocks_raw)]
+    _validate_splits(blocks, source=source)
     return PathEntry(blocks=blocks, input=inp, output=out)
 
 
-def _parse_block_entry(data: Any, *, source: str) -> BlockEntry:
+def _parse_path_entry(data: Any, *, source: str):
     if not isinstance(data, dict):
         raise _err(source, "must be an object.")
-
+    if "split" in data:
+        sd = data["split"]
+        if not isinstance(sd, dict) or not isinstance(sd.get("model"), str):
+            raise _err(source, '"split" must be an object with a "model" string.')
+        lane, pos = _parse_lane_pos(data, source=source)
+        return SplitEntry(model=sd["model"], params=dict(sd.get("params", {})), lane=lane, pos=pos)
+    if "join" in data:
+        jd = data["join"] or {}
+        lane, pos = _parse_lane_pos(data, source=source)
+        return JoinEntry(model=jd.get("model", "P35_AppDSPJoin"),
+                         params=dict(jd.get("params", {})), lane=lane, pos=pos)
+    # plain block (existing logic) + lane/pos
     if "parallel" in data:
-        raise _err(
-            source,
-            '"parallel" entries not supported in v1. '
-            "See docs/features/parallel-paths.md.",
-        )
-
+        raise _err(source, '"parallel" entries not supported; use split/join.')
     name = data.get("block")
     if not isinstance(name, str) or not name:
         raise _err(source, '"block" is required and must be a non-empty string.')
-
     params = data.get("params", {})
     if not isinstance(params, dict):
         raise _err(source, '"params" must be an object if provided.')
-
     ir = data.get("ir")
     if ir is not None and not isinstance(ir, str):
         raise _err(source, '"ir" must be a string if provided.')
-
     enabled = data.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         raise _err(source, '"enabled" must be a boolean if provided.')
+    lane, pos = _parse_lane_pos(data, source=source)
+    return BlockEntry(block=name, params=dict(params), ir=ir, enabled=enabled, lane=lane, pos=pos)
 
-    return BlockEntry(block=name, params=dict(params), ir=ir, enabled=enabled)
+
+def _validate_splits(entries: list, *, source: str) -> None:
+    n_split = sum(1 for e in entries if isinstance(e, SplitEntry))
+    n_join = sum(1 for e in entries if isinstance(e, JoinEntry))
+    if n_split > 2:
+        raise _err(source, f"at most 2 split regions per path (got {n_split}).")
+    if n_split != n_join:
+        raise _err(source, f"unbalanced split/join ({n_split} split, {n_join} join).")
+    # each split must precede a join in list order
+    depth = 0
+    for e in entries:
+        if isinstance(e, SplitEntry):
+            depth += 1
+        elif isinstance(e, JoinEntry):
+            depth -= 1
+            if depth < 0:
+                raise _err(source, "join without a matching open split.")
+    if depth != 0:
+        raise _err(source, "split without a matching join.")

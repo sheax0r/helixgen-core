@@ -92,7 +92,7 @@ def test_parallel_entry_rejected():
             }
         ],
     }
-    with pytest.raises(SpecError, match='"parallel" entries not supported in v1'):
+    with pytest.raises(SpecError, match='"parallel" entries not supported'):
         parse_spec(bad, source="t.json")
 
 
@@ -191,3 +191,44 @@ def test_block_entry_enabled_must_be_bool():
     with pytest.raises(SpecError):
         parse_spec({"name": "n", "paths": [
             {"blocks": [{"block": "X", "enabled": "yes"}]}]})
+
+
+# ---------------------------------------------------------------------------
+# lane/pos fields + split/join entries (parallel routing)
+# ---------------------------------------------------------------------------
+
+from helixgen.spec import SplitEntry, JoinEntry, BlockEntry
+
+
+def test_parse_lane_pos_on_block():
+    s = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "Pitch", "lane": 1, "pos": 1}]}]})
+    b = s.paths[0].blocks[0]
+    assert isinstance(b, BlockEntry) and b.lane == 1 and b.pos == 1
+
+
+def test_parse_split_join_entries():
+    s = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "Amp"},
+        {"split": {"model": "P35_AppDSPSplitY", "params": {}}, "lane": 0, "pos": 6},
+        {"block": "Pitch", "lane": 1, "pos": 1},
+        {"join": {}, "lane": 0, "pos": 8},
+        {"block": "Reverb"}]}]})
+    kinds = [type(b).__name__ for b in s.paths[0].blocks]
+    assert kinds == ["BlockEntry", "SplitEntry", "BlockEntry", "JoinEntry", "BlockEntry"]
+    assert s.paths[0].blocks[1].model == "P35_AppDSPSplitY"
+
+
+def test_reject_three_splits():
+    with pytest.raises(SpecError):
+        parse_spec({"name": "n", "paths": [{"blocks": [
+            {"split": {"model": "P35_AppDSPSplitY", "params": {}}}, {"join": {}},
+            {"split": {"model": "P35_AppDSPSplitY", "params": {}}}, {"join": {}},
+            {"split": {"model": "P35_AppDSPSplitY", "params": {}}}, {"join": {}}]}]})
+
+
+def test_reject_split_without_join():
+    with pytest.raises(SpecError):
+        parse_spec({"name": "n", "paths": [{"blocks": [
+            {"split": {"model": "P35_AppDSPSplitY", "params": {}}},
+            {"block": "X", "lane": 1}]}]})
