@@ -168,3 +168,17 @@ def test_combined_features_roundtrip_stable(hsp_library, strip_provenance):
     }
     p1, p2 = _roundtrip(spec, lib, strip_provenance)
     assert p1 == p2
+
+
+def test_split_roundtrip_stable(hsp_library, strip_provenance):
+    spec = {"name": "S", "paths": [{"blocks": [
+        {"block": "Tube Drive", "lane": 0, "pos": 5},
+        {"split": {"model": "P35_AppDSPSplitY", "params": {}}, "lane": 0, "pos": 6},
+        {"block": "Brit Amp", "lane": 1, "pos": 1},
+        {"join": {}, "lane": 0, "pos": 8}]}]}
+    from helixgen.generate import compose_preset
+    from helixgen.spec import parse_spec
+    p1 = compose_preset(parse_spec(spec), hsp_library, source="t")
+    spec2 = parse_spec(decompile_body(p1, hsp_library))
+    p2 = compose_preset(spec2, hsp_library, source="t")
+    assert strip_provenance(p1) == strip_provenance(p2)

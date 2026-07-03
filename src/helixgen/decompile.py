@@ -50,13 +50,19 @@ def _input_mode(path_dict: dict, device_id: Any) -> str | None:
 
 
 def _iter_blocks(flow: list) -> Any:
-    """Yield (path_idx, bnn, slot) for each user block in the flow."""
+    """Yield (path_idx, bnn, slot) for each user block in the flow.
+
+    Split and join structural blocks are skipped — they are not in the library
+    and carry no footswitch / expression / snapshot metadata.
+    """
     for path_idx, path_dict in enumerate(flow):
         if not isinstance(path_dict, dict):
             continue
         for key in _bnn_keys(path_dict):
             bnn = path_dict.get(key)
             if isinstance(bnn, dict) and bnn.get("slot"):
+                if bnn.get("type") in ("split", "join"):
+                    continue
                 yield path_idx, bnn, bnn["slot"][0]
 
 
@@ -140,6 +146,65 @@ def _recover_expression(body: dict, library: Library, device_id: Any) -> list[di
     return [{"pedal": p, "targets": t} for p, t in by_pedal.items()]
 
 
+def _entry_for(key, bnn, library, irs):
+    """Build a spec entry dict (block/split/join) with explicit lane/pos."""
+    num = int(key[1:])
+    lane = 1 if num >= 14 else 0
+    pos = num - 14 * lane
+    typ = bnn.get("type")
+    slot = bnn["slot"][0]
+    if typ == "split":
+        entry = {"split": {"model": slot.get("model"),
+                           "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
+    elif typ == "join":
+        entry = {"join": {"model": slot.get("model"),
+                          "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
+    else:
+        entry = _block_entry(slot, library, irs)
+    entry["lane"] = lane
+    entry["pos"] = pos
+    return entry
+
+
+def _reconstruct_path_blocks(path_dict, library, irs):
+    """Ordered spec ``blocks`` list for one .hsp path: lane-0 blocks in position
+    order, with each split's branch (lane-1) blocks inserted right after the
+    split entry so region membership survives the round-trip."""
+    def user_keys():
+        return [k for k in path_dict
+                if isinstance(k, str) and k.startswith("b") and k[1:].isdigit()
+                and k not in _ENDPOINT_KEYS
+                and isinstance(path_dict[k], dict) and path_dict[k].get("slot")]
+
+    keys = user_keys()
+    lane0 = sorted((k for k in keys if int(k[1:]) < 14), key=lambda k: int(k[1:]))
+    lane1 = sorted((k for k in keys if int(k[1:]) >= 14), key=lambda k: int(k[1:]))
+
+    # region branch keys for each split: [split.branch .. join.branch] by number
+    def branch_span(bnn):
+        b0, b1 = bnn.get("branch"), path_dict.get(bnn.get("endpoint"), {}).get("branch")
+        if not b0 or not b1:
+            return []
+        lo, hi = sorted((int(b0[1:]), int(b1[1:])))
+        return [k for k in lane1 if lo <= int(k[1:]) <= hi]
+
+    out = []
+    for k in lane0:
+        bnn = path_dict[k]
+        out.append(_entry_for(k, bnn, library, irs))
+        if bnn.get("type") == "split":
+            for bk in branch_span(bnn):
+                out.append(_entry_for(bk, path_dict[bk], library, irs))
+    # any lane-1 blocks not claimed by a split (shouldn't happen for valid
+    # presets) are appended so nothing is silently dropped
+    claimed = {e_key for k in lane0 if path_dict[k].get("type") == "split"
+               for e_key in branch_span(path_dict[k])}
+    for bk in lane1:
+        if bk not in claimed:
+            out.append(_entry_for(bk, path_dict[bk], library, irs))
+    return out
+
+
 def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[str, Any]:
     """One slot dict → a spec block entry (block name + non-default params).
 
@@ -202,12 +267,7 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
     for path_dict in flow:
         if not isinstance(path_dict, dict):
             continue
-        blocks: list[dict[str, Any]] = []
-        for key in _bnn_keys(path_dict):
-            bnn = path_dict[key]
-            if not isinstance(bnn, dict) or not bnn.get("slot"):
-                continue
-            blocks.append(_block_entry(bnn["slot"][0], library, irs))
+        blocks = _reconstruct_path_blocks(path_dict, library, irs)
         path_entry: dict[str, Any] = {"blocks": blocks}
         mode = _input_mode(path_dict, device_id)
         if mode is not None:
