@@ -40,20 +40,31 @@ def _resolve_irhash(block_default: str | None, spec_ir: str | None, irs: "IrMapp
 
     Priority: spec_ir (resolved via IrMapping) > block_default > error.
     """
-    from helixgen.ir import IrMapping, IrMappingError  # local import to avoid cycle
+    from helixgen.ir import IrMappingError  # local import to avoid cycle
 
     if spec_ir is not None:
         if _HASH_RE.fullmatch(spec_ir):
-            try:
-                irs.resolve_by_hash(spec_ir.lower())
-            except IrMappingError as e:
-                raise GenerateError(str(e)) from e
-            return spec_ir.lower()
+            h = spec_ir.lower()
+            if irs is not None:
+                try:
+                    irs.resolve_by_hash(h)
+                except IrMappingError:
+                    print(
+                        f"warning: IR hash {h} is not registered; passing it "
+                        f"through unchanged (the device must already hold this IR).",
+                        file=sys.stderr,
+                    )
+            return h
+        # basename form still requires a registered mapping
+        if irs is None:
+            raise GenerateError(
+                f"cannot resolve IR basename {spec_ir!r}: no IR mapping available"
+            )
         try:
             h, _ = irs.resolve_by_basename(spec_ir)
-            return h
         except IrMappingError as e:
             raise GenerateError(str(e)) from e
+        return h
     if block_default is not None:
         return block_default
     raise GenerateError(

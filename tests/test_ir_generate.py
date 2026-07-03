@@ -142,3 +142,21 @@ def test_generate_errors_when_no_canonical_and_no_spec_ir(tmp_library, sample_se
     out = tmp_path / "out.hsp"
     with pytest.raises(GenerateError, match="irhash"):
         generate_preset(spec, out, lib)
+
+
+import re
+from helixgen.generate import _resolve_irhash
+
+
+def test_resolve_irhash_passthrough_unregistered_hash(capsys):
+    h = "deadbeef" * 4  # 32 hex chars, not registered
+    irs = IrMapping(irs_dir=__import__("pathlib").Path("/tmp"), entries={})
+    out = _resolve_irhash(block_default=None, spec_ir=h, irs=irs)
+    assert out == h
+    assert "warning" in capsys.readouterr().err.lower()
+
+
+def test_resolve_irhash_none_irs_with_hash_ok():
+    h = "deadbeef" * 4
+    out = _resolve_irhash(block_default=None, spec_ir=h, irs=None)
+    assert out == h

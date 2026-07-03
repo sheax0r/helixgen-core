@@ -122,15 +122,16 @@ def test_ir_orphan_hash_emits_raw_hash(tmp_path, sample_serial_preset_hsp):
     assert block_entry.get("ir") == _ORPHAN_IRHASH
 
 
-def test_ir_orphan_hash_regenerate_raises(tmp_path, sample_serial_preset_hsp):
-    """Regenerating a spec that carries an unregistered IR hash raises GenerateError."""
-    from helixgen.generate import compose_preset, GenerateError
+def test_ir_orphan_hash_regenerate_passthrough(tmp_path, sample_serial_preset_hsp, capsys):
+    """Regenerating a spec that carries an unregistered IR hash passes it through with a warning."""
+    from helixgen.generate import compose_preset
     lib = _make_ir_library(tmp_path, sample_serial_preset_hsp)
     body = _make_ir_body(_ORPHAN_IRHASH)
     empty_irs = IrMapping(irs_dir=tmp_path / "irs")
     d = decompile_body(body, lib, irs=empty_irs)
-    with pytest.raises(GenerateError):
-        compose_preset(parse_spec(d), lib, source="t", irs=empty_irs)
+    # Must NOT raise — orphan hash is passed through unchanged
+    compose_preset(parse_spec(d), lib, source="t", irs=empty_irs)
+    assert "warning" in capsys.readouterr().err.lower()
 
 
 # ---------------------------------------------------------------------------
