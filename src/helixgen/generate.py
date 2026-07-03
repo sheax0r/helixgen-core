@@ -645,28 +645,43 @@ def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
     return snaps
 
 
-def _emit_splits(path_dict: dict[str, Any], path_entry) -> None:
-    """Emit split/join bNN slots with computed branch/endpoint pointers.
+def _assign_positions(path_entry) -> dict:
+    """Assign effective (lane, pos, key) to every entry in path_entry.blocks
+    in a single pass over ALL entry types (BlockEntry, SplitEntry, JoinEntry).
 
-    Plain BlockEntry blocks are already placed by the caller. Effective
-    positions are recomputed the same way the placement loop does so keys match.
-    Region (branch-block) membership is determined by LIST ORDER: the lane-1
-    blocks listed between a split and its join belong to that split.
+    Returns a dict keyed by id(entry) → (lane, pos, key).  Using one shared
+    counter for both blocks and structural entries ensures that the placement
+    loop and _emit_splits always agree on which slot each entry occupies.
     """
     next_pos = {0: 1, 1: 1}
-    eff = []  # (entry, lane, pos, key) in list order
+    eff: dict[int, tuple[int, int, str]] = {}
     for e in path_entry.blocks:
         lane = getattr(e, "lane", 0)
         pos = e.pos if e.pos is not None else next_pos[lane]
         next_pos[lane] = max(next_pos[lane], pos + 1)
-        eff.append((e, lane, pos, f"b{14 * lane + pos:02d}"))
+        eff[id(e)] = (lane, pos, f"b{14 * lane + pos:02d}")
+    return eff
+
+
+def _emit_splits(path_dict: dict[str, Any], path_entry, eff: dict) -> None:
+    """Emit split/join bNN slots with computed branch/endpoint pointers.
+
+    Plain BlockEntry blocks are already placed by the caller. ``eff`` is the
+    shared position map from ``_assign_positions`` so keys match exactly.
+    Region (branch-block) membership is determined by LIST ORDER: the lane-1
+    blocks listed between a split and its join belong to that split.
+    """
+    eff_list = []  # (entry, lane, pos, key) in list order
+    for e in path_entry.blocks:
+        lane, pos, key = eff[id(e)]
+        eff_list.append((e, lane, pos, key))
 
     # Sequential (non-nested) split regions: collect lane-1 keys between each
     # split and its join, in list order.
     regions = []            # (s_entry, s_pos, s_key, j_entry, j_pos, j_key, [branch_keys])
     open_split = None       # (s_entry, s_pos, s_key)
     branch_keys: list[str] = []
-    for (e, lane, pos, key) in eff:
+    for (e, lane, pos, key) in eff_list:
         if isinstance(e, SplitEntry):
             open_split = (e, pos, key)
             branch_keys = []
@@ -754,15 +769,13 @@ def _compose_preset_hsp(
                 f"{len(_HSP_BNN_RANGE)} user slots (b01..b12) available."
             )
         path_entry = spec.paths[path_index]
+        # Compute a single shared position map for ALL entry types so that
+        # block placement and _emit_splits use identical slot keys.
+        eff = _assign_positions(path_entry)
         block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
-        next_pos = {0: 1, 1: 1}  # auto-assign counter per lane
         for chain_idx, (block, user_params) in enumerate(chain):
             block_entry = block_entries[chain_idx]
-            lane = getattr(block_entry, "lane", 0)
-            pos = block_entry.pos if block_entry.pos is not None else next_pos[lane]
-            next_pos[lane] = max(next_pos[lane], pos + 1)
-            slot_index = 14 * lane + pos
-            key = f"b{slot_index:02d}"
+            lane, pos, key = eff[id(block_entry)]
             # Resolve irhash for IR blocks: spec.ir > canonical > error.
             resolved_irhash: str | None = None
             if block.model_id.startswith(IR_MODEL_PREFIX):
@@ -786,7 +799,7 @@ def _compose_preset_hsp(
                 } or None,
                 irhash=resolved_irhash,
             )
-        _emit_splits(path_dict, spec.paths[path_index])
+        _emit_splits(path_dict, path_entry, eff)
 
     all_source_ids = fs_source_ids | exp_source_ids
     if all_source_ids:

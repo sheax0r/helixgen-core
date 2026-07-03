@@ -188,14 +188,15 @@ def _run_patch(preset_path, library_path, irs_dir, mutate):
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--index", type=int, default=None)
 @click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
-def set_param_cmd(preset_path, block, param, value, path_idx, index, lane, library_path, irs_dir):
+def set_param_cmd(preset_path, block, param, value, path_idx, index, lane, pos, library_path, irs_dir):
     """Set a block param: helixgen set-param preset.hsp "Brit Amp" Drive 0.85"""
     from helixgen import patch
     _run_patch(preset_path, library_path, irs_dir,
                lambda spec: (patch.set_param(spec, block, param, _coerce_cli_value(value),
-                                             path=path_idx, index=index, lane=lane), []))
+                                             path=path_idx, index=index, lane=lane, pos=pos), []))
 
 
 @cli.command(name="enable")
@@ -205,14 +206,15 @@ def set_param_cmd(preset_path, block, param, value, path_idx, index, lane, libra
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--index", type=int, default=None)
 @click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
-def enable_cmd(preset_path, block, snapshot, path_idx, index, lane, library_path, irs_dir):
+def enable_cmd(preset_path, block, snapshot, path_idx, index, lane, pos, library_path, irs_dir):
     """Enable (un-bypass) a block."""
     from helixgen import patch
     _run_patch(preset_path, library_path, irs_dir,
                lambda spec: (patch.set_enabled(spec, block, True,
-                                               path=path_idx, index=index, lane=lane,
+                                               path=path_idx, index=index, lane=lane, pos=pos,
                                                snapshot=snapshot), []))
 
 
@@ -223,14 +225,15 @@ def enable_cmd(preset_path, block, snapshot, path_idx, index, lane, library_path
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--index", type=int, default=None)
 @click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
-def disable_cmd(preset_path, block, snapshot, path_idx, index, lane, library_path, irs_dir):
+def disable_cmd(preset_path, block, snapshot, path_idx, index, lane, pos, library_path, irs_dir):
     """Disable (bypass) a block."""
     from helixgen import patch
     _run_patch(preset_path, library_path, irs_dir,
                lambda spec: (patch.set_enabled(spec, block, False,
-                                               path=path_idx, index=index, lane=lane,
+                                               path=path_idx, index=index, lane=lane, pos=pos,
                                                snapshot=snapshot), []))
 
 
@@ -240,13 +243,14 @@ def disable_cmd(preset_path, block, snapshot, path_idx, index, lane, library_pat
 @click.option("--path", "path_idx", type=int, default=0)
 @click.option("--after", default=None)
 @click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
-def add_block_cmd(preset_path, block, path_idx, after, lane, library_path, irs_dir):
+def add_block_cmd(preset_path, block, path_idx, after, lane, pos, library_path, irs_dir):
     """Add a block to a path (optionally after another block)."""
     from helixgen import patch
     _run_patch(preset_path, library_path, irs_dir,
-               lambda spec: (patch.add_block(spec, block, path=path_idx, after=after, lane=lane), []))
+               lambda spec: (patch.add_block(spec, block, path=path_idx, after=after, lane=lane, pos=pos), []))
 
 
 @cli.command(name="remove-block")
@@ -255,13 +259,14 @@ def add_block_cmd(preset_path, block, path_idx, after, lane, library_path, irs_d
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--index", type=int, default=None)
 @click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
-def remove_block_cmd(preset_path, block, path_idx, index, lane, library_path, irs_dir):
+def remove_block_cmd(preset_path, block, path_idx, index, lane, pos, library_path, irs_dir):
     """Remove a block from a path."""
     from helixgen import patch
     _run_patch(preset_path, library_path, irs_dir,
-               lambda spec: (patch.remove_block(spec, block, path=path_idx, index=index, lane=lane), []))
+               lambda spec: (patch.remove_block(spec, block, path=path_idx, index=index, lane=lane, pos=pos), []))
 
 
 @cli.command(name="swap-model")
@@ -271,14 +276,15 @@ def remove_block_cmd(preset_path, block, path_idx, index, lane, library_path, ir
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--index", type=int, default=None)
 @click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
-def swap_model_cmd(preset_path, old, new, path_idx, index, lane, library_path, irs_dir):
+def swap_model_cmd(preset_path, old, new, path_idx, index, lane, pos, library_path, irs_dir):
     """Swap a block for another of the same category."""
     from helixgen import patch
     library = _resolved_library(library_path)
     _run_patch(preset_path, library_path, irs_dir,
-               lambda spec: patch.swap_model(spec, old, new, library, path=path_idx, index=index, lane=lane))
+               lambda spec: patch.swap_model(spec, old, new, library, path=path_idx, index=index, lane=lane, pos=pos))
 
 
 @cli.command(name="list-blocks")

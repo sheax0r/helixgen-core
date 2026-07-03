@@ -232,3 +232,9 @@ def test_reject_split_without_join():
         parse_spec({"name": "n", "paths": [{"blocks": [
             {"split": {"model": "P35_AppDSPSplitY", "params": {}}},
             {"block": "X", "lane": 1}]}]})
+
+
+def test_join_list_raises_spec_error():
+    from helixgen.spec import parse_spec, SpecError
+    with pytest.raises(SpecError):
+        parse_spec({"name": "n", "paths": [{"blocks": [{"join": [1]}]}]})

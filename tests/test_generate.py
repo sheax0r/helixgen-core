@@ -894,3 +894,23 @@ def test_split_join_pointers(hsp_library):
     assert path0["b08"]["branch"] == "b15"   # single branch block → first == last
     assert path0["b08"]["endpoint"] == "b06"
     assert path0["b06"]["slot"][0]["model"] == "P35_AppDSPSplitY"
+
+
+def test_autopos_split_does_not_overwrite_trailing_block(hsp_library):
+    # All pos omitted (the hand-authoring path). TubeDrive, split, branch amp, join, TubeDrive.
+    # Before the fix the placement loop and _emit_splits computed DIFFERENT keys,
+    # so the split overwrote the second Tube Drive slot.
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "Tube Drive"},                                        # lane0
+        {"split": {"model": "P35_AppDSPSplitY", "params": {}}},        # lane0
+        {"block": "Brit Amp", "lane": 1},                              # lane1 branch
+        {"join": {}},                                                   # lane0
+        {"block": "Tube Drive"},                                        # lane0 — must NOT be overwritten
+    ]}]})
+    path0 = compose_preset(spec, hsp_library, source="t")["preset"]["flow"][0]
+    # Both Tube Drive blocks and the split+join must all be present at distinct slots.
+    models = sorted(v["slot"][0].get("model") for k, v in path0.items()
+                    if k.startswith("b") and k[1:].isdigit() and k not in ("b00", "b13"))
+    # 2x Tube Drive (HD2_DistTube), 1 amp (HD2_AmpBrit), split + join
+    assert models.count("HD2_DistTube") == 2, models
+    assert "P35_AppDSPSplitY" in models and "P35_AppDSPJoin" in models

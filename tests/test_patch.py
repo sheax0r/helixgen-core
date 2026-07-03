@@ -106,3 +106,10 @@ def test_resolve_block_by_lane():
     assert patch.resolve_block(spec, "Tube Drive", None, None, lane=1) == (1, 0)
     with pytest.raises(patch.PatchError):
         patch.resolve_block(spec, "Tube Drive", None, None)  # ambiguous
+
+
+def test_add_block_preserves_lane_and_pos():
+    spec = {"name": "n", "paths": [{"blocks": []}]}
+    result = patch.add_block(spec, "X", path=0, lane=1, pos=1)
+    block_entry = result["paths"][0]["blocks"][0]
+    assert block_entry == {"block": "X", "lane": 1, "pos": 1}

@@ -80,6 +80,10 @@ def add_block(spec, block, *, path=0, after=None, params=None, lane=None, pos=No
         raise PatchError(f"No path {path} in spec.")
     blocks = out["paths"][path]["blocks"]
     entry: dict[str, Any] = {"block": block}
+    if lane is not None:
+        entry["lane"] = lane
+    if pos is not None:
+        entry["pos"] = pos
     if params:
         entry["params"] = dict(params)
     if after is None:

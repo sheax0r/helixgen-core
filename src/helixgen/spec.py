@@ -360,6 +360,8 @@ def _parse_path_entry(data: Any, *, source: str):
         return SplitEntry(model=sd["model"], params=dict(sd.get("params", {})), lane=lane, pos=pos)
     if "join" in data:
         jd = data["join"] or {}
+        if not isinstance(jd, dict):
+            raise _err(source, '"join" must be an object if provided.')
         lane, pos = _parse_lane_pos(data, source=source)
         return JoinEntry(model=jd.get("model", "P35_AppDSPJoin"),
                          params=dict(jd.get("params", {})), lane=lane, pos=pos)
