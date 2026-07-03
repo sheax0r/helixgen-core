@@ -170,6 +170,20 @@ def test_combined_features_roundtrip_stable(hsp_library, strip_provenance):
     assert p1 == p2
 
 
+def test_duplicate_block_footswitches_roundtrip(tmp_path, sample_serial_preset_hsp, strip_provenance):
+    from tests.test_generate_footswitches import _dup_ir_lib  # reuse helper
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = {"name": "n", "paths": [{"blocks": [
+        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1},
+        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 2}]}],
+        "footswitches": [{"switch": "FS1", "block": "With Pan", "pos": 1},
+                         {"switch": "FS2", "block": "With Pan", "pos": 2}]}
+    p1 = compose_preset(parse_spec(spec), lib, source="t")
+    spec2 = parse_spec(decompile_body(p1, lib))
+    p2 = compose_preset(spec2, lib, source="t")
+    assert strip_provenance(p1) == strip_provenance(p2)
+
+
 def test_split_roundtrip_stable(hsp_library, strip_provenance):
     spec = {"name": "S", "paths": [{"blocks": [
         {"block": "Tube Drive", "lane": 0, "pos": 5},

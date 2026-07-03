@@ -50,7 +50,7 @@ def _input_mode(path_dict: dict, device_id: Any) -> str | None:
 
 
 def _iter_blocks(flow: list) -> Any:
-    """Yield (path_idx, bnn, slot) for each user block in the flow.
+    """Yield (path_idx, key, bnn, slot) for each user block in the flow.
 
     Split and join structural blocks are skipped — they are not in the library
     and carry no footswitch / expression / snapshot metadata.
@@ -63,7 +63,41 @@ def _iter_blocks(flow: list) -> Any:
             if isinstance(bnn, dict) and bnn.get("slot"):
                 if bnn.get("type") in ("split", "join"):
                     continue
-                yield path_idx, bnn, bnn["slot"][0]
+                yield path_idx, key, bnn, bnn["slot"][0]
+
+
+def _name_index(flow: list, library: Library) -> dict:
+    """Build a display-name → list-of-(path_idx, lane, pos) index over all placed blocks."""
+    from collections import defaultdict
+    idx: dict = defaultdict(list)
+    for pi, path in enumerate(flow):
+        if not isinstance(path, dict):
+            continue
+        for key in path:
+            if not (isinstance(key, str) and key.startswith("b") and key[1:].isdigit()
+                    and key not in _ENDPOINT_KEYS):
+                continue
+            bnn = path[key]
+            if not isinstance(bnn, dict) or bnn.get("type") in ("split", "join") or not bnn.get("slot"):
+                continue
+            num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+            try:
+                name = library.load_block(_translate_model_id(bnn["slot"][0].get("model", ""))).display_name
+            except Exception:
+                continue
+            idx[name].append((pi, lane, pos))
+    return idx
+
+
+def _ref(name: str, pi: int, lane: int, pos: int, idx: dict) -> dict:
+    """Return a block-reference dict, adding lane/pos only when the name is ambiguous."""
+    ref: dict = {"block": name}
+    if len(idx.get(name, [])) > 1:
+        ref["lane"] = lane
+        ref["pos"] = pos
+        if pi:
+            ref["path"] = pi
+    return ref
 
 
 def _snapshot_names(body: dict) -> list[str]:
@@ -86,7 +120,7 @@ def _recover_snapshots(body: dict, library: Library) -> list[dict[str, Any]]:
         {"name": n, "disable": [], "params": {}} for n in names
     ]
     flow = (body.get("preset") or {}).get("flow") or []
-    for _, bnn, slot in _iter_blocks(flow):
+    for _, _, bnn, slot in _iter_blocks(flow):
         block = library.load_block(_translate_model_id(slot.get("model", "")))
         # @enabled snapshot overrides (False => disable in that snapshot).
         en = bnn.get("@enabled")
@@ -111,10 +145,10 @@ def _recover_snapshots(body: dict, library: Library) -> list[dict[str, Any]]:
     return snaps
 
 
-def _recover_footswitches(body: dict, library: Library, device_id: Any) -> list[dict[str, Any]]:
+def _recover_footswitches(body: dict, library: Library, device_id: Any, idx: dict) -> list[dict[str, Any]]:
     flow = (body.get("preset") or {}).get("flow") or []
     out: list[dict[str, Any]] = []
-    for _, bnn, slot in _iter_blocks(flow):
+    for pi, key, bnn, slot in _iter_blocks(flow):
         en = bnn.get("@enabled")
         ctrl = en.get("controller") if isinstance(en, dict) else None
         if not (isinstance(ctrl, dict) and ctrl.get("type") == "targetbypass"):
@@ -123,16 +157,18 @@ def _recover_footswitches(body: dict, library: Library, device_id: Any) -> list[
         if name is None:
             continue
         block = library.load_block(_translate_model_id(slot.get("model", "")))
-        out.append({"switch": name, "block": block.display_name,
+        num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        out.append({"switch": name, **_ref(block.display_name, pi, lane, pos, idx),
                     "behavior": ctrl.get("behavior", "latching")})
     return out
 
 
-def _recover_expression(body: dict, library: Library, device_id: Any) -> list[dict[str, Any]]:
+def _recover_expression(body: dict, library: Library, device_id: Any, idx: dict) -> list[dict[str, Any]]:
     flow = (body.get("preset") or {}).get("flow") or []
     by_pedal: dict[str, list[dict[str, Any]]] = {}
-    for _, _bnn, slot in _iter_blocks(flow):
+    for pi, key, _bnn, slot in _iter_blocks(flow):
         block = library.load_block(_translate_model_id(slot.get("model", "")))
+        num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         for pname, wrapped in (slot.get("params") or {}).items():
             ctrl = wrapped.get("controller") if isinstance(wrapped, dict) else None
             if not (isinstance(ctrl, dict) and ctrl.get("type") == "param"):
@@ -141,7 +177,8 @@ def _recover_expression(body: dict, library: Library, device_id: Any) -> list[di
             if pedal is None:
                 continue
             by_pedal.setdefault(pedal, []).append({
-                "block": block.display_name, "param": pname,
+                **_ref(block.display_name, pi, lane, pos, idx),
+                "param": pname,
                 "min": ctrl.get("min", 0.0), "max": ctrl.get("max", 1.0)})
     return [{"pedal": p, "targets": t} for p, t in by_pedal.items()]
 
@@ -283,11 +320,13 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
     if snaps:
         spec["snapshots"] = snaps
 
-    fs = _recover_footswitches(body, library, device_id)
+    idx = _name_index(flow, library)
+
+    fs = _recover_footswitches(body, library, device_id, idx)
     if fs:
         spec["footswitches"] = fs
 
-    exp = _recover_expression(body, library, device_id)
+    exp = _recover_expression(body, library, device_id, idx)
     if exp:
         spec["expression"] = exp
 
