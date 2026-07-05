@@ -43,14 +43,19 @@ def _models(b):
 @pytest.mark.xfail(
     reason=(
         "Decompiler round-trip is incomplete for arbitrary real device exports. "
-        "The parallel-routing + hardening effort (2026-07-03) raised the pass "
-        "rate from ~65/211 to ~124/211 (parallel splits, loopers, lane/pos "
-        "coordinates, native-unit expression). Remaining residual categories: "
-        "IR blocks decompiled without an `ir` field; duplicate-named blocks "
-        "referenced by snapshots (snapshot refs are not yet coordinate-aware); "
-        "P35 I/O routing endpoints on branch lanes; inverted (min>max) and "
-        "duplicate expression targets. Tracked in "
-        "docs/superpowers/specs/2026-07-03-parallel-routing-and-hardening-design.md."
+        "The parallel-routing + hardening effort (2026-07-03), followed by the "
+        "snapshot-coordinate-refs hardening pass, raised the pass rate from "
+        "127/211 to 194/211 (dense snapshot arrays, coordinate-aware snapshot "
+        "references, the IR-no-assign `no_ir` marker, empty-block-name "
+        "fallback, expression-recovery filtering). Remaining residual "
+        "categories, all in the deferred P35 branch-lane I/O follow-up: "
+        "P35 output routing endpoints (`P35_OutputPath2A/2B`, "
+        "`P35_OutputMatrix`) and P35 input routing endpoints "
+        "(`P35_InputInst1`, `P35_InputMic`, `P35_InputNone`) that "
+        "library.load_block cannot resolve on branch lanes, plus two "
+        "one-off outliers (a 13-block path exceeding the 12 user slots, "
+        "and an ambiguous IR basename match). Tracked in "
+        "docs/superpowers/specs/2026-07-03-decompiler-round-trip-residuals.md."
     ),
     strict=False,
 )

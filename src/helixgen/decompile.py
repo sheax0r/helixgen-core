@@ -19,6 +19,7 @@ Limitations
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,11 @@ def _iter_blocks(flow: list) -> Any:
                 yield path_idx, key, bnn, bnn["slot"][0]
 
 
+def _ref_name(block) -> str:
+    """Display name when non-empty, else model_id — never empty."""
+    return block.display_name or block.model_id
+
+
 def _name_index(flow: list, library: Library) -> dict:
     """Build a display-name → list-of-(path_idx, lane, pos) index over all placed blocks."""
     from collections import defaultdict
@@ -82,7 +88,7 @@ def _name_index(flow: list, library: Library) -> dict:
                 continue
             num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
             try:
-                name = library.load_block(_translate_model_id(bnn["slot"][0].get("model", ""))).display_name
+                name = _ref_name(library.load_block(_translate_model_id(bnn["slot"][0].get("model", ""))))
             except Exception:
                 continue
             idx[name].append((pi, lane, pos))
@@ -90,12 +96,15 @@ def _name_index(flow: list, library: Library) -> dict:
 
 
 def _ref(name: str, pi: int, lane: int, pos: int, idx: dict) -> dict:
-    """Return a block-reference dict, adding lane/pos only when the name is ambiguous."""
+    """Return a block-reference dict, adding coordinates only when the name is ambiguous."""
     ref: dict = {"block": name}
-    if len(idx.get(name, [])) > 1:
+    placements = idx.get(name, [])
+    if len(placements) > 1:
         ref["lane"] = lane
         ref["pos"] = pos
-        if pi:
+        # Include path (even 0) when the name is ambiguous ACROSS paths — lane/pos
+        # alone can't disambiguate a same-(lane,pos) collision between path 0 and 1.
+        if len({p for (p, _, _) in placements}) > 1:
             ref["path"] = pi
     return ref
 
@@ -112,36 +121,77 @@ def _snapshot_names(body: dict) -> list[str]:
     return names[:keep]
 
 
-def _recover_snapshots(body: dict, library: Library) -> list[dict[str, Any]]:
+def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str, Any]]:
+    """Recover the spec-level `snapshots` array from a decompiled body.
+
+    `idx` is the display-name -> [(path_idx, lane, pos), ...] index (from
+    `_name_index`); it's used to decide whether a snapshot ref needs
+    coordinates (ambiguous display_name) or can stay a bare string/dict
+    (unambiguous).
+
+    Task 1 densified the per-param `snapshots` arrays on generate: every slot
+    now carries an explicit value (base value fills previously-null slots)
+    instead of `null`. That means a naive "is this slot non-None" check would
+    record a spurious override for every non-diverging snapshot. We filter
+    those out by comparing each slot's value to the param's own base value
+    (`_unwrap_value(wrapped)`) and only keeping genuine differences.
+    """
     names = _snapshot_names(body)
     if not names:
         return []
-    snaps: list[dict[str, Any]] = [
-        {"name": n, "disable": [], "params": {}} for n in names
-    ]
+    # Per-snapshot accumulators keyed by (path_idx, lane, pos, display_name).
+    disables: list[list[tuple]] = [[] for _ in names]
+    params: list[dict[tuple, dict]] = [{} for _ in names]
     flow = (body.get("preset") or {}).get("flow") or []
-    for _, _, bnn, slot in _iter_blocks(flow):
+    for pi, key, bnn, slot in _iter_blocks(flow):
         block = library.load_block(_translate_model_id(slot.get("model", "")))
+        name = _ref_name(block)
+        num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        coord = (pi, lane, pos, name)
         # @enabled snapshot overrides (False => disable in that snapshot).
+        # The base bNN-level @enabled is always True (generate never densifies
+        # it to anything else), so `ov is False` already isolates genuine
+        # disables -- no phantom-filter needed here.
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
             for i, ov in enumerate(en["snapshots"]):
-                if i < len(snaps) and ov is False:
-                    snaps[i]["disable"].append(block.display_name)
-        # param snapshot overrides.
+                if i < len(names) and ov is False:
+                    disables[i].append(coord)
+        # param snapshot overrides -- filter dense fills equal to base.
         for pname, wrapped in (slot.get("params") or {}).items():
             if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
                 continue
+            base = _coerce_param_value(block, pname, _unwrap_value(wrapped))
             for i, ov in enumerate(wrapped["snapshots"]):
-                if i < len(snaps) and ov is not None:
-                    snaps[i]["params"].setdefault(block.display_name, {})[pname] = (
-                        _coerce_param_value(block, pname, ov))
-    # Drop empty disable/params keys for cleanliness.
-    for s in snaps:
-        if not s["disable"]:
-            s.pop("disable")
-        if not s["params"]:
-            s.pop("params")
+                if i >= len(names) or ov is None:
+                    continue
+                coerced = _coerce_param_value(block, pname, ov)
+                if coerced == base:
+                    continue  # phantom: densify-filled base value, not a real override
+                params[i].setdefault(coord, {})[pname] = coerced
+
+    snaps: list[dict[str, Any]] = []
+    for i, nm in enumerate(names):
+        s: dict[str, Any] = {"name": nm}
+        # disable: bare string if unambiguous, else coordinate dict
+        dis = []
+        for (dpi, dlane, dpos, dname) in disables[i]:
+            r = _ref(dname, dpi, dlane, dpos, idx)
+            dis.append(dname if len(r) == 1 else r)
+        if dis:
+            s["disable"] = dis
+        # params: name-keyed dict if every param-block is unambiguous, else
+        # the list-of-{**ref, "params": {...}} form.
+        if params[i]:
+            ambiguous = any(len(idx.get(pname, [])) > 1 for (_, _, _, pname) in params[i])
+            if ambiguous:
+                s["params"] = [
+                    {**_ref(pname, ppi, plane, ppos, idx), "params": pv}
+                    for (ppi, plane, ppos, pname), pv in params[i].items()
+                ]
+            else:
+                s["params"] = {pname: pv for (_, _, _, pname), pv in params[i].items()}
+        snaps.append(s)
     return snaps
 
 
@@ -158,7 +208,7 @@ def _recover_footswitches(body: dict, library: Library, device_id: Any, idx: dic
             continue
         block = library.load_block(_translate_model_id(slot.get("model", "")))
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
-        out.append({"switch": name, **_ref(block.display_name, pi, lane, pos, idx),
+        out.append({"switch": name, **_ref(_ref_name(block), pi, lane, pos, idx),
                     "behavior": ctrl.get("behavior", "latching")})
     return out
 
@@ -174,12 +224,26 @@ def _recover_expression(body: dict, library: Library, device_id: Any, idx: dict)
             if not (isinstance(ctrl, dict) and ctrl.get("type") == "param"):
                 continue
             pedal = controllers.controller_name_for_source(device_id, ctrl.get("source"))
-            if pedal is None:
+            if pedal not in ("EXP1", "EXP2"):
+                print(f"warning: skipping expression target on {block.display_name!r}."
+                      f"{pname!r}: controller {pedal or ctrl.get('source')!r} is not an "
+                      f"EXP1/EXP2 pedal (footswitch-as-parameter controllers are out of "
+                      f"v1 scope).", file=sys.stderr)
+                continue
+            lo, hi = ctrl.get("min", 0.0), ctrl.get("max", 1.0)
+
+            def _numeric(x: Any) -> bool:
+                return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+            if not (_numeric(lo) and _numeric(hi)):
+                print(f"warning: skipping expression target on {block.display_name!r}."
+                      f"{pname!r}: non-numeric sweep range ({lo!r}..{hi!r}) unsupported in v1.",
+                      file=sys.stderr)
                 continue
             by_pedal.setdefault(pedal, []).append({
-                **_ref(block.display_name, pi, lane, pos, idx),
+                **_ref(_ref_name(block), pi, lane, pos, idx),
                 "param": pname,
-                "min": ctrl.get("min", 0.0), "max": ctrl.get("max", 1.0)})
+                "min": lo, "max": hi})
     return [{"pedal": p, "targets": t} for p, t in by_pedal.items()]
 
 
@@ -291,6 +355,11 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
         # silently use the library default instead of the preset's actual hash,
         # breaking the round-trip for presets whose default_irhash is None.
         entry["ir"] = basename if basename is not None else irhash
+    elif model.startswith(IR_MODEL_PREFIX):
+        # IR slot with no irhash at all (device slot with no IR loaded).
+        # Mark it explicitly so generate doesn't raise "IR block requires
+        # an `ir` field" for a preset that never had one.
+        entry["no_ir"] = True
 
     return entry
 
@@ -317,11 +386,11 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
     if meta.get("author"):
         spec["author"] = meta["author"]
 
-    snaps = _recover_snapshots(body, library)
+    idx = _name_index(flow, library)
+
+    snaps = _recover_snapshots(body, library, idx)
     if snaps:
         spec["snapshots"] = snaps
-
-    idx = _name_index(flow, library)
 
     fs = _recover_footswitches(body, library, device_id, idx)
     if fs:

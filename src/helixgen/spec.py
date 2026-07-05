@@ -14,6 +14,7 @@ class BlockEntry:
     block: str
     params: dict[str, Any] = field(default_factory=dict)
     ir: str | None = None
+    no_ir: bool = False
     enabled: bool | None = None
     lane: int = 0
     pos: int | None = None
@@ -43,13 +44,33 @@ class PathEntry:
 
 
 @dataclass
+class SnapshotBlockRef:
+    """A reference to a placed block from within a snapshot. `block` is the
+    display_name; optional `path`/`lane`/`pos` disambiguate when multiple
+    placed blocks share the same display_name (common: humanized generic
+    names like "Stereo"/"Mono").
+    """
+    block: str
+    path: int | None = None
+    lane: int | None = None
+    pos: int | None = None
+
+
+@dataclass
+class SnapshotParamOverride:
+    """One block's param overrides within a snapshot."""
+    ref: SnapshotBlockRef
+    params: dict[str, Any]
+
+
+@dataclass
 class Snapshot:
     """One named snapshot (Stadium scene). Each snapshot is a delta from the
     path's base block enabled-state and param values.
     """
     name: str
-    disable: list[str] = field(default_factory=list)
-    params: dict[str, dict[str, Any]] = field(default_factory=dict)
+    disable: list[SnapshotBlockRef] = field(default_factory=list)
+    params: list[SnapshotParamOverride] = field(default_factory=list)
 
 
 @dataclass
@@ -157,6 +178,32 @@ def _parse_snapshots(raw: Any, *, source: str) -> list[Snapshot]:
     ]
 
 
+def _opt_int(v: Any, *, source: str) -> int | None:
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise _err(source, "must be an integer.")
+    return v
+
+
+def _parse_snapshot_ref(entry: Any, *, source: str) -> "SnapshotBlockRef":
+    if isinstance(entry, str):
+        if not entry:
+            raise _err(source, '"block" must be a non-empty string.')
+        return SnapshotBlockRef(block=entry)
+    if not isinstance(entry, dict):
+        raise _err(source, "must be a string or a {block, lane, pos} object.")
+    block = entry.get("block")
+    if not isinstance(block, str) or not block:
+        raise _err(source, '"block" is required and must be a non-empty string.')
+    return SnapshotBlockRef(
+        block=block,
+        path=_opt_int(entry.get("path"), source=f"{source} path"),
+        lane=_opt_int(entry.get("lane"), source=f"{source} lane"),
+        pos=_opt_int(entry.get("pos"),  source=f"{source} pos"),
+    )
+
+
 def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
     if not isinstance(data, dict):
         raise _err(source, "must be an object.")
@@ -166,22 +213,34 @@ def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
         raise _err(source, '"name" is required and must be a non-empty string.')
 
     disable_raw = data.get("disable", [])
-    if not isinstance(disable_raw, list) or not all(isinstance(x, str) for x in disable_raw):
-        raise _err(source, '"disable" must be a list of block-name strings.')
+    if not isinstance(disable_raw, list):
+        raise _err(source, '"disable" must be a list.')
+    disable = [_parse_snapshot_ref(e, source=f"{source} disable[{i}]")
+               for i, e in enumerate(disable_raw)]
 
     params_raw = data.get("params", {})
-    if not isinstance(params_raw, dict):
-        raise _err(source, '"params" must be an object if provided.')
-    params: dict[str, dict[str, Any]] = {}
-    for block_name, overrides in params_raw.items():
-        if not isinstance(overrides, dict):
-            raise _err(
-                f"{source} params[{block_name!r}]",
-                "must be an object mapping param names to values.",
-            )
-        params[block_name] = dict(overrides)
+    params: list[SnapshotParamOverride] = []
+    if isinstance(params_raw, dict):
+        for block_name, ov in params_raw.items():
+            if not isinstance(ov, dict):
+                raise _err(source, f'params[{block_name!r}] must be an object.')
+            params.append(SnapshotParamOverride(
+                ref=SnapshotBlockRef(block=block_name), params=ov))
+    elif isinstance(params_raw, list):
+        for i, e in enumerate(params_raw):
+            if not isinstance(e, dict):
+                raise _err(source, f'params[{i}] must be an object.')
+            pov = e.get("params")
+            if not isinstance(pov, dict):
+                raise _err(source, f'params[{i}]: "params" must be an object.')
+            ref = _parse_snapshot_ref(
+                {k: v for k, v in e.items() if k != "params"},
+                source=f"{source} params[{i}]")
+            params.append(SnapshotParamOverride(ref=ref, params=pov))
+    else:
+        raise _err(source, '"params" must be an object or a list.')
 
-    return Snapshot(name=name, disable=list(disable_raw), params=params)
+    return Snapshot(name=name, disable=disable, params=params)
 
 
 def _parse_footswitches(raw: Any, *, source: str) -> list[FootswitchAssignment]:
@@ -377,11 +436,17 @@ def _parse_path_entry(data: Any, *, source: str):
     ir = data.get("ir")
     if ir is not None and not isinstance(ir, str):
         raise _err(source, '"ir" must be a string if provided.')
+    no_ir = data.get("no_ir", False)
+    if not isinstance(no_ir, bool):
+        raise _err(source, '"no_ir" must be a boolean.')
+    if ir is not None and no_ir:
+        raise _err(source, 'set at most one of "ir" / "no_ir".')
     enabled = data.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         raise _err(source, '"enabled" must be a boolean if provided.')
     lane, pos = _parse_lane_pos(data, source=source)
-    return BlockEntry(block=name, params=dict(params), ir=ir, enabled=enabled, lane=lane, pos=pos)
+    return BlockEntry(block=name, params=dict(params), ir=ir, no_ir=no_ir,
+                       enabled=enabled, lane=lane, pos=pos)
 
 
 def _validate_splits(entries: list, *, source: str) -> None:

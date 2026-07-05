@@ -117,10 +117,12 @@ def test_snapshot_with_name_only_parses():
     s = spec.snapshots[0]
     assert s.name == "Rhythm"
     assert s.disable == []
-    assert s.params == {}
+    assert s.params == []
 
 
 def test_snapshot_with_disable_and_params_parses():
+    from helixgen.spec import SnapshotBlockRef, SnapshotParamOverride
+
     data = {
         **VALID,
         "snapshots": [
@@ -133,8 +135,11 @@ def test_snapshot_with_disable_and_params_parses():
     }
     spec = parse_spec(data, source="t.json")
     s = spec.snapshots[0]
-    assert s.disable == ["Compulsive Drive"]
-    assert s.params == {"Brit 2204": {"Drive": 0.85, "Master": 0.7}}
+    assert s.disable == [SnapshotBlockRef(block="Compulsive Drive")]
+    assert s.params == [SnapshotParamOverride(
+        ref=SnapshotBlockRef(block="Brit 2204"),
+        params={"Drive": 0.85, "Master": 0.7},
+    )]
 
 
 def test_snapshots_max_eight():
@@ -169,6 +174,51 @@ def test_snapshots_must_be_list():
     bad = {**VALID, "snapshots": {"Rhythm": {}}}
     with pytest.raises(SpecError, match='"snapshots" must be a list'):
         parse_spec(bad, source="t.json")
+
+
+# ---------------------------------------------------------------------------
+# Snapshot coordinate-aware disable/params — normalize both the bare form and
+# a new {block, lane?, pos?, path?} form to one internal representation so a
+# snapshot can reference a specific placed block among duplicate-named ones.
+# ---------------------------------------------------------------------------
+
+from helixgen.spec import SnapshotBlockRef, SnapshotParamOverride
+
+_BASE = {"name": "P", "paths": [{"blocks": [{"block": "Stereo"}]}]}
+
+
+def _spec(snapshots):
+    return parse_spec({**_BASE, "snapshots": snapshots})
+
+
+def test_disable_bare_string_normalizes_to_ref():
+    s = _spec([{"name": "A", "disable": ["Stereo"]}])
+    assert s.snapshots[0].disable == [SnapshotBlockRef(block="Stereo")]
+
+
+def test_disable_coordinate_dict():
+    s = _spec([{"name": "A", "disable": [{"block": "Stereo", "lane": 1, "pos": 2}]}])
+    assert s.snapshots[0].disable == [SnapshotBlockRef(block="Stereo", lane=1, pos=2)]
+
+
+def test_params_dict_form_normalizes_to_list():
+    s = _spec([{"name": "A", "params": {"Stereo": {"Mix": 0.3}}}])
+    ov = s.snapshots[0].params
+    assert ov == [SnapshotParamOverride(ref=SnapshotBlockRef(block="Stereo"),
+                                        params={"Mix": 0.3})]
+
+
+def test_params_list_form_with_coordinates():
+    s = _spec([{"name": "A", "params": [
+        {"block": "Stereo", "lane": 1, "pos": 2, "params": {"Mix": 0.3}}]}])
+    ov = s.snapshots[0].params
+    assert ov == [SnapshotParamOverride(
+        ref=SnapshotBlockRef(block="Stereo", lane=1, pos=2), params={"Mix": 0.3})]
+
+
+def test_params_list_entry_requires_params_object():
+    with pytest.raises(SpecError):
+        _spec([{"name": "A", "params": [{"block": "Stereo"}]}])
 
 
 # ---------------------------------------------------------------------------
@@ -238,3 +288,32 @@ def test_join_list_raises_spec_error():
     from helixgen.spec import parse_spec, SpecError
     with pytest.raises(SpecError):
         parse_spec({"name": "n", "paths": [{"blocks": [{"join": [1]}]}]})
+
+
+# ---------------------------------------------------------------------------
+# BlockEntry.no_ir — explicit "no IR loaded" marker (Task 6, IR round-trip)
+# ---------------------------------------------------------------------------
+
+
+def test_block_entry_parses_no_ir():
+    s = parse_spec({"name": "P", "paths": [{"blocks": [
+        {"block": "With Pan", "no_ir": True}]}]})
+    assert s.paths[0].blocks[0].no_ir is True
+
+
+def test_block_entry_no_ir_defaults_false():
+    s = parse_spec({"name": "P", "paths": [{"blocks": [
+        {"block": "With Pan"}]}]})
+    assert s.paths[0].blocks[0].no_ir is False
+
+
+def test_block_entry_no_ir_must_be_bool():
+    with pytest.raises(SpecError):
+        parse_spec({"name": "P", "paths": [{"blocks": [
+            {"block": "With Pan", "no_ir": "yes"}]}]})
+
+
+def test_block_entry_rejects_ir_and_no_ir_together():
+    with pytest.raises(SpecError, match="at most one"):
+        parse_spec({"name": "P", "paths": [{"blocks": [
+            {"block": "With Pan", "ir": "foo.wav", "no_ir": True}]}]})

@@ -72,6 +72,19 @@ Add a top-level `snapshots` array (up to 8 entries) to define named scenes that 
 - Block references must resolve to a block already placed in `paths`.
 - Omit `snapshots` entirely to use the device's defaults (8 unnamed slots, no variation).
 
+When a snapshot references a block whose display name is ambiguous (multiple
+placed blocks humanize to the same name, e.g. two "Stereo" blocks across a
+split), carry a `(lane, pos)` coordinate:
+
+- `disable` entries may be objects instead of bare strings:
+  `"disable": [{"block": "Stereo", "lane": 1, "pos": 2}]`
+- `params` may be a list instead of a name-keyed object:
+  `"params": [{"block": "Stereo", "lane": 1, "pos": 2, "params": {"Mix": 0.3}}]`
+
+Coordinates are only needed to disambiguate; the bare string / name-keyed object
+forms remain valid for uniquely-named blocks. `path` (0 or 1) is added only when
+the same name is ambiguous across both DSP paths.
+
 ### Optional: footswitches
 
 Assign blocks to physical footswitches on the device. Stadium XL exposes

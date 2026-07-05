@@ -330,10 +330,16 @@ def _wrap_value_with_snapshots(
     """Wrap a value in the Stadium `{"value": x}` envelope, optionally with a
     per-snapshot overrides array. The array is included only when at least
     one slot has a non-None override (else the wrapper stays plain).
+
+    The array is always dense: every slot gets an explicit value, with
+    `None` overrides filled in with `base`. The device firmware treats `null`
+    on a live snapshot as undefined recall state, so a sparse array leaves
+    the block's on/off (or param value) unrestored when switching snapshots
+    away and back.
     """
     wrapped: dict[str, Any] = {"value": base}
     if snapshot_overrides and any(o is not None for o in snapshot_overrides):
-        wrapped["snapshots"] = list(snapshot_overrides)
+        wrapped["snapshots"] = [base if o is None else o for o in snapshot_overrides]
     return wrapped
 
 
@@ -561,20 +567,24 @@ def _build_snapshot_overrides(
     param_map: dict[tuple[int, int], dict[str, list[Any]]] = {}
 
     for snap_idx, snap in enumerate(spec.snapshots):
-        # disable: turn off the named block in this snapshot
-        for name in snap.disable:
-            path_idx, chain_idx, _ = _resolve_spec_block(name, resolved, spec=spec)
+        # disable: turn off the referenced block in this snapshot
+        for ref in snap.disable:
+            path_idx, chain_idx, _ = _resolve_spec_block(
+                ref.block, resolved, spec=spec,
+                path=ref.path, lane=ref.lane, pos=ref.pos)
             key = (path_idx, chain_idx)
             enabled_map.setdefault(key, [None] * HSP_SNAPSHOT_SLOTS)
             enabled_map[key][snap_idx] = False
 
-        # params: override values for named block in this snapshot
-        for block_name, overrides in snap.params.items():
-            path_idx, chain_idx, block = _resolve_spec_block(block_name, resolved, spec=spec)
-            validate_params(block, overrides)
+        # params: override values for the referenced block in this snapshot
+        for ov in snap.params:
+            r = ov.ref
+            path_idx, chain_idx, block = _resolve_spec_block(
+                r.block, resolved, spec=spec, path=r.path, lane=r.lane, pos=r.pos)
+            validate_params(block, ov.params)
             key = (path_idx, chain_idx)
             block_params = param_map.setdefault(key, {})
-            for pname, pval in overrides.items():
+            for pname, pval in ov.params.items():
                 arr = block_params.setdefault(pname, [None] * HSP_SNAPSHOT_SLOTS)
                 arr[snap_idx] = pval
 
@@ -721,7 +731,7 @@ def _compose_preset_hsp(
         for block, user_params in chain:
             validate_params(block, user_params)
 
-    # Validate: reject `ir` field on non-IR blocks.
+    # Validate: reject `ir`/`no_ir` fields on non-IR blocks.
     for path_entry, chain in zip(spec.paths, resolved):
         block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
         for block_entry, (block, _) in zip(block_entries, chain):
@@ -729,6 +739,11 @@ def _compose_preset_hsp(
                 raise GenerateError(
                     f"block {block.display_name!r} is not an IR block; "
                     f"remove the 'ir' field or change the block"
+                )
+            if block_entry.no_ir and not block.model_id.startswith(IR_MODEL_PREFIX):
+                raise GenerateError(
+                    f"block {block.display_name!r} is not an IR block; "
+                    f"remove the 'no_ir' field or change the block"
                 )
 
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
@@ -777,8 +792,10 @@ def _compose_preset_hsp(
             block_entry = block_entries[chain_idx]
             lane, pos, key = eff[id(block_entry)]
             # Resolve irhash for IR blocks: spec.ir > canonical > error.
+            # `no_ir` opts an IR slot out of resolution entirely (device slot
+            # with no IR loaded) -- emit no irhash key at all.
             resolved_irhash: str | None = None
-            if block.model_id.startswith(IR_MODEL_PREFIX):
+            if block.model_id.startswith(IR_MODEL_PREFIX) and not block_entry.no_ir:
                 resolved_irhash = _resolve_irhash(
                     block_default=block.default_irhash,
                     spec_ir=block_entry.ir,

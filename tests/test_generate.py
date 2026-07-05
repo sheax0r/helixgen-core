@@ -671,7 +671,8 @@ def test_compose_preset_hsp_disable_emits_bnn_snapshots_array(tmp_library, tmp_p
     drive_bnn = preset["preset"]["flow"][0]["b01"]
     en = drive_bnn["@enabled"]
     assert en["value"] is True
-    assert en["snapshots"] == [None, False, None, None, None, None, None, None]
+    # Dense: every slot is explicit; unset slots fall back to the base value.
+    assert en["snapshots"] == [True, False, True, True, True, True, True, True]
 
 
 def test_compose_preset_hsp_undisabled_block_has_no_snapshots_array(tmp_library, tmp_path):
@@ -700,7 +701,8 @@ def test_compose_preset_hsp_param_override_emits_snapshots_array(tmp_library, tm
     preset = compose_preset(spec, lib, source="t.json")
     drive_param = preset["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]
     assert drive_param["value"] == 0.5  # base from spec
-    assert drive_param["snapshots"] == [None, 0.9, 0.3, None, None, None, None, None]
+    # Dense: every slot is explicit; unset slots fall back to the base value.
+    assert drive_param["snapshots"] == [0.5, 0.9, 0.3, 0.5, 0.5, 0.5, 0.5, 0.5]
 
 
 def test_compose_preset_hsp_param_without_override_stays_plain(tmp_library, tmp_path):
@@ -797,8 +799,9 @@ def test_compose_preset_hsp_coerces_snapshot_override_int_to_float(tmp_library, 
     preset = compose_preset(spec, lib, source="t.json")
     params = _cab_params_from_hsp(preset)
     snap_vals = params["HighCut"]["snapshots"]
-    # The 2nd snapshot overrides HighCut with an int; it must be stored as float.
-    override = next(v for v in snap_vals if v is not None)
+    # The 2nd snapshot (index 1, "Dark") overrides HighCut with an int; it
+    # must be stored as float. Other slots are densified to the base value.
+    override = snap_vals[1]
     assert override == 6000.0 and isinstance(override, float)
 
 
