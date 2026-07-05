@@ -179,3 +179,32 @@ def test_decompile_no_raw_when_no_harness_or_extra_slots(hsp_library):
     }
     entry = _block_entry(bnn, lib, None)
     assert "raw" not in entry
+
+
+def test_decompile_warns_on_unrepresentable_enable(hsp_library, capsys):
+    """base=False + enabled in a named snapshot + NO disable => can't round-trip;
+    decompile must warn."""
+    from helixgen.decompile import decompile_body
+    lib = hsp_library
+    block = lib.find_block("Tube Drive")
+    body = {
+        "meta": {"name": "T", "device_id": "stadium_xl"},
+        "preset": {
+            "snapshots": [{"name": "A"}, {"name": "B"}],  # 2 named
+            "flow": [{
+                "b00": {"@enabled": {"value": True}, "type": "input", "position": 0,
+                        "path": 0, "endpoint": "b13",
+                        "slot": [{"model": "P35_InputInst1", "@enabled": {"value": True}, "params": {}}]},
+                "b01": {"@enabled": {"value": False,
+                                     "snapshots": [True, True, None, None, None, None, None, None]},
+                        "type": "fx", "position": 1, "path": 0,
+                        "slot": [{"model": block.model_id, "@enabled": {"value": True}, "params": {}}]},
+                "b13": {"@enabled": {"value": True}, "type": "output", "position": 13,
+                        "path": 0, "endpoint": "b00",
+                        "slot": [{"model": "P35_OutputPath2A", "@enabled": {"value": True}, "params": {}}]},
+            }],
+        },
+    }
+    decompile_body(body, lib, irs=None)
+    err = capsys.readouterr().err
+    assert "cannot round-trip" in err and "b01" in err

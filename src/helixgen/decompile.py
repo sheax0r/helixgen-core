@@ -148,6 +148,37 @@ def _snapshot_names(body: dict) -> list[str]:
     return names[:keep]
 
 
+def _warn_unrepresentable_enables(body: dict, library: Library) -> None:
+    """Warn for a base-bypassed block that is enabled in a named snapshot but
+    has NO disable (an explicit `False`) anywhere in the named range. The
+    disable-only snapshot model cannot express that enable, so it will not
+    round-trip until a snapshot enable-override lands. 0/211 in the corpus."""
+    names = _snapshot_names(body)
+    n = len(names)
+    if n == 0:
+        return
+    flow = (body.get("preset") or {}).get("flow") or []
+    for pi, key, bnn, slot in _iter_blocks(flow):
+        base = _unwrap_value(bnn.get("@enabled", True))
+        if base is not False:
+            continue
+        en = bnn.get("@enabled")
+        arr = en.get("snapshots") if isinstance(en, dict) else None
+        if not isinstance(arr, list):
+            continue
+        named = arr[:n]
+        has_enable = any(v is True for v in named)
+        has_disable = any(v is False for v in named)
+        if has_enable and not has_disable:
+            print(
+                f"warning: block {slot.get('model')!r} at path {pi} {key} is "
+                f"base-bypassed but enabled in a snapshot with no disable; this "
+                f"cannot round-trip under the disable-only snapshot model "
+                f"(will read bypassed in every snapshot).",
+                file=sys.stderr,
+            )
+
+
 def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str, Any]]:
     """Recover the spec-level `snapshots` array from a decompiled body.
 
@@ -445,6 +476,8 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
         spec["author"] = meta["author"]
 
     idx = _name_index(flow, library)
+
+    _warn_unrepresentable_enables(body, library)
 
     snaps = _recover_snapshots(body, library, idx)
     if snaps:
