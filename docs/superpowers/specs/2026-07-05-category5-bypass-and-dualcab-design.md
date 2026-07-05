@@ -108,6 +108,17 @@ effective per-snapshot bypass over named snapshots** matches the source. The
 `test_generate.py:675` expecting `[True, False, True, …]`) stays green because
 the fill stays `True`.
 
+**One structural caveat (empirical, not guaranteed).** A base-`False` block that
+is *enabled* in some named snapshot round-trips only because such a block always
+also carries an explicit `False` in some other snapshot, which triggers emission
+of the snapshots array. The pure case — base `False`, at least one named
+explicit `True`, and **zero** named `False` ("Case B") — would emit no snapshots
+array and read base `False` in every snapshot (silently wrong). Case B is
+**0/211 in the corpus** but is not structurally impossible (an author could write
+it). The decompiler should emit a **warning** if it ever encounters a
+base-`False` block whose only snapshot divergence is an enable (no `disable`),
+flagging that it cannot fully round-trip until the snapshot enable-override lands.
+
 ### Part 2 — dual-cab + per-block verbatim state (`raw`)
 
 `harness` is non-deterministic (`harness.dual` present on only 24/55 real
@@ -152,12 +163,19 @@ since harness is universal). `_block_entry` needs the full `bnn`, not just
 `_to_hsp_bnn` gains a `raw` parameter; the `_compose_preset_hsp` placement loop
 passes `block_entry.raw`. Threads through with the existing per-block kwargs.
 
-**Interaction with item #1:** the second slot's `@enabled` is carried verbatim
-inside `raw.slots` (untouched by the item-#1 logic, which only manages
-slot[0]/bNN). The 1 anomalous slot-level `@enabled: False` (Megadeth b05) is a
-`slot[0]` value on a dual-cab; item #1 makes slot[0] `@enabled` the inert
-exemplar `True`, and the *real* bypass (bNN) is `True` there — correct. That
-block's second-slot state rides along in `raw.slots`.
+**Interaction with item #1:** a second slot's `@enabled` (when present) is
+carried verbatim inside `raw.slots`, untouched by the item-#1 logic, which only
+manages slot[0]/bNN. The 1 anomalous slot-level `@enabled: False` in the corpus
+is **Megadeth b05 — a *single*-slot IR cab** (`HX2_ImpulseResponseWithPan`,
+`len(slot)==1`, carries an irhash), *not* a dual-cab. Its bNN base is `True`
+(enabled). Item #1 rewrites slot[0]'s `@enabled` to the inert exemplar `True`,
+so that lone slot-level `False` is **discarded and not asserted** by the
+scoreboard. This is harmless **iff** the core premise holds — that the device
+reads bypass at the bNN level and slot-level `@enabled` is inert. That premise is
+strongly supported (210/211 blocks have slot-level `True`; the device-read-bNN
+behavior is documented at `test_generate.py:437`) but the discard of this single
+`False` should be **confirmed on the hardware-verify step** (an IR cab whose
+slot-level bypass is dropped must still sound identical).
 
 **IR / no_ir:** the primary slot's IR handling is unchanged. Second-slot IR
 state (irhash) is carried verbatim in `raw.slots`, so no `_resolve_irhash` pass
@@ -172,35 +190,77 @@ ingests all `data/*.hsp` into one shared library (like the existing bar),
 round-trips each, and asserts **per-user-block** equality of:
 
 1. **base `bNN.@enabled.value`** (item #1) — the on-load/live bypass;
-2. **effective per-snapshot bypass over the *named* snapshots** — where
-   `effective(i) = snapshots[i]` if present-and-non-null else the base value,
-   computed identically for source and regen;
+2. **effective per-snapshot bypass over the *named* snapshots**, with an explicit
+   null-skip rule (below);
 3. **every slot's `model`** across the full slot array (item #3 — catches the
    dropped second cab);
-4. **`harness`** dict equality (item #3);
-5. **`favorite`**.
+4. **every slot's param *values*** (unwrapped base values, per slot, all slots) —
+   the actual sound (gain/tone/mix). Currently 0 diffs across the corpus, so it
+   passes today and locks against a future param/coercion/stereo regression;
+   without it a test named "sonic fidelity" would not assert the knob values;
+5. **`harness`** dict equality (item #3);
+6. **`favorite`**.
 
 Target: **211/211**.
+
+**The effective-per-snapshot-bypass comparator (precise, so two implementations
+cannot disagree).** For a user block with named-snapshot count `N`
+(`len(_snapshot_names(body))`), base value `v`, snapshots array `a` (absent →
+all-`None`):
+
+```
+effective(side, i) = a[i]  if  (a exists and i < len(a) and a[i] is not None)
+                     else v
+```
+
+Compare `effective(source, i) == effective(regen, i)` for `i in range(N)`
+**only for cells where the SOURCE slot is present-and-non-null**. When the source
+snapshot slot is `null`/absent the cell is a **wildcard — skipped**: `null` is
+undefined device recall (the Category-4 "unreliable recall" state), so there is
+no defined source value to hold regen to. Regen densifies such cells to `True`
+(the `None`→`True` fill), a deliberate Category-4-consistent deviation on the
+~30 presets carrying a `null` in a *named*, base-`False` slot. **Without this
+explicit source-null skip the literal formula fails on those 30 presets —
+181/211, not 211/211.** The skip is what makes the "does not assert null-recall"
+exclusion below real rather than contradicted.
 
 **What it deliberately does NOT assert (documented in the test):**
 * **Redundant all-`True` snapshot arrays** (Class B) — source stores them on
   every block; regen omits them. Semantically identical (the effective-bypass
   compare normalizes this). Not audio.
-* **`null`-at-*named*-snapshot recall (~30 presets)** — the source stores `null`
-  (undefined recall) in a *named* snapshot slot with base `False`; regen
-  densifies to a `True` fill. This is the exact "unreliable recall" Category 4
-  set out to fix, it is not the on-load sound, and the device's `null` behavior
-  is ambiguous. The spec's `disable`-only snapshot model cannot express
-  "enabled-in-snapshot" for a base-bypassed block; closing it needs a snapshot
-  "enable"-override — a separate cycle. The scoreboard compares effective bypass
-  over **named** snapshots to stay honest about this.
+* **`null`-at-*named*-snapshot recall (~30 presets)** — handled by the
+  source-null skip above: the source stores `null` (undefined recall) in a
+  *named* snapshot slot with base `False`; regen densifies to a `True` fill. This
+  is the exact "unreliable recall" Category 4 set out to fix, it is not the
+  on-load sound, and the device's `null` behavior is ambiguous. The
+  `disable`-only snapshot model cannot express "enabled-in-snapshot" for a
+  base-bypassed block; closing it needs a snapshot "enable"-override — a separate
+  cycle. The scoreboard skips these cells (does not assert them) rather than
+  silently passing them.
 * **Unnamed trailing snapshot slots**, top-level unmodeled state (`sources`,
   `meta.info`, `xyctrl`, snapshot `valid`/`expsw`), and **non-FS bypass-assign
   controllers** (e.g. source `0x01010600`, which toggles bypass but is not an
   FS1–FS10 — control-surface only, not the loaded sound).
 
-The scoreboard measures the **sonic bypass + slot/harness state of every block**,
-not full-body byte-fidelity.
+The scoreboard measures the **sonic state of every block** — bypass (base +
+named-snapshot effective), all slot models + param values, harness, favorite —
+not full-body byte-fidelity (top-level `sources`/`meta`/`xyctrl`/snapshot
+metadata remain out of scope).
+
+## Existing tests that MUST be updated (they assert the old level)
+
+* **`tests/test_patch_cli.py::test_cli_disable_block` (line ~45)** — asserts
+  `body[...]["b01"]["slot"][0]["@enabled"]["value"] is False`. After the fix the
+  base bypass lives at the **bNN** level and the slot becomes the inert exemplar
+  `True`, so this must be rewritten to
+  `body[...]["b01"]["@enabled"]["value"] is False`. (This is a real behavior
+  move, not a broken test — the assertion follows the bypass to its correct
+  level.)
+* **Stale comment `decompile.py:179-181`** in `_recover_snapshots` — "The base
+  bNN-level `@enabled` is always True (generate never densifies it…)" becomes
+  false once generate writes `bNN.value = False`. The disable-recovery logic is
+  unaffected (it keys off explicit `snapshots[i] is False`, never the base), but
+  the comment must be corrected.
 
 ## Existing tests to keep green (verified compatible by inspection)
 
@@ -218,7 +278,9 @@ New/updated unit tests (TDD, alongside the corpus scoreboard):
 * generate places base bypass at `bNN.value` and keeps slot `@enabled` `True`;
 * generate keeps the `None`→`True` enabled-snapshot fill when base is `False`;
 * `raw` round-trips harness + second slot; `parse_spec` accepts/validates `raw`;
-* generate emits `favorite: 0`.
+* generate emits `favorite: 0`;
+* decompile warns on a Case-B block (base `False`, enabled-in-snapshot, no
+  `disable`) — the un-round-trippable pure-enable case.
 
 ## Out of scope / deferred (record in the parent spec)
 
@@ -229,3 +291,10 @@ New/updated unit tests (TDD, alongside the corpus scoreboard):
   round-trip; a friendlier `cab2` authoring surface can come later).
 * General harness *elision* for spec readability (we chose verbatim-on-all-blocks
   for max fidelity; elision is a future cosmetic optimization).
+* **Harness/authoring consistency.** `harness` carries independent state (`dual`
+  on 218 blocks, `Trails` on 382, harness-level `@enabled: false` on 34). Verbatim
+  preservation is exact for a *round-trip*, but a **surgical edit** to a modeled
+  field (e.g. re-enabling a base-bypassed block, or dropping a second cab via
+  `raw.slots`) can leave `harness.dual` / `harness.@enabled` / `bypass` stale and
+  internally inconsistent. Out of scope here (round-trip fidelity is the goal);
+  worth a note in the patch/surgical-edit path later.
