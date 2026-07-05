@@ -385,15 +385,14 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
     if model.startswith(IR_MODEL_PREFIX) and slot.get("irhash"):
         irhash = slot["irhash"]
         basename = None
-        if irs is not None:
-            for h, p in irs.entries.items():
-                if h == irhash:
-                    basename = os.path.basename(p)
-                    break
-        # Always emit ir — registered basename if available, else raw 32-hex hash.
-        # Omitting ir when irhash == block.default_irhash caused regeneration to
-        # silently use the library default instead of the preset's actual hash,
-        # breaking the round-trip for presets whose default_irhash is None.
+        if irs is not None and irhash in irs.entries:
+            cand = os.path.basename(irs.entries[irhash])
+            # Emit the basename ONLY if it maps back to exactly one registered
+            # wav; otherwise the basename is ambiguous and regeneration would
+            # raise, so emit the unambiguous 32-hex hash instead.
+            n = sum(1 for p in irs.entries.values() if os.path.basename(p) == cand)
+            if n == 1:
+                basename = cand
         entry["ir"] = basename if basename is not None else irhash
     elif model.startswith(IR_MODEL_PREFIX):
         # IR slot with no irhash at all (device slot with no IR loaded).
