@@ -426,6 +426,8 @@ def _parse_path_entry(data: Any, *, source: str):
         if not isinstance(raw, dict):
             raise _err(source, '"structural" must be an object (verbatim bNN dict).')
         lane, pos = _parse_lane_pos(data, source=source)
+        if pos is None:
+            raise _err(source, '"structural" entries require an explicit integer "pos".')
         return StructuralEntry(raw=raw, lane=lane, pos=pos)
     if "split" in data:
         sd = data["split"]

@@ -353,3 +353,12 @@ def test_structural_entry_ignored_by_split_balance():
              "lane": 0, "pos": 7},
         ]}],
     })  # must not raise
+
+
+def test_structural_entry_requires_pos():
+    from helixgen.spec import parse_spec, SpecError
+    with pytest.raises(SpecError, match='"structural" entries require an explicit integer "pos"'):
+        parse_spec({"name": "t", "paths": [{"blocks": [
+            {"structural": {"type": "output", "slot": [{"model": "P35_OutputMatrix"}]},
+             "lane": 1}   # pos omitted -> must raise a clean SpecError at parse time
+        ]}]})
