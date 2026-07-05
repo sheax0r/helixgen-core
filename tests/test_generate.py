@@ -917,3 +917,20 @@ def test_autopos_split_does_not_overwrite_trailing_block(hsp_library):
     # 2x Tube Drive (HD2_DistTube), 1 amp (HD2_AmpBrit), split + join
     assert models.count("HD2_DistTube") == 2, models
     assert "P35_AppDSPSplitY" in models and "P35_AppDSPJoin" in models
+
+
+# ---------------------------------------------------------------------------
+# Task 2: StructuralEntry emission
+# ---------------------------------------------------------------------------
+
+
+def test_emit_structural_writes_raw_verbatim():
+    from helixgen.generate import _emit_structural
+    from helixgen.spec import StructuralEntry, PathEntry
+    raw = {"type": "output", "position": 13, "path": 1, "endpoint": "b07",
+           "slot": [{"model": "P35_OutputPath2B", "params": {"gain": {"value": 0.0}}}]}
+    path_dict = {"b00": {"type": "input"}}
+    pe = PathEntry(blocks=[StructuralEntry(raw=raw, lane=1, pos=13)])
+    _emit_structural(path_dict, pe)
+    assert path_dict["b27"] == raw
+    assert path_dict["b27"] is not raw  # deep-copied, not aliased

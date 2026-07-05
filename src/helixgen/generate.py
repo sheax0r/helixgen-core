@@ -29,7 +29,7 @@ from helixgen.ingest import (
 )
 from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.library import Block, Library
-from helixgen.spec import BlockEntry, JoinEntry, SplitEntry, Spec, parse_spec
+from helixgen.spec import BlockEntry, JoinEntry, SplitEntry, StructuralEntry, Spec, parse_spec
 
 
 _HASH_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
@@ -722,6 +722,18 @@ def _emit_splits(path_dict: dict[str, Any], path_entry, eff: dict) -> None:
         }
 
 
+def _emit_structural(path_dict: dict[str, Any], path_entry) -> None:
+    """Write each StructuralEntry (endpoint or orphaned split/join) verbatim to
+    its bNN key. Key is computed from the entry's own lane/pos — deliberately
+    NOT via _assign_positions — so it never perturbs the block auto-position
+    counter. Overwrites the chassis endpoint slots (e.g. b13 main output) with
+    the correct per-preset routing block."""
+    for e in path_entry.blocks:
+        if isinstance(e, StructuralEntry):
+            key = f"b{14 * e.lane + e.pos:02d}"
+            path_dict[key] = copy.deepcopy(e.raw)
+
+
 def _compose_preset_hsp(
     spec: Spec, library: Library, *, source: str, chassis: dict[str, Any], irs: "IrMapping | None" = None
 ) -> dict[str, Any]:
@@ -817,6 +829,7 @@ def _compose_preset_hsp(
                 irhash=resolved_irhash,
             )
         _emit_splits(path_dict, path_entry, eff)
+        _emit_structural(path_dict, path_entry)
 
     all_source_ids = fs_source_ids | exp_source_ids
     if all_source_ids:
