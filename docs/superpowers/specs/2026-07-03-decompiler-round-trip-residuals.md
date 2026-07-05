@@ -1,9 +1,32 @@
 # Decompiler round-trip residuals (follow-up)
 
-**Date:** 2026-07-03
-**Status:** Open — follow-up after the parallel-routing + surgical-hardening effort
-**Baseline:** real-preset round-trip 127/211 (60%), up from 65/211 (31%). Measured by
+**Date:** 2026-07-03 (updated 2026-07-04)
+**Status:** Categories 1, 3, and the Minors DONE (2026-07-04, branch
+`hardening/snapshot-coordinate-refs`). **Category 2 (P35) remains OPEN** — the
+sole substantial residual left, its own follow-up cycle.
+**Baseline:** real-preset round-trip was 127/211 (60%); **now 194/211 (92%)** after
+the 2026-07-04 snapshot-fidelity + IR-edge pass. Measured by
 `tests/test_decompile_acceptance.py` (compares slot model placement; `xfail`).
+
+## Status update (2026-07-04)
+
+Closed this cycle (see `docs/superpowers/plans/2026-07-04-snapshot-fidelity-and-ir-edge.md`
+and specs `2026-07-04-snapshot-coordinate-refs-design.md`,
+`2026-07-04-dense-snapshot-arrays-design.md`):
+- **Category 1 (snapshot dup-named refs)** — DONE. Coordinate-aware `disable`/`params`
+  (dual-form), threaded through generate + decompile `_ref`.
+- **Category 3 (IR-no-assign)** — DONE. `no_ir` marker round-trips hash-less IR slots.
+- **Minors** — DONE. Empty-block-name → model_id fallback (`_ref_name`); expression
+  recovery filters out non-EXP / bool-range controllers; `_ref` now emits `path`
+  (incl. 0) on cross-path `(lane,pos)` collisions.
+- **New Category 4 (dense snapshot arrays)** — DONE. Fixes a user-reported hardware
+  recall bug: sparse `@enabled`/param `snapshots` arrays (`null` on live snapshots)
+  are now densified (`null`→base). Decompile filters base-equal phantom overrides.
+
+**Remaining (17/211):** Category 2 (P35 branch-lane I/O, ~15) below, plus two
+one-off outliers (a 13-block path exceeding the 12 user slots; an ambiguous IR
+basename). Tightening the acceptance test to a full-body `strip_provenance` compare
+still waits until Category 2 lands.
 
 ## Context
 
