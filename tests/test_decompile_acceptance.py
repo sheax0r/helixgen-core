@@ -55,7 +55,7 @@ def _models(b):
         "library.load_block cannot resolve on branch lanes, plus two "
         "one-off outliers (a 13-block path exceeding the 12 user slots, "
         "and an ambiguous IR basename match). Tracked in "
-        "docs/superpowers/specs/2026-07-03-parallel-routing-and-hardening-design.md."
+        "docs/superpowers/specs/2026-07-03-decompiler-round-trip-residuals.md."
     ),
     strict=False,
 )
