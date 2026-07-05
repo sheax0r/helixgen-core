@@ -501,3 +501,80 @@ def test_split_roundtrip_stable(hsp_library, strip_provenance):
     spec2 = parse_spec(decompile_body(p1, hsp_library))
     p2 = compose_preset(spec2, hsp_library, source="t")
     assert strip_provenance(p1) == strip_provenance(p2)
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — `_ref` cross-path disambiguation
+# ---------------------------------------------------------------------------
+
+def test_ref_adds_path_even_zero_when_name_ambiguous_across_paths():
+    """A name colliding at the SAME (lane, pos) in both path 0 and path 1
+    can't be disambiguated by lane/pos alone -- `_ref` must add an explicit
+    `path` key (even 0, which is falsy) for both placements."""
+    from helixgen.decompile import _ref
+
+    idx = {"Vol": [(0, 0, 12), (1, 0, 12)]}
+    assert _ref("Vol", 0, 0, 12, idx) == {"block": "Vol", "lane": 0, "pos": 12, "path": 0}
+    assert _ref("Vol", 1, 0, 12, idx) == {"block": "Vol", "lane": 0, "pos": 12, "path": 1}
+
+
+def test_ref_omits_path_when_ambiguity_is_within_a_single_path():
+    """A name ambiguous only WITHIN one path (different lane/pos, same path)
+    is fully disambiguated by lane/pos alone -- no `path` key should be
+    added."""
+    from helixgen.decompile import _ref
+
+    idx = {"Vol": [(0, 0, 3), (0, 0, 7)]}
+    ref = _ref("Vol", 0, 0, 3, idx)
+    assert ref == {"block": "Vol", "lane": 0, "pos": 3}
+    assert "path" not in ref
+
+
+def test_ref_unambiguous_name_emits_bare_block_only():
+    """A unique name gets no coordinates and no path -- unchanged behavior."""
+    from helixgen.decompile import _ref
+
+    idx = {"Vol": [(0, 0, 3)]}
+    assert _ref("Vol", 0, 0, 3, idx) == {"block": "Vol"}
+
+
+def test_cross_path_same_lane_pos_footswitch_roundtrips(hsp_library, strip_provenance):
+    """The SAME block ("Brit Amp") placed at identical (lane=0, pos=5) in
+    BOTH DSP paths, each wired to its own footswitch, must round-trip.
+    Pre-fix, the path-0 footswitch ref comes back as {block,lane,pos} with
+    no `path`, and generate's _resolve_spec_block matches both placements
+    -- "matches multiple placed blocks"."""
+    lib = hsp_library
+    spec = {
+        "name": "X",
+        "paths": [
+            {"blocks": [{"block": "Brit Amp", "lane": 0, "pos": 5}]},
+            {"blocks": [{"block": "Brit Amp", "lane": 0, "pos": 5}]},
+        ],
+        "footswitches": [
+            {"switch": "FS1", "block": "Brit Amp", "path": 0},
+            {"switch": "FS2", "block": "Brit Amp", "path": 1},
+        ],
+    }
+    p1, p2 = _roundtrip(spec, lib, strip_provenance)
+    assert p1 == p2
+
+
+def test_bas_goliathan_roundtrips_via_cli(tmp_path):
+    """Real-export integration check for the cross-path fix. Skips if the
+    personal data/ export isn't present (gitignored, not on a clean clone)."""
+    from helixgen.hsp import read_hsp
+    from helixgen.ingest import ingest_path
+    from helixgen.library import Library
+
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    sample = data_dir / "BAS_Goliathan.hsp"
+    if not sample.exists():
+        pytest.skip(f"{sample} not present; skipping real-export integration check.")
+
+    lib = Library(root=tmp_path / "lib")
+    ingest_path(sample, lib)
+    irs = IrMapping.load()
+    body = read_hsp(sample)
+    spec = parse_spec(decompile_body(body, lib, irs=irs))
+    compose_preset(spec, lib, source=str(sample), irs=irs)  # must not raise

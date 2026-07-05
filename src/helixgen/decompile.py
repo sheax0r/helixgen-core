@@ -96,12 +96,15 @@ def _name_index(flow: list, library: Library) -> dict:
 
 
 def _ref(name: str, pi: int, lane: int, pos: int, idx: dict) -> dict:
-    """Return a block-reference dict, adding lane/pos only when the name is ambiguous."""
+    """Return a block-reference dict, adding coordinates only when the name is ambiguous."""
     ref: dict = {"block": name}
-    if len(idx.get(name, [])) > 1:
+    placements = idx.get(name, [])
+    if len(placements) > 1:
         ref["lane"] = lane
         ref["pos"] = pos
-        if pi:
+        # Include path (even 0) when the name is ambiguous ACROSS paths — lane/pos
+        # alone can't disambiguate a same-(lane,pos) collision between path 0 and 1.
+        if len({p for (p, _, _) in placements}) > 1:
             ref["path"] = pi
     return ref
 
