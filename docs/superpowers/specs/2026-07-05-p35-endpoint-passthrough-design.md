@@ -1,7 +1,12 @@
 # P35 branch-lane endpoint structural passthrough (design)
 
 **Date:** 2026-07-05
-**Status:** Approved — implementation pre-approved (subagent-reviewed).
+**Status:** DONE — implemented, reviewed, 211/211. **Hardware-validated (topology):**
+regenerated `Black Keys` loaded on the Stadium XL and the orphaned cross-path
+split-join routes as authored. The preset was silent, but that traced to the
+source's own path-0 `InputNone` (2/211 presets; faithful reproduction, not a P35
+defect) — and exposed pre-existing sonic-fidelity gaps now tracked as Category 5 in
+`2026-07-03-decompiler-round-trip-residuals.md`.
 **Predecessor:** `2026-07-03-decompiler-round-trip-residuals.md` (Category 2, the
 sole substantial residual after the 2026-07-04 snapshot-fidelity + IR-edge pass).
 **Baseline:** real-export round-trip **194/211** on the current loose metric
