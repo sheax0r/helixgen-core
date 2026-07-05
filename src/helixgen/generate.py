@@ -567,20 +567,24 @@ def _build_snapshot_overrides(
     param_map: dict[tuple[int, int], dict[str, list[Any]]] = {}
 
     for snap_idx, snap in enumerate(spec.snapshots):
-        # disable: turn off the named block in this snapshot
-        for name in snap.disable:
-            path_idx, chain_idx, _ = _resolve_spec_block(name, resolved, spec=spec)
+        # disable: turn off the referenced block in this snapshot
+        for ref in snap.disable:
+            path_idx, chain_idx, _ = _resolve_spec_block(
+                ref.block, resolved, spec=spec,
+                path=ref.path, lane=ref.lane, pos=ref.pos)
             key = (path_idx, chain_idx)
             enabled_map.setdefault(key, [None] * HSP_SNAPSHOT_SLOTS)
             enabled_map[key][snap_idx] = False
 
-        # params: override values for named block in this snapshot
-        for block_name, overrides in snap.params.items():
-            path_idx, chain_idx, block = _resolve_spec_block(block_name, resolved, spec=spec)
-            validate_params(block, overrides)
+        # params: override values for the referenced block in this snapshot
+        for ov in snap.params:
+            r = ov.ref
+            path_idx, chain_idx, block = _resolve_spec_block(
+                r.block, resolved, spec=spec, path=r.path, lane=r.lane, pos=r.pos)
+            validate_params(block, ov.params)
             key = (path_idx, chain_idx)
             block_params = param_map.setdefault(key, {})
-            for pname, pval in overrides.items():
+            for pname, pval in ov.params.items():
                 arr = block_params.setdefault(pname, [None] * HSP_SNAPSHOT_SLOTS)
                 arr[snap_idx] = pval
 

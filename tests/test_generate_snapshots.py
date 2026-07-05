@@ -1,4 +1,26 @@
-from helixgen.generate import _wrap_value_with_snapshots
+from helixgen.generate import _build_snapshot_overrides, _wrap_value_with_snapshots, resolve_blocks
+from helixgen.spec import parse_spec
+
+
+def test_snapshot_override_resolves_by_coordinate(hsp_library):
+    """Two placed blocks share a display_name (a split-style duplicate); a
+    snapshot disables one by coordinate and param-overrides the other by
+    coordinate. The override must land on the coordinate-selected chain
+    index, not just the first match.
+    """
+    spec = parse_spec({
+        "name": "P",
+        "paths": [{"blocks": [
+            {"block": "Tube Drive", "lane": 0, "pos": 1},
+            {"block": "Tube Drive", "lane": 0, "pos": 2},
+        ]}],
+        "snapshots": [{"name": "A", "params": [
+            {"block": "Tube Drive", "lane": 0, "pos": 2, "params": {"Gain": 0.4}}]}],
+    })
+    resolved = resolve_blocks(spec, hsp_library)
+    _enabled, param_map = _build_snapshot_overrides(spec, resolved)
+    # chain index 1 (pos 2) carries the override, not chain index 0
+    assert (0, 1) in param_map and (0, 0) not in param_map
 
 
 def test_wrap_densifies_enabled_array():
