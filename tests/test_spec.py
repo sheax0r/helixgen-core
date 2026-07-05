@@ -317,3 +317,39 @@ def test_block_entry_rejects_ir_and_no_ir_together():
     with pytest.raises(SpecError, match="at most one"):
         parse_spec({"name": "P", "paths": [{"blocks": [
             {"block": "With Pan", "ir": "foo.wav", "no_ir": True}]}]})
+
+
+# ---------------------------------------------------------------------------
+# StructuralEntry — verbatim routing-skeleton slots (parallel routing scaffold)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_structural_entry():
+    from helixgen.spec import parse_spec, StructuralEntry
+    raw = {"type": "output", "position": 13, "path": 1, "endpoint": "b07",
+           "slot": [{"model": "P35_OutputPath2B", "params": {"gain": {"value": 0.0}}}]}
+    spec = parse_spec({
+        "name": "t",
+        "paths": [{"blocks": [
+            {"block": "Some Block"},
+            {"structural": raw, "lane": 1, "pos": 13},
+        ]}],
+    })
+    entries = spec.paths[0].blocks
+    assert isinstance(entries[1], StructuralEntry)
+    assert entries[1].raw == raw
+    assert entries[1].lane == 1
+    assert entries[1].pos == 13
+
+
+def test_structural_entry_ignored_by_split_balance():
+    # A lone structural (orphaned split captured verbatim) must NOT trip
+    # _validate_splits, which only counts semantic Split/Join entries.
+    from helixgen.spec import parse_spec
+    parse_spec({
+        "name": "t",
+        "paths": [{"blocks": [
+            {"structural": {"type": "split", "slot": [{"model": "P35_AppDSPSplitY"}]},
+             "lane": 0, "pos": 7},
+        ]}],
+    })  # must not raise
