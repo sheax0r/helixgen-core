@@ -148,3 +148,34 @@ def test_structural_entry_survives_real_compose(hsp_library):
     flow0 = body["preset"]["flow"][0]
     assert flow0["b27"]["slot"][0]["model"] == "P35_OutputPath2B"
     assert flow0["b27"] == raw_out
+
+
+def test_decompile_captures_harness_and_extra_slots(hsp_library):
+    from helixgen.decompile import _block_entry
+    lib = hsp_library
+    block = lib.find_block("Tube Drive")
+    bnn = {
+        "@enabled": {"value": True},
+        "type": "fx", "position": 1, "path": 0,
+        "harness": {"@enabled": {"value": True},
+                    "params": {"Trails": {"value": True}}},
+        "slot": [
+            {"model": block.model_id, "@enabled": {"value": True}, "params": {}},
+            {"model": "HD2_CabMicIr_NoCab", "@enabled": {"value": True}, "params": {}},
+        ],
+    }
+    entry = _block_entry(bnn, lib, None)
+    assert entry["raw"]["harness"]["params"]["Trails"]["value"] is True
+    assert entry["raw"]["slots"][0]["model"] == "HD2_CabMicIr_NoCab"
+
+
+def test_decompile_no_raw_when_no_harness_or_extra_slots(hsp_library):
+    from helixgen.decompile import _block_entry
+    lib = hsp_library
+    block = lib.find_block("Tube Drive")
+    bnn = {
+        "@enabled": {"value": True}, "type": "fx", "position": 1, "path": 0,
+        "slot": [{"model": block.model_id, "@enabled": {"value": True}, "params": {}}],
+    }
+    entry = _block_entry(bnn, lib, None)
+    assert "raw" not in entry

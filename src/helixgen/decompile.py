@@ -403,6 +403,19 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
         # an `ir` field" for a preset that never had one.
         entry["no_ir"] = True
 
+    # Verbatim non-modeled bNN state generate would otherwise drop: the harness
+    # dict (present on every real block, non-deterministic — Trails/dual/
+    # ControlSource) and any extra slots (slot[1:], i.e. a dual cab).
+    raw: dict[str, Any] = {}
+    harness = bnn.get("harness")
+    if isinstance(harness, dict):
+        raw["harness"] = copy.deepcopy(harness)
+    slots = bnn.get("slot") or []
+    if len(slots) > 1:
+        raw["slots"] = copy.deepcopy(slots[1:])
+    if raw:
+        entry["raw"] = raw
+
     return entry
 
 
