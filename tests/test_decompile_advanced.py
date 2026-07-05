@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+
 import pytest
 from helixgen.generate import compose_preset
 from helixgen.spec import parse_spec
@@ -114,6 +116,85 @@ def test_expression_roundtrip_stable(hsp_library, strip_provenance):
                 {"block": "Brit Amp", "param": "Master", "min": 0.1, "max": 0.8}]}]}
     p1, p2 = _roundtrip(spec, lib, strip_provenance)
     assert p1 == p2
+
+
+def test_expression_recovery_skips_bool_and_non_exp(hsp_library, capsys, tmp_path):
+    """FS-as-parameter controllers (e.g. FS9) and bool-typed min/max sweeps
+    are out of v1 scope (v1 expression is EXP1/EXP2, numeric non-bool
+    min/max only) -- mirrors data/BAS_Goliathan.hsp's "Ch1 Boost" controller
+    (source 0x01010108 == FS9, min=False, max=True). _recover_expression must
+    skip such controllers with a stderr warning rather than emit a spec that
+    parse_spec rejects.
+    """
+    lib = hsp_library
+
+    spec = {
+        "name": "Mixed",
+        "paths": [{"blocks": [{"block": "Brit Amp"}, {"block": "Tube Drive"}]}],
+        "expression": [{"pedal": "EXP2", "targets": [
+            {"block": "Brit Amp", "param": "Master", "min": 0.1, "max": 0.8}]}],
+    }
+    preset = compose_preset(parse_spec(spec), lib, source="t")
+
+    # Inject a footswitch-as-parameter (FS9) bool sweep directly onto Tube
+    # Drive's Gain param -- this shape cannot be produced via the spec model
+    # (v1 has no such construct) so it's built by hand, as real device
+    # exports carry it.
+    found = False
+    for path in preset["preset"]["flow"]:
+        for key, bnn in path.items():
+            if key.startswith("@"):
+                continue
+            slot = bnn.get("slot", [{}])[0]
+            if slot.get("model") == "HD2_DistTube":
+                gain = slot["params"]["Gain"]
+                gain["controller"] = {
+                    "behavior": "latching", "bypassed": True, "curve": "linear",
+                    "delay": 0, "goid": 0, "max": True, "midisource": 0,
+                    "min": False, "source": 0x01010108, "threshold": 0.0,
+                    "type": "param",
+                }
+                found = True
+    assert found, "Tube Drive slot not found in composed preset"
+
+    spec2 = decompile_body(preset, lib)
+
+    for a in spec2.get("expression", []):
+        assert a["pedal"] in ("EXP1", "EXP2")
+        for t in a["targets"]:
+            assert not isinstance(t["min"], bool) and isinstance(t["min"], (int, float))
+            assert not isinstance(t["max"], bool) and isinstance(t["max"], (int, float))
+
+    parse_spec(spec2)  # must parse -- the whole point of the filter
+
+    # the valid EXP2 sweep is still recovered
+    exp2 = [a for a in spec2["expression"] if a["pedal"] == "EXP2"]
+    assert exp2 and exp2[0]["targets"][0]["param"] == "Master"
+
+    err = capsys.readouterr().err
+    assert "warning:" in err
+
+    # Skip-if-absent real-export integration check. BAS_Goliathan.hsp is a
+    # real device export (not a repo fixture, gitignored under data/) that
+    # empirically carries exactly this shape: source 0x01020101 (EXP2) on a
+    # float pedal-position param, plus source 0x01010108/0x01010109
+    # (FS9/FS10) bool sweeps on "Ch1 Boost" / "Ch2 Boost".
+    real = Path(__file__).parent.parent / "data" / "BAS_Goliathan.hsp"
+    if real.exists():
+        from helixgen.hsp import read_hsp
+        from helixgen.ingest import ingest_path
+        from helixgen.library import Library
+
+        real_lib = Library(root=tmp_path / "real_lib")
+        ingest_path(real, real_lib)
+        real_body = read_hsp(real)
+        real_spec = decompile_body(real_body, real_lib)
+        for a in real_spec.get("expression", []):
+            assert a["pedal"] in ("EXP1", "EXP2")
+            for t in a["targets"]:
+                assert not isinstance(t["min"], bool) and isinstance(t["min"], (int, float))
+                assert not isinstance(t["max"], bool) and isinstance(t["max"], (int, float))
+        parse_spec(real_spec)
 
 
 def test_refs_never_emit_empty_block_name_when_display_name_blank(hsp_library):

@@ -19,6 +19,7 @@ Limitations
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -220,12 +221,26 @@ def _recover_expression(body: dict, library: Library, device_id: Any, idx: dict)
             if not (isinstance(ctrl, dict) and ctrl.get("type") == "param"):
                 continue
             pedal = controllers.controller_name_for_source(device_id, ctrl.get("source"))
-            if pedal is None:
+            if pedal not in ("EXP1", "EXP2"):
+                print(f"warning: skipping expression target on {block.display_name!r}."
+                      f"{pname!r}: controller {pedal or ctrl.get('source')!r} is not an "
+                      f"EXP1/EXP2 pedal (footswitch-as-parameter controllers are out of "
+                      f"v1 scope).", file=sys.stderr)
+                continue
+            lo, hi = ctrl.get("min", 0.0), ctrl.get("max", 1.0)
+
+            def _numeric(x: Any) -> bool:
+                return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+            if not (_numeric(lo) and _numeric(hi)):
+                print(f"warning: skipping expression target on {block.display_name!r}."
+                      f"{pname!r}: non-numeric sweep range ({lo!r}..{hi!r}) unsupported in v1.",
+                      file=sys.stderr)
                 continue
             by_pedal.setdefault(pedal, []).append({
                 **_ref(_ref_name(block), pi, lane, pos, idx),
                 "param": pname,
-                "min": ctrl.get("min", 0.0), "max": ctrl.get("max", 1.0)})
+                "min": lo, "max": hi})
     return [{"pedal": p, "targets": t} for p, t in by_pedal.items()]
 
 
