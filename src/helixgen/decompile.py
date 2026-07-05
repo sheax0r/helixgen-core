@@ -66,6 +66,11 @@ def _iter_blocks(flow: list) -> Any:
                 yield path_idx, key, bnn, bnn["slot"][0]
 
 
+def _ref_name(block) -> str:
+    """Display name when non-empty, else model_id — never empty."""
+    return block.display_name or block.model_id
+
+
 def _name_index(flow: list, library: Library) -> dict:
     """Build a display-name → list-of-(path_idx, lane, pos) index over all placed blocks."""
     from collections import defaultdict
@@ -82,7 +87,7 @@ def _name_index(flow: list, library: Library) -> dict:
                 continue
             num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
             try:
-                name = library.load_block(_translate_model_id(bnn["slot"][0].get("model", ""))).display_name
+                name = _ref_name(library.load_block(_translate_model_id(bnn["slot"][0].get("model", ""))))
             except Exception:
                 continue
             idx[name].append((pi, lane, pos))
@@ -136,7 +141,7 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
     flow = (body.get("preset") or {}).get("flow") or []
     for pi, key, bnn, slot in _iter_blocks(flow):
         block = library.load_block(_translate_model_id(slot.get("model", "")))
-        name = block.display_name
+        name = _ref_name(block)
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         coord = (pi, lane, pos, name)
         # @enabled snapshot overrides (False => disable in that snapshot).
@@ -199,7 +204,7 @@ def _recover_footswitches(body: dict, library: Library, device_id: Any, idx: dic
             continue
         block = library.load_block(_translate_model_id(slot.get("model", "")))
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
-        out.append({"switch": name, **_ref(block.display_name, pi, lane, pos, idx),
+        out.append({"switch": name, **_ref(_ref_name(block), pi, lane, pos, idx),
                     "behavior": ctrl.get("behavior", "latching")})
     return out
 
@@ -218,7 +223,7 @@ def _recover_expression(body: dict, library: Library, device_id: Any, idx: dict)
             if pedal is None:
                 continue
             by_pedal.setdefault(pedal, []).append({
-                **_ref(block.display_name, pi, lane, pos, idx),
+                **_ref(_ref_name(block), pi, lane, pos, idx),
                 "param": pname,
                 "min": ctrl.get("min", 0.0), "max": ctrl.get("max", 1.0)})
     return [{"pedal": p, "targets": t} for p, t in by_pedal.items()]

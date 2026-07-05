@@ -116,6 +116,61 @@ def test_expression_roundtrip_stable(hsp_library, strip_provenance):
     assert p1 == p2
 
 
+def test_refs_never_emit_empty_block_name_when_display_name_blank(hsp_library):
+    """Library blocks whose display_name is "" (empirically observed in some
+    real exports) must never surface as an empty "block" reference in
+    footswitches/expression/snapshots -- fall back to model_id instead,
+    mirroring _block_entry. Otherwise parse_spec rejects the recovered spec
+    with '"block" must be a non-empty string'.
+
+    Both placed blocks are blanked (not just one) so the blank name is
+    ambiguous in the library the same way real exports exhibit it -- this
+    keeps the test isolated to the footswitch/expression/snapshot recovery
+    paths (which, pre-fix, emit the raw display_name with no ambiguity
+    check at all) rather than incidentally exercising the unrelated
+    self-match short-circuit `_block_entry`'s own resolver takes when a
+    blank name happens to be unique."""
+    from helixgen.library import Block
+
+    lib = hsp_library
+    spec = {
+        "name": "F",
+        "paths": [{"blocks": [{"block": "Tube Drive"}, {"block": "Brit Amp"}]}],
+        "footswitches": [{"switch": "FS3", "block": "Tube Drive"}],
+        "expression": [{"pedal": "EXP1", "targets": [
+            {"block": "Brit Amp", "param": "Master"}]}],
+        "snapshots": [
+            {"name": "Rhythm"},
+            {"name": "Lead", "disable": ["Tube Drive"]},
+        ],
+    }
+    p1 = compose_preset(parse_spec(spec), lib, source="t")
+
+    # Blank the display_name of BOTH placed blocks in the library *after*
+    # composing -- model_id references inside the composed preset still
+    # resolve, but the blocks' display_names are now "" the way some real
+    # exports carry them.
+    for model_id in ("HD2_DistTube", "HD2_AmpBrit"):
+        orig = lib.load_block(model_id)
+        lib.save_block(Block(
+            model_id=orig.model_id, category=orig.category, display_name="",
+            params=orig.params, exemplar=orig.exemplar, first_seen=orig.first_seen))
+
+    d = decompile_body(p1, lib)
+
+    for fs in d.get("footswitches", []):
+        assert fs["block"], f"empty footswitch block ref: {fs!r}"
+    for exp in d.get("expression", []):
+        for t in exp["targets"]:
+            assert t["block"], f"empty expression target block ref: {t!r}"
+    for snap in d.get("snapshots", []):
+        for dis in snap.get("disable", []):
+            name = dis if isinstance(dis, str) else dis.get("block")
+            assert name, f"empty snapshot disable block ref: {dis!r}"
+
+    parse_spec(d)  # must parse -- this is the real failure mode being fixed
+
+
 # ---------------------------------------------------------------------------
 # FIX 2 — pin orphan-IR-hash decompile behavior
 # ---------------------------------------------------------------------------
