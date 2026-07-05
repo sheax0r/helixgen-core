@@ -188,6 +188,29 @@ def test_generate_no_ir_block_omits_irhash(tmp_library, sample_serial_preset_hsp
     assert "irhash" not in _first_ir_slot(body)
 
 
+def test_block_entry_emits_hash_when_basename_ambiguous(stadium_library_with_ir, tmp_path):
+    from helixgen.decompile import _block_entry
+    from helixgen.ir import IrMapping
+    # Two registered wavs share a basename → basename is ambiguous → emit hash.
+    h1, h2 = "a" * 32, "b" * 32
+    irs = IrMapping(irs_dir=tmp_path, entries={h1: "dirA/Same.wav", h2: "dirB/Same.wav"})
+    slot = {"model": "HX2_ImpulseResponseWithPan", "irhash": h1,
+            "params": {}, "@enabled": {"value": True}}
+    entry = _block_entry(slot, stadium_library_with_ir, irs)
+    assert entry["ir"] == h1   # the hash, not "Same.wav"
+
+
+def test_block_entry_emits_basename_when_unique(stadium_library_with_ir, tmp_path):
+    from helixgen.decompile import _block_entry
+    from helixgen.ir import IrMapping
+    h1 = "c" * 32
+    irs = IrMapping(irs_dir=tmp_path, entries={h1: "dirA/Unique.wav"})
+    slot = {"model": "HX2_ImpulseResponseWithPan", "irhash": h1,
+            "params": {}, "@enabled": {"value": True}}
+    entry = _block_entry(slot, stadium_library_with_ir, irs)
+    assert entry["ir"] == "Unique.wav"
+
+
 import re
 from helixgen.generate import _resolve_irhash
 

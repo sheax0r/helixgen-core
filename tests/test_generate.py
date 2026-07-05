@@ -917,3 +917,43 @@ def test_autopos_split_does_not_overwrite_trailing_block(hsp_library):
     # 2x Tube Drive (HD2_DistTube), 1 amp (HD2_AmpBrit), split + join
     assert models.count("HD2_DistTube") == 2, models
     assert "P35_AppDSPSplitY" in models and "P35_AppDSPJoin" in models
+
+
+# ---------------------------------------------------------------------------
+# Task 2: StructuralEntry emission
+# ---------------------------------------------------------------------------
+
+
+def test_emit_structural_writes_raw_verbatim():
+    from helixgen.generate import _emit_structural
+    from helixgen.spec import StructuralEntry, PathEntry
+    raw = {"type": "output", "position": 13, "path": 1, "endpoint": "b07",
+           "slot": [{"model": "P35_OutputPath2B", "params": {"gain": {"value": 0.0}}}]}
+    path_dict = {"b00": {"type": "input"}}
+    pe = PathEntry(blocks=[StructuralEntry(raw=raw, lane=1, pos=13)])
+    _emit_structural(path_dict, pe)
+    assert path_dict["b27"] == raw
+    assert path_dict["b27"] is not raw  # deep-copied, not aliased
+
+
+# ---------------------------------------------------------------------------
+# Task 4: per-lane capacity guard
+# ---------------------------------------------------------------------------
+
+
+def test_per_lane_capacity_allows_13_total_across_lanes(hsp_library):
+    # 10 main-lane + 3 branch-lane blocks = 13 total but each lane <= 12: OK.
+    main = [{"block": "Tube Drive", "lane": 0, "pos": i} for i in range(1, 8)]  # 7
+    main += [{"block": "Tube Drive", "lane": 0, "pos": i} for i in (10, 11, 12)]  # +3 = 10
+    split = [{"split": {"model": "P35_AppDSPSplitY"}, "lane": 0, "pos": 8},
+             {"join": {}, "lane": 0, "pos": 9}]
+    branch = [{"block": "Tube Drive", "lane": 1, "pos": i} for i in (1, 2, 3)]  # 3
+    spec = parse_spec({"name": "t", "paths": [{"blocks": main + split + branch}]})
+    compose_preset(spec, hsp_library, source="t")  # must NOT raise
+
+
+def test_per_lane_capacity_rejects_13_on_one_lane(hsp_library):
+    blocks = [{"block": "Tube Drive", "lane": 0, "pos": i} for i in range(1, 14)]  # 13 on lane 0
+    spec = parse_spec({"name": "t", "paths": [{"blocks": blocks}]})
+    with pytest.raises(GenerateError):
+        compose_preset(spec, hsp_library, source="t")

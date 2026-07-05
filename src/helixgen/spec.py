@@ -37,6 +37,16 @@ class JoinEntry:
 
 
 @dataclass
+class StructuralEntry:
+    """A routing-skeleton slot (endpoint or orphaned split/join) captured
+    verbatim. `raw` is the exact bNN wire dict; generate re-emits it as-is at
+    `b{14*lane+pos:02d}`. Never consulted against the block library."""
+    raw: dict[str, Any]
+    lane: int = 0
+    pos: int | None = None
+
+
+@dataclass
 class PathEntry:
     blocks: list
     input: str | None = None
@@ -411,6 +421,14 @@ def _parse_path(data: Any, *, source: str) -> PathEntry:
 def _parse_path_entry(data: Any, *, source: str):
     if not isinstance(data, dict):
         raise _err(source, "must be an object.")
+    if "structural" in data:
+        raw = data["structural"]
+        if not isinstance(raw, dict):
+            raise _err(source, '"structural" must be an object (verbatim bNN dict).')
+        lane, pos = _parse_lane_pos(data, source=source)
+        if pos is None:
+            raise _err(source, '"structural" entries require an explicit integer "pos".')
+        return StructuralEntry(raw=raw, lane=lane, pos=pos)
     if "split" in data:
         sd = data["split"]
         if not isinstance(sd, dict) or not isinstance(sd.get("model"), str):

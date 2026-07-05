@@ -18,6 +18,7 @@ Limitations
 """
 from __future__ import annotations
 
+import copy
 import os
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ from helixgen.generate import _coerce_param_value
 from helixgen.hsp import ENDPOINT_KEYS as _ENDPOINT_KEYS, _translate_model_id, _unwrap_value, read_hsp
 from helixgen.ir import IR_MODEL_PREFIX, IrMapping
 from helixgen.library import Library
+from helixgen.spec import StructuralEntry
 
 
 def _device_id(body: dict) -> Any:
@@ -40,6 +42,31 @@ def _bnn_keys(path_dict: dict) -> list[str]:
         if isinstance(k, str) and k.startswith("b")
         and k not in _ENDPOINT_KEYS and k[1:].isdigit()
     )
+
+
+def _is_endpoint(bnn: dict) -> bool:
+    return isinstance(bnn, dict) and bnn.get("type") in ("input", "output")
+
+
+def _is_orphan_structural(path_dict: dict, bnn: dict) -> bool:
+    """True for a split/join whose `endpoint` partner is NOT the complementary
+    block type (i.e. the partner is an input/output endpoint). Such split/join
+    slots cannot be reconstructed semantically and are captured verbatim."""
+    typ = bnn.get("type")
+    if typ not in ("split", "join"):
+        return False
+    partner = path_dict.get(bnn.get("endpoint"))
+    partner_type = partner.get("type") if isinstance(partner, dict) else None
+    want = "join" if typ == "split" else "split"
+    return partner_type != want
+
+
+def _is_structural_slot(path_dict: dict, key: str, bnn: dict) -> bool:
+    """A routing-skeleton slot captured verbatim: any endpoint (except the main
+    input b00, which drives the `input` field) or an orphaned split/join."""
+    if _is_endpoint(bnn):
+        return key != "b00"
+    return _is_orphan_structural(path_dict, bnn)
 
 
 def _input_mode(path_dict: dict, device_id: Any) -> str | None:
@@ -62,7 +89,7 @@ def _iter_blocks(flow: list) -> Any:
         for key in _bnn_keys(path_dict):
             bnn = path_dict.get(key)
             if isinstance(bnn, dict) and bnn.get("slot"):
-                if bnn.get("type") in ("split", "join"):
+                if bnn.get("type") in ("split", "join", "input", "output"):
                     continue
                 yield path_idx, key, bnn, bnn["slot"][0]
 
@@ -84,7 +111,7 @@ def _name_index(flow: list, library: Library) -> dict:
                     and key not in _ENDPOINT_KEYS):
                 continue
             bnn = path[key]
-            if not isinstance(bnn, dict) or bnn.get("type") in ("split", "join") or not bnn.get("slot"):
+            if not isinstance(bnn, dict) or bnn.get("type") in ("split", "join", "input", "output") or not bnn.get("slot"):
                 continue
             num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
             try:
@@ -268,20 +295,32 @@ def _entry_for(key, bnn, library, irs):
 
 
 def _reconstruct_path_blocks(path_dict, library, irs):
-    """Ordered spec ``blocks`` list for one .hsp path: lane-0 blocks in position
-    order, with each split's branch (lane-1) blocks inserted right after the
-    split entry so region membership survives the round-trip."""
-    def user_keys():
+    """Ordered spec ``blocks`` list for one .hsp path.
+
+    - Main input b00 → dropped here (drives the `input` field).
+    - Endpoints (other than b00) and orphaned split/join → StructuralEntry
+      (verbatim); library is never consulted for them.
+    - Balanced split/join → semantic Split/Join with branch reconstruction.
+    - User blocks → BlockEntry.
+    """
+    def all_bnn():
         return [k for k in path_dict
                 if isinstance(k, str) and k.startswith("b") and k[1:].isdigit()
-                and k not in _ENDPOINT_KEYS
                 and isinstance(path_dict[k], dict) and path_dict[k].get("slot")]
 
-    keys = user_keys()
-    lane0 = sorted((k for k in keys if int(k[1:]) < 14), key=lambda k: int(k[1:]))
-    lane1 = sorted((k for k in keys if int(k[1:]) >= 14), key=lambda k: int(k[1:]))
+    def structural_entry(k):
+        bnn = path_dict[k]
+        num = int(k[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        return StructuralEntry(raw=copy.deepcopy(bnn), lane=lane, pos=pos)
 
-    # region branch keys for each split: [split.branch .. join.branch] by number
+    keys = all_bnn()
+    structural_keys = {k for k in keys if _is_structural_slot(path_dict, k, path_dict[k])}
+    # user_keys: real blocks + balanced split/join (b00 excluded as an endpoint,
+    # structural keys excluded, but semantic split/join stay in).
+    user_keys = [k for k in keys if k != "b00" and k not in structural_keys]
+    lane0 = sorted((k for k in user_keys if int(k[1:]) < 14), key=lambda k: int(k[1:]))
+    lane1 = sorted((k for k in user_keys if int(k[1:]) >= 14), key=lambda k: int(k[1:]))
+
     def branch_span(bnn):
         b0, b1 = bnn.get("branch"), path_dict.get(bnn.get("endpoint"), {}).get("branch")
         if not b0 or not b1:
@@ -296,13 +335,14 @@ def _reconstruct_path_blocks(path_dict, library, irs):
         if bnn.get("type") == "split":
             for bk in branch_span(bnn):
                 out.append(_entry_for(bk, path_dict[bk], library, irs))
-    # any lane-1 blocks not claimed by a split (shouldn't happen for valid
-    # presets) are appended so nothing is silently dropped
     claimed = {e_key for k in lane0 if path_dict[k].get("type") == "split"
                for e_key in branch_span(path_dict[k])}
     for bk in lane1:
         if bk not in claimed:
             out.append(_entry_for(bk, path_dict[bk], library, irs))
+    # Structural slots (endpoints + orphaned split/join), in key order.
+    for k in sorted(structural_keys, key=lambda k: int(k[1:])):
+        out.append(structural_entry(k))
     return out
 
 
@@ -345,15 +385,14 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
     if model.startswith(IR_MODEL_PREFIX) and slot.get("irhash"):
         irhash = slot["irhash"]
         basename = None
-        if irs is not None:
-            for h, p in irs.entries.items():
-                if h == irhash:
-                    basename = os.path.basename(p)
-                    break
-        # Always emit ir — registered basename if available, else raw 32-hex hash.
-        # Omitting ir when irhash == block.default_irhash caused regeneration to
-        # silently use the library default instead of the preset's actual hash,
-        # breaking the round-trip for presets whose default_irhash is None.
+        if irs is not None and irhash in irs.entries:
+            cand = os.path.basename(irs.entries[irhash])
+            # Emit the basename ONLY if it maps back to exactly one registered
+            # wav; otherwise the basename is ambiguous and regeneration would
+            # raise, so emit the unambiguous 32-hex hash instead.
+            n = sum(1 for p in irs.entries.values() if os.path.basename(p) == cand)
+            if n == 1:
+                basename = cand
         entry["ir"] = basename if basename is not None else irhash
     elif model.startswith(IR_MODEL_PREFIX):
         # IR slot with no irhash at all (device slot with no IR loaded).
@@ -374,7 +413,10 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
     for path_dict in flow:
         if not isinstance(path_dict, dict):
             continue
-        blocks = _reconstruct_path_blocks(path_dict, library, irs)
+        blocks = [
+            {"structural": b.raw, "lane": b.lane, "pos": b.pos} if isinstance(b, StructuralEntry) else b
+            for b in _reconstruct_path_blocks(path_dict, library, irs)
+        ]
         path_entry: dict[str, Any] = {"blocks": blocks}
         mode = _input_mode(path_dict, device_id)
         if mode is not None:

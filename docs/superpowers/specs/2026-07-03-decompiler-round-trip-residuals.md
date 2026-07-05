@@ -1,12 +1,63 @@
 # Decompiler round-trip residuals (follow-up)
 
-**Date:** 2026-07-03 (updated 2026-07-04)
-**Status:** Categories 1, 3, and the Minors DONE (2026-07-04, branch
-`hardening/snapshot-coordinate-refs`). **Category 2 (P35) remains OPEN** — the
-sole substantial residual left, its own follow-up cycle.
-**Baseline:** real-preset round-trip was 127/211 (60%); **now 194/211 (92%)** after
-the 2026-07-04 snapshot-fidelity + IR-edge pass. Measured by
-`tests/test_decompile_acceptance.py` (compares slot model placement; `xfail`).
+**Date:** 2026-07-03 (updated 2026-07-05)
+**Status:** Categories 1, 2, 3 and the Minors + both one-offs **DONE**. Category 2
+(P35 branch-lane I/O) closed 2026-07-05 on branch
+`hardening/p35-endpoint-passthrough` (see
+`docs/superpowers/specs/2026-07-05-p35-endpoint-passthrough-design.md`). A **new
+Category 5 (sonic-fidelity gaps)** opened 2026-07-05 from the P35 hardware test —
+see below; it is the next cycle.
+**Baseline:** real-preset round-trip was 127/211 (60%) → 194/211 → **now 211/211**
+on the tightened **endpoint-inclusive model** bar (`tests/test_decompile_acceptance.py`,
+`xfail` removed 2026-07-05). NOTE: that bar compares slot *model* placement, not
+sonic fidelity — the full-body compare is still 0/211 (Category 5).
+
+## Status update (2026-07-05) — Category 2 DONE + Category 5 opened
+
+Closed (branch `hardening/p35-endpoint-passthrough`):
+- **Category 2 (P35 branch-lane I/O)** — DONE. New `StructuralEntry(raw, lane, pos)`
+  captures endpoints AND orphaned/cross-path split-join verbatim; generate re-emits
+  them. Detection: split/join whose `endpoint` partner is an input/output endpoint
+  (not the complementary block) is "orphaned" → verbatim; balanced pairs stay
+  semantic. Acceptance test tightened to compare every flow `bNN` model (incl.
+  b00/b13); `xfail` removed → **211/211**.
+- **One-off: US_UK Stereo** — DONE. Capacity guard now counts `BlockEntry` per lane
+  (main ≤12, branch ≤12) instead of per path.
+- **One-off: test.hsp** — DONE. Decompile emits the 32-hex IR hash when a wav
+  basename is ambiguous.
+
+**Hardware test (Black Keys, Stadium XL):** topology loaded correctly — the P35
+cross-path split-join renders and routes as authored. **But the preset was silent**,
+which exposed Category 5 below. Two facts from that investigation:
+- **Input=None is faithful, not a bug.** Black Keys' source has path-0 input =
+  `P35_InputNone` (one of only **2/211** presets — the other is `MUSE.hsp`; the
+  other 209 use `InputInst1`/`InputInst1_2`). helixgen reproduced it faithfully;
+  the source itself is silent on cold load (likely a shared preset that ships with
+  input unset). Setting Input 1 on-device restores audio.
+- The **211/211 model bar does not imply a working/sonic clone** — see Category 5.
+
+### 5. Sonic-fidelity gaps (exposed 2026-07-05) — next cycle
+A round-tripped preset reproduces routing + block *models* but is not a byte- or
+sonic-faithful clone. Ranked by audio impact:
+1. **Block bypass state read at the wrong level (highest impact).** A block's real
+   bypass is at the `bNN` level (`bNN.@enabled.value`, plus a `targetbypass`
+   footswitch controller and a per-block snapshot bypass array
+   `bNN.@enabled.snapshots`). `decompile._block_entry` reads the *slot* level
+   (`slot[0].@enabled`, ~always `True`), so **bypassed blocks round-trip as
+   enabled**, and bypass-footswitch assignments + per-block snapshot bypass are
+   dropped. (Black Keys b03/b04/b05/b06/b15 flip off→on.) Fix: read/emit
+   `bNN.@enabled` (value + snapshots + controller) instead of the slot level.
+2. **Input-block params are chassis leftovers.** `_rewrite_input_endpoint` swaps the
+   b00 model but keeps the *chassis* params (frankenstein `Pad:1`, `decay:0.1` on an
+   `InputNone`). Should carry the source b00 slot's params.
+3. **Dual-cab slots dropped.** Source `b10`/`b16` cab `slot` arrays are length 2
+   (dual cab); regen emits length 1.
+4. **`preset.params` inherited from the chassis** (tempo 120 vs source 157; `inst1Z`
+   impedance mode; `activeexpsw`). Should carry from the source body.
+
+Plus the previously-noted unmodeled top-level state (`sources` scribble
+labels/colors/`fs_topidx`, `meta.info`, `preset.xyctrl`, snapshot `valid`/`expsw`)
+that keeps the full-body compare at 0/211.
 
 ## Status update (2026-07-04)
 
