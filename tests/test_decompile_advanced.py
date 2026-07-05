@@ -28,6 +28,76 @@ def test_snapshots_roundtrip_stable(hsp_library, strip_provenance):
     assert names[:2] == ["Rhythm", "Lead"]
 
 
+def test_snapshot_decompile_filters_phantom_dense_overrides(hsp_library):
+    """Task 1's densify fills every non-diverging snapshot slot with the base
+    value (instead of leaving it null). The recovered spec must not turn those
+    fills into spurious per-snapshot param overrides -- only the one real
+    override on "Lead" should survive, and "Rhythm" (which diverges nowhere)
+    must carry no "params" key at all."""
+    lib = hsp_library
+    spec = {"name": "S", "paths": [{"blocks": [
+        {"block": "Tube Drive"}, {"block": "Brit Amp"}]}],
+        "snapshots": [
+            {"name": "Rhythm"},
+            {"name": "Lead", "disable": ["Tube Drive"],
+             "params": {"Brit Amp": {"Drive": 0.9}}}]}
+    p1 = compose_preset(parse_spec(spec), lib, source="t")
+    d = decompile_body(p1, lib)
+    snaps = {s["name"]: s for s in d["snapshots"]}
+    assert "params" not in snaps["Rhythm"]
+    assert snaps["Lead"]["params"] == {"Brit Amp": {"Drive": 0.9}}
+
+
+def _dup_tube_drive_split_spec(snapshots):
+    """A path with "Tube Drive" placed twice (ambiguous display_name): once
+    in lane 0 and once in lane 1 via a split, so snapshot refs to it must
+    disambiguate with lane/pos."""
+    return {"name": "S", "paths": [{"blocks": [
+        {"block": "Tube Drive", "lane": 0, "pos": 1},
+        {"split": {"model": "P35_AppDSPSplitY", "params": {}}, "lane": 0, "pos": 2},
+        {"block": "Tube Drive", "lane": 1, "pos": 1},
+        {"join": {}, "lane": 0, "pos": 3},
+    ]}], "snapshots": snapshots}
+
+
+def test_snapshot_decompile_emits_coordinates_when_ambiguous(hsp_library, strip_provenance):
+    lib = hsp_library
+    spec = _dup_tube_drive_split_spec([
+        {"name": "Rhythm"},
+        {"name": "Lead",
+         "disable": [{"block": "Tube Drive", "lane": 0, "pos": 1}],
+         "params": [{"block": "Tube Drive", "lane": 1, "pos": 1, "params": {"Gain": 0.9}}]},
+    ])
+    p1 = compose_preset(parse_spec(spec), lib, source="t")
+    d = decompile_body(p1, lib)
+    snap = d["snapshots"][1]
+    # ambiguous name -> list form with coordinates, not a bare dict
+    assert isinstance(snap.get("params"), list)
+    assert all("lane" in e and "pos" in e for e in snap["params"])
+    assert isinstance(snap.get("disable"), list)
+    assert all(isinstance(e, dict) and "lane" in e and "pos" in e for e in snap["disable"])
+    parse_spec(d)  # must round-trip through the parser
+    # And the regenerated preset must match the source (coordinates resolved
+    # back to the right physical block).
+    p2 = compose_preset(parse_spec(d), lib, source="t")
+    assert strip_provenance(p1) == strip_provenance(p2)
+
+
+def test_snapshot_decompile_stays_dict_when_unambiguous(hsp_library):
+    lib = hsp_library
+    spec = {"name": "S", "paths": [{"blocks": [
+        {"block": "Tube Drive"}, {"block": "Brit Amp"}]}],
+        "snapshots": [
+            {"name": "Rhythm"},
+            {"name": "Lead", "disable": ["Tube Drive"],
+             "params": {"Brit Amp": {"Drive": 0.9}}}]}
+    p1 = compose_preset(parse_spec(spec), lib, source="t")
+    d = decompile_body(p1, lib)
+    # unambiguous -> current dict form preserved (backward compatible)
+    assert isinstance(d["snapshots"][1].get("params"), dict)
+    assert d["snapshots"][1]["disable"] == ["Tube Drive"]
+
+
 def test_footswitch_roundtrip_stable(hsp_library, strip_provenance):
     lib = hsp_library
     spec = {"name": "F", "paths": [{"blocks": [{"block": "Tube Drive"}]}],

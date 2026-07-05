@@ -112,36 +112,77 @@ def _snapshot_names(body: dict) -> list[str]:
     return names[:keep]
 
 
-def _recover_snapshots(body: dict, library: Library) -> list[dict[str, Any]]:
+def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str, Any]]:
+    """Recover the spec-level `snapshots` array from a decompiled body.
+
+    `idx` is the display-name -> [(path_idx, lane, pos), ...] index (from
+    `_name_index`); it's used to decide whether a snapshot ref needs
+    coordinates (ambiguous display_name) or can stay a bare string/dict
+    (unambiguous).
+
+    Task 1 densified the per-param `snapshots` arrays on generate: every slot
+    now carries an explicit value (base value fills previously-null slots)
+    instead of `null`. That means a naive "is this slot non-None" check would
+    record a spurious override for every non-diverging snapshot. We filter
+    those out by comparing each slot's value to the param's own base value
+    (`_unwrap_value(wrapped)`) and only keeping genuine differences.
+    """
     names = _snapshot_names(body)
     if not names:
         return []
-    snaps: list[dict[str, Any]] = [
-        {"name": n, "disable": [], "params": {}} for n in names
-    ]
+    # Per-snapshot accumulators keyed by (path_idx, lane, pos, display_name).
+    disables: list[list[tuple]] = [[] for _ in names]
+    params: list[dict[tuple, dict]] = [{} for _ in names]
     flow = (body.get("preset") or {}).get("flow") or []
-    for _, _, bnn, slot in _iter_blocks(flow):
+    for pi, key, bnn, slot in _iter_blocks(flow):
         block = library.load_block(_translate_model_id(slot.get("model", "")))
+        name = block.display_name
+        num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        coord = (pi, lane, pos, name)
         # @enabled snapshot overrides (False => disable in that snapshot).
+        # The base bNN-level @enabled is always True (generate never densifies
+        # it to anything else), so `ov is False` already isolates genuine
+        # disables -- no phantom-filter needed here.
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
             for i, ov in enumerate(en["snapshots"]):
-                if i < len(snaps) and ov is False:
-                    snaps[i]["disable"].append(block.display_name)
-        # param snapshot overrides.
+                if i < len(names) and ov is False:
+                    disables[i].append(coord)
+        # param snapshot overrides -- filter dense fills equal to base.
         for pname, wrapped in (slot.get("params") or {}).items():
             if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
                 continue
+            base = _coerce_param_value(block, pname, _unwrap_value(wrapped))
             for i, ov in enumerate(wrapped["snapshots"]):
-                if i < len(snaps) and ov is not None:
-                    snaps[i]["params"].setdefault(block.display_name, {})[pname] = (
-                        _coerce_param_value(block, pname, ov))
-    # Drop empty disable/params keys for cleanliness.
-    for s in snaps:
-        if not s["disable"]:
-            s.pop("disable")
-        if not s["params"]:
-            s.pop("params")
+                if i >= len(names) or ov is None:
+                    continue
+                coerced = _coerce_param_value(block, pname, ov)
+                if coerced == base:
+                    continue  # phantom: densify-filled base value, not a real override
+                params[i].setdefault(coord, {})[pname] = coerced
+
+    snaps: list[dict[str, Any]] = []
+    for i, nm in enumerate(names):
+        s: dict[str, Any] = {"name": nm}
+        # disable: bare string if unambiguous, else coordinate dict
+        dis = []
+        for (dpi, dlane, dpos, dname) in disables[i]:
+            r = _ref(dname, dpi, dlane, dpos, idx)
+            dis.append(dname if len(r) == 1 else r)
+        if dis:
+            s["disable"] = dis
+        # params: name-keyed dict if every param-block is unambiguous, else
+        # the list-of-{**ref, "params": {...}} form.
+        if params[i]:
+            ambiguous = any(len(idx.get(pname, [])) > 1 for (_, _, _, pname) in params[i])
+            if ambiguous:
+                s["params"] = [
+                    {**_ref(pname, ppi, plane, ppos, idx), "params": pv}
+                    for (ppi, plane, ppos, pname), pv in params[i].items()
+                ]
+            else:
+                s["params"] = {pname: pv for (_, _, _, pname), pv in params[i].items()}
+        snaps.append(s)
     return snaps
 
 
@@ -317,11 +358,11 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
     if meta.get("author"):
         spec["author"] = meta["author"]
 
-    snaps = _recover_snapshots(body, library)
+    idx = _name_index(flow, library)
+
+    snaps = _recover_snapshots(body, library, idx)
     if snaps:
         spec["snapshots"] = snaps
-
-    idx = _name_index(flow, library)
 
     fs = _recover_footswitches(body, library, device_id, idx)
     if fs:
