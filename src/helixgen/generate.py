@@ -427,6 +427,7 @@ def _to_hsp_bnn(
     fs_controller: dict[str, Any] | None = None,
     exp_controllers: dict[str, dict[str, Any]] | None = None,
     irhash: str | None = None,
+    raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one Stadium bNN dict from a library Block and user param overrides.
 
@@ -493,8 +494,16 @@ def _to_hsp_bnn(
         "type": flat.get("@type", _hsp_type_for_block(block)),
         "position": position,
         "path": path_index,
+        "favorite": 0,
         "slot": [slot_inner],
     }
+    if raw:
+        harness = raw.get("harness")
+        if isinstance(harness, dict):
+            bnn["harness"] = copy.deepcopy(harness)
+        extra_slots = raw.get("slots")
+        if isinstance(extra_slots, list):
+            bnn["slot"].extend(copy.deepcopy(s) for s in extra_slots)
     return bnn
 
 
@@ -839,6 +848,7 @@ def _compose_preset_hsp(
                     if pi == path_index and ci == chain_idx
                 } or None,
                 irhash=resolved_irhash,
+                raw=block_entry.raw,
             )
         _emit_splits(path_dict, path_entry, eff)
         _emit_structural(path_dict, path_entry)

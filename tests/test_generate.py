@@ -992,3 +992,24 @@ def test_per_lane_capacity_rejects_13_on_one_lane(hsp_library):
     spec = parse_spec({"name": "t", "paths": [{"blocks": blocks}]})
     with pytest.raises(GenerateError):
         compose_preset(spec, hsp_library, source="t")
+
+
+def test_hsp_emits_raw_harness_slots_and_favorite(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [
+            {"block": "4x12 Greenback 25", "raw": {
+                "harness": {"@enabled": {"value": True},
+                            "params": {"dual": {"value": True}}},
+                "slots": [{"model": "HD2_CabMicIr_NoCab", "params": {}}],
+            }},
+        ]}],
+    }, source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    bnn = preset["preset"]["flow"][0]["b01"]
+    assert bnn["favorite"] == 0
+    assert bnn["harness"]["params"]["dual"]["value"] is True
+    assert len(bnn["slot"]) == 2
+    assert bnn["slot"][1]["model"] == "HD2_CabMicIr_NoCab"
