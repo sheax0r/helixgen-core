@@ -60,6 +60,43 @@ routing pointers for the hardware check.
 derivable, and the `endpoint`/`path`/`branch` back-pointers would need the full
 routing graph reverse-engineered. Not worth it.
 
+### Correction (2026-07-05, post-review): orphaned / cross-path split-join
+
+Two independent spec reviews found — and the field census confirms — that **12 of
+the 15 branch-endpoint presets (including `Black Keys`) carry a split/join whose
+partner is an *endpoint*, not the complementary block**, frequently routing across
+DSP paths. The P35 `KeyError` merely *masks* this today. Example (`Black Keys`):
+
+- path0: `b07` split, `endpoint=b27` — but `b27` is an **output** endpoint
+  (`P35_OutputPath2B`, `path`-field 1 → routes to path 2), not a join. → 1 split, 0 join.
+- path1: `b01` join, `endpoint=b14` — `b14` is an **input** endpoint
+  (`P35_InputNone`). → 0 split, 1 join.
+
+Removing only the endpoint KeyError un-masks `_validate_splits` raising
+`unbalanced split/join`, so the naive design lands at **199/211**, not 211, and
+removing `xfail` would redden the suite. The endpoint work is necessary but not
+sufficient.
+
+**Detection rule (total across all 211, zero exceptions):** a split's `endpoint`
+partner is *only ever* `type` `join` (66, balanced) or `output` (11, orphaned); a
+join's is *only ever* `split` (66) or `input` (6). So classify each split/join
+slot by its partner's type:
+
+- partner is the **complementary type** (`split`↔`join`) → keep the existing
+  **semantic** `SplitEntry`/`JoinEntry` (branch reconstruction, computed pointers).
+  60 presets; unchanged; no test/representation risk.
+- partner is an **endpoint** (`output`/`input`) → **orphaned**; capture the slot
+  **verbatim** as a structural passthrough entry, identical treatment to endpoints.
+  12 presets.
+
+The 2 presets with both (`Dream On`, `Space Cadet`) keep the balanced pair and the
+orphaned slot in **different paths**, so per-path (where `_validate_splits` counts)
+the semantic split/join always balance — no in-path mixing. The orphaned split's
+branch blocks (e.g. `Black Keys` `b15`) are already handled by the existing
+"unclaimed lane-1 blocks appended with explicit lane/pos" fallback in
+`_reconstruct_path_blocks`; their placement key matches the verbatim split's
+`branch` pointer, so routing stays valid.
+
 ### Scoreboard bar (chosen)
 
 A full-body `strip_provenance` compare is **0/211** and a full-`flow`-subtree
@@ -78,49 +115,78 @@ mismatches. Capturing main output structurally closes it. New xpass bar:
 ## Implementation
 
 ### Spec model (`spec.py`)
-- Add `EndpointEntry` (structural, parallel to `SplitEntry`/`JoinEntry`): fields
-  `lane: int`, `pos: int`, `raw: dict` (verbatim `bNN` wire dict).
-- Parse it from a spec entry shaped `{"endpoint": {...raw...}, "lane": L, "pos": P}`
-  (key `"endpoint"` distinguishes it, mirroring `"split"`/`"join"`). It lives in
-  `path.blocks` alongside the other structural entries.
+- Add `StructuralEntry` (parallel to `SplitEntry`/`JoinEntry`): fields
+  `lane: int`, `pos: int`, `raw: dict` (verbatim `bNN` wire dict). It represents a
+  routing-skeleton slot captured verbatim — used for **both** endpoints and
+  **orphaned** split/join.
+- Parse from a spec entry shaped `{"structural": {...raw bNN...}, "lane": L, "pos": P}`
+  (key `"structural"` distinguishes it, mirroring `"split"`/`"join"`). Dispatch in
+  `_parse_path_entry` **before** `_validate_splits`. It lives in `path.blocks`
+  alongside the other entries. `_validate_splits` ignores it (counts only
+  semantic `SplitEntry`/`JoinEntry`).
 
 ### Decompile (`decompile.py`)
-- Add `_is_endpoint(bnn) -> bool` = `bnn.get("type") in {"input","output"}`.
-- `_reconstruct_path_blocks`: exclude **all** endpoint slots from `user_keys()`
-  (this removes the `load_block` KeyError path). Then append one `EndpointEntry`
-  per endpoint slot **except main input `b00`** (lane 0 pos 0 — already round-tripped
-  by the `input` field). Captured endpoints: main output `b13`, branch input `b14`,
-  branch output `b27`, and any other-lane variants. Store `lane`/`pos`/`raw`.
-  Endpoints are appended after the block/split/join reconstruction; because they
-  are not `BlockEntry`/`SplitEntry`/`JoinEntry`, list position does not affect
-  split-region detection.
+- Add helpers: `_is_endpoint(bnn)` = `bnn.get("type") in {"input","output"}`;
+  `_is_orphan_structural(path_dict, bnn)` = split/join slot whose
+  `path_dict[bnn["endpoint"]].type` is **not** the complementary block type (i.e.
+  partner is an `input`/`output` endpoint).
+- `_reconstruct_path_blocks` / `_entry_for`: classify each `bNN` slot:
+  - **main input `b00`** (lane 0 pos 0) → drives the `input` field (existing
+    `_input_mode`); not emitted as a block.
+  - **endpoint** (`type` input/output, any other slot) → `StructuralEntry(raw, lane, pos)`.
+  - **split/join**: if balanced (partner is complementary type) → semantic
+    `SplitEntry`/`JoinEntry` (existing branch reconstruction). If orphaned →
+    `StructuralEntry(raw, lane, pos)`.
+  - **user block** → `BlockEntry` (existing).
+  - Exclude endpoints **and** orphaned split/join from the `load_block` path
+    (removes the `KeyError`). Structural entries are `raw`-captured; `library`
+    is never consulted for them.
+  - The orphaned split's branch blocks fall through to the existing "unclaimed
+    lane-1 block" append with explicit lane/pos — no special handling needed.
 - Make `_iter_blocks`, `_name_index`, `_recover_snapshots`, `_recover_footswitches`,
-  `_recover_expression` skip endpoint slots (extend the existing split/join skip).
-- Main input `b00` continues to feed the `input` field via `_input_mode`.
+  `_recover_expression` skip endpoint slots too (they already skip `type` split/join;
+  add `input`/`output`). Orphaned split/join keep `type` split/join, so the existing
+  skip already covers them.
 
 **IR one-off (`_block_entry`):** when the resolved IR basename maps to more than
 one registered wav, emit the 32-char **hash** instead of the basename (unambiguous;
-mirrors `_ref` emitting coordinates only when ambiguous). Consult `IrMapping` for
-the basename→wavs multiplicity.
+mirrors `_ref` emitting coordinates only when ambiguous). `IrMapping` exposes no
+multiplicity API — count over its public `entries` mapping and emit the raw
+`irhash` (already registered, so generate's hash path resolves it).
 
 ### Generate (`generate.py`)
-- New `_emit_endpoints(path_dict, path_entry)`: for each `EndpointEntry`, write
+- New `_emit_structural(path_dict, path_entry)`: for each `StructuralEntry`, write
   `path_dict[f"b{14*lane+pos:02d}"] = copy.deepcopy(entry.raw)`. Key is computed
-  from the entry's own `lane`/`pos` — **not** via `_assign_positions`, so it never
-  perturbs the auto-position counter for real blocks. This overwrites the chassis
-  `b13` with the correct per-preset main output and writes branch endpoints fresh.
+  from the entry's own `lane`/`pos` — **not** via `_assign_positions`. This
+  overwrites the chassis `b13` with the correct per-preset main output, writes
+  branch endpoints fresh, and re-emits orphaned split/join verbatim (routing
+  pointers intact).
+- Leave `_assign_positions` and `_emit_splits` iterating `path_entry.blocks`
+  **unchanged**: they must still see `StructuralEntry` in `eff` (so `_emit_splits`'s
+  `eff[id(e)]` lookup never `KeyError`s) and rely on every decompiled entry
+  carrying an explicit `pos` (so the `next_pos` perturbation is never read). Do
+  **not** add a "skip StructuralEntry" branch to `_assign_positions`.
 - Dispatch in `_compose_preset_hsp`: `BlockEntry` → placement loop (unchanged);
-  `Split`/`Join` → `_emit_splits` (unchanged); `EndpointEntry` → `_emit_endpoints`.
-  `b00` main input still rewritten by `_rewrite_input_endpoint`.
+  balanced `Split`/`Join` → `_emit_splits` (unchanged); `StructuralEntry` →
+  `_emit_structural`. `b00` main input still rewritten by `_rewrite_input_endpoint`.
 - **Capacity-guard one-off:** replace the per-path `len(chain) > len(_HSP_BNN_RANGE)`
-  check with a **per-lane** count — main-lane `BlockEntry` ≤ 12 and branch-lane
-  `BlockEntry` ≤ 12 — using each entry's lane. Fixes `US_UK Stereo`.
+  check with a **per-lane** count of `BlockEntry` from `path_entry.blocks` (main-lane
+  ≤ 12 and branch-lane ≤ 12) — `chain` carries no lane info, so count over
+  `path_entry.blocks` `BlockEntry.lane`. The check moves after `block_entries` is
+  computed. Fixes `US_UK Stereo` (10 main + 3 branch).
 
 ### Test (`test_decompile_acceptance.py`)
 - `_models`: drop the `k not in ("b00","b13")` exclusion so it compares the slot
   model at every flow `bNN`. Keep the skip-if-no-`data/` guard.
 - Remove the `xfail` marker (the round-trip now xpasses on the endpoint-inclusive
   model bar). Update the scoreboard docstring/reason.
+- **Scope note:** this bar compares the slot *model* at every `bNN` — it does **not**
+  assert endpoint `harness`/`endpoint`/`branch`/`path` back-pointer or param
+  fidelity. Verbatim capture preserves those, but only the hardware step actually
+  exercises routing. State this in the docstring so the green bar isn't over-read.
+- The 211 must be reached with **zero regressions** to the existing synthetic
+  suite (`test_decompile*.py`, `test_spec.py`) — the 60 balanced-split presets keep
+  their semantic representation, so those tests are unaffected by construction.
 
 ## Verification
 
