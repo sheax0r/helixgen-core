@@ -254,6 +254,56 @@ def test_ir_orphan_hash_regenerate_passthrough(tmp_path, sample_serial_preset_hs
 
 
 # ---------------------------------------------------------------------------
+# Task 6 — IR block with no assigned IR round-trips via a `no_ir` marker
+# ---------------------------------------------------------------------------
+
+def _make_ir_body_no_hash() -> dict:
+    """Minimal .hsp body with one path containing a single IR block that has
+    NO irhash key at all (device slot with no IR loaded)."""
+    body = _make_ir_body("placeholder")
+    del body["preset"]["flow"][0]["b01"]["slot"][0]["irhash"]
+    return body
+
+
+def test_decompile_ir_without_irhash_sets_no_ir(tmp_path, sample_serial_preset_hsp):
+    """An IR slot with no irhash at all must round-trip to no_ir=True, and
+    must NOT emit an "ir" field."""
+    lib = _make_ir_library(tmp_path, sample_serial_preset_hsp)
+    body = _make_ir_body_no_hash()
+    empty_irs = IrMapping(irs_dir=tmp_path / "irs")
+    d = decompile_body(body, lib, irs=empty_irs)
+    entry = d["paths"][0]["blocks"][0]
+    assert entry.get("no_ir") is True
+    assert "ir" not in entry
+    # Must round-trip through the parser and regenerate without raising.
+    compose_preset(parse_spec(d), lib, source="t", irs=empty_irs)
+
+
+def test_real_export_a_like_supreme_now_roundtrips(tmp_path):
+    """`A like supreme.hsp` carries an IR block with no irhash — previously
+    the largest real-export round-trip failure bucket (Category 3). Skips if
+    the personal data/ export isn't present (gitignored, not on a clean clone)."""
+    from pathlib import Path
+    from helixgen.hsp import read_hsp
+    from helixgen.ingest import ingest_path
+    from helixgen.library import Library
+
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    sample = data_dir / "A like supreme.hsp"
+    if not sample.exists():
+        pytest.skip(f"{sample} not present; skipping real-export integration check.")
+
+    samples = sorted(data_dir.glob("*.hsp"))
+    lib = Library(root=tmp_path / "lib")
+    for s in samples:
+        ingest_path(s, lib)
+    irs = IrMapping.load()
+    body = read_hsp(sample)
+    spec = parse_spec(decompile_body(body, lib, irs=irs))
+    compose_preset(spec, lib, source=str(sample), irs=irs)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # FIX 3 — combined-feature round-trip test
 # ---------------------------------------------------------------------------
 

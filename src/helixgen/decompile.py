@@ -332,6 +332,11 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
         # silently use the library default instead of the preset's actual hash,
         # breaking the round-trip for presets whose default_irhash is None.
         entry["ir"] = basename if basename is not None else irhash
+    elif model.startswith(IR_MODEL_PREFIX):
+        # IR slot with no irhash at all (device slot with no IR loaded).
+        # Mark it explicitly so generate doesn't raise "IR block requires
+        # an `ir` field" for a preset that never had one.
+        entry["no_ir"] = True
 
     return entry
 

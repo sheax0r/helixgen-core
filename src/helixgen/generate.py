@@ -731,7 +731,7 @@ def _compose_preset_hsp(
         for block, user_params in chain:
             validate_params(block, user_params)
 
-    # Validate: reject `ir` field on non-IR blocks.
+    # Validate: reject `ir`/`no_ir` fields on non-IR blocks.
     for path_entry, chain in zip(spec.paths, resolved):
         block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
         for block_entry, (block, _) in zip(block_entries, chain):
@@ -739,6 +739,11 @@ def _compose_preset_hsp(
                 raise GenerateError(
                     f"block {block.display_name!r} is not an IR block; "
                     f"remove the 'ir' field or change the block"
+                )
+            if block_entry.no_ir and not block.model_id.startswith(IR_MODEL_PREFIX):
+                raise GenerateError(
+                    f"block {block.display_name!r} is not an IR block; "
+                    f"remove the 'no_ir' field or change the block"
                 )
 
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
@@ -787,8 +792,10 @@ def _compose_preset_hsp(
             block_entry = block_entries[chain_idx]
             lane, pos, key = eff[id(block_entry)]
             # Resolve irhash for IR blocks: spec.ir > canonical > error.
+            # `no_ir` opts an IR slot out of resolution entirely (device slot
+            # with no IR loaded) -- emit no irhash key at all.
             resolved_irhash: str | None = None
-            if block.model_id.startswith(IR_MODEL_PREFIX):
+            if block.model_id.startswith(IR_MODEL_PREFIX) and not block_entry.no_ir:
                 resolved_irhash = _resolve_irhash(
                     block_default=block.default_irhash,
                     spec_ir=block_entry.ir,

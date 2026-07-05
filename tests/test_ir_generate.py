@@ -144,6 +144,50 @@ def test_generate_errors_when_no_canonical_and_no_spec_ir(tmp_library, sample_se
         generate_preset(spec, out, lib)
 
 
+def test_generate_rejects_no_ir_field_on_non_ir_block(tmp_library, sample_serial_preset_hsp, sample_amp_block, tmp_path):
+    """A `no_ir` field on a non-IR block must fail with a clear error, mirroring
+    the existing `ir`-on-non-IR-block rejection."""
+    lib = Library(tmp_library)
+    lib.save_chassis(extract_chassis_from_hsp(sample_serial_preset_hsp))
+    src = {"preset": "x.hsp", "firmware": "t", "date": "2026-05-28"}
+    lib.save_block_with_dedup(block_from_raw(sample_amp_block, src))
+    lib.rebuild_index()
+
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({
+        "name": "wrong",
+        "paths": [{"blocks": [{"block": "Brit 2204 Custom", "no_ir": True}]}],
+    }))
+    with pytest.raises(GenerateError, match="not an IR block"):
+        generate_preset(spec, tmp_path / "out.hsp", lib)
+
+
+def test_generate_no_ir_block_omits_irhash(tmp_library, sample_serial_preset_hsp, tmp_path):
+    """A block flagged `no_ir: true` must not raise even with no canonical
+    default and no spec `ir`, and the emitted slot must carry no irhash key."""
+    lib = Library(tmp_library)
+    lib.save_chassis(extract_chassis_from_hsp(sample_serial_preset_hsp))
+    src = {"preset": "x.hsp", "firmware": "t", "date": "2026-05-28"}
+    raw = {
+        "@model": "HX2_ImpulseResponseWithPan",
+        # NB: no irhash — the block was placed on the device with no IR loaded
+        "HighCut": 20100.0, "LowCut": 19.9, "Mix": 1.0, "Pan": 0.5,
+        "Level": -18.0, "Delay": 0.0, "IrData": 0, "Polarity": False,
+    }
+    lib.save_block_with_dedup(block_from_raw(raw, src))
+    lib.rebuild_index()
+
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps({
+        "name": "no-ir",
+        "paths": [{"blocks": [{"block": "With Pan", "no_ir": True}]}],
+    }))
+    out = tmp_path / "out.hsp"
+    generate_preset(spec, out, lib)  # must not raise
+    body = _read_hsp_body(out)
+    assert "irhash" not in _first_ir_slot(body)
+
+
 import re
 from helixgen.generate import _resolve_irhash
 

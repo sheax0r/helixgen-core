@@ -288,3 +288,32 @@ def test_join_list_raises_spec_error():
     from helixgen.spec import parse_spec, SpecError
     with pytest.raises(SpecError):
         parse_spec({"name": "n", "paths": [{"blocks": [{"join": [1]}]}]})
+
+
+# ---------------------------------------------------------------------------
+# BlockEntry.no_ir — explicit "no IR loaded" marker (Task 6, IR round-trip)
+# ---------------------------------------------------------------------------
+
+
+def test_block_entry_parses_no_ir():
+    s = parse_spec({"name": "P", "paths": [{"blocks": [
+        {"block": "With Pan", "no_ir": True}]}]})
+    assert s.paths[0].blocks[0].no_ir is True
+
+
+def test_block_entry_no_ir_defaults_false():
+    s = parse_spec({"name": "P", "paths": [{"blocks": [
+        {"block": "With Pan"}]}]})
+    assert s.paths[0].blocks[0].no_ir is False
+
+
+def test_block_entry_no_ir_must_be_bool():
+    with pytest.raises(SpecError):
+        parse_spec({"name": "P", "paths": [{"blocks": [
+            {"block": "With Pan", "no_ir": "yes"}]}]})
+
+
+def test_block_entry_rejects_ir_and_no_ir_together():
+    with pytest.raises(SpecError, match="at most one"):
+        parse_spec({"name": "P", "paths": [{"blocks": [
+            {"block": "With Pan", "ir": "foo.wav", "no_ir": True}]}]})

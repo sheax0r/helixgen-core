@@ -14,6 +14,7 @@ class BlockEntry:
     block: str
     params: dict[str, Any] = field(default_factory=dict)
     ir: str | None = None
+    no_ir: bool = False
     enabled: bool | None = None
     lane: int = 0
     pos: int | None = None
@@ -435,11 +436,17 @@ def _parse_path_entry(data: Any, *, source: str):
     ir = data.get("ir")
     if ir is not None and not isinstance(ir, str):
         raise _err(source, '"ir" must be a string if provided.')
+    no_ir = data.get("no_ir", False)
+    if not isinstance(no_ir, bool):
+        raise _err(source, '"no_ir" must be a boolean.')
+    if ir is not None and no_ir:
+        raise _err(source, 'set at most one of "ir" / "no_ir".')
     enabled = data.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         raise _err(source, '"enabled" must be a boolean if provided.')
     lane, pos = _parse_lane_pos(data, source=source)
-    return BlockEntry(block=name, params=dict(params), ir=ir, enabled=enabled, lane=lane, pos=pos)
+    return BlockEntry(block=name, params=dict(params), ir=ir, no_ir=no_ir,
+                       enabled=enabled, lane=lane, pos=pos)
 
 
 def _validate_splits(entries: list, *, source: str) -> None:
