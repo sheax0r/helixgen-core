@@ -790,16 +790,18 @@ def _compose_preset_hsp(
             raise GenerateError(
                 f"Chassis flow path {path_index} is not an object; cannot place blocks."
             )
-        if len(chain) > len(_HSP_BNN_RANGE):
-            raise GenerateError(
-                f"Path {path_index} has {len(chain)} blocks; only "
-                f"{len(_HSP_BNN_RANGE)} user slots (b01..b12) available."
-            )
         path_entry = spec.paths[path_index]
         # Compute a single shared position map for ALL entry types so that
         # block placement and _emit_splits use identical slot keys.
         eff = _assign_positions(path_entry)
         block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
+        for lane in (0, 1):
+            n = sum(1 for e in block_entries if getattr(e, "lane", 0) == lane)
+            if n > len(_HSP_BNN_RANGE):
+                raise GenerateError(
+                    f"Path {path_index} lane {lane} has {n} blocks; only "
+                    f"{len(_HSP_BNN_RANGE)} user slots (b01..b12) per lane available."
+                )
         for chain_idx, (block, user_params) in enumerate(chain):
             block_entry = block_entries[chain_idx]
             lane, pos, key = eff[id(block_entry)]
