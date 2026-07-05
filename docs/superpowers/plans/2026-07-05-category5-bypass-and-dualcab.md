@@ -109,9 +109,26 @@ Then replace the bNN-level enabled wrapper (currently `enabled_wrapped = _wrap_v
 Run: `PYTHONPATH=$PWD/src pytest tests/test_generate.py::test_hsp_base_bypass_lives_at_bnn_level tests/test_generate.py::test_hsp_base_bypass_keeps_true_snapshot_fill -v`
 Expected: PASS.
 
-- [ ] **Step 5: Fix the pre-existing patch-CLI test whose assertion moved level**
+- [ ] **Step 5: Fix the two pre-existing tests whose assertion moved level**
 
-`tests/test_patch_cli.py::test_cli_disable_block` asserts the base bypass at the old slot level; it must move to the bNN level. Change the assertion (around line 45) from:
+Two tests assert the base bypass at the old slot level; both must move to the bNN level (the slot is now the inert exemplar `True`).
+
+(a) `tests/test_generate.py::test_block_enabled_false_disables_slot` (~lines 848-853). Change the last two lines from:
+
+```python
+    slot = preset["preset"]["flow"][0]["b01"]["slot"][0]
+    assert slot["@enabled"] == {"value": False}
+```
+
+to:
+
+```python
+    b01 = preset["preset"]["flow"][0]["b01"]
+    assert b01["@enabled"]["value"] is False          # bNN: the real bypass
+    assert b01["slot"][0]["@enabled"] == {"value": True}  # slot: inert exemplar
+```
+
+(b) `tests/test_patch_cli.py::test_cli_disable_block` (around line 45). Change the assertion from:
 
 ```python
     assert body["preset"]["flow"][0]["b01"]["slot"][0]["@enabled"]["value"] is False
@@ -229,7 +246,7 @@ Then change the base-enabled read (currently `base_enabled = _unwrap_value(slot.
 
 - [ ] **Step 5: Correct the stale comment in `_recover_snapshots`**
 
-Around lines 179-181 the comment claims "The base bNN-level `@enabled` is always True (generate never densifies it to anything else)." That is no longer true. Replace with:
+Around lines 178-181 (the block starting `# @enabled snapshot overrides...` through the "always True" claim) the comment states "The base bNN-level `@enabled` is always True (generate never densifies it to anything else)." That is no longer true. Replace that comment block with:
 
 ```python
         # @enabled snapshot overrides (False => disable in that snapshot). The
@@ -911,7 +928,7 @@ Not a code task — the design's acceptance gate. After Task 7 is green:
 **Spec coverage:**
 - Item #1 base bypass read → Task 2; write → Task 1. ✓
 - Decouple value from snapshot fill → Task 1 (Step 3). ✓
-- `test_patch_cli` assertion move + stale comment → Task 1 Step 5 / Task 2 Step 5. ✓
+- Slot→bNN assertion moves in `test_generate.py::test_block_enabled_false_disables_slot` and `test_patch_cli::test_cli_disable_block` + stale comment → Task 1 Step 5 / Task 2 Step 5. ✓
 - Item #3 `raw` model → Task 3; generate emit + favorite → Task 4; decompile capture → Task 5. ✓
 - Case-B warning → Task 6. ✓
 - Scoreboard (base value, named effective bypass w/ null-skip, slot models, slot param values, harness, favorite) → Task 7. ✓
