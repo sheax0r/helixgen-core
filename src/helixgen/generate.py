@@ -330,10 +330,16 @@ def _wrap_value_with_snapshots(
     """Wrap a value in the Stadium `{"value": x}` envelope, optionally with a
     per-snapshot overrides array. The array is included only when at least
     one slot has a non-None override (else the wrapper stays plain).
+
+    The array is always dense: every slot gets an explicit value, with
+    `None` overrides filled in with `base`. The device firmware treats `null`
+    on a live snapshot as undefined recall state, so a sparse array leaves
+    the block's on/off (or param value) unrestored when switching snapshots
+    away and back.
     """
     wrapped: dict[str, Any] = {"value": base}
     if snapshot_overrides and any(o is not None for o in snapshot_overrides):
-        wrapped["snapshots"] = list(snapshot_overrides)
+        wrapped["snapshots"] = [base if o is None else o for o in snapshot_overrides]
     return wrapped
 
 
