@@ -49,6 +49,22 @@ def test_decompile_roundtrip_stable(hsp_library, strip_provenance):
     assert strip_provenance(p2) == strip_provenance(p1)
 
 
+def test_decompile_reads_base_bypass_from_bnn_level(hsp_library):
+    """A block bypassed at the bNN level (slot level inert True) decompiles to
+    enabled: false."""
+    from helixgen.decompile import _block_entry
+    lib = hsp_library
+    block = lib.find_block("Tube Drive")
+    model_id = block.model_id  # ingest-time hsp model id round-trips via translate
+    bnn = {
+        "@enabled": {"value": False},                 # bNN: real bypass
+        "type": "fx", "position": 1, "path": 0,
+        "slot": [{"model": model_id, "@enabled": {"value": True}, "params": {}}],
+    }
+    entry = _block_entry(bnn, lib, None)
+    assert entry["enabled"] is False
+
+
 def test_decompile_recovers_meta_and_blocks(hsp_library):
     lib = hsp_library
     spec1 = parse_spec({"name": "Tone X", "author": "me", "paths": [

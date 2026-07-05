@@ -394,6 +394,40 @@ def _populate_hsp_library(lib, tmp_path):
     lib.rebuild_index()
 
 
+def test_hsp_base_bypass_lives_at_bnn_level(tmp_library, tmp_path):
+    """A block with `enabled: false` must bypass at the bNN level (device reads
+    that), while the slot-level @enabled stays the inert exemplar True."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [{"block": "Brit 2204", "enabled": False}]}],
+    }, source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    b01 = preset["preset"]["flow"][0]["b01"]
+    assert b01["@enabled"]["value"] is False           # bNN: the real bypass
+    assert b01["slot"][0]["@enabled"] == {"value": True}  # slot: inert exemplar
+
+
+def test_hsp_base_bypass_keeps_true_snapshot_fill(tmp_library, tmp_path):
+    """base False + a disable in snapshot 0 must still leave snapshots 1..7
+    enabled (True fill), decoupled from the base value."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [{"block": "Brit 2204", "enabled": False}]}],
+        "snapshots": [
+            {"name": "A", "disable": ["Brit 2204"]},
+            {"name": "B"},
+        ],
+    }, source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    en = preset["preset"]["flow"][0]["b01"]["@enabled"]
+    assert en["value"] is False
+    assert en["snapshots"] == [False, True, True, True, True, True, True, True]
+
+
 def test_compose_preset_hsp_returns_hsp_shape(tmp_library, tmp_path):
     lib = Library(tmp_library)
     _populate_hsp_library(lib, tmp_path)
@@ -849,8 +883,9 @@ def test_block_enabled_false_disables_slot(hsp_library):
     spec = parse_spec({"name": "n", "paths": [
         {"blocks": [{"block": "Tube Drive", "enabled": False}]}]})
     preset = compose_preset(spec, hsp_library, source="t")
-    slot = preset["preset"]["flow"][0]["b01"]["slot"][0]
-    assert slot["@enabled"] == {"value": False}
+    b01 = preset["preset"]["flow"][0]["b01"]
+    assert b01["@enabled"]["value"] is False          # bNN: the real bypass
+    assert b01["slot"][0]["@enabled"] == {"value": True}  # slot: inert exemplar
 
 
 # ---------------------------------------------------------------------------

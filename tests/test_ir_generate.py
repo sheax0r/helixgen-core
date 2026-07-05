@@ -196,7 +196,8 @@ def test_block_entry_emits_hash_when_basename_ambiguous(stadium_library_with_ir,
     irs = IrMapping(irs_dir=tmp_path, entries={h1: "dirA/Same.wav", h2: "dirB/Same.wav"})
     slot = {"model": "HX2_ImpulseResponseWithPan", "irhash": h1,
             "params": {}, "@enabled": {"value": True}}
-    entry = _block_entry(slot, stadium_library_with_ir, irs)
+    bnn = {"@enabled": {"value": True}, "slot": [slot]}
+    entry = _block_entry(bnn, stadium_library_with_ir, irs)
     assert entry["ir"] == h1   # the hash, not "Same.wav"
 
 
@@ -207,7 +208,8 @@ def test_block_entry_emits_basename_when_unique(stadium_library_with_ir, tmp_pat
     irs = IrMapping(irs_dir=tmp_path, entries={h1: "dirA/Unique.wav"})
     slot = {"model": "HX2_ImpulseResponseWithPan", "irhash": h1,
             "params": {}, "@enabled": {"value": True}}
-    entry = _block_entry(slot, stadium_library_with_ir, irs)
+    bnn = {"@enabled": {"value": True}, "slot": [slot]}
+    entry = _block_entry(bnn, stadium_library_with_ir, irs)
     assert entry["ir"] == "Unique.wav"
 
 

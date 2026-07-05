@@ -175,10 +175,10 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         name = _ref_name(block)
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         coord = (pi, lane, pos, name)
-        # @enabled snapshot overrides (False => disable in that snapshot).
-        # The base bNN-level @enabled is always True (generate never densifies
-        # it to anything else), so `ov is False` already isolates genuine
-        # disables -- no phantom-filter needed here.
+        # @enabled snapshot overrides (False => disable in that snapshot). The
+        # bNN base @enabled.value may now be False (base-bypassed block), but
+        # disable-recovery keys only off explicit `snapshots[i] is False`, never
+        # the base, so base bypass and per-snapshot bypass stay independent.
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
             for i, ov in enumerate(en["snapshots"]):
@@ -288,7 +288,7 @@ def _entry_for(key, bnn, library, irs):
         entry = {"join": {"model": slot.get("model"),
                           "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
     else:
-        entry = _block_entry(slot, library, irs)
+        entry = _block_entry(bnn, library, irs)
     entry["lane"] = lane
     entry["pos"] = pos
     return entry
@@ -346,13 +346,14 @@ def _reconstruct_path_blocks(path_dict, library, irs):
     return out
 
 
-def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[str, Any]:
-    """One slot dict → a spec block entry (block name + non-default params).
+def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str, Any]:
+    """One bNN dict → a spec block entry (block name + non-default params).
 
     The block reference is the display_name when it uniquely resolves back to
     this block; otherwise the model_id is used so the spec regenerates without
     ambiguity.
     """
+    slot = bnn["slot"][0]
     model = _translate_model_id(slot.get("model", ""))
     block = library.load_block(model)
     name = block.display_name
@@ -377,7 +378,9 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
     if params:
         entry["params"] = params
 
-    base_enabled = _unwrap_value(slot.get("@enabled", True))
+    # Base bypass lives at the bNN level (the device reads it there); the slot
+    # level is inert (~always True). See generate._to_hsp_bnn.
+    base_enabled = _unwrap_value(bnn.get("@enabled", True))
     exemplar_enabled = block.exemplar.get("@enabled", True)
     if base_enabled != exemplar_enabled:
         entry["enabled"] = base_enabled
