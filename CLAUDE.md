@@ -21,6 +21,30 @@ file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
 
 Example: `helixgen ir-scan ~/IRs && helixgen list-irs | wc -l`.
 
+## IR cab-pack catalog (character reference)
+
+The IR library at `irs/` (gitignored — paid packs stay local) carries a
+grep-first tonal catalog at `irs/_catalog/`. It answers "which IR is beefiest /
+brightest / best for a vintage clean / tightest for modern metal" without
+re-analysing WAVs. Start at `irs/_catalog/README.md` (index + controlled tag
+vocabulary + mic legend + example greps); one file per pack holds per-mix mic
+combos and character tags.
+
+**When a new IR pack is added to `irs/`, catalog it before moving on:**
+1. Read the pack's `*Manual*.pdf` — cab/speaker/amp, mic legend, per-mix mic
+   combos, and any artist/usage notes.
+2. `ls` the pack's `Mixes/` folder for the exact WAV basenames (these are what a
+   preset's cab block references via `mapping.json`).
+3. Optionally FFT-analyse each Mix WAV (stdlib `wave` + `numpy`, 5 guitar bands)
+   for measured bright/dark/beefy/tight tags — relative *within* the pack.
+4. Write `irs/_catalog/<slug>.md` from the template in the catalog README, using
+   ONLY the controlled vocabulary; add a row to the README index table.
+
+Don't invent character the manual doesn't state, but well-established general
+knowledge is fine (Greenback = classic-rock, V30 = modern metal, ribbon = warm
+top, SM7 = fat). The catalog README's "Adding a new pack" section is the
+authoritative procedure and self-documenting template.
+
 ## spec.json shape
 
 ```json

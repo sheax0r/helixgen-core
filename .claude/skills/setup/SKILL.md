@@ -74,8 +74,20 @@ round-trip, no Bash permission prompt.
 
 ### 3. Recall IR preferences
 
-Check memory for `project_ir_notes.md` (if present). Use those one-line
-tonal notes when choosing which IR to suggest. Examples:
+**First, check for a local cab-pack catalog** at `<ir-library>/_catalog/`
+(e.g. `~/git/helixgen/irs/_catalog/`). If present it's the authoritative tonal
+reference — grep it to pick an IR by character. It has an index `README.md`
+(controlled tag vocabulary + mic legend) and one file per pack with per-mix mic
+combos and tags. Examples:
+
+```bash
+grep -rin 'high-gain' ~/git/helixgen/irs/_catalog/*.md | grep tight  # tight modern-metal
+grep -n beefy ~/git/helixgen/irs/_catalog/kw.md                       # beefiest Greenback
+grep -rin vintage ~/git/helixgen/irs/_catalog/*.md | grep clean       # vintage clean
+```
+
+Then check memory for `project_ir_notes.md` (if present) for any user-specific
+one-line preferences layered on top. Examples:
 
 - `- YA DXVB 112 Mix 03 — vintage Marshall-leaning, bright top; user reaches
   for it on clean tones`
@@ -109,6 +121,14 @@ Any specific tones you reach for it for?"
 
 Add a one-line entry to `project_ir_notes.md` keyed by basename. Keep each
 entry to one sentence; the file should stay scannable.
+
+**If a whole new commercial cab pack was added to the IR library** (not just one
+stray WAV), catalog it in `<ir-library>/_catalog/`: read the pack's
+`*Manual*.pdf`, `ls` its `Mixes/` folder for exact basenames, optionally
+FFT-measure each mix's band energy for bright/dark/beefy/tight tags, and write
+`_catalog/<slug>.md` from the template + controlled vocabulary in
+`_catalog/README.md` (its "Adding a new pack" section is the full procedure).
+This keeps "which IR is beefiest/brightest/best-for-X" answerable by grep.
 
 ## After generating a preset that uses user IRs
 
