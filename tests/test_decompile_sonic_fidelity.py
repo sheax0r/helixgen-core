@@ -83,7 +83,7 @@ def _slot_param_values(bnn):
     return out
 
 
-def test_real_export_sonic_fidelity(tmp_path, strip_provenance):
+def test_real_export_sonic_fidelity(tmp_path):
     lib, samples = _real_hsp_library(tmp_path)
     irs = IrMapping.load()
     failures = []

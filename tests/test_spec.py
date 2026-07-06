@@ -385,7 +385,6 @@ def test_parse_block_raw_absent_is_none():
 
 
 def test_parse_block_raw_rejects_non_object():
-    import pytest
     from helixgen.spec import parse_spec, SpecError
     with pytest.raises(SpecError):
         parse_spec({"name": "S", "paths": [{"blocks": [
@@ -393,7 +392,6 @@ def test_parse_block_raw_rejects_non_object():
 
 
 def test_parse_block_raw_rejects_bad_slots():
-    import pytest
     from helixgen.spec import parse_spec, SpecError
     with pytest.raises(SpecError):
         parse_spec({"name": "S", "paths": [{"blocks": [

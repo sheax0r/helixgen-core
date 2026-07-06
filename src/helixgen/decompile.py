@@ -148,7 +148,7 @@ def _snapshot_names(body: dict) -> list[str]:
     return names[:keep]
 
 
-def _warn_unrepresentable_enables(body: dict, library: Library) -> None:
+def _warn_unrepresentable_enables(body: dict) -> None:
     """Warn for a base-bypassed block that is enabled in a named snapshot but
     has NO disable (an explicit `False`) anywhere in the named range. The
     disable-only snapshot model cannot express that enable, so it will not
@@ -477,7 +477,7 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
 
     idx = _name_index(flow, library)
 
-    _warn_unrepresentable_enables(body, library)
+    _warn_unrepresentable_enables(body)
 
     snaps = _recover_snapshots(body, library, idx)
     if snaps:
