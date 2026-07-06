@@ -4,13 +4,67 @@
 **Status:** Categories 1, 2, 3 and the Minors + both one-offs **DONE**. Category 2
 (P35 branch-lane I/O) closed 2026-07-05 on branch
 `hardening/p35-endpoint-passthrough` (see
-`docs/superpowers/specs/2026-07-05-p35-endpoint-passthrough-design.md`). A **new
-Category 5 (sonic-fidelity gaps)** opened 2026-07-05 from the P35 hardware test —
-see below; it is the next cycle.
+`docs/superpowers/specs/2026-07-05-p35-endpoint-passthrough-design.md`). **Category
+5 items #1 (block bypass read at the bNN `@enabled` level) and #3 (verbatim
+per-block `raw` = harness + extra dual-cab slots + constant `favorite: 0`)** are
+now also **DONE**, on branch `hardening/category5-bypass-and-dualcab` (see
+`docs/superpowers/specs/2026-07-05-category5-bypass-and-dualcab-design.md`).
+Category 5 items #2 and #4, the snapshot enable-override (Case B), and the
+top-level unmodeled state remain open — see the Category 5 section below.
 **Baseline:** real-preset round-trip was 127/211 (60%) → 194/211 → **now 211/211**
 on the tightened **endpoint-inclusive model** bar (`tests/test_decompile_acceptance.py`,
 `xfail` removed 2026-07-05). NOTE: that bar compares slot *model* placement, not
-sonic fidelity — the full-body compare is still 0/211 (Category 5).
+sonic fidelity. A new, separate sonic-fidelity scoreboard
+(`tests/test_decompile_sonic_fidelity.py`) now covers per-block base bypass,
+effective per-snapshot bypass, every slot's model, every slot's param values,
+`harness`, and `favorite` — also **211/211** as of items #1/#3 above.
+
+## Status update (2026-07-05) — Category 5 #1/#3 DONE (bypass + dual-cab raw)
+
+Closed (branch `hardening/category5-bypass-and-dualcab`, see
+`docs/superpowers/specs/2026-07-05-category5-bypass-and-dualcab-design.md`):
+
+- **Item #1 (block bypass read at the wrong level)** — DONE. `decompile`/`generate`
+  now read and write bypass at the `bNN.@enabled` level (base value, snapshot
+  overrides, footswitch controller) instead of the inert `slot[0].@enabled`.
+  Base value and effective per-snapshot bypass round-trip; bypass-footswitch
+  assignments are preserved.
+- **Item #3 (dual-cab slots + harness dropped)** — DONE. New `BlockEntry.raw`
+  field (`{"harness": ..., "slots": [...]}`) preserves the bNN `harness` dict
+  (non-deterministic, present on 24/55 real dual-cabs and 166/206 single WithPan
+  cabs — must round-trip verbatim, never synthesized) and any slots beyond
+  `slot[0]` (the second cab of a dual-cab). `generate` also now always emits
+  `bnn["favorite"] = 0`, matching the constant `0` observed across all 2172
+  bNNs in the corpus.
+- **New scoreboard.** `tests/test_decompile_sonic_fidelity.py` ingests all
+  `data/*.hsp` into one shared library, round-trips each, and asserts per-user-block
+  equality of base bypass, effective per-snapshot bypass (over named snapshots,
+  with an explicit source-null skip for the ~30 presets with undefined recall in
+  a named, base-`False` slot), every slot's model, every slot's param values,
+  `harness`, and `favorite` — **211/211**.
+- **Confirmed harmless:** the one anomalous slot-level `@enabled: False` in the
+  corpus (Megadeth b05, a single-slot IR cab with bNN base `True`) is discarded
+  by item #1's rewrite of slot[0]'s `@enabled` to the inert exemplar; pending
+  hardware confirmation that this IR cab still sounds identical (see
+  post-implementation hardware-verify step in the design doc).
+
+Still deferred (see Category 5 section below for detail):
+- **Item #2** — input-block params still inherited from the chassis rather than
+  the source b00 slot.
+- **Item #4** — `preset.params` (tempo, `inst1Z`, `activeexpsw`, …) still
+  inherited from the chassis rather than the source body.
+- **Snapshot enable-override / source-null recall ("Case B").** A base-`False`
+  block that is enabled in some named snapshot with **zero** named explicit
+  `False` entries would emit no snapshots array and read base `False` in every
+  snapshot — silently wrong. 0/211 in the corpus today but not structurally
+  impossible; the decompiler warns if it's ever encountered. The related
+  `null`-at-named-snapshot recall (~30 presets, "unreliable recall" per Category
+  4) is deliberately not asserted by the new scoreboard (regen densifies to a
+  `True` fill) and remains an open semantic gap pending the snapshot
+  enable-override landing.
+- **Top-level unmodeled state** — `sources` scribble labels/colors/`fs_topidx`,
+  `meta.info`, `preset.xyctrl`, snapshot `valid`/`expsw` — keeps the full-body
+  compare at 0/211.
 
 ## Status update (2026-07-05) — Category 2 DONE + Category 5 opened
 
@@ -39,25 +93,37 @@ which exposed Category 5 below. Two facts from that investigation:
 ### 5. Sonic-fidelity gaps (exposed 2026-07-05) — next cycle
 A round-tripped preset reproduces routing + block *models* but is not a byte- or
 sonic-faithful clone. Ranked by audio impact:
-1. **Block bypass state read at the wrong level (highest impact).** A block's real
+1. **Block bypass state read at the wrong level (highest impact).** — **DONE**
+   (2026-07-05, branch `hardening/category5-bypass-and-dualcab`). A block's real
    bypass is at the `bNN` level (`bNN.@enabled.value`, plus a `targetbypass`
    footswitch controller and a per-block snapshot bypass array
-   `bNN.@enabled.snapshots`). `decompile._block_entry` reads the *slot* level
-   (`slot[0].@enabled`, ~always `True`), so **bypassed blocks round-trip as
-   enabled**, and bypass-footswitch assignments + per-block snapshot bypass are
-   dropped. (Black Keys b03/b04/b05/b06/b15 flip off→on.) Fix: read/emit
-   `bNN.@enabled` (value + snapshots + controller) instead of the slot level.
+   `bNN.@enabled.snapshots`). `decompile._block_entry` read the *slot* level
+   (`slot[0].@enabled`, ~always `True`), so **bypassed blocks round-tripped as
+   enabled**, and bypass-footswitch assignments + per-block snapshot bypass were
+   dropped. (Black Keys b03/b04/b05/b06/b15 flipped off→on.) Fixed: decompile/generate
+   now read/emit `bNN.@enabled` (value + snapshots + controller) instead of the
+   slot level. Verified by the new `tests/test_decompile_sonic_fidelity.py`
+   scoreboard (211/211). The snapshot enable-override / source-null recall
+   ("Case B", see status update above) remains a deferred edge.
 2. **Input-block params are chassis leftovers.** `_rewrite_input_endpoint` swaps the
    b00 model but keeps the *chassis* params (frankenstein `Pad:1`, `decay:0.1` on an
-   `InputNone`). Should carry the source b00 slot's params.
-3. **Dual-cab slots dropped.** Source `b10`/`b16` cab `slot` arrays are length 2
-   (dual cab); regen emits length 1.
+   `InputNone`). Should carry the source b00 slot's params. **Still open.**
+3. **Dual-cab slots dropped.** — **DONE** (2026-07-05, branch
+   `hardening/category5-bypass-and-dualcab`). Source `b10`/`b16` cab `slot`
+   arrays are length 2 (dual cab); regen emitted length 1. Fixed via the new
+   `BlockEntry.raw` field (`raw.slots` = verbatim `slot[1:]`, `raw.harness` =
+   verbatim `bNN.harness` dict — non-deterministic, present on 24/55 real
+   dual-cabs and 166/206 single WithPan cabs, so preserved rather than
+   synthesized) plus a constant `favorite: 0` on every emitted bNN. Documented
+   in `CLAUDE.md` under "Optional: per-block verbatim state (`raw`)". Verified
+   by `tests/test_decompile_sonic_fidelity.py` (211/211).
 4. **`preset.params` inherited from the chassis** (tempo 120 vs source 157; `inst1Z`
-   impedance mode; `activeexpsw`). Should carry from the source body.
+   impedance mode; `activeexpsw`). Should carry from the source body. **Still
+   open.**
 
 Plus the previously-noted unmodeled top-level state (`sources` scribble
 labels/colors/`fs_topidx`, `meta.info`, `preset.xyctrl`, snapshot `valid`/`expsw`)
-that keeps the full-body compare at 0/211.
+that keeps the full-body compare at 0/211. **Still open.**
 
 ## Status update (2026-07-04)
 
