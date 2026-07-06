@@ -23,6 +23,20 @@ When NOT to use:
 - Read-only questions ("what blocks do I have?") — just call the
   `list_blocks` MCP tool directly.
 
+## Editing an existing preset (direct edits)
+
+Not every "modify" request is a full tone-design pass. If the user wants a
+*targeted* change to a preset that already exists — change one param, disable
+a block, swap a model, add/remove a block — that's the surgical-edit path, not
+the `tone` skill: CLI `set-param`/`enable`/`disable`/`add-block`/
+`remove-block`/`swap-model`/`decompile`, or the MCP `patch_preset`/
+`decompile_preset` tools. See CLAUDE.md's **"Surgical edits"** section for the
+full verb list, disambiguation flags (`--path`/`--index`/`--lane`/`--pos`,
+`--snapshot`), and worked examples. Still worth a quick device-model check
+(step 1 below) if this is the first exchange of the session; skip the rest of
+setup (IR library location, IR preferences) unless the edit itself touches an
+IR block.
+
 ## Before generating or modifying any preset
 
 In order, every session:
@@ -42,15 +56,84 @@ needs to restart before the tools appear — tell them to `/restart` (or
 quit and reopen Claude Code). Don't auto-install silently — `pip install`
 is a system-affecting action and the user should see what's happening.
 
+### 0.5. Load user preferences
+
+Before checking device/IR details, load `~/.helixgen/preferences.json`
+(override the whole-file location with `$HELIXGEN_PREFS`; override a single
+key with `HELIXGEN_<KEY>` env, e.g. `HELIXGEN_FAVOR_IRS=1`). Precedence per
+key: env var > file value > Claude-memory seed > built-in default.
+
+- **File absent (first run):** scaffold it. Seed `device.model` from
+  `user_device.md` and `instruments` from `user_guitars.md` if those memories
+  exist; otherwise leave `device.model: null` and `instruments: []` (step 1
+  will ask). `guard_paid_irs_in_git` and `reveal_in_finder` seed `true`
+  (matching the existing feedback-memory defaults); `favor_irs` seeds `true`
+  only if a "prefer IRs" feedback memory exists, else `false`. Tell the user
+  in one line: "Created `~/.helixgen/preferences.json` — edit it any time to
+  change these defaults (device model, favor_irs, instruments, …)." If
+  `reveal_in_finder` resolves true and this is macOS, `open -R` the new file.
+- **File present:** read it and apply each setting for the rest of the
+  session. The file is now the authority — memory (`user_device.md`,
+  `user_guitars.md`, the feedback memories) becomes a fallback/seed only;
+  don't re-derive a setting from memory once the file carries an explicit
+  value for it.
+- **Learning a new value** (the user states their device model for the first
+  time, or says "prefer IRs" / "favor cabs"): confirm before writing it back
+  the *first* time a given key is set this way — e.g. "I'll set `favor_irs:
+  true` in preferences.json — ok?" Once the user has confirmed that key once,
+  later updates to it can be written silently.
+
+Keys this skill owns: `device.model`, `favor_irs`, `reveal_in_finder`,
+`guard_paid_irs_in_git`, `instruments`. (`preset_output_dir` and `author` are
+consumed by the `tone` skill.) `ir_library_dir` is deliberately **not** in
+this file — the IR directory stays env-only via `$HELIXGEN_IRS`; see step 2.
+
+#### Instruments
+
+`instruments` is an array recording the user's confirmed guitars/basses,
+seeded on first scaffold from `user_guitars.md` if present. Record shape:
+
+```json
+{
+  "name": "Gibson Les Paul Junior",
+  "type": "guitar",
+  "pickups": "one bridge P-90 (single-coil soapbar)",
+  "selector": "none",
+  "genres": ["punk", "garage", "raw rock", "blues"],
+  "notes": "breaks up early; vol + tone only"
+}
+```
+
+Fields: `name`, `type` (`"guitar"`|`"bass"`) required; `pickups` (free text),
+`selector` (`"none"`|`"3-way"`|`"5-way"`|string), `active` (bool — active vs
+passive pickups), `genres` (array of style hints used to auto-pick an
+instrument when the user doesn't name one), `notes` (one-liner) all optional.
+This feeds the `tone` skill's instrument recommendations — picking a guitar by
+`genres` when none is named, and phrasing pickup/selector guidance from
+`selector`/`pickups`.
+
+Seed the user's four confirmed instruments on first scaffold:
+
+- **LP Jr** — P-90 (single bridge pickup), no selector (`"none"`).
+- **ESP LTD EC-1000** — active EMG HH, 3-way selector.
+- **Strandberg Boden Essential 6** — HSS, 5-way selector.
+- **Ibanez Prestige** — HSH, 5-way selector.
+
+There's no `helixgen prefs` CLI yet — the file is plain JSON
+(`json.load`/atomic tmp+rename write), so read or hand-edit it directly. Edit
+it by hand or let this skill write it back per the confirm-first-then-silent
+rule above.
+
 ### 1. Confirm the device model
 
-Look up the existing user memory `user_device.md`. Three cases:
+Read `device.model` from `preferences.json` (loaded in step 0.5):
 
-- **Memory present and recent (≤ ~3 months old):** trust it; no need to ask.
-- **Memory present but older:** confirm once with a one-liner: "Still on
-  Stadium XL?" If yes, move on. If no, update memory.
-- **Memory absent:** ask: "Which Helix do you have? Stadium, Stadium XL, or
-  something else?" Record under `user_device.md`.
+- **Set:** trust it — a file doesn't go stale, so there's no memory-age check
+  to do here (unlike the old `user_device.md`-only flow).
+- **Unset (`null`):** ask: "Which Helix do you have? Stadium, Stadium XL, or
+  something else?" Write the answer back to `device.model` in the
+  preferences file (confirm-first-then-silent, per 0.5); it's fine to also
+  note it in memory as a convenience, but the file is the control now.
 
 If the answer is *not* Stadium or Stadium XL, tell the user helixgen
 supports the Stadium family only for now and stop — don't generate
@@ -73,6 +156,12 @@ If the user names one specific WAV, call the `register_ir` MCP tool — one
 round-trip, no Bash permission prompt.
 
 ### 3. Recall IR preferences
+
+`favor_irs` in `preferences.json` (loaded in step 0.5) is now the authority
+for "prefer a matching user IR block over a stock cab" — true only once the
+user has set it or confirmed it via the step-0.5 write-back. Older "prefer
+IRs" feedback-memory notes were the prior mechanism; they only matter now as
+the one-time seed value used the first time the file was scaffolded.
 
 **First, check for a local cab-pack catalog** at `<ir-library>/_catalog/`
 (e.g. `~/git/helixgen/irs/_catalog/`). If present it's the authoritative tonal

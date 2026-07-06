@@ -186,6 +186,79 @@ that helixgen does not model but preserves for round-trip fidelity:
 authored only by the decompiler; hand-editing it is unnecessary for typical
 tone specs. Stadium-only.
 
+## Surgical edits
+
+Once a preset exists, don't hand-edit the whole spec to change one setting —
+use the edit verbs below. They mutate a spec in place and regenerate the
+`.hsp`, reusing all of `generate.py`'s validation, model-id translation, and IR
+injection.
+
+**Mental model:** the spec is the source of truth. Every `generate` writes a
+sidecar next to the `.hsp` (`MyTone.hsp` → `MyTone.spec.json`); an edit verb
+loads that sidecar, applies the change, writes it back, and regenerates the
+`.hsp`. Point an edit verb at an orphan `.hsp` (no sidecar — e.g. an old export
+you never generated with helixgen) and it auto-decompiles first, so a sidecar
+appears next to it before the edit is applied. You can also run `decompile`
+directly to get a spec.json to inspect or hand-edit.
+
+**Run `helixgen show-block "<block>"` first** to confirm the exact,
+case-sensitive param name — the same guardrail `generate` already enforces.
+
+- `helixgen set-param <preset> <block> <param> <value> [--path/--index/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string).
+- `helixgen enable <preset> <block> [--snapshot NAME] [--path/--index/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) remove it from that snapshot's `disable` list.
+- `helixgen disable <preset> <block> [--snapshot NAME] [--path/--index/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) add it to that snapshot's `disable` list.
+- `helixgen add-block <preset> <block> [--path N] [--after NAME]` — insert a block (append to `--path`, default 0, or after a named block).
+- `helixgen remove-block <preset> <block> [--path/--index/--lane/--pos]` — delete a block.
+- `helixgen swap-model <preset> <old> <new> [--path/--index/--lane/--pos]` — replace a block with another of the **same category**; carries over params the target shares, warns on any it has to drop.
+- `helixgen decompile <preset.hsp> -o spec.json` — reconstruct a spec.json from an `.hsp` (this is what runs automatically on an orphan edit; run it directly to inspect or hand-edit).
+
+`--path`/`--index`/`--lane`/`--pos` disambiguate when a block name appears more
+than once in the preset (e.g. dual-cab, both lanes of a split). `--snapshot`
+applies only to `enable`/`disable`.
+
+MCP tools mirror the CLI for agent-driven edits: `patch_preset(model, spec,
+operations)` applies a list of `{op, ...}` operations to an in-memory spec
+dict (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`),
+and `decompile_preset(model, hsp_b64)` turns a base64 `.hsp` blob into an
+editable spec dict. The orphan-`.hsp` loop over MCP is: `decompile_preset` →
+`patch_preset` → `generate_preset`.
+
+### Worked examples
+
+**Change a delay's Mix:**
+
+```bash
+helixgen show-block "Tape Echo Stereo"        # confirm the param is "Mix"
+helixgen set-param MyTone.hsp "Tape Echo Stereo" Mix 0.3
+# rewrites MyTone.spec.json and regenerates MyTone.hsp
+```
+
+MCP: `{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value": 0.3}`
+
+**Disable a block (kill the reverb):**
+
+```bash
+helixgen disable MyTone.hsp "Plate Stereo"
+# add --snapshot Lead to bypass it only in the "Lead" snapshot
+```
+
+MCP: `{"op": "set_enabled", "block": "Plate Stereo", "enabled": false}`
+
+**Swap an amp:**
+
+```bash
+helixgen list-blocks --category amp          # find the exact target display name
+helixgen swap-model MyTone.hsp "Brit Plexi Brt" "Brit 2204"
+# same-category only; carries over shared params, warns on any it had to drop
+```
+
+MCP: `{"op": "swap_model", "old": "Brit Plexi Brt", "new": "Brit 2204"}`
+(surface any returned `warnings` to the user)
+
+Disambiguate duplicate block names (e.g. two cabs across a split) with
+`--pos`/`--lane`/`--path` on the CLI, or `"pos"`/`"lane"`/`"path"` on the MCP
+op.
+
 ## Generation notes
 
 - The chassis is whatever was first ingested. A Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; a `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from the originating export is currently expected.
