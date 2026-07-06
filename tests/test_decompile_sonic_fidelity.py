@@ -10,6 +10,10 @@ Deliberately NOT asserted (see the 2026-07-05 design spec): source-null named
 snapshot cells (~30 presets, densified to True — Category-4-consistent),
 redundant all-True snapshot arrays, unnamed trailing snapshot slots, top-level
 sources/meta/xyctrl/snapshot metadata, and non-FS bypass-assign controllers.
+Also NOT asserted: favorite reconstruction — generate emits a constant 0 for
+every block and decompile does not capture favorite in the spec at all, so
+the block-level `favorite` compare below only confirms both sides are the
+corpus-wide constant 0, not that a real value round-trips.
 """
 import pytest
 from pathlib import Path
@@ -105,6 +109,11 @@ def test_real_export_sonic_fidelity(tmp_path, strip_provenance):
                 assert _slot_models(sb) == _slot_models(rb), f"{kk} slot models"
                 assert _slot_param_values(sb) == _slot_param_values(rb), f"{kk} params"
                 assert sb.get("harness") == rb.get("harness"), f"{kk} harness"
+                # NOTE: today this is constant-vs-constant, not a reconstruction
+                # check — generate hardcodes favorite: 0 on every block, decompile
+                # never round-trips favorite through the spec, and the whole corpus
+                # is uniformly favorite == 0. It still guards against a future
+                # nonzero-favorite fixture or a generate change that stops emitting 0.
                 assert sb.get("favorite") == rb.get("favorite"), f"{kk} favorite"
             ok += 1
         except Exception as e:  # noqa: BLE001 — collect all before asserting
