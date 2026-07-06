@@ -362,3 +362,37 @@ def test_structural_entry_requires_pos():
             {"structural": {"type": "output", "slot": [{"model": "P35_OutputMatrix"}]},
              "lane": 1}   # pos omitted -> must raise a clean SpecError at parse time
         ]}]})
+
+
+def test_parse_block_raw_field_roundtrips():
+    from helixgen.spec import parse_spec, BlockEntry
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "X", "raw": {
+            "harness": {"@enabled": {"value": True}, "params": {}},
+            "slots": [{"model": "HD2_CabMicIr_NoCab", "params": {}}],
+        }},
+    ]}]})
+    entry = spec.paths[0].blocks[0]
+    assert isinstance(entry, BlockEntry)
+    assert entry.raw["harness"]["@enabled"]["value"] is True
+    assert entry.raw["slots"][0]["model"] == "HD2_CabMicIr_NoCab"
+
+
+def test_parse_block_raw_absent_is_none():
+    from helixgen.spec import parse_spec
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [{"block": "X"}]}]})
+    assert spec.paths[0].blocks[0].raw is None
+
+
+def test_parse_block_raw_rejects_non_object():
+    from helixgen.spec import parse_spec, SpecError
+    with pytest.raises(SpecError):
+        parse_spec({"name": "S", "paths": [{"blocks": [
+            {"block": "X", "raw": ["not", "an", "object"]}]}]})
+
+
+def test_parse_block_raw_rejects_bad_slots():
+    from helixgen.spec import parse_spec, SpecError
+    with pytest.raises(SpecError):
+        parse_spec({"name": "S", "paths": [{"blocks": [
+            {"block": "X", "raw": {"slots": [1, 2, 3]}}]}]})

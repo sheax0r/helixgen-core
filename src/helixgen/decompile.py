@@ -148,6 +148,37 @@ def _snapshot_names(body: dict) -> list[str]:
     return names[:keep]
 
 
+def _warn_unrepresentable_enables(body: dict) -> None:
+    """Warn for a base-bypassed block that is enabled in a named snapshot but
+    has NO disable (an explicit `False`) anywhere in the named range. The
+    disable-only snapshot model cannot express that enable, so it will not
+    round-trip until a snapshot enable-override lands. 0/211 in the corpus."""
+    names = _snapshot_names(body)
+    n = len(names)
+    if n == 0:
+        return
+    flow = (body.get("preset") or {}).get("flow") or []
+    for pi, key, bnn, slot in _iter_blocks(flow):
+        base = _unwrap_value(bnn.get("@enabled", True))
+        if base is not False:
+            continue
+        en = bnn.get("@enabled")
+        arr = en.get("snapshots") if isinstance(en, dict) else None
+        if not isinstance(arr, list):
+            continue
+        named = arr[:n]
+        has_enable = any(v is True for v in named)
+        has_disable = any(v is False for v in named)
+        if has_enable and not has_disable:
+            print(
+                f"warning: block {slot.get('model')!r} at path {pi} {key} is "
+                f"base-bypassed but enabled in a snapshot with no disable; this "
+                f"cannot round-trip under the disable-only snapshot model "
+                f"(will read bypassed in every snapshot).",
+                file=sys.stderr,
+            )
+
+
 def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str, Any]]:
     """Recover the spec-level `snapshots` array from a decompiled body.
 
@@ -175,10 +206,10 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         name = _ref_name(block)
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         coord = (pi, lane, pos, name)
-        # @enabled snapshot overrides (False => disable in that snapshot).
-        # The base bNN-level @enabled is always True (generate never densifies
-        # it to anything else), so `ov is False` already isolates genuine
-        # disables -- no phantom-filter needed here.
+        # @enabled snapshot overrides (False => disable in that snapshot). The
+        # bNN base @enabled.value may now be False (base-bypassed block), but
+        # disable-recovery keys only off explicit `snapshots[i] is False`, never
+        # the base, so base bypass and per-snapshot bypass stay independent.
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
             for i, ov in enumerate(en["snapshots"]):
@@ -288,7 +319,7 @@ def _entry_for(key, bnn, library, irs):
         entry = {"join": {"model": slot.get("model"),
                           "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
     else:
-        entry = _block_entry(slot, library, irs)
+        entry = _block_entry(bnn, library, irs)
     entry["lane"] = lane
     entry["pos"] = pos
     return entry
@@ -346,13 +377,14 @@ def _reconstruct_path_blocks(path_dict, library, irs):
     return out
 
 
-def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[str, Any]:
-    """One slot dict → a spec block entry (block name + non-default params).
+def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str, Any]:
+    """One bNN dict → a spec block entry (block name + non-default params).
 
     The block reference is the display_name when it uniquely resolves back to
     this block; otherwise the model_id is used so the spec regenerates without
     ambiguity.
     """
+    slot = bnn["slot"][0]
     model = _translate_model_id(slot.get("model", ""))
     block = library.load_block(model)
     name = block.display_name
@@ -377,7 +409,9 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
     if params:
         entry["params"] = params
 
-    base_enabled = _unwrap_value(slot.get("@enabled", True))
+    # Base bypass lives at the bNN level (the device reads it there); the slot
+    # level is inert (~always True). See generate._to_hsp_bnn.
+    base_enabled = _unwrap_value(bnn.get("@enabled", True))
     exemplar_enabled = block.exemplar.get("@enabled", True)
     if base_enabled != exemplar_enabled:
         entry["enabled"] = base_enabled
@@ -399,6 +433,19 @@ def _block_entry(slot: dict, library: Library, irs: IrMapping | None) -> dict[st
         # Mark it explicitly so generate doesn't raise "IR block requires
         # an `ir` field" for a preset that never had one.
         entry["no_ir"] = True
+
+    # Verbatim non-modeled bNN state generate would otherwise drop: the harness
+    # dict (present on every real block, non-deterministic — Trails/dual/
+    # ControlSource) and any extra slots (slot[1:], i.e. a dual cab).
+    raw: dict[str, Any] = {}
+    harness = bnn.get("harness")
+    if isinstance(harness, dict):
+        raw["harness"] = copy.deepcopy(harness)
+    slots = bnn.get("slot") or []
+    if len(slots) > 1:
+        raw["slots"] = copy.deepcopy(slots[1:])
+    if raw:
+        entry["raw"] = raw
 
     return entry
 
@@ -429,6 +476,8 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
         spec["author"] = meta["author"]
 
     idx = _name_index(flow, library)
+
+    _warn_unrepresentable_enables(body)
 
     snaps = _recover_snapshots(body, library, idx)
     if snaps:

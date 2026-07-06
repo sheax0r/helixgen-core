@@ -427,6 +427,7 @@ def _to_hsp_bnn(
     fs_controller: dict[str, Any] | None = None,
     exp_controllers: dict[str, dict[str, Any]] | None = None,
     irhash: str | None = None,
+    raw: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one Stadium bNN dict from a library Block and user param overrides.
 
@@ -446,9 +447,11 @@ def _to_hsp_bnn(
     slot_inner: dict[str, Any] = {
         "model": translate_to_hsp(flat.get(RAW_BLOCK_MODEL_KEY, block.model_id)),
     }
-    # Slot-level @enabled: always plain (the bNN-level wraps snapshot variation).
     base_enabled = enabled_base if enabled_base is not None else flat.get("@enabled", True)
-    slot_inner["@enabled"] = {"value": base_enabled}
+    # Slot-level @enabled is inert on Stadium; the device reads bypass at the
+    # bNN level (see the bNN @enabled built below). Keep the slot at the
+    # exemplar value (~always True).
+    slot_inner["@enabled"] = {"value": flat.get("@enabled", True)}
     if "@version" in flat:
         slot_inner["version"] = flat["@version"]
 
@@ -474,7 +477,15 @@ def _to_hsp_bnn(
         params[k] = wrapped
     slot_inner["params"] = params
 
-    enabled_wrapped = _wrap_value_with_snapshots(True, enabled_overrides)
+    # bNN-level @enabled carries the real base bypass value. The per-snapshot
+    # array fills unset slots with True (an unset snapshot is enabled,
+    # independent of the base) — do NOT reuse _wrap_value_with_snapshots here,
+    # which would fill with base_enabled and wrongly bypass enabled snapshots.
+    enabled_wrapped: dict[str, Any] = {"value": base_enabled}
+    if enabled_overrides and any(o is not None for o in enabled_overrides):
+        enabled_wrapped["snapshots"] = [
+            True if o is None else o for o in enabled_overrides
+        ]
     if fs_controller is not None:
         enabled_wrapped["controller"] = fs_controller
 
@@ -483,8 +494,16 @@ def _to_hsp_bnn(
         "type": flat.get("@type", _hsp_type_for_block(block)),
         "position": position,
         "path": path_index,
+        "favorite": 0,
         "slot": [slot_inner],
     }
+    if raw:
+        harness = raw.get("harness")
+        if isinstance(harness, dict):
+            bnn["harness"] = copy.deepcopy(harness)
+        extra_slots = raw.get("slots")
+        if isinstance(extra_slots, list):
+            bnn["slot"].extend(copy.deepcopy(s) for s in extra_slots)
     return bnn
 
 
@@ -829,6 +848,7 @@ def _compose_preset_hsp(
                     if pi == path_index and ci == chain_idx
                 } or None,
                 irhash=resolved_irhash,
+                raw=block_entry.raw,
             )
         _emit_splits(path_dict, path_entry, eff)
         _emit_structural(path_dict, path_entry)

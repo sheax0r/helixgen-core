@@ -148,6 +148,20 @@ add an optional `ir` field to load a registered user IR:
 
 Stadium-only; ignored without warning for `.hlx` (legacy Helix) chassis output.
 
+### Optional: per-block verbatim state (`raw`)
+
+Blocks may carry an optional `"raw"` object holding verbatim Stadium bNN state
+that helixgen does not model but preserves for round-trip fidelity:
+
+- `"harness"` — the bNN-level `harness` dict (carries `dual`, `Trails`,
+  `ControlSource`, its own `@enabled`). Non-deterministic; preserved verbatim.
+- `"slots"` — additional slots beyond the first (`slot[1:]`), i.e. the second
+  cab of a dual-cab block.
+
+`raw` is emitted by `decompile` and re-attached by `generate`. It is normally
+authored only by the decompiler; hand-editing it is unnecessary for typical
+tone specs. Stadium-only.
+
 ## Generation notes
 
 - The chassis is whatever was first ingested. A Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; a `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from the originating export is currently expected.

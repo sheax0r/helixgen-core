@@ -42,7 +42,7 @@ def test_cli_disable_block(tmp_path, hsp_library):
         "disable", str(out), "Tube Drive", "--library", str(lib_root)])
     assert res.exit_code == 0, res.output
     body = read_hsp(out)
-    assert body["preset"]["flow"][0]["b01"]["slot"][0]["@enabled"]["value"] is False
+    assert body["preset"]["flow"][0]["b01"]["@enabled"]["value"] is False
 
 
 def test_cli_unknown_block_errors(tmp_path, hsp_library):

@@ -18,6 +18,7 @@ class BlockEntry:
     enabled: bool | None = None
     lane: int = 0
     pos: int | None = None
+    raw: dict[str, Any] | None = None
 
 
 @dataclass
@@ -462,9 +463,20 @@ def _parse_path_entry(data: Any, *, source: str):
     enabled = data.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         raise _err(source, '"enabled" must be a boolean if provided.')
+    raw = data.get("raw")
+    if raw is not None:
+        if not isinstance(raw, dict):
+            raise _err(source, '"raw" must be an object if provided.')
+        if "harness" in raw and not isinstance(raw["harness"], dict):
+            raise _err(source, '"raw.harness" must be an object if provided.')
+        if "slots" in raw and not (
+            isinstance(raw["slots"], list)
+            and all(isinstance(s, dict) for s in raw["slots"])
+        ):
+            raise _err(source, '"raw.slots" must be a list of objects if provided.')
     lane, pos = _parse_lane_pos(data, source=source)
     return BlockEntry(block=name, params=dict(params), ir=ir, no_ir=no_ir,
-                       enabled=enabled, lane=lane, pos=pos)
+                       enabled=enabled, lane=lane, pos=pos, raw=raw)
 
 
 def _validate_splits(entries: list, *, source: str) -> None:
