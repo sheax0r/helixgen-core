@@ -230,11 +230,19 @@ def patch_preset(model: str, spec: dict[str, Any], operations: list) -> dict[str
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
     `operations` is a list of `{"op": ...}` dicts. Supported ops:
-    - `set_param` — `{op, block, param, value, [path], [index]}`
-    - `set_enabled` — `{op, block, enabled, [path], [index], [snapshot]}`
-    - `add_block` — `{op, block, [path], [after], [params]}`
-    - `remove_block` — `{op, block, [path], [index]}`
-    - `swap_model` — `{op, old, new, [path], [index]}`
+    - `set_param` — `{op, block, param, value, [path], [index], [lane], [pos]}`
+    - `set_enabled` — `{op, block, enabled, [path], [index], [lane], [pos], [snapshot]}`
+    - `add_block` — `{op, block, [path], [after], [params], [lane], [pos]}`
+    - `remove_block` — `{op, block, [path], [index], [lane], [pos]}`
+    - `swap_model` — `{op, old, new, [path], [index], [lane], [pos]}`
+
+    `[lane]`/`[pos]` disambiguate a block address when more than one placed
+    block shares the same display name (e.g. a dual-cab block or a block
+    duplicated across a parallel split) — same semantics as the CLI's
+    `--lane`/`--pos` flags. Use them together with `block` when `path`/`index`
+    alone would be ambiguous; a call `patch_preset_handler` cannot resolve
+    raises a clear "matches N placements" error listing the address to add.
+    Call `show_block` first to confirm exact, case-sensitive param names.
 
     Regenerate the `.hsp` afterwards with `generate_preset(spec=<returned spec>)`.
 

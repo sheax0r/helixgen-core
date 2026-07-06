@@ -330,19 +330,24 @@ def decompile_preset_handler(library: Library, model: str, hsp_b64: str) -> dict
 _PATCH_OPS = {
     "set_param": lambda lib, spec, o: (
         _patch.set_param(spec, o["block"], o["param"], o["value"],
-                         path=o.get("path"), index=o.get("index")), []),
+                         path=o.get("path"), index=o.get("index"),
+                         lane=o.get("lane"), pos=o.get("pos")), []),
     "set_enabled": lambda lib, spec, o: (
         _patch.set_enabled(spec, o["block"], o["enabled"],
                            path=o.get("path"), index=o.get("index"),
+                           lane=o.get("lane"), pos=o.get("pos"),
                            snapshot=o.get("snapshot")), []),
     "add_block": lambda lib, spec, o: (
         _patch.add_block(spec, o["block"], path=o.get("path", 0),
-                         after=o.get("after"), params=o.get("params")), []),
+                         after=o.get("after"), params=o.get("params"),
+                         lane=o.get("lane"), pos=o.get("pos")), []),
     "remove_block": lambda lib, spec, o: (
         _patch.remove_block(spec, o["block"],
-                            path=o.get("path"), index=o.get("index")), []),
+                            path=o.get("path"), index=o.get("index"),
+                            lane=o.get("lane"), pos=o.get("pos")), []),
     "swap_model": lambda lib, spec, o: _patch.swap_model(
-        spec, o["old"], o["new"], lib, path=o.get("path"), index=o.get("index")),
+        spec, o["old"], o["new"], lib, path=o.get("path"), index=o.get("index"),
+        lane=o.get("lane"), pos=o.get("pos")),
 }
 
 
