@@ -125,6 +125,8 @@ class Preferences:
     preset_output_dir: str | None = None
     author: str | None = None
     instruments: list[Instrument] = field(default_factory=list)
+    volume_normalize_snapshots: bool = True
+    volume_normalize_baseline: bool = True
 
 
 def _validate_device_model(model: Any) -> str | None:
@@ -189,6 +191,8 @@ def load_preferences(path: Path | None = None) -> Preferences:
         preset_output_dir=data.get("preset_output_dir"),
         author=data.get("author"),
         instruments=_parse_instruments(data.get("instruments")),
+        volume_normalize_snapshots=bool(data.get("volume_normalize_snapshots", True)),
+        volume_normalize_baseline=bool(data.get("volume_normalize_baseline", True)),
     )
 
     # --- per-key env overrides (first hit wins, applied last) ---
@@ -208,6 +212,16 @@ def load_preferences(path: Path | None = None) -> Preferences:
         prefs.preset_output_dir = os.environ["HELIXGEN_PRESET_DIR"]
     if "HELIXGEN_AUTHOR" in os.environ:
         prefs.author = os.environ["HELIXGEN_AUTHOR"]
+    if "HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS" in os.environ:
+        prefs.volume_normalize_snapshots = _parse_bool_env(
+            "HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS",
+            os.environ["HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS"],
+        )
+    if "HELIXGEN_VOLUME_NORMALIZE_BASELINE" in os.environ:
+        prefs.volume_normalize_baseline = _parse_bool_env(
+            "HELIXGEN_VOLUME_NORMALIZE_BASELINE",
+            os.environ["HELIXGEN_VOLUME_NORMALIZE_BASELINE"],
+        )
     # instruments are structured data; not env-overridable (per design doc).
 
     return prefs
@@ -227,6 +241,8 @@ def _default_scaffold_dict() -> dict:
         "preset_output_dir": None,
         "author": None,
         "instruments": [],
+        "volume_normalize_snapshots": True,
+        "volume_normalize_baseline": True,
     }
 
 

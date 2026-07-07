@@ -345,3 +345,42 @@ def test_device_model_null_is_unset(tmp_path):
     path.write_text(json.dumps({"device": {"model": None}}))
     prefs = load_preferences(path)
     assert prefs.device_model is None
+
+
+# ---------------------------------------------------------------------------
+# volume-normalization opt-out keys
+# ---------------------------------------------------------------------------
+
+
+def test_volume_normalize_defaults_true(tmp_path):
+    prefs = load_preferences(tmp_path / "nope.json")  # missing file -> defaults
+    assert prefs.volume_normalize_snapshots is True
+    assert prefs.volume_normalize_baseline is True
+
+
+def test_volume_normalize_from_file(tmp_path):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "volume_normalize_snapshots": False,
+        "volume_normalize_baseline": False,
+    }))
+    prefs = load_preferences(p)
+    assert prefs.volume_normalize_snapshots is False
+    assert prefs.volume_normalize_baseline is False
+
+
+def test_volume_normalize_env_overrides_file(tmp_path, monkeypatch):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"volume_normalize_snapshots": True}))
+    monkeypatch.setenv("HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS", "0")
+    monkeypatch.delenv("HELIXGEN_VOLUME_NORMALIZE_BASELINE", raising=False)
+    prefs = load_preferences(p)
+    assert prefs.volume_normalize_snapshots is False   # env beat the file
+    assert prefs.volume_normalize_baseline is True      # default
+
+
+def test_volume_normalize_in_scaffold(tmp_path):
+    path = scaffold_default(tmp_path / "preferences.json")
+    data = json.loads(path.read_text())
+    assert data["volume_normalize_snapshots"] is True
+    assert data["volume_normalize_baseline"] is True
