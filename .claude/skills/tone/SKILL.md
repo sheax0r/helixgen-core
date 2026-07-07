@@ -45,7 +45,9 @@ If the request implies an answer ("lead in X" → role known; "Strat" → single
 
 #### 1a. Multi-part disambiguation (only when there are 2+ roles/sections)
 
-When the user wants multiple parts of one song, multiple roles, or multiple sections, ask one focused question:
+When the user wants multiple parts of one song, multiple roles, or multiple sections, first pin down **how many distinct sounds** are actually in play. The unit is a distinct guitar **sound**, not a song section — a six-section song played on three tones is three parts, not six. Signals that mark a new part: a gain/saturation shift (clean → edge-of-breakup → crunch → high-gain — the most reliable boundary), a rhythm/lead role shift, an effect that switches on/off with the section (chorus on a clean verse, a bigger delay on the solo), or a channel/amp swap in the source rig. Merge any two candidate sections that would be reached by the same amp+cab with only knob/effect-bypass differences. If the true count still exceeds 8, keep the 8 the player actually needs and push the overflow to a separate preset.
+
+Then ask one focused question:
 
 > "Do these parts share an amp/cab family (e.g. all British crunch, just different gain/effects per part), or are they fundamentally different sounds (e.g. clean Fender for verse, high-gain Mesa for chorus)?"
 
@@ -54,10 +56,9 @@ Then pick the path:
 | Answer | Approach |
 |--------|----------|
 | Same family | **One preset, multiple snapshots.** Pick a chain that fits all parts, vary gain/EQ/effect bypass per snapshot. (See 5.5.) |
-| Different families, OK to switch presets between parts | **Multiple presets** — generate one `.hsp` per part, name them clearly (e.g. `<song>-verse`, `<song>-chorus`). Switch presets on-device between parts. |
-| Different families, need instant switching mid-song | **One preset with layered amps + snapshot bypass.** Place both amps (and both cabs, if different) in the chain; each snapshot enables one amp+cab pair and bypasses the other. Limited by the 12-slot per-path cap — don't go past 2 amps + 2 cabs. |
+| Different families | **One preset, layered amps + snapshot bypass — the default.** Place both amps (and both cabs, if different) in the chain; each snapshot enables one amp+cab pair and disables the other. Capped at 2 amp+cab pairs, 12 blocks/lane, 8 snapshots. (See 5.5.) |
 
-Default to "multiple presets" when the user says "different sounds" and doesn't specify needing instant switching — it's the simpler spec and the device's preset-switching is fast enough for between-song or between-section transitions in most material.
+Default to the **layered-snapshot preset** for "different sounds" — even when the user hasn't said they need instant mid-song switching — because it delivers every part in one file the player can recall live. Fall back to **multiple presets** (one `.hsp` per part, named `<song>-<part>`) only when the layered approach won't fit the budget: more than 2 amp+cab pairs needed, the lane would exceed 12 blocks, or you'd need more than 8 snapshots.
 
 #### 1b. Research the reference sound — REQUIRED for artist/song/specific-gear targets
 
@@ -97,7 +98,7 @@ Cab pick matters a lot for "is this fizzy or musical":
 - Cab variants with a **ribbon mic** in the name (`R121`, `R84`, `121 Ribbon`, `160 Ribbon`) or with `Off-Axis` / `Edge` in the position are much smoother than the default `SM57 On-Axis Cap` rendering. Prefer them for anything that should sound polished.
 - The fine-grained Hi Cut / Low Cut / mic moves live in step 5 — picking the right cab here saves you from fighting it later.
 
-**Check for user IRs (memory-gated).** Call `list_irs()`. If the result is non-empty AND a feedback memory says the user prefers IRs over stock cabs when available, look for an IR that matches the chain's tonal target:
+**Check for user IRs (preference-gated).** Call `list_irs()`. If the result is non-empty, check whether the user prefers IRs over stock cabs: read `favor_irs` from `~/.helixgen/preferences.json` if that file exists; if the file or the key is absent, fall back to the existing feedback-memory check (a saved memory saying the user prefers IRs over stock cabs). When either source says yes, look for an IR that matches the chain's tonal target:
 
 - Parse the wav filenames in the output — commercial IR packs encode cab + mic + position (e.g. `YA VX30 212 BLU Mix 01.wav` → Vox AC30-style 2x12 Blue, mix-position).
 - If a match exists, use an IR block instead of a stock cab:
@@ -106,7 +107,7 @@ Cab pick matters a lot for "is this fizzy or musical":
    "params": {"HighCut": 6500, "LowCut": 90, "Mix": 1.0}}
   ```
 - Anti-fizz baseline (Hi Cut 6500–7000, Low Cut 80–100) still applies — set on the IR block itself.
-- New users (no preference memory) get stock cabs by default. The preference flips on when the user explicitly says "from now on, prefer IRs when I have them" (and you save a feedback memory).
+- New users (no `favor_irs` preference and no feedback memory) get stock cabs by default. The preference flips on when the user explicitly says "from now on, prefer IRs when I have them" — record it in `~/.helixgen/preferences.json`'s `favor_irs` key if you can write there, otherwise as a feedback memory.
 
 ### 4. Get exact param names — REQUIRED step
 
@@ -182,7 +183,13 @@ Amp-EQ tweaks for the user's specific guitar (apply to whichever amp params actu
 
 ### 5.5. Snapshots (when the user wants multiple scenes in one preset)
 
-Stadium presets support 8 snapshots — named scenes that override block bypass and param values without leaving the preset. Use them when the user asks for "rhythm + lead", "verse + chorus + solo", "clean + crunch + lead", etc.
+Stadium presets support 8 snapshots — named scenes that override block bypass and param values without leaving the preset. Use them when the user asks for "rhythm + lead", "verse + chorus + solo", "clean + crunch + lead", etc., or when 1a's part-count derivation turned up 2+ distinct sounds (same family or different).
+
+**Keep the count lean.** Aim for the biggest **≤4** distinct parts — the ones the player actually needs to recall live. Only go up to the 8-snapshot hardware max when the user explicitly asks for more or the song genuinely has that many distinct sounds; don't pad to 8 by default.
+
+**Name snapshots by sound, not song section** — `Clean` / `Crunch` / `Lead`, not `Verse` / `Chorus` / `Bridge`. Names are what shows on the Stadium scribble strip, and a player recalling a scene live thinks in tone, not arrangement.
+
+**A solo boost is its own snapshot, not a footswitch.** It recalls a full lead voice — gain, EQ, delay, and reverb all moving together — which is exactly what a snapshot is for. Reserve footswitches (5.6) for single in-scene toggles.
 
 Spec extension (top-level `snapshots` array, up to 8 entries):
 
@@ -207,17 +214,52 @@ Rules:
 Common patterns:
 - **Rhythm/Lead**: lead = higher amp `Drive` + `Master`, +0.10 reverb `Mix`, +0.15 delay `Mix`
 - **Clean/Crunch/Lead**: clean = `disable` drive(s), back amp `Drive` to ~0.25; crunch = base; lead = stack as above
-- **Verse/Chorus/Solo**: verse = light delay/verb; chorus = same; solo = boost (raise amp `Drive` 0.10–0.15 and delay `Mix` 0.20→0.35)
+- **Clean/Crunch/Solo**: same as above, with the solo snapshot as the dedicated lead-boost scene (raise amp `Drive` 0.10–0.15 and delay `Mix` 0.20→0.35) rather than a footswitch
 
-**Need different amps across snapshots?** A single snapshot can't swap the amp model — only override knobs and bypass. If the user needs fundamentally different amps (clean Fender + hi-gain Mesa) AND wants to switch instantly without leaving the preset, place both amps (and matching cabs) in the chain and have each snapshot enable one amp+cab pair while bypassing the other. Keep this to 2 amp+cab pairs max so the chain stays under the 12-slot cap.
+**Different amps across snapshots — the default when families differ (see 1a).** A single snapshot can't swap the amp model — only override knobs and bypass — so place both amps (and matching cabs) in the chain and have each snapshot enable one amp+cab pair while disabling the other. Keep this to 2 amp+cab pairs max so the chain stays under the 12-slot cap.
+
+**Disable-only limitation — author every layered block base-ENABLED.** A snapshot can only `disable` a block; there is no `enable` field, so a block that's base-bypassed (`enabled: false`) can never be turned back on in a later snapshot. For a layered (different-amps) preset, place every amp/cab/drive it needs **base-enabled** in the path, and have each snapshot `disable` the complement — the pair(s) it isn't using that moment. Never set `enabled: false` at the base level on a block some snapshot needs lit up.
 
 If the user doesn't ask for snapshots, skip this section — omitting the field leaves the device's snapshot slots named "Snap 1..8" with no per-scene variation.
 
-### 6. Pick guitar-side settings
+### 5.6. Auto-wire controls (footswitches + expression)
 
-For the report (next step), specify the user's hands-on guitar settings to match the tone goal. Pickup choice and rolled-back knobs are part of the tone — telling them just the amp settings isn't enough.
+By default, wire the chain for live use: give every toggle-able effect a footswitch and route any sweep-able pedal to an expression pedal. Shipping a preset with no live control is a miss, not a safe default. All of this is **research-overridable** — if step 1b turned up something that dictates a different set (e.g. "this tone only ever uses the one drive live, not the others"), follow the tone over the defaults below.
 
-Defaults by tone goal:
+**Footswitches — chain order, FS1 upward:**
+- Assign a **latching** footswitch to every drive/fuzz/boost, modulation, delay, reverb, and non-wah pitch/filter toggle, in signal-chain order starting at `FS1`. This naturally puts dirt near the low switches and time-based effects up top — the conventional live layout falls out for free.
+- Skip amp, cab, EQ, comp/dynamics, and other always-on/utility blocks — they never get a footswitch. Tonal boosts belong in a snapshot (5.5), not a stomp.
+- Cap at `FS10`. If more than 10 toggle-able blocks exist, wire the first 10 in chain order and tell the user in the report which ones were left un-switched.
+- Use `momentary` only when the user explicitly asks for a hold gesture (e.g. a boost or pitch dive you only want while your foot is down); everything else is `latching`.
+
+**Expression pedals — wah/whammy → EXP1, volume → EXP2:**
+- Detect a pedal-controllable block by calling `show_block` and checking for a **`Pedal`** float param (0..1) — that's the real sweep param for every wah, `Pitch Wham`, and volume pedal in the library (e.g. `Teardrop 310 Mono`). Wah/expression blocks have **no `Position` param** (don't confuse it with the mic-`Position` knob on IR-cab `With Pan` blocks) — always confirm with `show_block` before writing the spec. Poly-pitch/int-`Interval` blocks are out of EXP v1 scope.
+- Route a wah or whammy's `Pedal` to **EXP1**; route a volume block's `Pedal` to **EXP2**. If only a volume pedal is present (no wah/whammy), put it on EXP1 instead. Full `min: 0.0, max: 1.0` sweep by default.
+- **Wah ships bypassed** — set `"enabled": false` on the wah block and give it its own latching bypass footswitch from the FS budget (the toe-switch analog: silent until stomped, then swept by EXP1) — unless research says the reference keeps it always inline.
+- If the user already claimed a pedal (e.g. "EXP2 sweeps amp Master"), that wins; auto-routing only fills what's left, and skips a target it can't place — telling the user — rather than overriding the user's mapping.
+
+**Snapshot/footswitch relationship:** a change that touches ≥2 blocks/params is a snapshot (5.5, including the solo snapshot); a single live on/off or sweep is a footswitch/EXP (here). Auto-wire footswitches and EXP even on a preset that already has snapshots — they're complementary, not competing: the snapshot sets the scene's base bypass state, and the footswitch toggles from there.
+
+If the user says "no footswitches" or "leave the controls alone," skip this step.
+
+### 6. Pick the instrument, then resolve its controls
+
+For the report (next step), the user's hands-on guitar settings are part of the tone — pickup choice and rolled-back knobs shape the sound as much as the amp settings do.
+
+**A user-named guitar always wins.** If the user named a specific guitar, use it. If research (1b) or the tone target suggests it's a poor fit, give **one** honest nudge — not an argument — e.g. "the EC-1000's scooped active EMGs will fight this vintage-crunch voicing — if you have it handy, the LP Jr's P-90 nails it more directly" — then proceed with the guitar they asked for.
+
+**If no guitar was named, auto-select the best-fit guitar from the user's owned lineup and state why.** Read the lineup from `~/.helixgen/preferences.json`'s `instruments` key if present; otherwise fall back to the user's guitar memory (Les Paul Jr, ESP LTD EC-1000, Strandberg Boden Essential 6, Ibanez Prestige). Match tone character to pickup class:
+
+| Tone target | Wants | Pick |
+|---|---|---|
+| Punk, garage, raw blues, vintage rock, early breakup, gritty midrange bark | P-90: hot single-coil, breaks up early | **Les Paul Jr** (single bridge P-90, no selector) |
+| Modern metal, djent, tight scooped high-gain rhythm | Active humbucker: tight, scooped, high-output | **ESP LTD EC-1000** (active EMGs, 3-way) |
+| Prog/fusion clarity, pristine clean needing sparkle, technical lead | Coil-split humbucker: HB for gain, split for SC clarity | **Strandberg Boden Essential 6** (HSS, 5-way with splits) |
+| Classic rock, versatile hard rock, ambiguous mid-gain | Versatile HSH, bridge HB for gain | **Ibanez Prestige** (HSH, 5-way) |
+
+Research (1b) beats the table when it names the reference's actual pickup type — match that class first, the table is the fallback for a generic target. Only name a runner-up when the top two are a genuine toss-up (one clause: "or the Prestige if you want it tighter and less hairy").
+
+**Resolve controls, then translate into the selected guitar's real switch language.** Start from the tone-goal defaults:
 
 | Tone goal | Selector | Volume | Tone |
 |-----------|----------|--------|------|
@@ -225,14 +267,22 @@ Defaults by tone goal:
 | Singing lead (Slash-style) | bridge | 10 | 7–8 (round off the edge) |
 | Mellow / woman tone | neck | 10 | 4–6 |
 | Clean breakup | bridge or neck | 6–8 (back off to clean it up) | 10 |
-| Chimey clean (Strat) | middle or position 2/4 | 10 | 8–10 |
+| Chimey clean (Strat-style) | middle or position 2/4 | 10 | 8–10 |
 | Jazz / hollow body | neck | 7–9 | 5–7 |
 | Funk single-note | bridge or position 2 | 10 | 10 |
 
-If the user named a specific guitar, adjust:
-- **Ibanez RG/Prestige with 5-way** → bridge is position 1 (HB), neck is position 5 (HB); positions 2/3/4 split-coil for SC-like tones if installed
-- **Tele with 3-way** → bridge (back), middle (both), neck (front)
-- **Les Paul/SG with 3-way** → rhythm (neck), middle (both), treble (bridge)
+Then translate the generic position into the guitar's actual switches — never say "middle position" for a guitar that doesn't have one:
+
+- **Les Paul Jr** — no selector; single bridge P-90. Nothing to move — note pick attack instead (digging in near the bridge is the "selector" here).
+- **ESP LTD EC-1000** — 3-way: rhythm (neck) / middle (both) / treble (bridge).
+- **Strandberg Boden Essential 6** — 5-way, HSS: position 1 = bridge humbucker … position 5 = neck single; positions 2–4 include coil-splits. Flag "confirm your wiring if it differs."
+- **Ibanez Prestige** — 5-way, HSH: position 1 = bridge HB, positions 2/4 = split in-betweens, position 3 = middle single, position 5 = neck HB.
+
+Round out the recommendation with, where relevant: a **coil-split** call for the Strandberg/Prestige ("split the bridge for the clean verse's glassy top, full humbucker for the chorus push"), a one-clause **pick-attack** note (P-90 rewards digging in near the bridge; active EMGs want a tight palm mute and let the pickup compress; single-coil/split positions want a lighter touch to avoid brittleness), and a one-clause **"why this guitar"** tying pickup class to the tone.
+
+If nothing is known about the user's lineup (no preferences file, no memory, no named guitar), fall back to the generic tone-goal table above with generic switch language, and ask one clarifying question only if the guitar is genuinely load-bearing for the tone.
+
+**Snapshots stay on one instrument.** For a snapshot preset (5.5), the recommendation names a single guitar — the player isn't swapping guitars mid-song — and expresses per-scene differences as control moves on that one guitar (e.g. "split (Strandberg pos 4) + volume 7 for the clean verse snapshot, full bridge (pos 1) + volume 10 for the lead snapshot").
 
 ### 7. Generate
 
@@ -259,7 +309,9 @@ Whenever you save a `.hsp`, also write a sibling markdown file at the same path 
 - **The chain** — one line per block: position, model, and the 2–3 settings that matter
 - **IRs referenced** — basenames, so the user knows what must be loaded on the device
 - **Snapshots** — one line each (only if the spec has them)
-- **Guitar settings** — selector / volume / tone
+- **Footswitches** — one line per assigned switch (`FS1 → Compulsive Drive`, …), only if the spec has them
+- **Expression** — one line per pedal mapping (`EXP1 → Teardrop 310 Mono Pedal`, …), only if the spec has them
+- **Recommended instrument** — a `## Recommended instrument` section (see step 6): **Pick**, **Why**, **Controls** (selector / volume / tone / coil-split if applicable / pick attack), **Second choice** (only on a genuine toss-up), **Note** (any lineup caveat, e.g. active-vs-passive TBD)
 - **Tweaks** — the one concrete tweak from step 8, plus any obvious alternates
 
 Keep it tight and scannable — it's reference material, not a transcript. If you regenerate/iterate on the preset (step 9), update this `.md` in place alongside the `.hsp`.
@@ -272,9 +324,10 @@ Keep it tight and scannable — it's reference material, not a transcript. If yo
 Tell the user, in this order:
 1. **The chain** — one short line per block (position, model, the 2–3 settings that matter for this tone)
 2. **Snapshots** (only if the spec has them) — one line per snapshot summarizing what differs from base, e.g. `Lead: amp Drive 0.85, delay Mix 0.30; Clean: drive bypassed, amp Drive 0.30`
-3. **Guitar settings** — one line: `Selector: <position> · Volume: <0–10> · Tone: <0–10>` plus a one-clause note if the goal requires a non-obvious knob move (e.g. "roll volume to 7 for the verse, 10 for the chorus")
-4. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder.
-5. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
+3. **Instrument** — `<guitar> — <one-clause why>` (skip the "why" if the user named the guitar themselves), then `Selector: <position> · Volume: <0–10> · Tone: <0–10>` in that guitar's real switch language, plus a one-clause note for any non-obvious move (roll-off, coil-split, pick attack)
+4. **Controls** (only if 5.6 wired any) — the footswitch map (`FS1 → Compulsive Drive, FS2 → Teardrop 310 Mono (bypass)`, …) and the expression routing (`EXP1 → wah Pedal`, …)
+5. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder.
+6. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
 
 Don't hedge with a list of 5 things to maybe try; pick one.
 
@@ -306,10 +359,16 @@ Rules of thumb for translating ear-language to param moves:
 | Trusting the default cab mic (SM57 on-axis at the cap) | Engineered to slice a live mix, harsh solo; prefer ribbon-mic variants for smoothness |
 | Heavy reverb defaults | Stadium plates run hot; start at 0.10 |
 | Asking 5 clarifying questions | Cap at 3, only what's actually missing |
-| Reporting only amp settings, not guitar settings | The selector + volume + tone knobs are part of the tone; include them in the report |
-| Generic guitar advice that ignores the named guitar | If the user said "Strat", say "middle/position 4"; if "Les Paul", say "treble (bridge)" — match the actual switch language |
-| Forcing one preset per role when snapshots fit | If the user wants "rhythm and lead" or "verse/chorus/solo", build ONE preset with snapshots, not multiple files |
+| Reporting only amp settings, not the instrument recommendation | Selector + volume + tone (+ coil-split/pick-attack where relevant) are part of the tone; include them in the report (step 6, step 8 item 3) |
+| Generic guitar advice that ignores the named or auto-selected guitar | If the user said "Strat", say "middle/position 4"; for the user's own lineup use its real switches — LP Jr has no selector, EC-1000 is a 3-way (not 5-way), Strandberg/Prestige are 5-way with specific split positions |
+| Defaulting to multiple presets when amp families differ | Default to ONE preset with layered amps + snapshot bypass instead (1a, 5.5); fall back to multiple presets only when it won't fit the 2-pair/12-block/8-snapshot budget |
+| Bypassing a block at the base level that a later snapshot needs lit up | Snapshots can only `disable`, never `enable` — author every layered block base-ENABLED and disable the complement (5.5) |
+| Naming snapshots after song sections | Name by sound (`Clean`/`Crunch`/`Lead`), not arrangement (`Verse`/`Chorus`) — that's what reads on the scribble strip (5.5) |
+| Giving a solo boost its own footswitch | A solo/lead boost changes gain + EQ + delay/reverb together — that's a snapshot (5.5), not a stomp |
+| Forcing one preset per role when snapshots fit | If the user wants "rhythm and lead" or "verse/chorus/solo" on one amp family, build ONE preset with snapshots, not multiple files |
 | Snapshot referencing a block name that isn't in the path | `disable` / `params` only see blocks the path actually places; add the block to the path first (even if it'll be bypassed in some snapshots) |
+| Shipping a preset with no live control | By default wire toggle-able blocks to footswitches and sweep-able blocks to EXP (5.6) — don't ship silent presets unless the user asked for hands-off |
+| Using `Position` as the wah/expression sweep param | The real param is `Pedal` (float 0..1) on blocks like `Teardrop 310 Mono`; wah/expression blocks have no `Position` param (that name is the IR-cab mic knob) — always confirm with `show_block` (5.6) |
 | Building an artist/song tone from memory | Research the real rig from the web first (step 1b) — signature tones hinge on non-obvious details; cite sources |
 | Saving the `.hsp` without a description | Always write the companion `<slug>.md` (step 7a) next to the preset so the tone is documented standalone |
 
