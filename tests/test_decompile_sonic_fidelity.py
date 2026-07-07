@@ -2,9 +2,14 @@
 
 Skips on a clean clone with no data/*.hsp. Complements the model bar
 (test_decompile_acceptance.py) by asserting each USER block's audible state:
-base bypass, effective per-snapshot bypass over NAMED snapshots (source-null
-cells skipped as undefined recall), every slot's model AND param values, the
-verbatim harness, and favorite.
+on-load (snapshot-0) bypass, effective per-snapshot bypass over NAMED snapshots
+(source-null cells skipped as undefined recall), every slot's model AND
+snapshot-0 param values, the verbatim harness, and favorite.
+
+generate normalizes activesnapshot -> 0, so the live `@enabled.value` / param
+`value` the device recalls on load mirrors snapshot 0 — a source `value` that
+reflected a non-zero active snapshot is deliberately not preserved. Comparisons
+therefore use the snapshot-0 effective state, not the raw stored value.
 
 Deliberately NOT asserted (see the 2026-07-05 design spec): source-null named
 snapshot cells (~30 presets, densified to True — Category-4-consistent),
@@ -75,11 +80,25 @@ def _slot_models(bnn):
     return [s.get("model") for s in bnn.get("slot") or []]
 
 
+def _param_onload(wrapped):
+    """A param's effective value in snapshot 0 (the state the device recalls on
+    load, since generate normalizes activesnapshot -> 0): snapshots[0] if
+    present-and-non-null, else the plain value."""
+    if isinstance(wrapped, dict):
+        arr = wrapped.get("snapshots")
+        if isinstance(arr, list) and len(arr) > 0 and arr[0] is not None:
+            return arr[0]
+    return _unwrap_value(wrapped)
+
+
 def _slot_param_values(bnn):
-    """Per-slot dict of unwrapped param base values (the actual knob values)."""
+    """Per-slot dict of each param's snapshot-0 effective value (the knob value
+    the device shows on load). Compared source-vs-regen: generate forces
+    activesnapshot=0, so a source `value` that reflected a non-zero active
+    snapshot is not preserved — the on-load (snapshot-0) state is."""
     out = []
     for s in bnn.get("slot") or []:
-        out.append({k: _unwrap_value(v) for k, v in (s.get("params") or {}).items()})
+        out.append({k: _param_onload(v) for k, v in (s.get("params") or {}).items()})
     return out
 
 
@@ -99,7 +118,13 @@ def test_real_export_sonic_fidelity(tmp_path):
             assert set(s_blocks) == set(r_blocks), "block key set differs"
             for kk, sb in s_blocks.items():
                 rb = r_blocks[kk]
-                assert _base(sb) == _base(rb), f"{kk} base bypass"
+                # generate normalizes activesnapshot -> 0, so the on-load bypass
+                # `value` mirrors snapshot 0, not a source `value` tied to a
+                # non-zero active snapshot. Assert the snapshot-0 effective
+                # bypass, skipping source-null snapshot-0 cells (undefined recall).
+                sa0 = _snap_array(sb)
+                if not (isinstance(sa0, list) and len(sa0) > 0 and sa0[0] is None):
+                    assert _effective(sb, 0) == _effective(rb, 0), f"{kk} on-load bypass"
                 for i in range(n_named):
                     sa = _snap_array(sb)
                     # skip source-null/absent named cells (undefined recall)

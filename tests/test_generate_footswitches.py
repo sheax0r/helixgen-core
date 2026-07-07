@@ -37,6 +37,20 @@ def test_footswitch_targets_duplicate_block_by_coordinate(tmp_path, sample_seria
     assert "controller" not in preset["preset"]["flow"][0]["b01"]["@enabled"]
 
 
+def test_wah_bypass_on_exp1_toe_switch(tmp_path, sample_serial_preset_hsp):
+    """Assigning a block's bypass to the EXP1 toe switch emits a targetbypass
+    controller with the toe source (0x01010500) — the real wah auto-engage."""
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "footswitches": [{"switch": "EXP1Toe", "block": "With Pan"}]})
+    preset = compose_preset(spec, lib, source="t")
+    ctrl = preset["preset"]["flow"][0]["b01"]["@enabled"]["controller"]
+    assert ctrl["source"] == 0x01010500
+    assert ctrl["type"] == "targetbypass"
+    assert ctrl["behavior"] == "latching"
+
+
 def _library(tmp_path) -> Library:
     samples = sorted(DATA_DIR.glob("*.hsp"))
     if not samples:

@@ -112,19 +112,25 @@ the same name is ambiguous across both DSP paths.
 ### Optional: footswitches
 
 Assign blocks to physical footswitches on the device. Stadium XL exposes
-`FS1`..`FS10`.
+`FS1`..`FS10`, plus `EXP1Toe` — the toe switch under the onboard expression
+pedal (push the pedal fully forward to click it).
 
 ```json
 "footswitches": [
   {"switch": "FS3", "block": "Compulsive Drive"},
-  {"switch": "FS4", "block": "Tape Echo Stereo", "behavior": "momentary"}
+  {"switch": "FS4", "block": "Tape Echo Stereo", "behavior": "momentary"},
+  {"switch": "EXP1Toe", "block": "Teardrop 310 Mono"}
 ]
 ```
 
-- `switch` — `"FS1"`..`"FS10"`.
+- `switch` — `"FS1"`..`"FS10"`, or `"EXP1Toe"` (expression-pedal toe switch).
 - `block` — must reference a block placed in `paths`.
 - `behavior` — `"latching"` (default; toggle) or `"momentary"` (on while held).
 - One switch may be assigned at most one block; one block may be on at most one switch.
+- **Wah/expression auto-engage:** assign the wah's bypass to `EXP1Toe` (with
+  `EXP1` sweeping its `Pedal` param) so pressing the pedal toe-down engages the
+  wah — the standard Helix wah behavior. A regular `FS` works too but requires a
+  separate stomp.
 
 ### Optional: expression pedal
 

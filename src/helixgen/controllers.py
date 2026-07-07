@@ -49,6 +49,13 @@ CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
         # scope for v1. EXPONBOARD was not observed in the scanned exports.
         "EXP1": 0x01020100,
         "EXP2": 0x01020101,
+        # The onboard expression pedal's toe switch (the click switch under the
+        # pedal, engaged by pushing it fully forward). This is the standard wah
+        # auto-engage: bypass toggles here while EXP1 sweeps the pedal. Source
+        # 0x01010500 is observed on ~all real wah exports (198 occurrences in
+        # data/*.hsp); it sits in its own 0x010105NN bank, distinct from both
+        # the FS range (0x010101NN) and the EXP-position range (0x010201NN).
+        "EXP1Toe": 0x01010500,
     },
 }
 

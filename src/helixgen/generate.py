@@ -339,7 +339,12 @@ def _wrap_value_with_snapshots(
     """
     wrapped: dict[str, Any] = {"value": base}
     if snapshot_overrides and any(o is not None for o in snapshot_overrides):
-        wrapped["snapshots"] = [base if o is None else o for o in snapshot_overrides]
+        snaps = [base if o is None else o for o in snapshot_overrides]
+        wrapped["snapshots"] = snaps
+        # `value` is the device's live/on-load state, which must mirror the
+        # active snapshot (activesnapshot is always 0). A stale base value
+        # leaves the block showing the base value until snapshots are toggled.
+        wrapped["value"] = snaps[0]
     return wrapped
 
 
@@ -486,6 +491,12 @@ def _to_hsp_bnn(
         enabled_wrapped["snapshots"] = [
             True if o is None else o for o in enabled_overrides
         ]
+        # `value` is the device's live/on-load bypass state, which must mirror
+        # the active snapshot (activesnapshot is always 0). When snapshot 0
+        # disables the block, a stale `value: True` leaves it audibly active
+        # on first load until snapshots are toggled away and back.
+        first = enabled_overrides[0]
+        enabled_wrapped["value"] = base_enabled if first is None else first
     if fs_controller is not None:
         enabled_wrapped["controller"] = fs_controller
 
