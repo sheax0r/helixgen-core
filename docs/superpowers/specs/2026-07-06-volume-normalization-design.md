@@ -3,9 +3,10 @@
 **Date:** 2026-07-06
 **Status:** Design (brainstormed + approved).
 **Branch:** `feature/volume-normalization`
-**Scope:** the `tone` skill only (`.claude/skills/tone/SKILL.md`). No code, no
-tests — prose guidance + a heuristic. Backlog item 6 from
-[[project_tone_skill_backlog]].
+**Scope:** mostly the `tone` skill (`.claude/skills/tone/SKILL.md`) — prose
+guidance + a heuristic — plus two new preference toggles in
+`src/helixgen/preferences.py` (small typed additions + tests) so the user can
+opt out. Backlog item 6 from [[project_tone_skill_backlog]].
 
 ## Goal
 
@@ -73,6 +74,27 @@ The knobs are 0–1 (0–10 on display) and we can't measure, so use a rule of t
 — *a small channel-volume nudge (~0.05–0.10) ≈ a couple dB* — to turn the
 intended dB deltas into starting param values. Treat these as starting points,
 not calibrated values; the user's ear is the final arbiter.
+
+## Preference overrides (opt out)
+
+The user can disable either target independently via the preferences file
+([[project_tone_skill_backlog]] item 5's `~/.helixgen/preferences.json`). Two new
+typed keys added to `src/helixgen/preferences.py` (`Preferences` dataclass +
+defaults + env override + scaffold hint), both **default `true`**:
+
+| Key | Default | Controls |
+|---|---|---|
+| `volume_normalize_snapshots` | `true` | The within-preset, between-snapshot **relative** leveling (forces 2 + 3). `false` → leave snapshot levels as the base amp settings dictate. |
+| `volume_normalize_baseline` | `true` | The **across-presets absolute anchor** (force 1). `false` → don't pin the reference part to a common baseline; take the level from the tone design as-is. |
+
+Precedence follows the existing module: `HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS` /
+`HELIXGEN_VOLUME_NORMALIZE_BASELINE` env → file → default `true`. Tests mirror the
+existing preference tests (default, file value, env override).
+
+Step 5.7 reads these at the top: skip force 1 when `volume_normalize_baseline`
+is false, skip forces 2–3 when `volume_normalize_snapshots` is false; if both are
+false the pass is a no-op. When a target is skipped by preference, the report's
+"Levels" line says so (e.g. `Levels: normalization off per preferences`).
 
 ## Integration into the tone workflow
 
