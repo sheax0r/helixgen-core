@@ -242,6 +242,50 @@ By default, wire the chain for live use: give every toggle-able effect a footswi
 
 If the user says "no footswitches" or "leave the controls alone," skip this step.
 
+### 5.7. Volume-normalization pass
+
+A final level pass so the preset's loudness is sane and — especially when
+replicating a reference — the **relative** loudness between parts/snapshots
+tracks the source. helixgen never renders audio, so this sets **starting**
+levels by rule of thumb; the user fine-tunes by ear on the device.
+
+**Read the preferences first** (`~/.helixgen/preferences.json`). Two toggles,
+both default on:
+- `volume_normalize_baseline: false` → skip force 1 (the across-preset anchor).
+- `volume_normalize_snapshots: false` → skip forces 2–3 (between-snapshot
+  leveling). If both are false, skip this step and say so in the report.
+
+**The knob:** `show_block` the amp and use its channel-volume param (`ChVol`, or
+the amp's `Level` — the name varies, so confirm). Do **not** use `Master` (it
+also changes power-amp sag/feel). Only if the amp has no channel-volume param,
+add one end-of-chain volume block (from `list_blocks(category="volume")`) and
+automate that. In a layered two-amp preset, level whichever amp is active in
+each snapshot via that amp's own channel volume.
+
+Apply three forces, in order:
+
+1. **Anchor** (force 1, `volume_normalize_baseline`): set the reference part
+   (usually rhythm) to a standard channel-volume anchor, default `~0.5` (leaves
+   headroom, no clipping; adjust if `show_block` shows an unusual taper). Every
+   preset anchoring its main part to the same value keeps presets at a
+   consistent baseline. If research says the source should sit hotter/softer
+   relative to its material, offset the anchor.
+2. **Gain compensation** (force 2, `volume_normalize_snapshots`): more gain →
+   more compression → louder *perceived* level at the same knob. So push
+   **lower-gain parts up** to sit even — a clean/edge-of-breakup part usually
+   needs its channel volume raised to match a high-gain rhythm; a very hot,
+   highly-compressed rhythm may need a small trim.
+3. **Intended dynamics** (force 3, `volume_normalize_snapshots`), relative to the
+   rhythm anchor: **lead/solo ~+2–3 dB** (to cut through), **crunch ~= rhythm**,
+   **clean = perceptually matched** (via force 2). When step-1b research reveals
+   the source's actual part-to-part dynamics, those override these conventions.
+
+**dB → param:** the knobs are 0–1 and we can't measure — use *a small channel-vol
+nudge (~0.05–0.10) ≈ a couple dB* to turn intended dB deltas into starting
+values. Per-snapshot moves become `params` overrides on the channel-volume param
+(alongside the gain/EQ/effect deltas from 5.5); a base preset gets the anchor on
+its base amp params.
+
 ### 6. Pick the instrument, then resolve its controls
 
 For the report (next step), the user's hands-on guitar settings are part of the tone — pickup choice and rolled-back knobs shape the sound as much as the amp settings do.
@@ -309,6 +353,7 @@ Whenever you save a `.hsp`, also write a sibling markdown file at the same path 
 - **The chain** — one line per block: position, model, and the 2–3 settings that matter
 - **IRs referenced** — basenames, so the user knows what must be loaded on the device
 - **Snapshots** — one line each (only if the spec has them)
+- **Levels** — the intended relative balance line from step 8 (or that normalization was off per preferences)
 - **Footswitches** — one line per assigned switch (`FS1 → Compulsive Drive`, …), only if the spec has them
 - **Expression** — one line per pedal mapping (`EXP1 → Teardrop 310 Mono Pedal`, …), only if the spec has them
 - **Recommended instrument** — a `## Recommended instrument` section (see step 6): **Pick**, **Why**, **Controls** (selector / volume / tone / coil-split if applicable / pick attack), **Second choice** (only on a genuine toss-up), **Note** (any lineup caveat, e.g. active-vs-passive TBD)
@@ -324,10 +369,11 @@ Keep it tight and scannable — it's reference material, not a transcript. If yo
 Tell the user, in this order:
 1. **The chain** — one short line per block (position, model, the 2–3 settings that matter for this tone)
 2. **Snapshots** (only if the spec has them) — one line per snapshot summarizing what differs from base, e.g. `Lead: amp Drive 0.85, delay Mix 0.30; Clean: drive bypassed, amp Drive 0.30`
-3. **Instrument** — `<guitar> — <one-clause why>` (skip the "why" if the user named the guitar themselves), then `Selector: <position> · Volume: <0–10> · Tone: <0–10>` in that guitar's real switch language, plus a one-clause note for any non-obvious move (roll-off, coil-split, pick attack)
-4. **Controls** (only if 5.6 wired any) — the footswitch map (`FS1 → Compulsive Drive, FS2 → Teardrop 310 Mono (bypass)`, …) and the expression routing (`EXP1 → wah Pedal`, …)
-5. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder.
-6. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
+3. **Levels** (from 5.7) — one line on the *intended* relative balance, e.g. `rhythm anchor; lead +~2 dB; clean bumped to match (fine-tune by ear)`. If normalization was skipped by preference, say `Levels: normalization off per preferences`.
+4. **Instrument** — `<guitar> — <one-clause why>` (skip the "why" if the user named the guitar themselves), then `Selector: <position> · Volume: <0–10> · Tone: <0–10>` in that guitar's real switch language, plus a one-clause note for any non-obvious move (roll-off, coil-split, pick attack)
+5. **Controls** (only if 5.6 wired any) — the footswitch map (`FS1 → Compulsive Drive, FS2 → Teardrop 310 Mono (bypass)`, …) and the expression routing (`EXP1 → wah Pedal`, …)
+6. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder.
+7. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
 
 Don't hedge with a list of 5 things to maybe try; pick one.
 
@@ -359,7 +405,8 @@ Rules of thumb for translating ear-language to param moves:
 | Trusting the default cab mic (SM57 on-axis at the cap) | Engineered to slice a live mix, harsh solo; prefer ribbon-mic variants for smoothness |
 | Heavy reverb defaults | Stadium plates run hot; start at 0.10 |
 | Asking 5 clarifying questions | Cap at 3, only what's actually missing |
-| Reporting only amp settings, not the instrument recommendation | Selector + volume + tone (+ coil-split/pick-attack where relevant) are part of the tone; include them in the report (step 6, step 8 item 3) |
+| Reporting only amp settings, not the instrument recommendation | Selector + volume + tone (+ coil-split/pick-attack where relevant) are part of the tone; include them in the report (step 6, step 8 item 4) |
+| Leaving a clean/low-gain part at the same level knob as a high-gain part and calling it balanced | High gain reads louder (more compression); push the lower-gain part's channel volume up to sit even — the volume-normalization pass (5.7), gain-compensation force |
 | Generic guitar advice that ignores the named or auto-selected guitar | If the user said "Strat", say "middle/position 4"; for the user's own lineup use its real switches — LP Jr has no selector, EC-1000 is a 3-way (not 5-way), Strandberg/Prestige are 5-way with specific split positions |
 | Defaulting to multiple presets when amp families differ | Default to ONE preset with layered amps + snapshot bypass instead (1a, 5.5); fall back to multiple presets only when it won't fit the 2-pair/12-block/8-snapshot budget |
 | Bypassing a block at the base level that a later snapshot needs lit up | Snapshots can only `disable`, never `enable` — author every layered block base-ENABLED and disable the complement (5.5) |
