@@ -233,7 +233,7 @@ By default, wire the chain for live use: give every toggle-able effect a footswi
 - Use `momentary` only when the user explicitly asks for a hold gesture (e.g. a boost or pitch dive you only want while your foot is down); everything else is `latching`.
 
 **Expression pedals — wah/whammy → EXP1, volume → EXP2:**
-- Detect a pedal-controllable block by calling `show_block` and checking for a **`Pedal`** float param (0..1) — that's the real sweep param for every wah, `Pitch Wham`, and volume pedal in the library (e.g. `Teardrop 310 Mono`). There is **no `Position` param** — always confirm with `show_block` before writing the spec. Poly-pitch/int-`Interval` blocks are out of EXP v1 scope.
+- Detect a pedal-controllable block by calling `show_block` and checking for a **`Pedal`** float param (0..1) — that's the real sweep param for every wah, `Pitch Wham`, and volume pedal in the library (e.g. `Teardrop 310 Mono`). Wah/expression blocks have **no `Position` param** (don't confuse it with the mic-`Position` knob on IR-cab `With Pan` blocks) — always confirm with `show_block` before writing the spec. Poly-pitch/int-`Interval` blocks are out of EXP v1 scope.
 - Route a wah or whammy's `Pedal` to **EXP1**; route a volume block's `Pedal` to **EXP2**. If only a volume pedal is present (no wah/whammy), put it on EXP1 instead. Full `min: 0.0, max: 1.0` sweep by default.
 - **Wah ships bypassed** — set `"enabled": false` on the wah block and give it its own latching bypass footswitch from the FS budget (the toe-switch analog: silent until stomped, then swept by EXP1) — unless research says the reference keeps it always inline.
 - If the user already claimed a pedal (e.g. "EXP2 sweeps amp Master"), that wins; auto-routing only fills what's left, and skips a target it can't place — telling the user — rather than overriding the user's mapping.
@@ -368,7 +368,7 @@ Rules of thumb for translating ear-language to param moves:
 | Forcing one preset per role when snapshots fit | If the user wants "rhythm and lead" or "verse/chorus/solo" on one amp family, build ONE preset with snapshots, not multiple files |
 | Snapshot referencing a block name that isn't in the path | `disable` / `params` only see blocks the path actually places; add the block to the path first (even if it'll be bypassed in some snapshots) |
 | Shipping a preset with no live control | By default wire toggle-able blocks to footswitches and sweep-able blocks to EXP (5.6) — don't ship silent presets unless the user asked for hands-off |
-| Using `Position` as the wah/expression sweep param | The real param is `Pedal` (float 0..1) on blocks like `Teardrop 310 Mono` — there is no `Position` param; always confirm with `show_block` (5.6) |
+| Using `Position` as the wah/expression sweep param | The real param is `Pedal` (float 0..1) on blocks like `Teardrop 310 Mono`; wah/expression blocks have no `Position` param (that name is the IR-cab mic knob) — always confirm with `show_block` (5.6) |
 | Building an artist/song tone from memory | Research the real rig from the web first (step 1b) — signature tones hinge on non-obvious details; cite sources |
 | Saving the `.hsp` without a description | Always write the companion `<slug>.md` (step 7a) next to the preset so the tone is documented standalone |
 

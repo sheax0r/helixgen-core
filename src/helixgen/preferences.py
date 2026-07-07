@@ -42,7 +42,7 @@ def default_prefs_path() -> Path:
     env = os.environ.get("HELIXGEN_PREFS")
     if env:
         return Path(env)
-    return Path(os.environ["HOME"]) / ".helixgen" / "preferences.json"
+    return Path.home() / ".helixgen" / "preferences.json"
 
 
 def _parse_bool_env(name: str, raw: str) -> bool:

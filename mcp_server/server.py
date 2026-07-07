@@ -240,8 +240,8 @@ def patch_preset(model: str, spec: dict[str, Any], operations: list) -> dict[str
     block shares the same display name (e.g. a dual-cab block or a block
     duplicated across a parallel split) — same semantics as the CLI's
     `--lane`/`--pos` flags. Use them together with `block` when `path`/`index`
-    alone would be ambiguous; a call `patch_preset_handler` cannot resolve
-    raises a clear "matches N placements" error listing the address to add.
+    alone would be ambiguous; an address the handler cannot resolve uniquely
+    raises a clear "matches N placements" error listing the candidates.
     Call `show_block` first to confirm exact, case-sensitive param names.
 
     Regenerate the `.hsp` afterwards with `generate_preset(spec=<returned spec>)`.

@@ -135,7 +135,7 @@ exposes `EXP1` and `EXP2`.
 "expression": [
   {
     "pedal": "EXP1",
-    "targets": [{"block": "Teardrop 310", "param": "Position"}]
+    "targets": [{"block": "Teardrop 310 Mono", "param": "Pedal"}]
   },
   {
     "pedal": "EXP2",
