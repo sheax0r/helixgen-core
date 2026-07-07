@@ -109,6 +109,19 @@ def test_footswitch_roundtrip_stable(hsp_library, strip_provenance):
     assert p1 == p2
 
 
+def test_exp1_toe_switch_roundtrip_stable(hsp_library, strip_provenance):
+    """A bypass assigned to the EXP1 toe switch (wah auto-engage) survives a
+    decompile round-trip as a footswitch with switch == "EXP1Toe"."""
+    lib = hsp_library
+    spec = {"name": "W", "paths": [{"blocks": [{"block": "Tube Drive"}]}],
+            "footswitches": [{"switch": "EXP1Toe", "block": "Tube Drive"}]}
+    p1, p2 = _roundtrip(spec, lib, strip_provenance)
+    assert p1 == p2
+    # decompiling the composed preset recovers the toe switch as a footswitch
+    decompiled = decompile_body(compose_preset(parse_spec(spec), lib, source="t"), lib)
+    assert any(fs["switch"] == "EXP1Toe" for fs in decompiled.get("footswitches", []))
+
+
 def test_expression_roundtrip_stable(hsp_library, strip_provenance):
     lib = hsp_library
     spec = {"name": "E", "paths": [{"blocks": [{"block": "Brit Amp"}]}],

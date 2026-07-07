@@ -709,6 +709,39 @@ def test_compose_preset_hsp_disable_emits_bnn_snapshots_array(tmp_library, tmp_p
     assert en["snapshots"] == [True, False, True, True, True, True, True, True]
 
 
+def test_compose_preset_hsp_disable_in_active_snapshot_sets_value_false(tmp_library, tmp_path):
+    """A block disabled in snapshot 0 (the on-load/active snapshot) must have
+    @enabled.value == False, mirroring snapshots[0]. The device honors `value`
+    on first load; a stale True leaves the block audibly active until you
+    switch snapshots away and back. Real exports keep value == snapshots[activesnapshot]."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "Riff", "disable": ["Scream 808"]},
+        {"name": "Lead"},
+    ])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    en = preset["preset"]["flow"][0]["b01"]["@enabled"]
+    assert en["snapshots"][0] is False
+    assert en["value"] is False
+
+
+def test_compose_preset_hsp_param_override_in_active_snapshot_sets_value(tmp_library, tmp_path):
+    """A param overridden in snapshot 0 must have value == snapshots[0]."""
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    spec = _spec_with_snapshots([
+        {"name": "Riff", "params": {"Brit 2204": {"Drive": 0.9}}},
+        {"name": "Lead"},
+    ])
+
+    preset = compose_preset(spec, lib, source="t.json")
+    drive_param = preset["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]
+    assert drive_param["snapshots"][0] == 0.9
+    assert drive_param["value"] == 0.9
+
+
 def test_compose_preset_hsp_undisabled_block_has_no_snapshots_array(tmp_library, tmp_path):
     """Even if other blocks have snapshot variation, untouched blocks stay plain."""
     lib = Library(tmp_library)

@@ -39,3 +39,20 @@ def test_wrap_densifies_param_array():
 def test_wrap_no_variation_stays_plain():
     assert _wrap_value_with_snapshots(0.5, [None] * 8) == {"value": 0.5}
     assert _wrap_value_with_snapshots(0.5, None) == {"value": 0.5}
+
+
+def test_wrap_value_mirrors_active_snapshot_zero():
+    """`value` is the device's live/on-load state and must mirror
+    snapshots[activesnapshot]. activesnapshot is always 0, so when snapshot 0
+    overrides the value, `value` must equal snapshots[0] — not the base.
+    Real device exports always keep value == snapshots[activesnapshot]."""
+    wrapped = _wrap_value_with_snapshots(0.12, [0.30, None, None, None, None, None, None, None])
+    assert wrapped["snapshots"][0] == 0.30
+    assert wrapped["value"] == 0.30
+
+
+def test_wrap_value_matches_base_when_snapshot_zero_unset():
+    """When snapshot 0 has no override, `value` stays at the base (== snaps[0])."""
+    wrapped = _wrap_value_with_snapshots(0.12, [None, 0.30, None, None, None, None, None, None])
+    assert wrapped["snapshots"][0] == 0.12
+    assert wrapped["value"] == 0.12

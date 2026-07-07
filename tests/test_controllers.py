@@ -93,3 +93,20 @@ def test_controller_name_for_source_roundtrips():
 
 def test_controller_name_for_source_unknown_returns_none():
     assert controllers.controller_name_for_source("stadium_xl", 0xDEADBEEF) is None
+
+
+def test_resolve_exp1_toe_switch_source():
+    """The EXP1 toe switch (the position/click switch under the onboard pedal)
+    is the standard wah auto-engage. Its source id is 0x01010500, observed on
+    ~all real wah exports."""
+    sid = controllers.resolve_controller_source("stadium_xl", "EXP1Toe")
+    assert sid == 0x01010500
+
+
+def test_exp1_toe_switch_roundtrips_and_is_distinct():
+    table = controllers.CONTROLLER_SOURCE_IDS["stadium_xl"]
+    toe = table["EXP1Toe"]
+    assert controllers.controller_name_for_source("stadium_xl", toe) == "EXP1Toe"
+    fs_values = {table[f"FS{n}"] for n in range(1, 11)}
+    exp_values = {table["EXP1"], table["EXP2"]}
+    assert toe not in fs_values and toe not in exp_values
