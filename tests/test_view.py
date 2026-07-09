@@ -8,7 +8,6 @@ entry point in decompile.py, which reads a path via read_hsp.
 import json
 import os
 
-from helixgen.decompile import decompile_body
 from helixgen.generate import compose_preset
 from helixgen.hsp import HSP_MAGIC, read_hsp, write_hsp
 from helixgen.ir import IR_MODEL_PREFIX, IrMapping
@@ -144,26 +143,3 @@ def test_view_does_not_create_any_file(hsp_library, tmp_path):
     view(body, lib)
     after = set(os.listdir(tmp_path))
     assert before == after
-
-
-def test_view_matches_decompile_body_exactly(hsp_library, tmp_path):
-    """Parity guard: view() is a direct port of decompile_body(); for the
-    same fixture body + library they must return identical dicts."""
-    lib = hsp_library
-    spec = {
-        "name": "Parity",
-        "paths": [{"blocks": [
-            {"block": "Tube Drive", "params": {"Gain": 0.6}},
-            {"block": "Brit Amp", "params": {"Drive": 0.7}},
-        ]}],
-        "footswitches": [{"switch": "FS1", "block": "Tube Drive"}],
-        "expression": [{"pedal": "EXP1", "targets": [
-            {"block": "Brit Amp", "param": "Master", "min": 0.0, "max": 0.7}]}],
-        "snapshots": [
-            {"name": "Rhythm"},
-            {"name": "Lead", "disable": ["Tube Drive"]},
-        ],
-    }
-    p1 = compose_preset(parse_spec(spec), lib, source="t")
-    body = _write_and_read(tmp_path, p1)
-    assert view(body, lib) == decompile_body(body, lib)

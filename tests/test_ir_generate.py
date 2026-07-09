@@ -189,7 +189,7 @@ def test_generate_no_ir_block_omits_irhash(tmp_library, sample_serial_preset_hsp
 
 
 def test_block_entry_emits_hash_when_basename_ambiguous(stadium_library_with_ir, tmp_path):
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     from helixgen.ir import IrMapping
     # Two registered wavs share a basename → basename is ambiguous → emit hash.
     h1, h2 = "a" * 32, "b" * 32
@@ -202,7 +202,7 @@ def test_block_entry_emits_hash_when_basename_ambiguous(stadium_library_with_ir,
 
 
 def test_block_entry_emits_basename_when_unique(stadium_library_with_ir, tmp_path):
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     from helixgen.ir import IrMapping
     h1 = "c" * 32
     irs = IrMapping(irs_dir=tmp_path, entries={h1: "dirA/Unique.wav"})

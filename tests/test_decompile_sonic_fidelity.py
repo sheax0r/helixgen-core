@@ -25,7 +25,7 @@ from pathlib import Path
 from helixgen.ingest import ingest_path
 from helixgen.library import Library
 from helixgen.hsp import read_hsp, _unwrap_value
-from helixgen.decompile import decompile_body, _snapshot_names
+from helixgen.view import view, _snapshot_names
 from helixgen.generate import compose_preset
 from helixgen.spec import parse_spec
 from helixgen.ir import IrMapping
@@ -111,7 +111,7 @@ def test_real_export_sonic_fidelity(tmp_path):
         try:
             body = read_hsp(sample)
             n_named = len(_snapshot_names(body))
-            spec = parse_spec(decompile_body(body, lib, irs=irs))
+            spec = parse_spec(view(body, lib, irs=irs))
             regen = compose_preset(spec, lib, source=str(sample), irs=irs)
             s_blocks = {(pi, k): bnn for pi, k, bnn in _user_blocks(body)}
             r_blocks = {(pi, k): bnn for pi, k, bnn in _user_blocks(regen)}

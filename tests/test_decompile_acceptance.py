@@ -13,7 +13,7 @@ from pathlib import Path
 from helixgen.ingest import ingest_path
 from helixgen.library import Library
 from helixgen.hsp import read_hsp
-from helixgen.decompile import decompile_body
+from helixgen.view import view
 from helixgen.generate import compose_preset
 from helixgen.spec import parse_spec
 from helixgen.ir import IrMapping
@@ -48,7 +48,7 @@ def test_real_export_decompile_roundtrip_stable(tmp_path, strip_provenance):
     for sample in samples:
         try:
             body = read_hsp(sample)
-            spec = parse_spec(decompile_body(body, lib, irs=irs))
+            spec = parse_spec(view(body, lib, irs=irs))
             regen = compose_preset(spec, lib, source=str(sample), irs=irs)
             assert _models(strip_provenance(regen)) == _models(strip_provenance(body))
             ok += 1

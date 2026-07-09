@@ -4,7 +4,7 @@ from helixgen.ingest import ingest_path
 from helixgen.library import Block, Library
 from helixgen.generate import compose_preset
 from helixgen.spec import parse_spec
-from helixgen.decompile import decompile_body
+from helixgen.view import view
 
 
 def test_decompile_ambiguous_display_name_uses_model_id(tmp_path, sample_serial_preset_hsp, strip_provenance):
@@ -25,7 +25,7 @@ def test_decompile_ambiguous_display_name_uses_model_id(tmp_path, sample_serial_
     spec1 = parse_spec({"name": "Amb", "paths": [{"blocks": [
         {"block": "HD2_DriveOne", "params": {"Gain": 0.7}}]}]})
     p1 = compose_preset(spec1, lib, source="t")
-    d = decompile_body(p1, lib)
+    d = view(p1, lib)
     # Decompiled reference must be the model_id (display_name is ambiguous).
     assert d["paths"][0]["blocks"][0]["block"] == "HD2_DriveOne"
     # And it must regenerate cleanly (no LookupError).
@@ -43,7 +43,7 @@ def test_decompile_roundtrip_stable(hsp_library, strip_provenance):
         ]}],
     })
     p1 = compose_preset(spec1, lib, source="t")
-    spec2_dict = decompile_body(p1, lib)
+    spec2_dict = view(p1, lib)
     spec2 = parse_spec(spec2_dict)
     p2 = compose_preset(spec2, lib, source="t")
     assert strip_provenance(p2) == strip_provenance(p1)
@@ -52,7 +52,7 @@ def test_decompile_roundtrip_stable(hsp_library, strip_provenance):
 def test_decompile_reads_base_bypass_from_bnn_level(hsp_library):
     """A block bypassed at the bNN level (slot level inert True) decompiles to
     enabled: false."""
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     lib = hsp_library
     block = lib.find_block("Tube Drive")
     model_id = block.model_id  # ingest-time hsp model id round-trips via translate
@@ -70,7 +70,7 @@ def test_decompile_recovers_meta_and_blocks(hsp_library):
     spec1 = parse_spec({"name": "Tone X", "author": "me", "paths": [
         {"blocks": [{"block": "Tube Drive", "params": {"Gain": 0.7}}]}]})
     p1 = compose_preset(spec1, lib, source="t")
-    d = decompile_body(p1, lib)
+    d = view(p1, lib)
     assert d["name"] == "Tone X"
     assert d["author"] == "me"
     assert d["paths"][0]["blocks"][0]["block"] == "Tube Drive"
@@ -91,7 +91,7 @@ def _endpoint_input(model, pos=0, path=0, endpoint="b13"):
 
 
 def test_reconstruct_captures_branch_endpoints_no_keyerror(hsp_library):
-    from helixgen.decompile import _reconstruct_path_blocks
+    from helixgen.view import _reconstruct_path_blocks
     from helixgen.spec import StructuralEntry
     lib = hsp_library
     # A branch lane with an input endpoint (b14) and an output endpoint (b27)
@@ -111,7 +111,7 @@ def test_reconstruct_captures_branch_endpoints_no_keyerror(hsp_library):
 
 
 def test_reconstruct_orphaned_split_is_structural_balanced_is_semantic(hsp_library):
-    from helixgen.decompile import _reconstruct_path_blocks
+    from helixgen.view import _reconstruct_path_blocks
     from helixgen.spec import StructuralEntry, SplitEntry, JoinEntry
     lib = hsp_library
     # Orphaned split: endpoint points at an OUTPUT endpoint (b27), not a join.
@@ -151,7 +151,7 @@ def test_structural_entry_survives_real_compose(hsp_library):
 
 
 def test_decompile_captures_harness_and_extra_slots(hsp_library):
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     lib = hsp_library
     block = lib.find_block("Tube Drive")
     bnn = {
@@ -181,7 +181,7 @@ def _add_delay_block(lib):
 
 
 def test_decompile_lifts_trails_on_delay(hsp_library):
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     lib = hsp_library
     block = _add_delay_block(lib)
     bnn = {
@@ -205,7 +205,7 @@ def test_decompile_lifts_trails_on_delay(hsp_library):
 def test_decompile_does_not_lift_trails_on_non_delay_reverb(hsp_library):
     """Symmetric with the generate guard: a drive block's Trails is NOT lifted
     (it could not be regenerated as a `trails` field), so it stays verbatim."""
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     lib = hsp_library
     block = lib.find_block("Tube Drive")  # category drive
     bnn = {
@@ -220,7 +220,7 @@ def test_decompile_does_not_lift_trails_on_non_delay_reverb(hsp_library):
 
 
 def test_decompile_delay_without_trails_no_trails_field(hsp_library):
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     lib = hsp_library
     block = _add_delay_block(lib)
     bnn = {
@@ -236,7 +236,7 @@ def test_decompile_delay_without_trails_no_trails_field(hsp_library):
 
 def test_decompile_generate_trails_roundtrip(hsp_library):
     """decompile -> parse -> generate reproduces the original harness dict."""
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     lib = hsp_library
     block = _add_delay_block(lib)
     harness = {"@enabled": {"value": True},
@@ -257,7 +257,7 @@ def test_decompile_generate_trails_roundtrip(hsp_library):
 
 
 def test_decompile_no_raw_when_no_harness_or_extra_slots(hsp_library):
-    from helixgen.decompile import _block_entry
+    from helixgen.view import _block_entry
     lib = hsp_library
     block = lib.find_block("Tube Drive")
     bnn = {
@@ -271,7 +271,7 @@ def test_decompile_no_raw_when_no_harness_or_extra_slots(hsp_library):
 def test_decompile_warns_on_unrepresentable_enable(hsp_library, capsys):
     """base=False + enabled in a named snapshot + NO disable => can't round-trip;
     decompile must warn."""
-    from helixgen.decompile import decompile_body
+    from helixgen.view import view
     lib = hsp_library
     block = lib.find_block("Tube Drive")
     body = {
@@ -292,6 +292,6 @@ def test_decompile_warns_on_unrepresentable_enable(hsp_library, capsys):
             }],
         },
     }
-    decompile_body(body, lib, irs=None)
+    view(body, lib, irs=None)
     err = capsys.readouterr().err
     assert "cannot round-trip" in err and "b01" in err
