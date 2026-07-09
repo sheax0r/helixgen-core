@@ -74,7 +74,11 @@ def _bnn_keys(path_dict: dict[str, Any]) -> list[str]:
 
 
 def _lane_pos(key: str) -> tuple[int, int]:
-    """Decode a `bNN` key into (lane, pos): lane 1 starts at b14, lane 0 is b01-b13."""
+    """Decode a `bNN` key into (lane, pos): num >= 14 decodes as lane 1 (pos =
+    num - 14), num < 14 as lane 0. Note `generate._assign_positions` numbers
+    lane 1 starting at pos=1 (i.e. the first lane-1 key is `b15`) -- `b14`
+    itself is never assigned by the generator, though it decodes as lane 1
+    pos 0 here if ever encountered on read."""
     num = int(key[1:])
     lane = 1 if num >= 14 else 0
     return lane, num - 14 * lane
@@ -225,6 +229,17 @@ def _active_snapshot(body: dict[str, Any]) -> int:
     return value if isinstance(value, int) else 0
 
 
+def _clamped_active_snapshot(body: dict[str, Any], length: int) -> int:
+    """`_active_snapshot`, clamped to a valid index into a `length`-slot
+    array. Guards `snaps[_active_snapshot(body)]` against `IndexError` if
+    `preset.params.activesnapshot` ever points past a malformed/short
+    snapshots array (`length` should normally be `HSP_SNAPSHOT_SLOTS`, but a
+    caller may pass whatever array it actually has in hand)."""
+    if length <= 0:
+        raise MutateError("Cannot index an empty snapshots array.")
+    return min(max(_active_snapshot(body), 0), length - 1)
+
+
 def _resolve_snapshot_index(body: dict[str, Any], snapshot: Any) -> int:
     """Resolve a snapshot name (matched against `preset.snapshots[*].name`)
     or a bare int index to an index into the 8-slot snapshot arrays."""
@@ -275,6 +290,9 @@ def set_enabled(
 
     if snapshot is None:
         wrapped["value"] = enabled
+        snaps = wrapped.get("snapshots")
+        if isinstance(snaps, list) and snaps:
+            snaps[_clamped_active_snapshot(body, len(snaps))] = enabled
         return
 
     idx = _resolve_snapshot_index(body, snapshot)
@@ -289,7 +307,7 @@ def set_enabled(
     snaps[idx] = enabled
     snaps = [base if s is None else s for s in snaps]  # densify
     wrapped["snapshots"] = snaps
-    wrapped["value"] = snaps[_active_snapshot(body)]
+    wrapped["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
 
 
 # --- add_block / remove_block -----------------------------------------------
@@ -321,8 +339,10 @@ def _find_block(model: str, library: Library) -> Block:
 def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str, Any]]) -> dict[int, str]:
     """Replace every `bNN` entry in `path_dict` for `lane` with `ordered`
     (already in the desired final sequence), assigning sequential
-    `position` (1-based) and `bNN` keys (`b01..b12` for lane 0, `b14..b25`
-    for lane 1). Returns {index-in-ordered: new_key} for caller bookkeeping.
+    `position` (1-based) and `bNN` keys (`b01..b12` for lane 0, `b15..b25`
+    for lane 1 -- lane 1 numbering starts at pos=1, i.e. `b15`; `b14` is
+    never assigned, matching `generate._assign_positions`). Returns
+    {index-in-ordered: new_key} for caller bookkeeping.
     """
     if len(ordered) > _MAX_LANE_SLOTS:
         raise MutateError(

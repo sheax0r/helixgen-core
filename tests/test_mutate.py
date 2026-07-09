@@ -255,6 +255,25 @@ def test_set_enabled_base_enable_flips_bnn_value(goldfinger_body, library):
     assert goldfinger_body["preset"]["flow"][0]["b02"]["@enabled"]["value"] is True
 
 
+def test_set_enabled_base_edit_syncs_active_snapshot_slot(snapshots_body, library):
+    # Scream 808 (b01) already carries a dense snapshots array in the golden
+    # fixture ([T, T, F, T, T, T, T, T], activesnapshot=0). A base-level edit
+    # (snapshot=None) must keep value == snapshots[activesnapshot] in sync --
+    # otherwise the block shows its old value on load until snapshots are
+    # toggled once (the exact stale-on-load bug class fixed in 0.5.1).
+    bnn = snapshots_body["preset"]["flow"][0]["b01"]
+    assert bnn["@enabled"]["snapshots"][0] is True
+
+    mutate.set_enabled(snapshots_body, "Scream 808", False, library)
+
+    wrapped = bnn["@enabled"]
+    assert wrapped["value"] is False
+    assert wrapped["snapshots"][0] is False
+    assert wrapped["value"] == wrapped["snapshots"][0]
+    # Other snapshot slots are untouched by a base edit.
+    assert wrapped["snapshots"] == [False, True, False, True, True, True, True, True]
+
+
 def test_set_enabled_missing_block_raises(goldfinger_body, library):
     with pytest.raises(mutate.MutateError):
         mutate.set_enabled(goldfinger_body, "Nope Amp", False, library)
@@ -309,6 +328,15 @@ def test_set_enabled_snapshot_accepts_int_index(goldfinger_body, library):
     wrapped = goldfinger_body["preset"]["flow"][0]["b02"]["@enabled"]
     assert wrapped["snapshots"][1] is False
     assert wrapped["snapshots"][0] is True  # densified from the pre-edit base
+
+
+def test_set_enabled_clamps_out_of_range_active_snapshot_index(goldfinger_body, library):
+    # A malformed `activesnapshot` pointing past the (8-slot) snapshots array
+    # must not IndexError -- clamp to the last valid slot instead.
+    goldfinger_body["preset"]["params"]["activesnapshot"] = 99
+    mutate.set_enabled(goldfinger_body, "Brit 2204 Custom", False, library, snapshot=0)
+    wrapped = goldfinger_body["preset"]["flow"][0]["b02"]["@enabled"]
+    assert wrapped["value"] == wrapped["snapshots"][-1]
 
 
 def test_set_enabled_unknown_snapshot_name_raises(snapshots_body, library):
