@@ -305,6 +305,112 @@ def test_set_enabled_unknown_snapshot_name_raises(snapshots_body, library):
     assert "Nope" in str(exc.value)
 
 
+# --- add_block --------------------------------------------------------------
+
+def test_add_block_appends_new_bnn_with_sequential_position(goldfinger_body, library):
+    key = mutate.add_block(goldfinger_body, "With Pan", library)
+
+    assert key == "b06"
+    bnn = goldfinger_body["preset"]["flow"][0][key]
+    assert bnn["slot"][0]["model"] == "HX2_ImpulseResponseWithPan"
+    assert bnn["type"] == "cab"
+    assert bnn["position"] == 6
+    assert bnn["path"] == 0
+    assert bnn["@enabled"]["value"] is True
+    # Existing blocks' positions/keys are untouched by an append.
+    assert goldfinger_body["preset"]["flow"][0]["b01"]["position"] == 1
+    assert goldfinger_body["preset"]["flow"][0]["b05"]["position"] == 5
+
+
+def test_add_block_applies_params(goldfinger_body, library):
+    key = mutate.add_block(goldfinger_body, "With Pan", library, params={"Mix": 0.5})
+    slot = goldfinger_body["preset"]["flow"][0][key]["slot"][0]
+    assert slot["params"]["Mix"]["value"] == 0.5
+
+
+def test_add_block_after_inserts_and_renumbers(goldfinger_body, library):
+    key = mutate.add_block(goldfinger_body, "With Pan", library, after="Scream 808")
+    flow0 = goldfinger_body["preset"]["flow"][0]
+
+    assert key == "b02"
+    assert flow0["b02"]["slot"][0]["model"] == "HX2_ImpulseResponseWithPan"
+    assert flow0["b02"]["position"] == 2
+    # Everything that followed shifted up by one position AND bNN key so key
+    # order keeps matching chain order (decompile relies on sorted-key order).
+    assert flow0["b03"]["slot"][0]["model"] == "HD2_AmpBrit2204Custom"  # was b02
+    assert flow0["b03"]["position"] == 3
+    assert flow0["b04"]["slot"][0]["model"] == "HD2_Cab4x12Greenback25"  # was b03
+    assert flow0["b04"]["position"] == 4
+    assert flow0["b05"]["slot"][0]["model"] == "HD2_DlyDigital"  # was b04
+    assert flow0["b05"]["position"] == 5
+    assert flow0["b06"]["slot"][0]["model"] == "HD2_RvbPlate"  # was b05
+    assert flow0["b06"]["position"] == 6
+    assert "b07" not in flow0
+
+
+def test_add_block_unknown_model_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.add_block(goldfinger_body, "Nope Block", library)
+
+
+def test_add_block_invalid_path_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.add_block(goldfinger_body, "With Pan", library, path=5)
+
+
+def test_add_block_raises_when_lane_full(library):
+    path_dict = {}
+    for i in range(1, 13):
+        path_dict[f"b{i:02d}"] = {
+            "type": "fx", "position": i, "path": 0,
+            "@enabled": {"value": True},
+            "slot": [{"model": "HD2_DlyDigital", "@enabled": {"value": True}, "params": {}}],
+        }
+    body = {"preset": {"flow": [path_dict]}}
+    with pytest.raises(mutate.MutateError):
+        mutate.add_block(body, "Digital", library)
+
+
+def test_add_block_round_trips_through_write_and_read_hsp(goldfinger_body, library, tmp_path):
+    mutate.add_block(goldfinger_body, "With Pan", library, after="Scream 808")
+    out = tmp_path / "roundtrip_add.hsp"
+    write_hsp(out, goldfinger_body)
+    reloaded = read_hsp(out)
+    assert reloaded == goldfinger_body
+
+
+# --- remove_block ------------------------------------------------------------
+
+def test_remove_block_deletes_and_renumbers(goldfinger_body, library):
+    mutate.remove_block(goldfinger_body, "Brit 2204 Custom", library)
+    flow0 = goldfinger_body["preset"]["flow"][0]
+
+    assert flow0["b02"]["slot"][0]["model"] == "HD2_Cab4x12Greenback25"  # was b03
+    assert flow0["b02"]["position"] == 2
+    assert flow0["b03"]["slot"][0]["model"] == "HD2_DlyDigital"  # was b04
+    assert flow0["b03"]["position"] == 3
+    assert flow0["b04"]["slot"][0]["model"] == "HD2_RvbPlate"  # was b05
+    assert flow0["b04"]["position"] == 4
+    assert "b05" not in flow0
+    assert not any(
+        isinstance(v, dict) and v.get("slot", [{}])[0].get("model") == "HD2_AmpBrit2204Custom"
+        for k, v in flow0.items() if k not in ("b00", "b13")
+    )
+
+
+def test_remove_block_missing_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.remove_block(goldfinger_body, "Nope Amp", library)
+
+
+def test_remove_block_round_trips_through_write_and_read_hsp(goldfinger_body, library, tmp_path):
+    mutate.remove_block(goldfinger_body, "Brit 2204 Custom", library)
+    out = tmp_path / "roundtrip_remove.hsp"
+    write_hsp(out, goldfinger_body)
+    reloaded = read_hsp(out)
+    assert reloaded == goldfinger_body
+
+
 # --- golden micro-test (Task 1c step 4) -----------------------------------
 
 def test_golden_micro_single_param_diff(goldfinger_body, library):

@@ -27,12 +27,15 @@ from helixgen.generate import (
     ParamValidationError,
     _coerce_param_value,
     _is_stereo_param,
+    _to_hsp_bnn,
     validate_params,
 )
 from helixgen.hsp import CHASSIS_MODEL_PREFIX, ENDPOINT_KEYS, _translate_model_id
 from helixgen.library import Block, Library
 
-__all__ = ["MutateError", "resolve_slot", "set_param", "set_enabled"]
+__all__ = ["MutateError", "resolve_slot", "set_param", "set_enabled", "add_block", "remove_block"]
+
+_MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
 
 
 class MutateError(ValueError):
@@ -264,3 +267,112 @@ def set_enabled(
     snaps = [base if s is None else s for s in snaps]  # densify
     wrapped["snapshots"] = snaps
     wrapped["value"] = snaps[_active_snapshot(body)]
+
+
+# --- add_block / remove_block -----------------------------------------------
+
+def _find_block(model: str, library: Library) -> Block:
+    try:
+        return library.find_block(model)
+    except (KeyError, LookupError) as exc:
+        raise MutateError(str(exc)) from exc
+
+
+def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str, Any]]) -> dict[int, str]:
+    """Replace every `bNN` entry in `path_dict` for `lane` with `ordered`
+    (already in the desired final sequence), assigning sequential
+    `position` (1-based) and `bNN` keys (`b01..b12` for lane 0, `b14..b25`
+    for lane 1). Returns {index-in-ordered: new_key} for caller bookkeeping.
+    """
+    if len(ordered) > _MAX_LANE_SLOTS:
+        raise MutateError(
+            f"Lane {lane} would have {len(ordered)} blocks; only "
+            f"{_MAX_LANE_SLOTS} user slots (b01..b{_MAX_LANE_SLOTS:02d}) available."
+        )
+    for k in _bnn_keys(path_dict):
+        if _lane_pos(k)[0] == lane:
+            del path_dict[k]
+
+    new_keys: dict[int, str] = {}
+    for i, bnn in enumerate(ordered, start=1):
+        bnn["position"] = i
+        new_key = f"b{14 * lane + i:02d}"
+        path_dict[new_key] = bnn
+        new_keys[i - 1] = new_key
+    return new_keys
+
+
+def add_block(
+    body: dict[str, Any],
+    model: str,
+    library: Library,
+    *,
+    path: int = 0,
+    after: str | None = None,
+    params: dict[str, Any] | None = None,
+) -> str:
+    """Insert a new block into `body.preset.flow[path]`'s main (lane-0)
+    chain, in place, and return its new `bNN` key.
+
+    `model` resolves via `Library.find_block` (display name, alias, or
+    model_id). The `bNN` skeleton is synthesized by `generate._to_hsp_bnn`
+    (correct `type`/wrapped param defaults/`@enabled`) — reused rather than
+    duplicated, per the Task 1a slot-skeleton decision.
+
+    `after=None` appends to the end of the chain; `after="<name>"` inserts
+    immediately following that block (resolved the same way `resolve_slot`
+    resolves any other block reference, narrowed to this `path`/lane 0).
+    Every block at or after the insertion point is renumbered — both its
+    `position` and its `bNN` key — so key order keeps matching chain order
+    (device- and decompile-relied-upon; see `decompile._bnn_keys`).
+    """
+    flow = (body.get("preset") or {}).get("flow") or []
+    if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
+        raise MutateError(f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
+    path_dict = flow[path]
+
+    block = _find_block(model, library)
+    lane = 0
+
+    existing_keys = sorted(
+        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == lane),
+        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
+    )
+    ordered = [path_dict[k] for k in existing_keys]
+
+    if after is None:
+        insert_at = len(ordered)
+    else:
+        after_fi, after_key, _si = resolve_slot(body, after, library, path=path, lane=lane)
+        insert_at = existing_keys.index(after_key) + 1
+
+    new_bnn = _to_hsp_bnn(block, params or {}, position=0, path_index=lane)
+    ordered.insert(insert_at, new_bnn)
+
+    new_keys = _renumber_lane(path_dict, lane, ordered)
+    return new_keys[insert_at]
+
+
+def remove_block(
+    body: dict[str, Any],
+    block: str,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Delete a placed block from `body`, in place, and renumber the
+    `position`/`bNN` keys of every block that followed it in the same lane
+    so key order keeps matching chain order.
+    """
+    fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    path_dict = body["preset"]["flow"][fi]
+    del_lane, _del_pos = _lane_pos(key)
+
+    remaining_keys = sorted(
+        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == del_lane and k != key),
+        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
+    )
+    ordered = [path_dict[k] for k in remaining_keys]
+    _renumber_lane(path_dict, del_lane, ordered)
