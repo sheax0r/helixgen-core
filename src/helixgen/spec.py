@@ -19,6 +19,7 @@ class BlockEntry:
     lane: int = 0
     pos: int | None = None
     raw: dict[str, Any] | None = None
+    trails: bool | None = None
 
 
 @dataclass
@@ -463,6 +464,9 @@ def _parse_path_entry(data: Any, *, source: str):
     enabled = data.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         raise _err(source, '"enabled" must be a boolean if provided.')
+    trails = data.get("trails")
+    if trails is not None and not isinstance(trails, bool):
+        raise _err(source, '"trails" must be a boolean if provided.')
     raw = data.get("raw")
     if raw is not None:
         if not isinstance(raw, dict):
@@ -476,7 +480,8 @@ def _parse_path_entry(data: Any, *, source: str):
             raise _err(source, '"raw.slots" must be a list of objects if provided.')
     lane, pos = _parse_lane_pos(data, source=source)
     return BlockEntry(block=name, params=dict(params), ir=ir, no_ir=no_ir,
-                       enabled=enabled, lane=lane, pos=pos, raw=raw)
+                       enabled=enabled, lane=lane, pos=pos, raw=raw,
+                       trails=trails)
 
 
 def _validate_splits(entries: list, *, source: str) -> None:

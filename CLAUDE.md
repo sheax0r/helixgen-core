@@ -178,13 +178,37 @@ add an optional `ir` field to load a registered user IR:
 
 Stadium-only; ignored without warning for `.hlx` (legacy Helix) chassis output.
 
+### Optional: delay/reverb trails (`trails`)
+
+Delay and reverb blocks may carry an optional `"trails"` boolean that controls
+harness spillover — whether the block's echoes / reverb tail keep ringing when
+you bypass the block or switch snapshots:
+
+```json
+{"block": "Tape Echo Stereo", "params": {"Mix": 0.25}, "trails": true},
+{"block": "Plate Stereo",     "params": {"Mix": 0.15}, "trails": true}
+```
+
+- `trails: true` / `false` sets the block's bNN `harness.params.Trails`.
+- Omitting `trails` leaves the device default (or whatever a decompiled
+  `raw.harness` carried) untouched.
+- **Delay and reverb only.** Setting `trails` on any other block category is a
+  generate error.
+- `decompile` lifts an existing `Trails` out of `raw.harness` into this clean
+  `trails` field (delay/reverb blocks only), so it round-trips as a first-class
+  setting. If both `trails` and a `raw.harness` are present, `trails` wins.
+- Stadium-only; ignored for `.hlx` (legacy Helix) chassis (no harness emitted).
+
 ### Optional: per-block verbatim state (`raw`)
 
 Blocks may carry an optional `"raw"` object holding verbatim Stadium bNN state
 that helixgen does not model but preserves for round-trip fidelity:
 
-- `"harness"` — the bNN-level `harness` dict (carries `dual`, `Trails`,
-  `ControlSource`, its own `@enabled`). Non-deterministic; preserved verbatim.
+- `"harness"` — the bNN-level `harness` dict (carries structural fields like
+  `dual`, `upper`, `bypass`, `EvtIdx`, and its own `@enabled`). Non-deterministic;
+  preserved verbatim. The one author-facing harness field, `Trails`
+  (delay/reverb spillover), is modeled separately as the block-level `trails`
+  field above and is lifted out of `raw.harness` on decompile.
 - `"slots"` — additional slots beyond the first (`slot[1:]`), i.e. the second
   cab of a dual-cab block.
 
