@@ -1,0 +1,21 @@
+{
+  "name": "Expression Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "blocks": [
+        { "block": "Brit 2204 Custom" },
+        { "block": "Digital" }
+      ]
+    }
+  ],
+  "expression": [
+    { "pedal": "EXP1", "targets": [
+      { "block": "Brit 2204 Custom", "param": "Master" }
+    ] },
+    { "pedal": "EXP2", "targets": [
+      { "block": "Brit 2204 Custom", "param": "Drive", "min": 0.1, "max": 0.9 },
+      { "block": "Digital", "param": "Mix", "min": 0.0, "max": 0.4 }
+    ] }
+  ]
+}

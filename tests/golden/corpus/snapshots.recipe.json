@@ -1,0 +1,18 @@
+{
+  "name": "Snapshots Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "blocks": [
+        { "block": "Scream 808" },
+        { "block": "Brit 2204 Custom", "params": { "Drive": 0.5 } },
+        { "block": "4x12 Greenback 25" }
+      ]
+    }
+  ],
+  "snapshots": [
+    { "name": "Rhythm" },
+    { "name": "Lead", "params": { "Brit 2204 Custom": { "Drive": 0.85 } } },
+    { "name": "Clean", "disable": ["Scream 808"], "params": { "Brit 2204 Custom": { "Drive": 0.3 } } }
+  ]
+}

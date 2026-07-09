@@ -1,0 +1,15 @@
+{
+  "name": "Split Join Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "blocks": [
+        { "block": "Scream 808", "lane": 0, "pos": 1 },
+        { "split": { "model": "P35_AppDSPSplitY" }, "lane": 0, "pos": 2 },
+        { "block": "Digital", "lane": 1, "pos": 1 },
+        { "join": {}, "lane": 0, "pos": 3 },
+        { "block": "Brit 2204 Custom", "lane": 0, "pos": 4 }
+      ]
+    }
+  ]
+}
