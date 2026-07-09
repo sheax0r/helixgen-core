@@ -40,6 +40,11 @@ ENDPOINT_KEYS = frozenset({"b00", "b13"})
 # extraction time.
 CHASSIS_MODEL_PREFIX = "P35_"
 
+# Loopers live under the `P35_` namespace but ARE user-arrangeable blocks
+# (present in the library), unlike the rest of `P35_` (routing/IO). Callers
+# that skip `P35_` chassis models must exempt this prefix.
+LOOPER_MODEL_PREFIX = "P35_LooperHelix"
+
 
 # Stadium model-id → Helix model-id translations we know about.
 # Add entries here as we observe new divergences during bulk ingest.

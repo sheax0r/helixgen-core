@@ -664,10 +664,18 @@ def test_wire_footswitch_momentary_behavior(goldfinger_body, library):
     assert bnn["@enabled"]["controller"]["behavior"] == "momentary"
 
 
-def test_wire_footswitch_duplicate_switch_raises(goldfinger_body, library):
+def test_wire_footswitch_one_switch_multiple_blocks_allowed(goldfinger_body, library):
+    # The Stadium allows one switch to drive multiple blocks (a footswitch
+    # group). Real exports rely on this (e.g. a wah + a volume both on
+    # `EXP1Toe`), so wiring a second block to the same switch must NOT raise.
     mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
-    with pytest.raises(mutate.MutateError):
-        mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+
+    fs3_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"]
+    b01 = goldfinger_body["preset"]["flow"][0]["b01"]
+    b04 = goldfinger_body["preset"]["flow"][0]["b04"]
+    assert b01["@enabled"]["controller"]["source"] == fs3_source
+    assert b04["@enabled"]["controller"]["source"] == fs3_source
 
 
 def test_wire_footswitch_unknown_block_raises(goldfinger_body, library):
@@ -675,22 +683,15 @@ def test_wire_footswitch_unknown_block_raises(goldfinger_body, library):
         mutate.wire_footswitch(goldfinger_body, "FS3", "Nope Amp", "latching", library)
 
 
-def test_wire_footswitch_rejects_rewiring_block_to_different_switch(goldfinger_body, library):
-    # Wiring a second, different switch to an already-wired block must not
-    # silently overwrite the bnn-level controller -- that would orphan the
-    # first switch's `sources` entry (still present, but nothing points at
-    # it any more).
+def test_wire_footswitch_rewiring_block_to_different_switch_is_last_wins(goldfinger_body, library):
+    # Re-wiring a block to a different switch is last-wins (matches the
+    # device-validated original pipeline, whose fs_map is keyed by block).
     mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
-    with pytest.raises(mutate.MutateError):
-        mutate.wire_footswitch(goldfinger_body, "FS4", "Scream 808", "latching", library)
+    mutate.wire_footswitch(goldfinger_body, "FS4", "Scream 808", "latching", library)
 
-    fs3_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"]
     fs4_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS4"]
     bnn = goldfinger_body["preset"]["flow"][0]["b01"]
-    assert bnn["@enabled"]["controller"]["source"] == fs3_source
-    sources = goldfinger_body["preset"]["sources"]
-    assert str(fs3_source) in sources
-    assert str(fs4_source) not in sources  # no orphan registered
+    assert bnn["@enabled"]["controller"]["source"] == fs4_source
 
 
 def test_wire_footswitch_same_switch_same_block_is_idempotent(goldfinger_body, library):
@@ -720,13 +721,13 @@ def test_wire_footswitch_allows_preexisting_source_metadata(goldfinger_body, lib
     assert bnn["@enabled"]["controller"]["source"] == fs3_source
 
 
-def test_wire_footswitch_two_blocks_same_switch_still_raises(goldfinger_body, library):
-    # Even with the flow-scan conflict check (not a sources-table check),
-    # wiring two DIFFERENT blocks to the same switch must still raise, because
-    # a real targetbypass binding on a different bNN already claims the source.
+def test_wire_footswitch_registers_single_source_for_grouped_blocks(goldfinger_body, library):
+    # Two blocks on one switch register exactly one `sources` entry for that
+    # switch (the source-id set is deduped, matching the original pipeline).
     mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
-    with pytest.raises(mutate.MutateError, match="already assigned"):
-        mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+    fs3_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"]
+    assert goldfinger_body["preset"]["sources"][str(fs3_source)] == {"bypass": False}
 
 
 def test_wire_expression_writes_param_controller(goldfinger_body, library):
@@ -774,26 +775,33 @@ def test_wire_expression_multiple_targets_one_pedal(goldfinger_body, library):
     assert len(goldfinger_body["preset"]["sources"]) == 1
 
 
-def test_wire_expression_duplicate_block_param_raises(goldfinger_body, library):
+def test_wire_expression_second_pedal_on_param_is_last_wins(goldfinger_body, library):
+    # A param driven by one pedal, then re-assigned to another, follows the
+    # last pedal (matches the original pipeline's (block, param)-keyed map).
     mutate.wire_expression(
         goldfinger_body, "EXP1", [{"block": "Digital", "param": "Mix"}], library
     )
-    with pytest.raises(mutate.MutateError):
-        mutate.wire_expression(
-            goldfinger_body, "EXP2", [{"block": "Digital", "param": "Mix"}], library
-        )
+    mutate.wire_expression(
+        goldfinger_body, "EXP2", [{"block": "Digital", "param": "Mix"}], library
+    )
+    wrapped = goldfinger_body["preset"]["flow"][0]["b04"]["slot"][0]["params"]["Mix"]
+    exp2_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["EXP2"]
+    assert wrapped["controller"]["source"] == exp2_source
 
 
-def test_wire_expression_duplicate_within_call_raises(goldfinger_body, library):
-    with pytest.raises(mutate.MutateError):
-        mutate.wire_expression(
-            goldfinger_body, "EXP1",
-            [
-                {"block": "Digital", "param": "Mix"},
-                {"block": "Digital", "param": "Mix"},
-            ],
-            library,
-        )
+def test_wire_expression_duplicate_within_call_is_last_wins(goldfinger_body, library):
+    # A (block, param) repeated within one call resolves to the last entry.
+    mutate.wire_expression(
+        goldfinger_body, "EXP1",
+        [
+            {"block": "Digital", "param": "Mix", "min": 0.0, "max": 0.4},
+            {"block": "Digital", "param": "Mix", "min": 0.1, "max": 0.9},
+        ],
+        library,
+    )
+    wrapped = goldfinger_body["preset"]["flow"][0]["b04"]["slot"][0]["params"]["Mix"]
+    assert wrapped["controller"]["min"] == 0.1
+    assert wrapped["controller"]["max"] == 0.9
 
 
 def test_wire_expression_unknown_param_raises(goldfinger_body, library):
@@ -827,10 +835,18 @@ def test_wire_wah_toe_uses_exp1toe_source(goldfinger_body, library):
     assert sources[str(source_id)] == {"bypass": False}
 
 
-def test_wire_wah_toe_duplicate_raises(goldfinger_body, library):
+def test_wire_wah_toe_multiple_blocks_allowed(goldfinger_body, library):
+    # `EXP1Toe` may drive multiple blocks (e.g. a wah and a volume both
+    # auto-engage on the toe switch) -- a real, device-validated configuration
+    # (e.g. "A7X"). Wiring a second block to the toe switch must not raise.
     mutate.wire_wah_toe(goldfinger_body, "Digital", library)
-    with pytest.raises(mutate.MutateError):
-        mutate.wire_wah_toe(goldfinger_body, "Plate", library)
+    mutate.wire_wah_toe(goldfinger_body, "Plate", library)
+
+    exp1toe = CONTROLLER_SOURCE_IDS["stadium_xl"]["EXP1Toe"]
+    b04 = goldfinger_body["preset"]["flow"][0]["b04"]
+    b05 = goldfinger_body["preset"]["flow"][0]["b05"]
+    assert b04["@enabled"]["controller"]["source"] == exp1toe
+    assert b05["@enabled"]["controller"]["source"] == exp1toe
 
 
 # --- golden micro-test (Task 1c step 4) -----------------------------------

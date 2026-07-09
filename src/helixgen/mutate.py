@@ -38,7 +38,13 @@ from helixgen.generate import (
     _to_hsp_bnn,
     validate_params,
 )
-from helixgen.hsp import CHASSIS_MODEL_PREFIX, ENDPOINT_KEYS, _translate_model_id, translate_to_hsp
+from helixgen.hsp import (
+    CHASSIS_MODEL_PREFIX,
+    ENDPOINT_KEYS,
+    LOOPER_MODEL_PREFIX,
+    _translate_model_id,
+    translate_to_hsp,
+)
 from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.library import Block, Library
 
@@ -110,7 +116,11 @@ def _iter_slots(
             if not isinstance(slot0, dict) or "model" not in slot0:
                 continue
             model = slot0["model"]
-            if isinstance(model, str) and model.startswith(CHASSIS_MODEL_PREFIX):
+            # Skip P35_ chassis-routing models, but NOT loopers
+            # (`P35_LooperHelix*`), which are real user blocks in the library
+            # and can carry a footswitch (mirrors `hsp.extract_blocks_from_hsp`).
+            if (isinstance(model, str) and model.startswith(CHASSIS_MODEL_PREFIX)
+                    and not model.startswith(LOOPER_MODEL_PREFIX)):
                 continue
             try:
                 block = library.load_block(_translate_model_id(model))
@@ -657,13 +667,11 @@ def wire_footswitch(
     switch -- see `wire_wah_toe`), resolved via
     `controllers.resolve_controller_source` against the chassis device_id.
 
-    Raises `MutateError` if `switch`'s source id is already registered in
-    `preset.sources` for a DIFFERENT block -- one switch can drive only one
-    block's bypass, and the Stadium doesn't disambiguate a second binding.
-    Also raises if `block` already carries a `targetbypass` controller from a
-    DIFFERENT switch -- overwriting it would silently orphan the prior
-    switch's `sources` entry (nothing would point at it any more). Re-wiring
-    the SAME switch to the SAME block is idempotent and does not raise.
+    Assignment is permissive (matches the device-validated original
+    `generate._build_fs_assignments`): one switch may drive multiple blocks (a
+    footswitch group), and re-wiring a block to a different switch is
+    last-wins. Only an invalid `behavior` or an unresolvable `switch`/`block`
+    raises `MutateError`.
     """
     if behavior not in ("latching", "momentary"):
         raise MutateError(
@@ -682,45 +690,13 @@ def wire_footswitch(
         wrapped = {"value": True}
         bnn["@enabled"] = wrapped
 
-    existing_controller = wrapped.get("controller")
-    existing_source = (
-        existing_controller.get("source") if isinstance(existing_controller, dict) else None
-    )
-    if existing_source is not None and existing_source != source_id:
-        raise MutateError(
-            f"Block {block!r} is already assigned to a footswitch (source "
-            f"{existing_source!r}); a block can be wired to only one switch."
-        )
-
-    # Conflict detection scans the FLOW for a real targetbypass binding that
-    # already claims this source, NOT the `sources` table: a chassis cloned
-    # from a real export carries ~30 pre-existing device-metadata `sources`
-    # entries (e.g. FS1..FS10) that are not block bindings, so presence in the
-    # table is not a conflict signal. Only another bNN whose
-    # `@enabled.controller.source == source_id` (on a DIFFERENT bNN than the
-    # target) is a genuine second binding.
-    flow = (body.get("preset") or {}).get("flow") or []
-    for other_fi, path_dict in enumerate(flow):
-        if not isinstance(path_dict, dict):
-            continue
-        for other_key in _bnn_keys(path_dict):
-            if (other_fi, other_key) == (fi, key):
-                continue
-            other_bnn = path_dict.get(other_key)
-            if not isinstance(other_bnn, dict):
-                continue
-            other_wrapped = other_bnn.get("@enabled")
-            if not isinstance(other_wrapped, dict):
-                continue
-            other_controller = other_wrapped.get("controller")
-            if not isinstance(other_controller, dict):
-                continue
-            if other_controller.get("source") == source_id:
-                raise MutateError(
-                    f"Switch {switch!r} is already assigned to a block; one switch "
-                    f"can drive only one block's bypass."
-                )
-
+    # Assignment is permissive, matching the device-validated behavior of the
+    # original `generate._build_fs_assignments` (keyed by block; its source-id
+    # set is deduped): the Stadium allows ONE switch to drive MULTIPLE blocks
+    # (a footswitch group -- e.g. a wah and a volume both bound to `EXP1Toe`),
+    # and re-wiring a block to a different switch is last-wins. Real exports
+    # rely on both, so no conflict is raised here -- that would reject valid
+    # hardware configurations and break faithful round-tripping.
     sources = body.setdefault("preset", {}).setdefault("sources", {})
     wrapped["controller"] = _build_fs_controller(
         source_id, behavior, position=controllers.is_position_switch(switch)
@@ -742,10 +718,11 @@ def wire_expression(
     Writes a `param`-type controller dict onto the param's existing value
     wrapper and registers the pedal's source id in `preset.sources`.
 
-    Raises `MutateError` for: an empty `targets` list; `min > max`; an
-    unknown param; a `(block, param)` pair repeated within `targets`; or a
-    `(block, param)` pair that already carries a controller (already driven
-    by a previously-wired pedal). Stereo-shaped params (`{"1": ..., "2":
+    Raises `MutateError` for: an empty `targets` list or an unknown param.
+    Assignment is last-wins (matches the device-validated
+    original `generate._build_exp_assignments`): a repeated `(block, param)`
+    within `targets`, or a param already driven by another pedal, is
+    overwritten rather than rejected. Stereo-shaped params (`{"1": ..., "2":
     ...}`) are out of scope -- see `set_param`'s stereo handling, which this
     verb does not replicate.
     """
@@ -759,23 +736,14 @@ def wire_expression(
         raise MutateError(str(exc)) from exc
 
     resolved: list[tuple[dict[str, Any], float, float]] = []
-    seen: set[tuple[str, str]] = set()
     for target in targets:
         block = target["block"]
         param = target["param"]
+        # `min > max` is a valid inverted sweep (heel = max effect, toe = min);
+        # real exports carry it and the original `_build_exp_controller` passed
+        # it through untouched, so it is NOT rejected here.
         min_val = target.get("min", 0.0)
         max_val = target.get("max", 1.0)
-        if min_val > max_val:
-            raise MutateError(
-                f"EXP target {block!r}.{param!r}: min {min_val} > max {max_val}."
-            )
-        dedupe_key = (block, param)
-        if dedupe_key in seen:
-            raise MutateError(
-                f"EXP target {block!r}.{param!r} is assigned more than once "
-                f"in this wire_expression call."
-            )
-        seen.add(dedupe_key)
 
         fi, key, si = resolve_slot(
             body, block, library,
@@ -798,11 +766,12 @@ def wire_expression(
                 f"EXP target {block!r}.{param!r}: stereo-shaped params are "
                 f"not supported for expression assignment."
             )
-        if "controller" in wrapped:
-            raise MutateError(
-                f"Param {block!r}.{param!r} is already driven by a controller; "
-                f"cannot assign a second pedal."
-            )
+        # Last-wins: a param already carrying a controller is overwritten,
+        # matching the original `generate._build_exp_assignments` (its
+        # `exp_map` is keyed by (block, param), so a later assignment replaces
+        # an earlier one). A duplicate (block, param) within `targets`, or a
+        # second pedal driving the same param, resolves to the last write --
+        # real exports contain both, so raising would break round-tripping.
         resolved.append((wrapped, min_val, max_val))
 
     # Commit only after every target validates, so a failure partway through

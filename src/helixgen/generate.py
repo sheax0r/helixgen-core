@@ -172,7 +172,8 @@ def compose_preset(spec: Spec, library: Library, *, source: str, irs: "IrMapping
     if shape == "hlx":
         return _compose_preset_hlx(spec, library, source=source, chassis=chassis)
     if shape == "hsp":
-        return _compose_preset_hsp(spec, library, source=source, chassis=chassis, irs=irs)
+        from helixgen.recipe import apply_recipe  # local import avoids generate<->recipe cycle
+        return apply_recipe(spec, library, chassis=chassis, irs=irs, source=source)
     raise GenerateError(
         f"Unknown chassis shape {shape!r}. Re-ingest from a real export."
     )
