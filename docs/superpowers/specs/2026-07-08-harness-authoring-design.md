@@ -1,7 +1,8 @@
 # Harness authoring — design
 
 **Date:** 2026-07-08
-**Status:** approved (autonomous agent design; reviewed by review-subagent)
+**Status:** implemented + HARDWARE-VALIDATED on Stadium XL (2026-07-08);
+reviewed by review-subagent
 
 ## Problem
 
@@ -54,8 +55,10 @@ CLAUDE.md wording will be corrected.
 
 `Trails` is the only harness field an author would ever want to set. It controls
 whether a delay's echoes / a reverb's tail keep ringing ("spill over") when the
-block is bypassed or you switch snapshots — a standard, musically-meaningful
-Helix behavior. Everything else is either a device-constant (`upper`, `bypass`,
+block is **bypassed** (manually or via a footswitch) — a standard,
+musically-meaningful Helix behavior. (Note: Stadium *snapshot* transitions are
+gapless and spill tails largely regardless of this toggle — see the device-test
+protocol below; Trails is a block-bypass behavior, not a snapshot behavior.) Everything else is either a device-constant (`upper`, `bypass`,
 `EvtIdx`, `@enabled`) or structural and already handled elsewhere (`dual` is a
 consequence of a dual-cab, which the existing `raw.slots` mechanism carries).
 `dual`, therefore, stays verbatim: authoring it independently of a second cab
@@ -247,8 +250,55 @@ low-risk assumption; the field is defined as `bool`.
   truth and can be hand-edited or regenerated; a surgical verb is a possible
   follow-up but not required for authoring.
 
-## Demonstrator
+## Demonstrator & device-test protocol
 
-Generate a demo `.hsp` with a delay + reverb both `trails: true` (plus an amp
-and cab) so the user can verify on real Stadium XL hardware that the tails spill
-over on bypass / snapshot change. Provide step-by-step device-test instructions.
+**Status: HARDWARE-VALIDATED on Stadium XL (2026-07-08).** The `Trails` value
+helixgen writes is honored by the device and produces the documented behavior.
+
+### What Trails actually governs (learned from Line 6 docs + on-device testing)
+
+`Trails` controls tail spillover on **manual / footswitch block bypass**:
+
+- **Trails On** → the delay's echoes / reverb tail keep ringing out and fade
+  naturally when you bypass the block.
+- **Trails Off** → the tail cuts off abruptly the instant you bypass the block.
+
+**Do NOT demonstrate Trails with a snapshot change.** A snapshot A/B is a
+misleading test for two reasons:
+1. The guitar's natural note sustain masks the wet tail unless the strings are
+   palm-muted at the moment of the switch.
+2. Stadium snapshot transitions are gapless and appear to spill delay/reverb
+   tails **largely regardless of the Trails toggle** — so an A/B shows little or
+   no audible difference and misleads the tester.
+
+An early draft of this spec proposed a snapshot Wet/Dry demonstrator; that was
+wrong and caused a confusing multi-round debugging session. The correct
+demonstrator is footswitch bypass, below.
+
+### Correct demonstrator
+
+Generate **two** presets, identical except the trails bit, with the delay (and
+reverb) assigned to a **footswitch** and no reliance on snapshots:
+
+- `Trails ON Demo` — delay + reverb `trails: true`, block(s) on a footswitch.
+- `Trails OFF Demo` — same preset, `trails: false`.
+
+Load them into **different preset slots** on the device (identical preset
+*names* are indistinguishable on-device and lead to accidentally testing one
+preset against itself).
+
+### Test protocol to document for the user
+
+1. Load `Trails ON Demo` into one slot and `Trails OFF Demo` into a *different*
+   slot. (Same snapshot throughout — snapshots are not involved.)
+2. On the ON preset: strum a chord so the delay/reverb wash builds, then
+   **palm-mute** the strings to silence the dry note, and **stomp the
+   footswitch** to bypass the delay/reverb block.
+   - **Trails On** → the existing wash rings out and fades naturally after the
+     stomp.
+3. Repeat on the OFF preset (chord → palm-mute → stomp).
+   - **Trails Off** → the wash cuts off abruptly at the stomp.
+4. The audible difference between step 2 and step 3 is the feature working.
+
+Palm-muting before the stomp is essential — it removes the sustaining dry note
+that would otherwise mask the tail.
