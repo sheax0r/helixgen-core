@@ -1,4 +1,14 @@
-"""Decompile: reverse a Stadium .hsp body back into a generate-ready spec dict.
+"""View: project a parsed Stadium .hsp body dict into a readable recipe-shape
+dict (name, paths[*].blocks, snapshots, footswitches, expression, etc.) for
+agents/humans to comprehend a preset.
+
+This is a direct port of ``decompile.decompile_body`` (and every private
+helper it depends on) under the hsp-canonical redesign: ``.hsp`` is the
+single source of truth, and ``view()`` is the read-only projection off of it.
+Unlike the old ``decompile()`` entry point, ``view()`` never reads a path off
+disk and never writes a sidecar file -- it takes an already-parsed body dict
+(from ``hsp.read_hsp``) and returns a plain dict. It is lossy by design; see
+the fidelity notes below (carried over from decompile.py).
 
 The fidelity bar is *round-trip stability*: composing the returned spec must
 reproduce the source preset body (modulo the generated_at provenance stamp).
@@ -12,7 +22,7 @@ Limitations
   spec regenerates unambiguously.
 * **Orphan IR hash**: if an IR slot's ``irhash`` is neither registered in the
   IR mapping *nor* equal to the block's ingest-time ``default_irhash``, the
-  raw 32-hex hash is emitted as the ``ir`` field.  Regenerating that spec will
+  raw 32-hex hash is emitted as the ``ir`` field. Regenerating that spec will
   fail with ``GenerateError`` (wrapping the underlying ``IrMappingError``)
   until the IR is registered via ``helixgen register-irs``.
 """
@@ -21,12 +31,11 @@ from __future__ import annotations
 import copy
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 from helixgen import controllers
 from helixgen.generate import _coerce_param_value
-from helixgen.hsp import ENDPOINT_KEYS as _ENDPOINT_KEYS, _translate_model_id, _unwrap_value, read_hsp
+from helixgen.hsp import ENDPOINT_KEYS as _ENDPOINT_KEYS, _translate_model_id, _unwrap_value
 from helixgen.ir import IR_MODEL_PREFIX, IrMapping
 from helixgen.library import Library
 from helixgen.spec import StructuralEntry
@@ -463,7 +472,14 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
     return entry
 
 
-def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
+def view(body: dict, library: Library, *, irs: IrMapping | None = None) -> dict[str, Any]:
+    """Project a parsed Stadium ``.hsp`` body into a readable recipe-shape
+    dict: ``name``, ``paths[*].blocks``, and (when present) ``snapshots``,
+    ``footswitches``, ``expression``.
+
+    Read-only: ``body`` is an already-parsed dict (from ``hsp.read_hsp``);
+    this function never touches the filesystem and never writes a sidecar.
+    """
     if irs is None:
         irs = IrMapping.load()
     device_id = _device_id(body)
@@ -505,7 +521,3 @@ def decompile_body(body: dict, library: Library, irs=None) -> dict[str, Any]:
         spec["expression"] = exp
 
     return spec
-
-
-def decompile(hsp_path: Path | str, library: Library, irs=None) -> dict[str, Any]:
-    return decompile_body(read_hsp(hsp_path), library, irs=irs)

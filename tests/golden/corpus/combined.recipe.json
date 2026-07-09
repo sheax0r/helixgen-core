@@ -1,0 +1,38 @@
+{
+  "name": "Combined Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "input": "both",
+      "blocks": [
+        { "block": "Scream 808" },
+        { "block": "Brit 2204 Custom", "params": { "Drive": 0.55 } },
+        { "block": "With Pan" }
+      ]
+    },
+    {
+      "input": "none",
+      "blocks": [
+        { "block": "Digital" },
+        { "block": "Plate" }
+      ]
+    }
+  ],
+  "snapshots": [
+    { "name": "Rhythm" },
+    { "name": "Lead", "params": { "Brit 2204 Custom": { "Drive": 0.85 } } },
+    { "name": "Clean", "disable": ["Scream 808"] }
+  ],
+  "footswitches": [
+    { "switch": "FS3", "block": "Scream 808" },
+    { "switch": "FS5", "block": "Digital", "behavior": "momentary" }
+  ],
+  "expression": [
+    { "pedal": "EXP1", "targets": [
+      { "block": "Brit 2204 Custom", "param": "Master", "min": 0.0, "max": 0.7 }
+    ] },
+    { "pedal": "EXP2", "targets": [
+      { "block": "Plate", "param": "Mix", "min": 0.0, "max": 0.3 }
+    ] }
+  ]
+}

@@ -40,6 +40,11 @@ ENDPOINT_KEYS = frozenset({"b00", "b13"})
 # extraction time.
 CHASSIS_MODEL_PREFIX = "P35_"
 
+# Loopers live under the `P35_` namespace but ARE user-arrangeable blocks
+# (present in the library), unlike the rest of `P35_` (routing/IO). Callers
+# that skip `P35_` chassis models must exempt this prefix.
+LOOPER_MODEL_PREFIX = "P35_LooperHelix"
+
 
 # Stadium model-id → Helix model-id translations we know about.
 # Add entries here as we observe new divergences during bulk ingest.
@@ -75,6 +80,21 @@ def read_hsp(path: Path | str) -> dict[str, Any]:
             f"{path}: not a .hsp file (missing {HSP_MAGIC!r} magic header)"
         )
     return json.loads(raw[HSP_MAGIC_LEN:].decode("utf-8"))
+
+
+def dumps_hsp(body: dict[str, Any]) -> bytes:
+    """Serialize `body` as a .hsp file's bytes: magic header + compact UTF-8 JSON.
+
+    Compact separators (no spaces) match what the device itself writes, and
+    is what `read_hsp` expects to strip the magic header and parse back.
+    """
+    payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+    return HSP_MAGIC + payload.encode("utf-8")
+
+
+def write_hsp(path: Path | str, body: dict[str, Any]) -> None:
+    """Write `body` to `path` as a .hsp file (magic header + compact JSON)."""
+    Path(path).write_bytes(dumps_hsp(body))
 
 
 def _unwrap_value(wrapped: Any) -> Any:

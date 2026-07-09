@@ -76,6 +76,27 @@ def test_cli_generate_writes_output(
     assert content["data"]["meta"]["name"] == "From CLI"
 
 
+def test_cli_generate_writes_hsp_no_sidecar(tmp_path, hsp_library):
+    """`.hsp` chassis -> recipe.generate_from_recipe path; no .spec.json sidecar."""
+    recipe_path = tmp_path / "recipe.json"
+    recipe_path.write_text(json.dumps({
+        "name": "From CLI HSP",
+        "paths": [{"blocks": [{"block": "Tube Drive", "params": {"Gain": 0.6}}]}],
+    }))
+    out_path = tmp_path / "out.hsp"
+
+    result = CliRunner().invoke(
+        cli,
+        ["generate", str(recipe_path), "-o", str(out_path), "--library", str(hsp_library.root)],
+    )
+    assert result.exit_code == 0, result.output
+    from helixgen.hsp import read_hsp
+    body = read_hsp(out_path)
+    assert body["meta"]["name"] == "From CLI HSP"
+    sidecar = out_path.with_name(out_path.stem + ".spec.json")
+    assert not sidecar.exists()
+
+
 def test_cli_generate_missing_block_user_error(tmp_library, sample_serial_preset, tmp_path):
     lib = Library(tmp_library)
     lib.save_chassis(extract_chassis(sample_serial_preset))

@@ -40,7 +40,7 @@ def test_server_registers_documented_tools():
         "discover_irs",
         "register_ir",
         "register_irs",
-        "decompile_preset",
+        "view_preset",
         "patch_preset",
     }
     assert names == expected, f"unexpected tool set: {names}"
@@ -105,7 +105,7 @@ def test_generate_preset_via_server_returns_embedded_resource(mcp_library, monke
 
     if hasattr(srv.app, "_tool_manager"):
         tool = srv.app._tool_manager.get_tool("generate_preset")
-        result = tool.fn(model="stadium_xl", spec=spec)
+        result = tool.fn(model="stadium_xl", recipe=spec)
     else:
         import pytest as _pytest_inner
         _pytest_inner.skip("FastMCP._tool_manager not available on this SDK version")
@@ -116,3 +116,42 @@ def test_generate_preset_via_server_returns_embedded_resource(mcp_library, monke
     assert str(result.resource.uri).endswith(".hsp")
     decoded = base64.b64decode(result.resource.blob)
     assert decoded.startswith(HSP_MAGIC)
+
+
+def test_view_then_patch_preset_via_server(mcp_library, monkeypatch):
+    """view_preset/patch_preset round-trip through the server dispatch on a
+    base64 .hsp blob — no spec dict anywhere in the loop."""
+    import base64
+    from helixgen.hsp import HSP_MAGIC
+    from mcp_server import server as srv
+
+    monkeypatch.setattr(srv, "_resolve_library", lambda: mcp_library)
+
+    amps = mcp_library.list_blocks(category="amp")
+    cabs = mcp_library.list_blocks(category="cab")
+    recipe = {
+        "name": "Protocol View/Patch",
+        "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
+    }
+
+    if not hasattr(srv.app, "_tool_manager"):
+        pytest.skip("FastMCP._tool_manager not available on this SDK version")
+
+    gen_tool = srv.app._tool_manager.get_tool("generate_preset")
+    embedded = gen_tool.fn(model="stadium_xl", recipe=recipe)
+    hsp_b64 = embedded.resource.blob
+
+    view_tool = srv.app._tool_manager.get_tool("view_preset")
+    projection = view_tool.fn(model="stadium_xl", hsp_b64=hsp_b64)
+    assert projection["name"] == "Protocol View/Patch"
+    assert projection["paths"][0]["blocks"][0]["block"] == amps[0].display_name
+
+    patch_tool = srv.app._tool_manager.get_tool("patch_preset")
+    patched = patch_tool.fn(
+        model="stadium_xl", hsp_b64=hsp_b64,
+        operations=[{"op": "set_enabled", "block": amps[0].display_name, "enabled": False}],
+    )
+    assert patched["warnings"] == []
+    decoded = base64.b64decode(patched["hsp_b64"])
+    assert decoded.startswith(HSP_MAGIC)
+    assert patched["hsp_b64"] != hsp_b64

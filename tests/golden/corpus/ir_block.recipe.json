@@ -1,0 +1,12 @@
+{
+  "name": "IR Block Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "blocks": [
+        { "block": "Scream 808" },
+        { "block": "With Pan" }
+      ]
+    }
+  ]
+}

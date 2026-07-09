@@ -1,0 +1,17 @@
+{
+  "name": "Footswitches Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "blocks": [
+        { "block": "Scream 808" },
+        { "block": "Digital" },
+        { "block": "Plate" }
+      ]
+    }
+  ],
+  "footswitches": [
+    { "switch": "FS3", "block": "Scream 808" },
+    { "switch": "FS4", "block": "Digital", "behavior": "momentary" }
+  ]
+}

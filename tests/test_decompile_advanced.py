@@ -4,13 +4,13 @@ from pathlib import Path
 import pytest
 from helixgen.generate import compose_preset
 from helixgen.spec import parse_spec
-from helixgen.decompile import decompile_body
+from helixgen.view import view
 from helixgen.ir import IR_MODEL_PREFIX, IrMapping
 
 
 def _roundtrip(spec_dict, lib, strip):
     p1 = compose_preset(parse_spec(spec_dict), lib, source="t")
-    spec2 = parse_spec(decompile_body(p1, lib))
+    spec2 = parse_spec(view(p1, lib))
     p2 = compose_preset(spec2, lib, source="t")
     return strip(p1), strip(p2)
 
@@ -25,7 +25,7 @@ def test_snapshots_roundtrip_stable(hsp_library, strip_provenance):
              "params": {"Brit Amp": {"Drive": 0.9}}}]}
     p1, p2 = _roundtrip(spec, lib, strip_provenance)
     assert p1 == p2
-    d = decompile_body(compose_preset(parse_spec(spec), lib, source="t"), lib)
+    d = view(compose_preset(parse_spec(spec), lib, source="t"), lib)
     names = [s["name"] for s in d["snapshots"]]
     assert names[:2] == ["Rhythm", "Lead"]
 
@@ -44,7 +44,7 @@ def test_snapshot_decompile_filters_phantom_dense_overrides(hsp_library):
             {"name": "Lead", "disable": ["Tube Drive"],
              "params": {"Brit Amp": {"Drive": 0.9}}}]}
     p1 = compose_preset(parse_spec(spec), lib, source="t")
-    d = decompile_body(p1, lib)
+    d = view(p1, lib)
     snaps = {s["name"]: s for s in d["snapshots"]}
     assert "params" not in snaps["Rhythm"]
     assert snaps["Lead"]["params"] == {"Brit Amp": {"Drive": 0.9}}
@@ -71,7 +71,7 @@ def test_snapshot_decompile_emits_coordinates_when_ambiguous(hsp_library, strip_
          "params": [{"block": "Tube Drive", "lane": 1, "pos": 1, "params": {"Gain": 0.9}}]},
     ])
     p1 = compose_preset(parse_spec(spec), lib, source="t")
-    d = decompile_body(p1, lib)
+    d = view(p1, lib)
     snap = d["snapshots"][1]
     # ambiguous name -> list form with coordinates, not a bare dict
     assert isinstance(snap.get("params"), list)
@@ -94,7 +94,7 @@ def test_snapshot_decompile_stays_dict_when_unambiguous(hsp_library):
             {"name": "Lead", "disable": ["Tube Drive"],
              "params": {"Brit Amp": {"Drive": 0.9}}}]}
     p1 = compose_preset(parse_spec(spec), lib, source="t")
-    d = decompile_body(p1, lib)
+    d = view(p1, lib)
     # unambiguous -> current dict form preserved (backward compatible)
     assert isinstance(d["snapshots"][1].get("params"), dict)
     assert d["snapshots"][1]["disable"] == ["Tube Drive"]
@@ -118,7 +118,7 @@ def test_exp1_toe_switch_roundtrip_stable(hsp_library, strip_provenance):
     p1, p2 = _roundtrip(spec, lib, strip_provenance)
     assert p1 == p2
     # decompiling the composed preset recovers the toe switch as a footswitch
-    decompiled = decompile_body(compose_preset(parse_spec(spec), lib, source="t"), lib)
+    decompiled = view(compose_preset(parse_spec(spec), lib, source="t"), lib)
     assert any(fs["switch"] == "EXP1Toe" for fs in decompiled.get("footswitches", []))
 
 
@@ -170,7 +170,7 @@ def test_expression_recovery_skips_bool_and_non_exp(hsp_library, capsys, tmp_pat
                 found = True
     assert found, "Tube Drive slot not found in composed preset"
 
-    spec2 = decompile_body(preset, lib)
+    spec2 = view(preset, lib)
 
     for a in spec2.get("expression", []):
         assert a["pedal"] in ("EXP1", "EXP2")
@@ -201,7 +201,7 @@ def test_expression_recovery_skips_bool_and_non_exp(hsp_library, capsys, tmp_pat
         real_lib = Library(root=tmp_path / "real_lib")
         ingest_path(real, real_lib)
         real_body = read_hsp(real)
-        real_spec = decompile_body(real_body, real_lib)
+        real_spec = view(real_body, real_lib)
         for a in real_spec.get("expression", []):
             assert a["pedal"] in ("EXP1", "EXP2")
             for t in a["targets"]:
@@ -250,7 +250,7 @@ def test_refs_never_emit_empty_block_name_when_display_name_blank(hsp_library):
             model_id=orig.model_id, category=orig.category, display_name="",
             params=orig.params, exemplar=orig.exemplar, first_seen=orig.first_seen))
 
-    d = decompile_body(p1, lib)
+    d = view(p1, lib)
 
     for fs in d.get("footswitches", []):
         assert fs["block"], f"empty footswitch block ref: {fs!r}"
@@ -326,7 +326,7 @@ def test_ir_default_hash_always_emits_ir_field(tmp_path, sample_serial_preset_hs
     lib = _make_ir_library(tmp_path, sample_serial_preset_hsp)
     body = _make_ir_body(_DEFAULT_IRHASH)
     empty_irs = IrMapping(irs_dir=tmp_path / "irs")
-    d = decompile_body(body, lib, irs=empty_irs)
+    d = view(body, lib, irs=empty_irs)
     block_entry = d["paths"][0]["blocks"][0]
     # Always emit — even when the hash matches the library block's default_irhash.
     assert block_entry.get("ir") == _DEFAULT_IRHASH
@@ -373,7 +373,7 @@ def test_ir_block_no_default_hash_emits_raw_hash(tmp_path, sample_serial_preset_
         },
     }
     empty_irs = IrMapping(irs_dir=tmp_path / "irs")
-    d = decompile_body(body, lib, irs=empty_irs)
+    d = view(body, lib, irs=empty_irs)
     block_entry = d["paths"][0]["blocks"][0]
     assert block_entry.get("ir") == _UNREGISTERED
     # Round-trip must not raise — unregistered hex hash passes through with a warning.
@@ -385,7 +385,7 @@ def test_ir_orphan_hash_emits_raw_hash(tmp_path, sample_serial_preset_hsp):
     lib = _make_ir_library(tmp_path, sample_serial_preset_hsp)
     body = _make_ir_body(_ORPHAN_IRHASH)
     empty_irs = IrMapping(irs_dir=tmp_path / "irs")
-    d = decompile_body(body, lib, irs=empty_irs)
+    d = view(body, lib, irs=empty_irs)
     block_entry = d["paths"][0]["blocks"][0]
     assert block_entry.get("ir") == _ORPHAN_IRHASH
 
@@ -396,7 +396,7 @@ def test_ir_orphan_hash_regenerate_passthrough(tmp_path, sample_serial_preset_hs
     lib = _make_ir_library(tmp_path, sample_serial_preset_hsp)
     body = _make_ir_body(_ORPHAN_IRHASH)
     empty_irs = IrMapping(irs_dir=tmp_path / "irs")
-    d = decompile_body(body, lib, irs=empty_irs)
+    d = view(body, lib, irs=empty_irs)
     # Must NOT raise — orphan hash is passed through unchanged
     compose_preset(parse_spec(d), lib, source="t", irs=empty_irs)
     assert "warning" in capsys.readouterr().err.lower()
@@ -420,7 +420,7 @@ def test_decompile_ir_without_irhash_sets_no_ir(tmp_path, sample_serial_preset_h
     lib = _make_ir_library(tmp_path, sample_serial_preset_hsp)
     body = _make_ir_body_no_hash()
     empty_irs = IrMapping(irs_dir=tmp_path / "irs")
-    d = decompile_body(body, lib, irs=empty_irs)
+    d = view(body, lib, irs=empty_irs)
     entry = d["paths"][0]["blocks"][0]
     assert entry.get("no_ir") is True
     assert "ir" not in entry
@@ -448,7 +448,7 @@ def test_real_export_a_like_supreme_now_roundtrips(tmp_path):
         ingest_path(s, lib)
     irs = IrMapping.load()
     body = read_hsp(sample)
-    spec = parse_spec(decompile_body(body, lib, irs=irs))
+    spec = parse_spec(view(body, lib, irs=irs))
     compose_preset(spec, lib, source=str(sample), irs=irs)  # must not raise
 
 
@@ -497,7 +497,7 @@ def test_duplicate_block_footswitches_roundtrip(tmp_path, sample_serial_preset_h
         "footswitches": [{"switch": "FS1", "block": "With Pan", "pos": 1},
                          {"switch": "FS2", "block": "With Pan", "pos": 2}]}
     p1 = compose_preset(parse_spec(spec), lib, source="t")
-    spec2 = parse_spec(decompile_body(p1, lib))
+    spec2 = parse_spec(view(p1, lib))
     p2 = compose_preset(spec2, lib, source="t")
     assert strip_provenance(p1) == strip_provenance(p2)
 
@@ -511,7 +511,7 @@ def test_split_roundtrip_stable(hsp_library, strip_provenance):
     from helixgen.generate import compose_preset
     from helixgen.spec import parse_spec
     p1 = compose_preset(parse_spec(spec), hsp_library, source="t")
-    spec2 = parse_spec(decompile_body(p1, hsp_library))
+    spec2 = parse_spec(view(p1, hsp_library))
     p2 = compose_preset(spec2, hsp_library, source="t")
     assert strip_provenance(p1) == strip_provenance(p2)
 
@@ -524,7 +524,7 @@ def test_ref_adds_path_even_zero_when_name_ambiguous_across_paths():
     """A name colliding at the SAME (lane, pos) in both path 0 and path 1
     can't be disambiguated by lane/pos alone -- `_ref` must add an explicit
     `path` key (even 0, which is falsy) for both placements."""
-    from helixgen.decompile import _ref
+    from helixgen.view import _ref
 
     idx = {"Vol": [(0, 0, 12), (1, 0, 12)]}
     assert _ref("Vol", 0, 0, 12, idx) == {"block": "Vol", "lane": 0, "pos": 12, "path": 0}
@@ -535,7 +535,7 @@ def test_ref_omits_path_when_ambiguity_is_within_a_single_path():
     """A name ambiguous only WITHIN one path (different lane/pos, same path)
     is fully disambiguated by lane/pos alone -- no `path` key should be
     added."""
-    from helixgen.decompile import _ref
+    from helixgen.view import _ref
 
     idx = {"Vol": [(0, 0, 3), (0, 0, 7)]}
     ref = _ref("Vol", 0, 0, 3, idx)
@@ -545,7 +545,7 @@ def test_ref_omits_path_when_ambiguity_is_within_a_single_path():
 
 def test_ref_unambiguous_name_emits_bare_block_only():
     """A unique name gets no coordinates and no path -- unchanged behavior."""
-    from helixgen.decompile import _ref
+    from helixgen.view import _ref
 
     idx = {"Vol": [(0, 0, 3)]}
     assert _ref("Vol", 0, 0, 3, idx) == {"block": "Vol"}
@@ -589,5 +589,5 @@ def test_bas_goliathan_roundtrips_via_cli(tmp_path):
     ingest_path(sample, lib)
     irs = IrMapping.load()
     body = read_hsp(sample)
-    spec = parse_spec(decompile_body(body, lib, irs=irs))
+    spec = parse_spec(view(body, lib, irs=irs))
     compose_preset(spec, lib, source=str(sample), irs=irs)  # must not raise

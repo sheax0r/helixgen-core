@@ -1,0 +1,20 @@
+{
+  "name": "Dual Cab Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "blocks": [
+        { "block": "Brit 2204 Custom" },
+        { "block": "4x12 Greenback 25", "raw": {
+          "harness": {
+            "@enabled": { "value": true },
+            "params": { "dual": { "value": true } }
+          },
+          "slots": [
+            { "model": "HD2_CabMicNoCab", "@enabled": { "value": false }, "params": {}, "version": 0 }
+          ]
+        } }
+      ]
+    }
+  ]
+}
