@@ -11,6 +11,7 @@ import copy
 import pytest
 
 from helixgen import mutate
+from helixgen.controllers import CONTROLLER_SOURCE_IDS
 from helixgen.generate import ParamValidationError
 from helixgen.hsp import read_hsp, write_hsp
 from helixgen.ir import IrMapping
@@ -578,6 +579,148 @@ def test_set_input_invalid_jack_raises(goldfinger_body):
 def test_set_input_invalid_path_raises(goldfinger_body):
     with pytest.raises(mutate.MutateError):
         mutate.set_input(goldfinger_body, 5, "inst1")
+
+
+# --- wire_footswitch / wire_expression / wire_wah_toe (Task 1g) ------------
+
+def test_wire_footswitch_writes_targetbypass_controller(goldfinger_body, library):
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+
+    bnn = goldfinger_body["preset"]["flow"][0]["b01"]
+    controller = bnn["@enabled"]["controller"]
+    source_id = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"]
+    assert source_id == 0x01010102
+    assert controller["source"] == source_id
+    assert controller["type"] == "targetbypass"
+    assert controller["behavior"] == "latching"
+    # Digital footswitch: null bounds (only EXP-toe position switches need
+    # explicit min/max/threshold).
+    assert controller["min"] is None
+    assert controller["max"] is None
+
+    sources = goldfinger_body["preset"]["sources"]
+    assert sources[str(source_id)] == {"bypass": False}
+
+
+def test_wire_footswitch_momentary_behavior(goldfinger_body, library):
+    mutate.wire_footswitch(goldfinger_body, "FS4", "Digital", "momentary", library)
+    bnn = goldfinger_body["preset"]["flow"][0]["b04"]
+    assert bnn["@enabled"]["controller"]["behavior"] == "momentary"
+
+
+def test_wire_footswitch_duplicate_switch_raises(goldfinger_body, library):
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+
+
+def test_wire_footswitch_unknown_block_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_footswitch(goldfinger_body, "FS3", "Nope Amp", "latching", library)
+
+
+def test_wire_expression_writes_param_controller(goldfinger_body, library):
+    mutate.wire_expression(
+        goldfinger_body, "EXP1",
+        [{"block": "Brit 2204 Custom", "param": "Drive", "min": 0.1, "max": 0.9}],
+        library,
+    )
+    wrapped = goldfinger_body["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]
+    controller = wrapped["controller"]
+    source_id = CONTROLLER_SOURCE_IDS["stadium_xl"]["EXP1"]
+    assert source_id == 0x01020100
+    assert controller["source"] == source_id
+    assert controller["type"] == "param"
+    assert controller["min"] == 0.1
+    assert controller["max"] == 0.9
+
+    sources = goldfinger_body["preset"]["sources"]
+    assert sources[str(source_id)] == {"bypass": False}
+
+
+def test_wire_expression_defaults_min_max(goldfinger_body, library):
+    mutate.wire_expression(
+        goldfinger_body, "EXP2",
+        [{"block": "Digital", "param": "Mix"}],
+        library,
+    )
+    wrapped = goldfinger_body["preset"]["flow"][0]["b04"]["slot"][0]["params"]["Mix"]
+    assert wrapped["controller"]["min"] == 0.0
+    assert wrapped["controller"]["max"] == 1.0
+
+
+def test_wire_expression_multiple_targets_one_pedal(goldfinger_body, library):
+    mutate.wire_expression(
+        goldfinger_body, "EXP2",
+        [
+            {"block": "Brit 2204 Custom", "param": "Drive", "min": 0.1, "max": 0.9},
+            {"block": "Digital", "param": "Mix", "min": 0.0, "max": 0.4},
+        ],
+        library,
+    )
+    drive = goldfinger_body["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]
+    mix = goldfinger_body["preset"]["flow"][0]["b04"]["slot"][0]["params"]["Mix"]
+    assert drive["controller"]["source"] == mix["controller"]["source"]
+    assert len(goldfinger_body["preset"]["sources"]) == 1
+
+
+def test_wire_expression_duplicate_block_param_raises(goldfinger_body, library):
+    mutate.wire_expression(
+        goldfinger_body, "EXP1", [{"block": "Digital", "param": "Mix"}], library
+    )
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_expression(
+            goldfinger_body, "EXP2", [{"block": "Digital", "param": "Mix"}], library
+        )
+
+
+def test_wire_expression_duplicate_within_call_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_expression(
+            goldfinger_body, "EXP1",
+            [
+                {"block": "Digital", "param": "Mix"},
+                {"block": "Digital", "param": "Mix"},
+            ],
+            library,
+        )
+
+
+def test_wire_expression_unknown_param_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_expression(
+            goldfinger_body, "EXP1", [{"block": "Digital", "param": "NotAParam"}], library
+        )
+
+
+def test_wire_expression_empty_targets_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_expression(goldfinger_body, "EXP1", [], library)
+
+
+def test_wire_wah_toe_uses_exp1toe_source(goldfinger_body, library):
+    mutate.wire_wah_toe(goldfinger_body, "Digital", library)
+
+    bnn = goldfinger_body["preset"]["flow"][0]["b04"]
+    controller = bnn["@enabled"]["controller"]
+    source_id = CONTROLLER_SOURCE_IDS["stadium_xl"]["EXP1Toe"]
+    assert source_id == 0x01010500
+    assert controller["source"] == 0x01010500
+    assert controller["type"] == "targetbypass"
+    assert controller["behavior"] == "latching"
+    # Position switch: explicit min/max/threshold, unlike a digital FS.
+    assert controller["min"] is False
+    assert controller["max"] is True
+    assert controller["threshold"] == 0.0
+
+    sources = goldfinger_body["preset"]["sources"]
+    assert sources[str(source_id)] == {"bypass": False}
+
+
+def test_wire_wah_toe_duplicate_raises(goldfinger_body, library):
+    mutate.wire_wah_toe(goldfinger_body, "Digital", library)
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_wah_toe(goldfinger_body, "Plate", library)
 
 
 # --- golden micro-test (Task 1c step 4) -----------------------------------

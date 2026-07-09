@@ -586,3 +586,168 @@ def set_input(body: dict[str, Any], path: int, jack: str) -> None:
     except GenerateError as exc:
         raise MutateError(str(exc)) from exc
 
+
+# --- controller wiring: wire_footswitch / wire_expression / wire_wah_toe ----
+
+def wire_footswitch(
+    body: dict[str, Any],
+    switch: str,
+    block: str,
+    behavior: str,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Assign a physical footswitch to a placed block's bypass, in place.
+
+    Ports `generate._build_fs_controller` + `_build_fs_assignments`: writes
+    a `targetbypass` controller dict onto the block's bNN-level `@enabled`
+    wrapper (the same wrapper `set_enabled` mutates) and registers the
+    resolved source id in `preset.sources`. `switch` is a logical name
+    ("FS1".."FS10", or "EXP1Toe" for the expression-pedal toe/position
+    switch -- see `wire_wah_toe`), resolved via
+    `controllers.resolve_controller_source` against the chassis device_id.
+
+    Raises `MutateError` if `switch`'s source id is already registered in
+    `preset.sources` -- one switch can drive only one block's bypass, and
+    the Stadium doesn't disambiguate a second binding.
+    """
+    if behavior not in ("latching", "momentary"):
+        raise MutateError(
+            f"Unknown footswitch behavior {behavior!r}; must be 'latching' or 'momentary'."
+        )
+    fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    device_id = _chassis_device_id(body)
+    try:
+        source_id = controllers.resolve_controller_source(device_id, switch)
+    except ControllerError as exc:
+        raise MutateError(str(exc)) from exc
+
+    sources = body.setdefault("preset", {}).setdefault("sources", {})
+    if str(source_id) in sources:
+        raise MutateError(
+            f"Switch {switch!r} is already assigned to a block; one switch "
+            f"can drive only one block's bypass."
+        )
+
+    bnn = body["preset"]["flow"][fi][key]
+    wrapped = bnn.get("@enabled")
+    if not isinstance(wrapped, dict):
+        wrapped = {"value": True}
+        bnn["@enabled"] = wrapped
+    wrapped["controller"] = _build_fs_controller(
+        source_id, behavior, position=controllers.is_position_switch(switch)
+    )
+    sources[str(source_id)] = {"bypass": False}
+
+
+def wire_expression(
+    body: dict[str, Any],
+    pedal: str,
+    targets: list[dict[str, Any]],
+    library: Library,
+) -> None:
+    """Sweep one or more block params with an expression pedal, in place.
+
+    Ports `generate._build_exp_controller` + `_build_exp_assignments`: each
+    target dict is `{"block", "param", "min"=0.0, "max"=1.0}` (plus optional
+    `"path"`/`"lane"`/`"pos"` to disambiguate, matching `resolve_slot`).
+    Writes a `param`-type controller dict onto the param's existing value
+    wrapper and registers the pedal's source id in `preset.sources`.
+
+    Raises `MutateError` for: an empty `targets` list; `min > max`; an
+    unknown param; a `(block, param)` pair repeated within `targets`; or a
+    `(block, param)` pair that already carries a controller (already driven
+    by a previously-wired pedal). Stereo-shaped params (`{"1": ..., "2":
+    ...}`) are out of scope -- see `set_param`'s stereo handling, which this
+    verb does not replicate.
+    """
+    if not targets:
+        raise MutateError("wire_expression requires a non-empty targets list.")
+
+    device_id = _chassis_device_id(body)
+    try:
+        source_id = controllers.resolve_controller_source(device_id, pedal)
+    except ControllerError as exc:
+        raise MutateError(str(exc)) from exc
+
+    resolved: list[tuple[dict[str, Any], float, float]] = []
+    seen: set[tuple[str, str]] = set()
+    for target in targets:
+        block = target["block"]
+        param = target["param"]
+        min_val = target.get("min", 0.0)
+        max_val = target.get("max", 1.0)
+        if min_val > max_val:
+            raise MutateError(
+                f"EXP target {block!r}.{param!r}: min {min_val} > max {max_val}."
+            )
+        dedupe_key = (block, param)
+        if dedupe_key in seen:
+            raise MutateError(
+                f"EXP target {block!r}.{param!r} is assigned more than once "
+                f"in this wire_expression call."
+            )
+        seen.add(dedupe_key)
+
+        fi, key, si = resolve_slot(
+            body, block, library,
+            path=target.get("path"), lane=target.get("lane"), pos=target.get("pos"),
+        )
+        slot = _slot_dict(body, fi, key, si)
+        lib_block = library.load_block(_translate_model_id(slot.get("model", "")))
+        if param not in lib_block.params:
+            raise MutateError(
+                f"EXP target {pedal} → {block!r}.{param!r}: unknown param. "
+                f"Known params: {sorted(lib_block.params.keys())}."
+            )
+        wrapped = (slot.get("params") or {}).get(param)
+        if not isinstance(wrapped, dict):
+            raise MutateError(
+                f"Block {block!r} has no existing value for param {param!r}."
+            )
+        if _is_stereo_param(wrapped):
+            raise MutateError(
+                f"EXP target {block!r}.{param!r}: stereo-shaped params are "
+                f"not supported for expression assignment."
+            )
+        if "controller" in wrapped:
+            raise MutateError(
+                f"Param {block!r}.{param!r} is already driven by a controller; "
+                f"cannot assign a second pedal."
+            )
+        resolved.append((wrapped, min_val, max_val))
+
+    # Commit only after every target validates, so a failure partway through
+    # `targets` leaves the body untouched.
+    for wrapped, min_val, max_val in resolved:
+        wrapped["controller"] = _build_exp_controller(source_id, min_val, max_val)
+
+    sources = body.setdefault("preset", {}).setdefault("sources", {})
+    sources.setdefault(str(source_id), {"bypass": False})
+
+
+def wire_wah_toe(
+    body: dict[str, Any],
+    block: str,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Wire a wah block's bypass to the onboard expression pedal's toe/
+    position switch (`EXP1Toe`), in place -- the standard Helix wah
+    auto-engage: pushing the pedal fully forward toggles the wah on/off
+    while `EXP1` sweeps its `Pedal` param (see `wire_expression` for that
+    half of the setup; this verb only wires the bypass side).
+
+    `EXP1Toe`'s source id is `0x01010500` (hardware-validated in 0.5.1 --
+    ~all real wah exports carry it). Thin wrapper over `wire_footswitch`
+    with `switch="EXP1Toe"`, `behavior="latching"`: `is_position_switch`
+    recognizes the "Toe" suffix and attaches the explicit min/max/threshold
+    bounds a position switch needs (a digital FS's null bounds don't bind).
+    """
+    wire_footswitch(body, "EXP1Toe", block, "latching", library, path=path, lane=lane, pos=pos)
