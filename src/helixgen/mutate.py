@@ -692,17 +692,40 @@ def wire_footswitch(
             f"{existing_source!r}); a block can be wired to only one switch."
         )
 
-    sources = body.setdefault("preset", {}).setdefault("sources", {})
-    if str(source_id) in sources and existing_source != source_id:
-        raise MutateError(
-            f"Switch {switch!r} is already assigned to a block; one switch "
-            f"can drive only one block's bypass."
-        )
+    # Conflict detection scans the FLOW for a real targetbypass binding that
+    # already claims this source, NOT the `sources` table: a chassis cloned
+    # from a real export carries ~30 pre-existing device-metadata `sources`
+    # entries (e.g. FS1..FS10) that are not block bindings, so presence in the
+    # table is not a conflict signal. Only another bNN whose
+    # `@enabled.controller.source == source_id` (on a DIFFERENT bNN than the
+    # target) is a genuine second binding.
+    flow = (body.get("preset") or {}).get("flow") or []
+    for other_fi, path_dict in enumerate(flow):
+        if not isinstance(path_dict, dict):
+            continue
+        for other_key in _bnn_keys(path_dict):
+            if (other_fi, other_key) == (fi, key):
+                continue
+            other_bnn = path_dict.get(other_key)
+            if not isinstance(other_bnn, dict):
+                continue
+            other_wrapped = other_bnn.get("@enabled")
+            if not isinstance(other_wrapped, dict):
+                continue
+            other_controller = other_wrapped.get("controller")
+            if not isinstance(other_controller, dict):
+                continue
+            if other_controller.get("source") == source_id:
+                raise MutateError(
+                    f"Switch {switch!r} is already assigned to a block; one switch "
+                    f"can drive only one block's bypass."
+                )
 
+    sources = body.setdefault("preset", {}).setdefault("sources", {})
     wrapped["controller"] = _build_fs_controller(
         source_id, behavior, position=controllers.is_position_switch(switch)
     )
-    sources[str(source_id)] = {"bypass": False}
+    sources.setdefault(str(source_id), {"bypass": False})
 
 
 def wire_expression(

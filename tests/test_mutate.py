@@ -704,6 +704,31 @@ def test_wire_footswitch_same_switch_same_block_is_idempotent(goldfinger_body, l
     assert list(sources.keys()) == [str(fs3_source)]
 
 
+def test_wire_footswitch_allows_preexisting_source_metadata(goldfinger_body, library):
+    # A chassis cloned from a real export carries pre-existing device-metadata
+    # `sources` entries (e.g. FS1..FS10) that are NOT actual block bindings.
+    # Presence of the target switch's source id in the `sources` table must
+    # NOT be treated as a conflict when no bNN's `@enabled.controller` actually
+    # points at it (regression: false-positive "switch already assigned").
+    fs3_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"]
+    sources = goldfinger_body["preset"].setdefault("sources", {})
+    sources[str(fs3_source)] = {"bypass": False}  # device metadata, no block bound
+
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+
+    bnn = goldfinger_body["preset"]["flow"][0]["b01"]
+    assert bnn["@enabled"]["controller"]["source"] == fs3_source
+
+
+def test_wire_footswitch_two_blocks_same_switch_still_raises(goldfinger_body, library):
+    # Even with the flow-scan conflict check (not a sources-table check),
+    # wiring two DIFFERENT blocks to the same switch must still raise, because
+    # a real targetbypass binding on a different bNN already claims the source.
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    with pytest.raises(mutate.MutateError, match="already assigned"):
+        mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+
+
 def test_wire_expression_writes_param_controller(goldfinger_body, library):
     mutate.wire_expression(
         goldfinger_body, "EXP1",
