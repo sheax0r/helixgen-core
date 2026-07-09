@@ -306,7 +306,6 @@ def set_enabled(
         return
 
     idx = _resolve_snapshot_index(body, snapshot)
-    base = wrapped.get("value", True)
     snaps = wrapped.get("snapshots")
     snaps = list(snaps) if isinstance(snaps, list) else [None] * HSP_SNAPSHOT_SLOTS
     if len(snaps) < HSP_SNAPSHOT_SLOTS:
@@ -315,7 +314,12 @@ def set_enabled(
         raise MutateError(f"Snapshot index {idx} out of range (0..{len(snaps) - 1}).")
 
     snaps[idx] = enabled
-    snaps = [base if s is None else s for s in snaps]  # densify
+    # Densify null slots to True (an unset snapshot is ENABLED, independent of
+    # the base value) -- matches `generate._to_hsp_bnn`'s @enabled fill. Filling
+    # with the base value instead would wrongly bypass a base-bypassed block in
+    # every untouched snapshot. (Param snapshots densify to base; @enabled does
+    # NOT -- the two are deliberately different.)
+    snaps = [True if s is None else s for s in snaps]
     wrapped["snapshots"] = snaps
     wrapped["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
 

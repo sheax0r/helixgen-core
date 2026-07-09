@@ -825,11 +825,10 @@ def generate_preset(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shape = library.load_chassis().get(CHASSIS_SHAPE_KEY, "hlx")
     if shape == "hsp":
+        # No sidecar: the .hsp is the sole source of truth (surgical edits
+        # mutate it in place via `mutate.py`).
         body = json.dumps(preset, separators=(",", ":")).encode("utf-8")
         output_path.write_bytes(HSP_MAGIC + body)
-        # Sidecar spec beside the .hsp (source of truth for surgical edits).
-        sidecar = output_path.with_name(output_path.stem + ".spec.json")
-        sidecar.write_text(json.dumps(raw, indent=2))
     else:
         output_path.write_text(json.dumps(preset, indent=2))
     return output_path

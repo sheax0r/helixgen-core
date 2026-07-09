@@ -295,6 +295,23 @@ def test_set_enabled_snapshot_densifies_nulls_and_sets_index(snapshots_body, lib
     assert wrapped["snapshots"] == [True, True, False, True, True, True, True, True]
 
 
+def test_set_enabled_snapshot_densifies_base_bypassed_to_true(snapshots_body, library):
+    # A BASE-BYPASSED block (@enabled.value=False) edited in one snapshot must
+    # densify its OTHER unset snapshot slots to True, NOT to the base value --
+    # an unset snapshot is enabled independent of the base (matches
+    # generate._to_hsp_bnn). Filling with base (False) would silently bypass
+    # the block in every snapshot the user never touched.
+    bnn = snapshots_body["preset"]["flow"][0]["b02"]
+    bnn["@enabled"] = {"value": False}  # base-bypassed, no snapshots array yet
+
+    mutate.set_enabled(snapshots_body, "Brit 2204 Custom", False, library, snapshot="Clean")
+
+    wrapped = bnn["@enabled"]
+    assert None not in wrapped["snapshots"]
+    # Only "Clean" (index 2) is False; every untouched slot is True, not base.
+    assert wrapped["snapshots"] == [True, True, False, True, True, True, True, True]
+
+
 def test_set_enabled_snapshot_preserves_existing_overrides(snapshots_body, library):
     # b01 (Scream 808) already carries a real snapshots array in the golden
     # fixture: [T, T, F, T, T, T, T, T] (disabled in "Clean"). Editing a

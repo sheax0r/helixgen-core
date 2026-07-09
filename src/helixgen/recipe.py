@@ -33,7 +33,6 @@ from helixgen.generate import (
     _assign_positions,
     _build_snapshot_metadata,
     _build_snapshot_overrides,
-    _chassis_device_id,
     _emit_splits,
     _emit_structural,
     _is_chassis_meta_key,
