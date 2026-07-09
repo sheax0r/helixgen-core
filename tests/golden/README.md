@@ -97,5 +97,7 @@ x}`, no `snapshots`/`controller` unless explicitly requested), and leave
 `harness` absent unless the caller supplies verbatim `raw.harness` (or, for
 delay/reverb, an author-facing `trails` flag) — `_to_hsp_bnn` never synthesizes
 a harness out of thin air for the common case. This is a straight port, not a
-new algorithm; `_to_hsp_bnn` itself gets deleted once `add_block` in `mutate.py`
-replaces its call site.
+new algorithm; `mutate.add_block` actually *calls* `generate._to_hsp_bnn`
+(and the other compose-path helpers it imports) rather than replacing it, so
+Phase 3 must relocate `_to_hsp_bnn` (and those other helpers) into
+`mutate.py` or a shared module -- not delete them.
