@@ -194,7 +194,9 @@ def normalize(hsp_bytes: bytes) -> dict[str, Any]:
     pipeline compare equal regardless of when each ran.
     """
     d = parsed_dict(hsp_bytes)
-    d.get("meta", {}).get("helixgen", {}).pop("generated_at", None)
+    helixgen_meta = d.get("meta", {}).get("helixgen", {})
+    helixgen_meta.pop("generated_at", None)
+    helixgen_meta.pop("version", None)  # release provenance, not tone data
     return d
 
 

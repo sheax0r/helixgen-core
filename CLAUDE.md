@@ -12,7 +12,8 @@ file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
 
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
 - `helixgen show-block "<name>"` — print a block's exact param names, types, defaults, and observed ranges. **Run this before writing a spec** — param names are case-sensitive and the generator rejects unknown ones.
-- `helixgen generate <spec.json> -o <out.hsp>` — generate a preset. The `-o` flag is required. Output extension `.hsp` writes a Stadium-format file (8-byte magic + compact JSON); `.hlx` writes pretty JSON for the original Helix.
+- `helixgen generate <recipe.json> -o <out.hsp>` — author a preset from a transient recipe (no sidecar is written). The `-o` flag is required. Output extension `.hsp` writes a Stadium-format file (8-byte magic + compact JSON); `.hlx` writes pretty JSON for the original Helix.
+- `helixgen view <preset.hsp> [-o recipe.json]` — read-only projection of a `.hsp` back into the recipe shape (replaces the old `decompile`; `-o` dump is non-authoritative).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
 - `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg. Use `--force` to overwrite existing mappings.
 - `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash directly (no device export needed) and register. Requires libsndfile (`brew install libsndfile` on macOS). Only 48 kHz sources supported; non-48 kHz raises an error suggesting `sox`. Stereo WAVs are reduced to the left channel (matches Stadium's import).
@@ -45,7 +46,24 @@ knowledge is fine (Greenback = classic-rock, V30 = modern metal, ribbon = warm
 top, SM7 = fat). The catalog README's "Adding a new pack" section is the
 authoritative procedure and self-documenting template.
 
-## spec.json shape
+## Architecture: `.hsp` is the source of truth
+
+A `.hsp` file is the 8-byte magic `rpshnosj` followed by a JSON document — it
+**is** the canonical, editable artifact. There is no persisted intermediary
+spec and **no `.spec.json` sidecar**. Two flows act on it:
+
+- **Author** a new preset by feeding a transient **recipe** (the JSON shape
+  below) to `generate`; helixgen clones the chassis template and replays the
+  recipe as in-place mutations. The recipe is input-only — it is not written to
+  disk and is never read back as truth.
+- **Edit** an existing `.hsp` with the surgical verbs (`set-param`, `enable`,
+  `add-block`, …); each reads the `.hsp`, mutates its body in place, and writes
+  the `.hsp` back. No recompile, no sidecar.
+
+To read a `.hsp` back into the recipe shape (for inspection or hand-authoring a
+similar preset), use `helixgen view <preset.hsp>` — a read-only projection.
+
+## recipe shape (author input to `generate`)
 
 ```json
 {
@@ -200,64 +218,68 @@ the block is **bypassed** (manually or via a footswitch):
   `raw.harness` carried) untouched.
 - **Delay and reverb only.** Setting `trails` on any other block category is a
   generate error.
-- `decompile` lifts an existing `Trails` out of `raw.harness` into this clean
+- `view` lifts an existing `Trails` out of `raw.harness` into this clean
   `trails` field (delay/reverb blocks only), so it round-trips as a first-class
   setting. If both `trails` and a `raw.harness` are present, `trails` wins.
 - Stadium-only; ignored for `.hlx` (legacy Helix) chassis (no harness emitted).
+- Editing an existing `.hsp` never needs `trails`: `set-param`/edit verbs
+  preserve the block's `harness` (and its `Trails`) verbatim in place.
 
 ### Optional: per-block verbatim state (`raw`)
 
-Blocks may carry an optional `"raw"` object holding verbatim Stadium bNN state
-that helixgen does not model but preserves for round-trip fidelity:
+A recipe block may carry an optional `"raw"` object holding verbatim Stadium bNN
+state that helixgen does not model, so that *authoring* a preset from a recipe
+can reproduce it:
 
 - `"harness"` — the bNN-level `harness` dict (carries structural fields like
   `dual`, `upper`, `bypass`, `EvtIdx`, and its own `@enabled`). Non-deterministic;
   preserved verbatim. The one author-facing harness field, `Trails`
   (delay/reverb spillover), is modeled separately as the block-level `trails`
-  field above and is lifted out of `raw.harness` on decompile.
+  field above and is lifted out of `raw.harness` by `view`.
 - `"slots"` — additional slots beyond the first (`slot[1:]`), i.e. the second
   cab of a dual-cab block.
 
-`raw` is emitted by `decompile` and re-attached by `generate`. It is normally
-authored only by the decompiler; hand-editing it is unnecessary for typical
-tone specs. Stadium-only.
+`raw` is emitted by `view` and consumed by `generate`. **Editing an existing
+`.hsp` never needs `raw`** — in-place mutation leaves every unmodeled field
+untouched by construction; `raw` matters only for authoring a fresh preset that
+carries such state. Stadium-only.
 
 ## Surgical edits
 
-Once a preset exists, don't hand-edit the whole spec to change one setting —
-use the edit verbs below. They mutate a spec in place and regenerate the
-`.hsp`, reusing all of `generate.py`'s validation, model-id translation, and IR
-injection.
+Once a preset exists, don't re-author it to change one setting — use the edit
+verbs below. Each reads the `.hsp`, mutates its body **in place**, and writes
+the `.hsp` back, reusing all of helixgen's validation, model-id translation,
+and IR injection. Works on ANY `.hsp` — one helixgen authored or a raw device
+export — with no decompile step and no sidecar.
 
-**Mental model:** the spec is the source of truth. Every `generate` writes a
-sidecar next to the `.hsp` (`MyTone.hsp` → `MyTone.spec.json`); an edit verb
-loads that sidecar, applies the change, writes it back, and regenerates the
-`.hsp`. Point an edit verb at an orphan `.hsp` (no sidecar — e.g. an old export
-you never generated with helixgen) and it auto-decompiles first, so a sidecar
-appears next to it before the edit is applied. You can also run `decompile`
-directly to get a spec.json to inspect or hand-edit.
+**Mental model:** the `.hsp` is the source of truth. An edit verb loads it,
+applies one change to the verbose device-native JSON, and saves it. Fields
+helixgen doesn't model (dual-cab slots, harness, `xyctrl`, …) are preserved
+untouched by construction.
 
 **Run `helixgen show-block "<block>"` first** to confirm the exact,
 case-sensitive param name — the same guardrail `generate` already enforces.
 
-- `helixgen set-param <preset> <block> <param> <value> [--path/--index/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string).
-- `helixgen enable <preset> <block> [--snapshot NAME] [--path/--index/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) remove it from that snapshot's `disable` list.
-- `helixgen disable <preset> <block> [--snapshot NAME] [--path/--index/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) add it to that snapshot's `disable` list.
+- `helixgen set-param <preset> <block> <param> <value> [--path/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string).
+- `helixgen enable <preset> <block> [--snapshot NAME] [--path/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) enable it in that snapshot.
+- `helixgen disable <preset> <block> [--snapshot NAME] [--path/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) bypass it in that snapshot.
 - `helixgen add-block <preset> <block> [--path N] [--after NAME]` — insert a block (append to `--path`, default 0, or after a named block).
-- `helixgen remove-block <preset> <block> [--path/--index/--lane/--pos]` — delete a block.
-- `helixgen swap-model <preset> <old> <new> [--path/--index/--lane/--pos]` — replace a block with another of the **same category**; carries over params the target shares, warns on any it has to drop.
-- `helixgen decompile <preset.hsp> -o spec.json` — reconstruct a spec.json from an `.hsp` (this is what runs automatically on an orphan edit; run it directly to inspect or hand-edit).
+- `helixgen remove-block <preset> <block> [--path/--lane/--pos]` — delete a block.
+- `helixgen swap-model <preset> <old> <new> [--path/--lane/--pos]` — replace a block with another of the **same category**; carries over params the target shares, warns on any it has to drop.
+- `helixgen view <preset.hsp> [-o recipe.json]` — read-only projection of a `.hsp` into the recipe shape (replaces `decompile`; the dump is non-authoritative).
 
-`--path`/`--index`/`--lane`/`--pos` disambiguate when a block name appears more
-than once in the preset (e.g. dual-cab, both lanes of a split). `--snapshot`
-applies only to `enable`/`disable`.
+`--path`/`--lane`/`--pos` disambiguate when a block name appears more than once
+in the preset (e.g. dual-cab, both lanes of a split). (`--index` was removed in
+1.0.0 — block addressing is `(path, lane, pos)`.) `--snapshot` applies only to
+`enable`/`disable`.
 
-MCP tools mirror the CLI for agent-driven edits: `patch_preset(model, spec,
-operations)` applies a list of `{op, ...}` operations to an in-memory spec
-dict (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`),
-and `decompile_preset(model, hsp_b64)` turns a base64 `.hsp` blob into an
-editable spec dict. The orphan-`.hsp` loop over MCP is: `decompile_preset` →
-`patch_preset` → `generate_preset`.
+MCP tools mirror the CLI for agent-driven edits, operating directly on a base64
+`.hsp` blob: `patch_preset(model, hsp_b64, operations)` applies a list of
+`{op, ...}` operations (`set_param`, `set_enabled`, `add_block`, `remove_block`,
+`swap_model`) and returns the mutated `.hsp` blob; `view_preset(model, hsp_b64)`
+returns the read-only recipe-shape projection; `generate_preset(model, recipe)`
+authors a `.hsp` from a recipe. The agent edit loop is just a single
+`patch_preset` call — no decompile/regenerate round-trip.
 
 ### Worked examples
 
@@ -266,7 +288,7 @@ editable spec dict. The orphan-`.hsp` loop over MCP is: `decompile_preset` →
 ```bash
 helixgen show-block "Tape Echo Stereo"        # confirm the param is "Mix"
 helixgen set-param MyTone.hsp "Tape Echo Stereo" Mix 0.3
-# rewrites MyTone.spec.json and regenerates MyTone.hsp
+# mutates MyTone.hsp in place (no sidecar)
 ```
 
 MCP: `{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value": 0.3}`
@@ -299,12 +321,12 @@ op.
 
 - The chassis is whatever was first ingested. A Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; a `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from the originating export is currently expected.
 - Some Stadium model IDs are translated on ingest (e.g. `HD2_DistScream808Mono` → `HD2_DrvScream808`); generate translates back when writing `.hsp`.
-- If the param validator fails with a list of valid names, run `show-block` and correct the spec — don't guess.
+- If the param validator fails with a list of valid names, run `show-block` and correct the recipe — don't guess.
 
 ## Project layout
 
-- `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec`, `generate`, `bootstrap`, `ir`
-- `tests/` — pytest suite (286 tests, run with `pytest`)
+- `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `bootstrap`, `ir`
+- `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports
 - `docs/superpowers/plans/` — implementation plan history
