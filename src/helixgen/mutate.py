@@ -22,18 +22,41 @@ from __future__ import annotations
 
 from typing import Any
 
+from helixgen import controllers
+from helixgen.controllers import ControllerError
 from helixgen.generate import (
     HSP_SNAPSHOT_SLOTS,
+    GenerateError,
     ParamValidationError,
+    _build_exp_controller,
+    _build_fs_controller,
+    _chassis_device_id,
     _coerce_param_value,
     _is_stereo_param,
+    _resolve_irhash,
+    _rewrite_input_endpoint,
     _to_hsp_bnn,
     validate_params,
 )
-from helixgen.hsp import CHASSIS_MODEL_PREFIX, ENDPOINT_KEYS, _translate_model_id
+from helixgen.hsp import CHASSIS_MODEL_PREFIX, ENDPOINT_KEYS, _translate_model_id, translate_to_hsp
+from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.library import Block, Library
 
-__all__ = ["MutateError", "resolve_slot", "set_param", "set_enabled", "add_block", "remove_block"]
+__all__ = [
+    "MutateError",
+    "resolve_slot",
+    "set_param",
+    "set_enabled",
+    "add_block",
+    "remove_block",
+    "swap_model",
+    "set_ir",
+    "set_trails",
+    "set_input",
+    "wire_footswitch",
+    "wire_expression",
+    "wire_wah_toe",
+]
 
 _MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
 
@@ -376,3 +399,190 @@ def remove_block(
     )
     ordered = [path_dict[k] for k in remaining_keys]
     _renumber_lane(path_dict, del_lane, ordered)
+
+
+# --- swap_model --------------------------------------------------------------
+
+def swap_model(
+    body: dict[str, Any],
+    old: str,
+    new: str,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> list[str]:
+    """Replace a placed block's model with another of the same category, in
+    place, and return a list of human-readable warnings for anything that
+    could not be carried over.
+
+    Ports `patch.swap_model`'s semantics (same-category-only; carry params
+    the target shares by name; warn on any dropped) onto an `.hsp` slot dict
+    instead of a spec-json block entry. Because slots are already wrapped
+    (`{"value": x}` / `{"controller": {...}, "value": x}`), a carried param
+    keeps its controller assignment (e.g. an EXP-driven "Drive") intact --
+    spec-level `patch.swap_model` has no such wrapper to preserve.
+
+    `old` resolves like any other `resolve_slot` reference (narrowed by
+    `path`/`lane`/`pos`); `new` resolves via `Library.find_block` (display
+    name, alias, or model_id) but need not be placed anywhere.
+
+    If the resolved slot carries an `irhash` and the target is not an IR
+    block (`HX2_ImpulseResponse*`), the `irhash` is dropped with a warning
+    -- an IR reference on a non-IR block is meaningless.
+    """
+    fi, key, si = resolve_slot(body, old, library, path=path, lane=lane, pos=pos)
+    slot = _slot_dict(body, fi, key, si)
+
+    old_block = library.load_block(_translate_model_id(slot.get("model", "")))
+    new_block = _find_block(new, library)
+
+    if old_block.category != new_block.category:
+        raise MutateError(
+            f"Cannot swap {old!r} ({old_block.category}) for {new!r} "
+            f"({new_block.category}): categories differ."
+        )
+
+    warnings: list[str] = []
+    old_params: dict[str, Any] = slot.get("params") or {}
+    new_keys = set(new_block.params.keys())
+    dropped = sorted(set(old_params) - new_keys)
+    if dropped:
+        warnings.append(
+            f"swap {old!r}→{new!r}: dropped param(s) {dropped} not on target."
+        )
+
+    new_params: dict[str, Any] = {
+        k: {"value": v} for k, v in new_block.exemplar.items() if k in new_block.params
+    }
+    new_params.update({k: v for k, v in old_params.items() if k in new_keys})
+
+    slot["model"] = translate_to_hsp(new_block.model_id)
+    slot["params"] = new_params
+
+    if "irhash" in slot and not new_block.model_id.startswith(IR_MODEL_PREFIX):
+        del slot["irhash"]
+        warnings.append(f"swap {old!r}→{new!r}: dropped IR (target is not an IR block).")
+
+    return warnings
+
+
+# --- set_ir --------------------------------------------------------------
+
+def set_ir(
+    body: dict[str, Any],
+    block: str,
+    ir: str,
+    library: Library,
+    irs: Any,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Bind a registered IR to a placed IR block's `irhash`, in place.
+
+    Ports `generate._resolve_irhash`'s resolution: `ir` may be a wav
+    basename (looked up in `irs`' mapping) or a 32-char hex hash (used
+    directly, with a stderr warning if unregistered -- the device may
+    already hold it). Raises `MutateError` if `block` does not resolve to
+    an `HX2_ImpulseResponse*` block, or if `ir` cannot be resolved.
+    """
+    fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    slot = _slot_dict(body, fi, key, si)
+
+    lib_block = library.load_block(_translate_model_id(slot.get("model", "")))
+    if not lib_block.model_id.startswith(IR_MODEL_PREFIX):
+        raise MutateError(
+            f"Block {block!r} ({lib_block.category}) is not an IR block; "
+            f"set_ir only applies to HX2_ImpulseResponse* blocks."
+        )
+
+    try:
+        irhash = _resolve_irhash(block_default=None, spec_ir=ir, irs=irs)
+    except GenerateError as exc:
+        raise MutateError(str(exc)) from exc
+
+    slot["irhash"] = irhash
+
+
+# --- set_trails ------------------------------------------------------------
+
+def set_trails(
+    body: dict[str, Any],
+    block: str,
+    trails: bool,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Set a delay/reverb block's harness `Trails` (spillover) flag, in place.
+
+    Ports the trails branch of `generate._to_hsp_bnn`: the value lives at
+    `bNN.harness.params.Trails`, not on the slot. If the bNN has no verbatim
+    harness yet, one is synthesized with the device constants observed
+    across real exports; an existing harness has only its `Trails` entry
+    overwritten. Raises `MutateError` for any block whose category is not
+    `delay` or `reverb`.
+    """
+    fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    bnn = body["preset"]["flow"][fi][key]
+    slot = bnn["slot"][si]
+
+    lib_block = library.load_block(_translate_model_id(slot.get("model", "")))
+    if lib_block.category not in ("delay", "reverb"):
+        raise MutateError(
+            f"Block {block!r} has category {lib_block.category!r}; trails "
+            f"(harness spillover) applies only to delay and reverb blocks."
+        )
+
+    trails = bool(trails)
+    harness = bnn.get("harness")
+    if not isinstance(harness, dict):
+        bnn["harness"] = {
+            "@enabled": {"value": True},
+            "params": {
+                "EvtIdx": {"value": -1},
+                "Trails": {"value": trails},
+                "bypass": {"value": False},
+                "upper": {"value": True},
+            },
+        }
+    else:
+        params = harness.get("params")
+        if not isinstance(params, dict):
+            params = {}
+            harness["params"] = params
+        params["Trails"] = {"value": trails}
+
+
+# --- set_input ---------------------------------------------------------------
+
+def set_input(body: dict[str, Any], path: int, jack: str) -> None:
+    """Rewrite one path's input-endpoint (`b00`) jack routing, in place.
+
+    `jack` is a logical mode ("inst1"/"inst2"/"both"/"none"), resolved to a
+    Stadium input model via `controllers.resolve_input_model` (keyed by the
+    chassis's `meta.device_id`, defaulting to Stadium XL). Ports
+    `generate._rewrite_input_endpoint`, which also reshapes `b00`'s params
+    between the mono and stereo wrapper shapes when the target's
+    channel-count differs from the current model's.
+    """
+    flow = (body.get("preset") or {}).get("flow") or []
+    if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
+        raise MutateError(f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
+
+    device_id = _chassis_device_id(body)
+    try:
+        target_model = controllers.resolve_input_model(device_id, jack)
+    except ControllerError as exc:
+        raise MutateError(str(exc)) from exc
+
+    try:
+        _rewrite_input_endpoint(flow[path], target_model)
+    except GenerateError as exc:
+        raise MutateError(str(exc)) from exc
+

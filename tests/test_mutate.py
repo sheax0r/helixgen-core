@@ -13,6 +13,7 @@ import pytest
 from helixgen import mutate
 from helixgen.generate import ParamValidationError
 from helixgen.hsp import read_hsp, write_hsp
+from helixgen.ir import IrMapping
 from tests.golden import harness
 
 
@@ -409,6 +410,174 @@ def test_remove_block_round_trips_through_write_and_read_hsp(goldfinger_body, li
     write_hsp(out, goldfinger_body)
     reloaded = read_hsp(out)
     assert reloaded == goldfinger_body
+
+
+# --- swap_model (Task 1f) --------------------------------------------------
+
+def test_swap_model_carries_shared_params_and_warns_on_dropped(goldfinger_body, library):
+    # "4x12 Greenback 25" (Distance/HighCut/LowCut) -> "With Pan"
+    # (HighCut/LowCut/Mix/Pan/Level/Delay/IrData/Polarity): HighCut/LowCut are
+    # shared and must carry over; Distance has no home on the target and must
+    # be dropped with a warning.
+    warnings = mutate.swap_model(goldfinger_body, "4x12 Greenback 25", "With Pan", library)
+
+    slot = goldfinger_body["preset"]["flow"][0]["b03"]["slot"][0]
+    assert slot["model"] == "HX2_ImpulseResponseWithPan"
+    assert slot["params"]["HighCut"]["value"] == 8000.0
+    assert slot["params"]["LowCut"]["value"] == 80.0
+    assert "Distance" not in slot["params"]
+    assert any("Distance" in w and "dropped" in w for w in warnings)
+
+
+def test_swap_model_no_ir_warning_when_target_is_ir_block(goldfinger_body, library):
+    # The source block ("4x12 Greenback 25") carries no irhash to begin with,
+    # and the target ("With Pan") IS an IR block, so there's nothing to drop
+    # and no warning about it (default_irhash injection is set_ir's job, not
+    # swap_model's).
+    warnings = mutate.swap_model(goldfinger_body, "4x12 Greenback 25", "With Pan", library)
+    slot = goldfinger_body["preset"]["flow"][0]["b03"]["slot"][0]
+    assert "irhash" not in slot
+    assert not any("IR" in w for w in warnings)
+
+
+def test_swap_model_drops_ir_when_target_is_not_ir_block(goldfinger_body, library):
+    # Give the placed "With Pan" an irhash first (as if set_ir had run).
+    mutate.add_block(goldfinger_body, "With Pan", library)
+    key = "b06"
+    goldfinger_body["preset"]["flow"][0][key]["slot"][0]["irhash"] = "ad8182e1ebe9fd95dffde5dd54b6d89c"
+
+    warnings = mutate.swap_model(goldfinger_body, "With Pan", "4x12 Greenback 25", library)
+
+    slot = goldfinger_body["preset"]["flow"][0][key]["slot"][0]
+    assert slot["model"] == "HD2_Cab4x12Greenback25"
+    assert "irhash" not in slot
+    assert any("IR" in w for w in warnings)
+
+
+def test_swap_model_rejects_cross_category(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.swap_model(goldfinger_body, "Digital", "Plate", library)
+
+
+def test_swap_model_preserves_controller_on_carried_param(expression_body, library):
+    # "Drive" on "Brit 2204 Custom" (b01 in expression.hsp) carries an EXP
+    # controller. Swapping to another amp with a "Drive" param must not lose it.
+    controller_before = copy.deepcopy(
+        expression_body["preset"]["flow"][0]["b01"]["slot"][0]["params"]["Drive"]["controller"]
+    )
+    mutate.swap_model(expression_body, "Brit 2204 Custom", "Brit 2204 Custom", library)
+    wrapped = expression_body["preset"]["flow"][0]["b01"]["slot"][0]["params"]["Drive"]
+    assert wrapped["controller"] == controller_before
+
+
+def test_swap_model_missing_block_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.swap_model(goldfinger_body, "Nope Amp", "Digital", library)
+
+
+def test_swap_model_unknown_target_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.swap_model(goldfinger_body, "Digital", "Nope Delay", library)
+
+
+# --- set_ir (Task 1f) -------------------------------------------------------
+
+@pytest.fixture
+def ir_block_body():
+    return read_hsp(harness.CORPUS_DIR / "ir_block.hsp")
+
+
+@pytest.fixture
+def irs(tmp_path):
+    return IrMapping(
+        irs_dir=tmp_path,
+        entries={"1234567890abcdef1234567890abcdef": "West.wav"},
+    )
+
+
+def test_set_ir_by_basename(ir_block_body, library, irs):
+    mutate.set_ir(ir_block_body, "With Pan", "West.wav", library, irs)
+    slot = ir_block_body["preset"]["flow"][0]["b02"]["slot"][0]
+    assert slot["irhash"] == "1234567890abcdef1234567890abcdef"
+
+
+def test_set_ir_by_hash(ir_block_body, library, irs):
+    mutate.set_ir(ir_block_body, "With Pan", "1234567890abcdef1234567890abcdef", library, irs)
+    slot = ir_block_body["preset"]["flow"][0]["b02"]["slot"][0]
+    assert slot["irhash"] == "1234567890abcdef1234567890abcdef"
+
+
+def test_set_ir_unknown_basename_raises(ir_block_body, library, irs):
+    with pytest.raises(mutate.MutateError):
+        mutate.set_ir(ir_block_body, "With Pan", "Nope.wav", library, irs)
+
+
+def test_set_ir_non_ir_block_raises(goldfinger_body, library, irs):
+    with pytest.raises(mutate.MutateError):
+        mutate.set_ir(goldfinger_body, "Brit 2204 Custom", "West.wav", library, irs)
+
+
+# --- set_trails (Task 1f) ----------------------------------------------------
+
+def test_set_trails_true_sets_harness_param(goldfinger_body, library):
+    mutate.set_trails(goldfinger_body, "Digital", True, library)
+    harness_dict = goldfinger_body["preset"]["flow"][0]["b04"]["harness"]
+    assert harness_dict["params"]["Trails"]["value"] is True
+
+
+def test_set_trails_false_on_reverb(goldfinger_body, library):
+    mutate.set_trails(goldfinger_body, "Plate", False, library)
+    harness_dict = goldfinger_body["preset"]["flow"][0]["b05"]["harness"]
+    assert harness_dict["params"]["Trails"]["value"] is False
+
+
+def test_set_trails_preserves_existing_harness(goldfinger_body, library):
+    bnn = goldfinger_body["preset"]["flow"][0]["b04"]
+    bnn["harness"] = {
+        "@enabled": {"value": True},
+        "dual": True,
+        "params": {"EvtIdx": {"value": -1}, "Trails": {"value": False},
+                   "bypass": {"value": False}, "upper": {"value": True}},
+    }
+    mutate.set_trails(goldfinger_body, "Digital", True, library)
+    assert bnn["harness"]["dual"] is True
+    assert bnn["harness"]["params"]["Trails"]["value"] is True
+
+
+def test_set_trails_rejects_non_delay_reverb(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.set_trails(goldfinger_body, "Brit 2204 Custom", True, library)
+
+
+# --- set_input (Task 1f) -----------------------------------------------------
+
+def test_set_input_rewrites_endpoint_model(goldfinger_body):
+    mutate.set_input(goldfinger_body, 0, "inst1")
+    slot = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]
+    assert slot["model"] == "P35_InputInst1"
+
+
+def test_set_input_both_to_inst_reshapes_params_to_mono(goldfinger_body):
+    # path 0's b00 starts stereo (P35_InputInst1_2); give it a stereo-shaped
+    # param so the mono rewrite has something to reshape.
+    b00_slot = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]
+    b00_slot["params"] = {"Gain": {"1": {"value": 0.5}, "2": {"value": 0.6}},
+                           "StereoLink": {"value": False}}
+    mutate.set_input(goldfinger_body, 0, "inst2")
+    slot = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]
+    assert slot["model"] == "P35_InputInst2"
+    assert slot["params"]["Gain"] == {"value": 0.5}
+    assert "StereoLink" not in slot["params"]
+
+
+def test_set_input_invalid_jack_raises(goldfinger_body):
+    with pytest.raises(mutate.MutateError):
+        mutate.set_input(goldfinger_body, 0, "nope")
+
+
+def test_set_input_invalid_path_raises(goldfinger_body):
+    with pytest.raises(mutate.MutateError):
+        mutate.set_input(goldfinger_body, 5, "inst1")
 
 
 # --- golden micro-test (Task 1c step 4) -----------------------------------
