@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from tests.golden import harness
 
 
@@ -62,3 +64,21 @@ def test_generate_from_recipe_returns_hsp_bytes(tmp_path):
     out = generate_from_recipe(recipe, library, chassis=chassis)
 
     assert out[:8] == HSP_MAGIC
+
+
+def test_recipe_lane_over_capacity_raises(tmp_path):
+    # A lane has only 12 user-block slots (b01..b12). A 13th block on one lane
+    # must raise, not silently overwrite the endpoint slot (b13) — the same
+    # guard the legacy `_compose_preset_hsp` enforced.
+    from helixgen.generate import GenerateError
+    from helixgen.recipe import apply_recipe
+
+    library = harness.build_corpus_library(tmp_path)
+    chassis = _corpus_chassis()
+    recipe = {
+        "name": "Overfull",
+        "paths": [{"blocks": [{"block": "Scream 808"} for _ in range(13)]}],
+    }
+
+    with pytest.raises(GenerateError, match="12 user slots"):
+        apply_recipe(recipe, library, chassis=chassis)
