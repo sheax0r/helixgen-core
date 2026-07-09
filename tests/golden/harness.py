@@ -175,12 +175,12 @@ def run_current_pipeline(spec_dict: dict[str, Any], library: Library) -> bytes:
     update only this function's body — every golden, every recipe.json, and
     `test_golden_parity`'s comparison logic stay unchanged.
     """
-    from helixgen.generate import compose_preset
-    from helixgen.spec import parse_spec
+    from helixgen.recipe import generate_from_recipe
 
-    spec = parse_spec(spec_dict, source="golden-corpus")
-    preset = compose_preset(spec, library, source="golden-corpus")
-    return dumps_hsp(preset)
+    chassis = library.load_chassis()
+    return generate_from_recipe(
+        spec_dict, library, chassis=chassis, source="golden-corpus"
+    )
 
 
 def parsed_dict(hsp_bytes: bytes) -> dict[str, Any]:
