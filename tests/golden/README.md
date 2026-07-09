@@ -78,3 +78,24 @@ existing to catch *unintended* drift.
   equivalent output, `test_golden_parity` should pass without touching
   `corpus/`. If it doesn't, that's exactly the regression this harness
   exists to catch.
+
+## Slot-skeleton decision (redesign Task 1a)
+
+`library.Block` does **not** store a verbose `bNN` slot skeleton — `Block.exemplar`
+is a flat dict of unwrapped scalars plus a couple of `@`-prefixed keys
+(`@model`, `@type`, `@enabled`), e.g. `{"@model": "...", "@type": "fx",
+"@enabled": true, "Drive": 0.1, "Tone": 0.5, ...}`, as seen in both
+`tests/golden/harness._corpus_blocks()` and every real ingested block on disk.
+There is no per-model cache of the nested `{"slot": [...], "params": {"Name":
+{"value": ...}}}` shape anywhere in the library. So a future `add_block` must
+go with option (b): synthesize the verbose `bNN` skeleton at mutation time by
+porting `generate._to_hsp_bnn`'s logic — start from `copy.deepcopy(block.exemplar)`
+for param defaults, take `type` from the exemplar's `@type` (falling back to
+`generate._hsp_type_for_block`'s per-category default: `amp`→`amp`, `cab`→`cab`,
+else `fx`), wrap each param value through the plain-value wrapper (`{"value":
+x}`, no `snapshots`/`controller` unless explicitly requested), and leave
+`harness` absent unless the caller supplies verbatim `raw.harness` (or, for
+delay/reverb, an author-facing `trails` flag) — `_to_hsp_bnn` never synthesizes
+a harness out of thin air for the common case. This is a straight port, not a
+new algorithm; `_to_hsp_bnn` itself gets deleted once `add_block` in `mutate.py`
+replaces its call site.
