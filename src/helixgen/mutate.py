@@ -22,11 +22,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from helixgen.generate import ParamValidationError, _coerce_param_value, _is_stereo_param, validate_params
+from helixgen.generate import (
+    HSP_SNAPSHOT_SLOTS,
+    ParamValidationError,
+    _coerce_param_value,
+    _is_stereo_param,
+    validate_params,
+)
 from helixgen.hsp import CHASSIS_MODEL_PREFIX, ENDPOINT_KEYS, _translate_model_id
 from helixgen.library import Block, Library
 
-__all__ = ["MutateError", "resolve_slot", "set_param"]
+__all__ = ["MutateError", "resolve_slot", "set_param", "set_enabled"]
 
 
 class MutateError(ValueError):
@@ -180,3 +186,81 @@ def set_param(
         wrapped["value"] = coerced
     else:
         params[param] = {"value": coerced}
+
+
+# --- set_enabled -----------------------------------------------------------
+
+def _active_snapshot(body: dict[str, Any]) -> int:
+    """The device's on-load snapshot index (`preset.params.activesnapshot`,
+    defaulting to 0 when absent — matches `generate._compose_preset_hsp`,
+    which always writes 0)."""
+    params = (body.get("preset") or {}).get("params") or {}
+    value = params.get("activesnapshot", 0)
+    return value if isinstance(value, int) else 0
+
+
+def _resolve_snapshot_index(body: dict[str, Any], snapshot: Any) -> int:
+    """Resolve a snapshot name (matched against `preset.snapshots[*].name`)
+    or a bare int index to an index into the 8-slot snapshot arrays."""
+    if isinstance(snapshot, int) and not isinstance(snapshot, bool):
+        return snapshot
+    meta = (body.get("preset") or {}).get("snapshots") or []
+    for i, s in enumerate(meta):
+        if isinstance(s, dict) and s.get("name") == snapshot:
+            return i
+    names = [s.get("name") for s in meta if isinstance(s, dict)]
+    raise MutateError(f"Snapshot {snapshot!r} not found. Known snapshots: {names}.")
+
+
+def set_enabled(
+    body: dict[str, Any],
+    block: str,
+    enabled: bool,
+    library: Library,
+    *,
+    snapshot: Any = None,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Bypass-toggle one block, in place, at the `bNN`-level `@enabled`
+    wrapper (device-validated: Stadium reads bypass there, NOT at the
+    slot-level `@enabled`, which stays untouched).
+
+    `snapshot=None` (default) sets the base `@enabled.value` directly.
+
+    `snapshot=<name-or-index>` instead flips that one slot of the 8-element
+    `@enabled.snapshots` array (resolved by matching `preset.snapshots[*].name`,
+    or used directly if already an int). Any other `null` slot in the array is
+    densified to the pre-edit base value — a sparse (null-containing) array
+    left on-device snapshot recall unreliable (see 0.5.1). After a snapshot
+    edit, `@enabled.value` is re-synced to `snapshots[<active snapshot>]`
+    (`preset.params.activesnapshot`) so the block shows its active-snapshot
+    state on load, matching `generate._wrap_value_with_snapshots`.
+    """
+    fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    bnn = body["preset"]["flow"][fi][key]
+    enabled = bool(enabled)
+
+    wrapped = bnn.get("@enabled")
+    if not isinstance(wrapped, dict):
+        wrapped = {"value": True}
+        bnn["@enabled"] = wrapped
+
+    if snapshot is None:
+        wrapped["value"] = enabled
+        return
+
+    idx = _resolve_snapshot_index(body, snapshot)
+    base = wrapped.get("value", True)
+    snaps = wrapped.get("snapshots")
+    snaps = list(snaps) if isinstance(snaps, list) else [None] * HSP_SNAPSHOT_SLOTS
+    if len(snaps) < HSP_SNAPSHOT_SLOTS:
+        snaps.extend([None] * (HSP_SNAPSHOT_SLOTS - len(snaps)))
+    if not (0 <= idx < len(snaps)):
+        raise MutateError(f"Snapshot index {idx} out of range (0..{len(snaps) - 1}).")
+
+    snaps[idx] = enabled
+    snaps = [base if s is None else s for s in snaps]  # densify
+    wrapped["snapshots"] = snaps
+    wrapped["value"] = snaps[_active_snapshot(body)]

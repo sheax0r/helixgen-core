@@ -2,7 +2,7 @@
 
 These operate directly on a parsed `.hsp` body dict (`preset.flow[*].bNN`),
 not on a spec.json. See docs/superpowers/plans/2026-07-08-hsp-canonical-redesign.md
-Tasks 1b/1c.
+Tasks 1b/1c/1d/1e.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 
 from helixgen import mutate
 from helixgen.generate import ParamValidationError
-from helixgen.hsp import read_hsp
+from helixgen.hsp import read_hsp, write_hsp
 from tests.golden import harness
 
 
@@ -30,6 +30,11 @@ def goldfinger_body():
 @pytest.fixture
 def expression_body():
     return read_hsp(harness.CORPUS_DIR / "expression.hsp")
+
+
+@pytest.fixture
+def snapshots_body():
+    return read_hsp(harness.CORPUS_DIR / "snapshots.hsp")
 
 
 # --- resolve_slot ------------------------------------------------------
@@ -216,6 +221,88 @@ def test_set_param_disambiguates_with_path_lane_pos(library):
     mutate.set_param(body, "Brit 2204 Custom", "Drive", 0.9, library, path=1)
     assert body["preset"]["flow"][0]["b01"]["slot"][0]["params"]["Drive"]["value"] == 0.5
     assert body["preset"]["flow"][1]["b01"]["slot"][0]["params"]["Drive"]["value"] == 0.9
+
+
+# --- set_enabled ----------------------------------------------------------
+
+def test_set_enabled_base_disable_flips_bnn_value(goldfinger_body, library):
+    bnn = goldfinger_body["preset"]["flow"][0]["b02"]
+    slot_enabled_before = copy.deepcopy(bnn["slot"][0]["@enabled"])
+
+    mutate.set_enabled(goldfinger_body, "Brit 2204 Custom", False, library)
+
+    assert bnn["@enabled"]["value"] is False
+    # Base bypass lives at the bNN level, NOT inside slot (device-validated;
+    # slot-level @enabled is inert on Stadium and must stay untouched).
+    assert bnn["slot"][0]["@enabled"] == slot_enabled_before
+
+
+def test_set_enabled_base_enable_flips_bnn_value(goldfinger_body, library):
+    mutate.set_enabled(goldfinger_body, "Brit 2204 Custom", False, library)
+    mutate.set_enabled(goldfinger_body, "Brit 2204 Custom", True, library)
+    assert goldfinger_body["preset"]["flow"][0]["b02"]["@enabled"]["value"] is True
+
+
+def test_set_enabled_missing_block_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.set_enabled(goldfinger_body, "Nope Amp", False, library)
+
+
+def test_set_enabled_snapshot_densifies_nulls_and_sets_index(snapshots_body, library):
+    # b02 (Brit 2204 Custom) starts with a plain @enabled (no snapshots array
+    # yet) -- disabling it in "Clean" (snapshot index 2) must synthesize a
+    # dense 8-element array, not a sparse one (the 0.5.1 sparse-snapshot bug).
+    bnn = snapshots_body["preset"]["flow"][0]["b02"]
+    assert "snapshots" not in bnn["@enabled"]
+    assert bnn["@enabled"]["value"] is True
+
+    mutate.set_enabled(snapshots_body, "Brit 2204 Custom", False, library, snapshot="Clean")
+
+    wrapped = bnn["@enabled"]
+    assert len(wrapped["snapshots"]) == 8
+    assert None not in wrapped["snapshots"]
+    assert wrapped["snapshots"] == [True, True, False, True, True, True, True, True]
+
+
+def test_set_enabled_snapshot_preserves_existing_overrides(snapshots_body, library):
+    # b01 (Scream 808) already carries a real snapshots array in the golden
+    # fixture: [T, T, F, T, T, T, T, T] (disabled in "Clean"). Editing a
+    # different snapshot must not clobber that pre-existing override.
+    bnn = snapshots_body["preset"]["flow"][0]["b01"]
+    assert bnn["@enabled"]["snapshots"][2] is False
+
+    mutate.set_enabled(snapshots_body, "Scream 808", False, library, snapshot="Lead")
+
+    assert bnn["@enabled"]["snapshots"] == [True, False, False, True, True, True, True, True]
+
+
+def test_set_enabled_value_mirrors_active_snapshot_after_edit(snapshots_body, library):
+    # activesnapshot is 0 ("Rhythm"). Editing a non-active snapshot must not
+    # perturb the on-load `value`.
+    mutate.set_enabled(snapshots_body, "Brit 2204 Custom", False, library, snapshot="Clean")
+    wrapped = snapshots_body["preset"]["flow"][0]["b02"]["@enabled"]
+    assert wrapped["value"] is True  # unchanged: mirrors snapshots[0] == True
+
+    # Editing the ACTIVE snapshot flips `value` too -- the invariant
+    # value == snapshots[activesnapshot] must hold after any snapshot edit.
+    mutate.set_enabled(snapshots_body, "Brit 2204 Custom", False, library, snapshot="Rhythm")
+    wrapped = snapshots_body["preset"]["flow"][0]["b02"]["@enabled"]
+    assert wrapped["value"] is False
+    assert wrapped["snapshots"][0] is False
+    assert wrapped["value"] == wrapped["snapshots"][0]
+
+
+def test_set_enabled_snapshot_accepts_int_index(goldfinger_body, library):
+    mutate.set_enabled(goldfinger_body, "Brit 2204 Custom", False, library, snapshot=1)
+    wrapped = goldfinger_body["preset"]["flow"][0]["b02"]["@enabled"]
+    assert wrapped["snapshots"][1] is False
+    assert wrapped["snapshots"][0] is True  # densified from the pre-edit base
+
+
+def test_set_enabled_unknown_snapshot_name_raises(snapshots_body, library):
+    with pytest.raises(mutate.MutateError) as exc:
+        mutate.set_enabled(snapshots_body, "Brit 2204 Custom", False, library, snapshot="Nope")
+    assert "Nope" in str(exc.value)
 
 
 # --- golden micro-test (Task 1c step 4) -----------------------------------
