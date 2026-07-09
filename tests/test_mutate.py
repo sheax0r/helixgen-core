@@ -642,6 +642,35 @@ def test_wire_footswitch_unknown_block_raises(goldfinger_body, library):
         mutate.wire_footswitch(goldfinger_body, "FS3", "Nope Amp", "latching", library)
 
 
+def test_wire_footswitch_rejects_rewiring_block_to_different_switch(goldfinger_body, library):
+    # Wiring a second, different switch to an already-wired block must not
+    # silently overwrite the bnn-level controller -- that would orphan the
+    # first switch's `sources` entry (still present, but nothing points at
+    # it any more).
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    with pytest.raises(mutate.MutateError):
+        mutate.wire_footswitch(goldfinger_body, "FS4", "Scream 808", "latching", library)
+
+    fs3_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"]
+    fs4_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS4"]
+    bnn = goldfinger_body["preset"]["flow"][0]["b01"]
+    assert bnn["@enabled"]["controller"]["source"] == fs3_source
+    sources = goldfinger_body["preset"]["sources"]
+    assert str(fs3_source) in sources
+    assert str(fs4_source) not in sources  # no orphan registered
+
+
+def test_wire_footswitch_same_switch_same_block_is_idempotent(goldfinger_body, library):
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+
+    fs3_source = CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"]
+    bnn = goldfinger_body["preset"]["flow"][0]["b01"]
+    assert bnn["@enabled"]["controller"]["source"] == fs3_source
+    sources = goldfinger_body["preset"]["sources"]
+    assert list(sources.keys()) == [str(fs3_source)]
+
+
 def test_wire_expression_writes_param_controller(goldfinger_body, library):
     mutate.wire_expression(
         goldfinger_body, "EXP1",

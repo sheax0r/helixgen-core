@@ -638,8 +638,12 @@ def wire_footswitch(
     `controllers.resolve_controller_source` against the chassis device_id.
 
     Raises `MutateError` if `switch`'s source id is already registered in
-    `preset.sources` -- one switch can drive only one block's bypass, and
-    the Stadium doesn't disambiguate a second binding.
+    `preset.sources` for a DIFFERENT block -- one switch can drive only one
+    block's bypass, and the Stadium doesn't disambiguate a second binding.
+    Also raises if `block` already carries a `targetbypass` controller from a
+    DIFFERENT switch -- overwriting it would silently orphan the prior
+    switch's `sources` entry (nothing would point at it any more). Re-wiring
+    the SAME switch to the SAME block is idempotent and does not raise.
     """
     if behavior not in ("latching", "momentary"):
         raise MutateError(
@@ -652,18 +656,29 @@ def wire_footswitch(
     except ControllerError as exc:
         raise MutateError(str(exc)) from exc
 
-    sources = body.setdefault("preset", {}).setdefault("sources", {})
-    if str(source_id) in sources:
-        raise MutateError(
-            f"Switch {switch!r} is already assigned to a block; one switch "
-            f"can drive only one block's bypass."
-        )
-
     bnn = body["preset"]["flow"][fi][key]
     wrapped = bnn.get("@enabled")
     if not isinstance(wrapped, dict):
         wrapped = {"value": True}
         bnn["@enabled"] = wrapped
+
+    existing_controller = wrapped.get("controller")
+    existing_source = (
+        existing_controller.get("source") if isinstance(existing_controller, dict) else None
+    )
+    if existing_source is not None and existing_source != source_id:
+        raise MutateError(
+            f"Block {block!r} is already assigned to a footswitch (source "
+            f"{existing_source!r}); a block can be wired to only one switch."
+        )
+
+    sources = body.setdefault("preset", {}).setdefault("sources", {})
+    if str(source_id) in sources and existing_source != source_id:
+        raise MutateError(
+            f"Switch {switch!r} is already assigned to a block; one switch "
+            f"can drive only one block's bypass."
+        )
+
     wrapped["controller"] = _build_fs_controller(
         source_id, behavior, position=controllers.is_position_switch(switch)
     )
