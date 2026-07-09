@@ -39,6 +39,11 @@ def snapshots_body():
     return read_hsp(harness.CORPUS_DIR / "snapshots.hsp")
 
 
+@pytest.fixture
+def split_join_body():
+    return read_hsp(harness.CORPUS_DIR / "split_join.hsp")
+
+
 # --- resolve_slot ------------------------------------------------------
 
 def test_resolve_slot_unique_match(goldfinger_body, library):
@@ -373,6 +378,17 @@ def test_add_block_raises_when_lane_full(library):
         mutate.add_block(body, "Digital", library)
 
 
+def test_add_block_rejects_parallel_routed_path(split_join_body, library):
+    # split_join.hsp's path 0 has a split/join pair (b02/b03) whose
+    # branch/endpoint cross-references point at specific bNN keys --
+    # renumbering lane 0 would rewrite those keys without updating the
+    # pointers, and desync lane 1's positions. Not supported yet.
+    before = copy.deepcopy(split_join_body)
+    with pytest.raises(mutate.MutateError, match="parallel-routed"):
+        mutate.add_block(split_join_body, "With Pan", library)
+    assert split_join_body == before
+
+
 def test_add_block_round_trips_through_write_and_read_hsp(goldfinger_body, library, tmp_path):
     mutate.add_block(goldfinger_body, "With Pan", library, after="Scream 808")
     out = tmp_path / "roundtrip_add.hsp"
@@ -398,6 +414,13 @@ def test_remove_block_deletes_and_renumbers(goldfinger_body, library):
         isinstance(v, dict) and v.get("slot", [{}])[0].get("model") == "HD2_AmpBrit2204Custom"
         for k, v in flow0.items() if k not in ("b00", "b13")
     )
+
+
+def test_remove_block_rejects_parallel_routed_path(split_join_body, library):
+    before = copy.deepcopy(split_join_body)
+    with pytest.raises(mutate.MutateError, match="parallel-routed"):
+        mutate.remove_block(split_join_body, "Scream 808", library)
+    assert split_join_body == before
 
 
 def test_remove_block_missing_raises(goldfinger_body, library):

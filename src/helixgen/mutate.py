@@ -294,6 +294,23 @@ def set_enabled(
 
 # --- add_block / remove_block -----------------------------------------------
 
+def _is_parallel_routed(path_dict: dict[str, Any]) -> bool:
+    """True if `path_dict` contains a `split`/`join` structural block --
+    i.e. this path has a parallel-routed lane 1 branch.
+
+    `split`/`join` blocks live in lane 0 and carry `branch`/`endpoint` keys
+    that cross-reference specific `bNN` keys by name (see module docstring).
+    `_renumber_lane` rewrites `bNN` keys wholesale and knows nothing about
+    those pointers, so running it on a parallel-routed path would silently
+    corrupt the split/join wiring and desync lane 1's positions.
+    """
+    return any(
+        isinstance(path_dict.get(k), dict) and path_dict[k].get("type") in ("split", "join")
+        for k in _bnn_keys(path_dict)
+        if _lane_pos(k)[0] == 0
+    )
+
+
 def _find_block(model: str, library: Library) -> Block:
     try:
         return library.find_block(model)
@@ -353,6 +370,11 @@ def add_block(
     if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
         raise MutateError(f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
     path_dict = flow[path]
+    if _is_parallel_routed(path_dict):
+        raise MutateError(
+            "add_block not supported on a parallel-routed path yet (path "
+            f"{path} contains a split/join)."
+        )
 
     block = _find_block(model, library)
     lane = 0
@@ -391,6 +413,11 @@ def remove_block(
     """
     fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     path_dict = body["preset"]["flow"][fi]
+    if _is_parallel_routed(path_dict):
+        raise MutateError(
+            "remove_block not supported on a parallel-routed path yet (path "
+            f"{fi} contains a split/join)."
+        )
     del_lane, _del_pos = _lane_pos(key)
 
     remaining_keys = sorted(
