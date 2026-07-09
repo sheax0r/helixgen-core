@@ -103,6 +103,12 @@ def test_resolve_exp1_toe_switch_source():
     assert sid == 0x01010500
 
 
+def test_is_position_switch():
+    assert controllers.is_position_switch("EXP1Toe") is True
+    assert controllers.is_position_switch("FS1") is False
+    assert controllers.is_position_switch("EXP1") is False
+
+
 def test_exp1_toe_switch_roundtrips_and_is_distinct():
     table = controllers.CONTROLLER_SOURCE_IDS["stadium_xl"]
     toe = table["EXP1Toe"]

@@ -304,22 +304,29 @@ def _build_exp_controller(source_id: int, min_val: float, max_val: float) -> dic
     }
 
 
-def _build_fs_controller(source_id: int, behavior: str) -> dict[str, Any]:
+def _build_fs_controller(source_id: int, behavior: str, *, position: bool = False) -> dict[str, Any]:
     """Build the controller dict that wraps @enabled for an FS assignment.
 
     Shape derived from real Stadium XL exports.
+
+    `position=True` marks an expression-pedal toe/position switch (e.g.
+    EXP1Toe). Such a switch needs explicit min/max/threshold to actually bind
+    the bypass toggle — with the null bounds a digital footswitch uses, the
+    device ignores the binding and the toe reverts to its EXP1/EXP2 default,
+    leaving the target (e.g. a wah) stuck bypassed. min=False/max=True are the
+    two @enabled states the toe toggles between; delay/goid go to 0.
     """
     return {
         "behavior":   behavior,
         "bypassed":   False,
         "curve":      "linear",
-        "delay":      None,
-        "goid":       None,
-        "max":        None,
+        "delay":      0 if position else None,
+        "goid":       0 if position else None,
+        "max":        True if position else None,
         "midisource": 0,
-        "min":        None,
+        "min":        False if position else None,
         "source":     source_id,
-        "threshold":  None,
+        "threshold":  0.0 if position else None,
         "type":       "targetbypass",
     }
 
@@ -632,7 +639,10 @@ def _build_fs_assignments(
             fs.block, resolved, spec=spec, path=fs.path, lane=fs.lane, pos=fs.pos
         )
         source_id = controllers.resolve_controller_source(device_id, fs.switch)
-        fs_map[(path_idx, chain_idx)] = _build_fs_controller(source_id, fs.behavior)
+        fs_map[(path_idx, chain_idx)] = _build_fs_controller(
+            source_id, fs.behavior,
+            position=controllers.is_position_switch(fs.switch),
+        )
         source_ids.add(source_id)
     return fs_map, source_ids
 
