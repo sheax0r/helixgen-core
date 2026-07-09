@@ -192,11 +192,10 @@ the block is **bypassed** (manually or via a footswitch):
 - `trails: true` / `false` sets the block's bNN `harness.params.Trails`.
   - `true` → tail rings out and fades when you bypass the block.
   - `false` → tail cuts off abruptly the instant you bypass the block.
-- **Trails is a block-bypass behavior, not a snapshot behavior.** Stadium
-  snapshot transitions are gapless and spill delay/reverb tails largely
-  regardless of this toggle, so don't try to hear the difference by A/B-ing
-  snapshots — bypass the block (footswitch or manual), ideally while palm-muting,
-  to hear it. (Hardware-validated on Stadium XL.)
+- Trails governs tail spillover on **block bypass** (footswitch or manual). To
+  hear it, bypass the block — ideally while palm-muting so the guitar's natural
+  sustain doesn't mask the wet tail. (Footswitch/manual-bypass behavior is
+  hardware-validated on Stadium XL.)
 - Omitting `trails` leaves the device default (or whatever a decompiled
   `raw.harness` carried) untouched.
 - **Delay and reverb only.** Setting `trails` on any other block category is a

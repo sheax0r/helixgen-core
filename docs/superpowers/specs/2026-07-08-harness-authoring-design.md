@@ -56,9 +56,9 @@ CLAUDE.md wording will be corrected.
 `Trails` is the only harness field an author would ever want to set. It controls
 whether a delay's echoes / a reverb's tail keep ringing ("spill over") when the
 block is **bypassed** (manually or via a footswitch) — a standard,
-musically-meaningful Helix behavior. (Note: Stadium *snapshot* transitions are
-gapless and spill tails largely regardless of this toggle — see the device-test
-protocol below; Trails is a block-bypass behavior, not a snapshot behavior.) Everything else is either a device-constant (`upper`, `bypass`,
+musically-meaningful Helix behavior. This block-bypass behavior is what Line 6's
+docs describe and what we verified on hardware; demonstrate it with footswitch /
+manual bypass (see the device-test protocol below). Everything else is either a device-constant (`upper`, `bypass`,
 `EvtIdx`, `@enabled`) or structural and already handled elsewhere (`dual` is a
 consequence of a dual-cab, which the existing `raw.slots` mechanism carries).
 `dual`, therefore, stays verbatim: authoring it independently of a second cab
@@ -263,17 +263,15 @@ helixgen writes is honored by the device and produces the documented behavior.
   naturally when you bypass the block.
 - **Trails Off** → the tail cuts off abruptly the instant you bypass the block.
 
-**Do NOT demonstrate Trails with a snapshot change.** A snapshot A/B is a
-misleading test for two reasons:
-1. The guitar's natural note sustain masks the wet tail unless the strings are
-   palm-muted at the moment of the switch.
-2. Stadium snapshot transitions are gapless and appear to spill delay/reverb
-   tails **largely regardless of the Trails toggle** — so an A/B shows little or
-   no audible difference and misleads the tester.
+**Demonstrate Trails with footswitch / manual block bypass, not a snapshot
+change.** The reliable, directly-verified demonstrator is bypassing the block
+itself (below). Note also that the guitar's natural note sustain can mask the
+wet tail unless the strings are palm-muted at the moment of bypass, so palm-mute
+before you stomp.
 
-An early draft of this spec proposed a snapshot Wet/Dry demonstrator; that was
-wrong and caused a confusing multi-round debugging session. The correct
-demonstrator is footswitch bypass, below.
+An early draft of this spec proposed a snapshot Wet/Dry demonstrator; that
+proved confusing to test and is not the behavior Line 6's docs describe. The
+correct, verified demonstrator is footswitch bypass, below.
 
 ### Correct demonstrator
 
