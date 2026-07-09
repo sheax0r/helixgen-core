@@ -11,12 +11,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from helixgen.decompile import decompile_body
-from helixgen.generate import generate_preset
-from helixgen.hsp import HSP_MAGIC
+from helixgen import mutate
+from helixgen.hsp import HSP_MAGIC, dumps_hsp
 from helixgen.ir import IrMapping, compute_stadium_irhash
 from helixgen.library import Library
-from helixgen import patch as _patch
+from helixgen.recipe import generate_from_recipe
+from helixgen.spec import parse_spec
+from helixgen.view import view as view_projection
 
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -115,30 +116,38 @@ def _safe_filename(name: str) -> str:
     return f"{cleaned or 'preset'}.hsp"
 
 
-def generate_preset_handler(library: Library, model: str, spec: dict[str, Any]) -> dict[str, Any]:
-    """Generate a Helix Stadium .hsp from an inline spec dict.
+def generate_preset_handler(
+    library: Library, model: str, recipe: dict[str, Any], *, irs_dir: Path | None = None
+) -> dict[str, Any]:
+    """Generate a Helix Stadium .hsp preset from an inline recipe dict.
+
+    Builds directly against the library's Stadium chassis via
+    `helixgen.recipe.generate_from_recipe` -- no temp files, no sidecar spec
+    is written (the `.hsp` itself is the sole source of truth post-redesign).
 
     Returns a dict suitable for an MCP EmbeddedResource:
       - mimeType: application/octet-stream
       - name:     safe basename ending in .hsp
-      - blob:     base64-encoded .hsp bytes (magic header + JSON body)
+      - hsp_b64:  base64-encoded .hsp bytes (magic header + compact JSON)
 
     Underlying SpecError / ParamValidationError / GenerateError propagate;
     the MCP server boundary translates them to protocol errors.
     """
     _validate_model(model)
-    with tempfile.TemporaryDirectory(prefix="helixgen-mcp-") as tmp_dir:
-        tmp = Path(tmp_dir)
-        spec_path = tmp / "spec.json"
-        out_path = tmp / "preset.hsp"
-        spec_path.write_text(json.dumps(spec))
-        generate_preset(spec_path, out_path, library)
-        raw = out_path.read_bytes()
+    # Parse+validate the recipe before touching the chassis, so a malformed
+    # recipe reports its own error rather than being masked by a
+    # missing-chassis error (mirrors `helixgen generate`'s error ordering).
+    spec = parse_spec(recipe, source="mcp:generate_preset")
+    irs = IrMapping.load(irs_dir)
+    chassis = library.load_chassis()
+    raw = generate_from_recipe(
+        spec, library, irs=irs, chassis=chassis, source="mcp:generate_preset"
+    )
 
     return {
         "mimeType": "application/octet-stream",
-        "name":     _safe_filename(spec.get("name", "preset")),
-        "blob":     base64.b64encode(raw).decode("ascii"),
+        "name":     _safe_filename(recipe.get("name", "preset")),
+        "hsp_b64":  base64.b64encode(raw).decode("ascii"),
     }
 
 
@@ -317,49 +326,109 @@ def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
     return out
 
 
-def decompile_preset_handler(library: Library, model: str, hsp_b64: str) -> dict:
-    """Decompile a base64-encoded .hsp blob into a spec dict."""
-    _validate_model(model)
+def _decode_hsp_b64(hsp_b64: str) -> dict[str, Any]:
+    """Decode a base64 `.hsp` blob into its parsed JSON body dict.
+
+    Raises ValueError if the decoded bytes don't start with the `.hsp` magic
+    header.
+    """
     raw = base64.b64decode(hsp_b64)
     if raw[:len(HSP_MAGIC)] != HSP_MAGIC:
         raise ValueError("payload is not a .hsp blob (missing magic header)")
-    body = json.loads(raw[len(HSP_MAGIC):].decode("utf-8"))
-    return decompile_body(body, library)
+    return json.loads(raw[len(HSP_MAGIC):].decode("utf-8"))
+
+
+def view_preset_handler(
+    library: Library, model: str, hsp_b64: str, *, irs_dir: Path | None = None
+) -> dict[str, Any]:
+    """Decode a base64-encoded .hsp blob into its read-only projection dict.
+
+    Mirrors `helixgen view`: unwraps the magic-prefixed JSON body, then
+    projects it via `helixgen.view.view` -- never reads/writes disk, no
+    sidecar spec is produced. IRs are resolved against the mapping at
+    `irs_dir` (or the default `$HELIXGEN_IRS`/`~/.helixgen/irs/` location)
+    so a registered IR block's `irhash` can be reported by wav basename.
+    """
+    _validate_model(model)
+    body = _decode_hsp_b64(hsp_b64)
+    irs = IrMapping.load(irs_dir)
+    return view_projection(body, library, irs=irs)
+
+
+# Each entry takes (body, library, op_dict) and mutates `body` in place,
+# returning a list[str] of warnings (empty for ops that never warn).
+def _op_set_param(body: dict, library: Library, o: dict) -> list[str]:
+    mutate.set_param(
+        body, o["block"], o["param"], o["value"], library,
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+    return []
+
+
+def _op_set_enabled(body: dict, library: Library, o: dict) -> list[str]:
+    mutate.set_enabled(
+        body, o["block"], o["enabled"], library,
+        snapshot=o.get("snapshot"),
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+    return []
+
+
+def _op_add_block(body: dict, library: Library, o: dict) -> list[str]:
+    mutate.add_block(
+        body, o["block"], library,
+        path=o.get("path", 0), after=o.get("after"), params=o.get("params"),
+    )
+    return []
+
+
+def _op_remove_block(body: dict, library: Library, o: dict) -> list[str]:
+    mutate.remove_block(
+        body, o["block"], library,
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+    return []
+
+
+def _op_swap_model(body: dict, library: Library, o: dict) -> list[str]:
+    return mutate.swap_model(
+        body, o["old"], o["new"], library,
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
 
 
 _PATCH_OPS = {
-    "set_param": lambda lib, spec, o: (
-        _patch.set_param(spec, o["block"], o["param"], o["value"],
-                         path=o.get("path"), index=o.get("index"),
-                         lane=o.get("lane"), pos=o.get("pos")), []),
-    "set_enabled": lambda lib, spec, o: (
-        _patch.set_enabled(spec, o["block"], o["enabled"],
-                           path=o.get("path"), index=o.get("index"),
-                           lane=o.get("lane"), pos=o.get("pos"),
-                           snapshot=o.get("snapshot")), []),
-    "add_block": lambda lib, spec, o: (
-        _patch.add_block(spec, o["block"], path=o.get("path", 0),
-                         after=o.get("after"), params=o.get("params"),
-                         lane=o.get("lane"), pos=o.get("pos")), []),
-    "remove_block": lambda lib, spec, o: (
-        _patch.remove_block(spec, o["block"],
-                            path=o.get("path"), index=o.get("index"),
-                            lane=o.get("lane"), pos=o.get("pos")), []),
-    "swap_model": lambda lib, spec, o: _patch.swap_model(
-        spec, o["old"], o["new"], lib, path=o.get("path"), index=o.get("index"),
-        lane=o.get("lane"), pos=o.get("pos")),
+    "set_param": _op_set_param,
+    "set_enabled": _op_set_enabled,
+    "add_block": _op_add_block,
+    "remove_block": _op_remove_block,
+    "swap_model": _op_swap_model,
 }
 
 
-def patch_preset_handler(library: Library, model: str, spec: dict, operations: list) -> dict:
-    """Apply a sequence of patch ops to a spec dict. Returns {spec, warnings}."""
+def patch_preset_handler(
+    library: Library, model: str, hsp_b64: str, operations: list
+) -> dict[str, Any]:
+    """Apply a sequence of surgical edits directly to a base64-encoded .hsp blob.
+
+    Decodes `hsp_b64` to a body dict, applies each `{"op": ...}` entry in
+    `operations` via the matching `helixgen.mutate` verb (mutating the body
+    in place -- no spec round-trip), then re-encodes via
+    `helixgen.hsp.dumps_hsp`.
+
+    Returns `{"hsp_b64": <base64 .hsp bytes>, "warnings": [<str>, ...]}`.
+    `warnings` collects any `swap_model` messages about params/IRs that
+    couldn't be carried over to the new block.
+    """
     _validate_model(model)
+    body = _decode_hsp_b64(hsp_b64)
     warnings: list[str] = []
-    current = spec
     for o in operations:
         op = o.get("op")
         if op not in _PATCH_OPS:
             raise ValueError(f"unknown patch op {op!r}; valid: {sorted(_PATCH_OPS)}")
-        current, warns = _PATCH_OPS[op](library, current, o)
-        warnings.extend(warns)
-    return {"spec": current, "warnings": warnings}
+        warnings.extend(_PATCH_OPS[op](body, library, o))
+    return {
+        "hsp_b64": base64.b64encode(dumps_hsp(body)).decode("ascii"),
+        "warnings": warnings,
+    }

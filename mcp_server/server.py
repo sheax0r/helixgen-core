@@ -57,15 +57,17 @@ def show_block(model: str, name_or_id: str) -> str:
 
 
 @app.tool()
-def generate_preset(model: str, spec: dict[str, Any]) -> EmbeddedResource:
-    """Generate a Helix Stadium .hsp preset from an inline JSON spec.
+def generate_preset(model: str, recipe: dict[str, Any]) -> EmbeddedResource:
+    """Generate a Helix Stadium .hsp preset from an inline JSON recipe.
 
     Required `model`: `"stadium"` or `"stadium_xl"`. Confirm the user's
     device before calling — see the `setup` skill.
 
-    The spec follows the helixgen schema (see https://github.com/sheax0r/helixgen):
+    The recipe follows the helixgen schema (see https://github.com/sheax0r/helixgen):
     a `name`, optional `author`, 1-2 `paths` each with `blocks`, and optional
-    `snapshots` / `footswitches` / `expression`.
+    `snapshots` / `footswitches` / `expression`. It is built directly against
+    the library's Stadium chassis — no sidecar spec file is written; the
+    returned `.hsp` blob is the sole source of truth.
 
     **IR usage:** `With Pan` blocks accept an `ir` field with either a
     basename (resolved via the local IR mapping) or a 32-char hex hash
@@ -77,19 +79,21 @@ def generate_preset(model: str, spec: dict[str, Any]) -> EmbeddedResource:
 
     **On param errors:** if the error message says `Unknown param(s)`, call
     `show_block` with the offending block name to retrieve the correct param
-    names, then retry `generate_preset` with the corrected spec. Param
+    names, then retry `generate_preset` with the corrected recipe. Param
     names are case-sensitive.
 
     Returns an MCP `EmbeddedResource` whose `resource.blob` is the base64-
     encoded `.hsp` bytes; `resource.uri` is `file:///<sanitized-name>.hsp`.
+    To apply further surgical edits, pass `resource.blob` as `hsp_b64` to
+    `patch_preset`.
     """
-    result = _tools.generate_preset_handler(_resolve_library(), model, spec=spec)
+    result = _tools.generate_preset_handler(_resolve_library(), model, recipe=recipe)
     return EmbeddedResource(
         type="resource",
         resource=BlobResourceContents(
             uri=f"file:///{result['name']}",
             mimeType=result["mimeType"],
-            blob=result["blob"],
+            blob=result["hsp_b64"],
         ),
     )
 
@@ -206,46 +210,56 @@ def register_irs(model: str, ir_directory: str, force: bool = False) -> dict[str
 
 
 @app.tool()
-def decompile_preset(model: str, hsp_b64: str) -> dict[str, Any]:
-    """Decompile a base64-encoded Stadium .hsp into an editable spec dict.
+def view_preset(model: str, hsp_b64: str) -> dict[str, Any]:
+    """Project a base64-encoded Stadium .hsp into a readable dict for agents/humans.
 
-    Use this to bring an orphan/ingested preset into the spec world before
-    applying surgical edits with patch_preset.
+    Use this to inspect an orphan/ingested preset's blocks, params,
+    snapshots, footswitches, and expression wiring before deciding what to
+    edit with `patch_preset`. Read-only — never writes a sidecar file; the
+    `.hsp` blob itself remains the sole source of truth.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
     `hsp_b64` is the base64-encoded bytes of a `.hsp` file (the same blob
-    returned by `generate_preset`'s `resource.blob`).
+    returned by `generate_preset`'s `resource.blob`, or `patch_preset`'s
+    `hsp_b64`).
 
-    Returns a spec dict that can be passed directly to `patch_preset` or
-    `generate_preset`.
+    Returns a spec-shaped dict (`name`, `paths[*].blocks`, `snapshots`,
+    `footswitches`, `expression`, ...) for comprehension only — it is NOT
+    accepted back into `patch_preset` or `generate_preset`; edit the `.hsp`
+    blob itself via `patch_preset`'s `operations`.
     """
-    return _tools.decompile_preset_handler(_resolve_library(), model, hsp_b64)
+    return _tools.view_preset_handler(_resolve_library(), model, hsp_b64)
 
 
 @app.tool()
-def patch_preset(model: str, spec: dict[str, Any], operations: list) -> dict[str, Any]:
-    """Apply surgical edits to a spec dict and return {spec, warnings}.
+def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
+    """Apply surgical edits directly to a base64-encoded .hsp blob.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    `operations` is a list of `{"op": ...}` dicts. Supported ops:
-    - `set_param` — `{op, block, param, value, [path], [index], [lane], [pos]}`
-    - `set_enabled` — `{op, block, enabled, [path], [index], [lane], [pos], [snapshot]}`
-    - `add_block` — `{op, block, [path], [after], [params], [lane], [pos]}`
-    - `remove_block` — `{op, block, [path], [index], [lane], [pos]}`
-    - `swap_model` — `{op, old, new, [path], [index], [lane], [pos]}`
+    `hsp_b64` is the base64-encoded bytes of a `.hsp` file (from
+    `generate_preset`'s `resource.blob`, a prior `patch_preset` call's
+    `hsp_b64`, or a user-supplied orphan export). Each op in `operations`
+    mutates the decoded body directly (no spec round-trip) via the matching
+    `helixgen.mutate` verb. Supported ops:
+    - `set_param` — `{op, block, param, value, [path], [lane], [pos]}`
+    - `set_enabled` — `{op, block, enabled, [path], [lane], [pos], [snapshot]}`
+    - `add_block` — `{op, block, [path], [after], [params]}`
+    - `remove_block` — `{op, block, [path], [lane], [pos]}`
+    - `swap_model` — `{op, old, new, [path], [lane], [pos]}`
 
     `[lane]`/`[pos]` disambiguate a block address when more than one placed
     block shares the same display name (e.g. a dual-cab block or a block
     duplicated across a parallel split) — same semantics as the CLI's
-    `--lane`/`--pos` flags. Use them together with `block` when `path`/`index`
-    alone would be ambiguous; an address the handler cannot resolve uniquely
+    `--lane`/`--pos` flags. An address that cannot be resolved uniquely
     raises a clear "matches N placements" error listing the candidates.
     Call `show_block` first to confirm exact, case-sensitive param names.
 
-    Regenerate the `.hsp` afterwards with `generate_preset(spec=<returned spec>)`.
-
-    Returns `{"spec": <updated spec dict>, "warnings": [<str>, ...]}`.
+    Returns `{"hsp_b64": <base64 .hsp bytes reflecting every op>, "warnings":
+    [<str>, ...]}`. `warnings` collects any `swap_model` messages about
+    params/IRs that couldn't be carried over. Pass the returned `hsp_b64`
+    into another `patch_preset` call to keep editing, or `view_preset` to
+    inspect the result.
     """
-    return _tools.patch_preset_handler(_resolve_library(), model, spec, operations)
+    return _tools.patch_preset_handler(_resolve_library(), model, hsp_b64, operations)

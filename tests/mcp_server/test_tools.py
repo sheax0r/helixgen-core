@@ -91,12 +91,12 @@ def test_generate_preset_handler_returns_base64_hsp(mcp_library):
         ],
     }
 
-    result = generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
+    result = generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
 
     assert isinstance(result, dict)
     assert result["mimeType"] == "application/octet-stream"
     assert result["name"].endswith(".hsp")
-    decoded = base64.b64decode(result["blob"])
+    decoded = base64.b64decode(result["hsp_b64"])
     assert decoded.startswith(HSP_MAGIC), (
         f"expected HSP_MAGIC prefix; got {decoded[:8]!r}"
     )
@@ -117,7 +117,7 @@ def test_generate_preset_handler_rejects_unknown_param(mcp_library):
         ],
     }
     with _pytest.raises(ParamValidationError):
-        generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
 
 
 def test_generate_preset_handler_sanitizes_filename(mcp_library):
@@ -130,7 +130,7 @@ def test_generate_preset_handler_sanitizes_filename(mcp_library):
         "name": "../../etc/passwd",
         "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
     }
-    result = generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
+    result = generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
     # No path traversal, no slashes, no null bytes.
     assert "/" not in result["name"]
     assert "\\" not in result["name"]
@@ -161,7 +161,7 @@ def test_generate_preset_handler_rejects_malformed_spec(mcp_library):
     # Missing 'paths' is a structural failure caught by parse_spec.
     spec = {"name": "no paths here"}
     with _pytest.raises(SpecError):
-        generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
 
 
 def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
@@ -195,7 +195,7 @@ def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
         ]}],
     }
     with _pytest.raises(GenerateError):
-        generate_preset_handler(mcp_library, "stadium_xl", spec=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
 
 
 def test_list_irs_handler_empty_when_no_mapping(tmp_path):
