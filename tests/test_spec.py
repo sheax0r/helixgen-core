@@ -396,3 +396,40 @@ def test_parse_block_raw_rejects_bad_slots():
     with pytest.raises(SpecError):
         parse_spec({"name": "S", "paths": [{"blocks": [
             {"block": "X", "raw": {"slots": [1, 2, 3]}}]}]})
+
+
+def test_parse_block_trails_true():
+    from helixgen.spec import parse_spec
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Tape Echo", "trails": True}]}]})
+    assert spec.paths[0].blocks[0].trails is True
+
+
+def test_parse_block_trails_false():
+    from helixgen.spec import parse_spec
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Tape Echo", "trails": False}]}]})
+    assert spec.paths[0].blocks[0].trails is False
+
+
+def test_parse_block_trails_absent_is_none():
+    from helixgen.spec import parse_spec
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [{"block": "X"}]}]})
+    assert spec.paths[0].blocks[0].trails is None
+
+
+def test_parse_block_trails_rejects_non_bool():
+    from helixgen.spec import parse_spec, SpecError
+    with pytest.raises(SpecError, match='"trails" must be a boolean'):
+        parse_spec({"name": "S", "paths": [{"blocks": [
+            {"block": "X", "trails": "yes"}]}]})
+
+
+def test_parse_block_trails_coexists_with_raw_harness():
+    from helixgen.spec import parse_spec
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Tape Echo", "trails": True,
+         "raw": {"harness": {"@enabled": {"value": True}, "params": {}}}}]}]})
+    entry = spec.paths[0].blocks[0]
+    assert entry.trails is True
+    assert entry.raw["harness"]["@enabled"]["value"] is True

@@ -440,6 +440,7 @@ def _to_hsp_bnn(
     exp_controllers: dict[str, dict[str, Any]] | None = None,
     irhash: str | None = None,
     raw: dict[str, Any] | None = None,
+    trails: bool | None = None,
 ) -> dict[str, Any]:
     """Build one Stadium bNN dict from a library Block and user param overrides.
 
@@ -522,6 +523,29 @@ def _to_hsp_bnn(
         extra_slots = raw.get("slots")
         if isinstance(extra_slots, list):
             bnn["slot"].extend(copy.deepcopy(s) for s in extra_slots)
+    if trails is not None:
+        # Author-facing Trails (delay/reverb spillover) lives in the bNN harness.
+        # Start from any verbatim harness (raw), else synthesize a complete one
+        # using the device constants observed across real exports, then set the
+        # authoritative Trails value (overriding any verbatim value).
+        harness = bnn.get("harness")
+        if not isinstance(harness, dict):
+            harness = {
+                "@enabled": {"value": True},
+                "params": {
+                    "EvtIdx": {"value": -1},
+                    "Trails": {"value": trails},
+                    "bypass": {"value": False},
+                    "upper": {"value": True},
+                },
+            }
+            bnn["harness"] = harness
+        else:
+            params = harness.get("params")
+            if not isinstance(params, dict):
+                params = {}
+                harness["params"] = params
+            params["Trails"] = {"value": trails}
     return bnn
 
 
@@ -855,6 +879,14 @@ def _compose_preset_hsp(
                     spec_ir=block_entry.ir,
                     irs=irs,
                 )
+            if block_entry.trails is not None and block.category not in (
+                "delay", "reverb"
+            ):
+                raise GenerateError(
+                    f"Block {block_entry.block!r} sets \"trails\" but its "
+                    f"category is {block.category!r}; trails (harness spillover) "
+                    f"applies only to delay and reverb blocks."
+                )
             path_dict[key] = _to_hsp_bnn(
                 block, user_params,
                 position=pos,
@@ -870,6 +902,7 @@ def _compose_preset_hsp(
                 } or None,
                 irhash=resolved_irhash,
                 raw=block_entry.raw,
+                trails=block_entry.trails,
             )
         _emit_splits(path_dict, path_entry, eff)
         _emit_structural(path_dict, path_entry)

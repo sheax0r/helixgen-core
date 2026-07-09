@@ -169,6 +169,93 @@ def test_decompile_captures_harness_and_extra_slots(hsp_library):
     assert entry["raw"]["slots"][0]["model"] == "HD2_CabMicIr_NoCab"
 
 
+def _add_delay_block(lib):
+    lib.save_block(Block(
+        model_id="HD2_DelayTape", category="delay", display_name="Tape Delay",
+        params={"Mix": {"type": "float"}},
+        exemplar={"@model": "HD2_DelayTape", "@type": "fx", "@enabled": True,
+                  "Mix": 0.3},
+        first_seen={"preset": "_", "firmware": "_", "date": "2026-07-08"}))
+    lib.rebuild_index()
+    return lib.find_block("Tape Delay")
+
+
+def test_decompile_lifts_trails_on_delay(hsp_library):
+    from helixgen.decompile import _block_entry
+    lib = hsp_library
+    block = _add_delay_block(lib)
+    bnn = {
+        "@enabled": {"value": True}, "type": "fx", "position": 1, "path": 0,
+        "harness": {"@enabled": {"value": True},
+                    "params": {"EvtIdx": {"value": -1},
+                               "Trails": {"value": True},
+                               "upper": {"value": True}}},
+        "slot": [{"model": block.model_id, "@enabled": {"value": True}, "params": {}}],
+    }
+    entry = _block_entry(bnn, lib, None)
+    # Trails lifted to a clean field...
+    assert entry["trails"] is True
+    # ...and removed from the verbatim harness (single source of truth)...
+    assert "Trails" not in entry["raw"]["harness"]["params"]
+    # ...while the other harness constants are retained verbatim.
+    assert entry["raw"]["harness"]["params"]["upper"]["value"] is True
+    assert entry["raw"]["harness"]["params"]["EvtIdx"]["value"] == -1
+
+
+def test_decompile_does_not_lift_trails_on_non_delay_reverb(hsp_library):
+    """Symmetric with the generate guard: a drive block's Trails is NOT lifted
+    (it could not be regenerated as a `trails` field), so it stays verbatim."""
+    from helixgen.decompile import _block_entry
+    lib = hsp_library
+    block = lib.find_block("Tube Drive")  # category drive
+    bnn = {
+        "@enabled": {"value": True}, "type": "fx", "position": 1, "path": 0,
+        "harness": {"@enabled": {"value": True},
+                    "params": {"Trails": {"value": True}}},
+        "slot": [{"model": block.model_id, "@enabled": {"value": True}, "params": {}}],
+    }
+    entry = _block_entry(bnn, lib, None)
+    assert "trails" not in entry
+    assert entry["raw"]["harness"]["params"]["Trails"]["value"] is True
+
+
+def test_decompile_delay_without_trails_no_trails_field(hsp_library):
+    from helixgen.decompile import _block_entry
+    lib = hsp_library
+    block = _add_delay_block(lib)
+    bnn = {
+        "@enabled": {"value": True}, "type": "fx", "position": 1, "path": 0,
+        "harness": {"@enabled": {"value": True},
+                    "params": {"upper": {"value": True}}},
+        "slot": [{"model": block.model_id, "@enabled": {"value": True}, "params": {}}],
+    }
+    entry = _block_entry(bnn, lib, None)
+    assert "trails" not in entry
+    assert entry["raw"]["harness"]["params"]["upper"]["value"] is True
+
+
+def test_decompile_generate_trails_roundtrip(hsp_library):
+    """decompile -> parse -> generate reproduces the original harness dict."""
+    from helixgen.decompile import _block_entry
+    lib = hsp_library
+    block = _add_delay_block(lib)
+    harness = {"@enabled": {"value": True},
+               "params": {"EvtIdx": {"value": -1},
+                          "Trails": {"value": True},
+                          "bypass": {"value": False},
+                          "upper": {"value": True}}}
+    bnn = {
+        "@enabled": {"value": True}, "type": "fx", "position": 1, "path": 0,
+        "harness": json.loads(json.dumps(harness)),
+        "slot": [{"model": block.model_id, "@enabled": {"value": True}, "params": {}}],
+    }
+    entry = _block_entry(bnn, lib, None)
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [entry]}]}, source="t")
+    preset = compose_preset(spec, lib, source="t")
+    regen = preset["preset"]["flow"][0]["b01"]["harness"]
+    assert regen == harness
+
+
 def test_decompile_no_raw_when_no_harness_or_extra_slots(hsp_library):
     from helixgen.decompile import _block_entry
     lib = hsp_library

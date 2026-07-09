@@ -42,6 +42,22 @@ def test_swap_unknown_target_refused(tmp_path):
         patch.swap_model(_spec(), "Amp A", "Ghost", _lib(tmp_path))
 
 
+def test_swap_preserves_trails_field(tmp_path):
+    """A same-category delay->delay swap keeps the block-level `trails` field
+    (swap_model only rewrites block/params/ir, so trails survives untouched)."""
+    lib = Library(root=tmp_path / "lib")
+    for mid, dn in (("HD2_DelayA", "Delay A"), ("HD2_DelayB", "Delay B")):
+        lib.save_block(Block(model_id=mid, category="delay", display_name=dn,
+            params={"Mix": {"type": "float"}},
+            exemplar={}, first_seen={"preset": "_", "firmware": "_", "date": "x"}))
+    spec = {"name": "S", "paths": [{"blocks": [
+        {"block": "Delay A", "trails": True, "params": {"Mix": 0.3}}]}]}
+    out, _ = patch.swap_model(spec, "Delay A", "Delay B", lib)
+    b = out["paths"][0]["blocks"][0]
+    assert b["block"] == "Delay B"
+    assert b["trails"] is True
+
+
 def test_swap_preserves_ir_ref(tmp_path):
     lib = Library(root=tmp_path / "lib")
     lib.save_block(Block(model_id="HX2_ImpulseResponse1", category="cab",

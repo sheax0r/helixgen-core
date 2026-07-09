@@ -440,7 +440,20 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
     raw: dict[str, Any] = {}
     harness = bnn.get("harness")
     if isinstance(harness, dict):
-        raw["harness"] = copy.deepcopy(harness)
+        harness_copy = copy.deepcopy(harness)
+        # Lift the author-facing Trails (delay/reverb spillover) out of the
+        # verbatim harness into a clean top-level `trails` field, so it is a
+        # single source of truth that generate re-injects. Gate on category to
+        # stay symmetric with generate's delay/reverb-only guard: a block that
+        # could not be regenerated with a `trails` field never gets one, and its
+        # Trails (if any) stays verbatim inside raw.harness.
+        if block.category in ("delay", "reverb"):
+            hparams = harness_copy.get("params")
+            trails_wrapped = hparams.get("Trails") if isinstance(hparams, dict) else None
+            if isinstance(trails_wrapped, dict) and "value" in trails_wrapped:
+                entry["trails"] = bool(trails_wrapped["value"])
+                del hparams["Trails"]
+        raw["harness"] = harness_copy
     slots = bnn.get("slot") or []
     if len(slots) > 1:
         raw["slots"] = copy.deepcopy(slots[1:])

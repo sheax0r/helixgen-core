@@ -1027,6 +1027,94 @@ def test_per_lane_capacity_rejects_13_on_one_lane(hsp_library):
         compose_preset(spec, hsp_library, source="t")
 
 
+def _add_delay_reverb_blocks(lib):
+    """Register a synthetic delay + reverb into an hsp library so trails tests
+    have a delay/reverb display_name to reference."""
+    from helixgen.library import Block
+    lib.save_block(Block(
+        model_id="HD2_DelayTape", category="delay", display_name="Tape Delay",
+        params={"Mix": {"type": "float"}},
+        exemplar={"@model": "HD2_DelayTape", "@type": "fx", "@enabled": True,
+                  "Mix": 0.3},
+        first_seen={"preset": "_", "firmware": "_", "date": "2026-07-08"}))
+    lib.save_block(Block(
+        model_id="HD2_ReverbPlate", category="reverb", display_name="Plate Verb",
+        params={"Mix": {"type": "float"}},
+        exemplar={"@model": "HD2_ReverbPlate", "@type": "fx", "@enabled": True,
+                  "Mix": 0.2},
+        first_seen={"preset": "_", "firmware": "_", "date": "2026-07-08"}))
+    lib.rebuild_index()
+
+
+def test_trails_true_synthesizes_harness_on_delay(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    _add_delay_reverb_blocks(lib)
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Tape Delay", "trails": True}]}]}, source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    bnn = preset["preset"]["flow"][0]["b01"]
+    h = bnn["harness"]
+    assert h["params"]["Trails"]["value"] is True
+    # synthesized harness carries the observed device constants
+    assert h["@enabled"]["value"] is True
+    assert h["params"]["EvtIdx"]["value"] == -1
+    assert h["params"]["bypass"]["value"] is False
+    assert h["params"]["upper"]["value"] is True
+
+
+def test_trails_false_on_delay(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    _add_delay_reverb_blocks(lib)
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Tape Delay", "trails": False}]}]}, source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    bnn = preset["preset"]["flow"][0]["b01"]
+    assert bnn["harness"]["params"]["Trails"]["value"] is False
+
+
+def test_trails_field_overrides_raw_harness_trails(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    _add_delay_reverb_blocks(lib)
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Plate Verb", "trails": True, "raw": {
+            "harness": {"@enabled": {"value": True},
+                        "params": {"Trails": {"value": False},
+                                   "upper": {"value": True}}}}}]}]},
+        source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    h = preset["preset"]["flow"][0]["b01"]["harness"]
+    assert h["params"]["Trails"]["value"] is True     # field wins
+    assert h["params"]["upper"]["value"] is True       # other verbatim kept
+
+
+def test_trails_on_non_delay_reverb_raises(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    _add_delay_reverb_blocks(lib)
+    # "Scream 808" is the drive from the seed fixture (category drive)
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Scream 808", "trails": True}]}]}, source="t.json")
+    with pytest.raises(GenerateError, match="trails"):
+        compose_preset(spec, lib, source="t.json")
+
+
+def test_trails_unset_leaves_raw_harness_verbatim(tmp_library, tmp_path):
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    _add_delay_reverb_blocks(lib)
+    spec = parse_spec({"name": "S", "paths": [{"blocks": [
+        {"block": "Tape Delay", "raw": {
+            "harness": {"@enabled": {"value": True},
+                        "params": {"Trails": {"value": True}}}}}]}]},
+        source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    h = preset["preset"]["flow"][0]["b01"]["harness"]
+    assert h["params"]["Trails"]["value"] is True  # verbatim, unchanged
+
+
 def test_hsp_emits_raw_harness_slots_and_favorite(tmp_library, tmp_path):
     lib = Library(tmp_library)
     _populate_hsp_library(lib, tmp_path)
