@@ -123,6 +123,17 @@ def resolve_controller_source(device_id: str, logical_name: str) -> int:
     return table[logical_name]
 
 
+def is_position_switch(logical_name: str) -> bool:
+    """True for expression-pedal toe/position switches (e.g. "EXP1Toe").
+
+    Unlike a digital footswitch, a position switch bound to a block's bypass
+    needs explicit min/max/threshold on its targetbypass controller for the
+    device to honor the toggle — see _build_fs_controller. Digital footswitches
+    work with null bounds.
+    """
+    return logical_name.endswith("Toe")
+
+
 def input_mode_for_model(device_id, model: str) -> str | None:
     """Reverse of resolve_input_model: Stadium input model_id → logical mode."""
     table = INPUT_MODELS[_resolve_device(device_id)]

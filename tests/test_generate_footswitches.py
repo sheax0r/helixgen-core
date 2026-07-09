@@ -49,6 +49,13 @@ def test_wah_bypass_on_exp1_toe_switch(tmp_path, sample_serial_preset_hsp):
     assert ctrl["source"] == 0x01010500
     assert ctrl["type"] == "targetbypass"
     assert ctrl["behavior"] == "latching"
+    # The toe/position switch (unlike a digital footswitch) needs an explicit
+    # min/max/threshold to actually bind the bypass toggle — with nulls the
+    # device ignores the binding and the toe reverts to its EXP1/EXP2 default,
+    # leaving the wah stuck bypassed. Matches real wah exports.
+    assert ctrl["min"] is False and ctrl["max"] is True
+    assert ctrl["threshold"] == 0.0
+    assert ctrl["delay"] == 0 and ctrl["goid"] == 0
 
 
 def _library(tmp_path) -> Library:
