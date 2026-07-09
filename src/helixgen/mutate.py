@@ -666,9 +666,10 @@ def wire_footswitch(
     Ports `generate._build_fs_controller` + `_build_fs_assignments`: writes
     a `targetbypass` controller dict onto the block's bNN-level `@enabled`
     wrapper (the same wrapper `set_enabled` mutates) and registers the
-    resolved source id in `preset.sources`. `switch` is a logical name
-    ("FS1".."FS10", or "EXP1Toe" for the expression-pedal toe/position
-    switch -- see `wire_wah_toe`), resolved via
+    resolved source id in `preset.sources`. `switch` is a logical name — one of
+    the assignable footswitches "FS1".."FS5" / "FS7".."FS11" (FS6 = MODE and
+    FS12 = TAP/Tuner are reserved and rejected), or "EXP1Toe" for the
+    expression-pedal toe/position switch (see `wire_wah_toe`) — resolved via
     `controllers.resolve_controller_source` against the chassis device_id.
 
     Assignment is permissive (matches the device-validated original

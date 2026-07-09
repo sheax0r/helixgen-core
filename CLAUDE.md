@@ -129,9 +129,13 @@ the same name is ambiguous across both DSP paths.
 
 ### Optional: footswitches
 
-Assign blocks to physical footswitches on the device. Stadium XL exposes
-`FS1`..`FS10`, plus `EXP1Toe` — the toe switch under the onboard expression
-pedal (push the pedal fully forward to click it).
+Assign blocks to physical footswitches on the device. The Stadium XL has 12
+capacitive footswitches in **2 rows × 6 columns** (top row FS1–FS6, bottom row
+FS7–FS12), but only **10 are assignable**: `FS1`–`FS5` (top row) and
+`FS7`–`FS11` (bottom row). `FS6` (**MODE**) and `FS12` (**TAP/Tuner**) are
+reserved and rejected with a tailored error if you try to assign them. There is
+also `EXP1Toe` — the toe switch under the onboard expression pedal (push the
+pedal fully forward to click it).
 
 ```json
 "footswitches": [
@@ -141,7 +145,9 @@ pedal (push the pedal fully forward to click it).
 ]
 ```
 
-- `switch` — `"FS1"`..`"FS10"`, or `"EXP1Toe"` (expression-pedal toe switch).
+- `switch` — an assignable footswitch `"FS1"`–`"FS5"` or `"FS7"`–`"FS11"`, or
+  `"EXP1Toe"` (expression-pedal toe switch). `"FS6"`/`"FS12"` are reserved
+  (MODE / TAP-Tuner) and not assignable.
 - `block` — must reference a block placed in `paths`.
 - `behavior` — `"latching"` (default; toggle) or `"momentary"` (on while held).
 - One switch may be assigned at most one block; one block may be on at most one switch.
@@ -149,6 +155,22 @@ pedal (push the pedal fully forward to click it).
   `EXP1` sweeping its `Pedal` param) so pressing the pedal toe-down engages the
   wah — the standard Helix wah behavior. A regular `FS` works too but requires a
   separate stomp.
+
+**Controller vocabulary & English rendering.** `helixgen controllers`
+(add `--json` for the machine-readable table) lists every assignable
+controller with its English name + physical position, e.g.
+`Footswitch 5 (top row, 5th from left)`. When reporting a tone to a human,
+render controllers in this English form (via
+`controllers.english_for_controller` / the `controller_mapping` MCP tool),
+never a bare `FS#`. When a human *describes* a control in plain language
+("the top-left switch", "second from right on the bottom", "the wah toe"),
+translate it to a canonical identifier with a dedicated small-model
+translation sub-agent fed `controller_mapping(stadium_xl)` — it returns exactly
+one identifier (or `AMBIGUOUS`/`NONE`); validate the result against the
+canonical set before writing it into a recipe. `view` never drops controls it
+can't map: an un-tabled/out-of-v1-scope source is kept and labeled under a
+separate top-level `unknown_controllers` list (ignored by `parse_spec`, so it
+stays round-trip safe).
 
 ### Optional: expression pedal
 

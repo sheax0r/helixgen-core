@@ -184,8 +184,14 @@ def test_expression_recovery_skips_bool_and_non_exp(hsp_library, capsys, tmp_pat
     exp2 = [a for a in spec2["expression"] if a["pedal"] == "EXP2"]
     assert exp2 and exp2[0]["targets"][0]["param"] == "Master"
 
-    err = capsys.readouterr().err
-    assert "warning:" in err
+    # The footswitch-as-parameter (FS9, source 0x01010108) sweep is out of v1
+    # authoring scope. Under the controller-mapping redesign it is no longer
+    # silently dropped-with-warning: it is KEPT and labeled under the separate
+    # `unknown_controllers` key (which parse_spec ignores), so round-trip is
+    # preserved and the control is visible rather than vanishing.
+    unknown = spec2.get("unknown_controllers", [])
+    assert any(u["kind"] == "expression" and u["source"] == "0x01010108"
+               and u["param"] == "Gain" for u in unknown), unknown
 
     # Skip-if-absent real-export integration check. BAS_Goliathan.hsp is a
     # real device export (not a repo fixture, gitignored under data/) that

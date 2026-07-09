@@ -133,6 +133,66 @@ def test_view_recovers_ir_basename(tmp_path, sample_serial_preset_hsp):
     assert entry["ir"] == "MyCab.wav"
 
 
+def test_view_recovers_fs11(hsp_library, tmp_path):
+    """A footswitch bound to FS11 (source 0x0101010a) decodes to switch=='FS11'
+    rather than being dropped as an unknown source."""
+    lib = hsp_library
+    spec = parse_spec({
+        "name": "FS11 tone",
+        "paths": [{"blocks": [{"block": "Tube Drive"}]}],
+        "footswitches": [{"switch": "FS11", "block": "Tube Drive"}],
+    })
+    p1 = compose_preset(spec, lib, source="t")
+    body = _write_and_read(tmp_path, p1)
+    d = view(body, lib)
+    assert d["footswitches"] == [
+        {"switch": "FS11", "block": "Tube Drive", "behavior": "latching"}]
+    assert "unknown_controllers" not in d
+
+
+def test_view_labels_untabled_bypass_controller(hsp_library, tmp_path):
+    """A targetbypass controller whose source is not in the canonical table is
+    kept and labeled under `unknown_controllers`, never silently dropped."""
+    lib = hsp_library
+    spec = parse_spec({
+        "name": "unknown ctrl",
+        "paths": [{"blocks": [{"block": "Tube Drive"}]}],
+        "footswitches": [{"switch": "FS1", "block": "Tube Drive"}],
+    })
+    p1 = compose_preset(spec, lib, source="t")
+    # Rewrite the controller source to an un-tabled bank (0x0101020N targetbypass).
+    p1["preset"]["flow"][0]["b01"]["@enabled"]["controller"]["source"] = 0x01010200
+    body = _write_and_read(tmp_path, p1)
+    d = view(body, lib)
+    # No known footswitch recovered; instead a labeled unknown control.
+    assert "footswitches" not in d
+    unknown = d["unknown_controllers"]
+    assert len(unknown) == 1
+    entry = unknown[0]
+    assert entry["kind"] == "footswitch"
+    assert entry["source"] == "0x01010200"
+    assert "unknown control" in entry["label"] and "0x01010200" in entry["label"]
+    assert entry["block"] == "Tube Drive"
+
+
+def test_view_unknown_controllers_survives_parse_spec(hsp_library, tmp_path):
+    """parse_spec must ignore the `unknown_controllers` key (round-trip safe)."""
+    lib = hsp_library
+    spec = parse_spec({
+        "name": "unknown ctrl",
+        "paths": [{"blocks": [{"block": "Tube Drive"}]}],
+        "footswitches": [{"switch": "FS1", "block": "Tube Drive"}],
+    })
+    p1 = compose_preset(spec, lib, source="t")
+    p1["preset"]["flow"][0]["b01"]["@enabled"]["controller"]["source"] = 0x010104ff
+    body = _write_and_read(tmp_path, p1)
+    d = view(body, lib)
+    assert "unknown_controllers" in d
+    # Must not raise even though `unknown_controllers` is a key parse_spec
+    # doesn't model — it reads only known keys via .get().
+    parse_spec(d)
+
+
 def test_view_does_not_create_any_file(hsp_library, tmp_path):
     lib = hsp_library
     spec = parse_spec({"name": "NoWrite", "paths": [

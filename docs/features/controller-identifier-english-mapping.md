@@ -1,10 +1,14 @@
 # Controller Identifier ↔ English Mapping (Helix Stadium XL)
 
-**Status:** Design approved 2026-07-08.
-**Implementation gate:** HOLD until `redesign-hsp-canonical` lands on `main` and the primary
-checkout returns to `main`. After it lands, a sub-agent MUST re-review this spec against the
-redesigned controller representation before implementation begins (the redesign may move where
-controller encoding lives).
+**Status:** Design approved 2026-07-08. **Implemented in 1.0.1** (branch
+`feature/controller-identifier-mapping`).
+**Implementation gate:** SATISFIED. `redesign-hsp-canonical` landed as **1.0.0**;
+this spec was reconciled against the redesigned controller representation on
+**2026-07-09** and implemented. The redesign moved the decode surface from
+`decompile.py` to `view.py` and the authoring/validation surface from
+`generate.py`/`spec.py` hooks to `mutate.wire_*` + `recipe.apply_recipe`; the
+mapping tables still live in `controllers.py` as this spec intended. See the
+per-section reconciliation notes below.
 **Owner device:** Helix **Stadium XL** (`device_id` → `stadium_xl`).
 
 ---
@@ -34,16 +38,20 @@ Bank Up/Down in Preset mode but remain assignable as stomps.
 Source-id corroboration (211 real `.hsp` exports parsed; source index = FS# − 1, i.e. source
 `0x010101NN`, `NN = FS# − 1`):
 
-| Device switch | source id | in real presets | helixgen today |
-|---|---|---|---|
-| FS1–FS5 | `0x01010100`–`04` | yes | ✓ correct |
-| **FS6 (MODE)** | `0x01010105` | **0 occurrences** | ✗ exposed as assignable "FS6" (bug) |
-| FS7–FS10 | `0x01010106`–`09` | yes | ✓ correct |
-| **FS11** | `0x0101010a` | **109 occurrences** | ✗ missing from table |
-| FS12 (TAP) | `0x0101010b` | (reserved) | n/a |
+Counts below are **files (of 211) containing at least one controller bound to that source**,
+re-verified in the worktree against `data/*.hsp` on 2026-07-09.
 
-`FS6` scoring **0** occurrences across 211 presets is the tell: nobody assigns to the MODE switch.
-`FS11` scoring **109** is the real 5th assignable switch on the bottom row.
+| Device switch | source id | in real presets | helixgen ≤1.0.0 | helixgen 1.0.1 |
+|---|---|---|---|---|
+| FS1–FS5 | `0x01010100`–`04` | yes (FS1 55, FS5 61 files) | ✓ correct | ✓ correct |
+| **FS6 (MODE)** | `0x01010105` | **0 files** | ✗ exposed as assignable "FS6" (bug) | ✓ reserved → tailored MODE error |
+| FS7–FS10 | `0x01010106`–`09` | yes (FS10 87 files) | ✓ correct | ✓ correct |
+| **FS11** | `0x0101010a` | **90 files** | ✗ missing from table | ✓ added, assignable |
+| FS12 (TAP) | `0x0101010b` | **0 files** (reserved) | n/a (never in table) | ✓ reserved → tailored TAP/Tuner error |
+
+`FS6` scoring **0** files across 211 presets is the tell: nobody assigns to the MODE switch.
+`FS11` scoring **90** files is the real 5th assignable switch on the bottom row. (`EXP1Toe`,
+the wah toe switch, appears in 142 files.)
 
 Sources: manuals.line6.com/en/helix-stadium/live/{top-panel-and-footswitches,command-center,midi};
 Helix Stadium XL Floor cheat-sheet (doc 40-00-0572 Rev B).
@@ -63,7 +71,8 @@ bottom-row, 5th-from-left switch (device FS11, immediately left of TAP/Tuner) an
 **Non-goals (v1)**
 - Standard (non-XL) Stadium (identical FS grid, no onboard pedal) — future extension; the design
   stays device-keyed so it drops in later.
-- EXP3, external Control A/B/C/D pedals, and the unidentified `0x010104NN` source bank — these are
+- EXP3, external Control A/B/C/D pedals, the unidentified `0x010104NN` source bank, and the
+  `0x0101020N` (00–03) targetbypass bank newly found during implementation — these are
   **decode-labeled as "unknown control"** (not silently dropped) but not authorable in v1.
 - Any change to how blocks/snapshots are encoded — controls only.
 
@@ -114,10 +123,25 @@ Everything routes through one module, **`src/helixgen/controllers.py`**, which a
 per-device source-id table and the forward/reverse resolvers. Extend it; do not scatter tables.
 
 ### 6.1 Data model
-Replace the flat `CONTROLLER_SOURCE_IDS[device]` name→int table with a per-device record set
-(or add a parallel `CONTROLLER_META[device]` keyed by identifier) carrying: `source_id`, `kind`,
-`row`, `col`, `canonical_name`, `position_phrase`, `aliases`, and a `reserved` flag + reason for
-`FS6`/`FS12`. Keep the existing forward/reverse functions working (they read from the new record).
+**Implemented (1.0.1):** added `CONTROLLER_META["stadium_xl"]` keyed by identifier, each record
+carrying `source_id`, `kind`, `row`, `col`, `canonical_name`, `position_phrase`, `aliases`; the
+flat `CONTROLLER_SOURCE_IDS[device]` name→int table is now **derived from** `CONTROLLER_META`
+(single source of truth), so the existing forward/reverse resolvers keep working unchanged. The
+reserved switches live in a separate `RESERVED["stadium_xl"] = {"FS6": (0x01010105, "MODE"),
+"FS12": (0x0101010b, "TAP/Tuner")}` table rather than a per-record flag.
+
+**Reconciliation note (position_phrase):** the §5 table's parenthetical secondary hints
+("(2nd from right)", "(top-left)") are stored as `aliases`, and `position_phrase` holds the clean
+directional phrase ("top row, 5th from left"), so `english_for_controller` renders
+`"Footswitch 5 (top row, 5th from left)"` without nested parentheses (matching the stated contract
+example) while the hints still feed the translation sub-agent's alias vocabulary.
+
+The authoring/validation surface moved in the 1.0.0 redesign: controllers are wired by
+`mutate.wire_footswitch` / `wire_expression` / `wire_wah_toe` (which wrap `ControllerError` →
+`MutateError`) and driven from `recipe.apply_recipe`. `resolve_controller_source` now checks
+`RESERVED` first and raises a tailored "not assignable" error for `FS6`/`FS12`; the reverse
+`controller_name_for_source` is deliberately left untouched — it still returns `None` for
+un-tabled sources and never raises (decode must stay tolerant).
 
 New functions (pure stdlib):
 - `english_for_controller(device, identifier) -> str` — e.g. `"Footswitch 5 (top row, 5th from left)"`.
@@ -128,10 +152,16 @@ New functions (pure stdlib):
 - `controller_name_for_source(device, source_id)` — unchanged (reverse lookup).
 
 ### 6.2 Decode direction (hsp → human)
-- `decompile.py::_recover_footswitches` / `_recover_expression`: unchanged recovery, but a source
-  id not in the table is **kept and labeled** `"unknown control (source 0xNNNNNNNN)"` in the
-  decompiled output rather than dropped/warned-away. (This is where EXP3 / `0x010104NN` surface
-  instead of vanishing.)
+**Reconciliation:** the 1.0.0 redesign renamed the decode entry point from `decompile.py` to
+`view.py` (a read-only projection off the canonical `.hsp`; no sidecar). The behaviour change
+landed there:
+- `view.py::_recover_footswitches` / `_recover_expression`: unchanged recovery, but a source id
+  not in the table (or a param-driven footswitch out of v1 scope) is **kept and labeled**
+  `"unknown control (source 0xNNNNNNNN)"` rather than dropped/warned-away. These labeled entries are
+  collected into a **new, separate top-level `unknown_controllers` list** on the projection — kept
+  distinct from `footswitches`/`expression` so that `spec.parse_spec` (which reads only known keys
+  via `.get()`) ignores it and round-trip stays safe. (This is where EXP3 / the `0x010104NN` bank /
+  the `0x0101020N` targetbypass bank surface instead of vanishing.)
 - The `tone`/`setup` skill report renders each assigned control with `english_for_controller`
   (name + position), never the bare identifier.
 
@@ -146,9 +176,15 @@ New functions (pure stdlib):
 - This sub-agent is reusable within a session (same device mapping every call).
 
 ### 6.4 Consumers
-- `generate.py`: no change to encoding; error messages surface English names.
-- `mcp_server`: expose `controller_mapping(device)` (and a thin `describe_controller`) so the skill
-  and translation sub-agent get the data without a second hard-coded table.
+- **Encoding (authoring):** no change to the on-device encoding. In the redesigned architecture the
+  encode path is `recipe.apply_recipe` → `mutate.wire_footswitch`/`wire_expression`/`wire_wah_toe`
+  (which resolve via `controllers.resolve_controller_source` and surface the tailored reserved
+  errors). The deleted `generate.py`/`spec.py` controller hooks from the pre-1.0.0 design are
+  **not** reintroduced.
+- `mcp_server`: new `controller_mapping(model)` tool (handler
+  `mcp_server.tools.controller_mapping_handler`) returns the full JSON table so the skill and
+  translation sub-agent get the data without a second hard-coded table. CLI mirror:
+  `helixgen controllers [--json]`.
 - `CLAUDE.md`: correct the footswitch vocabulary (FS1–5, FS7–11, Exp Toe; FS6/FS12 reserved),
   document the English rendering and the translation-sub-agent flow.
 - `tone`/`setup` SKILL.md: auto-wire uses the corrected set (skip FS6; FS1→FS5 then FS7→FS11);
@@ -184,6 +220,9 @@ New functions (pure stdlib):
 5. Version bump per repo release process; ship.
 
 ## 10. Open items
-- [ ] Confirm `FS11 = 0x0101010a` via device round-trip.
-- [ ] (Stretch) Identify the `0x010104NN` bank and EXP3 (`0x01020102`) for a future authorable pass.
+- [ ] Confirm `FS11 = 0x0101010a` via device round-trip. (Coordinated with the 1.0.1 hardware
+  confirmation before merge; source is present in 90/211 real exports.)
+- [ ] (Stretch) Identify the `0x010104NN` bank, the `0x0101020N` (00–03) targetbypass bank found
+  during implementation, and EXP3 (`0x01020102`) for a future authorable pass. All three are
+  currently decode-labeled as "unknown control".
 - [ ] Decide small-model choice for the translation sub-agent (default: Haiku).

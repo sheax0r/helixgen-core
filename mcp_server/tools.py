@@ -326,6 +326,24 @@ def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
     return out
 
 
+def controller_mapping_handler(model: str) -> list[dict[str, Any]]:
+    """Return the device's canonical controller mapping (identifier ↔ English).
+
+    Mirrors `helixgen controllers --json`: a JSON-serialisable list of records,
+    one per assignable controller (FS1–FS5, FS7–FS11, EXP1, EXP2, EXP1Toe),
+    each carrying the identifier, source id (hex + int), kind, grid position,
+    canonical name, position phrase, rendered English, and aliases. Feeds the
+    skill's English rendering and the English→identifier translation sub-agent.
+    Reserved switches (FS6 = MODE, FS12 = TAP/Tuner) are intentionally excluded.
+    """
+    _validate_model(model)
+    from helixgen import controllers
+    # helixgen keys its tables by "stadium_xl"; the standard Stadium shares the
+    # same FS grid, so resolve both supported models against that table.
+    device = "stadium_xl" if model in _SUPPORTED_MODELS else model
+    return controllers.controller_mapping(device)
+
+
 def _decode_hsp_b64(hsp_b64: str) -> dict[str, Any]:
     """Decode a base64 `.hsp` blob into its parsed JSON body dict.
 

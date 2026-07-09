@@ -24,39 +24,104 @@ INPUT_MODELS: dict[str, dict[str, str]] = {
 }
 
 
-# Empirically derived from the user's real .hsp exports (see
-# scripts/derive_controller_table.py). FS1..FS10 are Stadium XL's 10
-# physical stomp-mode footswitches; their source IDs follow 0x010101NN.
-# FS6 (0x01010105) had no assignments in the scanned exports but the
-# contiguous pattern is unambiguous. A source ID 0x0101010a was observed
-# in data (an 11th stomp / MODE-switch context) but is out of scope for v1.
-CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
+# Device-accurate controller metadata, keyed by identifier. This is the single
+# source of truth: the flat CONTROLLER_SOURCE_IDS table below is DERIVED from it.
+#
+# Hardware layout (Line 6 Helix Stadium XL): 12 capacitive footswitches in
+# 2 rows × 6 columns, numbered left-to-right — top row FS1–FS6, bottom row
+# FS7–FS12. Only FS1–FS5 and FS7–FS11 are ASSIGNABLE; FS6 = MODE and
+# FS12 = TAP/Tuner are reserved (see RESERVED below). Source index = FS# − 1,
+# i.e. source 0x010101NN with NN = FS# − 1. Corroborated by 211 real .hsp
+# exports: FS11 (0x0101010a) appears 109×; FS6 (0x01010105) appears 0×.
+#
+# Each record carries:
+#   source_id       device controller source id (int)
+#   kind            "footswitch" | "expression" | "toe"
+#   row, col        physical grid position ("top"/"bottom", 1-based col) or None
+#   canonical_name  human name ("Footswitch 5", "Expression Pedal 1", ...)
+#   position_phrase clean directional phrase, un-nested ("top row, 5th from left")
+#   aliases         free-text synonyms seeding the English→identifier sub-agent
+#                   (includes the secondary "2nd from right" / "top-left" hints)
+CONTROLLER_META: dict[str, dict[str, dict]] = {
     "stadium_xl": {
-        "FS1":  0x01010100,
-        "FS2":  0x01010101,
-        "FS3":  0x01010102,
-        "FS4":  0x01010103,
-        "FS5":  0x01010104,
-        "FS6":  0x01010105,
-        "FS7":  0x01010106,
-        "FS8":  0x01010107,
-        "FS9":  0x01010108,
-        "FS10": 0x01010109,
-        # Expression pedals (derived empirically from data/*.hsp);
-        # both wrap Pedal-position params with source IDs in the 0x010201NN
-        # range (distinct from the 0x010101NN FS range).
-        # 0x01020102 was seen in 2 files only — likely a 3rd EXP slot, out of
-        # scope for v1. EXPONBOARD was not observed in the scanned exports.
-        "EXP1": 0x01020100,
-        "EXP2": 0x01020101,
+        "FS1": {"source_id": 0x01010100, "kind": "footswitch", "row": "top", "col": 1,
+                "canonical_name": "Footswitch 1", "position_phrase": "top row, 1st from left",
+                "aliases": ["top-left", "top left switch", "top left", "first from left top"]},
+        "FS2": {"source_id": 0x01010101, "kind": "footswitch", "row": "top", "col": 2,
+                "canonical_name": "Footswitch 2", "position_phrase": "top row, 2nd from left",
+                "aliases": ["second from left top", "top row second"]},
+        "FS3": {"source_id": 0x01010102, "kind": "footswitch", "row": "top", "col": 3,
+                "canonical_name": "Footswitch 3", "position_phrase": "top row, 3rd from left",
+                "aliases": ["third from left top", "top row middle", "top middle"]},
+        "FS4": {"source_id": 0x01010103, "kind": "footswitch", "row": "top", "col": 4,
+                "canonical_name": "Footswitch 4", "position_phrase": "top row, 4th from left",
+                "aliases": ["fourth from left top", "top row fourth"]},
+        "FS5": {"source_id": 0x01010104, "kind": "footswitch", "row": "top", "col": 5,
+                "canonical_name": "Footswitch 5", "position_phrase": "top row, 5th from left",
+                "aliases": ["2nd from right top", "top row second from right",
+                            "top-right stomp", "fifth from left top"]},
+        "FS7": {"source_id": 0x01010106, "kind": "footswitch", "row": "bottom", "col": 1,
+                "canonical_name": "Footswitch 7", "position_phrase": "bottom row, 1st from left",
+                "aliases": ["bottom-left", "bottom left switch", "bottom left",
+                            "first from left bottom"]},
+        "FS8": {"source_id": 0x01010107, "kind": "footswitch", "row": "bottom", "col": 2,
+                "canonical_name": "Footswitch 8", "position_phrase": "bottom row, 2nd from left",
+                "aliases": ["second from left bottom", "bottom row second"]},
+        "FS9": {"source_id": 0x01010108, "kind": "footswitch", "row": "bottom", "col": 3,
+                "canonical_name": "Footswitch 9", "position_phrase": "bottom row, 3rd from left",
+                "aliases": ["third from left bottom", "bottom row middle", "bottom middle"]},
+        "FS10": {"source_id": 0x01010109, "kind": "footswitch", "row": "bottom", "col": 4,
+                 "canonical_name": "Footswitch 10", "position_phrase": "bottom row, 4th from left",
+                 "aliases": ["fourth from left bottom", "bottom row fourth"]},
+        "FS11": {"source_id": 0x0101010a, "kind": "footswitch", "row": "bottom", "col": 5,
+                 "canonical_name": "Footswitch 11", "position_phrase": "bottom row, 5th from left",
+                 "aliases": ["bottom right stomp", "second from right bottom",
+                             "bottom row second from right", "2nd from right bottom",
+                             "fifth from left bottom"]},
+        # Expression pedals: source IDs in the 0x010201NN range (distinct from
+        # the 0x010101NN FS range). 0x01020102 (likely EXP3) is out of scope.
+        "EXP1": {"source_id": 0x01020100, "kind": "expression", "row": None, "col": None,
+                 "canonical_name": "Expression Pedal 1",
+                 "position_phrase": "onboard pedal, EXP 1 (violet LED)",
+                 "aliases": ["the expression pedal", "wah pedal sweep", "expression pedal",
+                             "exp 1", "onboard pedal"]},
+        "EXP2": {"source_id": 0x01020101, "kind": "expression", "row": None, "col": None,
+                 "canonical_name": "Expression Pedal 2",
+                 "position_phrase": "onboard pedal, EXP 2 (teal LED)",
+                 "aliases": ["exp 2", "second expression pedal"]},
         # The onboard expression pedal's toe switch (the click switch under the
         # pedal, engaged by pushing it fully forward). This is the standard wah
         # auto-engage: bypass toggles here while EXP1 sweeps the pedal. Source
-        # 0x01010500 is observed on ~all real wah exports (198 occurrences in
-        # data/*.hsp); it sits in its own 0x010105NN bank, distinct from both
-        # the FS range (0x010101NN) and the EXP-position range (0x010201NN).
-        "EXP1Toe": 0x01010500,
+        # 0x01010500 is observed on ~all real wah exports; it sits in its own
+        # 0x010105NN bank, distinct from both the FS range (0x010101NN) and the
+        # EXP-position range (0x010201NN). Identifier retained for back-compat.
+        "EXP1Toe": {"source_id": 0x01010500, "kind": "toe", "row": None, "col": None,
+                    "canonical_name": "Expression pedal toe switch",
+                    "position_phrase": "the toe switch under the expression pedal "
+                                       "(push the pedal fully forward to click it); "
+                                       "standard wah auto-engage",
+                    "aliases": ["toe switch", "wah engage", "pedal toe", "exp toe",
+                                "wah auto-engage"]},
     },
+}
+
+
+# Reserved footswitches: physically present, addressable-looking, but NOT
+# assignable to a block. Resolving one raises a tailored ControllerError.
+# Keyed identifier → (source_id, human label).
+RESERVED: dict[str, dict[str, tuple[int, str]]] = {
+    "stadium_xl": {
+        "FS6":  (0x01010105, "MODE"),
+        "FS12": (0x0101010b, "TAP/Tuner"),
+    },
+}
+
+
+# Flat name→source-id table, DERIVED from CONTROLLER_META (single source of
+# truth). Kept for the forward/reverse resolvers and existing callers.
+CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
+    device: {cid: rec["source_id"] for cid, rec in meta.items()}
+    for device, meta in CONTROLLER_META.items()
 }
 
 
@@ -112,15 +177,68 @@ def resolve_input_model(device_id: str, mode: str) -> str:
 def resolve_controller_source(device_id: str, logical_name: str) -> int:
     """Look up a controller source ID for a logical FS/EXP name.
 
-    Raises ControllerError listing valid names if the logical name is unknown.
+    Reserved switches (`FS6` = MODE, `FS12` = TAP/Tuner) raise a *tailored*
+    ControllerError explaining they are not assignable. Any other unknown name
+    raises the generic error listing the valid canonical set.
     """
-    table = CONTROLLER_SOURCE_IDS[_resolve_device(device_id)]
+    device = _resolve_device(device_id)
+    table = CONTROLLER_SOURCE_IDS[device]
     if logical_name not in table:
+        reserved = RESERVED.get(device, {})
+        if logical_name in reserved:
+            _sid, label = reserved[logical_name]
+            raise ControllerError(
+                f"{logical_name} is the {label} switch and is not assignable; "
+                f"assignable switches are FS1–FS5, FS7–FS11 (plus EXP1, EXP2, EXP1Toe)."
+            )
         raise ControllerError(
             f"Unknown controller name {logical_name!r}. "
             f"Valid names: {sorted(table.keys())}."
         )
     return table[logical_name]
+
+
+def english_for_controller(device_id, identifier: str) -> str:
+    """Render a controller identifier as English name + physical position.
+
+    E.g. ``english_for_controller("stadium_xl", "FS5")`` →
+    ``"Footswitch 5 (top row, 5th from left)"``. Raises ControllerError (with
+    the tailored reserved / valid-set message) for a non-canonical identifier.
+    """
+    device = _resolve_device(device_id)
+    meta = CONTROLLER_META[device]
+    if identifier not in meta:
+        # Reuse resolve_controller_source's tailored / generic error message.
+        resolve_controller_source(device_id, identifier)
+    rec = meta[identifier]
+    return f"{rec['canonical_name']} ({rec['position_phrase']})"
+
+
+def controller_mapping(device_id) -> list[dict]:
+    """Return the full canonical controller table as a JSON-serialisable list.
+
+    One dict per assignable identifier, ordered as in CONTROLLER_META. Each row
+    carries the identifier, hex + int source id, kind, grid position, canonical
+    name, position phrase, the rendered English string, and aliases — the data
+    the English→identifier translation sub-agent and the MCP tool consume.
+    """
+    device = _resolve_device(device_id)
+    meta = CONTROLLER_META[device]
+    out: list[dict] = []
+    for cid, rec in meta.items():
+        out.append({
+            "id": cid,
+            "source": f"0x{rec['source_id']:08x}",
+            "source_id": rec["source_id"],
+            "kind": rec["kind"],
+            "row": rec["row"],
+            "col": rec["col"],
+            "name": rec["canonical_name"],
+            "position": rec["position_phrase"],
+            "english": f"{rec['canonical_name']} ({rec['position_phrase']})",
+            "aliases": list(rec["aliases"]),
+        })
+    return out
 
 
 def is_position_switch(logical_name: str) -> bool:

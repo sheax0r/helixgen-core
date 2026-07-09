@@ -700,6 +700,23 @@ def test_wire_footswitch_unknown_block_raises(goldfinger_body, library):
         mutate.wire_footswitch(goldfinger_body, "FS3", "Nope Amp", "latching", library)
 
 
+def test_wire_footswitch_fs11_writes_correct_source(goldfinger_body, library):
+    """FS11 (the newly-added 5th bottom-row switch) resolves to 0x0101010a."""
+    mutate.wire_footswitch(goldfinger_body, "FS11", "Scream 808", "latching", library)
+    ctrl = goldfinger_body["preset"]["flow"][0]["b01"]["@enabled"]["controller"]
+    assert ctrl["source"] == 0x0101010a
+    assert ctrl["type"] == "targetbypass"
+
+
+def test_wire_footswitch_fs6_raises_mode_error(goldfinger_body, library):
+    """FS6 is the reserved MODE switch — wiring it raises the tailored MutateError
+    (ControllerError is wrapped by wire_footswitch)."""
+    with pytest.raises(mutate.MutateError) as exc:
+        mutate.wire_footswitch(goldfinger_body, "FS6", "Scream 808", "latching", library)
+    msg = str(exc.value)
+    assert "MODE" in msg and "not assignable" in msg
+
+
 def test_wire_footswitch_rewiring_block_to_different_switch_is_last_wins(goldfinger_body, library):
     # Re-wiring a block to a different switch is last-wins (matches the
     # device-validated original pipeline, whose fs_map is keyed by block).

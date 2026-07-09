@@ -233,6 +233,27 @@ def view_preset(model: str, hsp_b64: str) -> dict[str, Any]:
 
 
 @app.tool()
+def controller_mapping(model: str) -> list[dict[str, Any]]:
+    """Return the device's assignable controllers with English names + positions.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`.
+
+    Returns a JSON list of records — one per assignable control (FS1–FS5,
+    FS7–FS11, EXP1, EXP2, EXP1Toe) — each with the identifier (`id`), source id
+    (`source` hex + `source_id` int), `kind`, grid `row`/`col`, canonical
+    `name`, `position` phrase, a rendered `english` string (e.g.
+    `"Footswitch 5 (top row, 5th from left)"`), and `aliases`.
+
+    Use this to (a) render any controller to the user in plain English rather
+    than a bare `FS#`, and (b) feed the English→identifier translation
+    sub-agent when a user describes a switch in free text. Reserved switches
+    (FS6 = MODE, FS12 = TAP/Tuner) are intentionally NOT assignable and are
+    excluded from the list.
+    """
+    return _tools.controller_mapping_handler(model)
+
+
+@app.tool()
 def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
     """Apply surgical edits directly to a base64-encoded .hsp blob.
 

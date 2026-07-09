@@ -16,6 +16,28 @@ def test_cli_help_lists_subcommands():
         assert cmd in result.output
 
 
+def test_cli_controllers_human_output():
+    result = CliRunner().invoke(cli, ["controllers"])
+    assert result.exit_code == 0
+    # English rendering: name + position, for both a top-row and bottom-row FS.
+    assert "Footswitch 5 (top row, 5th from left)" in result.output
+    assert "Footswitch 11 (bottom row, 5th from left)" in result.output
+    assert "FS11" in result.output
+    # Reserved FS6 must not appear as an assignable identifier line.
+    assert "Expression Pedal 1" in result.output
+
+
+def test_cli_controllers_json_output():
+    result = CliRunner().invoke(cli, ["controllers", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    ids = {row["id"] for row in data}
+    assert "FS11" in ids and "FS6" not in ids and "FS12" not in ids
+    assert {"EXP1", "EXP2", "EXP1Toe"} <= ids
+    row = next(r for r in data if r["id"] == "FS5")
+    assert row["english"] == "Footswitch 5 (top row, 5th from left)"
+
+
 def test_cli_ingest_full_preset(tmp_library, sample_serial_preset, tmp_path):
     preset_path = tmp_path / "p.hlx"
     preset_path.write_text(json.dumps(sample_serial_preset))
