@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from helixgen import hsp
 from helixgen.hsp import (
     HSP_MAGIC,
     extract_blocks_from_hsp,
@@ -239,6 +240,37 @@ def test_read_hsp_blocks_end_to_end(tmp_path):
     f.write_bytes(_make_hsp_bytes(_synthetic_hsp_payload()))
     blocks = read_hsp_blocks(f)
     assert any(b["@model"] == "HD2_AmpBrit2204" for b in blocks)
+
+
+# ----- write_hsp / dumps_hsp round-trip primitive -----
+
+
+def test_write_hsp_round_trips_a_real_fixture(tmp_path):
+    """read_hsp -> write_hsp -> read_hsp must reproduce the same parsed dict."""
+    src = tmp_path / "source.hsp"
+    src.write_bytes(_make_hsp_bytes(_synthetic_hsp_payload()))
+    original = read_hsp(src)
+
+    dest = tmp_path / "roundtrip.hsp"
+    hsp.write_hsp(dest, original)
+    reloaded = read_hsp(dest)
+
+    assert reloaded == original
+
+
+def test_dumps_hsp_returns_magic_prefixed_bytes():
+    payload = {"meta": {"name": "X"}, "preset": {"flow": []}}
+    raw = hsp.dumps_hsp(payload)
+    assert raw.startswith(HSP_MAGIC)
+    assert json.loads(raw[len(HSP_MAGIC):].decode("utf-8")) == payload
+
+
+def test_write_hsp_writes_compact_json():
+    payload = {"a": 1, "b": [1, 2, 3]}
+    raw = hsp.dumps_hsp(payload)
+    body = raw[len(HSP_MAGIC):].decode("utf-8")
+    # Compact separators: no spaces after ',' or ':'.
+    assert " " not in body
 
 
 # ----- real-export smoke test, only runs if the user's data/ dir is present -----

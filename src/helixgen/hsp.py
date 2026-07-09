@@ -77,6 +77,21 @@ def read_hsp(path: Path | str) -> dict[str, Any]:
     return json.loads(raw[HSP_MAGIC_LEN:].decode("utf-8"))
 
 
+def dumps_hsp(body: dict[str, Any]) -> bytes:
+    """Serialize `body` as a .hsp file's bytes: magic header + compact UTF-8 JSON.
+
+    Compact separators (no spaces) match what the device itself writes, and
+    is what `read_hsp` expects to strip the magic header and parse back.
+    """
+    payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+    return HSP_MAGIC + payload.encode("utf-8")
+
+
+def write_hsp(path: Path | str, body: dict[str, Any]) -> None:
+    """Write `body` to `path` as a .hsp file (magic header + compact JSON)."""
+    Path(path).write_bytes(dumps_hsp(body))
+
+
 def _unwrap_value(wrapped: Any) -> Any:
     """Unwrap a .hsp param value.
 
