@@ -14,18 +14,19 @@ addressable slot in a `bNN` entry is `slot[0]`; a dual-cab's second physical
 slot (`slot[1]`) is opaque verbatim state (see `decompile._block_entry`'s
 `raw.slots`) and is not independently addressable here.
 
-More verbs (`set_param`, `set_enabled`, `add_block`, controller wiring, ...)
-land in this same module in later phases of the redesign; keep additions
-here rather than spawning new modules per verb.
+More verbs (`set_enabled`, `add_block`, controller wiring, ...) land in this
+same module in later phases of the redesign; keep additions here rather than
+spawning new modules per verb.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from helixgen.generate import ParamValidationError, _coerce_param_value, _is_stereo_param, validate_params
 from helixgen.hsp import CHASSIS_MODEL_PREFIX, ENDPOINT_KEYS, _translate_model_id
 from helixgen.library import Block, Library
 
-__all__ = ["MutateError", "resolve_slot"]
+__all__ = ["MutateError", "resolve_slot", "set_param"]
 
 
 class MutateError(ValueError):
@@ -125,3 +126,57 @@ def resolve_slot(
         )
     fi, key, si, _block, _lane, _pos = matches[0]
     return (fi, key, si)
+
+
+def _slot_dict(body: dict[str, Any], fi: int, key: str, si: int) -> dict[str, Any]:
+    return body["preset"]["flow"][fi][key]["slot"][si]
+
+
+def set_param(
+    body: dict[str, Any],
+    block: str,
+    param: str,
+    value: Any,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Set one param on one block, in place, preserving the wrapper shape.
+
+    Validates `param` against the library schema (`generate.validate_params`,
+    raising `ParamValidationError` for an unknown name) and coerces `value`
+    to the schema's declared type (`generate._coerce_param_value` — an int
+    given for a float-schema param becomes a float, matching the guard
+    `generate._to_hsp_bnn` already applies, since a raw int there can
+    silently brick the block on-device).
+
+    Writes into the existing `params[param]` wrapper:
+      - plain `{"value": x}` — updates `value`.
+      - controlled `{"controller": {...}, "value": x}` — updates `value`,
+        leaves `controller` untouched.
+      - stereo `{"1": {"value": x}, "2": {"value": y}}` — updates both
+        channels' `value`.
+      - missing entirely — creates a plain `{"value": x}` wrapper.
+    """
+    fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    slot = _slot_dict(body, fi, key, si)
+
+    lib_block = library.load_block(_translate_model_id(slot.get("model", "")))
+    validate_params(lib_block, {param: value})
+    coerced = _coerce_param_value(lib_block, param, value)
+
+    params = slot.setdefault("params", {})
+    wrapped = params.get(param)
+    if isinstance(wrapped, dict) and _is_stereo_param(wrapped):
+        for channel in ("1", "2"):
+            chan = wrapped.get(channel)
+            if isinstance(chan, dict):
+                chan["value"] = coerced
+            else:
+                wrapped[channel] = {"value": coerced}
+    elif isinstance(wrapped, dict):
+        wrapped["value"] = coerced
+    else:
+        params[param] = {"value": coerced}
