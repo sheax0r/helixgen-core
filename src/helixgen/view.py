@@ -262,7 +262,16 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
     return snaps
 
 
-def _recover_footswitches(body: dict, library: Library, device_id: Any, idx: dict) -> list[dict[str, Any]]:
+def _source_hex(source: Any) -> str:
+    """Render a controller source id as a stable 0x-hex string for labeling."""
+    if isinstance(source, int) and not isinstance(source, bool):
+        return f"0x{source:08x}"
+    return str(source)
+
+
+def _recover_footswitches(
+    body: dict, library: Library, device_id: Any, idx: dict, unknowns: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     flow = (body.get("preset") or {}).get("flow") or []
     out: list[dict[str, Any]] = []
     for pi, key, bnn, slot in _iter_blocks(flow):
@@ -270,17 +279,28 @@ def _recover_footswitches(body: dict, library: Library, device_id: Any, idx: dic
         ctrl = en.get("controller") if isinstance(en, dict) else None
         if not (isinstance(ctrl, dict) and ctrl.get("type") == "targetbypass"):
             continue
-        name = controllers.controller_name_for_source(device_id, ctrl.get("source"))
-        if name is None:
-            continue
         block = library.load_block(_translate_model_id(slot.get("model", "")))
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        name = controllers.controller_name_for_source(device_id, ctrl.get("source"))
+        if name is None:
+            # Un-tabled bypass source (EXP3, the 0x010104NN bank, a reserved
+            # switch, ...). Keep it, labeled, instead of silently dropping it.
+            src = _source_hex(ctrl.get("source"))
+            unknowns.append({
+                "kind": "footswitch",
+                "source": src,
+                "label": f"unknown control (source {src})",
+                "block": _ref_name(block),
+            })
+            continue
         out.append({"switch": name, **_ref(_ref_name(block), pi, lane, pos, idx),
                     "behavior": ctrl.get("behavior", "latching")})
     return out
 
 
-def _recover_expression(body: dict, library: Library, device_id: Any, idx: dict) -> list[dict[str, Any]]:
+def _recover_expression(
+    body: dict, library: Library, device_id: Any, idx: dict, unknowns: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     flow = (body.get("preset") or {}).get("flow") or []
     by_pedal: dict[str, list[dict[str, Any]]] = {}
     for pi, key, _bnn, slot in _iter_blocks(flow):
@@ -292,10 +312,17 @@ def _recover_expression(body: dict, library: Library, device_id: Any, idx: dict)
                 continue
             pedal = controllers.controller_name_for_source(device_id, ctrl.get("source"))
             if pedal not in ("EXP1", "EXP2"):
-                print(f"warning: skipping expression target on {block.display_name!r}."
-                      f"{pname!r}: controller {pedal or ctrl.get('source')!r} is not an "
-                      f"EXP1/EXP2 pedal (footswitch-as-parameter controllers are out of "
-                      f"v1 scope).", file=sys.stderr)
+                # A param-driven controller that isn't a known EXP pedal —
+                # either an un-tabled source or a footswitch-as-parameter (out
+                # of v1 authoring scope). Keep it labeled rather than dropping.
+                src = _source_hex(ctrl.get("source"))
+                unknowns.append({
+                    "kind": "expression",
+                    "source": src,
+                    "label": f"unknown control (source {src})",
+                    "block": _ref_name(block),
+                    "param": pname,
+                })
                 continue
             lo, hi = ctrl.get("min", 0.0), ctrl.get("max", 1.0)
 
@@ -512,12 +539,22 @@ def view(body: dict, library: Library, *, irs: IrMapping | None = None) -> dict[
     if snaps:
         spec["snapshots"] = snaps
 
-    fs = _recover_footswitches(body, library, device_id, idx)
+    # Un-tabled / out-of-v1-scope controllers are collected here (kept, labeled)
+    # rather than silently dropped. This key lives SEPARATE from footswitches /
+    # expression on purpose: parse_spec reads only known keys via .get() and
+    # ignores it, so decoding a preset with unmodeled controls stays round-trip
+    # safe (nothing is re-authored from `unknown_controllers`).
+    unknowns: list[dict[str, Any]] = []
+
+    fs = _recover_footswitches(body, library, device_id, idx, unknowns)
     if fs:
         spec["footswitches"] = fs
 
-    exp = _recover_expression(body, library, device_id, idx)
+    exp = _recover_expression(body, library, device_id, idx, unknowns)
     if exp:
         spec["expression"] = exp
+
+    if unknowns:
+        spec["unknown_controllers"] = unknowns
 
     return spec

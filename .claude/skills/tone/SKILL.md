@@ -226,10 +226,10 @@ If the user doesn't ask for snapshots, skip this section — omitting the field 
 
 By default, wire the chain for live use: give every toggle-able effect a footswitch and route any sweep-able pedal to an expression pedal. Shipping a preset with no live control is a miss, not a safe default. All of this is **research-overridable** — if step 1b turned up something that dictates a different set (e.g. "this tone only ever uses the one drive live, not the others"), follow the tone over the defaults below.
 
-**Footswitches — chain order, FS1 upward:**
-- Assign a **latching** footswitch to every drive/fuzz/boost, modulation, delay, reverb, and non-wah pitch/filter toggle, in signal-chain order starting at `FS1`. This naturally puts dirt near the low switches and time-based effects up top — the conventional live layout falls out for free.
+**Footswitches — chain order, top row then bottom:**
+- Assign a **latching** footswitch to every drive/fuzz/boost, modulation, delay, reverb, and non-wah pitch/filter toggle, in signal-chain order. Walk the assignable switches in order: `FS1 → FS2 → FS3 → FS4 → FS5` (top row), then `FS7 → FS8 → FS9 → FS10 → FS11` (bottom row). **Skip `FS6` — it is the reserved MODE switch, not assignable** (and `FS12` is TAP/Tuner). This puts dirt near the low switches and time-based effects up top — the conventional live layout falls out for free.
 - Skip amp, cab, EQ, comp/dynamics, and other always-on/utility blocks — they never get a footswitch. Tonal boosts belong in a snapshot (5.5), not a stomp.
-- Cap at `FS10`. If more than 10 toggle-able blocks exist, wire the first 10 in chain order and tell the user in the report which ones were left un-switched.
+- Cap at **10 assignable switches** (FS1–FS5, FS7–FS11). If more than 10 toggle-able blocks exist, wire the first 10 in chain order and tell the user in the report which ones were left un-switched.
 - Use `momentary` only when the user explicitly asks for a hold gesture (e.g. a boost or pitch dive you only want while your foot is down); everything else is `latching`.
 
 **Expression pedals — wah/whammy → EXP1, volume → EXP2:**
@@ -354,8 +354,8 @@ Whenever you save a `.hsp`, also write a sibling markdown file at the same path 
 - **IRs referenced** — basenames, so the user knows what must be loaded on the device
 - **Snapshots** — one line each (only if the spec has them)
 - **Levels** — the intended relative balance line from step 8 (or that normalization was off per preferences)
-- **Footswitches** — one line per assigned switch (`FS1 → Compulsive Drive`, …), only if the spec has them
-- **Expression** — one line per pedal mapping (`EXP1 → Teardrop 310 Mono Pedal`, …), only if the spec has them
+- **Footswitches** — one line per assigned switch, rendered in **English name + position**, not a bare identifier (`Footswitch 1 (top row, 1st from left) → Compulsive Drive`, …). Get the English string from the `controller_mapping` MCP tool (or `helixgen controllers`) / `controllers.english_for_controller`. Only if the spec has them.
+- **Expression** — one line per pedal mapping, also in English (`Expression Pedal 1 (onboard pedal, EXP 1) → Teardrop 310 Mono Pedal`, …), only if the spec has them
 - **Recommended instrument** — a `## Recommended instrument` section (see step 6): **Pick**, **Why**, **Controls** (selector / volume / tone / coil-split if applicable / pick attack), **Second choice** (only on a genuine toss-up), **Note** (any lineup caveat, e.g. active-vs-passive TBD)
 - **Tweaks** — the one concrete tweak from step 8, plus any obvious alternates
 
@@ -371,7 +371,7 @@ Tell the user, in this order:
 2. **Snapshots** (only if the spec has them) — one line per snapshot summarizing what differs from base, e.g. `Lead: amp Drive 0.85, delay Mix 0.30; Clean: drive bypassed, amp Drive 0.30`
 3. **Levels** (from 5.7) — one line on the *intended* relative balance, e.g. `rhythm anchor; lead +~2 dB; clean bumped to match (fine-tune by ear)`. If normalization was skipped by preference, say `Levels: normalization off per preferences`.
 4. **Instrument** — `<guitar> — <one-clause why>` (skip the "why" if the user named the guitar themselves), then `Selector: <position> · Volume: <0–10> · Tone: <0–10>` in that guitar's real switch language, plus a one-clause note for any non-obvious move (roll-off, coil-split, pick attack)
-5. **Controls** (only if 5.6 wired any) — the footswitch map (`FS1 → Compulsive Drive`, …), the expression routing (`EXP1 → wah Pedal`, …), and any toe-switch engage (`EXP1Toe → Teardrop 310 Mono (bypass)`)
+5. **Controls** (only if 5.6 wired any) — render every controller in **English (name + physical position)**, never a bare `FS#`: the footswitch map (`Footswitch 1 (top row, 1st from left) → Compulsive Drive`, …), the expression routing (`Expression Pedal 1 → wah Pedal`, …), and any toe-switch engage (`Expression pedal toe switch → Teardrop 310 Mono (bypass)`). Use `controllers.english_for_controller` / the `controller_mapping` tool for the exact strings. Conversely, if the **user** describes a switch in plain language, run it through the small-model controller-translation sub-agent (fed `controller_mapping(stadium_xl)`) to get the canonical identifier before wiring it, and validate the result against the canonical set.
 6. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder.
 7. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
 

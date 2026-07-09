@@ -349,6 +349,25 @@ def show_block_cmd(name_or_id: str, library_path: Path | None) -> None:
         click.echo(f"  {name}  ({', '.join(meta_bits)})")
 
 
+@cli.command(name="controllers")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the full mapping as a JSON array instead of English lines.")
+@click.option("--device", default="stadium_xl", help="Device key (default stadium_xl).")
+def controllers_cmd(as_json: bool, device: str) -> None:
+    """List the device's assignable controllers with their English name + position.
+
+    Shows the canonical, device-accurate vocabulary (FS1–FS5, FS7–FS11, EXP1,
+    EXP2, EXP1Toe). FS6 (MODE) and FS12 (TAP/Tuner) are reserved and not listed.
+    """
+    from helixgen import controllers as _controllers
+    mapping = _controllers.controller_mapping(device)
+    if as_json:
+        click.echo(json.dumps(mapping, indent=2))
+        return
+    for row in mapping:
+        click.echo(f"{row['id']:<8} {row['english']}")
+
+
 @cli.command(name="bootstrap")
 @click.option("--phelix-ref", "ref", default="main", help="Git ref of sensorium/phelix to clone.")
 @_library_option

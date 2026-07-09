@@ -58,6 +58,33 @@ def test_wah_bypass_on_exp1_toe_switch(tmp_path, sample_serial_preset_hsp):
     assert ctrl["delay"] == 0 and ctrl["goid"] == 0
 
 
+def test_fs11_wires_targetbypass_on_correct_source(tmp_path, sample_serial_preset_hsp):
+    """FS11 (the real 5th bottom-row switch) wires a targetbypass on 0x0101010a."""
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "footswitches": [{"switch": "FS11", "block": "With Pan"}]})
+    preset = compose_preset(spec, lib, source="t")
+    ctrl = preset["preset"]["flow"][0]["b01"]["@enabled"]["controller"]
+    assert ctrl["source"] == 0x0101010a
+    assert ctrl["type"] == "targetbypass"
+
+
+def test_fs6_authoring_raises_mode_error(tmp_path, sample_serial_preset_hsp):
+    """Authoring a block onto FS6 (the reserved MODE switch) raises the tailored
+    'not assignable' error rather than silently addressing the MODE switch."""
+    from helixgen.controllers import ControllerError
+    from helixgen.mutate import MutateError
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "footswitches": [{"switch": "FS6", "block": "With Pan"}]})
+    with pytest.raises((ControllerError, MutateError)) as exc_info:
+        compose_preset(spec, lib, source="t")
+    msg = str(exc_info.value)
+    assert "MODE" in msg and "not assignable" in msg
+
+
 def _library(tmp_path) -> Library:
     samples = sorted(DATA_DIR.glob("*.hsp"))
     if not samples:

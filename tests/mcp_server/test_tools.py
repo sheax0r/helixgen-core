@@ -587,3 +587,28 @@ def test_register_irs_skips_non_wav_files(tmp_path):
 
     r = register_irs_handler("stadium_xl", str(tmp_path / "src"), irs_dir=irs_dir)
     assert r == {"registered": [], "already_registered": [], "conflicts": [], "failed": []}
+
+
+def test_controller_mapping_handler_returns_canonical_set():
+    """controller_mapping_handler returns the device-accurate assignable set."""
+    from mcp_server.tools import controller_mapping_handler
+    import json as _json
+
+    mapping = controller_mapping_handler("stadium_xl")
+    assert isinstance(mapping, list)
+    ids = {row["id"] for row in mapping}
+    assert "FS11" in ids
+    assert "FS6" not in ids and "FS12" not in ids
+    assert {"EXP1", "EXP2", "EXP1Toe"} <= ids
+    # JSON-serialisable and carries English + aliases.
+    _json.dumps(mapping)
+    row = next(r for r in mapping if r["id"] == "FS5")
+    assert row["english"] == "Footswitch 5 (top row, 5th from left)"
+    assert row["aliases"]
+
+
+def test_controller_mapping_handler_rejects_unknown_model():
+    from mcp_server.tools import controller_mapping_handler
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        controller_mapping_handler("nord_stage")
