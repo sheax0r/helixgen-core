@@ -44,6 +44,11 @@ def split_join_body():
     return read_hsp(harness.CORPUS_DIR / "split_join.hsp")
 
 
+@pytest.fixture
+def dual_cab_raw_body():
+    return read_hsp(harness.CORPUS_DIR / "dual_cab_raw.hsp")
+
+
 # --- resolve_slot ------------------------------------------------------
 
 def test_resolve_slot_unique_match(goldfinger_body, library):
@@ -786,6 +791,27 @@ def test_golden_micro_single_param_diff(goldfinger_body, library):
 
     diffs = _diff_paths(before, goldfinger_body)
     assert diffs == [("preset", "flow", 0, "b04", "slot", 0, "params", "Mix", "value")]
+
+
+def test_golden_micro_single_param_diff_survives_dual_cab_and_harness(dual_cab_raw_body, library):
+    """The headline `raw`-preservation guarantee, exercised against a fixture
+    that actually HAS opaque verbatim state: dual_cab_raw.hsp's b02 (cab)
+    carries a 2-entry `slot` (dual-cab) and a block-level `harness` dict.
+    Mutating an unrelated block's param must leave both byte-identical --
+    the previous golden-micro test only covered a fixture with neither."""
+    before = copy.deepcopy(dual_cab_raw_body)
+    b02_before = before["preset"]["flow"][0]["b02"]
+    assert len(b02_before["slot"]) == 2  # sanity: fixture really is dual-cab
+    assert "harness" in b02_before  # sanity: fixture really carries a harness
+
+    mutate.set_param(dual_cab_raw_body, "Brit 2204 Custom", "Drive", 0.42, library)
+
+    diffs = _diff_paths(before, dual_cab_raw_body)
+    assert diffs == [("preset", "flow", 0, "b01", "slot", 0, "params", "Drive", "value")]
+
+    b02_after = dual_cab_raw_body["preset"]["flow"][0]["b02"]
+    assert b02_after["slot"][1] == b02_before["slot"][1]
+    assert b02_after["harness"] == b02_before["harness"]
 
 
 def _diff_paths(a, b, prefix=()):
