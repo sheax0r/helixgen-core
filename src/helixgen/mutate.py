@@ -1,7 +1,6 @@
 """In-place mutation verbs for a parsed `.hsp` body dict.
 
-This is the heart of the `.hsp`-canonical redesign
-(`docs/superpowers/plans/2026-07-08-hsp-canonical-redesign.md`): instead of
+This is the heart of the `.hsp`-canonical redesign: instead of
 compiling a spec into a fresh `.hsp` body, we address a block already placed
 in `preset.flow[*].bNN` and mutate its `slot` dict directly, in place.
 

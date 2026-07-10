@@ -1,8 +1,7 @@
 """Tests for helixgen.mutate — the .hsp-canonical body-mutation verbs.
 
 These operate directly on a parsed `.hsp` body dict (`preset.flow[*].bNN`),
-not on a spec.json. See docs/superpowers/plans/2026-07-08-hsp-canonical-redesign.md
-Tasks 1b/1c/1d/1e.
+not on a spec.json (the `.hsp`-canonical redesign).
 """
 from __future__ import annotations
 

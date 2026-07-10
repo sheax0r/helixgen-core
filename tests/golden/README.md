@@ -2,8 +2,7 @@
 
 This directory pins the exact `.hsp` output of the **current** (pre-rewrite)
 authoring pipeline for a corpus of specs. It exists so the `.hsp`-canonical
-redesign (see `docs/superpowers/plans/2026-07-08-hsp-canonical-redesign.md`)
-can prove later phases didn't change device-validated behavior: as long as
+redesign can prove later phases didn't change device-validated behavior: as long as
 `test_golden_parity` stays green, whatever phase N produces still matches
 what the pipeline produced before the rewrite started.
 

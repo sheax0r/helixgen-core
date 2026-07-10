@@ -278,8 +278,7 @@ file — `~/.helixgen/preferences.json` (override the whole-file location with
 `HELIXGEN_FAVOR_IRS=1`). Loaded by `src/helixgen/preferences.py`; per-key
 precedence is env var > file value > built-in default. Keys include
 `device.model`, `favor_irs`, `reveal_in_finder`, `guard_paid_irs_in_git`,
-`preset_output_dir`, `author`, `default_guitar`, and `instruments`. See the
-design doc `docs/superpowers/specs/2026-07-05-user-preferences-file-design.md`.
+`preset_output_dir`, `author`, `default_guitar`, and `instruments`.
 
 - **`default_guitar`** (string, default `null`) — which of the user's
   `instruments` to default to when a tone request doesn't name a guitar. Env
@@ -381,7 +380,6 @@ op.
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports
-- `docs/superpowers/plans/` — implementation plan history
 
 ## Development conventions
 

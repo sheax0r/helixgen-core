@@ -1,8 +1,7 @@
 """Recipe: author a fresh `.hsp` (Stadium) body by replaying a spec-shaped
 "recipe" onto a cloned chassis.
 
-This is the authoring front-end of the `.hsp`-canonical redesign
-(`docs/superpowers/plans/2026-07-08-hsp-canonical-redesign.md`). Where the
+This is the authoring front-end of the `.hsp`-canonical redesign. Where the
 legacy `generate._compose_preset_hsp` compiled a spec into a fresh body, this
 module does the same job as a sequence of edits onto a cloned chassis body:
 

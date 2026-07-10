@@ -7,8 +7,6 @@ Resolution order per key (first hit wins):
    default ``~/.helixgen/preferences.json``).
 3. Built-in default (Claude memory is a skill-level seed only; this module
    never reads memory).
-
-See ``docs/superpowers/specs/2026-07-05-user-preferences-file-design.md``.
 """
 from __future__ import annotations
 

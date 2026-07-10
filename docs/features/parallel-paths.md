@@ -77,10 +77,9 @@ The chassis extracted in v1 is a serial-only example, so a separate
 4. Add a CLI test using a real exported parallel preset round-trip:
    ingest → re-generate from spec → diff blocks (not byte-identical, but
    structurally equivalent).
-5. Update `docs/superpowers/specs/<original-spec>` to reflect that parallel
-   is now supported, or write a new spec for the extension.
+5. Update the v1 design spec to reflect that parallel is now supported, or
+   write a new spec for the extension.
 
 ## Related
 
-- `docs/superpowers/specs/2026-05-01-helix-preset-generator-design.md` — v1 design that defers this.
 - `sensorium/phelix` `blocks/` directory — may already include split/merge block exemplars worth studying.
