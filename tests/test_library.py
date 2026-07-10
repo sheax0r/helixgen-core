@@ -53,6 +53,44 @@ def make_block(**overrides):
     return Block(**defaults)
 
 
+def test_block_path_rejects_traversal_model_id(tmp_library):
+    """A model_id with '../' must be rejected before any path is built."""
+    lib = Library(tmp_library)
+    with pytest.raises(ValueError):
+        lib.block_path("../../../ESCAPED", "amp")
+
+
+def test_block_path_rejects_slash_in_category(tmp_library):
+    """A category with a path separator / unknown value must be rejected."""
+    lib = Library(tmp_library)
+    with pytest.raises(ValueError):
+        lib.block_path("HD2_AmpBrit2204Custom", "../evil")
+    with pytest.raises(ValueError):
+        lib.block_path("HD2_AmpBrit2204Custom", "not_a_real_category")
+
+
+def test_save_block_traversal_does_not_escape_root(tmp_library, tmp_path):
+    """Saving a block with a malicious model_id/category writes nothing outside root."""
+    lib = Library(tmp_library)
+    sentinel = tmp_path / "ESCAPED.json"
+    with pytest.raises(ValueError):
+        lib.save_block(make_block(model_id="../../../ESCAPED", category="amp"))
+    assert not sentinel.exists()
+    with pytest.raises(ValueError):
+        lib.save_block_with_dedup(make_block(model_id="../../../ESCAPED", category="amp"))
+    assert not sentinel.exists()
+
+
+def test_valid_categories_and_model_ids_still_accepted(tmp_library):
+    """Legitimate looper/uncategorized categories and normal model_ids pass."""
+    lib = Library(tmp_library)
+    lib.save_block(make_block(model_id="P35_LooperHelix", category="looper",
+                              display_name="Looper"))
+    lib.save_block(make_block(model_id="HD2_Weird", category="uncategorized",
+                              display_name="Weird"))
+    assert lib.block_path("HD2_AmpBrit2204Custom", "amp").name == "HD2_AmpBrit2204Custom.json"
+
+
 def test_save_block_writes_to_category_subdir(tmp_library):
     lib = Library(tmp_library)
     block = make_block()

@@ -16,7 +16,7 @@ file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
 - `helixgen view <preset.hsp> [-o recipe.json]` — read-only projection of a `.hsp` back into the recipe shape (replaces the old `decompile`; `-o` dump is non-authoritative).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
 - `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg. Use `--force` to overwrite existing mappings.
-- `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash directly (no device export needed) and register. Requires libsndfile (`brew install libsndfile` on macOS). Only 48 kHz sources supported; non-48 kHz raises an error suggesting `sox`. Stereo WAVs are reduced to the left channel (matches Stadium's import).
+- `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash directly (no device export needed) and register. Requires libsndfile (`brew install libsndfile` on macOS). Only 48 kHz sources supported; non-48 kHz raises an error suggesting `sox`. This 48 kHz limit is a **helixgen** input constraint (it does not resample) — the **device** itself accepts any sample rate and normalizes internally, so a non-48k IR still works once imported onto the hardware; you just can't hash it off-device with helixgen without resampling first. Stereo WAVs are reduced to the left channel (matches Stadium's import).
 - `helixgen ir-scan <dir>... [--rescan] [--remove <basename>]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache. Files already cached are skipped by absolute path unless `--rescan`. Per-file failures (non-48 kHz, libsndfile errors) print a stderr warning and the scan continues. `--remove <basename>` forgets a single entry. Use this to bulk-register a whole IR library at once; use `register-irs` for one-off binding from a preset.
 - `helixgen list-irs` — print `<hash>  <wav-path>` for every registered IR.
 
@@ -232,10 +232,14 @@ the block is **bypassed** (manually or via a footswitch):
 - `trails: true` / `false` sets the block's bNN `harness.params.Trails`.
   - `true` → tail rings out and fades when you bypass the block.
   - `false` → tail cuts off abruptly the instant you bypass the block.
-- Trails governs tail spillover on **block bypass** (footswitch or manual). To
-  hear it, bypass the block — ideally while palm-muting so the guitar's natural
-  sustain doesn't mask the wet tail. (Footswitch/manual-bypass behavior is
-  hardware-validated on Stadium XL.)
+- Trails governs tail spillover on **block bypass** (footswitch or manual) —
+  and also across **snapshot switches** within the same preset (the tail rings
+  through a scene change instead of cutting). It never bridges a **preset**
+  change. To hear the bypass case, bypass the block — ideally while palm-muting
+  so the guitar's natural sustain doesn't mask the wet tail. (Footswitch/
+  manual-bypass behavior is hardware-validated on Stadium XL.)
+- On the device, FX-Loop blocks also carry a `Trails` param, but helixgen's
+  `trails` authoring field is scoped to **delay and reverb only** (below).
 - Omitting `trails` leaves the device default (or whatever a decompiled
   `raw.harness` carried) untouched.
 - **Delay and reverb only.** Setting `trails` on any other block category is a
@@ -373,7 +377,7 @@ op.
 
 ## Project layout
 
-- `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `bootstrap`, `ir`
+- `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports

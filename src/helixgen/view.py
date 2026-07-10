@@ -37,8 +37,23 @@ from helixgen import controllers
 from helixgen.generate import _coerce_param_value
 from helixgen.hsp import ENDPOINT_KEYS as _ENDPOINT_KEYS, _translate_model_id, _unwrap_value
 from helixgen.ir import IR_MODEL_PREFIX, IrMapping
-from helixgen.library import Library
+from helixgen.library import Block, Library
 from helixgen.spec import StructuralEntry
+
+
+def _try_load_block(library: Library, model_id: str) -> Block | None:
+    """Load a block by (already-translated) model id, or return None if the
+    library can't resolve it.
+
+    Mirrors the skip-on-KeyError policy used across `_name_index` and
+    `mutate._iter_slots`: a single unknown/unmodeled model id must not abort
+    the whole `view` projection. `library.load_block` raises `KeyError` for an
+    unknown model id.
+    """
+    try:
+        return library.load_block(model_id)
+    except KeyError:
+        return None
 
 
 def _device_id(body: dict) -> Any:
@@ -123,10 +138,10 @@ def _name_index(flow: list, library: Library) -> dict:
             if not isinstance(bnn, dict) or bnn.get("type") in ("split", "join", "input", "output") or not bnn.get("slot"):
                 continue
             num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
-            try:
-                name = _ref_name(library.load_block(_translate_model_id(bnn["slot"][0].get("model", ""))))
-            except Exception:
+            block = _try_load_block(library, _translate_model_id(bnn["slot"][0].get("model", "")))
+            if block is None:
                 continue
+            name = _ref_name(block)
             idx[name].append((pi, lane, pos))
     return idx
 
@@ -211,7 +226,9 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
     params: list[dict[tuple, dict]] = [{} for _ in names]
     flow = (body.get("preset") or {}).get("flow") or []
     for pi, key, bnn, slot in _iter_blocks(flow):
-        block = library.load_block(_translate_model_id(slot.get("model", "")))
+        block = _try_load_block(library, _translate_model_id(slot.get("model", "")))
+        if block is None:
+            continue
         name = _ref_name(block)
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         coord = (pi, lane, pos, name)
@@ -279,7 +296,9 @@ def _recover_footswitches(
         ctrl = en.get("controller") if isinstance(en, dict) else None
         if not (isinstance(ctrl, dict) and ctrl.get("type") == "targetbypass"):
             continue
-        block = library.load_block(_translate_model_id(slot.get("model", "")))
+        block = _try_load_block(library, _translate_model_id(slot.get("model", "")))
+        if block is None:
+            continue
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         name = controllers.controller_name_for_source(device_id, ctrl.get("source"))
         if name is None:
@@ -304,7 +323,9 @@ def _recover_expression(
     flow = (body.get("preset") or {}).get("flow") or []
     by_pedal: dict[str, list[dict[str, Any]]] = {}
     for pi, key, _bnn, slot in _iter_blocks(flow):
-        block = library.load_block(_translate_model_id(slot.get("model", "")))
+        block = _try_load_block(library, _translate_model_id(slot.get("model", "")))
+        if block is None:
+            continue
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         for pname, wrapped in (slot.get("params") or {}).items():
             ctrl = wrapped.get("controller") if isinstance(wrapped, dict) else None
@@ -356,6 +377,11 @@ def _entry_for(key, bnn, library, irs):
                           "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
     else:
         entry = _block_entry(bnn, library, irs)
+        if entry is None:
+            # Unknown/unmodeled model the library can't resolve: capture the
+            # bNN verbatim as a structural slot rather than aborting the whole
+            # projection (mirrors the skip-on-KeyError policy elsewhere).
+            return StructuralEntry(raw=copy.deepcopy(bnn), lane=lane, pos=pos)
     entry["lane"] = lane
     entry["pos"] = pos
     return entry
@@ -413,16 +439,22 @@ def _reconstruct_path_blocks(path_dict, library, irs):
     return out
 
 
-def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str, Any]:
+def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str, Any] | None:
     """One bNN dict → a spec block entry (block name + non-default params).
 
     The block reference is the display_name when it uniquely resolves back to
     this block; otherwise the model_id is used so the spec regenerates without
     ambiguity.
+
+    Returns None if the library can't resolve the slot's model id (an
+    unknown/unmodeled block) so the caller can capture it verbatim rather than
+    aborting the whole projection.
     """
     slot = bnn["slot"][0]
     model = _translate_model_id(slot.get("model", ""))
-    block = library.load_block(model)
+    block = _try_load_block(library, model)
+    if block is None:
+        return None
     name = block.display_name
     try:
         if library.find_block(name).model_id != block.model_id:
@@ -432,16 +464,16 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
     entry: dict[str, Any] = {"block": name}
 
     params: dict[str, Any] = {}
-    for name, wrapped in (slot.get("params") or {}).items():
+    for param_name, wrapped in (slot.get("params") or {}).items():
         value = _unwrap_value(wrapped)
-        default = block.exemplar.get(name)
+        default = block.exemplar.get(param_name)
         # Coerce the exemplar default to the same type before comparing, so a
         # float-vs-int mismatch doesn't spuriously register as an override.
         if default is not None:
-            default = _coerce_param_value(block, name, default)
-        coerced = _coerce_param_value(block, name, value)
+            default = _coerce_param_value(block, param_name, default)
+        coerced = _coerce_param_value(block, param_name, value)
         if default is None or coerced != default:
-            params[name] = coerced
+            params[param_name] = coerced
     if params:
         entry["params"] = params
 

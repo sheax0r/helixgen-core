@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -15,17 +16,71 @@ class IngestStatus(Enum):
     CONFLICT = "conflict"
 
 
+# --- Path-traversal guard for ingested, attacker-controlled block fields ---
+#
+# `@model` and `@category` come straight out of ingested .hsp/.hlx/.json files
+# and are used to build filesystem paths under the library root. Without
+# validation a crafted `@model` like "../../../ESCAPED" (or a `@category` with
+# a slash) escapes the root and writes an arbitrary *.json. Validate BOTH the
+# model_id and the category BEFORE joining, then assert containment before any
+# write (belt-and-suspenders against edge cases like symlinks).
+
+# model_id: must start alphanumeric, then alnum / _ . -  (no "/", no "..").
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+# Allowed categories, derived from ingest._CATEGORY_PREFIXES' category values
+# plus infer_category()'s "uncategorized" fallback. Kept as a literal set here
+# (rather than importing) to avoid a circular import with helixgen.ingest,
+# which imports Block/Library/IngestStatus from this module. Keep in sync if
+# ingest._CATEGORY_PREFIXES gains a new category.
+_ALLOWED_CATEGORIES = frozenset(
+    {
+        "amp",
+        "cab",
+        "drive",
+        "reverb",
+        "delay",
+        "eq",
+        "dynamics",
+        "modulation",
+        "pitch",
+        "filter",
+        "volume",
+        "send",
+        "looper",
+        "uncategorized",
+    }
+)
+
+
+def _validate_block_coords(model_id: str, category: str) -> None:
+    """Reject model_id/category that could escape the library root.
+
+    Raises ValueError on a non-conforming model_id or an unknown category.
+    """
+    if not isinstance(model_id, str) or not _MODEL_ID_RE.match(model_id):
+        raise ValueError(
+            f"invalid block model_id {model_id!r}: must match "
+            f"{_MODEL_ID_RE.pattern} (no path separators or '..')"
+        )
+    if category not in _ALLOWED_CATEGORIES:
+        raise ValueError(
+            f"invalid block category {category!r}: not one of "
+            f"{sorted(_ALLOWED_CATEGORIES)}"
+        )
+
+
 def default_library_path() -> Path:
     """Return the library path, honoring HELIXGEN_LIBRARY env var."""
     env = os.environ.get("HELIXGEN_LIBRARY")
     if env:
         return Path(env)
-    return Path(os.environ["HOME"]) / ".helixgen" / "library"
+    return Path.home() / ".helixgen" / "library"
 
 
 def default_cache_path() -> Path:
     """Return the cache path used for cloned upstream repos."""
-    return Path(os.environ["HOME"]) / ".helixgen" / ".cache"
+    return Path.home() / ".helixgen" / ".cache"
 
 
 @dataclass
@@ -69,10 +124,22 @@ class Library:
         self.blocks_dir = self.root / "blocks"
 
     def block_path(self, model_id: str, category: str) -> Path:
+        _validate_block_coords(model_id, category)
         return self.blocks_dir / category / f"{model_id}.json"
+
+    def _assert_contained(self, path: Path) -> Path:
+        """Assert `path` resolves inside blocks_dir; raise ValueError if not."""
+        resolved = path.resolve()
+        if not resolved.is_relative_to(self.blocks_dir.resolve()):
+            raise ValueError(
+                f"refusing to write {resolved} outside library blocks dir "
+                f"{self.blocks_dir.resolve()}"
+            )
+        return path
 
     def save_block(self, block: Block) -> Path:
         path = self.block_path(block.model_id, block.category)
+        self._assert_contained(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(block.to_dict(), indent=2, sort_keys=False))
         return path
@@ -189,6 +256,7 @@ class Library:
         while True:
             conflict_path = path.with_name(f"{block.model_id}.v{v}.json")
             if not conflict_path.exists():
+                self._assert_contained(conflict_path)
                 conflict_path.write_text(
                     json.dumps(block.to_dict(), indent=2, sort_keys=False)
                 )
@@ -206,7 +274,7 @@ def _schemas_match(a: dict[str, dict[str, Any]], b: dict[str, dict[str, Any]]) -
     return True
 
 
-_CONFLICT_VARIANT_RE = __import__("re").compile(r"\.v\d+$")
+_CONFLICT_VARIANT_RE = re.compile(r"\.v\d+$")
 
 
 def _is_conflict_variant(stem: str) -> bool:

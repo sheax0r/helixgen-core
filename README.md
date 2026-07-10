@@ -8,7 +8,7 @@ A Claude Code plugin that generates Line 6 Helix Stadium presets from natural-la
 
 ## Install
 
-helixgen is a Claude Code plugin backed by a Python package. You need both:
+helixgen is a Claude Code plugin backed by a Python package. Requires **Python 3.11+**. You need both:
 
 ```
 /plugin marketplace add sheax0r/helixgen
@@ -16,10 +16,12 @@ helixgen is a Claude Code plugin backed by a Python package. You need both:
 ```
 
 ```bash
-pip install git+https://github.com/sheax0r/helixgen.git@stable
+pip install "helixgen[mcp] @ git+https://github.com/sheax0r/helixgen.git@stable"
 ```
 
-The plugin contributes the `/tone` skill, a `setup` skill, and an MCP server. The pip package is the actual generator the MCP server invokes; without it the MCP tools can't import their handler module. The pip install pins to the same `stable` branch the plugin install does, so the two always agree on version.
+The plugin contributes the `/tone` skill, a `setup` skill, and an MCP server. The pip package is the actual generator the MCP server invokes; without it the MCP tools can't import their handler module. **The `[mcp]` extra is required** — it pulls in the `mcp` SDK the server needs; installing plain `helixgen` (helixgen + `click` only) leaves the MCP tools unable to start. The pip install pins to the same `stable` branch the plugin install does, so the two always agree on version.
+
+**CLI-only (no plugin):** if you use the Python CLI directly instead of the Claude Code plugin, you must first populate the block library — a fresh install has an empty `~/.helixgen/library/`. Run `helixgen bootstrap` (clones and ingests the [sensorium/phelix](https://github.com/sensorium/phelix) catalog) or point `$HELIXGEN_LIBRARY` at an existing library. The plugin ships with bundled library data, so `/tone` works out of the box.
 
 ## Use it
 
@@ -38,6 +40,8 @@ What the skill does: drafts a spec, runs the generator, and reports back with th
 helixgen supports user IRs in Stadium presets — `With Pan` blocks (and the rest of the `HX2_ImpulseResponse*` family) can reference a `.wav` file by basename, and helixgen will resolve it to the 32-character `irhash` the device expects. Stadium identifies user IRs by a content-derived hash, not by filename or slot. helixgen reproduces that hash bit-identically without any device round-trip, so you can register an entire IR library once and reference IRs by name in any spec the `/tone` skill writes.
 
 In Claude Code, ask the skill to register an IR — it can call the MCP `register_ir` tool (one file) or `register_irs` (a whole directory, in one round-trip) without needing Bash permission. Memory will remember your IR directory after the first time.
+
+**Prerequisite for direct IR hashing:** computing an IR's hash from a WAV (`register-irs <wav>`, `ir-scan`) needs **libsndfile** (`brew install libsndfile` on macOS; `apt install libsndfile1` on Debian/Ubuntu). Only 48 kHz sources are supported for direct hashing.
 
 **Caveat:** for the `irhash` in a generated preset to actually resolve on the device, the matching WAV must also be loaded onto the device via the Helix Stadium app's **Librarian → Cab IRs → Import**. helixgen only handles the preset side; importing IRs onto the device is the Stadium app's job. If a slot displays "No Model" on the device after loading a preset, that IR wasn't imported.
 
@@ -64,13 +68,16 @@ helixgen ships a Python CLI for direct generation, library inspection, IR manage
 
 See [`docs/CLI.md`](docs/CLI.md) for the full surface: install, spec format, all subcommands, IR registration, library location.
 
+For the underlying Helix Stadium format and hardware model — DSP/path layout, the 8-snapshot model, footswitch/expression-pedal layout, IR hashing, trails — see [`docs/helix-format-reference.md`](docs/helix-format-reference.md).
+
 ## Limitations (v1)
 
 - **Device validation:** `.hsp` output has been load-tested on a Helix **Stadium XL** and works. The non-XL **Helix Stadium** uses the same `.hsp` format and should work but is **untested** — the chassis baked into your library carries the device_id of whichever Stadium variant first exported a preset into it, so a chassis built from XL exports might or might not load cleanly on a non-XL Stadium. `.hlx` output is code-complete and round-trips through the parser and a real HX Edit export fixture, but has **never been loaded on a legacy Helix** (Floor / LT / Rack / Native) — treat it as plausibly-working-but-unverified until someone confirms.
 - Single serial chain per DSP; no parallel A/B routing yet (see `docs/features/parallel-paths.md`).
 - Wire values only — no display-value (0–10) translation.
 - Output is not byte-identical to HX Edit's exports; it aims to load correctly.
-- Footswitch assignment is not generated; assign on-device after loading.
+
+Footswitch assignment, expression-pedal routing, snapshots, and per-path input routing **are** generated (hardware-validated on a Stadium XL) — you don't have to wire them on-device after loading.
 
 ## Acknowledgments
 
@@ -84,6 +91,8 @@ If you are a representative of Line 6 / Yamaha and have concerns about this proj
 
 ## Tests
 
+Run from a source checkout with the package on `PYTHONPATH`:
+
 ```bash
-pytest
+PYTHONPATH=$PWD/src python -m pytest
 ```

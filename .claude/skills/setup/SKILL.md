@@ -29,9 +29,9 @@ Not every "modify" request is a full tone-design pass. If the user wants a
 *targeted* change to a preset that already exists — change one param, disable
 a block, swap a model, add/remove a block — that's the surgical-edit path, not
 the `tone` skill: CLI `set-param`/`enable`/`disable`/`add-block`/
-`remove-block`/`swap-model`/`decompile`, or the MCP `patch_preset`/
-`decompile_preset` tools. See CLAUDE.md's **"Surgical edits"** section for the
-full verb list, disambiguation flags (`--path`/`--index`/`--lane`/`--pos`,
+`remove-block`/`swap-model`/`view`, or the MCP `patch_preset`/
+`view_preset` tools. See CLAUDE.md's **"Surgical edits"** section for the
+full verb list, disambiguation flags (`--path`/`--lane`/`--pos`,
 `--snapshot`), and worked examples. Still worth a quick device-model check
 (step 1 below) if this is the first exchange of the session; skip the rest of
 setup (IR library location, IR preferences) unless the edit itself touches an

@@ -22,7 +22,7 @@ def default_irs_path() -> Path:
     env = os.environ.get("HELIXGEN_IRS")
     if env:
         return Path(env)
-    return Path(os.environ["HOME"]) / ".helixgen" / "irs"
+    return Path.home() / ".helixgen" / "irs"
 
 
 @dataclass
@@ -144,6 +144,32 @@ _TRUNC_LEN = 0x2000              # 8192
 _TRUNC_THRESH = 0x1FFF           # 8191
 _FADE_LEN = 128
 
+# Front-door guard before handing a file to libsndfile (which has a CVE
+# history parsing malformed audio). IRs are tiny — a 48 kHz mono PCM_24 IR is
+# a few hundred KB — but be generous with the cap to accommodate long/stereo
+# sources without letting an arbitrarily huge file reach the parser.
+_MAX_WAV_BYTES = 64 * 1024 * 1024  # 64 MB
+
+
+def _validate_wav_front_door(wav_path: Path) -> None:
+    """Cheap sanity checks before opening a WAV via libsndfile.
+
+    Rejects oversized files and anything lacking the RIFF/WAVE magic, so an
+    arbitrary/malicious blob never reaches libsndfile. Raises ValueError.
+    """
+    size = wav_path.stat().st_size
+    if size > _MAX_WAV_BYTES:
+        raise ValueError(
+            f"{wav_path} is {size} bytes; refusing files larger than "
+            f"{_MAX_WAV_BYTES} bytes"
+        )
+    with open(wav_path, "rb") as f:
+        header = f.read(12)
+    if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+        raise ValueError(
+            f"{wav_path} is not a RIFF/WAVE file (bad magic)"
+        )
+
 
 class _SF_INFO(ctypes.Structure):
     _fields_ = [
@@ -243,6 +269,7 @@ def compute_stadium_irhash(wav_path: Path | str) -> str:
     wav_path = Path(wav_path)
     if not wav_path.is_file():
         raise FileNotFoundError(f"wav file not found: {wav_path}")
+    _validate_wav_front_door(wav_path)
 
     tmp1 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp1.close()

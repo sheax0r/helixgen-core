@@ -197,7 +197,8 @@ def test_block_from_raw_prefers_explicit_category_field():
 import json
 from pathlib import Path
 
-from helixgen.ingest import IngestSummary, ingest_file
+import helixgen.ingest as ingest_module
+from helixgen.ingest import IngestSummary, ingest_file, ingest_path
 from helixgen.library import Library
 
 
@@ -415,3 +416,35 @@ def test_looper_is_catalogued(tmp_path, sample_serial_preset_hsp):
     models = [b.model_id for b in lib.list_blocks()]
     assert "P35_LooperHelixStereo" in models
     assert infer_category("P35_LooperHelixStereo") == "looper"
+
+
+def test_ingest_path_isolates_a_failing_file(tmp_path, monkeypatch, capsys):
+    """A single malformed/rejected export must not abort a directory ingest.
+
+    The library's model_id/category validation raises on a crafted block; the
+    directory loop should warn-and-continue (mirroring ir-scan) so the rest of
+    the directory still ingests, and nothing escapes the library root.
+    """
+    presets = tmp_path / "presets"
+    presets.mkdir()
+    (presets / "a-bad.hsp").write_bytes(b"x")
+    (presets / "b-good.hsp").write_bytes(b"x")
+    lib = Library(root=tmp_path / "lib")
+
+    attempted = []
+
+    def fake_ingest_file(path, library):
+        attempted.append(path.name)
+        if path.name == "a-bad.hsp":
+            raise ValueError("invalid block model_id '../../../evil'")
+        s = IngestSummary()
+        s.new = 3
+        return s
+
+    monkeypatch.setattr(ingest_module, "ingest_file", fake_ingest_file)
+
+    summary = ingest_path(presets, lib)  # must not raise
+
+    assert attempted == ["a-bad.hsp", "b-good.hsp"]  # bad file did not abort the loop
+    assert summary.new == 3  # the good file's blocks were still ingested
+    assert "skipping" in capsys.readouterr().err  # the failure was surfaced, not swallowed

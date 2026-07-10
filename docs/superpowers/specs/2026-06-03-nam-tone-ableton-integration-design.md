@@ -2,9 +2,9 @@
 
 Status: approved design, ready for implementation plan. Written 2026-06-03.
 
-Supersedes the exploratory `docs/tone3000-integration-handoff.md` where they conflict
-(notably: the output artifact is now decided — option C, the Ableton `.adg` rack — not
-the handoff's recommended option A).
+Supersedes an earlier exploratory integration handoff note (since removed from the repo)
+where they conflict (notably: the output artifact is now decided — option C, the Ableton
+`.adg` rack — not the handoff's recommended option A).
 
 ---
 

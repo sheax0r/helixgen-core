@@ -248,6 +248,45 @@ def test_compute_stadium_irhash_rejects_non_48k(tmp_path):
         compute_stadium_irhash(wav)
 
 
+def test_front_door_rejects_non_riff(tmp_path):
+    """A file lacking RIFF/WAVE magic is rejected before libsndfile is touched."""
+    from helixgen.ir import _validate_wav_front_door
+
+    bogus = tmp_path / "bogus.wav"
+    bogus.write_bytes(b"NOTAWAVEFILE____")
+    with pytest.raises(ValueError, match="RIFF/WAVE"):
+        _validate_wav_front_door(bogus)
+
+
+def test_front_door_rejects_oversized(tmp_path, monkeypatch):
+    """A file above the size cap is rejected before libsndfile is touched."""
+    import helixgen.ir as ir
+
+    monkeypatch.setattr(ir, "_MAX_WAV_BYTES", 8)
+    big = _write_synth_wav(tmp_path / "big.wav", n_frames=64)  # valid WAV, > 8 bytes
+    with pytest.raises(ValueError, match="refusing files larger"):
+        ir._validate_wav_front_door(big)
+
+
+def test_front_door_accepts_valid_wav(tmp_path):
+    """A well-formed RIFF/WAVE under the cap passes the front door."""
+    from helixgen.ir import _validate_wav_front_door
+
+    good = _write_synth_wav(tmp_path / "good.wav", n_frames=64)
+    _validate_wav_front_door(good)  # no raise
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_compute_stadium_irhash_rejects_non_riff(tmp_path):
+    """compute_stadium_irhash refuses a non-RIFF blob (front-door guard)."""
+    from helixgen.ir import compute_stadium_irhash
+
+    bogus = tmp_path / "bogus.wav"
+    bogus.write_bytes(b"NOTAWAVEFILE____")
+    with pytest.raises(ValueError, match="RIFF/WAVE"):
+        compute_stadium_irhash(bogus)
+
+
 def test_register_irs_rejects_non_wav_after_first(tmp_path, monkeypatch):
     """Auto-compute branch rejects non-.wav args with a friendly error."""
     irs_dir = tmp_path / "irs"

@@ -46,7 +46,7 @@ from helixgen.hsp import dumps_hsp
 from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.spec import BlockEntry, Spec, parse_spec
 
-_MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane (matches generate._HSP_BNN_RANGE)
+_MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
 
 
 def apply_recipe(

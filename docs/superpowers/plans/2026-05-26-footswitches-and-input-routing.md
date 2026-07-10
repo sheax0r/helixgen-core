@@ -6,7 +6,7 @@
 
 **Architecture:** Both features share a new `src/helixgen/controllers.py` module that holds per-device (`stadium_xl`, future devices) lookup tables. `generate._compose_preset_hsp` gains two new passes: one rewrites the `b00` input endpoint on each path; another wraps `@enabled` (FS) or specific param `value` (EXP) with a `controller` dict and registers source IDs in `preset.sources`. `spec.parse_spec` gains parse helpers for `footswitches` and `expression` and tightens the existing `input` field validation.
 
-**Tech Stack:** Python 3 stdlib only (existing project constraint), `pytest` + `pytest`'s standard `tmp_path` fixture for tests, `click` is already in use for the CLI (not touched in this plan). All file paths absolute from repo root `/Users/michael.shea/git/helixgen/`.
+**Tech Stack:** Python 3 stdlib only (existing project constraint), `pytest` + `pytest`'s standard `tmp_path` fixture for tests, `click` is already in use for the CLI (not touched in this plan). All file paths absolute from repo root `~/git/helixgen/`.
 
 ---
 
@@ -575,7 +575,7 @@ git commit -m "feat(generate): per-path input endpoint rewrite (defaults: both /
 ### Task 1.5: Document `input` in CLAUDE.md
 
 **Files:**
-- Modify: `/Users/michael.shea/git/helixgen/CLAUDE.md` (the spec.json shape section)
+- Modify: `~/git/helixgen/CLAUDE.md` (the spec.json shape section)
 
 - [ ] **Step 1: Add the documentation**
 

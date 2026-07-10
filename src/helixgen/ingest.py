@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from enum import Enum
 from typing import Any
 
@@ -414,7 +415,18 @@ def ingest_path(path: Path, library: Library) -> IngestSummary:
     elif path.is_dir():
         for entry in sorted(path.rglob("*")):
             if entry.is_file() and entry.suffix.lower() in INGEST_EXTENSIONS:
-                summary.add(ingest_file(entry, library))
+                # Isolate each file so one malformed/rejected export (e.g. a
+                # block that fails the library's model_id/category validation)
+                # doesn't abort ingest of the rest of the directory. Mirrors
+                # ir-scan's per-file warn-and-continue behavior. A single
+                # explicit-file ingest (above) still surfaces its error.
+                try:
+                    summary.add(ingest_file(entry, library))
+                except Exception as exc:  # noqa: BLE001 - per-file isolation
+                    print(
+                        f"warning: skipping {entry}: {exc}",
+                        file=sys.stderr,
+                    )
     else:
         raise FileNotFoundError(f"Path does not exist: {path}")
 

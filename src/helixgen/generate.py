@@ -27,7 +27,6 @@ from helixgen.ingest import (
     RAW_BLOCK_NON_PARAM_KEYS,
     RAW_BLOCK_SYSTEM_KEY_PREFIX,
 )
-from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.library import Block, Library
 from helixgen.spec import BlockEntry, JoinEntry, SplitEntry, StructuralEntry, Spec, parse_spec
 
@@ -269,7 +268,6 @@ def _compose_preset_hlx(
 # re-wrap, and translate model ids back to the Stadium namespace.
 # ---------------------------------------------------------------------------
 
-_HSP_BNN_RANGE = range(1, 13)  # b01..b12 are user-block slots
 HSP_SNAPSHOT_SLOTS = 8           # Stadium has 8 fixed snapshot slots per preset
 DEFAULT_INPUT_MODES = ("both", "none")  # by path index
 

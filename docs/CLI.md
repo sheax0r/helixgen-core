@@ -14,6 +14,8 @@ server) — anything you can do in `/tone` you can do here, and vice versa.
 
 ## Install
 
+Requires **Python 3.11+**.
+
 ```bash
 git clone https://github.com/sheax0r/helixgen
 cd helixgen
@@ -21,11 +23,24 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-You only need `pip install helixgen` (without the `-e ".[dev]"` extras) if all
-you want is the CLI as a black box; the source install is what's recommended
-for contributors and for use alongside the Claude Code plugin.
+If all you want is the CLI as a black box (no source checkout), install it
+straight from the `stable` branch — helixgen is **not** published to PyPI:
+
+```bash
+pip install "git+https://github.com/sheax0r/helixgen.git@stable"
+```
+
+The source install is what's recommended for contributors and for use alongside
+the Claude Code plugin. Add the `[mcp]` extra
+(`pip install "helixgen[mcp] @ git+…@stable"`) if you also want the MCP server.
 
 ## Quickstart
+
+A fresh install has an **empty** block library at `~/.helixgen/library/` — you
+must seed it before `generate` / `list-blocks` / `show-block` will find any
+blocks. Seed it once with `helixgen bootstrap` (below) or point
+`$HELIXGEN_LIBRARY` at an existing library. (The Claude Code plugin ships bundled
+library data, so this step is CLI-only.)
 
 ```bash
 # 1. Seed the library — from your own exports (preferred for accuracy)
@@ -78,6 +93,10 @@ expression pedal targets, per-block IR references — see the project
 round-trip, so you can register an IR library locally and reference IRs by
 basename in your specs. See [`docs/ir-hash-algorithm.md`](ir-hash-algorithm.md)
 for the algorithm.
+
+**Prerequisite:** direct hash computation (`register-irs <wav>`, `ir-scan`)
+needs **libsndfile** (`brew install libsndfile` on macOS; `apt install
+libsndfile1` on Debian/Ubuntu).
 
 ```bash
 # Bulk-register a whole IR directory (recurses; ~1 ms per IR after warm-up)

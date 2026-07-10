@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-01
 **Status:** Approved (pending user review of this written spec)
-**Source brief:** `input.md` (in repo root)
+**Source brief:** the user's original project brief (an early handoff note, since removed from the repo)
 
 ## Goal
 
@@ -374,7 +374,6 @@ helix-preset-generator/
       parallel-paths.md     # already exists
     superpowers/specs/
       2026-05-01-helix-preset-generator-design.md   # this file
-  input.md                  # original brief, kept for reference
 ```
 
 ## Implementation language and dependencies
@@ -410,6 +409,6 @@ helix-preset-generator/
 
 ## Related documents
 
-- `input.md` — original brief from the user.
+- The original project brief from the user (an early handoff note, since removed from the repo).
 - `docs/features/parallel-paths.md` — deferred feature, full design for
   parallel A/B routing extension.

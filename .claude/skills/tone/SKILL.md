@@ -28,7 +28,7 @@ When NOT to use: editing an existing `.hsp` (load and modify directly outside th
 |---|---|---|
 | `list_blocks` | `category?` (amp/cab/drive/delay/reverb/modulation/filter/eq/dynamics/pitch/volume/send) | text, grouped by category, one `<display_name>  [<model_id>]` per line |
 | `show_block` | `name_or_id` (display name, model id, or alias) | text: header, category, aliases, params with types/defaults/ranges |
-| `generate_preset` | `spec` (inline JSON dict — full helixgen schema) | `EmbeddedResource` with base64-encoded `.hsp` blob |
+| `generate_preset` | `model`, `recipe` (inline JSON dict — full helixgen schema) | `EmbeddedResource` with base64-encoded `.hsp` blob |
 | `list_irs` | — | text, one `<hash>  <wav-path>` per registered IR; empty on the public deploy |
 
 ## Workflow
@@ -376,7 +376,7 @@ If nothing is known about the user's lineup (no preferences file, no memory, no 
 
 ### 7. Generate
 
-Call `generate_preset(spec=<the dict you built in step 5>)`. The return value is an MCP `EmbeddedResource` containing the `.hsp` bytes as a base64 blob.
+Call `generate_preset(model, recipe=<the dict you built in step 5>)` (`model` is the device model string, e.g. `"stadium_xl"`). The return value is an MCP `EmbeddedResource` containing the `.hsp` bytes as a base64 blob.
 
 If the validator errors with `Unknown param(s) [...]`, re-run `show_block` on the offending block, fix the spec, retry. Never guess the corrected name.
 
@@ -425,7 +425,7 @@ Don't hedge with a list of 5 things to maybe try; pick one.
 
 ### 9. Iterate on feedback (when the user loads it and says it's not quite right)
 
-After the user loads the preset and reports back ("the lead is too compressed", "verses are too dark", "swap that delay for something slappier", "clean snapshot needs a touch of reverb"), don't start over. Keep the prior spec dict in mind, make the smallest edit that addresses the feedback, call `generate_preset` again with the updated spec, and tell the user what changed in one line so they can A/B.
+After the user loads the preset and reports back ("the lead is too compressed", "verses are too dark", "swap that delay for something slappier", "clean snapshot needs a touch of reverb"), don't start over. The `.hsp` you saved is the source of truth — make the smallest edit that addresses the feedback with a single in-place `patch_preset` call (see **Adjusting an existing tone** above; do NOT regenerate from the spec dict), and tell the user what changed in one line so they can A/B.
 
 Rules of thumb for translating ear-language to param moves:
 - **"Too compressed"** on a lead → back amp `Drive` off ~0.10, raise `Master`; or back drive pedal `Gain` off ~0.10
@@ -437,7 +437,7 @@ Rules of thumb for translating ear-language to param moves:
 - **"Lead doesn't sing / cut"** → raise `Mid` 0.05–0.10 in the lead snapshot, raise delay `Mix` 0.05
 - **"Delay is washy / too long"** → drop `Mix` 0.05 OR drop `Time` 0.05
 - **"Reverb feels too loud"** → drop `Mix` 0.03–0.05 (Stadium plates run hot, small moves matter)
-- **"Swap X for something Y"** → call `list_blocks(category=<cat>)`, scan for candidates, `show_block` the chosen one, edit the spec, regenerate
+- **"Swap X for something Y"** → call `list_blocks(category=<cat>)`, scan for candidates, `show_block` the chosen one, then `swap_model` (same category) via a `patch_preset` op
 
 ## Common Mistakes
 
@@ -470,22 +470,31 @@ Rules of thumb for translating ear-language to param moves:
 
 When the user asks to *tweak* a tone you already generated (e.g. "brighter
 cab", "swap to a Plexi", "more delay", "kill the reverb"), do NOT regenerate
-from a fresh description. Apply the narrowest surgical edit instead:
+from a fresh description. The `.hsp` is the source of truth — edit it in place
+with a single `patch_preset` call. There is **no** decompile→edit-spec→
+regenerate round-trip.
 
-1. If you still hold the spec dict, call `patch_preset(model, spec, operations)`
-   with the smallest op that expresses the change:
+1. Get the current `.hsp` as a base64 blob (`hsp_b64`): re-read the file you
+   saved (base64-encode its bytes), or use the blob returned by the last
+   `generate_preset` / `patch_preset` call. If the user only has an `.hsp` file
+   on disk (an orphan they imported), just read + base64-encode it — no
+   recovery step needed.
+2. Call `patch_preset(model, hsp_b64, operations)` with the smallest set of ops
+   that expresses the change (batch multiple changes into one call):
    - "brighter" → `set_param` on the cab `HighCut` (raise it).
    - "swap to a Plexi" → `swap_model` (old → new amp; same category required).
    - "kill the reverb" → `set_enabled` with `enabled: false` on the reverb block.
    - "add a delay" → `add_block` with the delay block, `after` the amp/cab.
-2. If you only have the `.hsp` (an orphan the user imported), first call
-   `decompile_preset(model, hsp_b64)` to recover the spec, then patch it.
-3. Regenerate by calling `generate_preset(model, spec=<patched spec>)`.
+3. `patch_preset` returns the **mutated `.hsp` blob** (plus any `warnings`).
+   Decode it to the same file path so the user just re-imports. To inspect the
+   result in recipe shape, call `view_preset(model, hsp_b64)` (read-only) on the
+   returned blob.
 4. Surface any `warnings` from `patch_preset` (e.g. dropped params on a swap)
    to the user.
 
-Prefer one `patch_preset` call with multiple `operations` over several
-regenerations. The spec stays the source of truth; the `.hsp` is rebuilt from it.
+Prefer one `patch_preset` call with multiple `operations` over several edits.
+The `.hsp` blob is the thing you mutate and re-save — the recipe/spec dict is
+author-input only and is not read back as truth.
 
 ### Addressing duplicate blocks
 
@@ -495,8 +504,8 @@ its coordinate: add `"pos": N` (and `"lane": 0|1`, `"path": 0|1`) to the
 `patch_preset` operation or the snapshot/footswitch/expression reference. A bare
 name only works when it is unique in the preset.
 
-If `decompile_preset` refuses a preset (more than two parallel splits, or an
-unknown routing block), tell the user it's an unsupported routing shape rather
-than editing it blindly. If `generate_preset` warns that an IR hash was passed
-through unregistered, mention the user must `register-irs` that WAV to edit it
-locally.
+If `patch_preset` or `view_preset` refuses a preset (more than two parallel
+splits, or an unknown routing block), tell the user it's an unsupported routing
+shape rather than editing it blindly. If `patch_preset` warns that an IR hash
+was passed through unregistered, mention the user must `register-irs` that WAV
+to edit it locally.

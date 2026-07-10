@@ -5,7 +5,8 @@
       "args": ["-m", "mcp_server"],
       "env": {
         "MCP_TRANSPORT": "stdio",
-        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}:${CLAUDE_PLUGIN_ROOT}/src"
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}:${CLAUDE_PLUGIN_ROOT}/src",
+        "HELIXGEN_LIBRARY": "${CLAUDE_PLUGIN_ROOT}/mcp_server/data/library"
       }
     }
   }
