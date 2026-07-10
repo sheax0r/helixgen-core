@@ -112,6 +112,7 @@ on read (missing key ⇒ built-in default); the scaffolder writes them all.
 | `guard_paid_irs_in_git` | bool | `true` | `HELIXGEN_GUARD_PAID_IRS` | setup / any git action | When true, the agent refuses to `git add`/commit/copy WAVs into tracked paths or fixtures and uses free/synthesized fixtures. Formalizes `feedback_no_paid_irs_in_repo.md`. |
 | `preset_output_dir` | string (path) | `null` (⇒ `/tmp`) | `HELIXGEN_PRESET_DIR` | tone §7/§7a | Where generated `.hsp` + companion `.md` are written. `null` keeps today's `/tmp/<slug>.{hsp,md}` behaviour. `~` expanded. |
 | `author` | string | `null` (⇒ OS username) | `HELIXGEN_AUTHOR` | tone §5 (spec `author`) | Default value for the spec `author` field, instead of the placeholder `"you"`. |
+| `default_guitar` | string | `null` (⇒ ask) | `HELIXGEN_DEFAULT_GUITAR` | tone §6 | Which of the user's `instruments` to default to when a tone request doesn't name a guitar (used for tone-naming — title + filename + description). `null` ⇒ the tone skill asks and offers to save the answer here. |
 | `instruments` | array<Instrument> | `[]` | — (structured; not env-overridable) | tone §1/§6, instrument-recs feature | The user's guitars/basses. Replaces `user_guitars.md` as the machine-readable control for the instrument-recommendations feature. |
 
 ### `Instrument` object
@@ -142,6 +143,7 @@ Example file the scaffolder writes:
   "guard_paid_irs_in_git": true,
   "preset_output_dir": null,
   "author": null,
+  "default_guitar": null,
   "instruments": [
     {
       "name": "Gibson Les Paul Junior",

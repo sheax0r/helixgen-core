@@ -45,6 +45,7 @@ def test_load_defaults_when_no_file(tmp_path, monkeypatch):
         "HELIXGEN_GUARD_PAID_IRS",
         "HELIXGEN_PRESET_DIR",
         "HELIXGEN_AUTHOR",
+        "HELIXGEN_DEFAULT_GUITAR",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -57,6 +58,7 @@ def test_load_defaults_when_no_file(tmp_path, monkeypatch):
     assert prefs.guard_paid_irs_in_git is True
     assert prefs.preset_output_dir is None
     assert prefs.author is None
+    assert prefs.default_guitar is None
     assert prefs.instruments == []
 
 
@@ -106,6 +108,36 @@ def test_load_reads_file_values(tmp_path, monkeypatch):
     assert prefs.guard_paid_irs_in_git is False
     assert prefs.preset_output_dir == "~/presets"
     assert prefs.author == "mike"
+
+
+def test_load_reads_default_guitar(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_GUITAR", raising=False)
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"default_guitar": "Les Paul Jr"}))
+    prefs = load_preferences(path)
+    assert prefs.default_guitar == "Les Paul Jr"
+
+
+def test_default_guitar_non_string_raises(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_GUITAR", raising=False)
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"default_guitar": 123}))
+    with pytest.raises(PreferencesError):
+        load_preferences(path)
+
+
+def test_env_default_guitar_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_DEFAULT_GUITAR", "EC-1000")
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"default_guitar": "Les Paul Jr"}))
+    prefs = load_preferences(path)
+    assert prefs.default_guitar == "EC-1000"
+
+
+def test_default_guitar_in_scaffold(tmp_path):
+    path = scaffold_default(tmp_path / "preferences.json")
+    data = json.loads(path.read_text())
+    assert data["default_guitar"] is None
 
 
 def test_load_unknown_key_tolerated(tmp_path):
