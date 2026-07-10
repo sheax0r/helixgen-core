@@ -139,6 +139,27 @@ Minimal shape:
 }
 ```
 
+#### Name the preset for its target guitar
+
+Presets are named for the guitar they're voiced for. Append the **target
+guitar** (resolved in step 6) to **both** the spec `"name"` (the display title)
+**and** the save slug (step 7a filename), in the format `"<Tone Name> —
+<Guitar>"` for the title and a sanitized equivalent for the `.hsp`/`.md`
+filename — e.g. title `"White Limo Lead — Les Paul Jr"`, slug
+`white-limo-lead-les-paul-jr`. Use a concise, recognizable guitar label — the
+name as the user/prefs refer to it (`"Les Paul Jr"`, `"EC-1000"`,
+`"Strandberg"`, `"Ibanez Prestige"`), not the full catalog name.
+
+**Omit the guitar** (no suffix, plain tone name) **only** when the tone is
+explicitly *not* targeted at a specific guitar — e.g. the user asked for a
+guitar-agnostic or generic patch. In that case note in the report and the `.md`
+that it's not guitar-specific.
+
+(Guitar resolution happens in step 6; you can build the spec in step 5 with a
+placeholder name and stamp the final `"<Tone> — <Guitar>"` title once the guitar
+is settled — just make sure the generated preset and both files carry the
+guitar-suffixed name.)
+
 #### Anti-fizz baseline — bake these into nearly every preset
 
 The Helix gives raw modeling and trusts you to voice it. A Spark/JC-120/etc. sounds "nice" out of the box because it's doing fixed cab voicing, EQ-curve baking, and mild compression for you. Without those, default Helix presets sound fizzy and thin compared to a real amp pushing real air. The cab block is where you fix this — verify exact param names with `show_block` (older cabs may use `Hi Cut` / `Lo Cut`; newer ones `High Cut` / `Low Cut`).
@@ -290,9 +311,34 @@ its base amp params.
 
 For the report (next step), the user's hands-on guitar settings are part of the tone — pickup choice and rolled-back knobs shape the sound as much as the amp settings do.
 
-**A user-named guitar always wins.** If the user named a specific guitar, use it. If research (1b) or the tone target suggests it's a poor fit, give **one** honest nudge — not an argument — e.g. "the EC-1000's scooped active EMGs will fight this vintage-crunch voicing — if you have it handy, the LP Jr's P-90 nails it more directly" — then proceed with the guitar they asked for.
+Resolve the target guitar in this order (first hit wins). The resolved guitar
+is **the target guitar** used to name the preset (title + filename + description
+— see step 5 naming and step 7a):
 
-**If no guitar was named, auto-select the best-fit guitar from the user's owned lineup and state why.** Read the lineup from `~/.helixgen/preferences.json`'s `instruments` key if present; otherwise fall back to the user's guitar memory (Les Paul Jr, ESP LTD EC-1000, Strandberg Boden Essential 6, Ibanez Prestige). Match tone character to pickup class:
+**(a) A user-named guitar always wins.** If the user named a specific guitar,
+use it. If research (1b) or the tone target suggests it's a poor fit, give
+**one** honest nudge — not an argument — e.g. "the EC-1000's scooped active EMGs
+will fight this vintage-crunch voicing — if you have it handy, the LP Jr's P-90
+nails it more directly" — then proceed with the guitar they asked for.
+
+**(b) Else, use `default_guitar` from preferences.** If no guitar was named and
+`~/.helixgen/preferences.json` has a `default_guitar` set, use it — state it
+briefly ("using your default guitar, the <X>"). Still give the one-nudge from
+(a) if it's a poor fit for the tone.
+
+**(c) Else, ask which guitar to use — and offer to save it.** When no guitar was
+named and `default_guitar` is unset, **ask the user which guitar to use.** Offer
+a best-fit suggestion from their owned lineup (read `instruments` from
+preferences.json if present; otherwise the user's guitar memory — Les Paul Jr,
+ESP LTD EC-1000, Strandberg Boden Essential 6, Ibanez Prestige) using the
+pickup-class table below, and **offer to save their choice as `default_guitar`
+in preferences.json** (confirm-first, per the setup skill's write-back rule) so
+you won't have to ask next time. Only fall through to the generic tone-goal
+table (further down) plus a single clarifying question when the lineup is
+entirely unknown — no preferences file and no memory.
+
+Match tone character to pickup class (this is the best-fit suggestion in (c),
+and the nudge check in (a)/(b)):
 
 | Tone target | Wants | Pick |
 |---|---|---|
@@ -348,7 +394,7 @@ open('/tmp/<slug>.hsp', 'wb').write(base64.b64decode(b64))
 
 Whenever you save a `.hsp`, also write a sibling markdown file at the same path with the same slug (`<dir>/<slug>.md` next to `<dir>/<slug>.hsp`). This is the durable, human-readable record of the tone so it stands alone without the chat. It's effectively the step-8 report, persisted. Include:
 
-- **Title + target** — the tone name and what it's aiming at (artist/song/section/genre/feel)
+- **Title + target** — the tone name, the guitar it's voiced for, and what it's aiming at (artist/song/section/genre/feel). State the target guitar clearly near the top (omit it only when the tone is explicitly not guitar-specific — then say so)
 - **Reference notes & sources** — the key findings from step 1b research, with the source links (omit if research was skipped because the target was generic)
 - **The chain** — one line per block: position, model, and the 2–3 settings that matter
 - **IRs referenced** — basenames, so the user knows what must be loaded on the device
@@ -361,7 +407,7 @@ Whenever you save a `.hsp`, also write a sibling markdown file at the same path 
 
 Keep it tight and scannable — it's reference material, not a transcript. If you regenerate/iterate on the preset (step 9), update this `.md` in place alongside the `.hsp`.
 
-> **Save location:** default to writing both files wherever the user's convention puts presets. If a project/user preference (memory or a stated rule) names a presets directory, write the `.hsp` **and** `.md` there; otherwise `/tmp/<slug>.{hsp,md}`. Reveal the `.hsp` in Finder per step 8.
+> **Save location:** default to writing both files wherever the user's convention puts presets. If a project/user preference (memory or a stated rule) names a presets directory, write the `.hsp` **and** `.md` there; otherwise `/tmp/<slug>.{hsp,md}`. The `<slug>` includes the target guitar (sanitized `"<Tone Name> — <Guitar>"`, e.g. `white-limo-lead-les-paul-jr.{hsp,md}`) — omit the guitar from the slug only when the tone is explicitly not guitar-specific. Reveal the `.hsp` in Finder per step 8.
 
 
 ### 8. Report back
@@ -418,6 +464,7 @@ Rules of thumb for translating ear-language to param moves:
 | Using `Position` as the wah/expression sweep param | The real param is `Pedal` (float 0..1) on blocks like `Teardrop 310 Mono`; wah/expression blocks have no `Position` param (that name is the IR-cab mic knob) — always confirm with `show_block` (5.6) |
 | Building an artist/song tone from memory | Research the real rig from the web first (step 1b) — signature tones hinge on non-obvious details; cite sources |
 | Saving the `.hsp` without a description | Always write the companion `<slug>.md` (step 7a) next to the preset so the tone is documented standalone |
+| Naming a preset without its target guitar | Append the target guitar to the title AND the `.hsp`/`.md` filename (`<Tone> — <Guitar>`, step 5 naming); omit it only when the tone is explicitly guitar-agnostic |
 
 ## Adjusting an existing tone (surgical edits)
 

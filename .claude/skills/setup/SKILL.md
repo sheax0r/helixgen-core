@@ -84,9 +84,10 @@ key: env var > file value > Claude-memory seed > built-in default.
   later updates to it can be written silently.
 
 Keys this skill owns: `device.model`, `favor_irs`, `reveal_in_finder`,
-`guard_paid_irs_in_git`, `instruments`. (`preset_output_dir` and `author` are
-consumed by the `tone` skill.) `ir_library_dir` is deliberately **not** in
-this file — the IR directory stays env-only via `$HELIXGEN_IRS`; see step 2.
+`guard_paid_irs_in_git`, `instruments`, `default_guitar`. (`preset_output_dir`
+and `author` are consumed by the `tone` skill.) `ir_library_dir` is
+deliberately **not** in this file — the IR directory stays env-only via
+`$HELIXGEN_IRS`; see step 2.
 
 #### Instruments
 
@@ -118,6 +119,13 @@ Seed the user's four confirmed instruments on first scaffold:
 - **ESP LTD EC-1000** — active EMG HH, 3-way selector.
 - **Strandberg Boden Essential 6** — HSS, 5-way selector.
 - **Ibanez Prestige** — HSH, 5-way selector.
+
+`default_guitar` is a string naming which of the user's `instruments` to
+default to when a tone request doesn't name a guitar — it feeds tone-naming
+(the preset title, `.hsp`/`.md` filename, and description are named for the
+target guitar). If it's unset (`null`) and the `tone` skill needs a guitar, the
+tone skill asks the user which guitar to use and offers to save their choice
+here (confirm-first-then-silent, matching the other prefs).
 
 There's no `helixgen prefs` CLI yet — the file is plain JSON
 (`json.load`/atomic tmp+rename write), so read or hand-edit it directly. Edit

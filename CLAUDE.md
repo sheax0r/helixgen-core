@@ -266,6 +266,32 @@ can reproduce it:
 untouched by construction; `raw` matters only for authoring a fresh preset that
 carries such state. Stadium-only.
 
+## User preferences (`preferences.json`)
+
+The `setup` / `tone` skills read explicit settings from a user-editable JSON
+file — `~/.helixgen/preferences.json` (override the whole-file location with
+`$HELIXGEN_PREFS`; override any single key with `HELIXGEN_<KEY>`, e.g.
+`HELIXGEN_FAVOR_IRS=1`). Loaded by `src/helixgen/preferences.py`; per-key
+precedence is env var > file value > built-in default. Keys include
+`device.model`, `favor_irs`, `reveal_in_finder`, `guard_paid_irs_in_git`,
+`preset_output_dir`, `author`, `default_guitar`, and `instruments`. See the
+design doc `docs/superpowers/specs/2026-07-05-user-preferences-file-design.md`.
+
+- **`default_guitar`** (string, default `null`) — which of the user's
+  `instruments` to default to when a tone request doesn't name a guitar. Env
+  override `HELIXGEN_DEFAULT_GUITAR`. When unset and the `tone` skill needs a
+  guitar, the skill asks the user and offers to save the answer here.
+
+**Preset naming convention.** Generated presets are named for the guitar they
+target — the target guitar is appended to the preset **display title**, the
+`.hsp`/`.md` **filename** slug, and stated near the top of the companion
+markdown **description** (format `"<Tone Name> — <Guitar>"`, e.g. `White Limo
+Lead — Les Paul Jr`). The guitar is omitted only when a tone is explicitly not
+targeted at a specific guitar (a guitar-agnostic/generic patch). Guitar
+resolution order in the `tone` skill: a user-named guitar wins; else
+`default_guitar`; else the skill asks and offers to save the choice as
+`default_guitar`.
+
 ## Surgical edits
 
 Once a preset exists, don't re-author it to change one setting — use the edit

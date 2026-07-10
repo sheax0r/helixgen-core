@@ -124,6 +124,7 @@ class Preferences:
     guard_paid_irs_in_git: bool = True
     preset_output_dir: str | None = None
     author: str | None = None
+    default_guitar: str | None = None
     instruments: list[Instrument] = field(default_factory=list)
     volume_normalize_snapshots: bool = True
     volume_normalize_baseline: bool = True
@@ -137,6 +138,16 @@ def _validate_device_model(model: Any) -> str | None:
             f"device.model must be one of {_VALID_DEVICE_MODELS} or null, got {model!r}"
         )
     return model
+
+
+def _validate_default_guitar(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise PreferencesError(
+            f"default_guitar must be a string or null, got {type(value).__name__}"
+        )
+    return value
 
 
 def _parse_instruments(raw: Any) -> list[Instrument]:
@@ -190,6 +201,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         guard_paid_irs_in_git=bool(data.get("guard_paid_irs_in_git", True)),
         preset_output_dir=data.get("preset_output_dir"),
         author=data.get("author"),
+        default_guitar=_validate_default_guitar(data.get("default_guitar")),
         instruments=_parse_instruments(data.get("instruments")),
         volume_normalize_snapshots=bool(data.get("volume_normalize_snapshots", True)),
         volume_normalize_baseline=bool(data.get("volume_normalize_baseline", True)),
@@ -212,6 +224,8 @@ def load_preferences(path: Path | None = None) -> Preferences:
         prefs.preset_output_dir = os.environ["HELIXGEN_PRESET_DIR"]
     if "HELIXGEN_AUTHOR" in os.environ:
         prefs.author = os.environ["HELIXGEN_AUTHOR"]
+    if "HELIXGEN_DEFAULT_GUITAR" in os.environ:
+        prefs.default_guitar = os.environ["HELIXGEN_DEFAULT_GUITAR"]
     if "HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS" in os.environ:
         prefs.volume_normalize_snapshots = _parse_bool_env(
             "HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS",
@@ -240,6 +254,7 @@ def _default_scaffold_dict() -> dict:
         "guard_paid_irs_in_git": True,
         "preset_output_dir": None,
         "author": None,
+        "default_guitar": None,
         "instruments": [],
         "volume_normalize_snapshots": True,
         "volume_normalize_baseline": True,
