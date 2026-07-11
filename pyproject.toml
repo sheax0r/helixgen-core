@@ -35,6 +35,10 @@ dev = [
 mcp = [
     "mcp>=1.0,<2.0",
 ]
+device = [
+    "pyzmq>=25",
+    "msgpack>=1",
+]
 
 [project.scripts]
 helixgen = "helixgen.cli:cli"
@@ -46,6 +50,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src", "."]
 include = ["helixgen*", "mcp_server*"]
+
+[tool.setuptools.package-data]
+"helixgen.device" = ["_defs_data.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

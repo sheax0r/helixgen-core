@@ -549,3 +549,258 @@ def list_irs_cmd(irs_dir: Path | None) -> None:
     mapping = _resolved_irs(irs_dir)
     for hash_ in sorted(mapping.entries):
         click.echo(f"{hash_}  {mapping.entries[hash_]}")
+
+
+# --- device: network control of a Line 6 Helix Stadium --------------------
+
+def _device_option(f):
+    """Add shared --ip / --port options for the networked device commands."""
+    f = click.option(
+        "--ip",
+        envvar="HELIXGEN_HELIX_IP",
+        default="192.168.4.84",
+        show_default=True,
+        help="Helix device IP address ($HELIXGEN_HELIX_IP).",
+    )(f)
+    f = click.option(
+        "--port",
+        default=2002,
+        show_default=True,
+        type=int,
+        help="Helix device control port.",
+    )(f)
+    return f
+
+
+def _setlist_container(name: str) -> int:
+    """Map a --setlist name (user/factory/throwaway) to its container constant."""
+    from helixgen.device import USER, FACTORY, THROWAWAY
+
+    mapping = {"user": USER, "factory": FACTORY, "throwaway": THROWAWAY}
+    try:
+        return mapping[name]
+    except KeyError as e:  # pragma: no cover - click Choice guards this
+        raise click.ClickException(f"unknown setlist {name!r}") from e
+
+
+@cli.group(name="device")
+def device() -> None:
+    """Drive a networked Line 6 Helix Stadium over the LAN.
+
+    Requires the ``device`` extra (``pip install 'helixgen[device]'``) for the
+    pyzmq/msgpack transport. Point at the device with --ip / --port or set
+    $HELIXGEN_HELIX_IP.
+    """
+
+
+@device.command(name="list")
+@click.option(
+    "--setlist",
+    type=click.Choice(["user", "factory", "throwaway"]),
+    default="user",
+    show_default=True,
+    help="Which setlist to list.",
+)
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the preset list as JSON.")
+@_device_option
+def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
+    """List the presets in a setlist (default: user)."""
+    from helixgen.device import HelixClient, HelixError, slot_label
+
+    container = _setlist_container(setlist)
+    try:
+        with HelixClient(ip, port) as h:
+            presets = h.list_presets(container)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(presets, indent=2))
+        return
+    for m in presets:
+        click.echo(f"{slot_label(m.get('posi')):<4} cid={m.get('cid_')}  {m.get('name', '')}")
+
+
+@device.command(name="setlists")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the setlist list as JSON.")
+@_device_option
+def device_setlists(as_json: bool, ip: str, port: int) -> None:
+    """List the device's setlist containers."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            setlists = h.list_setlists()
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(setlists, indent=2))
+        return
+    for m in setlists:
+        click.echo(f"cid={m.get('cid_')}  {m.get('name', '')}")
+
+
+@device.command(name="read")
+@click.argument("cid", type=int)
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the content ref as JSON.")
+@_device_option
+def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
+    """Read the content ref for a CID (name/slot/parent)."""
+    from helixgen.device import HelixClient, HelixError, slot_label
+
+    try:
+        with HelixClient(ip, port) as h:
+            ref = h.get_ref(cid)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if ref is None:
+        raise click.ClickException(f"no content ref for cid {cid}")
+    if as_json:
+        click.echo(json.dumps(ref, indent=2))
+        return
+    click.echo(f"name:   {ref.get('name', '')}")
+    click.echo(f"cid:    {ref.get('cid_', cid)}")
+    click.echo(f"parent: {ref.get('cpid')}")
+    click.echo(f"slot:   {slot_label(ref.get('posi'))}")
+
+
+@device.command(name="load")
+@click.argument("cid", type=int)
+@_device_option
+def device_load(cid: int, ip: str, port: int) -> None:
+    """Load a preset into the edit buffer by CID."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            ok = h.load_preset(cid)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to load preset cid {cid}")
+    click.echo(f"loaded cid {cid}")
+
+
+@device.command(name="create")
+@click.option("--from", "src_cid", type=int, required=True,
+              help="Source preset CID to copy from.")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Destination setlist.")
+@click.option("--pos", type=int, required=True, help="Destination slot (posi).")
+@_device_option
+def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> None:
+    """Copy a preset into a setlist slot; prints the new CID."""
+    from helixgen.device import HelixClient, HelixError
+
+    container = _setlist_container(setlist)
+    try:
+        with HelixClient(ip, port) as h:
+            new_cid = h.create_from(src_cid, container, pos)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if new_cid is None:
+        raise click.ClickException(
+            f"failed to copy cid {src_cid} into {setlist} slot {pos}")
+    click.echo(f"created cid {new_cid}")
+
+
+@device.command(name="rename")
+@click.argument("cid", type=int)
+@click.argument("new_name")
+@_device_option
+def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
+    """Rename the preset at CID."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            ok = h.rename(cid, new_name)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to rename cid {cid}")
+    click.echo(f"renamed cid {cid} -> {new_name!r}")
+
+
+@device.command(name="delete")
+@click.argument("cid", type=int)
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Setlist the preset lives in.")
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@_device_option
+def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None:
+    """Delete the preset at CID from a setlist."""
+    from helixgen.device import HelixClient, HelixError
+
+    if not yes:
+        click.confirm(f"Delete cid {cid} from {setlist} setlist?", abort=True)
+    container = _setlist_container(setlist)
+    try:
+        with HelixClient(ip, port) as h:
+            ok = h.delete(container, [cid])
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to delete cid {cid}")
+    click.echo(f"deleted cid {cid}")
+
+
+@device.command(name="set-param")
+@click.argument("path", type=int)
+@click.argument("block", type=int)
+@click.argument("param_id", type=int)
+@click.argument("value", type=float)
+@_device_option
+def device_set_param(path: int, block: int, param_id: int, value: float,
+                     ip: str, port: int) -> None:
+    """Set one param in the edit buffer (path block param_id value)."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            ok = h.set_param(path, block, param_id, value)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(
+            f"failed to set param {param_id} on path {path} block {block}")
+    click.echo(f"set path {path} block {block} param {param_id} = {value}")
+
+
+@device.command(name="pull")
+@click.argument("cid", type=int)
+@click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
+@_device_option
+def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
+    """Load a preset and save its raw edit-buffer content blob (a .sbe backup)."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            if not h.load_preset(cid):
+                raise click.ClickException(f"failed to load preset cid {cid}")
+            blob = h.get_edit_buffer()
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    outfile.write_bytes(blob)
+    click.echo(f"wrote {len(blob)} bytes to {outfile}")
