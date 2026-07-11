@@ -836,5 +836,74 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
 
 
+@device.command(name="backup")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Setlist to back up.")
+@click.option("--dir", "out_dir", type=click.Path(file_okay=False, path_type=Path),
+              default=None, help="Output dir (default ~/.helixgen/device-backups/ "
+                                 "or $HELIXGEN_DEVICE_BACKUPS).")
+@_device_option
+def device_backup(setlist: str, out_dir, ip: str, port: int) -> None:
+    """Back up every preset in a setlist to local .sbe files + a manifest.
+
+    Note: this loads each preset in turn (changes the device's active preset),
+    then restores the first one. Works offline afterwards via `device local-list`.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import backup as _backup
+    from datetime import datetime, timezone
+
+    container = _setlist_container(setlist)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        with HelixClient(ip, port) as h:
+            entries = _backup.backup_setlist(h, container, out_dir, now=now)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    dest = out_dir or _backup.default_backup_dir()
+    click.echo(f"backed up {len(entries)} preset(s) to {dest}")
+
+
+@device.command(name="local-list")
+@click.option("--dir", "out_dir", type=click.Path(file_okay=False, path_type=Path),
+              default=None, help="Backup dir to read (offline; no device needed).")
+@click.option("--json", "as_json", is_flag=True, default=False)
+def device_local_list(out_dir, as_json: bool) -> None:
+    """List locally backed-up presets (works with the Helix disconnected)."""
+    from helixgen.device import backup as _backup
+
+    entries = _backup.local_list(out_dir)
+    if as_json:
+        click.echo(json.dumps(entries, indent=2))
+        return
+    for e in entries:
+        click.echo(f"{e.get('slot_label',''):<4} {e.get('name','?'):<28} "
+                   f"[{e.get('fmt','?')}] {e.get('file','')}")
+
+
+@device.command(name="watch")
+@click.option("--seconds", type=float, default=5.0, show_default=True,
+              help="How long to watch the device's live event streams.")
+@click.option("--filter", "filter_addr", multiple=True,
+              help="Only show these OSC addresses (repeatable).")
+@_device_option
+def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
+    """Watch the device's live property/telemetry streams (ports 2001/2003)."""
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+
+    flt = set(filter_addr) or None
+    try:
+        with HelixSubscriber(ip) as sub:
+            for ev in sub.stream(duration=seconds, filter_addrs=flt):
+                click.echo(f"{ev.port}  {ev.addr:<20} {ev.args}")
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+
+
 if __name__ == "__main__":  # allow `python -m helixgen.cli ...`
     cli()

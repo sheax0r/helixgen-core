@@ -204,8 +204,83 @@ targets).
 save + reload. So for tone content, compare/round-trip on `sfg_` + `pm__` and
 ignore `hist`/`cg__`.
 
-The full leaf-level field dictionary inside `blks` (per-block model id, param
-ids/values, controller wiring) is still being mapped — see §9.
+#### Block / param layout inside `sfg_.flow[dsp].blks` (the `.hsp`↔device Rosetta layer)
+
+This is the level at which a device preset and a helixgen `.hsp` describe the
+**same thing** (blocks → a model + named params) — they differ only in encoding.
+
+**`blks` is a FLAT alternating list** `[int, dict, int, dict, …]`. Each
+`(int, dict)` **pair is one block**: the `int` is the block's index/key and the
+`dict` is the block. `bcnt` = number of blocks; `bmap` = the index map
+`[0 .. bcnt-1]`. Iterate the list two elements at a time (or use `bmap`) to
+recover blocks.
+
+**Block dict** keys:
+
+| Key | Meaning |
+|-----|---------|
+| `cid_` | content id of this block instance |
+| `enbl` | enabled (`0`/`1`) |
+| `favo` | favorite flag |
+| `hasb` | bool |
+| `hrns` | **harness** dict (8 keys — routing/DSP wiring, the device analogue of helixgen's `raw.harness`) |
+| `id__` | block instance id |
+| `mdls` | **models list** (usually length 1 — the block's model instance) |
+| `snap` | bool (per-snapshot presence) |
+| `tid_` | topology/type id |
+| `type` | **block category int** (e.g. `8` = Reverb — matches the §8 category ids) |
+
+**`block['mdls'][0]`** is the **model instance**:
+
+| Key | Meaning |
+|-----|---------|
+| `cid_` | content id |
+| `enbl` | enabled |
+| `id__` | **the numeric model id** — resolves via the bundled defs: `defs.model_name_for(id__)`. Examples: `769` → `P35_InputInst1_2`, `310` → `HD2_DistScream808Mono`, `387` → `HD2_DistBallisticFuzzMono`. |
+| `lbid` | label/bank id |
+| `parm` | **param list** (see below) |
+| `snap` | bool |
+| `tid_` | topology id |
+| `vers` | model version |
+
+**Each entry in `mdls[0]['parm']`** is one parameter:
+
+| Key | Meaning |
+|-----|---------|
+| `accs` | access/flags |
+| `cid_` | content id |
+| `mid_` | model id (echoes the parent's `id__`) |
+| `pid_` | **param id** — resolves via `defs.param_meta(model_id, name)` / the model-params table. |
+| `snap` | per-snapshot marker |
+| `tid_` | topology id |
+| `valu` | **the value — a normalized float** |
+
+Worked example: for model `310` (`HD2_DistScream808Mono`), a `parm` with
+`pid_ = 1, valu = 0.18` — the defs say `pid 1 = "Gain"` (also `pid 2 = "Tone"`,
+`pid 3 = "Level"`). So that block is a Screamer 808 with Gain ≈ 0.18.
+
+**Key takeaway — same semantic model, two encodings.** The device edit buffer
+and helixgen's `.hsp` both model a preset as **blocks → (a model + named
+params)**. They differ only in how a model and a param are named:
+
+| Concept | `.hsp` (helixgen) | Device `_sbepgsm` |
+|---------|-------------------|-------------------|
+| Model | model-id **string** (e.g. `HD2_DistScream808Mono`) | numeric `id__` |
+| Param | param **name** (e.g. `Gain`) | numeric `pid_` |
+| Value | normalized float | normalized float `valu` (same scale) |
+
+The **bundled modeldefs (`defs.py`, §8) is the translation table** in both
+directions: `defs.model_id_for(name)` / `defs.model_name_for(id__)` and
+`defs.param_meta(model_id, name)` ↔ `pid_`.
+
+> **Caveat — apply helixgen's model-id translation first.** helixgen renames a
+> handful of model ids on ingest (e.g. `HD2_DrvScream808` ↔ the device's
+> `HD2_DistScream808Mono`; see the project's ingest translation table). Convert
+> a helixgen model-id string back to its **device-native** name **before**
+> calling `defs.model_id_for`, or the lookup will miss.
+
+The remaining open items at this level (exact `hrns` sub-fields, controller
+`srcs`/`trgs` wiring) are tracked in §9.
 
 ### Leading 4-byte length prefix (some blobs)
 
@@ -217,11 +292,13 @@ array with no prefix.
 
 ### Relationship to `.hsp` (helixgen's on-disk format)
 
-The `_sbepgsm` edit-buffer schema is **disjoint from the `.hsp` format** that
-helixgen reads/writes. There is no shared field vocabulary and **no existing
-converter**. `.hsp` is its own 8-byte magic (`rpshnosj`) + JSON; `_sbepgsm` is
-8-byte magic + msgpack with numeric 4CC keys. A full `_sbepgsm`↔`.hsp` mapping is
-a known open task (section 9).
+The two formats differ in **encoding** but share the **same semantic model**
+(blocks → a model + named params). `.hsp` is 8-byte magic `rpshnosj` + JSON with
+model-id **strings** and param **names**; `_sbepgsm` is 8-byte magic + msgpack
+with numeric model ids (`id__`) and param ids (`pid_`). The **bundled modeldefs
+(`defs.py`, §8) is the translation table** between them — see the block/param
+layout subsection above for the field-level mapping. A complete converter still
+has open leaf-level items (`hrns`, controller wiring); tracked in §9.
 
 ---
 
@@ -489,14 +566,16 @@ footswitch/controller assignment commands are parameterised on the device.
 
 ## 9. Known-unknowns / TODO
 
-- **Full `_sbepgsm` leaf field dictionary.** The **top-level** structure is now
-  decoded (`cg__`/`hist`/`pm__`/`sfg_`, §4). Still open: the per-block leaf
-  fields inside `sfg_.flow[].blks` (model id, param id↔value encoding,
-  controller wiring) and the exact `cg__.entt` sub-fields
-  (`cmnd`/`ctm_`/`ctrl`/`sm_`/`snps`/`srcs`/`trgs`).
-- **`_sbepgsm` ↔ `.hsp` mapping.** No converter exists between the device's
-  edit-buffer schema and helixgen's `.hsp`. Building it (or a shared
-  intermediate) is the main lift for full round-trip.
+- **Remaining `_sbepgsm` leaf fields.** The top-level (`cg__`/`hist`/`pm__`/
+  `sfg_`) **and** the block/param layer (`blks` → block dict → `mdls[0]` →
+  `parm` with numeric `id__`/`pid_`/`valu`, §4) are now decoded. Still open: the
+  8-key **`hrns` harness** dict per block, and the controller-wiring maps in
+  `cg__.entt` (`cmnd`/`ctm_`/`ctrl`/`sm_`/`snps`/`srcs`/`trgs`).
+- **`_sbepgsm` ↔ `.hsp` converter.** The field-level mapping is known (blocks →
+  model + named params; `defs.py` bridges numeric `id__`/`pid_` ↔ `.hsp`
+  strings/names, applying helixgen's ingest model-id translation first). Writing
+  the actual bidirectional converter — including the still-open `hrns` /
+  controller leaves — remains the main lift for full round-trip.
 - **`/SavePresetWithCID` 4th arg `N`.** Meaning unknown (not the block count;
   editor sent `6`, `0` works byte-faithfully). Harmless but uncharacterised.
 - **`/ModelSet` leading args.** `127, 0, 1, 0` — which are reqid/path/block/flag
