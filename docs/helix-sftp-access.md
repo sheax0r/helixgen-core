@@ -137,6 +137,29 @@ dedups (no second registration). This is about as low-risk as a device write
 gets, but it *is* a filesystem write — gate it behind explicit confirmation and
 test on one throwaway IR first (as we did: `cid 946`, `YA KW 412 M25 121-2`).
 
+## Findings from building `push-ir` (device write behavior)
+
+SFTP-uploading a `.wav` into `ir/` works, but registration is not the instant
+inotify I first assumed. Confirmed by uploading several IRs:
+
+1. **Registration is real but delayed.** When the *editor* is connected it
+   triggers an immediate rescan (via a watched-dir command), so its imports
+   register in ~0.15 s. An SFTP-only upload (no editor) still registers, but on
+   the device's own slower scan — `GetContentRef(<new cid>)` confirms it later.
+2. **The container listing lags.** `/GetContainerContents(-11)` keeps returning
+   the old count/set after an upload until something refreshes it; `get_ref` by
+   cid sees the new IR immediately. So confirm uploads by cid/name, not by
+   re-listing (and don't trust the list's count right after a write).
+3. **helixgen `irhash` ≠ device hash for some files.** Uploading three IRs, the
+   device registered them under its own computed hash; for 2 of 3 that hash did
+   **not** match `helixgen.ir.compute_stadium_irhash` of the same file — and all
+   three were identical format (48 kHz / mono / 24-bit / 24000 frames), so it's
+   **not** a sample-rate/bit-depth issue. This is the real blocker for auto-load:
+   a preset references helixgen's hash, but the device knows the IR under a
+   different one, so the cab won't resolve. Tracked as its own investigation
+   (helixgen's irhash algorithm accuracy — affects the normal file workflow too,
+   not just device auto-load).
+
 ## How this maps to helixgen
 
 - The device's IR list (OSC `/GetContainerContents(-11)`) already gives each IR's

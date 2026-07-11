@@ -89,7 +89,14 @@ helixgen device pull 904 backup.sbe      # back up a preset's raw content blob
 helixgen device backup --setlist user    # back up a whole setlist to local files
 helixgen device push backup.sbe "Clone" --pos 7   # restore/clone a backup
 helixgen device install MyTone.hsp "My Tone" --pos 7   # author a helixgen .hsp onto the device (EXPERIMENTAL)
+helixgen device list-irs                 # impulse responses on the device (name + hash)
+helixgen device push-ir cab.wav          # upload an IR (SFTP; device auto-registers) (EXPERIMENTAL)
+helixgen device pull-ir "cab.wav" out.wav  # download an IR by on-device filename (EXPERIMENTAL)
 ```
+
+IR transfer uses the editor's own SFTP identity (located from your installed Helix
+app, never bundled) — see [`docs/helix-sftp-access.md`](docs/helix-sftp-access.md).
+Needs the `paramiko` from the `[device]` extra.
 
 `device install` is the **`/tone` → playable-on-your-amp** path: it maps a
 helixgen-authored `.hsp`'s blocks onto a device template's block slots and
