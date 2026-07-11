@@ -1,6 +1,6 @@
 [project]
 name = "helixgen"
-version = "0.3.0"
+version = "0.4.0"
 description = "Generate Line 6 Helix Stadium .hsp / legacy .hlx preset files from JSON tone specs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -52,7 +52,7 @@ where = ["src", "."]
 include = ["helixgen*", "mcp_server*"]
 
 [tool.setuptools.package-data]
-"helixgen.device" = ["_defs_data.json"]
+"helixgen.device" = ["_defs_data.json", "_modelmap.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -39,7 +39,14 @@ these verbs **mutate the device** — prefer an empty/expendable slot when testi
 - `helixgen device rename <cid> <new_name>` — rename a preset.
 - `helixgen device delete <cid> [--setlist <name>] [--yes]` — delete a preset.
 - `helixgen device set-param <path> <block> <param_id> <value>` — set one edit-buffer param (`/ParamValueSet`).
+- `helixgen device save <name> --setlist <n> --pos <N>` — save the live edit buffer as a new preset (slot must be empty).
 - `helixgen device pull <cid> <outfile.sbe>` — back up a preset's raw content blob.
+- `helixgen device push <file.sbe> <name> --pos <N>` — install a local content file into a new slot (restore/clone).
+- `helixgen device restore <file.sbe> <cid>` — overwrite an existing preset's content from a file.
+- `helixgen device backup [--setlist <n>] [--dir <D>]` — pull a whole setlist to local `.sbe` files + `manifest.json` (offline backup).
+- `helixgen device local-list [--dir <D>]` — list locally backed-up presets (works with the Helix disconnected).
+- `helixgen device watch [--seconds N] [--filter <addr>]` — stream the device's live property/telemetry events (2001/2003).
+- `helixgen device install <preset.hsp> <name> --pos <N> [--template <cid>]` — **author a helixgen `.hsp` onto the device as a new, playable preset** (the `/tone` → on-your-amp path). Maps the preset's blocks onto a device template's same-category slots (v2.2: single serial chain; `--template` picks the skeleton preset, default = current edit buffer). Model/param names bridge helixgen↔device via `device/modelmap.py` + `device/defs.py`. Writes are byte-faithful via `/SetContentData`. EXPERIMENTAL.
 
 Presets are addressed by integer **CID**; setlists are virtual containers
 (`user`=-2, `factory`=-1, `throwaway`=-5); slot `posi` maps to the Helix

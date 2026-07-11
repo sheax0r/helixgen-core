@@ -428,3 +428,27 @@ def device_save_preset(
     return _tools.device_save_preset_handler(
         model, ip=ip, name=name, setlist=setlist, pos=pos
     )
+
+
+@app.tool()
+def device_install_preset(
+    model: str,
+    hsp_b64: str,
+    name: str,
+    pos: int,
+    setlist: str = "user",
+    template_cid: int | None = None,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Author a helixgen `.hsp` (base64) onto the device as a new preset.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Maps the preset's blocks
+    onto a device template's same-category slots and installs it into `setlist`
+    slot `pos` (must be empty). `template_cid` selects a device preset to use as
+    the chain template (defaults to the current edit buffer). EXPERIMENTAL.
+    Returns `{"ok": <bool>, "cid": <new cid>}`.
+    """
+    return _tools.device_install_preset_handler(
+        model, ip=ip, hsp_b64=hsp_b64, name=name, pos=pos,
+        setlist=setlist, template_cid=template_cid,
+    )

@@ -76,3 +76,32 @@ def test_edit_buffer_roundtrips(client):
     decoded = C.decode_content(blob)
     assert isinstance(decoded, dict)
     assert C.decode_content(C.encode_content(decoded)) == decoded
+
+
+def test_authoring_bridge_installs_a_chain(client):
+    """Author a device-native chain onto the current edit buffer as a template
+    and install it, then verify + clean up. Requires the target slot empty."""
+    from helixgen.device import USER, bridge, defs
+
+    if client.find_by_pos(USER, POS) is not None:
+        pytest.skip(f"USER slot {POS} not empty")
+    template = client.get_edit_buffer()  # whatever's currently loaded
+    # a minimal chain in device ids: distortion + reverb (categories most
+    # templates contain). Skip if the template lacks those slots.
+    chain = [(310, {"Gain": 0.7}), (63, {"Mix": 0.3})]
+    cid = None
+    try:
+        try:
+            cid = bridge.install_chain(client, USER, POS, "live bridge test",
+                                       template, chain)
+        except ValueError:
+            pytest.skip("current template lacks the needed block categories")
+        assert cid is not None
+        client.load_preset(cid)
+        doc = client.read_edit_buffer()
+        enabled = {b["mdls"][0]["id__"]
+                   for _p, b in bridge._user_blocks(doc) if b.get("enbl") == 1}
+        assert 310 in enabled and 63 in enabled
+    finally:
+        if cid is not None:
+            client.delete(USER, [cid])

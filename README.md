@@ -86,7 +86,15 @@ helixgen device rename 930 "My Tone"
 helixgen device save "My Tone" --pos 7   # persist the live edit buffer to a slot
 helixgen device delete 930               # remove a preset
 helixgen device pull 904 backup.sbe      # back up a preset's raw content blob
+helixgen device backup --setlist user    # back up a whole setlist to local files
+helixgen device push backup.sbe "Clone" --pos 7   # restore/clone a backup
+helixgen device install MyTone.hsp "My Tone" --pos 7   # author a helixgen .hsp onto the device (EXPERIMENTAL)
 ```
+
+`device install` is the **`/tone` → playable-on-your-amp** path: it maps a
+helixgen-authored `.hsp`'s blocks onto a device template's block slots and
+installs a new, playable preset — no editor, no file import. (v2.2, experimental:
+single serial chain; pass `--template <cid>` to pick the skeleton preset.)
 
 The same operations are exposed as `device_*` MCP tools. Only 48 kHz-family
 Stadium hardware is supported; this is **Stadium-only** (not legacy Helix), and

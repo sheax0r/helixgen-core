@@ -836,6 +836,56 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
 
 
+@device.command(name="install")
+@click.argument("hsp_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("name")
+@click.option("--pos", type=int, required=True, help="Destination slot (posi); must be empty.")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Destination setlist.")
+@click.option("--template", type=int, default=None,
+              help="CID of a device preset to use as the chain template "
+                   "(defaults to the device's current edit buffer). Its block "
+                   "chain must cover the recipe's block categories.")
+@_device_option
+def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
+                   template: int, ip: str, port: int) -> None:
+    """Author a helixgen .hsp onto the device as a new, playable preset.
+
+    Maps the .hsp's blocks onto a device template's same-category slots (v2.2:
+    single serial chain), then installs it. EXPERIMENTAL.
+    """
+    from helixgen.hsp import read_hsp
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import bridge
+
+    body = read_hsp(hsp_file)
+    container = _setlist_container(setlist)
+    try:
+        with HelixClient(ip, port) as h:
+            if h.find_by_pos(container, pos) is not None:
+                raise click.ClickException(f"{setlist} slot {pos} is not empty")
+            if template is not None:
+                if not h.load_preset(template):
+                    raise click.ClickException(f"could not load template cid {template}")
+            template_blob = h.get_edit_buffer()
+            try:
+                cid = bridge.install_recipe(h, body, container, pos, name,
+                                            template_blob, strict=True)
+            except bridge.UnresolvedModel as e:
+                raise click.ClickException(str(e)) from e
+            except ValueError as e:
+                raise click.ClickException(
+                    f"{e}. Try --template <cid> of a preset whose block chain "
+                    f"covers this recipe.") from e
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if cid is None:
+        raise click.ClickException(f"failed to install {hsp_file.name}")
+    click.echo(f"installed {hsp_file.name} as cid {cid} ({name!r}) in {setlist} slot {pos}")
+
+
 @device.command(name="push")
 @click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("name")
