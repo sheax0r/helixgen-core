@@ -194,6 +194,37 @@ class HelixClient:
                 out.append(ref)
         return out
 
+    @staticmethod
+    def _hex_hash(h: Any) -> Optional[str]:
+        """Normalize a device IR hash (raw 16 bytes) to a 32-char hex string
+        (== helixgen's ``irhash``)."""
+        if isinstance(h, (bytes, bytearray)):
+            return bytes(h).hex()
+        if isinstance(h, str):
+            return h
+        return None
+
+    def list_irs(self) -> List[Dict[str, Any]]:
+        """Return the device's user IRs: ``{cid_, name, hash, mono, posi}``.
+
+        ``hash`` is normalized to the 32-hex Stadium IR hash (== helixgen
+        ``irhash``).
+        """
+        irs = []
+        for m in self.list_container(USER_IRS):
+            hh = self._hex_hash(m.get("hash"))
+            if hh is None:
+                continue
+            m = dict(m)
+            m["hash"] = hh
+            irs.append(m)
+        irs.sort(key=lambda m: m.get("posi", 1 << 30))
+        return irs
+
+    def device_ir_hashes(self) -> set:
+        """The set of IR hashes (hex) present on the device."""
+        return {m["hash"] for m in self.list_irs()}
+
     def get_ref(self, cid: int) -> Optional[Dict[str, Any]]:
         for _addr, args in self._rpc("/GetContentRef", [("i", cid)]):
             for a in args:

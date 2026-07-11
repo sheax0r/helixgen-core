@@ -836,6 +836,27 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
 
 
+@device.command(name="list-irs")
+@click.option("--json", "as_json", is_flag=True, default=False)
+@_device_option
+def device_list_irs(as_json: bool, ip: str, port: int) -> None:
+    """List the impulse responses on the device (name + hash)."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            irs = h.list_irs()
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(irs, indent=2))
+        return
+    for m in irs:
+        click.echo(f"{m.get('hash','')}  {'stereo' if not m.get('mono') else 'mono'}  {m.get('name','?')}")
+
+
 @device.command(name="install")
 @click.argument("hsp_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("name")
@@ -864,6 +885,13 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
         with HelixClient(ip, port) as h:
             if h.find_by_pos(container, pos) is not None:
                 raise click.ClickException(f"{setlist} slot {pos} is not empty")
+            # warn about IRs the preset references that aren't on the device yet
+            ir_status = bridge.check_irs(h, body)
+            for missing in sorted(ir_status["missing"]):
+                click.echo(
+                    f"warning: IR {missing} is referenced but not on the device; "
+                    f"import it (helixgen register-irs / the editor) or the cab "
+                    f"will be silent", err=True)
             if template is not None:
                 if not h.load_preset(template):
                     raise click.ClickException(f"could not load template cid {template}")

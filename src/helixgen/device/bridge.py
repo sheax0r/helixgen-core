@@ -220,6 +220,33 @@ def hsp_to_chain(hsp_body: dict, *, dsp: int = 0,
     return chain
 
 
+def hsp_ir_hashes(hsp_body: dict) -> set:
+    """Every IR hash (``irhash``) referenced by a helixgen ``.hsp`` body."""
+    hashes = set()
+    for flow in hsp_body.get("preset", {}).get("flow", []):
+        if not isinstance(flow, dict):
+            continue
+        for key, b in flow.items():
+            if not (isinstance(key, str) and key.startswith("b") and isinstance(b, dict)):
+                continue
+            for slot in (b.get("slot") or []):
+                if isinstance(slot, dict) and slot.get("irhash"):
+                    hashes.add(slot["irhash"])
+    return hashes
+
+
+def check_irs(client, hsp_body: dict) -> Dict[str, set]:
+    """Compare a preset's referenced IRs against what's on the device.
+
+    Returns ``{"present": {...hashes...}, "missing": {...hashes...}}``. Missing
+    IRs must be imported onto the device (helixgen ``register-irs``/``ir-scan``
+    + the editor's IR import) before the preset's cab will sound right.
+    """
+    want = hsp_ir_hashes(hsp_body)
+    have = client.device_ir_hashes()
+    return {"present": want & have, "missing": want - have}
+
+
 def install_recipe(client, hsp_body: dict, container: int, pos: int, name: str,
                    template_blob: bytes, *, dsp: int = 0,
                    resolve_model=_default_resolve_model,

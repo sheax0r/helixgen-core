@@ -111,6 +111,31 @@ def test_hsp_to_chain_strict_raises_on_unresolved():
         bridge.hsp_to_chain(body, resolve_model=lambda m: None, strict=True)
 
 
+def test_hsp_ir_hashes_extracts_irhashes():
+    body = {"preset": {"flow": [
+        {"b01": {"slot": [{"model": "HX2_ImpulseResponseWithPan", "irhash": "aa11"}]},
+         "b02": {"slot": [{"model": "HD2_AmpBrit2204"}]}},
+        {"b05": {"slot": [{"model": "HX2_ImpulseResponse", "irhash": "bb22"},
+                          {"model": "HX2_ImpulseResponse", "irhash": "cc33"}]}},
+    ]}}
+    assert bridge.hsp_ir_hashes(body) == {"aa11", "bb22", "cc33"}
+
+
+def test_check_irs_partitions_present_and_missing():
+    body = {"preset": {"flow": [
+        {"b01": {"slot": [{"model": "HX2_ImpulseResponse", "irhash": "ondev"}]},
+         "b02": {"slot": [{"model": "HX2_ImpulseResponse", "irhash": "missing"}]}},
+    ]}}
+
+    class FakeClient:
+        def device_ir_hashes(self):
+            return {"ondev", "other"}
+
+    status = bridge.check_irs(FakeClient(), body)
+    assert status["present"] == {"ondev"}
+    assert status["missing"] == {"missing"}
+
+
 def test_content_from_template_roundtrips_to_stored_blob():
     doc = _template()
     blob = C.encode_content(doc)  # _sbepgsm edit-buffer form
