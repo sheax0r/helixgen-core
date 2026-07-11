@@ -160,9 +160,16 @@ class HelixSFTP:
 
     # -- write (device filesystem — the device auto-registers the file) ----
     def upload_ir(self, local_path: str, *, remote_name: Optional[str] = None) -> str:
-        """Upload a local `.wav` into the device's IR directory.
+        """Upload a local `.wav` into the device's IR directory **atomically**.
 
-        The device auto-registers it (watched dir → db rows + `/addContent`).
+        The device watches ``ir/`` and auto-hashes any new ``*.wav`` the instant
+        it appears. A plain streaming ``put`` straight to ``<name>.wav`` lets the
+        watcher fire mid-transfer and register the hash of a *half-written* file
+        — the file on disk ends up complete, but the device's registry keeps the
+        transient (wrong) hash forever. To avoid that race we stream to a temp
+        name the ``*.wav`` watcher ignores, then rename it into place; the final
+        ``<name>.wav`` only ever appears complete.
+
         Returns the remote path. **This writes to the device filesystem.**
         """
         local = Path(local_path)
@@ -170,9 +177,26 @@ class HelixSFTP:
             raise HelixError(f"no such IR file: {local_path}")
         name = remote_name or local.name
         remote = f"{self.ir_dir}/{name}"
+        # Dotfile + non-.wav suffix so the device's `*.wav` watcher skips it
+        # until the atomic rename below exposes the complete file.
+        staging = f"{self.ir_dir}/.{name}.uploading"
         try:
-            self._sftp.put(str(local), remote)
+            self._sftp.put(str(local), staging)
+            # posix_rename (openssh ext) is a true atomic replace; fall back to
+            # plain rename (needs the target absent) if the server lacks it.
+            try:
+                self._sftp.posix_rename(staging, remote)
+            except (AttributeError, IOError):
+                try:
+                    self._sftp.remove(remote)
+                except IOError:
+                    pass
+                self._sftp.rename(staging, remote)
         except Exception as exc:
+            try:
+                self._sftp.remove(staging)
+            except Exception:
+                pass
             raise HelixError(f"upload {local} -> {remote} failed: {exc}") from exc
         return remote
 
