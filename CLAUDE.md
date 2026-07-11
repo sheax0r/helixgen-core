@@ -22,6 +22,32 @@ file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
 
 Example: `helixgen ir-scan ~/IRs && helixgen list-irs | wc -l`.
 
+### `helixgen device` — network control of a Helix Stadium (2.0+)
+
+Talks to a **Stadium** over the LAN directly (OSC-over-ZeroMQ; no editor app).
+Requires the `device` extra (`pip install 'helixgen[device]'` → pyzmq+msgpack).
+Point at the device with `--ip`/`--port` or `$HELIXGEN_HELIX_IP` (default
+`192.168.4.84`). Protocol reference: `docs/helix-protocol.md`. **Stadium-only**;
+these verbs **mutate the device** — prefer an empty/expendable slot when testing.
+
+- `helixgen device list [--setlist user|factory|throwaway] [--json]` — presets in a setlist.
+- `helixgen device setlists [--json]` — the device's setlist containers.
+- `helixgen device read <cid> [--json]` — a preset's metadata (name/slot/parent).
+- `helixgen device load <cid>` — load a preset into the edit buffer.
+- `helixgen device create --from <src_cid> --setlist <name> --pos <N>` — copy a preset into a slot.
+- `helixgen device save <name> --setlist <name> --pos <N>` — save the live edit buffer as a new preset (slot must be empty).
+- `helixgen device rename <cid> <new_name>` — rename a preset.
+- `helixgen device delete <cid> [--setlist <name>] [--yes]` — delete a preset.
+- `helixgen device set-param <path> <block> <param_id> <value>` — set one edit-buffer param (`/ParamValueSet`).
+- `helixgen device pull <cid> <outfile.sbe>` — back up a preset's raw content blob.
+
+Presets are addressed by integer **CID**; setlists are virtual containers
+(`user`=-2, `factory`=-1, `throwaway`=-5); slot `posi` maps to the Helix
+`1A`..`8D` label. MCP mirrors these as `device_*` tools. Full-preset semantic
+authoring (helixgen `.hsp` → device) is a documented follow-up — the device's
+native content format (`_sbepgsm`) is a separate schema from `.hsp`; see
+`docs/helix-protocol.md` and `docs/superpowers/specs/2026-07-11-helix-device-v2-plan.md`.
+
 ## IR cab-pack catalog (character reference)
 
 The IR library at `irs/` (gitignored — paid packs stay local) carries a

@@ -65,6 +65,33 @@ The `/tone` skill writes to `/tmp/<slug>.hsp` by default. Move it somewhere dura
 
 If HX Edit refuses to open the file, double-check that the chassis in your library matches your hardware (Stadium chassis → `.hsp`, legacy Helix chassis → `.hlx`).
 
+## Control your Stadium over the network (2.0)
+
+As of **2.0**, helixgen can talk to a **Helix Stadium** directly over your LAN —
+no editor app required. It speaks the Stadium's own control protocol (OSC over
+ZeroMQ; see [`docs/helix-protocol.md`](docs/helix-protocol.md)), so you can list,
+read, create, rename, delete, load, save, and live-tweak presets from the CLI or
+the MCP tools.
+
+Install the optional transport deps and point at your device:
+
+```bash
+pip install 'helixgen[device]'          # adds pyzmq + msgpack
+export HELIXGEN_HELIX_IP=192.168.4.84    # your Stadium's IP (or pass --ip)
+
+helixgen device list                     # presets in the USER setlist
+helixgen device read 904                 # a preset's metadata
+helixgen device create --from 904 --pos 7   # copy a preset into a slot
+helixgen device rename 930 "My Tone"
+helixgen device save "My Tone" --pos 7   # persist the live edit buffer to a slot
+helixgen device delete 930               # remove a preset
+helixgen device pull 904 backup.sbe      # back up a preset's raw content blob
+```
+
+The same operations are exposed as `device_*` MCP tools. Only 48 kHz-family
+Stadium hardware is supported; this is **Stadium-only** (not legacy Helix), and
+it writes to your device — test against an expendable slot first.
+
 ## CLI
 
 helixgen ships a Python CLI for direct generation, library inspection, IR management, and ingesting your own preset exports to grow the block library. The Claude Code plugin uses the same code under the hood — most users won't need to reach for the CLI directly.
