@@ -43,6 +43,16 @@ def test_server_registers_documented_tools():
         "view_preset",
         "patch_preset",
         "controller_mapping",
+        # device_* tools — networked Helix Stadium control.
+        "device_list_presets",
+        "device_list_setlists",
+        "device_read_preset",
+        "device_load_preset",
+        "device_create_preset",
+        "device_rename_preset",
+        "device_delete_preset",
+        "device_set_param",
+        "device_save_preset",
     }
     assert names == expected, f"unexpected tool set: {names}"
 

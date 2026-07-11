@@ -450,3 +450,211 @@ def patch_preset_handler(
         "hsp_b64": base64.b64encode(dumps_hsp(body)).decode("ascii"),
         "warnings": warnings,
     }
+
+
+# ---------------------------------------------------------------------------
+# device_* handlers — drive a networked Line 6 Helix Stadium over the LAN.
+#
+# These delegate to `helixgen.device.HelixClient`, which speaks the editor's
+# ZeroMQ/OSC protocol and needs the optional `device` extra (pyzmq + msgpack).
+# The client is imported LAZILY inside each handler so merely importing
+# `mcp_server.tools` never requires the device extra — only actually calling a
+# device_* tool does. `HelixError` (device/RPC failure) is wrapped as
+# `ValueError` so FastMCP renders it as an MCP `isError` text block.
+# ---------------------------------------------------------------------------
+
+# Default LAN address of the user's Helix Stadium (override per-call via `ip`).
+_DEFAULT_DEVICE_IP = os.environ.get("HELIXGEN_HELIX_IP") or "192.168.4.84"
+
+
+def _device_container(setlist: str) -> int:
+    """Map a setlist name (``"user"``/``"factory"``/``"throwaway"``) to a container id.
+
+    Returns the virtual-container constant from `helixgen.device`. Raises
+    ValueError for any other name so a typo reports itself rather than
+    silently targeting the wrong container.
+    """
+    from helixgen.device import USER, FACTORY, THROWAWAY
+
+    key = (setlist or "user").strip().lower()
+    mapping = {"user": USER, "factory": FACTORY, "throwaway": THROWAWAY}
+    if key not in mapping:
+        raise ValueError(
+            f"unknown setlist {setlist!r}; valid: {sorted(mapping)}"
+        )
+    return mapping[key]
+
+
+def device_list_presets_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, setlist: str = "user"
+) -> list[dict[str, Any]]:
+    """List presets in a setlist on the networked device.
+
+    Returns the raw preset dicts as reported by the device (each carries
+    ``cid_``, ``name``, ``cctp``, ``posi``), sorted by slot position.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    container = _device_container(setlist)
+    try:
+        with HelixClient(ip=ip) as client:
+            return client.list_presets(container=container)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_list_setlists_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP
+) -> list[dict[str, Any]]:
+    """List the device's virtual setlist containers that currently resolve."""
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return client.list_setlists()
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_read_preset_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, cid: int
+) -> dict[str, Any]:
+    """Read a single preset's content reference (attributes) by its ``cid``.
+
+    Raises ValueError if the device has no content at that ``cid``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            ref = client.get_ref(cid)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    if ref is None:
+        raise ValueError(f"no content at cid {cid!r}")
+    return ref
+
+
+def device_load_preset_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, cid: int
+) -> dict[str, Any]:
+    """Load a preset (by ``cid``) into the device's edit buffer.
+
+    Returns ``{"ok": <bool>}`` — the device's acknowledgement status.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return {"ok": bool(client.load_preset(cid))}
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_create_preset_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    src_cid: int,
+    setlist: str = "user",
+    pos: int,
+) -> dict[str, Any]:
+    """Create a preset by copying ``src_cid`` into ``setlist`` at slot ``pos``.
+
+    Returns ``{"ok": <bool>, "cid": <new cid or None>}``. ``ok`` is False when
+    the device did not report a new cid for the copy.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    container = _device_container(setlist)
+    try:
+        with HelixClient(ip=ip) as client:
+            new_cid = client.create_from(src_cid, container, pos)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": new_cid is not None, "cid": new_cid}
+
+
+def device_rename_preset_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, cid: int, name: str
+) -> dict[str, Any]:
+    """Rename the preset at ``cid`` to ``name``. Returns ``{"ok": <bool>}``."""
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return {"ok": bool(client.rename(cid, name))}
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_delete_preset_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, cid: int, setlist: str = "user"
+) -> dict[str, Any]:
+    """Delete the preset at ``cid`` from ``setlist``. Returns ``{"ok": <bool>}``."""
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    container = _device_container(setlist)
+    try:
+        with HelixClient(ip=ip) as client:
+            return {"ok": bool(client.delete(container, [cid]))}
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_set_param_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    path: int,
+    block: int,
+    param_id: int,
+    value: float,
+) -> dict[str, Any]:
+    """Set one param in the device's edit buffer. Returns ``{"ok": <bool>}``.
+
+    ``path``/``block``/``param_id`` are the device's numeric coordinates for
+    the target param; ``value`` is the normalized float.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return {"ok": bool(client.set_param(path, block, param_id, value))}
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_save_preset_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    name: str,
+    setlist: str = "user",
+    pos: int,
+) -> dict[str, Any]:
+    """Save the device's CURRENT edit buffer as a new preset at ``pos``.
+
+    Mirrors the editor's "Save As New". The target slot must be empty. Returns
+    ``{"ok": <bool>, "cid": <new cid or None>}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    container = _device_container(setlist)
+    try:
+        with HelixClient(ip=ip) as client:
+            if client.find_by_pos(container, pos) is not None:
+                raise ValueError(f"{setlist} slot {pos} is not empty")
+            new_cid = client.save_edit_buffer_to(container, pos, name)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": new_cid is not None, "cid": new_cid}

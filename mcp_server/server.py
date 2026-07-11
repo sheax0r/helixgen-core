@@ -284,3 +284,147 @@ def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
     inspect the result.
     """
     return _tools.patch_preset_handler(_resolve_library(), model, hsp_b64, operations)
+
+
+# ---------------------------------------------------------------------------
+# device_* tools — drive a networked Line 6 Helix Stadium over the LAN.
+#
+# Thin wrappers over the `device_*_handler` functions in `mcp_server.tools`,
+# which lazily import `helixgen.device.HelixClient` (the optional `device`
+# extra: pyzmq + msgpack). `ip` defaults to the user's device; pass it to
+# target another. Device/RPC failures surface as MCP errors (ValueError).
+# ---------------------------------------------------------------------------
+
+
+@app.tool()
+def device_list_presets(
+    model: str, ip: str = _tools._DEFAULT_DEVICE_IP, setlist: str = "user"
+) -> list[dict[str, Any]]:
+    """List presets in a setlist on the networked Helix Stadium.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `ip` is the device's LAN
+    address; `setlist` is one of `"user"` (default), `"factory"`,
+    `"throwaway"`.
+
+    Returns the device's raw preset records — each with `cid_` (content id,
+    used by the other `device_*` tools), `name`, `cctp` (content type), and
+    `posi` (slot position) — sorted by slot.
+    """
+    return _tools.device_list_presets_handler(model, ip=ip, setlist=setlist)
+
+
+@app.tool()
+def device_list_setlists(
+    model: str, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> list[dict[str, Any]]:
+    """List the device's virtual setlist containers (user/factory/throwaway).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Returns one record per
+    setlist container that currently resolves on the device.
+    """
+    return _tools.device_list_setlists_handler(model, ip=ip)
+
+
+@app.tool()
+def device_read_preset(
+    model: str, cid: int, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Read a single preset's attributes (content reference) by its `cid`.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `cid` is a content id
+    from `device_list_presets`. Errors if the device has no content at `cid`.
+    """
+    return _tools.device_read_preset_handler(model, ip=ip, cid=cid)
+
+
+@app.tool()
+def device_load_preset(
+    model: str, cid: int, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Load a preset (by `cid`) into the device's edit buffer.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Returns `{"ok": <bool>}`
+    reflecting the device's acknowledgement.
+    """
+    return _tools.device_load_preset_handler(model, ip=ip, cid=cid)
+
+
+@app.tool()
+def device_create_preset(
+    model: str,
+    src_cid: int,
+    pos: int,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+    setlist: str = "user",
+) -> dict[str, Any]:
+    """Create a preset by copying `src_cid` into `setlist` at slot `pos`.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `setlist` is one of
+    `"user"` (default), `"factory"`, `"throwaway"`. Returns
+    `{"ok": <bool>, "cid": <new content id or null>}`.
+    """
+    return _tools.device_create_preset_handler(
+        model, ip=ip, src_cid=src_cid, setlist=setlist, pos=pos
+    )
+
+
+@app.tool()
+def device_rename_preset(
+    model: str, cid: int, name: str, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Rename the preset at `cid` to `name` on the device.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Returns `{"ok": <bool>}`.
+    """
+    return _tools.device_rename_preset_handler(model, ip=ip, cid=cid, name=name)
+
+
+@app.tool()
+def device_delete_preset(
+    model: str, cid: int, ip: str = _tools._DEFAULT_DEVICE_IP, setlist: str = "user"
+) -> dict[str, Any]:
+    """Delete the preset at `cid` from `setlist` on the device.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `setlist` is one of
+    `"user"` (default), `"factory"`, `"throwaway"`. Returns `{"ok": <bool>}`.
+    """
+    return _tools.device_delete_preset_handler(model, ip=ip, cid=cid, setlist=setlist)
+
+
+@app.tool()
+def device_set_param(
+    model: str,
+    path: int,
+    block: int,
+    param_id: int,
+    value: float,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Set one param in the device's live edit buffer.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `path`/`block`/`param_id`
+    are the device's numeric coordinates for the target param; `value` is the
+    normalized float. Returns `{"ok": <bool>}`.
+    """
+    return _tools.device_set_param_handler(
+        model, ip=ip, path=path, block=block, param_id=param_id, value=value
+    )
+
+
+@app.tool()
+def device_save_preset(
+    model: str,
+    name: str,
+    pos: int,
+    setlist: str = "user",
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Save the device's CURRENT edit buffer as a new preset (Save As New).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Saves the live edit buffer
+    into `setlist` at slot `pos` (which must be empty) under `name`. Returns
+    `{"ok": <bool>, "cid": <new cid>}`.
+    """
+    return _tools.device_save_preset_handler(
+        model, ip=ip, name=name, setlist=setlist, pos=pos
+    )
