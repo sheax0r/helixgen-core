@@ -15,7 +15,10 @@ from __future__ import annotations
 import struct
 from typing import Any
 
-MAGIC = b"_sbepgsm"
+MAGIC = b"_sbepgsm"          # edit-buffer content (from /EditBufferStateGet)
+CONTENT_DATA_MAGIC = b"\xff\xff\xff\xffpgsm"  # stored preset content (/SetContentData)
+HIST_KEY = "hist"           # volatile undo history — present in the edit buffer,
+                            # absent from stored preset content
 
 
 def _require_msgpack():
@@ -79,6 +82,38 @@ def encode_content(obj: Any) -> bytes:
     msgpack = _require_msgpack()
     packed = msgpack.packb(_keys_to_fourcc(obj), use_bin_type=True)
     return MAGIC + packed
+
+
+def is_content_data(blob: bytes) -> bool:
+    return blob[:8] == CONTENT_DATA_MAGIC
+
+
+def decode_any(blob: bytes) -> Any:
+    """Decode either content encoding (edit-buffer ``_sbepgsm`` or stored
+    ``\\xff\\xff\\xff\\xffpgsm``) into a nested dict with 4CC str keys."""
+    msgpack = _require_msgpack()
+    if blob[:8] in (MAGIC, CONTENT_DATA_MAGIC):
+        return _keys_to_str(msgpack.unpackb(blob[8:], raw=False, strict_map_key=False))
+    raise ValueError("not a recognised content blob")
+
+
+def encode_content_data(obj: Any) -> bytes:
+    """Encode a nested dict to the stored-preset content format used by
+    ``/SetContentData`` (drops the volatile ``hist`` key)."""
+    msgpack = _require_msgpack()
+    if isinstance(obj, dict):
+        obj = {k: v for k, v in obj.items() if k != HIST_KEY}
+    packed = msgpack.packb(_keys_to_fourcc(obj), use_bin_type=True)
+    return CONTENT_DATA_MAGIC + packed
+
+
+def to_content_data(blob: bytes) -> bytes:
+    """Convert an edit-buffer ``_sbepgsm`` blob (e.g. a pulled backup) into the
+    ``/SetContentData`` stored-content format.  Idempotent for already-stored
+    blobs."""
+    if blob[:8] == CONTENT_DATA_MAGIC:
+        return blob
+    return encode_content_data(decode_any(blob))
 
 
 def decode_blob(blob: bytes) -> Any:

@@ -8,8 +8,8 @@
   "plugins": [
     {
       "name": "helixgen",
-      "description": "Generate Line 6 Helix Stadium .hsp presets from JSON or natural-language tone descriptions, and control a Stadium directly over the LAN (no editor app). Bundles the /tone skill and the helixgen MCP server (code bundled, loaded from ${CLAUDE_PLUGIN_ROOT}). The MCP server launches via `uv`, which auto-provisions the `mcp`, `click`, `pyzmq`, and `msgpack` Python packages into an isolated env — requires `uv` on your PATH.",
-      "version": "2.0.0",
+      "description": "Generate Line 6 Helix Stadium .hsp presets from JSON or natural-language tone descriptions, and control a Stadium directly over the LAN (no editor app) — CRUD presets, back up/restore setlists to local files offline, and watch live streams. Bundles the /tone skill and the helixgen MCP server (code bundled, loaded from ${CLAUDE_PLUGIN_ROOT}). The MCP server launches via `uv`, which auto-provisions the `mcp`, `click`, `pyzmq`, and `msgpack` Python packages into an isolated env — requires `uv` on your PATH.",
+      "version": "2.1.0",
       "source": {
         "source": "url",
         "url": "https://github.com/sheax0r/helixgen.git",

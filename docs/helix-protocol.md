@@ -171,7 +171,26 @@ Decoded, the codes render as 4-char tags such as `cg__`, `asnp`, `entt`,
 `cmnd`. To read them, decode the msgpack normally, then for each integer key
 unpack it to its 4 ASCII bytes (big-endian) to recover the tag.
 
-#### Preset content (`_sbepgsm`) top-level structure (decoded)
+#### Two content encodings — edit-buffer vs. stored preset
+
+Preset content appears in **two encodings** that share the same msgpack body but
+differ in magic and in one key:
+
+| | Edit-buffer content | Stored preset content |
+|--|--------------------|-----------------------|
+| **Source / sink** | `/EditBufferStateGet` reply; `/setEditBuffer` stream | `/SetContentData` write; on-disk / imported presets |
+| **8-byte magic** | `_sbepgsm` (= `msgpebs_` reversed) | `\xff\xff\xff\xff pgsm` (= `msgp` + `0xFFFFFFFF`, reversed — sibling of `_sbepgsm` / `ldompgsm`) |
+| **Top-level keys** | `{cg__, hist, pm__, sfg_}` | `{cg__, pm__, sfg_}` — **same structure MINUS the volatile `hist`** |
+
+**Converting one form to the other = swap the 8-byte magic and add/drop the
+`hist` key.** To install an edit buffer as a stored preset (for
+`/SetContentData`): strip the `_sbepgsm` magic, drop `hist` from the msgpack
+map, re-encode, prepend the `\xff\xff\xff\xff pgsm` magic. To go the other way,
+add `hist` back (any value; it is volatile) and swap to `_sbepgsm`. Everything
+below about the `_sbepgsm` structure applies to both forms except the `hist`
+row.
+
+#### Preset content top-level structure (decoded)
 
 The decoded `_sbepgsm` document is a map with these top-level 4CC keys:
 
@@ -204,8 +223,83 @@ targets).
 save + reload. So for tone content, compare/round-trip on `sfg_` + `pm__` and
 ignore `hist`/`cg__`.
 
-The full leaf-level field dictionary inside `blks` (per-block model id, param
-ids/values, controller wiring) is still being mapped — see §9.
+#### Block / param layout inside `sfg_.flow[dsp].blks` (the `.hsp`↔device Rosetta layer)
+
+This is the level at which a device preset and a helixgen `.hsp` describe the
+**same thing** (blocks → a model + named params) — they differ only in encoding.
+
+**`blks` is a FLAT alternating list** `[int, dict, int, dict, …]`. Each
+`(int, dict)` **pair is one block**: the `int` is the block's index/key and the
+`dict` is the block. `bcnt` = number of blocks; `bmap` = the index map
+`[0 .. bcnt-1]`. Iterate the list two elements at a time (or use `bmap`) to
+recover blocks.
+
+**Block dict** keys:
+
+| Key | Meaning |
+|-----|---------|
+| `cid_` | content id of this block instance |
+| `enbl` | enabled (`0`/`1`) |
+| `favo` | favorite flag |
+| `hasb` | bool |
+| `hrns` | **harness** dict (8 keys — routing/DSP wiring, the device analogue of helixgen's `raw.harness`) |
+| `id__` | block instance id |
+| `mdls` | **models list** (usually length 1 — the block's model instance) |
+| `snap` | bool (per-snapshot presence) |
+| `tid_` | topology/type id |
+| `type` | **block category int** (e.g. `8` = Reverb — matches the §8 category ids) |
+
+**`block['mdls'][0]`** is the **model instance**:
+
+| Key | Meaning |
+|-----|---------|
+| `cid_` | content id |
+| `enbl` | enabled |
+| `id__` | **the numeric model id** — resolves via the bundled defs: `defs.model_name_for(id__)`. Examples: `769` → `P35_InputInst1_2`, `310` → `HD2_DistScream808Mono`, `387` → `HD2_DistBallisticFuzzMono`. |
+| `lbid` | label/bank id |
+| `parm` | **param list** (see below) |
+| `snap` | bool |
+| `tid_` | topology id |
+| `vers` | model version |
+
+**Each entry in `mdls[0]['parm']`** is one parameter:
+
+| Key | Meaning |
+|-----|---------|
+| `accs` | access/flags |
+| `cid_` | content id |
+| `mid_` | model id (echoes the parent's `id__`) |
+| `pid_` | **param id** — resolves via `defs.param_meta(model_id, name)` / the model-params table. |
+| `snap` | per-snapshot marker |
+| `tid_` | topology id |
+| `valu` | **the value — a normalized float** |
+
+Worked example: for model `310` (`HD2_DistScream808Mono`), a `parm` with
+`pid_ = 1, valu = 0.18` — the defs say `pid 1 = "Gain"` (also `pid 2 = "Tone"`,
+`pid 3 = "Level"`). So that block is a Screamer 808 with Gain ≈ 0.18.
+
+**Key takeaway — same semantic model, two encodings.** The device edit buffer
+and helixgen's `.hsp` both model a preset as **blocks → (a model + named
+params)**. They differ only in how a model and a param are named:
+
+| Concept | `.hsp` (helixgen) | Device `_sbepgsm` |
+|---------|-------------------|-------------------|
+| Model | model-id **string** (e.g. `HD2_DistScream808Mono`) | numeric `id__` |
+| Param | param **name** (e.g. `Gain`) | numeric `pid_` |
+| Value | normalized float | normalized float `valu` (same scale) |
+
+The **bundled modeldefs (`defs.py`, §8) is the translation table** in both
+directions: `defs.model_id_for(name)` / `defs.model_name_for(id__)` and
+`defs.param_meta(model_id, name)` ↔ `pid_`.
+
+> **Caveat — apply helixgen's model-id translation first.** helixgen renames a
+> handful of model ids on ingest (e.g. `HD2_DrvScream808` ↔ the device's
+> `HD2_DistScream808Mono`; see the project's ingest translation table). Convert
+> a helixgen model-id string back to its **device-native** name **before**
+> calling `defs.model_id_for`, or the lookup will miss.
+
+The remaining open items at this level (exact `hrns` sub-fields, controller
+`srcs`/`trgs` wiring) are tracked in §9.
 
 ### Leading 4-byte length prefix (some blobs)
 
@@ -217,11 +311,13 @@ array with no prefix.
 
 ### Relationship to `.hsp` (helixgen's on-disk format)
 
-The `_sbepgsm` edit-buffer schema is **disjoint from the `.hsp` format** that
-helixgen reads/writes. There is no shared field vocabulary and **no existing
-converter**. `.hsp` is its own 8-byte magic (`rpshnosj`) + JSON; `_sbepgsm` is
-8-byte magic + msgpack with numeric 4CC keys. A full `_sbepgsm`↔`.hsp` mapping is
-a known open task (section 9).
+The two formats differ in **encoding** but share the **same semantic model**
+(blocks → a model + named params). `.hsp` is 8-byte magic `rpshnosj` + JSON with
+model-id **strings** and param **names**; `_sbepgsm` is 8-byte magic + msgpack
+with numeric model ids (`id__`) and param ids (`pid_`). The **bundled modeldefs
+(`defs.py`, §8) is the translation table** between them — see the block/param
+layout subsection above for the field-level mapping. A complete converter still
+has open leaf-level items (`hrns`, controller wiring); tracked in §9.
 
 ---
 
@@ -299,6 +395,7 @@ msgpack map.
 | **CREATE (empty)** | `/CreateContent` | `(reqid:i, container:i, pos:i, ctype:i, msgpack{name:"…"})` | `/status [reqid, newCid, code]` | Creates a **new empty content entry** (e.g. an empty preset) in `container` at slot `pos`. `ctype = 2` observed for a **preset**. **Its `/status` is special:** field 2 is the **new CID**, field 3 is the ok-code (`0`=ok) — unlike every other write. This is the first step of "Save As New" (§7.1). |
 | **CREATE (copy)** | `/AddContentsToContainer` | `(reqid:i, container:i, msgpack[srcCIDs], pos:i, 0:i, 0:i)` | `/status [reqid, code, n]` | Copies the listed source CIDs into `container` at slot `pos`. **The new CID is NOT in this `/status`** — re-list the container and match by `posi`/`name` to discover it. Trailing two ints observed as `0,0` (**partially decoded**). |
 | **SAVE (persist buffer)** | `/SavePresetWithCID` | `(reqid:i, cid:i, 0:i, N:i)` | `/status [reqid, code, n]` | Persists the **current edit buffer** into an existing `cid`. The `0` third arg is fixed in captures. **`N` is an unknown 4th arg** — the editor sent `N=6` for a preset whose edit buffer had `bcnt=28` / 20 blocks, so **`N` is NOT the block count**; its meaning is unknown and **`N=0` works** (verified byte-faithful: after a `/SavePresetWithCID … 0` + reload, the `sfg_` and `pm__` sections are identical; only the volatile `hist`/`cg__` sections differ). |
+| **WRITE content** | `/SetContentData` | `(reqid:i, cid:i, contentBlob:b)` | `/status [reqid, code, n]` | Writes preset **content** directly into an existing `cid`, replacing it. `contentBlob` is the **stored-preset** encoding (`\xff\xff\xff\xff pgsm` magic — see §4 "content encodings"), **not** the edit-buffer `_sbepgsm` form. This is how the editor installs an **imported** preset (it also sends `/SetContentAttrs` for name/colour and `/LoadPresetWithCID` after). Live-verified: used to restore a preset **byte-faithfully**. Combined with `/CreateContent` (§7.1) this is the full "author arbitrary content into a new slot" path. |
 | **RENAME / set attrs** | `/SetContentAttrs` | `(reqid:i, cid:i, msgpack{name:"…"})` | `/status [reqid, code, n]` | Sets item attributes; `{name:"…"}` renames. Also used to set the preset **colour** via a `colr` key (`{colr:…}`) as the 3rd step of "Save As New" (§7.1). Other attr keys **partially decoded**. |
 | **DELETE** | `/RemoveContent` | `(reqid:i, container:i, msgpack[cids])` | `/status [reqid, code, n]` | Removes the listed CIDs from `container`. |
 | **IR path lookup** | `/IrPathForHashGet` | `(reqid:i, blob16:b)` | `/xxxIrxPathForHash1 [reqid, path:s]` | IRs are referenced by a **16-byte hash**; this resolves a hash to its on-device path. Reply address is literally `/xxxIrxPathForHash1`; the path is device-side, e.g. `"/data/stadium-family-fw/ir/<name>.wav"` (IR files live under `/data/stadium-family-fw/ir/`). |
@@ -363,8 +460,43 @@ of four RPCs on 2002:
 4. **`/LoadPresetWithCID (reqid, newCid)`** — load the freshly-saved preset back
    into the edit buffer.
 
-To author over the wire: build the desired edit buffer (via `/ModelSet` +
-`/ParamValueSet` on the current buffer), then run this sequence to persist it.
+This flow persists **whatever is currently in the edit buffer**. Build that
+buffer first via `/ModelSet` + `/ParamValueSet` on the live buffer, then run the
+sequence to persist it.
+
+### 7.2 "Import Preset" — install arbitrary content into a CID (live-verified)
+
+The editor's *Import Preset* installs a preset **blob** it already has (from a
+file) directly into an existing CID via `/SetContentData` — it does **not** go
+through the edit buffer, and it **overwrites the currently-selected preset's
+CID** rather than auto-creating a new slot. Observed sequence on 2002:
+
+1. **`/GetContainerContents (reqid, container)`** — locate the target CID.
+2. **`/SetContentAttrs (reqid, cid, {name, colr, blck, flow})`** — set metadata
+   (name, colour, block count, flow) to match the incoming preset.
+3. **`/SetContentData (reqid, cid, storedBlob)`** — write the content. `storedBlob`
+   is the **stored-preset encoding** (`\xff\xff\xff\xff pgsm` magic, no `hist`;
+   §4 "content encodings").
+4. **`/LoadPresetWithCID (reqid, cid)`** — load it into the edit buffer.
+5. **`/IrPathForHashGet (reqid, blob16 hash)`** for each IR the preset references.
+
+Used live to **restore a preset byte-faithfully**.
+
+### 7.3 Full authoring path (create a new slot + install content)
+
+Combine the two: `/CreateContent` mints a fresh CID, then `/SetContentData`
+installs arbitrary content into it (no edit-buffer round-trip required):
+
+```
+/CreateContent (reqid, container, pos, ctype=2, {name})   -> new cid (from /status field 2)
+/SetContentData (reqid, cid, storedBlob)                  -> install stored-preset content
+/SetContentAttrs (reqid, cid, {name, colr, blck, flow})   -> metadata (optional; may precede data)
+/LoadPresetWithCID (reqid, cid)                            -> make it live
+```
+
+`storedBlob` is produced from an edit buffer (or a helixgen-built preset) by the
+magic-swap + drop-`hist` conversion in §4. This is the recommended path for
+authoring a **new** preset from scratch without clobbering an existing slot.
 
 ---
 
@@ -489,14 +621,16 @@ footswitch/controller assignment commands are parameterised on the device.
 
 ## 9. Known-unknowns / TODO
 
-- **Full `_sbepgsm` leaf field dictionary.** The **top-level** structure is now
-  decoded (`cg__`/`hist`/`pm__`/`sfg_`, §4). Still open: the per-block leaf
-  fields inside `sfg_.flow[].blks` (model id, param id↔value encoding,
-  controller wiring) and the exact `cg__.entt` sub-fields
-  (`cmnd`/`ctm_`/`ctrl`/`sm_`/`snps`/`srcs`/`trgs`).
-- **`_sbepgsm` ↔ `.hsp` mapping.** No converter exists between the device's
-  edit-buffer schema and helixgen's `.hsp`. Building it (or a shared
-  intermediate) is the main lift for full round-trip.
+- **Remaining `_sbepgsm` leaf fields.** The top-level (`cg__`/`hist`/`pm__`/
+  `sfg_`) **and** the block/param layer (`blks` → block dict → `mdls[0]` →
+  `parm` with numeric `id__`/`pid_`/`valu`, §4) are now decoded. Still open: the
+  8-key **`hrns` harness** dict per block, and the controller-wiring maps in
+  `cg__.entt` (`cmnd`/`ctm_`/`ctrl`/`sm_`/`snps`/`srcs`/`trgs`).
+- **`_sbepgsm` ↔ `.hsp` converter.** The field-level mapping is known (blocks →
+  model + named params; `defs.py` bridges numeric `id__`/`pid_` ↔ `.hsp`
+  strings/names, applying helixgen's ingest model-id translation first). Writing
+  the actual bidirectional converter — including the still-open `hrns` /
+  controller leaves — remains the main lift for full round-trip.
 - **`/SavePresetWithCID` 4th arg `N`.** Meaning unknown (not the block count;
   editor sent `6`, `0` works byte-faithfully). Harmless but uncharacterised.
 - **`/ModelSet` leading args.** `127, 0, 1, 0` — which are reqid/path/block/flag

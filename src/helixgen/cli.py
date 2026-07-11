@@ -836,5 +836,129 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
 
 
+@device.command(name="push")
+@click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("name")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Destination setlist.")
+@click.option("--pos", type=int, required=True, help="Destination slot (posi); must be empty.")
+@_device_option
+def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: int) -> None:
+    """Install a local content file (.sbe backup) into a new preset slot.
+
+    Restores a backup / clones a preset / installs authored content. The target
+    slot must be empty.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    container = _setlist_container(setlist)
+    blob = infile.read_bytes()
+    try:
+        with HelixClient(ip, port) as h:
+            if h.find_by_pos(container, pos) is not None:
+                raise click.ClickException(f"{setlist} slot {pos} is not empty")
+            new_cid = h.push_to_slot(container, pos, name, blob)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if new_cid is None:
+        raise click.ClickException(f"failed to push {infile} into {setlist} slot {pos}")
+    click.echo(f"pushed {infile.name} as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
+
+
+@device.command(name="restore")
+@click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("cid", type=int)
+@_device_option
+def device_restore(infile: Path, cid: int, ip: str, port: int) -> None:
+    """Overwrite an EXISTING preset's content from a local file (.sbe).
+
+    Warning: replaces the content at CID in place.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    blob = infile.read_bytes()
+    try:
+        with HelixClient(ip, port) as h:
+            ok = h.set_content_data(cid, blob)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to restore content to cid {cid}")
+    click.echo(f"restored content of cid {cid} from {infile.name}")
+
+
+@device.command(name="backup")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Setlist to back up.")
+@click.option("--dir", "out_dir", type=click.Path(file_okay=False, path_type=Path),
+              default=None, help="Output dir (default ~/.helixgen/device-backups/ "
+                                 "or $HELIXGEN_DEVICE_BACKUPS).")
+@_device_option
+def device_backup(setlist: str, out_dir, ip: str, port: int) -> None:
+    """Back up every preset in a setlist to local .sbe files + a manifest.
+
+    Note: this loads each preset in turn (changes the device's active preset),
+    then restores the first one. Works offline afterwards via `device local-list`.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import backup as _backup
+    from datetime import datetime, timezone
+
+    container = _setlist_container(setlist)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        with HelixClient(ip, port) as h:
+            entries = _backup.backup_setlist(h, container, out_dir, now=now)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    dest = out_dir or _backup.default_backup_dir()
+    click.echo(f"backed up {len(entries)} preset(s) to {dest}")
+
+
+@device.command(name="local-list")
+@click.option("--dir", "out_dir", type=click.Path(file_okay=False, path_type=Path),
+              default=None, help="Backup dir to read (offline; no device needed).")
+@click.option("--json", "as_json", is_flag=True, default=False)
+def device_local_list(out_dir, as_json: bool) -> None:
+    """List locally backed-up presets (works with the Helix disconnected)."""
+    from helixgen.device import backup as _backup
+
+    entries = _backup.local_list(out_dir)
+    if as_json:
+        click.echo(json.dumps(entries, indent=2))
+        return
+    for e in entries:
+        click.echo(f"{e.get('slot_label',''):<4} {e.get('name','?'):<28} "
+                   f"[{e.get('fmt','?')}] {e.get('file','')}")
+
+
+@device.command(name="watch")
+@click.option("--seconds", type=float, default=5.0, show_default=True,
+              help="How long to watch the device's live event streams.")
+@click.option("--filter", "filter_addr", multiple=True,
+              help="Only show these OSC addresses (repeatable).")
+@_device_option
+def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
+    """Watch the device's live property/telemetry streams (ports 2001/2003)."""
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+
+    flt = set(filter_addr) or None
+    try:
+        with HelixSubscriber(ip) as sub:
+            for ev in sub.stream(duration=seconds, filter_addrs=flt):
+                click.echo(f"{ev.port}  {ev.addr:<20} {ev.args}")
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+
+
 if __name__ == "__main__":  # allow `python -m helixgen.cli ...`
     cli()
