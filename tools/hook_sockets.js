@@ -97,4 +97,34 @@ function hookIovSend(name, iovArg, cntArg, viaMsghdr) {
 ['writev', 'writev$NOCANCEL'].forEach(n => hookIovSend(n, 1, 2, false));
 ['sendmsg', 'sendmsg$NOCANCEL'].forEach(n => hookIovSend(n, 0, 0, true));
 
+// libssh2 SFTP file operations — reveals which device files the editor writes
+// during an IR/song import (ir/ only? also db/?).
+{
+  const so = Module.findGlobalExportByName('libssh2_sftp_open_ex');
+  if (so) Interceptor.attach(so, {
+    onEnter(args) {
+      try {
+        const fn = args[1].readUtf8String(args[2].toInt32());
+        const flags = args[3].toInt32();
+        const w = (flags & 0x2) ? 'W' : '';   // LIBSSH2_FXF_WRITE
+        const c = (flags & 0x8) ? 'C' : '';    // CREAT
+        send({ dir: 'INFO', msg: 'SFTP_OPEN [' + w + c + ' 0x' + flags.toString(16) + '] ' + fn });
+      } catch (e) {}
+    }
+  });
+  const su = Module.findGlobalExportByName('libssh2_sftp_unlink_ex');
+  if (su) Interceptor.attach(su, {
+    onEnter(args) {
+      try { send({ dir: 'INFO', msg: 'SFTP_UNLINK ' + args[1].readUtf8String(args[2].toInt32()) }); } catch (e) {}
+    }
+  });
+  const sr = Module.findGlobalExportByName('libssh2_sftp_rename_ex');
+  if (sr) Interceptor.attach(sr, {
+    onEnter(args) {
+      try { send({ dir: 'INFO', msg: 'SFTP_RENAME ' + args[1].readUtf8String(args[2].toInt32()) + ' -> ' + args[3].readUtf8String(args[4].toInt32()) }); } catch (e) {}
+    }
+  });
+  send({ dir: 'INFO', msg: 'libssh2 SFTP hooks: open=' + !!so + ' unlink=' + !!su });
+}
+
 send({ dir: 'INFO', msg: 'OSC hooks installed for ' + DEVICE_IP + '; symbols=' + installed.join(',') });

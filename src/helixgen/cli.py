@@ -583,6 +583,34 @@ def _setlist_container(name: str) -> int:
         raise click.ClickException(f"unknown setlist {name!r}") from e
 
 
+def _auto_upload_irs(ip: str, hashes) -> None:
+    """Upload each missing IR hash by resolving it to a local wav via the
+    helixgen IR mapping, then SFTP-pushing it (device auto-registers)."""
+    from helixgen.ir import IrMapping
+    from helixgen.device import sftp as _sftp
+
+    try:
+        irmap = IrMapping.load()
+    except Exception as e:  # noqa: BLE001
+        raise click.ClickException(
+            f"--auto-irs needs your local IR mapping.json: {e}")
+    for hh in hashes:
+        try:
+            path = irmap.resolve_by_hash(hh)
+        except Exception:  # noqa: BLE001 - not registered locally
+            click.echo(f"warning: referenced IR {hh} not found locally; register "
+                       f"it (helixgen register-irs) — cab may be silent", err=True)
+            continue
+        res = _sftp.push_ir(ip, str(path))
+        if res.get("already"):
+            click.echo(f"IR {hh} already on device")
+        elif res.get("ok"):
+            click.echo(f"uploaded IR {res.get('name') or path.name} ({hh})")
+        else:
+            click.echo(f"warning: uploaded {path.name} but registration "
+                       f"unconfirmed ({hh})", err=True)
+
+
 @cli.group(name="device")
 def device() -> None:
     """Drive a networked Line 6 Helix Stadium over the LAN.
@@ -857,6 +885,57 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
         click.echo(f"{m.get('hash','')}  {'stereo' if not m.get('mono') else 'mono'}  {m.get('name','?')}")
 
 
+@device.command(name="push-ir")
+@click.argument("wav", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84", show_default=True)
+def device_push_ir(wav: Path, ip: str) -> None:
+    """Upload an impulse-response .wav to the device (auto-registered).
+
+    Writes the file over SFTP; the device detects and registers it. Skips upload
+    if that IR (by hash) is already present.
+    """
+    from helixgen.device import HelixError
+    from helixgen.device import sftp as _sftp
+
+    try:
+        res = _sftp.push_ir(ip, str(wav))
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    if not res.get("ok"):
+        raise click.ClickException(f"upload of {wav.name} failed")
+    if res.get("registered", res.get("already")):
+        verb = "already on device" if res.get("already") else "uploaded + registered"
+        click.echo(f"{verb}: cid {res['cid']} ({res['name']}) device-hash {res['device_hash']}")
+        if res.get("hash_match") is False:
+            click.echo(
+                f"warning: helixgen's irhash ({res['helixgen_hash']}) != the "
+                f"device's ({res['device_hash']}) for this file — a preset "
+                f"referencing helixgen's hash won't resolve this IR", err=True)
+    else:
+        click.echo(f"uploaded {wav.name} — {res.get('note')}")
+
+
+@device.command(name="pull-ir")
+@click.argument("filename")
+@click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
+@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84", show_default=True)
+def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
+    """Download an IR .wav from the device by its on-disk filename.
+
+    Use `device sftp-ls` semantics: pass the exact `.wav` basename (see the
+    device's ir/ directory).
+    """
+    from helixgen.device import HelixError
+    from helixgen.device import sftp as _sftp
+
+    try:
+        with _sftp.HelixSFTP(ip) as s:
+            s.download_ir(filename, str(outfile))
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"downloaded {filename} -> {outfile}")
+
+
 @device.command(name="install")
 @click.argument("hsp_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("name")
@@ -867,13 +946,17 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
               help="CID of a device preset to use as the chain template "
                    "(defaults to the device's current edit buffer). Its block "
                    "chain must cover the recipe's block categories.")
+@click.option("--auto-irs", is_flag=True, default=False,
+              help="Upload any referenced IRs that aren't on the device yet "
+                   "(resolved from your local IR mapping.json).")
 @_device_option
 def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
-                   template: int, ip: str, port: int) -> None:
+                   template: int, auto_irs: bool, ip: str, port: int) -> None:
     """Author a helixgen .hsp onto the device as a new, playable preset.
 
     Maps the .hsp's blocks onto a device template's same-category slots (v2.2:
-    single serial chain), then installs it. EXPERIMENTAL.
+    single serial chain), then installs it. With --auto-irs, missing IRs are
+    uploaded first. EXPERIMENTAL.
     """
     from helixgen.hsp import read_hsp
     from helixgen.device import HelixClient, HelixError
@@ -885,13 +968,18 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
         with HelixClient(ip, port) as h:
             if h.find_by_pos(container, pos) is not None:
                 raise click.ClickException(f"{setlist} slot {pos} is not empty")
-            # warn about IRs the preset references that aren't on the device yet
+            # IRs the preset references that aren't on the device yet
             ir_status = bridge.check_irs(h, body)
-            for missing in sorted(ir_status["missing"]):
-                click.echo(
-                    f"warning: IR {missing} is referenced but not on the device; "
-                    f"import it (helixgen register-irs / the editor) or the cab "
-                    f"will be silent", err=True)
+            missing = sorted(ir_status["missing"])
+            if missing and auto_irs:
+                _auto_upload_irs(ip, missing)
+            else:
+                for m in missing:
+                    click.echo(
+                        f"warning: IR {m} is referenced but not on the device; "
+                        f"re-run with --auto-irs, or import it (helixgen "
+                        f"register-irs / the editor), or the cab will be silent",
+                        err=True)
             if template is not None:
                 if not h.load_preset(template):
                     raise click.ClickException(f"could not load template cid {template}")
