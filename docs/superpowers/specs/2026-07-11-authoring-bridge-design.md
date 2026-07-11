@@ -60,6 +60,35 @@ routing, `bmap`/`bcnt`, snapshot/controller scaffolding — brittle. Instead:
   `tone --to-device` path).
 - MCP: `device_install_preset(model, recipe, ip, pos, name)`.
 
+## Status: mechanism PROVEN (live)
+- **P1 (single block):** built a Screamer 808 (id 310) from `defs` (model + full
+  parm list, Gain override), swapped it into a template block, `SetContentData`
+  → reloaded as model 310 with Gain=0.85. **PASS.**
+- **P2 (multi-block):** rewrote two blocks (drive→Screamer, reverb→Glitz 73) from
+  `defs` in one blob → installed → both reloaded faithfully (model + params).
+  **PASS.** (The amp swap was skipped: `HD2_AmpBrit2204Custom` didn't resolve via
+  `defs.model_id_for` — a name-mapping gap, see remaining work.)
+
+Conclusion: constructing blocks from `defs` and installing them via
+`/SetContentData` works; same-category swaps into a template keep valid
+scaffolding. The bridge is an engineering task now, not a research one.
+
+## Remaining work for a production `device install`
+1. **Model-name resolution gap** — some `.hsp`/helixgen model strings don't match
+   `defs` keys directly (e.g. `HD2_AmpBrit2204Custom`). Build a resolver that
+   applies helixgen's ingest translation and falls back on catalog/alias lookup;
+   fail loudly on unresolved models.
+2. **Category ↔ template position** — map each recipe block to a template slot of
+   the matching category, or curate per-category template blocks (with correct
+   `type`/`hrns`) to assemble from. Bypass unused template slots.
+3. **Param coverage** — Hz/int/enum params (not just 0..1 floats) via `defs`
+   `type`; IR blocks (`irhash`); snapshots/controllers (pass-through v1).
+4. **Surfaces + tests** — `bridge.py` (`recipe_to_content`, `install_recipe`),
+   CLI `device install`, MCP `device_install_preset`; unit tests (mock) + a
+   live-gated test authoring a known chain and asserting model/params.
+5. **Template source** — ship a vendored empty/neutral template blob so authoring
+   doesn't depend on a specific on-device preset.
+
 ## Risks / unknowns
 - Model swap may need more than `id__`+`parm` (e.g. `type`, `hrns` fields tied to
   the model/category). Mitigation: pick template slots of the same category, or
