@@ -5,13 +5,13 @@ archives) to/from the hardware, and where its SFTP identity lives. This is the
 transfer channel behind IR import/export — distinct from the OSC-over-ZeroMQ
 control protocol in [`helix-protocol.md`](helix-protocol.md).
 
-> **Responsible-disclosure note.** The editor ships a **private SSH key** inside
-> the app bundle. This document records *that it exists and where to find it*, so
-> anyone can verify it in their own copy — it does **not** reproduce the private
-> key material. Treat the key as a shared, app-embedded credential; don't
-> redistribute it. Writing to the device's filesystem over this channel can brick
-> the unit — read-only use (listing/downloading) only, unless you really know
-> what you're doing.
+> The editor ships a **private SSH key** in the app bundle — the credential it
+> uses to reach the hardware over the LAN. It's the **same key in every copy of
+> the app**. This document records where to find it so you can verify it in your
+> own copy; it does **not** reproduce the private key material — don't paste a
+> credential around. **Writes are the hazard**: pushing/moving/deleting files
+> under `/data/…` can brick the unit, so keep to **read-only** (listing,
+> downloading) unless you really know what you're doing.
 
 ## Where to find it yourself (macOS)
 
@@ -28,8 +28,8 @@ then navigate to `Contents/Resources/sshKeys/`:
 
 - **Present in the shipping release build**, not just internal/debug copies
   (verified in `/Applications/Line6/Helix Stadium.app`, and in a debugger-enabled
-  copy). It appears to be an internal build artifact that made it into the public
-  release.
+  copy). `SFTP_SETUP.md` is Line 6's internal developer guide (it references their
+  dev VMs and usernames).
 - Public-key fingerprint (safe to cite):
   `SHA256:nsoXOr2+xP1CptdRXv2mRq5a1bQ+Yd/W0Ah4DQV9cY8` (RSA 3072, `id_hedit.pub`).
 
@@ -60,6 +60,36 @@ like `rkylberg@10.211.55.3` and Xcode schemes). Key facts it documents:
   - `songs/archives/` — song-file archives (the guide's example).
 - **Transport:** SSH/SFTP on the device's port 22 (`OpenSSH_9.6`, `libssh2` on the
   editor side).
+
+## Device filesystem layout (observed, read-only)
+
+SFTP as `hedit` lands at `/` (the account is chroot/SFTP-only — no shell). Under
+`/data/stadium-family-fw/`:
+
+```
+bluetooth/  db/  ir/  presetclip/  proxy/  showcase/  songs/  tmp/  user_data/
+```
+
+`ir/` holds, per impulse response, three files:
+
+```
+-rwxr--r--  2000 3000  24660  YA DXVB 112 121-1.wav        # the 48 kHz IR
+-rw-rw-r--  2001 3000  23038  YA DXVB 112 121-1_FULL.png   # full waveform image
+-rw-rw-r--  2001 3000   5730  YA DXVB 112 121-1_THUMB.png  # thumbnail
+```
+
+Notes:
+- The on-disk **filenames** (e.g. `… 121-1.wav`) are *not* the same as the IR
+  **display names** in the OSC user-IR list (e.g. `YA DXVB 112 Mix 01`); the
+  `irhash` is the reliable join key.
+- The `ir/` directory is a **superset** of the OSC user-IR list — a downloaded
+  file's `irhash` may not be in `/GetContainerContents(-11)` (that list tracks
+  the registered user IRs, via `db/`). So a naive `sftp put` of a `.wav` would
+  **not** register the IR in the device's list/db — a real import needs the file
+  drop **and** whatever registration the editor does (a strong reason to gate any
+  write behind a verified procedure).
+- Read-only download works (validated: `sftp get` of a `.wav`, then
+  `helixgen.ir.compute_stadium_irhash` on it).
 
 ## How this maps to helixgen
 
