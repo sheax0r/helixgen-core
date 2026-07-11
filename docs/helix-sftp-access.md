@@ -91,6 +91,37 @@ Notes:
 - Read-only download works (validated: `sftp get` of a `.wav`, then
   `helixgen.ir.compute_stadium_irhash` on it).
 
+## IR registration model (from the device SQLite db, read-only)
+
+The device tracks content in `/data/stadium-family-fw/db/StadiumDataStore.sqlite3`
+(root-owned). Relevant tables:
+
+| Table | Cols | Notes |
+|-------|------|-------|
+| `Content` | `cid, ctype, ccid, position, locked, premium, owner, name, color` | master content table (presets, folders, IRs); backs `/GetContainerContents` |
+| `IRContent` | `cid, mono, hash, path` | one row per registered user IR; `cid` == the OSC `cid_` (e.g. 492…) |
+| `IrHashToPath` | `hash (16 bytes), path` | IR hash → `/data/…/ir/<name>.wav` |
+
+So a **registered IR** = the `.wav` on disk **plus** rows in `Content` +
+`IRContent` + `IrHashToPath`. The db is **root-owned**, so the `hedit` SFTP user
+can't write it — the editor does **not** hand-edit the db over SFTP. Instead it
+uses device-mediated OSC commands (the device, running as root, updates its own
+db). Registration/assignment commands in the editor binary:
+
+- `/UserIRSet` — set/register a user IR (primary registration command).
+- `/CreateContent` + `/SetContentPath` + `/SetContentData` — the generic content
+  path used for everything (IRs are `ctype`=IR rows).
+- `/observeWatchedDirChange`, `/rootdir`, `/imports`, `/currentdir` — the device
+  **watches the `ir/` directory**, so a dropped file may be auto-detected.
+- Assignment to a cab/IR block: `/setUserIR`, `/setTargetIR`, `/setSnapshotIR`.
+
+**Upshot for a safe upload:** SFTP the `.wav` into `ir/` (device may also want the
+`_FULL.png`/`_THUMB.png` waveform images, or it generates them), then trigger the
+**device-mediated** registration (`/UserIRSet` or the watched-dir auto-scan) —
+do **not** write the SQLite db directly. The exact `/UserIRSet` argument shape
+still needs one live-import capture to pin down. Every step here is a device
+write (brick-risk) and must be gated behind explicit confirmation + testing.
+
 ## How this maps to helixgen
 
 - The device's IR list (OSC `/GetContainerContents(-11)`) already gives each IR's
