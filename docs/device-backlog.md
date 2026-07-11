@@ -64,6 +64,16 @@ bounded but invasive/firmware-fragile; (b) find an OSC/drag-drop import command
 if one exists. Until then, `device install` *warns* about missing IRs (with the
 local path available from `mapping.json`) instead of auto-loading.
 
+## Requested backlog (2026-07-11, cont.)
+
+5. **Cache precalculated IR hashes in the plugin data dir** — computing an IR's
+   Stadium `irhash` (libsndfile float round-trip + MD5) is relatively expensive;
+   cache `wav-path (+ mtime/size) -> irhash` in the plugin/user data directory so
+   reusing the same IR across presets doesn't recompute. Invalidate on
+   mtime/size change. Ties into `mapping.json` and the authoring-bridge IR check
+   (which needs each referenced IR's hash). Store under the plugin data dir
+   (e.g. `~/.helixgen/cache/irhash.json`), keyed by absolute path + stat.
+
 ## Notes / dependencies
 - #2/#3 hinge on the device's SSH file channel (see above) — the mechanism is now
   known; the blocker is credentials, not discovery.
