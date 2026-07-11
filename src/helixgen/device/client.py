@@ -65,16 +65,38 @@ class HelixClient:
             ) from exc
         return zmq
 
-    def connect(self) -> "HelixClient":
+    def _load_msgpack(self):
+        try:
+            import msgpack
+        except ImportError as exc:
+            raise HelixError(
+                "the device feature needs msgpack; install with "
+                "`pip install 'helixgen[device]'`"
+            ) from exc
+        return msgpack
+
+    def connect(self, verify: bool = True) -> "HelixClient":
+        """Open the DEALER socket. If ``verify``, confirm a device actually
+        answers (a lazily-connected socket to a dead/wrong host never errors on
+        its own, which would otherwise make every read look like an empty
+        result)."""
         zmq = self._load_zmq()
-        self._zmq = zmq
-        self._ctx = zmq.Context.instance()
-        self.sock = self._ctx.socket(zmq.DEALER)
-        self.sock.setsockopt(zmq.LINGER, 0)
-        self.sock.connect(f"tcp://{self.ip}:{self.port}")
-        self.poller = zmq.Poller()
-        self.poller.register(self.sock, zmq.POLLIN)
+        try:
+            self._zmq = zmq
+            self._ctx = zmq.Context.instance()
+            self.sock = self._ctx.socket(zmq.DEALER)
+            self.sock.setsockopt(zmq.LINGER, 0)
+            self.sock.connect(f"tcp://{self.ip}:{self.port}")
+            self.poller = zmq.Poller()
+            self.poller.register(self.sock, zmq.POLLIN)
+        except zmq.ZMQError as exc:
+            raise HelixError(f"could not open device socket: {exc}") from exc
         time.sleep(self.connect_settle)  # let the ZMTP handshake complete
+        if verify and self.get_ref(USER) is None:
+            self.close()
+            raise HelixError(
+                f"no Helix Stadium answered at {self.ip}:{self.port} "
+                "(wrong IP, device off, or Remote Access disabled?)")
         return self
 
     def close(self) -> None:
@@ -102,26 +124,40 @@ class HelixClient:
             raise HelixError("client is not connected; call connect() first")
         if first_wait is None:
             first_wait = self.rpc_timeout
+        # zmq's exception type, or an empty tuple when a fake socket is injected
+        zmq_error = getattr(self._zmq, "ZMQError", ()) if self._zmq else ()
         rid = next(self._rid)
-        self.sock.send(osc_encode(addr, [("i", rid)] + list(args)))
+        try:
+            self.sock.send(osc_encode(addr, [("i", rid)] + list(args)))
+        except zmq_error as exc:
+            raise HelixError(f"device send failed: {exc}") from exc
         replies: List[tuple] = []
         got = False
         while True:
+            # Keep the full first_wait window until OUR reply lands; an
+            # unsolicited frame must not shrink it to the settle window.
             events = dict(self.poller.poll(int((settle if got else first_wait) * 1000)))
             if not events:
                 break
-            raw = self.sock.recv()
+            try:
+                raw = self.sock.recv()
+            except zmq_error as exc:
+                raise HelixError(f"device recv failed: {exc}") from exc
             i = raw.find(b"/")
             if i < 0:
                 continue
-            raddr, rargs, _ = parse_osc_message(raw, i)
-            if raw_blobs:
-                dec = [v for _t, v in rargs]
-            else:
-                dec = [_content.decode_blob(v) if t == "b" else v for t, v in rargs]
+            try:
+                raddr, rargs, _ = parse_osc_message(raw, i)
+                if raw_blobs:
+                    dec = [v for _t, v in rargs]
+                else:
+                    dec = [_content.decode_blob(v) if t == "b" else v
+                           for t, v in rargs]
+            except (ValueError, IndexError, KeyError, RuntimeError) as exc:
+                raise HelixError(f"malformed device reply: {exc}") from exc
             if dec and dec[0] == rid:
                 replies.append((raddr, dec))
-            got = True
+                got = True  # only our matching reply narrows the poll window
         return replies
 
     def _ok(self, replies: List[tuple]) -> bool:
@@ -189,14 +225,14 @@ class HelixClient:
 
     def create_copy(self, container: int, src_cids: Sequence[int], pos: int) -> bool:
         """Copy preset(s) by CID into ``container`` at slot ``pos`` (CREATE)."""
-        import msgpack
+        msgpack = self._load_msgpack()
         return self._ok(self._rpc(
             "/AddContentsToContainer",
             [("i", container), ("b", msgpack.packb(list(src_cids))),
              ("i", pos), ("i", 0), ("i", 0)]))
 
     def set_attrs(self, cid: int, attrs: Dict[str, Any]) -> bool:
-        import msgpack
+        msgpack = self._load_msgpack()
         return self._ok(self._rpc(
             "/SetContentAttrs", [("i", cid), ("b", msgpack.packb(dict(attrs)))]))
 
@@ -204,7 +240,7 @@ class HelixClient:
         return self.set_attrs(cid, {"name": name})
 
     def delete(self, container: int, cids: Sequence[int]) -> bool:
-        import msgpack
+        msgpack = self._load_msgpack()
         return self._ok(self._rpc(
             "/RemoveContent", [("i", container), ("b", msgpack.packb(list(cids)))]))
 
@@ -230,12 +266,25 @@ class HelixClient:
         self.poller.poll(int(self.rpc_timeout * 1000))
         return True
 
+    def _find_by_pos_retry(self, container: int, pos: int,
+                           tries: int = 4, delay: float = 0.25
+                           ) -> Optional[Dict[str, Any]]:
+        """find_by_pos with a few retries — the device may re-index the
+        container slightly after a write lands."""
+        for i in range(tries):
+            m = self.find_by_pos(container, pos)
+            if m is not None:
+                return m
+            if i < tries - 1:
+                time.sleep(delay)
+        return None
+
     # convenience alias for the create-by-copy flow
     def create_from(self, src_cid: int, container: int, pos: int) -> Optional[int]:
         """Copy ``src_cid`` into ``container`` at ``pos``; return the new CID."""
         if not self.create_copy(container, [src_cid], pos):
             return None
-        m = self.find_by_pos(container, pos)
+        m = self._find_by_pos_retry(container, pos)
         return m.get("cid_") if m else None
 
     # -- write current edit buffer to a new preset slot --------------------
@@ -247,7 +296,7 @@ class HelixClient:
         newCid, code]`` — the new CID is in the second field, the ok-code in the
         third.
         """
-        import msgpack
+        msgpack = self._load_msgpack()
         for addr, args in self._rpc(
                 "/CreateContent",
                 [("i", container), ("i", pos), ("i", ctype),
@@ -271,5 +320,10 @@ class HelixClient:
         if cid is None:
             return None
         if not self.save_preset_with_cid(cid):
+            # don't leave an orphaned empty entry occupying the slot
+            try:
+                self.delete(container, [cid])
+            except HelixError:
+                pass
             return None
         return cid

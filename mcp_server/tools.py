@@ -464,7 +464,7 @@ def patch_preset_handler(
 # ---------------------------------------------------------------------------
 
 # Default LAN address of the user's Helix Stadium (override per-call via `ip`).
-_DEFAULT_DEVICE_IP = "192.168.4.84"
+_DEFAULT_DEVICE_IP = os.environ.get("HELIXGEN_HELIX_IP") or "192.168.4.84"
 
 
 def _device_container(setlist: str) -> int:

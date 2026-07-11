@@ -158,3 +158,12 @@ def test_save_preset_with_cid_ok():
     reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
     _wire(h, [reply])
     assert h.save_preset_with_cid(930) is True
+
+
+def test_malformed_reply_frame_raises_helixerror():
+    # a frame that starts an OSC address but is never NUL-terminated -> the
+    # parser raises ValueError, which _rpc must wrap as HelixError (not leak).
+    h = HelixClient()
+    _wire(h, [b"/GetContentRef no null terminator here"])
+    with pytest.raises(HelixError):
+        h.list_presets()

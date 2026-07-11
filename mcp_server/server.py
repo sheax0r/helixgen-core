@@ -298,7 +298,7 @@ def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
 
 @app.tool()
 def device_list_presets(
-    model: str, ip: str = "192.168.4.84", setlist: str = "user"
+    model: str, ip: str = _tools._DEFAULT_DEVICE_IP, setlist: str = "user"
 ) -> list[dict[str, Any]]:
     """List presets in a setlist on the networked Helix Stadium.
 
@@ -315,7 +315,7 @@ def device_list_presets(
 
 @app.tool()
 def device_list_setlists(
-    model: str, ip: str = "192.168.4.84"
+    model: str, ip: str = _tools._DEFAULT_DEVICE_IP
 ) -> list[dict[str, Any]]:
     """List the device's virtual setlist containers (user/factory/throwaway).
 
@@ -327,7 +327,7 @@ def device_list_setlists(
 
 @app.tool()
 def device_read_preset(
-    model: str, cid: int, ip: str = "192.168.4.84"
+    model: str, cid: int, ip: str = _tools._DEFAULT_DEVICE_IP
 ) -> dict[str, Any]:
     """Read a single preset's attributes (content reference) by its `cid`.
 
@@ -339,7 +339,7 @@ def device_read_preset(
 
 @app.tool()
 def device_load_preset(
-    model: str, cid: int, ip: str = "192.168.4.84"
+    model: str, cid: int, ip: str = _tools._DEFAULT_DEVICE_IP
 ) -> dict[str, Any]:
     """Load a preset (by `cid`) into the device's edit buffer.
 
@@ -354,7 +354,7 @@ def device_create_preset(
     model: str,
     src_cid: int,
     pos: int,
-    ip: str = "192.168.4.84",
+    ip: str = _tools._DEFAULT_DEVICE_IP,
     setlist: str = "user",
 ) -> dict[str, Any]:
     """Create a preset by copying `src_cid` into `setlist` at slot `pos`.
@@ -370,7 +370,7 @@ def device_create_preset(
 
 @app.tool()
 def device_rename_preset(
-    model: str, cid: int, name: str, ip: str = "192.168.4.84"
+    model: str, cid: int, name: str, ip: str = _tools._DEFAULT_DEVICE_IP
 ) -> dict[str, Any]:
     """Rename the preset at `cid` to `name` on the device.
 
@@ -381,7 +381,7 @@ def device_rename_preset(
 
 @app.tool()
 def device_delete_preset(
-    model: str, cid: int, ip: str = "192.168.4.84", setlist: str = "user"
+    model: str, cid: int, ip: str = _tools._DEFAULT_DEVICE_IP, setlist: str = "user"
 ) -> dict[str, Any]:
     """Delete the preset at `cid` from `setlist` on the device.
 
@@ -398,7 +398,7 @@ def device_set_param(
     block: int,
     param_id: int,
     value: float,
-    ip: str = "192.168.4.84",
+    ip: str = _tools._DEFAULT_DEVICE_IP,
 ) -> dict[str, Any]:
     """Set one param in the device's live edit buffer.
 
@@ -417,7 +417,7 @@ def device_save_preset(
     name: str,
     pos: int,
     setlist: str = "user",
-    ip: str = "192.168.4.84",
+    ip: str = _tools._DEFAULT_DEVICE_IP,
 ) -> dict[str, Any]:
     """Save the device's CURRENT edit buffer as a new preset (Save As New).
 
