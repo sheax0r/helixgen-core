@@ -602,13 +602,27 @@ def _auto_upload_irs(ip: str, hashes) -> None:
                        f"it (helixgen register-irs) — cab may be silent", err=True)
             continue
         res = _sftp.push_ir(ip, str(path))
+        dev_hash = res.get("device_hash")
         if res.get("already"):
             click.echo(f"IR {hh} already on device")
-        elif res.get("ok"):
+        elif res.get("ok") and res.get("registered") and dev_hash == hh:
+            # atomic upload → the device hashed the complete file → the
+            # registered hash matches what the preset references, so the cab
+            # will resolve.
             click.echo(f"uploaded IR {res.get('name') or path.name} ({hh})")
-        else:
+        elif res.get("ok") and res.get("registered") and dev_hash != hh:
+            # should not happen with atomic upload; surface loudly if it does
+            # (the preset references {hh} but the device registered {dev_hash},
+            # so the cab would not resolve).
+            click.echo(f"warning: {path.name} registered on device as {dev_hash} "
+                       f"but the preset references {hh} — cab may not resolve",
+                       err=True)
+        elif res.get("ok"):
             click.echo(f"warning: uploaded {path.name} but registration "
-                       f"unconfirmed ({hh})", err=True)
+                       f"unconfirmed ({hh}); verify later with "
+                       f"`helixgen device list-irs`", err=True)
+        else:
+            click.echo(f"warning: failed to upload {path.name} ({hh})", err=True)
 
 
 @cli.group(name="device")

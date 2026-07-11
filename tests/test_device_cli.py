@@ -178,3 +178,79 @@ def test_device_delete_yes_skips_prompt(monkeypatch):
     result = CliRunner().invoke(cli, ["device", "delete", "101", "--yes"])
     assert result.exit_code == 0
     assert holder["args"] == (-2, [101])
+
+
+# -- auto-load IRs (_auto_upload_irs) -----------------------------------------
+
+class _FakeMapping:
+    def __init__(self, table):
+        self._t = table  # hash -> path (or missing)
+
+    @classmethod
+    def _make(cls, table):
+        m = cls(table)
+        return m
+
+    def resolve_by_hash(self, hh):
+        if hh not in self._t:
+            raise KeyError(hh)
+        return self._t[hh]
+
+
+def _patch_auto(monkeypatch, table, push_results):
+    """Patch IrMapping.load + sftp.push_ir for _auto_upload_irs tests."""
+    import helixgen.ir as _ir
+    from helixgen.device import sftp as _sftp
+
+    monkeypatch.setattr(_ir.IrMapping, "load",
+                        classmethod(lambda cls: _FakeMapping(table)))
+    calls = []
+
+    def fake_push(ip, path, **kw):
+        calls.append((ip, str(path)))
+        return push_results.pop(0)
+
+    monkeypatch.setattr(_sftp, "push_ir", fake_push)
+    return calls
+
+
+def test_auto_upload_irs_hash_match_ok(monkeypatch, capsys):
+    from pathlib import Path
+    from helixgen.cli import _auto_upload_irs
+    _patch_auto(monkeypatch, {"aa11": Path("/irs/a.wav")},
+                [{"ok": True, "registered": True, "device_hash": "aa11",
+                  "name": "a", "already": False}])
+    _auto_upload_irs("1.2.3.4", ["aa11"])
+    out = capsys.readouterr()
+    assert "uploaded IR a (aa11)" in out.out
+    assert "warning" not in (out.out + out.err).lower()
+
+
+def test_auto_upload_irs_hash_mismatch_warns(monkeypatch, capsys):
+    """If the device registers a different hash than the preset references,
+    the cab won't resolve — must warn loudly."""
+    from pathlib import Path
+    from helixgen.cli import _auto_upload_irs
+    _patch_auto(monkeypatch, {"aa11": Path("/irs/a.wav")},
+                [{"ok": True, "registered": True, "device_hash": "ZZZZ",
+                  "name": "a", "already": False}])
+    _auto_upload_irs("1.2.3.4", ["aa11"])
+    err = capsys.readouterr().err
+    assert "may not resolve" in err
+    assert "aa11" in err and "ZZZZ" in err
+
+
+def test_auto_upload_irs_already_present(monkeypatch, capsys):
+    from pathlib import Path
+    from helixgen.cli import _auto_upload_irs
+    _patch_auto(monkeypatch, {"bb22": Path("/irs/b.wav")},
+                [{"already": True, "device_hash": "bb22"}])
+    _auto_upload_irs("1.2.3.4", ["bb22"])
+    assert "already on device" in capsys.readouterr().out
+
+
+def test_auto_upload_irs_not_registered_locally(monkeypatch, capsys):
+    from helixgen.cli import _auto_upload_irs
+    _patch_auto(monkeypatch, {}, [])  # resolve_by_hash raises -> skipped
+    _auto_upload_irs("1.2.3.4", ["nope"])
+    assert "not found locally" in capsys.readouterr().err

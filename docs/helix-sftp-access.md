@@ -129,13 +129,22 @@ A live IR import (drag a WAV onto a cab/IR block) showed the whole thing:
    correct hash/name (`/UserIRSet` was **not** needed for registration — it's for
    block assignment, not import).
 
-**Upshot for a safe upload:** `push-ir` = **just SFTP the `.wav` into `ir/`.** The
-device does the registration (db writes stay device-side; we never touch SQLite).
-The editor didn't upload the `_FULL/_THUMB` PNGs in the capture — the device
-appears to generate them (or they're optional). Duplicate hash → the device
-dedups (no second registration). This is about as low-risk as a device write
-gets, but it *is* a filesystem write — gate it behind explicit confirmation and
-test on one throwaway IR first (as we did: `cid 946`, `YA KW 412 M25 121-2`).
+**Upshot for a safe upload:** `push-ir` SFTPs the `.wav` into `ir/` and the
+device does the registration itself (db writes stay device-side; we never touch
+SQLite). The editor didn't upload the `_FULL/_THUMB` PNGs in the capture — the
+device appears to generate them (or they're optional). Duplicate hash → the
+device dedups (no second registration). This is about as low-risk as a device
+write gets, but it *is* a filesystem write — gate it behind explicit
+confirmation and test on one throwaway IR first (as we did: `cid 946`,
+`YA KW 412 M25 121-2`).
+
+> **The upload must be atomic.** The device auto-hashes any new `*.wav` the
+> instant it appears in `ir/`, so a plain streaming `put` straight to
+> `<name>.wav` lets the watcher fire **mid-transfer** and register the hash of a
+> half-written file. `upload_ir` therefore streams to a temp name the `*.wav`
+> watcher ignores (`.<name>.uploading`) and then **renames** it into place, so
+> the final `<name>.wav` only ever appears complete. See the root-cause finding
+> below.
 
 ## Findings from building `push-ir` (device write behavior)
 
@@ -150,15 +159,34 @@ inotify I first assumed. Confirmed by uploading several IRs:
    the old count/set after an upload until something refreshes it; `get_ref` by
    cid sees the new IR immediately. So confirm uploads by cid/name, not by
    re-listing (and don't trust the list's count right after a write).
-3. **helixgen `irhash` ≠ device hash for some files.** Uploading three IRs, the
-   device registered them under its own computed hash; for 2 of 3 that hash did
-   **not** match `helixgen.ir.compute_stadium_irhash` of the same file — and all
-   three were identical format (48 kHz / mono / 24-bit / 24000 frames), so it's
-   **not** a sample-rate/bit-depth issue. This is the real blocker for auto-load:
-   a preset references helixgen's hash, but the device knows the IR under a
-   different one, so the cab won't resolve. Tracked as its own investigation
-   (helixgen's irhash algorithm accuracy — affects the normal file workflow too,
-   not just device auto-load).
+3. **`push-ir`'d IRs registered under a wrong hash — ROOT-CAUSED (write race, not
+   an algorithm bug).** Uploading three IRs, the device registered 2 of 3 under a
+   hash that did **not** match `helixgen.ir.compute_stadium_irhash`. This was
+   *diagnosed*, not left open:
+
+   - The device's **own on-disk copy** of the mismatched IR is **byte-identical**
+     to the local file (`YA KW 412 M25 M69v-CNT.wav`, both md5 `877d6d85…`), and
+     helixgen hashes those exact device bytes to `0045e64c…` — the **correct**
+     value. helixgen's algorithm is fine (it matches **386/386** editor-imported
+     IRs on this device).
+   - Yet the device **registry** (OSC `/GetContainerContents`, `IrHashToPath`)
+     records `620d381f…` for that file — a hash that matches **neither** the
+     on-disk bytes nor any of the 573 files in the pack, and is not reproducible
+     from any truncated prefix or algorithm variant of the file.
+   - Conclusion: the device hashed **different bytes at registration time than
+     the bytes now on disk** — it auto-hashed the file **mid-transfer**, while
+     `push-ir`'s streaming `put` was still writing it, and never re-hashed once
+     the file completed. Editor imports don't hit this because the editor
+     triggers a rescan of the *finished* file (hence 386/386 match). The race is
+     intermittent, which is exactly the observed "2 of 3".
+
+   **Fix:** `upload_ir` now uploads **atomically** (stage to `.<name>.uploading`,
+   then rename to `<name>.wav`), so the device never sees a partial `.wav`. This
+   unblocks auto-load. A preset's helixgen `irhash` and the device's registered
+   hash now agree because the device only ever hashes the complete file.
+   *(On-device re-validation of the atomic path — and repairing the already-stale
+   `cid 947` registration — are device writes, done only with explicit user
+   sign-off.)*
 
 ## How this maps to helixgen
 
