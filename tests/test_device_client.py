@@ -136,3 +136,25 @@ def test_slot_label():
     assert slot_label(0) == "1A"
     assert slot_label(5) == "2B"
     assert slot_label(None) == ""
+
+
+def test_create_content_reads_new_cid_from_status_second_field():
+    # /CreateContent replies /status [reqid, newCid, code] (cid in 2nd field!)
+    h = HelixClient()
+    reply = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    _wire(h, [reply])
+    assert h.create_content(-2, 7, "x") == 930
+
+
+def test_create_content_none_on_nonzero_code():
+    h = HelixClient()
+    reply = osc_encode("/status", [("i", 1000), ("i", 5), ("i", 1)])  # code=1
+    _wire(h, [reply])
+    assert h.create_content(-2, 7, "x") is None
+
+
+def test_save_preset_with_cid_ok():
+    h = HelixClient()
+    reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
+    _wire(h, [reply])
+    assert h.save_preset_with_cid(930) is True

@@ -237,3 +237,39 @@ class HelixClient:
             return None
         m = self.find_by_pos(container, pos)
         return m.get("cid_") if m else None
+
+    # -- write current edit buffer to a new preset slot --------------------
+    def create_content(self, container: int, pos: int, name: str,
+                       ctype: int = 2) -> Optional[int]:
+        """Create an empty preset entry (`/CreateContent`); return its new CID.
+
+        Unlike other writes, ``/CreateContent`` replies ``/status [reqid,
+        newCid, code]`` — the new CID is in the second field, the ok-code in the
+        third.
+        """
+        import msgpack
+        for addr, args in self._rpc(
+                "/CreateContent",
+                [("i", container), ("i", pos), ("i", ctype),
+                 ("b", msgpack.packb({"name": name}))]):
+            if addr == "/status" and len(args) >= 3 and args[2] == 0:
+                return args[1]
+        return None
+
+    def save_preset_with_cid(self, cid: int, block_count: int = 0) -> bool:
+        """Persist the current edit buffer into an existing CID (`/SavePresetWithCID`)."""
+        return self._ok(self._rpc(
+            "/SavePresetWithCID", [("i", cid), ("i", 0), ("i", block_count)]))
+
+    def save_edit_buffer_to(self, container: int, pos: int, name: str) -> Optional[int]:
+        """Save the current edit buffer as a new preset at ``pos``; return its CID.
+
+        Mirrors the editor's "Save Preset As -> Save As New": CreateContent then
+        SavePresetWithCID.
+        """
+        cid = self.create_content(container, pos, name)
+        if cid is None:
+            return None
+        if not self.save_preset_with_cid(cid):
+            return None
+        return cid

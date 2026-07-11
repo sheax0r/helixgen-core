@@ -804,3 +804,33 @@ def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
         raise click.ClickException(str(e)) from e
     outfile.write_bytes(blob)
     click.echo(f"wrote {len(blob)} bytes to {outfile}")
+
+
+@device.command(name="save")
+@click.argument("name")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Destination setlist.")
+@click.option("--pos", type=int, required=True, help="Destination slot (posi).")
+@_device_option
+def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
+    """Save the device's CURRENT edit buffer as a new preset; prints the new CID.
+
+    Mirrors the editor's "Save Preset As -> Save As New". The target slot must be
+    empty. Whatever preset/edits are live on the device are persisted.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    container = _setlist_container(setlist)
+    try:
+        with HelixClient(ip, port) as h:
+            if h.find_by_pos(container, pos) is not None:
+                raise click.ClickException(
+                    f"{setlist} slot {pos} is not empty; refusing to overwrite")
+            new_cid = h.save_edit_buffer_to(container, pos, name)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if new_cid is None:
+        raise click.ClickException(f"failed to save edit buffer to {setlist} slot {pos}")
+    click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")

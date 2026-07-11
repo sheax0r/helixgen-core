@@ -171,6 +171,42 @@ Decoded, the codes render as 4-char tags such as `cg__`, `asnp`, `entt`,
 `cmnd`. To read them, decode the msgpack normally, then for each integer key
 unpack it to its 4 ASCII bytes (big-endian) to recover the tag.
 
+#### Preset content (`_sbepgsm`) top-level structure (decoded)
+
+The decoded `_sbepgsm` document is a map with these top-level 4CC keys:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `cg__` | map | **Config.** Holds `asnp` (active-snapshot index) and `entt` (see below), plus `nxt*` "next-id" counters. **Volatile** across a save (differs after save+reload). |
+| `hist` | int | Edit/undo **history** marker. **Volatile** (differs after save+reload). |
+| `pm__` | list | **Global/preset params** — a list of `{key_, type, val_}` entries, e.g. `key_ = "preset.clip.end"`. Stable across a byte-faithful save. |
+| `sfg_` | map | **Signal-flow graph** (the actual tone). Stable across a byte-faithful save. See below. |
+
+`cg__.entt` (config "entities") contains: `cmnd`, `ctm_`, `ctrl`, `sm_`,
+`snps` (an **8-element** snapshot array), `srcs`, `trgs` (controller sources /
+targets).
+
+`sfg_` (signal-flow graph) contains: `enbl` (enabled), `fcnt` (flow count), and
+`flow` — a **2-element list, one per DSP path**. Each flow entry is a map with:
+
+| `flow[]` key | Meaning |
+|--------------|---------|
+| `bcnt` | **block count** for this path (e.g. `28`) |
+| `blks` | **list of blocks** (the models + their params) |
+| `bmap` | block map / layout |
+| `cid_` | content id of this flow |
+| `enbl` | path enabled |
+| `snap` | per-path snapshot data |
+| `tid_` | path/topology id |
+
+**Save fidelity:** a `/SavePresetWithCID` (§6) reproduces `sfg_` and `pm__`
+**byte-for-byte**; only the volatile `hist` and `cg__` sections differ after a
+save + reload. So for tone content, compare/round-trip on `sfg_` + `pm__` and
+ignore `hist`/`cg__`.
+
+The full leaf-level field dictionary inside `blks` (per-block model id, param
+ids/values, controller wiring) is still being mapped — see §9.
+
 ### Leading 4-byte length prefix (some blobs)
 
 Some blobs carry a **leading 4-byte big-endian length** *before* the msgpack
@@ -239,8 +275,15 @@ All commands below are sent **from the DEALER to the device ROUTER on port
 2002**. **Convention:** the **first argument is a client-chosen request id**
 (any int32; a per-client counter is typical) that the device **echoes** in its
 reply, so you can correlate response to request. Reads follow a `/XxxGet` →
-`/getXxx` naming pattern. **Writes reply with `/status ,ibi`-style**
+`/getXxx` naming pattern. **Most writes reply with `/status`**
 `[reqid, code, n]` where **`code == 0` means OK** (`n` is a count/detail field).
+
+> **`/status` shape differs per command — read carefully.** The **majority** of
+> writes use `[reqid, code, n]` (code in the **second** field). But
+> **`/CreateContent` is the exception**: its `/status` is
+> `[reqid, newCid, code]` — the **second** field is the **new CID** and the
+> **third** field is the ok-code. When parsing a `/status`, key off which
+> command you sent; do not assume field 2 is always the code.
 
 Notation: typetags are shown OSC-style (`,iib` etc.). "msgpack[…]" = a `b` blob
 whose payload is a msgpack array; "msgpack{…}" = a `b` blob whose payload is a
@@ -253,16 +296,18 @@ msgpack map.
 | **LIST** | `/GetContainerContents` | `(reqid:i, containerCID:i)` | `,ibi` → `[reqid, msgpack-array-of-item-maps, trailing:i]` | Lists a container's items (dialect A maps). **Large replies chunk the blob** across multiple frames — reassemble before msgpack-decoding. |
 | **READ meta** | `/GetContentRef` | `(reqid:i, cid:i)` | item metadata map (dialect A) | Single item's metadata. On a root CID returns the container's friendly name. |
 | **LOAD** | `/LoadPresetWithCID` | `(reqid:i, cid:i)` | `/status`; then device streams `/setEditBuffer` + `/setPropertyValue` on **2001** | Loads a preset into the edit buffer. Full content arrives on the PUB stream, not in the 2002 reply. |
-| **CREATE (copy)** | `/AddContentsToContainer` | `(reqid:i, container:i, msgpack[srcCIDs], pos:i, 0:i, 0:i)` | `/status` | Copies the listed source CIDs into `container` at slot `pos`. **The new CID is NOT in the `/status` reply** — re-list the container and match by `posi`/`name` to discover it. Trailing two ints observed as `0,0` (**partially decoded**). |
-| **RENAME / set attrs** | `/SetContentAttrs` | `(reqid:i, cid:i, msgpack{name:"…"})` | `/status` | Sets item attributes; `{name:"…"}` renames. Other attr keys **UNVERIFIED**. |
-| **DELETE** | `/RemoveContent` | `(reqid:i, container:i, msgpack[cids])` | `/status` | Removes the listed CIDs from `container`. |
-| **IR path lookup** | `/IrPathForHashGet` | `(reqid:i, blob16:b)` | `/getIrPathForHash`-style reply (name **UNVERIFIED**) | IRs are referenced by a **16-byte hash**; this resolves a hash to its path/name. |
+| **CREATE (empty)** | `/CreateContent` | `(reqid:i, container:i, pos:i, ctype:i, msgpack{name:"…"})` | `/status [reqid, newCid, code]` | Creates a **new empty content entry** (e.g. an empty preset) in `container` at slot `pos`. `ctype = 2` observed for a **preset**. **Its `/status` is special:** field 2 is the **new CID**, field 3 is the ok-code (`0`=ok) — unlike every other write. This is the first step of "Save As New" (§7.1). |
+| **CREATE (copy)** | `/AddContentsToContainer` | `(reqid:i, container:i, msgpack[srcCIDs], pos:i, 0:i, 0:i)` | `/status [reqid, code, n]` | Copies the listed source CIDs into `container` at slot `pos`. **The new CID is NOT in this `/status`** — re-list the container and match by `posi`/`name` to discover it. Trailing two ints observed as `0,0` (**partially decoded**). |
+| **SAVE (persist buffer)** | `/SavePresetWithCID` | `(reqid:i, cid:i, 0:i, N:i)` | `/status [reqid, code, n]` | Persists the **current edit buffer** into an existing `cid`. The `0` third arg is fixed in captures. **`N` is an unknown 4th arg** — the editor sent `N=6` for a preset whose edit buffer had `bcnt=28` / 20 blocks, so **`N` is NOT the block count**; its meaning is unknown and **`N=0` works** (verified byte-faithful: after a `/SavePresetWithCID … 0` + reload, the `sfg_` and `pm__` sections are identical; only the volatile `hist`/`cg__` sections differ). |
+| **RENAME / set attrs** | `/SetContentAttrs` | `(reqid:i, cid:i, msgpack{name:"…"})` | `/status [reqid, code, n]` | Sets item attributes; `{name:"…"}` renames. Also used to set the preset **colour** via a `colr` key (`{colr:…}`) as the 3rd step of "Save As New" (§7.1). Other attr keys **partially decoded**. |
+| **DELETE** | `/RemoveContent` | `(reqid:i, container:i, msgpack[cids])` | `/status [reqid, code, n]` | Removes the listed CIDs from `container`. |
+| **IR path lookup** | `/IrPathForHashGet` | `(reqid:i, blob16:b)` | `/xxxIrxPathForHash1 [reqid, path:s]` | IRs are referenced by a **16-byte hash**; this resolves a hash to its on-device path. Reply address is literally `/xxxIrxPathForHash1`; the path is device-side, e.g. `"/data/stadium-family-fw/ir/<name>.wav"` (IR files live under `/data/stadium-family-fw/ir/`). |
 
 ### Live edit-buffer manipulation
 
 | Op | Address | Typetags / args | Reply | Notes |
 |----|---------|-----------------|-------|-------|
-| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, block, 0, paramId, floatValue, -1]` | edit-buffer update (echoed on 2001) | Sets one parameter live. `path` = signal-path/DSP index; `block` = block index within the path; the `0` and trailing `-1` are fixed in captures (**partially decoded** — see §9). `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f`; int/bool params are passed as their float encoding. |
+| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, block, 0, paramId, floatValue, -1]` | edit-buffer update (echoed on 2001) | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `block` = block index within the path (a reverb-block change was captured as `path=0, block=6`); the `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f`; int/bool params are passed as their float encoding. |
 | **MODEL SET** | `/ModelSet` | `,iiiii` → `[127, 0, 1, 0, modelId]` | edit-buffer update | Places/replaces a model. The leading ints in captures are literally `127, 0, 1, 0` (their exact roles — reqid? path? block? — are **partially decoded**); `modelId` is the **numeric** model id from the model defs (§8). |
 | **SNAPSHOT NAME** | `/SetSnapshotName` | `,iis` → `[reqid, snapshotIndex, "Name"]` | `/status` | Renames snapshot `snapshotIndex` (0–7). |
 | **EDIT BUFFER GET** | `/EditBufferStateGet` | `(reqid:i)` | `/getEditBufferState` → `[reqid, len:h, blob:b]` where blob = `_sbepgsm…` | Pulls the entire current edit buffer as the dialect-B blob (§4). `len` is an int64 (`h`) byte count. |
@@ -276,8 +321,9 @@ msgpack map.
 | Property value | `/PropertyValueGet` | `(reqid:i, …)` | `/getPropertyValue` |
 
 **UNVERIFIED / naming:** reply address names marked "-style" are inferred from
-the `/XxxGet`→`/getXxx` convention and may differ in exact casing. `/status`
-`code` values other than `0` (error taxonomy) are not yet catalogued.
+the `/XxxGet`→`/getXxx` convention and may differ in exact casing (the IR-path
+reply `/xxxIrxPathForHash1` is confirmed exact). `/status` `code` values other
+than `0` (error taxonomy) are not yet catalogued.
 
 ---
 
@@ -301,6 +347,24 @@ the reference "known-good" bring-up:
 
 After this the device streams live updates on 2001/2003. To just list/CRUD, you
 can skip straight to `/GetContainerContents` on the container you care about.
+
+### 7.1 "Save Preset As → Save As New" write sequence (live-verified)
+
+The editor's *Save Preset As → Save As New* action — the full **write path** for
+persisting the current edit buffer to a new slot — is this exact ordered sequence
+of four RPCs on 2002:
+
+1. **`/CreateContent (reqid, container, pos, ctype=2, {name})`** — create the
+   empty preset entry. **Grab the new CID from its special `/status [reqid,
+   newCid, code]`** (§6).
+2. **`/SavePresetWithCID (reqid, newCid, 0, N)`** — persist the current edit
+   buffer into that CID. `N=0` works (§6).
+3. **`/SetContentAttrs (reqid, newCid, {colr: …})`** — set the preset colour.
+4. **`/LoadPresetWithCID (reqid, newCid)`** — load the freshly-saved preset back
+   into the edit buffer.
+
+To author over the wire: build the desired edit buffer (via `/ModelSet` +
+`/ParamValueSet` on the current buffer), then run this sequence to persist it.
 
 ---
 
@@ -351,8 +415,10 @@ read directly to build name↔id maps:
 
 Layout: a small JSON header `{"id":["0x00260000"],"ver":"0x13000000","pbn":0 }`,
 a single `\0`, the 8-byte magic **`ldompgsm`** (reverse of `msgpmodl`), then a
-**msgpack map** keyed by model-string id (801 entries in the `1_3_0_0`
-Stadium/`p35` build; 615 of them `HD2_*`). Each value:
+**msgpack map** keyed by model-string id (**801 models** in the `1_3_0_0`
+Stadium/`p35` build; 615 of them `HD2_*`), across **~7065 params** in total.
+helixgen's `device/defs.py` extracts these into the `modelId` / `paramId`
+name↔id maps (801 models / 7065 params). Each value:
 
 ```jsonc
 {
@@ -423,25 +489,25 @@ footswitch/controller assignment commands are parameterised on the device.
 
 ## 9. Known-unknowns / TODO
 
-- **Full `_sbepgsm` field dictionary.** The dialect-B (§4) content blob's 4CC
-  keys (`cg__`, `asnp`, `entt`, `cmnd`, …) are only partially identified. A
-  complete field map (blocks, params, snapshots, routing, controllers) is
-  needed to author/read presets purely over the wire.
+- **Full `_sbepgsm` leaf field dictionary.** The **top-level** structure is now
+  decoded (`cg__`/`hist`/`pm__`/`sfg_`, §4). Still open: the per-block leaf
+  fields inside `sfg_.flow[].blks` (model id, param id↔value encoding,
+  controller wiring) and the exact `cg__.entt` sub-fields
+  (`cmnd`/`ctm_`/`ctrl`/`sm_`/`snps`/`srcs`/`trgs`).
 - **`_sbepgsm` ↔ `.hsp` mapping.** No converter exists between the device's
   edit-buffer schema and helixgen's `.hsp`. Building it (or a shared
   intermediate) is the main lift for full round-trip.
-- **`/ParamValueSet` indexing semantics.** The `path` and `block` argument
-  meanings (signal-path/DSP index vs. block-within-path; how splits/parallel
-  lanes are addressed) and the fixed `0` / trailing `-1` fields are not fully
-  pinned. Needs a diff sweep (change one known param, capture, correlate).
+- **`/SavePresetWithCID` 4th arg `N`.** Meaning unknown (not the block count;
+  editor sent `6`, `0` works byte-faithfully). Harmless but uncharacterised.
 - **`/ModelSet` leading args.** `127, 0, 1, 0` — which are reqid/path/block/flag
-  is unconfirmed; verify before relying on it for placement.
+  is unconfirmed; verify before relying on it for placement. (`/ParamValueSet`'s
+  `[reqid, path, block, 0, paramId, value, -1]` layout is now **confirmed live**.)
 - **`/status` error codes.** Only `code == 0` (OK) is confirmed; the non-zero
   error taxonomy is uncatalogued.
 - **2001 12-byte header field split** (§2) and **2003 framing** (assumed same as
   2002) are inferred, not verified.
-- **Reply address exact names** for some `/XxxGet` reads (e.g. IR-path lookup)
-  are inferred from the naming convention.
+- **`/CreateContent` `ctype`.** Only `ctype = 2` (preset) is observed; values
+  for setlist/IR creation are unknown.
 - **PIN / remote-access auth.** The device has a menu concept of remote-access /
   pairing (and a real `sshd` on 22 with publickey/password). Whether/how a PIN
   gates the ZMQ ports on some firmware, and how SSH keys are provisioned

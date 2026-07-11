@@ -52,6 +52,7 @@ def test_server_registers_documented_tools():
         "device_rename_preset",
         "device_delete_preset",
         "device_set_param",
+        "device_save_preset",
     }
     assert names == expected, f"unexpected tool set: {names}"
 

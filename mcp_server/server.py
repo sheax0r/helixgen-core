@@ -409,3 +409,22 @@ def device_set_param(
     return _tools.device_set_param_handler(
         model, ip=ip, path=path, block=block, param_id=param_id, value=value
     )
+
+
+@app.tool()
+def device_save_preset(
+    model: str,
+    name: str,
+    pos: int,
+    setlist: str = "user",
+    ip: str = "192.168.4.84",
+) -> dict[str, Any]:
+    """Save the device's CURRENT edit buffer as a new preset (Save As New).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Saves the live edit buffer
+    into `setlist` at slot `pos` (which must be empty) under `name`. Returns
+    `{"ok": <bool>, "cid": <new cid>}`.
+    """
+    return _tools.device_save_preset_handler(
+        model, ip=ip, name=name, setlist=setlist, pos=pos
+    )

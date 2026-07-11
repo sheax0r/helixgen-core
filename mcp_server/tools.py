@@ -631,3 +631,30 @@ def device_set_param_handler(
             return {"ok": bool(client.set_param(path, block, param_id, value))}
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
+
+
+def device_save_preset_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    name: str,
+    setlist: str = "user",
+    pos: int,
+) -> dict[str, Any]:
+    """Save the device's CURRENT edit buffer as a new preset at ``pos``.
+
+    Mirrors the editor's "Save As New". The target slot must be empty. Returns
+    ``{"ok": <bool>, "cid": <new cid or None>}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    container = _device_container(setlist)
+    try:
+        with HelixClient(ip=ip) as client:
+            if client.find_by_pos(container, pos) is not None:
+                raise ValueError(f"{setlist} slot {pos} is not empty")
+            new_cid = client.save_edit_buffer_to(container, pos, name)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": new_cid is not None, "cid": new_cid}
