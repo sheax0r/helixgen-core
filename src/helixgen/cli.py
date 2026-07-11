@@ -836,6 +836,61 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
 
 
+@device.command(name="push")
+@click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("name")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Destination setlist.")
+@click.option("--pos", type=int, required=True, help="Destination slot (posi); must be empty.")
+@_device_option
+def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: int) -> None:
+    """Install a local content file (.sbe backup) into a new preset slot.
+
+    Restores a backup / clones a preset / installs authored content. The target
+    slot must be empty.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    container = _setlist_container(setlist)
+    blob = infile.read_bytes()
+    try:
+        with HelixClient(ip, port) as h:
+            if h.find_by_pos(container, pos) is not None:
+                raise click.ClickException(f"{setlist} slot {pos} is not empty")
+            new_cid = h.push_to_slot(container, pos, name, blob)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if new_cid is None:
+        raise click.ClickException(f"failed to push {infile} into {setlist} slot {pos}")
+    click.echo(f"pushed {infile.name} as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
+
+
+@device.command(name="restore")
+@click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("cid", type=int)
+@_device_option
+def device_restore(infile: Path, cid: int, ip: str, port: int) -> None:
+    """Overwrite an EXISTING preset's content from a local file (.sbe).
+
+    Warning: replaces the content at CID in place.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    blob = infile.read_bytes()
+    try:
+        with HelixClient(ip, port) as h:
+            ok = h.set_content_data(cid, blob)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to restore content to cid {cid}")
+    click.echo(f"restored content of cid {cid} from {infile.name}")
+
+
 @device.command(name="backup")
 @click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
               default="user", show_default=True, help="Setlist to back up.")

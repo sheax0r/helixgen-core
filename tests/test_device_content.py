@@ -8,13 +8,17 @@ import pytest
 msgpack = pytest.importorskip("msgpack")
 
 from helixgen.device.content import (  # noqa: E402
+    CONTENT_DATA_MAGIC,
     MAGIC,
+    decode_any,
     decode_blob,
     decode_content,
     encode_content,
     fourcc_to_str,
     is_content_blob,
+    is_content_data,
     str_to_fourcc,
+    to_content_data,
 )
 
 
@@ -87,3 +91,28 @@ def test_decode_blob_sbepgsm_content():
 
 def test_decode_blob_empty():
     assert decode_blob(b"") is None
+
+
+def test_to_content_data_swaps_magic_and_drops_hist():
+    obj = {"cg__": {"a": 1}, "hist": 7, "pm__": [], "sfg_": {"flow": []}}
+    sbe = encode_content(obj)                 # _sbepgsm + all keys
+    assert sbe[:8] == MAGIC
+    cd = to_content_data(sbe)
+    assert cd[:8] == CONTENT_DATA_MAGIC
+    assert is_content_data(cd)
+    back = decode_any(cd)
+    assert "hist" not in back                 # volatile key dropped
+    assert back["cg__"] == {"a": 1}
+    assert back["sfg_"] == {"flow": []}
+
+
+def test_to_content_data_idempotent_on_stored():
+    obj = {"cg__": {}, "pm__": [], "sfg_": {}}
+    cd = to_content_data(encode_content(obj))
+    assert to_content_data(cd) == cd          # already stored -> unchanged
+
+
+def test_decode_any_handles_both_magics():
+    obj = {"cg__": 1, "pm__": 2, "sfg_": 3}
+    assert decode_any(encode_content(obj)) == {**obj, }
+    assert decode_any(to_content_data(encode_content(obj))) == obj

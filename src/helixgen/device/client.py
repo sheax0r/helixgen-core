@@ -327,3 +327,28 @@ class HelixClient:
                 pass
             return None
         return cid
+
+    # -- push arbitrary content to a preset (restore / clone / author) ------
+    def set_content_data(self, cid: int, blob: bytes) -> bool:
+        """Write preset content to an existing CID (`/SetContentData`).
+
+        ``blob`` may be either an edit-buffer (`_sbepgsm`) blob or an already
+        stored-content blob; it is converted as needed.
+        """
+        blob = _content.to_content_data(bytes(blob))
+        return self._ok(self._rpc("/SetContentData", [("i", cid), ("b", blob)]))
+
+    def push_to_slot(self, container: int, pos: int, name: str,
+                     blob: bytes) -> Optional[int]:
+        """Create a new preset at ``pos`` and write ``blob`` into it (restore a
+        backup / clone / install authored content).  Returns the new CID."""
+        cid = self.create_content(container, pos, name)
+        if cid is None:
+            return None
+        if not self.set_content_data(cid, blob):
+            try:
+                self.delete(container, [cid])
+            except HelixError:
+                pass
+            return None
+        return cid

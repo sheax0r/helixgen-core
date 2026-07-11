@@ -160,6 +160,20 @@ def test_save_preset_with_cid_ok():
     assert h.save_preset_with_cid(930) is True
 
 
+def test_set_content_data_converts_and_sends():
+    from helixgen.device import content as C
+    h = HelixClient()
+    reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
+    _wire(h, [reply])
+    # feed an edit-buffer (_sbepgsm) blob; set_content_data must convert it to
+    # the stored-content format before sending.
+    sbe = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    assert h.set_content_data(930, sbe) is True
+    sent = h.sock.sent[0]
+    assert b"/SetContentData" in sent
+    assert C.CONTENT_DATA_MAGIC in sent and C.MAGIC not in sent  # converted
+
+
 def test_malformed_reply_frame_raises_helixerror():
     # a frame that starts an OSC address but is never NUL-terminated -> the
     # parser raises ValueError, which _rpc must wrap as HelixError (not leak).
