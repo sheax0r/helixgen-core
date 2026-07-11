@@ -171,7 +171,26 @@ Decoded, the codes render as 4-char tags such as `cg__`, `asnp`, `entt`,
 `cmnd`. To read them, decode the msgpack normally, then for each integer key
 unpack it to its 4 ASCII bytes (big-endian) to recover the tag.
 
-#### Preset content (`_sbepgsm`) top-level structure (decoded)
+#### Two content encodings — edit-buffer vs. stored preset
+
+Preset content appears in **two encodings** that share the same msgpack body but
+differ in magic and in one key:
+
+| | Edit-buffer content | Stored preset content |
+|--|--------------------|-----------------------|
+| **Source / sink** | `/EditBufferStateGet` reply; `/setEditBuffer` stream | `/SetContentData` write; on-disk / imported presets |
+| **8-byte magic** | `_sbepgsm` (= `msgpebs_` reversed) | `\xff\xff\xff\xff pgsm` (= `msgp` + `0xFFFFFFFF`, reversed — sibling of `_sbepgsm` / `ldompgsm`) |
+| **Top-level keys** | `{cg__, hist, pm__, sfg_}` | `{cg__, pm__, sfg_}` — **same structure MINUS the volatile `hist`** |
+
+**Converting one form to the other = swap the 8-byte magic and add/drop the
+`hist` key.** To install an edit buffer as a stored preset (for
+`/SetContentData`): strip the `_sbepgsm` magic, drop `hist` from the msgpack
+map, re-encode, prepend the `\xff\xff\xff\xff pgsm` magic. To go the other way,
+add `hist` back (any value; it is volatile) and swap to `_sbepgsm`. Everything
+below about the `_sbepgsm` structure applies to both forms except the `hist`
+row.
+
+#### Preset content top-level structure (decoded)
 
 The decoded `_sbepgsm` document is a map with these top-level 4CC keys:
 
@@ -376,6 +395,7 @@ msgpack map.
 | **CREATE (empty)** | `/CreateContent` | `(reqid:i, container:i, pos:i, ctype:i, msgpack{name:"…"})` | `/status [reqid, newCid, code]` | Creates a **new empty content entry** (e.g. an empty preset) in `container` at slot `pos`. `ctype = 2` observed for a **preset**. **Its `/status` is special:** field 2 is the **new CID**, field 3 is the ok-code (`0`=ok) — unlike every other write. This is the first step of "Save As New" (§7.1). |
 | **CREATE (copy)** | `/AddContentsToContainer` | `(reqid:i, container:i, msgpack[srcCIDs], pos:i, 0:i, 0:i)` | `/status [reqid, code, n]` | Copies the listed source CIDs into `container` at slot `pos`. **The new CID is NOT in this `/status`** — re-list the container and match by `posi`/`name` to discover it. Trailing two ints observed as `0,0` (**partially decoded**). |
 | **SAVE (persist buffer)** | `/SavePresetWithCID` | `(reqid:i, cid:i, 0:i, N:i)` | `/status [reqid, code, n]` | Persists the **current edit buffer** into an existing `cid`. The `0` third arg is fixed in captures. **`N` is an unknown 4th arg** — the editor sent `N=6` for a preset whose edit buffer had `bcnt=28` / 20 blocks, so **`N` is NOT the block count**; its meaning is unknown and **`N=0` works** (verified byte-faithful: after a `/SavePresetWithCID … 0` + reload, the `sfg_` and `pm__` sections are identical; only the volatile `hist`/`cg__` sections differ). |
+| **WRITE content** | `/SetContentData` | `(reqid:i, cid:i, contentBlob:b)` | `/status [reqid, code, n]` | Writes preset **content** directly into an existing `cid`, replacing it. `contentBlob` is the **stored-preset** encoding (`\xff\xff\xff\xff pgsm` magic — see §4 "content encodings"), **not** the edit-buffer `_sbepgsm` form. This is how the editor installs an **imported** preset (it also sends `/SetContentAttrs` for name/colour and `/LoadPresetWithCID` after). Live-verified: used to restore a preset **byte-faithfully**. Combined with `/CreateContent` (§7.1) this is the full "author arbitrary content into a new slot" path. |
 | **RENAME / set attrs** | `/SetContentAttrs` | `(reqid:i, cid:i, msgpack{name:"…"})` | `/status [reqid, code, n]` | Sets item attributes; `{name:"…"}` renames. Also used to set the preset **colour** via a `colr` key (`{colr:…}`) as the 3rd step of "Save As New" (§7.1). Other attr keys **partially decoded**. |
 | **DELETE** | `/RemoveContent` | `(reqid:i, container:i, msgpack[cids])` | `/status [reqid, code, n]` | Removes the listed CIDs from `container`. |
 | **IR path lookup** | `/IrPathForHashGet` | `(reqid:i, blob16:b)` | `/xxxIrxPathForHash1 [reqid, path:s]` | IRs are referenced by a **16-byte hash**; this resolves a hash to its on-device path. Reply address is literally `/xxxIrxPathForHash1`; the path is device-side, e.g. `"/data/stadium-family-fw/ir/<name>.wav"` (IR files live under `/data/stadium-family-fw/ir/`). |
@@ -440,8 +460,43 @@ of four RPCs on 2002:
 4. **`/LoadPresetWithCID (reqid, newCid)`** — load the freshly-saved preset back
    into the edit buffer.
 
-To author over the wire: build the desired edit buffer (via `/ModelSet` +
-`/ParamValueSet` on the current buffer), then run this sequence to persist it.
+This flow persists **whatever is currently in the edit buffer**. Build that
+buffer first via `/ModelSet` + `/ParamValueSet` on the live buffer, then run the
+sequence to persist it.
+
+### 7.2 "Import Preset" — install arbitrary content into a CID (live-verified)
+
+The editor's *Import Preset* installs a preset **blob** it already has (from a
+file) directly into an existing CID via `/SetContentData` — it does **not** go
+through the edit buffer, and it **overwrites the currently-selected preset's
+CID** rather than auto-creating a new slot. Observed sequence on 2002:
+
+1. **`/GetContainerContents (reqid, container)`** — locate the target CID.
+2. **`/SetContentAttrs (reqid, cid, {name, colr, blck, flow})`** — set metadata
+   (name, colour, block count, flow) to match the incoming preset.
+3. **`/SetContentData (reqid, cid, storedBlob)`** — write the content. `storedBlob`
+   is the **stored-preset encoding** (`\xff\xff\xff\xff pgsm` magic, no `hist`;
+   §4 "content encodings").
+4. **`/LoadPresetWithCID (reqid, cid)`** — load it into the edit buffer.
+5. **`/IrPathForHashGet (reqid, blob16 hash)`** for each IR the preset references.
+
+Used live to **restore a preset byte-faithfully**.
+
+### 7.3 Full authoring path (create a new slot + install content)
+
+Combine the two: `/CreateContent` mints a fresh CID, then `/SetContentData`
+installs arbitrary content into it (no edit-buffer round-trip required):
+
+```
+/CreateContent (reqid, container, pos, ctype=2, {name})   -> new cid (from /status field 2)
+/SetContentData (reqid, cid, storedBlob)                  -> install stored-preset content
+/SetContentAttrs (reqid, cid, {name, colr, blck, flow})   -> metadata (optional; may precede data)
+/LoadPresetWithCID (reqid, cid)                            -> make it live
+```
+
+`storedBlob` is produced from an edit buffer (or a helixgen-built preset) by the
+magic-swap + drop-`hist` conversion in §4. This is the recommended path for
+authoring a **new** preset from scratch without clobbering an existing slot.
 
 ---
 
