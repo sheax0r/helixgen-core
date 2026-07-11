@@ -834,3 +834,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     if new_cid is None:
         raise click.ClickException(f"failed to save edit buffer to {setlist} slot {pos}")
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
+
+
+if __name__ == "__main__":  # allow `python -m helixgen.cli ...`
+    cli()
