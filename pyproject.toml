@@ -52,7 +52,7 @@ where = ["src", "."]
 include = ["helixgen*", "mcp_server*"]
 
 [tool.setuptools.package-data]
-"helixgen.device" = ["_defs_data.json"]
+"helixgen.device" = ["_defs_data.json", "_modelmap.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

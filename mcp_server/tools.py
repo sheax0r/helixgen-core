@@ -633,6 +633,50 @@ def device_set_param_handler(
         raise ValueError(f"device error: {e}") from e
 
 
+def device_install_preset_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    hsp_b64: str,
+    name: str,
+    pos: int,
+    setlist: str = "user",
+    template_cid: int | None = None,
+) -> dict[str, Any]:
+    """Author a helixgen .hsp (base64) onto the device as a new preset.
+
+    Maps the preset's blocks onto a device template's same-category slots
+    (v2.2: single serial chain) and installs it. ``template_cid`` picks a device
+    preset to use as the chain template (defaults to the current edit buffer).
+    Returns ``{"ok": <bool>, "cid": <new cid or None>}``. EXPERIMENTAL.
+    """
+    _validate_model(model)
+    import json as _json
+    from helixgen.hsp import is_hsp_bytes
+    from helixgen.device import HelixClient, HelixError, bridge
+
+    raw = base64.b64decode(hsp_b64)
+    if not is_hsp_bytes(raw):
+        raise ValueError("not a .hsp document (bad magic)")
+    body = _json.loads(raw[8:].decode("utf-8"))
+    container = _device_container(setlist)
+    try:
+        with HelixClient(ip=ip) as client:
+            if client.find_by_pos(container, pos) is not None:
+                raise ValueError(f"{setlist} slot {pos} is not empty")
+            if template_cid is not None:
+                client.load_preset(template_cid)
+            template_blob = client.get_edit_buffer()
+            try:
+                cid = bridge.install_recipe(client, body, container, pos, name,
+                                            template_blob, strict=True)
+            except (bridge.UnresolvedModel, ValueError) as e:
+                raise ValueError(str(e)) from e
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": cid is not None, "cid": cid}
+
+
 def device_save_preset_handler(
     model: str,
     *,
