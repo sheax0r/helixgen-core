@@ -115,12 +115,27 @@ db). Registration/assignment commands in the editor binary:
   **watches the `ir/` directory**, so a dropped file may be auto-detected.
 - Assignment to a cab/IR block: `/setUserIR`, `/setTargetIR`, `/setSnapshotIR`.
 
-**Upshot for a safe upload:** SFTP the `.wav` into `ir/` (device may also want the
-`_FULL.png`/`_THUMB.png` waveform images, or it generates them), then trigger the
-**device-mediated** registration (`/UserIRSet` or the watched-dir auto-scan) —
-do **not** write the SQLite db directly. The exact `/UserIRSet` argument shape
-still needs one live-import capture to pin down. Every step here is a device
-write (brick-risk) and must be gated behind explicit confirmation + testing.
+### Import flow — CONFIRMED by live capture
+
+A live IR import (drag a WAV onto a cab/IR block) showed the whole thing:
+
+1. Editor **SFTP-uploads** the `.wav` to `/data/stadium-family-fw/ir/<name>.wav`
+   (`libssh2_sftp_open_ex` with WRITE|CREAT). That's the only client-side write.
+2. The **device auto-registers it**: it watches `ir/`, and on the new file it
+   computes the hash, writes the `Content`/`IRContent`/`IrHashToPath` rows
+   **itself** (as root), and broadcasts **`/addContent`** on the 2001 PUB stream:
+   `[_, _, msgpack{ccid:-11, cctp:1002, cid_:<new>, hash:<16 bytes>, mono:…}]`.
+   Verified: after the upload, `GetContentRef(<new cid>)` returns the IR with the
+   correct hash/name (`/UserIRSet` was **not** needed for registration — it's for
+   block assignment, not import).
+
+**Upshot for a safe upload:** `push-ir` = **just SFTP the `.wav` into `ir/`.** The
+device does the registration (db writes stay device-side; we never touch SQLite).
+The editor didn't upload the `_FULL/_THUMB` PNGs in the capture — the device
+appears to generate them (or they're optional). Duplicate hash → the device
+dedups (no second registration). This is about as low-risk as a device write
+gets, but it *is* a filesystem write — gate it behind explicit confirmation and
+test on one throwaway IR first (as we did: `cid 946`, `YA KW 412 M25 121-2`).
 
 ## How this maps to helixgen
 
