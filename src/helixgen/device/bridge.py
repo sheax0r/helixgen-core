@@ -55,6 +55,38 @@ def build_parm(model_id: int, overrides: Dict[str, Any]) -> List[dict]:
     return parm
 
 
+def _norm(s: str) -> str:
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+def map_params(model_id: int, src_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Map helixgen param names -> device param names for a model.
+
+    Device and helixgen mostly share param names (Tone/Level/Bass/Mix/…) but a
+    few differ (helixgen "Drive" vs device "Gain"). Strategy: exact/normalized
+    name match first, then assign any leftover helixgen params to the remaining
+    device params by position (both are in canonical param order). Returns
+    ``{device_param_name: value}`` for use by :func:`build_parm`.
+    """
+    dev = defs.load_defs().get("model_params", {}).get(str(model_id), {})
+    dev_names = list(dev.keys())
+    by_norm = {_norm(n): n for n in dev_names}
+    out: Dict[str, Any] = {}
+    leftover: List[Tuple[str, Any]] = []
+    used = set()
+    for hn, v in src_params.items():
+        dn = by_norm.get(_norm(hn))
+        if dn is not None:
+            out[dn] = v
+            used.add(dn)
+        else:
+            leftover.append((hn, v))
+    remaining = [n for n in dev_names if n not in used]
+    for (_hn, v), dn in zip(leftover, remaining):
+        out[dn] = v
+    return out
+
+
 def _user_blocks(doc: dict) -> List[Tuple[int, dict]]:
     """Return (flow-position, block-dict) for user blocks (skip input/output)."""
     out = []
@@ -122,3 +154,76 @@ def install_chain(client, container: int, pos: int, name: str,
     """Author ``chain`` onto ``template_blob`` and install it as a new preset."""
     blob = content_from_template(template_blob, chain)
     return client.push_to_slot(container, pos, name, blob)
+
+
+# --- helixgen .hsp -> device chain ------------------------------------------
+
+def _default_resolve_model(helixgen_model_id: str) -> Optional[int]:
+    """Resolve a helixgen model-id string to a device numeric id.
+
+    Prefers the reconciled modelmap (helixgen<->device vocabulary); falls back to
+    a direct defs lookup for the models whose names already match.
+    """
+    try:
+        from . import modelmap
+        dev = modelmap.device_model_id(helixgen_model_id)
+        if dev is not None:
+            return dev
+    except Exception:
+        pass
+    return defs.model_id_for(helixgen_model_id)
+
+
+class UnresolvedModel(Exception):
+    def __init__(self, model_id: str):
+        super().__init__(f"could not resolve helixgen model {model_id!r} to a device model")
+        self.model_id = model_id
+
+
+def hsp_to_chain(hsp_body: dict, *, dsp: int = 0,
+                 resolve_model=_default_resolve_model,
+                 strict: bool = True) -> List[Tuple[int, Dict[str, Any]]]:
+    """Extract an ordered device chain from a helixgen ``.hsp`` body.
+
+    Input/output endpoints are skipped; each user block's helixgen model is
+    resolved to a device id and its params flattened to ``{name: value}``.
+    ``strict`` raises :class:`UnresolvedModel` on a model that can't be resolved;
+    otherwise the block is skipped.
+    """
+    flow = hsp_body["preset"]["flow"][dsp]
+    chain: List[Tuple[int, Dict[str, Any]]] = []
+    for key in sorted(k for k in flow if isinstance(k, str) and k.startswith("b")):
+        b = flow[key]
+        if not isinstance(b, dict):
+            continue
+        slot = b.get("slot")
+        if not (isinstance(slot, list) and slot and isinstance(slot[0], dict)):
+            continue
+        model = slot[0].get("model")
+        if not model:
+            continue
+        dev_id = resolve_model(model)
+        if dev_id is None:
+            if strict:
+                raise UnresolvedModel(model)
+            continue
+        cat = device_category(dev_id)
+        if cat in (None, "input", "output"):
+            continue
+        raw = {}
+        for name, wrapped in (slot[0].get("params") or {}).items():
+            val = wrapped.get("value") if isinstance(wrapped, dict) else wrapped
+            if isinstance(val, (int, float)):
+                raw[name] = val
+        params = map_params(dev_id, raw)   # helixgen param names -> device names
+        chain.append((dev_id, params))
+    return chain
+
+
+def install_recipe(client, hsp_body: dict, container: int, pos: int, name: str,
+                   template_blob: bytes, *, dsp: int = 0,
+                   resolve_model=_default_resolve_model,
+                   strict: bool = True) -> Optional[int]:
+    """Author a helixgen ``.hsp`` body onto ``template_blob`` and install it."""
+    chain = hsp_to_chain(hsp_body, dsp=dsp, resolve_model=resolve_model, strict=strict)
+    return install_chain(client, container, pos, name, template_blob, chain)
