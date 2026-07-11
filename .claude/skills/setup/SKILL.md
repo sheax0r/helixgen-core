@@ -41,6 +41,20 @@ IR block.
 
 In order, every session:
 
+### -1. Verify `uv` is on PATH
+
+The helixgen MCP server launches via `uv run --with mcp --with click`, which
+auto-provisions its Python deps in an ephemeral env — but `uv` itself must be
+installed. If the `mcp__helixgen__*` tools aren't showing up, this is the
+first thing to check (before assuming a helixgen install problem in step 0).
+
+Run `which uv` (or `command -v uv`) via Bash. If it resolves, proceed — no
+need to mention it to the user. If missing, tell them in one line:
+
+> "The helixgen MCP server needs `uv` to launch. Install it with `brew
+> install uv` (macOS) or `curl -LsSf https://astral.sh/uv/install.sh | sh`,
+> then restart Claude Code so the MCP server can start."
+
 ### 0. Verify helixgen is installed
 
 Check whether the `mcp__helixgen__*` tools appear in the agent's tool list.

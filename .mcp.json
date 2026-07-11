@@ -1,8 +1,10 @@
 {
   "mcpServers": {
     "helixgen": {
-      "command": "python",
-      "args": ["-m", "mcp_server"],
+      "command": "uv",
+      "args": ["run", "--no-project",
+               "--with", "mcp>=1.0,<2.0", "--with", "click>=8.1",
+               "-m", "mcp_server"],
       "env": {
         "MCP_TRANSPORT": "stdio",
         "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}:${CLAUDE_PLUGIN_ROOT}/src",

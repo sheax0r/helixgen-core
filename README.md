@@ -4,24 +4,27 @@ A Claude Code plugin that generates Line 6 Helix Stadium presets from natural-la
 
 ![Demo: register an IR, ask Claude /tone for a U2 "Streets" rhythm clean, generate the .hsp](docs/demo.gif)
 
-> ⚠️ **Unofficial tool — use at your own risk.** Not affiliated with or endorsed by Line 6 / Yamaha (see the [Trademark notice](#trademark-notice) below). helixgen produces preset files that you import via HX Edit; loading any user-generated preset on your hardware carries non-zero risk — rejected loads, corrupted preset slots, on-device crashes, or other behavior we haven't seen. Review what you import. The MIT license under which helixgen is distributed disclaims all warranty; see [LICENSE](LICENSE).
+> ⚠️ **Unofficial tool — use at your own risk.** Not affiliated with or endorsed by Line 6 / Yamaha (see [Trademark notice](#trademark-notice)). Loading any user-generated preset on your hardware carries risk — rejected loads, corrupted preset slots, on-device crashes. Review what you import. The MIT [LICENSE](LICENSE) disclaims all warranty.
 
 ## Install
 
-helixgen is a Claude Code plugin backed by a Python package. Requires **Python 3.11+**. You need both:
+helixgen is a Claude Code plugin. Requires **Python 3.11+**.
 
 ```
 /plugin marketplace add sheax0r/helixgen
 /plugin install helixgen@helixgen
 ```
 
+The plugin bundles the generator code *and* the block library, so it works out of the box. The only thing it needs from your environment is [`uv`](https://docs.astral.sh/uv/) on your `PATH` — the MCP server uses it to auto-provision `mcp` + `click` into an isolated, ephemeral env on first launch, so nothing touches your system Python:
+
 ```bash
-pip install "helixgen[mcp] @ git+https://github.com/sheax0r/helixgen.git@stable"
+brew install uv                                        # macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh         # or see docs.astral.sh/uv
 ```
 
-The plugin contributes the `/tone` skill, a `setup` skill, and an MCP server. The pip package is the actual generator the MCP server invokes; without it the MCP tools can't import their handler module. **The `[mcp]` extra is required** — it pulls in the `mcp` SDK the server needs; installing plain `helixgen` (helixgen + `click` only) leaves the MCP tools unable to start. The pip install pins to the same `stable` branch the plugin install does, so the two always agree on version.
+That's the whole setup — there's no separate `helixgen` package to install. The plugin contributes the `/tone` and `setup` skills plus an MCP server, which loads its bundled code and library from the plugin directory.
 
-**CLI-only (no plugin):** if you use the Python CLI directly instead of the Claude Code plugin, you must first populate the block library — a fresh install has an empty `~/.helixgen/library/`. Run `helixgen bootstrap` (clones and ingests the [sensorium/phelix](https://github.com/sensorium/phelix) catalog) or point `$HELIXGEN_LIBRARY` at an existing library. The plugin ships with bundled library data, so `/tone` works out of the box.
+**Using the Python CLI directly** (no plugin)? See [`docs/CLI.md`](docs/CLI.md) — a standalone install starts with an empty library, so seed it first with `helixgen bootstrap`.
 
 ## Use it
 
@@ -31,13 +34,13 @@ In any Claude Code session, type something like:
 
 A good prompt usually includes (a) your guitar (model and pickup type are most useful), (b) the musical style or a band/song reference, and (c) the role(s) you need. The skill will ask you for anything missing.
 
-What the skill does: drafts a spec, runs the generator, and reports back with the chain, your guitar-side knob/selector settings, the file path, and one suggested tweak after you load it. Multi-part requests ("rhythm + lead", "verse + chorus + solo") are bundled into snapshots automatically; fundamentally different sounds get split into separate presets.
+What the skill does: designs the chain, generates the `.hsp`, and reports back with the signal chain, your guitar-side knob/selector settings, the file path, and one suggested tweak to try after loading. Multi-part requests ("rhythm + lead", "verse + chorus + solo") become snapshots in one preset; fundamentally different sounds get split into separate presets.
 
-**Iterate on the tone.** Generation is the start, not the end. After you load the preset on your device, come back to the same Claude Code session and describe what's off — *"the lead is too compressed,"* *"verses are too dark, more sparkle,"* *"swap the delay for something shorter and slappier,"* *"clean snapshot needs a touch of room reverb."* Claude will adjust the spec, regenerate, and tell you what changed so you can A/B against the previous version. Same `.hsp` filename by default, so you just re-import.
+**Iterate on the tone.** Generation is the start, not the end. After loading the preset, come back to the same session and describe what's off — *"the lead is too compressed,"* *"verses are too dark, more sparkle,"* *"swap the delay for something shorter and slappier,"* *"clean snapshot needs a touch of room reverb."* Claude adjusts the preset in place and tells you what changed, so you can A/B against the previous version. Same `.hsp` filename by default — just re-import.
 
 ## Impulse Responses (IRs)
 
-helixgen supports user IRs in Stadium presets — `With Pan` blocks (and the rest of the `HX2_ImpulseResponse*` family) can reference a `.wav` file by basename, and helixgen will resolve it to the 32-character `irhash` the device expects. Stadium identifies user IRs by a content-derived hash, not by filename or slot. helixgen reproduces that hash bit-identically without any device round-trip, so you can register an entire IR library once and reference IRs by name in any spec the `/tone` skill writes.
+Stadium identifies user IRs by a content-derived hash, not by filename or slot. helixgen reproduces that 32-character `irhash` bit-identically — no device round-trip — so you can register an IR library once and then reference IRs by `.wav` basename in any preset the `/tone` skill writes (`With Pan` blocks and the rest of the `HX2_ImpulseResponse*` family).
 
 In Claude Code, ask the skill to register an IR — it can call the MCP `register_ir` tool (one file) or `register_irs` (a whole directory, in one round-trip) without needing Bash permission. Memory will remember your IR directory after the first time.
 
