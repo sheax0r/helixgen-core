@@ -90,45 +90,40 @@ def get_container_contents(sock, container_cid, first_wait=2.0, settle=0.4):
     return items
 
 
+# Well-known virtual setlist container slots (discovered by reverse-engineering).
+SETLIST_SLOTS = [(-1, 'FACTORY'), (-2, 'USER'), (-5, 'Throwaway')]
+SLOT_LABELS = 'ABCD'
+
+
+def slot_label(posi):
+    """Device 'posi' -> Helix bank/slot label, e.g. 0 -> '1A', 5 -> '2B'."""
+    if posi is None:
+        return ''
+    return '%d%s' % (posi // 4 + 1, SLOT_LABELS[posi % 4])
+
+
 def main():
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.DEALER)
     sock.setsockopt(zmq.LINGER, 0)
-    sock.setsockopt(zmq.RCVTIMEO, 2000)
-    print('connecting DEALER -> tcp://%s:%d' % (DEVICE, CMD_PORT))
+    print('connecting DEALER -> tcp://%s:%d ...' % (DEVICE, CMD_PORT))
     sock.connect('tcp://%s:%d' % (DEVICE, CMD_PORT))
     time.sleep(0.6)  # let ZMTP handshake settle before first send
 
-    # Enumerate the root container to discover setlists.
-    print('enumerating root container (%d)...' % ROOT)
-    roots = get_container_contents(sock, ROOT)
-    if not roots:
-        print('NO REPLY — device may require a handshake command first, or wrong port.')
-        return
-
-    def name(m): return m.get('name', '?')
-    def cid(m):  return m.get('cid_')
-    def ctp(m):  return m.get('cctp')
-
-    print('\n=== root items (%d) ===' % len(roots))
-    for m in roots:
-        print('  cid=%-6s cctp=%-5s %s' % (cid(m), ctp(m), name(m)))
-
-    # Recurse one level: list each container's presets.
-    print('\n=== preset lists ===')
-    for m in roots:
-        c = cid(m)
-        if c is None:
-            continue
-        kids = get_container_contents(sock, c)
-        presets = [k for k in kids if k.get('name')]
+    any_reply = False
+    for slot, label in SETLIST_SLOTS:
+        presets = [m for m in get_container_contents(sock, slot) if m.get('cctp') == 1000]
         if not presets:
             continue
-        print('\n[%s]  (cid=%s, %d entries)' % (name(m), c, len(presets)))
-        for k in presets:
-            pos = k.get('posi')
-            print('   %3s  cid=%-6s %s' % (pos if pos is not None else '', cid(k), name(k)))
+        any_reply = True
+        presets.sort(key=lambda m: (m.get('posi') if m.get('posi') is not None else 1e9))
+        print('\n=== Setlist %s (container %d, %d presets) ===' % (label, slot, len(presets)))
+        for m in presets:
+            print('  %-4s cid=%-6s %s' % (
+                slot_label(m.get('posi')), m.get('cid_'), m.get('name', '?')))
 
+    if not any_reply:
+        print('NO REPLY — device unreachable, or protocol/port changed.')
     sock.close()
 
 
