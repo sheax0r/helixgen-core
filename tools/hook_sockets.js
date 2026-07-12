@@ -124,7 +124,35 @@ function hookIovSend(name, iovArg, cntArg, viaMsghdr) {
       try { send({ dir: 'INFO', msg: 'SFTP_RENAME ' + args[1].readUtf8String(args[2].toInt32()) + ' -> ' + args[3].readUtf8String(args[4].toInt32()) }); } catch (e) {}
     }
   });
-  send({ dir: 'INFO', msg: 'libssh2 SFTP hooks: open=' + !!so + ' unlink=' + !!su });
+  // close / fsync / fsetstat / fstat — prime suspects for a post-write
+  // registration trigger the editor uses that a plain paramiko put does not.
+  const scl = Module.findGlobalExportByName('libssh2_sftp_close_handle');
+  if (scl) Interceptor.attach(scl, {
+    onEnter() { try { send({ dir: 'INFO', msg: 'SFTP_CLOSE handle' }); } catch (e) {} }
+  });
+  const sfs = Module.findGlobalExportByName('libssh2_sftp_fsync');
+  if (sfs) Interceptor.attach(sfs, {
+    onEnter() { try { send({ dir: 'INFO', msg: 'SFTP_FSYNC' }); } catch (e) {} }
+  });
+  const sst = Module.findGlobalExportByName('libssh2_sftp_fstat_ex');
+  if (sst) Interceptor.attach(sst, {
+    onEnter(args) { try { send({ dir: 'INFO', msg: 'SFTP_FSTAT setstat=' + args[2].toInt32() }); } catch (e) {} }
+  });
+  // channel exec / process startup — in case the editor runs a remote command
+  // (e.g. a rescan/register helper) rather than pure SFTP.
+  const cps = Module.findGlobalExportByName('libssh2_channel_process_startup');
+  if (cps) Interceptor.attach(cps, {
+    onEnter(args) {
+      try {
+        const req = args[1].readUtf8String(args[2].toInt32());
+        let msg = '';
+        try { msg = args[3].readUtf8String(args[4].toInt32()); } catch (e) {}
+        send({ dir: 'INFO', msg: 'SSH_CHANNEL ' + req + ' :: ' + msg });
+      } catch (e) {}
+    }
+  });
+  send({ dir: 'INFO', msg: 'libssh2 SFTP hooks: open=' + !!so + ' unlink=' + !!su
+        + ' close=' + !!scl + ' fsync=' + !!sfs + ' fstat=' + !!sst + ' exec=' + !!cps });
 }
 
 send({ dir: 'INFO', msg: 'OSC hooks installed for ' + DEVICE_IP + '; symbols=' + installed.join(',') });

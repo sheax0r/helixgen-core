@@ -160,15 +160,16 @@ class HelixSFTP:
 
     # -- write (device filesystem — the device auto-registers the file) ----
     def upload_ir(self, local_path: str, *, remote_name: Optional[str] = None) -> str:
-        """Upload a local `.wav` into the device's IR directory **atomically**.
+        """Upload a local `.wav` straight into the device's IR directory.
 
-        The device watches ``ir/`` and auto-hashes any new ``*.wav`` the instant
-        it appears. A plain streaming ``put`` straight to ``<name>.wav`` lets the
-        watcher fire mid-transfer and register the hash of a *half-written* file
-        — the file on disk ends up complete, but the device's registry keeps the
-        transient (wrong) hash forever. To avoid that race we stream to a temp
-        name the ``*.wav`` watcher ignores, then rename it into place; the final
-        ``<name>.wav`` only ever appears complete.
+        Mirrors the editor's import exactly: a direct ``open(write|create|trunc)``
+        write to ``ir/<name>.wav``. (The editor writes directly, not via a
+        temp+rename — a rename lands as ``IN_MOVED_TO`` which does **not** trigger
+        the device's registration; a direct create does.) **Caller must upload
+        the device-canonical *processed* IR** (``helixgen.ir.write_stadium_ir``),
+        not a raw source WAV — the device registers an IR by MD5-ing the file's
+        data chunk, and only the processed 8192-sample file hashes to the
+        ``irhash`` a preset references. See :func:`push_ir`.
 
         Returns the remote path. **This writes to the device filesystem.**
         """
@@ -177,81 +178,67 @@ class HelixSFTP:
             raise HelixError(f"no such IR file: {local_path}")
         name = remote_name or local.name
         remote = f"{self.ir_dir}/{name}"
-        # Dotfile + non-.wav suffix so the device's `*.wav` watcher skips it
-        # until the atomic rename below exposes the complete file.
-        staging = f"{self.ir_dir}/.{name}.uploading"
         try:
-            self._sftp.put(str(local), staging)
-            # posix_rename (openssh ext) is a true atomic replace; fall back to
-            # plain rename (needs the target absent) if the server lacks it.
-            try:
-                self._sftp.posix_rename(staging, remote)
-            except (AttributeError, IOError):
-                try:
-                    self._sftp.remove(remote)
-                except IOError:
-                    pass
-                self._sftp.rename(staging, remote)
+            self._sftp.put(str(local), remote)
         except Exception as exc:
-            try:
-                self._sftp.remove(staging)
-            except Exception:
-                pass
             raise HelixError(f"upload {local} -> {remote} failed: {exc}") from exc
         return remote
 
 
 def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
             user: str = DEFAULT_USER, wait_timeout: float = 25.0) -> dict:
-    """Upload an IR to the device and wait for it to auto-register.
+    """Import an IR onto the device the way the editor does.
 
-    Confirmation is by **filename** (the device names a registered IR by the
-    `.wav` stem), because the **device computes its own hash** — which does not
-    always match helixgen's ``irhash`` for a given file. The result therefore
-    reports both hashes and whether they agree:
-    ``{ok, cid, name, device_hash, helixgen_hash, hash_match, remote, already}``.
-    A ``hash_match`` of False means a preset referencing helixgen's hash will not
-    resolve this IR — the device knows it under a different hash.
+    The editor does **not** upload the raw WAV — it uploads the *processed*
+    IR (source truncated to the Stadium's 8192-sample form + fade), and the
+    device registers it by MD5-ing that file's data chunk. That MD5 **is**
+    helixgen's ``irhash``. So we render the same processed file
+    (:func:`helixgen.ir.write_stadium_ir`) and SFTP it to ``ir/<stem>.wav``;
+    the device then registers it under exactly the hash a preset references.
+
+    Registration is confirmed via ``/IrPathForHashGet`` (the reliable check —
+    the ``/GetContainerContents`` listing lags). Returns
+    ``{ok, name, helixgen_hash, device_path, registered, remote, already}``.
     """
+    import tempfile
     import time
-    from helixgen.ir import compute_stadium_irhash
+    from helixgen.ir import write_stadium_ir
     from .client import HelixClient
 
     stem = Path(local_wav).stem
-    hg_hash = compute_stadium_irhash(local_wav)
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    try:
+        # render the device-canonical processed IR; its data-chunk MD5 == irhash
+        hg_hash = write_stadium_ir(local_wav, tmp.name)
 
-    def _match(client):
-        for m in client.list_irs():
-            if m["name"] == stem or m["hash"] == hg_hash:
-                return m
-        return None
+        with HelixClient(ip) as h:
+            if h.ir_path_for_hash(hg_hash):
+                return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
+                        "device_path": h.ir_path_for_hash(hg_hash),
+                        "registered": True, "remote": None, "already": True}
 
-    with HelixClient(ip) as h:
-        found = _match(h)
-        if found is not None:
-            return {"ok": True, "cid": found["cid_"], "name": found["name"],
-                    "device_hash": found["hash"], "helixgen_hash": hg_hash,
-                    "hash_match": found["hash"] == hg_hash, "remote": None,
-                    "already": True}
+        with HelixSFTP(ip, key_path=key_path, user=user) as s:
+            remote = s.upload_ir(tmp.name, remote_name=f"{stem}.wav")
+            on_disk = s.ir_file_exists(f"{stem}.wav")
 
-    with HelixSFTP(ip, key_path=key_path, user=user) as s:
-        remote = s.upload_ir(local_wav)
-        on_disk = s.ir_file_exists(Path(local_wav).name)
-
-    with HelixClient(ip) as h:
-        deadline = time.time() + wait_timeout
-        while time.time() < deadline:
-            found = _match(h)
-            if found is not None:
-                return {"ok": True, "cid": found["cid_"], "name": found["name"],
-                        "device_hash": found["hash"], "helixgen_hash": hg_hash,
-                        "hash_match": found["hash"] == hg_hash, "remote": remote,
-                        "already": False, "registered": True}
-            time.sleep(1.5)
-    # The file is uploaded; the device registers it on its own (delayed) scan —
-    # the OSC container listing lags. Report success with registration pending.
-    return {"ok": bool(on_disk), "cid": None, "name": stem, "device_hash": None,
-            "helixgen_hash": hg_hash, "hash_match": None, "remote": remote,
-            "already": False, "registered": False,
-            "note": "uploaded; the device will register it on its next scan "
-                    "(the IR listing lags — verify later with `device list-irs`)"}
+        with HelixClient(ip) as h:
+            deadline = time.time() + wait_timeout
+            while time.time() < deadline:
+                path = h.ir_path_for_hash(hg_hash)
+                if path:
+                    return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
+                            "device_path": path, "registered": True,
+                            "remote": remote, "already": False}
+                time.sleep(1.5)
+        # uploaded but not yet registered — the device registers on its scan
+        return {"ok": bool(on_disk), "name": stem, "helixgen_hash": hg_hash,
+                "device_path": None, "registered": False, "remote": remote,
+                "already": False,
+                "note": "uploaded; not yet registered — open the editor's IR "
+                        "librarian or retry `device list-irs` shortly"}
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass

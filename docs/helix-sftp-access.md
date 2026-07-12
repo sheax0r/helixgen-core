@@ -138,13 +138,14 @@ write gets, but it *is* a filesystem write — gate it behind explicit
 confirmation and test on one throwaway IR first (as we did: `cid 946`,
 `YA KW 412 M25 121-2`).
 
-> **The upload must be atomic.** The device auto-hashes any new `*.wav` the
-> instant it appears in `ir/`, so a plain streaming `put` straight to
-> `<name>.wav` lets the watcher fire **mid-transfer** and register the hash of a
-> half-written file. `upload_ir` therefore streams to a temp name the `*.wav`
-> watcher ignores (`.<name>.uploading`) and then **renames** it into place, so
-> the final `<name>.wav` only ever appears complete. See the root-cause finding
-> below.
+> **Upload the *processed* IR, and write it directly.** The editor uploads the
+> Stadium-canonical processed IR (8192-sample, `helixgen.ir.write_stadium_ir`),
+> not the raw WAV, and the device's `irhash` is MD5 of that file's data chunk —
+> so uploading the raw source registers the wrong hash for any IR longer than
+> 8192 samples. Write it **directly** to `ir/<stem>.wav` (a temp+rename lands as
+> `IN_MOVED_TO` and doesn't trigger the device's registration; the editor writes
+> directly). See finding #3 below for the full mechanism and the
+> device-gated-registration caveat.
 
 ## Findings from building `push-ir` (device write behavior)
 
@@ -159,34 +160,44 @@ inotify I first assumed. Confirmed by uploading several IRs:
    the old count/set after an upload until something refreshes it; `get_ref` by
    cid sees the new IR immediately. So confirm uploads by cid/name, not by
    re-listing (and don't trust the list's count right after a write).
-3. **`push-ir`'d IRs registered under a wrong hash — ROOT-CAUSED (write race, not
-   an algorithm bug).** Uploading three IRs, the device registered 2 of 3 under a
-   hash that did **not** match `helixgen.ir.compute_stadium_irhash`. This was
-   *diagnosed*, not left open:
+3. **`push-ir`'d IRs registered under a wrong hash — ACTUAL ROOT CAUSE: the
+   editor uploads a *processed* IR, not the raw WAV.** (An earlier hypothesis —
+   a partial-write race, "fixed" in 2.5.0 with an atomic upload — was **wrong**;
+   see below.)
 
-   - The device's **own on-disk copy** of the mismatched IR is **byte-identical**
-     to the local file (`YA KW 412 M25 M69v-CNT.wav`, both md5 `877d6d85…`), and
-     helixgen hashes those exact device bytes to `0045e64c…` — the **correct**
-     value. helixgen's algorithm is fine (it matches **386/386** editor-imported
-     IRs on this device).
-   - Yet the device **registry** (OSC `/GetContainerContents`, `IrHashToPath`)
-     records `620d381f…` for that file — a hash that matches **neither** the
-     on-disk bytes nor any of the 573 files in the pack, and is not reproducible
-     from any truncated prefix or algorithm variant of the file.
-   - Conclusion: the device hashed **different bytes at registration time than
-     the bytes now on disk** — it auto-hashed the file **mid-transfer**, while
-     `push-ir`'s streaming `put` was still writing it, and never re-hashed once
-     the file completed. Editor imports don't hit this because the editor
-     triggers a rescan of the *finished* file (hence 386/386 match). The race is
-     intermittent, which is exactly the observed "2 of 3".
+   Live capture of a real editor IR import (Frida on `_libssh2_channel_write` +
+   the OSC streams) showed the editor's complete wire behavior:
 
-   **Fix:** `upload_ir` now uploads **atomically** (stage to `.<name>.uploading`,
-   then rename to `<name>.wav`), so the device never sees a partial `.wav`. This
-   unblocks auto-load. A preset's helixgen `irhash` and the device's registered
-   hash now agree because the device only ever hashes the complete file.
-   *(On-device re-validation of the atomic path — and repairing the already-stale
-   `cid 947` registration — are device writes, done only with explicit user
-   sign-off.)*
+   - The editor SFTP-writes a file to `ir/<stem>.wav` that is **24660 bytes /
+     8192 frames** — **not** the 72 kB raw source. It is the *processed* IR: the
+     source truncated to the Stadium's 8192-sample form + exp fade — exactly the
+     pipeline `helixgen.ir.compute_stadium_irhash` runs internally.
+   - The device registers it by taking **MD5 of that file's data chunk**, and
+     that MD5 **is** helixgen's `irhash` (verified: device's editor-uploaded file
+     → `MD5(data) == irhash`, byte-for-byte).
+   - `push-ir` was uploading the **raw** WAV. For any IR longer than 8192 samples
+     the device then sees different bytes → the wrong hash (and the device's own
+     raw-file processing differs slightly from helixgen's, which is why the
+     `620d381f`/`44cf68fe` values matched no simple variant). Short IRs (≤8192)
+     upload raw == processed, which is why the user's regular IRs never broke.
+
+   **Fix (2.6.0):** `helixgen.ir.write_stadium_ir(src, out)` emits the
+   device-canonical processed IR (data-chunk MD5 == `irhash`); `push_ir` uploads
+   **that** to `ir/<stem>.wav` via a direct write (mirroring the editor). The
+   device then registers the IR under exactly the hash a preset references.
+
+   **Known limitation — registration timing is device-gated.** The editor's
+   import registers **instantly** (~0.15 s); an identical external SFTP write of
+   the identical processed file does **not** (confirmed against every replicable
+   variable: same file bytes, same `INIT/OPEN/WRITE/CLOSE` SFTP protocol, same
+   `0744` perms, same key/user/IP, same `libssh2` client banner, persistent vs
+   fresh session). The device correlates the write with the editor's own trusted
+   control session in a way not reproducible from an external client. External
+   uploads therefore register on the device's own (slower, unpredictable) scan,
+   or when the user next imports through the editor — but **when they register,
+   the hash is now correct**. The 2.5.0 atomic-upload was reverted (a rename
+   lands as `IN_MOVED_TO`, which does not trigger registration; the editor writes
+   directly).
 
 ## How this maps to helixgen
 

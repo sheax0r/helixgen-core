@@ -40,29 +40,13 @@ def test_module_imports_without_paramiko():
 
 
 class _FakeSFTP:
-    """Records the SFTP call sequence so we can assert atomic upload order."""
+    """Records the SFTP call sequence."""
 
-    def __init__(self, posix=True):
+    def __init__(self):
         self.calls = []
-        self._posix = posix
-        if not posix:
-            # simulate a server without posix-rename@openssh.com
-            self.posix_rename = self._no_posix
-
-    def _no_posix(self, *a):
-        raise AttributeError("no posix_rename")
 
     def put(self, local, remote):
         self.calls.append(("put", local, remote))
-
-    def posix_rename(self, src, dst):
-        self.calls.append(("posix_rename", src, dst))
-
-    def rename(self, src, dst):
-        self.calls.append(("rename", src, dst))
-
-    def remove(self, path):
-        self.calls.append(("remove", path))
 
 
 def _sftp_with(fake):
@@ -71,48 +55,33 @@ def _sftp_with(fake):
     return s
 
 
-def test_upload_ir_is_atomic_stage_then_rename(tmp_path):
-    """The final `<name>.wav` must never be written directly — we stage to a
-    temp name the device's *.wav watcher ignores, then atomically rename."""
+def test_upload_ir_direct_write_to_final_path(tmp_path):
+    """upload_ir mirrors the editor: a direct put straight to ir/<name>.wav
+    (a rename lands as IN_MOVED_TO and does not trigger device registration)."""
     wav = tmp_path / "Cab 4x12.wav"
     wav.write_bytes(b"RIFFxxxx")
-    fake = _FakeSFTP(posix=True)
+    fake = _FakeSFTP()
     remote = _sftp_with(fake).upload_ir(str(wav))
-
     assert remote == "/data/stadium-family-fw/ir/Cab 4x12.wav"
-    staging = "/data/stadium-family-fw/ir/.Cab 4x12.wav.uploading"
-    # put lands on the staging path (not the final .wav), then rename into place
-    assert fake.calls[0] == ("put", str(wav), staging)
-    assert fake.calls[1] == ("posix_rename", staging, remote)
-    # the final path is never a `put` target
-    assert not any(c[0] == "put" and c[2] == remote for c in fake.calls)
+    assert fake.calls == [("put", str(wav), remote)]
 
 
-def test_upload_ir_falls_back_to_plain_rename(tmp_path):
-    wav = tmp_path / "Cab.wav"
+def test_upload_ir_honors_remote_name(tmp_path):
+    wav = tmp_path / "processed_tmp.wav"
     wav.write_bytes(b"RIFFxxxx")
-    fake = _FakeSFTP(posix=False)
-    remote = _sftp_with(fake).upload_ir(str(wav))
-    staging = "/data/stadium-family-fw/ir/.Cab.wav.uploading"
-    ops = [c[0] for c in fake.calls]
-    assert ops[0] == "put"
-    # remove-any-existing-target then plain rename
-    assert ("remove", remote) in fake.calls
-    assert ("rename", staging, remote) in fake.calls
+    fake = _FakeSFTP()
+    remote = _sftp_with(fake).upload_ir(str(wav), remote_name="My Cab.wav")
+    assert remote == "/data/stadium-family-fw/ir/My Cab.wav"
+    assert fake.calls[0][2] == remote
 
 
-def test_upload_ir_cleans_up_staging_on_failure(tmp_path):
+def test_upload_ir_wraps_transfer_error(tmp_path):
     wav = tmp_path / "Cab.wav"
     wav.write_bytes(b"RIFFxxxx")
 
     class _BoomSFTP(_FakeSFTP):
         def put(self, local, remote):
-            self.calls.append(("put", local, remote))
             raise IOError("connection dropped mid-transfer")
 
-    fake = _BoomSFTP(posix=True)
     with pytest.raises(sftp.HelixError, match="upload"):
-        _sftp_with(fake).upload_ir(str(wav))
-    staging = "/data/stadium-family-fw/ir/.Cab.wav.uploading"
-    # a failed transfer must not leave the staging turd behind
-    assert ("remove", staging) in fake.calls
+        _sftp_with(_BoomSFTP()).upload_ir(str(wav))
