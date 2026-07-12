@@ -54,7 +54,11 @@ def test_server_registers_documented_tools():
         "device_set_param",
         "device_save_preset",
         "device_install_preset",
-        "device_sync_library",
+        "device_setlist_list",
+        "device_setlist_add",
+        "device_setlist_remove",
+        "device_sync_setlist",
+        "device_sync_all",
     }
     assert names == expected, f"unexpected tool set: {names}"
 

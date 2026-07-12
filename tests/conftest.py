@@ -21,10 +21,14 @@ def _isolate_irhash_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_device_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Point the device slot ledger at a per-test tmp file, so no test ever
-    reads or writes the real `~/.helixgen/device-slots.json`. Tests that assert
-    on ledger-path resolution override this env themselves.
+    """Point the device slot ledger + setlist manifest at per-test tmp files, so
+    no test ever reads or writes the real `~/.helixgen/setlists.json` or the
+    legacy `~/.helixgen/device-slots.json`. The ledger is now folded into the
+    manifest file (`$HELIXGEN_SETLISTS`); the legacy `$HELIXGEN_DEVICE_SLOTS`
+    path is only read for migration. Tests that assert on path resolution
+    override these envs themselves.
     """
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(tmp_path / "_setlists.json"))
     monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "_device_slots.json"))
 
 

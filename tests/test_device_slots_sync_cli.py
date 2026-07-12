@@ -28,6 +28,10 @@ class SyncClient:
         self.calls = []
         self._next_cid = 900
 
+    @property
+    def _raw(self):  # production calls client._raw.<primitive>
+        return self
+
     def __enter__(self):
         return self
 

@@ -24,6 +24,12 @@ class FakeClient:
         self.init_args = (args, kwargs)
         self.calls = []
 
+    # production reaches the raw primitives via client._raw.<name>; on this
+    # fake they live directly on the instance.
+    @property
+    def _raw(self):
+        return self
+
     # context-manager protocol
     def __enter__(self):
         return self
@@ -268,63 +274,152 @@ def test_auto_upload_irs_not_registered_locally(monkeypatch, capsys):
     assert "not found locally" in capsys.readouterr().err
 
 
-# -- device sync (bulk-sync a directory of .hsp tones) ------------------------
+# -- device setlist: local manifest membership --------------------------------
 
-def test_device_sync_installs_and_prints_summary(tmp_path, monkeypatch):
-    from helixgen.device import sync as _sync
-    seen = {}
-    summary = {
-        "ok": True, "setlist": "user", "directory": str(tmp_path),
-        "deleted": [{"name": "Old Tone", "cid": 900, "slot": "1A"}],
-        "installed": [
-            {"file": "a.hsp", "name": "Tone A", "pos": 1, "slot": "1B",
-             "cid": 101, "irs": [{"hash": "aa"}]},
-        ],
-        "errors": [],
+def _fresh_manifest_env(monkeypatch, tmp_path):
+    """Point the manifest + legacy ledger at empty tmp paths so `load()` starts
+    empty and never reads the real user's ~/.helixgen files."""
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(tmp_path / "setlists.json"))
+    monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "device-slots.json"))
+
+
+def _make_hsp(path, name):
+    from helixgen.hsp import write_hsp
+    write_hsp(path, {"meta": {"name": name}})
+    return path
+
+
+def test_device_setlist_group_registers(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    result = CliRunner().invoke(cli, ["device", "setlist", "--help"])
+    assert result.exit_code == 0
+    for sub in ("list", "add", "remove", "create-local"):
+        assert sub in result.output
+
+
+def test_device_setlist_add_and_list(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "White Limo Lead")
+    add = CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
+    assert add.exit_code == 0, add.output
+    assert "White Limo Lead" in add.output
+
+    lst = CliRunner().invoke(cli, ["device", "setlist", "list"])
+    assert lst.exit_code == 0
+    assert "helixgen  (1 tone)" in lst.output
+    assert "White Limo Lead" in lst.output
+
+
+def test_device_setlist_list_json(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "Tone X")
+    CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
+    lst = CliRunner().invoke(cli, ["device", "setlist", "list", "--json"])
+    assert lst.exit_code == 0
+    doc = json.loads(lst.output)
+    assert doc["setlists"] == {"helixgen": ["Tone X"]}
+
+
+def test_device_setlist_remove(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "Tone X")
+    CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
+    rm = CliRunner().invoke(cli, ["device", "setlist", "remove", "helixgen", "Tone X"])
+    assert rm.exit_code == 0
+    assert "removed" in rm.output.lower()
+    # gone now
+    rm2 = CliRunner().invoke(cli, ["device", "setlist", "remove", "helixgen", "Tone X"])
+    assert rm2.exit_code != 0
+
+
+def test_device_setlist_create_local(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    res = CliRunner().invoke(cli, ["device", "setlist", "create-local", "helixgen"])
+    assert res.exit_code == 0
+    lst = CliRunner().invoke(cli, ["device", "setlist", "list"])
+    assert "helixgen  (0 tones)" in lst.output
+
+
+# -- device sync (manifest-driven, reference-based) ---------------------------
+
+def _patch_sync(monkeypatch, seen, result=None):
+    """Stub `setlist_sync.sync_setlists` to record kwargs and return canned."""
+    from helixgen.device import setlist_sync as _ss
+    canned = result or {
+        "ok": True, "setlists": ["helixgen"],
+        "pool": {"installed": ["Tone A"], "updated": [], "skipped": ["Tone B"]},
+        "references": {"helixgen": {"added": [9000], "removed": []}},
+        "gc": {"deleted": []}, "irs": [], "errors": [],
     }
-    monkeypatch.setattr(_sync, "sync_library",
-                        lambda directory, **kw: seen.update(directory=directory, **kw) or summary)
-    result = CliRunner().invoke(cli, ["device", "sync", str(tmp_path)])
-    assert result.exit_code == 0, result.output
-    assert "deleted 1A: 'Old Tone' (cid 900)" in result.output
-    assert "installed 1B: 'Tone A' (cid 101)  (+1 IRs)" in result.output
-    assert "mirrored 1 tone to user (1 removed)" in result.output
-    assert seen["directory"] == str(tmp_path)
-    assert seen["exclude_irs"] is False
+    monkeypatch.setattr(_ss, "sync_setlists",
+                        lambda manifest, **kw: seen.update(kw) or canned)
 
 
-def test_device_sync_exclude_irs_flag(tmp_path, monkeypatch):
-    from helixgen.device import sync as _sync
+def test_device_sync_one_setlist_prints_summary(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
     seen = {}
-    monkeypatch.setattr(_sync, "sync_library",
-                        lambda directory, **kw: seen.update(**kw) or
-                        {"ok": True, "setlist": "user", "deleted": [], "installed": [], "errors": []})
-    CliRunner().invoke(cli, ["device", "sync", str(tmp_path), "--exclude-irs"])
-    assert seen["exclude_irs"] is True
+    _patch_sync(monkeypatch, seen)
+    res = CliRunner().invoke(cli, ["device", "sync", "helixgen"])
+    assert res.exit_code == 0, res.output
+    assert seen["setlists"] == ["helixgen"]
+    assert seen["gc"] is False
+    assert "pool: 1 installed, 0 updated, 1 skipped" in res.output
+    assert "setlist 'helixgen': +1 references, -0 references" in res.output
+    assert "synced 1 setlist(s): helixgen" in res.output
 
 
-def test_device_sync_defaults_to_preset_output_dir(monkeypatch, tmp_path):
-    from helixgen.device import sync as _sync
-    from helixgen import preferences as _prefs
-
-    class _P:
-        preset_output_dir = str(tmp_path)
-    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
+def test_device_sync_all_flag(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
     seen = {}
-    monkeypatch.setattr(_sync, "sync_library",
-                        lambda directory, **kw: seen.update(directory=directory) or
-                        {"ok": True, "setlist": "user", "deleted": [], "installed": [], "errors": []})
-    result = CliRunner().invoke(cli, ["device", "sync"])
-    assert result.exit_code == 0, result.output
-    assert seen["directory"] == str(tmp_path)
+    _patch_sync(monkeypatch, seen)
+    res = CliRunner().invoke(cli, ["device", "sync", "--all", "--gc"])
+    assert res.exit_code == 0, res.output
+    assert seen["setlists"] is None
+    assert seen["gc"] is True
 
 
-def test_device_sync_no_dir_no_pref_errors(monkeypatch):
-    from helixgen import preferences as _prefs
+def test_device_sync_requires_exactly_one_of_setlist_or_all(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    seen = {}
+    _patch_sync(monkeypatch, seen)
+    # neither
+    r1 = CliRunner().invoke(cli, ["device", "sync"])
+    assert r1.exit_code != 0
+    assert "exactly one" in r1.output
+    # both
+    r2 = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--all"])
+    assert r2.exit_code != 0
+    assert "exactly one" in r2.output
+    assert seen == {}  # engine never called
 
-    class _P:
-        preset_output_dir = None
-    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
-    result = CliRunner().invoke(cli, ["device", "sync"])
-    assert result.exit_code != 0
-    assert "preset_output_dir" in result.output
+
+def test_device_sync_gc_ignored_without_all(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    seen = {}
+    _patch_sync(monkeypatch, seen)
+    res = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--gc"])
+    assert res.exit_code == 0, res.output
+    assert "ignored" in res.output  # warning surfaced (stderr merged by CliRunner)
+    assert seen["gc"] is False
+
+
+def test_device_sync_json_passthrough(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    seen = {}
+    _patch_sync(monkeypatch, seen)
+    res = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output)["ok"] is True
+
+
+def test_device_sync_errors_surface(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    seen = {}
+    _patch_sync(monkeypatch, seen, result={
+        "ok": False, "setlists": [], "pool": {"installed": [], "updated": [], "skipped": []},
+        "references": {}, "gc": {"deleted": []}, "irs": [],
+        "errors": ["setlist 'helixgen' not found on device; create it in the Stadium app first"],
+    })
+    res = CliRunner().invoke(cli, ["device", "sync", "helixgen"])
+    assert res.exit_code == 0, res.output
+    assert "not found on device" in res.output

@@ -7,11 +7,20 @@ spot. Pure stdlib; the offline read side needs no device. Distinct from
 ``device backup``'s ``manifest.json`` (a device *snapshot*) — this is a running
 record of helixgen's own placements.
 
-On-disk (default ``~/.helixgen/device-slots.json``, override
-``$HELIXGEN_DEVICE_SLOTS``)::
+**One file.** The ledger's placements are *folded into* the setlist manifest
+(design §3): they live as an ``entries`` section of the single
+``~/.helixgen/setlists.json`` document (override ``$HELIXGEN_SETLISTS``), right
+alongside the manifest's own ``tones`` / ``setlists`` / ``observed`` sections.
+``SlotLedger.load()`` / ``save()`` read and write *only* that ``entries``
+section, preserving the manifest's sections untouched, so the two views never
+diverge across two files. The legacy ``~/.helixgen/device-slots.json``
+(``$HELIXGEN_DEVICE_SLOTS``) is retired as a writer — it is read once, for a
+one-time migration, and never written again.
 
-    {"version": 1, "entries": [ {order, name, setlist, posi, slot_label, cid,
-      source_kind, source_path, model, created_at, updated_at}, ... ]}
+On-disk (the ``entries`` section of ``setlists.json``)::
+
+    {"version": 1, ..., "entries": [ {order, name, setlist, posi, slot_label,
+      cid, source_kind, source_path, model, created_at, updated_at}, ... ]}
 
 An entry is keyed by ``(setlist, posi)`` — one preset per device slot.
 ``source_kind`` (``hsp`` | ``sbe`` | ``edit-buffer`` | ``copy``) records how the
@@ -32,14 +41,42 @@ LEDGER_VERSION = 1
 
 
 def default_ledger_path() -> Path:
-    """Where the slot ledger lives: ``~/.helixgen/device-slots.json``.
+    """The **legacy** slot-ledger path: ``~/.helixgen/device-slots.json``.
 
-    Overridable wholesale with ``$HELIXGEN_DEVICE_SLOTS``.
+    Overridable wholesale with ``$HELIXGEN_DEVICE_SLOTS``. Since the fold this
+    file is only ever *read*, once, to migrate old placements into the manifest
+    (see :meth:`SlotLedger._migrate_from_legacy`); the ledger no longer writes
+    it. New placements live in the manifest file (:func:`_storage_path`).
     """
     override = os.environ.get("HELIXGEN_DEVICE_SLOTS")
     if override:
         return Path(override).expanduser()
     return Path.home() / ".helixgen" / "device-slots.json"
+
+
+def _storage_path() -> Path:
+    """Where the ledger's ``entries`` actually live now: the single setlist
+    manifest file (``~/.helixgen/setlists.json`` / ``$HELIXGEN_SETLISTS``).
+
+    Lazy import of the manifest's path resolver avoids a circular import
+    (``manifest`` imports :func:`default_ledger_path` from this module)."""
+    from .manifest import default_setlists_path
+
+    return default_setlists_path()
+
+
+def _read_doc(path: Path) -> Optional[Dict[str, Any]]:
+    """Return the on-disk JSON document if it is a valid, current-version dict,
+    else ``None`` (missing / corrupt / unknown version). The manifest and the
+    ledger share ``version == 1``, so a manifest document reads back fine here —
+    the ledger simply looks at its ``entries`` section."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != LEDGER_VERSION:
+        return None
+    return data
 
 
 def _dev_cid(preset: Dict[str, Any]) -> Optional[int]:
@@ -56,17 +93,43 @@ class SlotLedger:
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "SlotLedger":
-        path = Path(path) if path is not None else default_ledger_path()
+        """Load the ledger's ``entries`` from the single manifest file.
+
+        With no ``path`` the folded storage location (:func:`_storage_path`) is
+        used. If that file is missing/corrupt and this is the default location,
+        a one-time migration folds a legacy ``device-slots.json`` in. An explicit
+        ``path`` (tests, callers targeting a specific file) never migrates.
+        """
+        use_default = path is None
+        path = Path(path) if path is not None else _storage_path()
+        data = _read_doc(path)
+        entries = data.get("entries") if data is not None else None
+        if isinstance(entries, list):
+            return cls(path, [e for e in entries if isinstance(e, dict)])
+        # No ledger section yet (file absent, or a manifest written before any
+        # placement). On the default file, fold a legacy device-slots.json in.
+        ledger = cls(path, [])
+        if use_default:
+            ledger._migrate_from_legacy()
+        return ledger
+
+    def _migrate_from_legacy(self) -> None:
+        """One-time fold of a legacy ``device-slots.json`` into the ledger view.
+
+        Reads (never writes) the old file at :func:`default_ledger_path`; its
+        ``entries`` become this ledger's entries. A subsequent :meth:`save`
+        persists them into the manifest file's ``entries`` section. No-op if the
+        legacy file is absent/corrupt or aliases the new storage path."""
+        legacy = default_ledger_path()
+        if legacy == self.path:
+            return
         try:
-            data = json.loads(path.read_text())
+            data = json.loads(legacy.read_text())
         except (OSError, ValueError):
-            return cls(path, [])
-        if not isinstance(data, dict) or data.get("version") != LEDGER_VERSION:
-            return cls(path, [])
-        entries = data.get("entries")
-        if not isinstance(entries, list):
-            return cls(path, [])
-        return cls(path, [e for e in entries if isinstance(e, dict)])
+            return
+        if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+            return
+        self.entries = [e for e in data["entries"] if isinstance(e, dict)]
 
     # -- lookups --------------------------------------------------------------
 
@@ -274,12 +337,19 @@ class SlotLedger:
     # -- persistence ----------------------------------------------------------
 
     def save(self) -> None:
-        """Atomically write the ledger (temp file + ``os.replace``)."""
+        """Atomically update *only* the ``entries`` section of the single
+        manifest file (temp file + ``os.replace``).
+
+        Any manifest sections already on disk (``tones`` / ``setlists`` /
+        ``observed``) are read back and preserved verbatim, so writing the
+        ledger never clobbers the manifest's half of the shared document."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        doc = _read_doc(self.path) or {}
+        doc["version"] = LEDGER_VERSION
+        doc["entries"] = self.entries_in_order()
         tmp = self.path.with_name(self.path.name + ".tmp")
-        payload = {"version": LEDGER_VERSION, "entries": self.entries_in_order()}
         try:
-            tmp.write_text(json.dumps(payload, indent=2, sort_keys=False))
+            tmp.write_text(json.dumps(doc, indent=2, sort_keys=False))
             os.replace(tmp, self.path)
         except OSError:
             try:

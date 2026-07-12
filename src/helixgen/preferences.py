@@ -128,14 +128,22 @@ class Preferences:
     volume_normalize_baseline: bool = True
 
 
+def _normalize_device_model_key(value: str) -> str:
+    """Fold case + separators (spaces/underscores/hyphens) for matching."""
+    return " ".join(value.lower().replace("_", " ").replace("-", " ").split())
+
+
 def _validate_device_model(model: Any) -> str | None:
     if model is None:
         return None
-    if model not in _VALID_DEVICE_MODELS:
-        raise PreferencesError(
-            f"device.model must be one of {_VALID_DEVICE_MODELS} or null, got {model!r}"
-        )
-    return model
+    if isinstance(model, str):
+        key = _normalize_device_model_key(model)
+        for canonical in _VALID_DEVICE_MODELS:
+            if _normalize_device_model_key(canonical) == key:
+                return canonical
+    raise PreferencesError(
+        f"device.model must be one of {_VALID_DEVICE_MODELS} or null, got {model!r}"
+    )
 
 
 def _validate_default_guitar(value: Any) -> str | None:

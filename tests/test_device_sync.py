@@ -28,6 +28,12 @@ class FakeClient:
         self._missing = list(missing)
         self.deleted = []  # cids passed to delete()
 
+    # production reaches the raw primitives via client._raw.<name>; on this
+    # fake they live directly on the instance.
+    @property
+    def _raw(self):
+        return self
+
     def __enter__(self):
         return self
 
@@ -56,7 +62,9 @@ class FakeClient:
 
 def _patch(monkeypatch, ledger_path, *, client, cids=(101, 102, 103),
            missing_by_default=()):
-    monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(ledger_path))
+    # The slot ledger is folded into the setlist manifest file now, so its
+    # `entries` land in $HELIXGEN_SETLISTS (one file), not device-slots.json.
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(ledger_path))
     monkeypatch.setattr(_sync, "HelixClient", lambda **k: client)
     it = iter(cids)
     monkeypatch.setattr(_sync.bridge, "install_recipe",
@@ -154,7 +162,7 @@ def test_sync_uploads_referenced_irs_unless_excluded(tmp_path, monkeypatch):
     # with exclude_irs, no IR upload happens
     calls.clear()
     ledger2 = tmp_path / "ledger2.json"
-    monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(ledger2))
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(ledger2))
     res2 = _sync.sync_library(str(d), ip="9.9.9.9", exclude_irs=True)
     assert calls == []
     assert all(i["irs"] == [] for i in res2["installed"])

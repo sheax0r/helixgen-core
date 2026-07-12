@@ -443,27 +443,90 @@ def device_install_preset(
 
 
 @app.tool()
-def device_sync_library(
+def device_setlist_list(model: str) -> dict[str, Any]:
+    """Return the local setlist manifest (desired membership + observed state).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Reads
+    `~/.helixgen/setlists.json` and returns its full document
+    (`{version, tones, setlists, observed}`). Local-only — never touches the
+    device. Use it to see which authored tones belong to which setlist before
+    calling `device_sync_setlist` / `device_sync_all`.
+    """
+    return _tools.device_setlist_list_handler(model)
+
+
+@app.tool()
+def device_setlist_add(
+    model: str, setlist: str, hsp_path: str, pos: int | None = None
+) -> dict[str, Any]:
+    """Register an authored `.hsp` tone and add it to a setlist's membership.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `hsp_path` is a filesystem
+    path to a `.hsp` file (path-based, no base64); its `meta.name` becomes the
+    tone name. Appends the tone to `setlist` (at `pos` if given; the setlist is
+    auto-created in the manifest if new). Local-only — writes
+    `~/.helixgen/setlists.json`; run `device_sync_setlist` to push it to the
+    device. Returns `{ok, setlist, tone, tones}`.
+    """
+    return _tools.device_setlist_add_handler(model, setlist, hsp_path, pos=pos)
+
+
+@app.tool()
+def device_setlist_remove(
+    model: str, setlist: str, tone_name: str
+) -> dict[str, Any]:
+    """Drop a tone from a setlist's membership in the local manifest.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Removes `tone_name` from
+    `setlist` (keeping the tone in the registry if another setlist still uses
+    it). Local-only. Returns `{ok, setlist, tone, tones}` — `ok` is False if the
+    tone wasn't in that setlist.
+    """
+    return _tools.device_setlist_remove_handler(model, setlist, tone_name)
+
+
+@app.tool()
+def device_sync_setlist(
     model: str,
-    directory: str | None = None,
-    setlist: str = "user",
+    setlist: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
     exclude_irs: bool = False,
     template_cid: int | None = None,
-    ip: str = _tools._DEFAULT_DEVICE_IP,
 ) -> dict[str, Any]:
-    """Bulk-sync a directory of authored `.hsp` tones onto the device.
+    """Sync ONE manifest setlist onto the device (pool-first, reference rebuild).
 
-    Required `model`: `"stadium"` or `"stadium_xl"`. Installs every `.hsp` in
-    `directory` (default: the `preset_output_dir` preference) into **empty**
-    slots of `setlist` — non-destructive, never overwriting an occupied slot —
-    uploading each tone's referenced IRs first (unless `exclude_irs=True`) and
-    recording every placement in the slot ledger. Idempotent: a tone already on
-    the device (matched by name) is skipped, so re-running only adds what's new.
+    Required `model`: `"stadium"` or `"stadium_xl"`. Reconciles the preset pool
+    for the tones `setlist` needs (install missing / update changed / skip
+    unchanged), then rebuilds that setlist's references to match manifest order —
+    never orphaning a still-referenced pool preset. Uploads each tone's IRs
+    unless `exclude_irs=True`. A single-setlist sync never garbage-collects.
     `template_cid` selects the chain template (defaults to the current edit
-    buffer). EXPERIMENTAL. Returns `{ok, setlist, directory, installed:[...],
-    skipped:[...], errors:[...]}`.
+    buffer). EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
+    references, gc, irs, errors}`).
     """
-    return _tools.device_sync_library_handler(
-        model, ip=ip, directory=directory, setlist=setlist,
-        exclude_irs=exclude_irs, template_cid=template_cid,
+    return _tools.device_sync_setlist_handler(
+        model, setlist, ip=ip, exclude_irs=exclude_irs, template_cid=template_cid,
+    )
+
+
+@app.tool()
+def device_sync_all(
+    model: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+    gc: bool = False,
+    exclude_irs: bool = False,
+    template_cid: int | None = None,
+) -> dict[str, Any]:
+    """Sync ALL manifest setlists onto the device (the whole-library reconcile).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Reconciles the preset pool
+    for the union of every setlist's tones, rebuilds each setlist's references,
+    and — only when `gc=True` — garbage-collects pool presets no setlist
+    references any more (never orphaning). Uploads IRs unless `exclude_irs=True`.
+    `template_cid` selects the chain template (defaults to the current edit
+    buffer). EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
+    references, gc, irs, errors}`).
+    """
+    return _tools.device_sync_all_handler(
+        model, ip=ip, gc=gc, exclude_irs=exclude_irs, template_cid=template_cid,
     )

@@ -34,13 +34,14 @@ auto-load shipped through **2.5.0**. Ordered loosely.
   **verify** the device registered it under the expected hash (warns if not).
   Closes the `/tone` → playable-on-amp loop for IRs.
 
-- **Library mirror sync** (`device sync` / `device_sync_library`, **destructive
-  in 2.15.0**) — makes the target setlist (default `user`) match a directory of
-  authored `.hsp` tones exactly: deletes every preset already in the setlist,
-  then installs the library fresh (arbitrary order), uploads referenced IRs, and
-  replaces the setlist's ledger entries. Only that setlist is touched; no backup;
-  an empty/all-unreadable library deletes nothing (guardrail).
-  (`src/helixgen/device/sync.py`)
+- **Library mirror sync** (`device sync [dir]` / `device_sync_library`,
+  destructive in 2.15.0) — **RETIRED 2026-07-12**, superseded by the
+  reference-based multi-setlist `device sync <setlist>` (#10). The old path made
+  the target setlist match a directory of `.hsp` tones by deleting every preset
+  in it and reinstalling the library fresh; the new engine reconciles a preset
+  pool + setlist references non-destructively instead. The `device_sync_library`
+  MCP tool and the directory-mirror CLI form are gone.
+  (was `src/helixgen/device/sync.py`)
 
 ## 🔲 Remaining
 
@@ -98,6 +99,74 @@ rule). **[discovery]** = also needs an OSC command we haven't captured yet.
   - Rationale: the single-tone verbs are the ones an agent reaches for when
     installing/replacing *one* tone; today they silently skip IRs (cabs won't
     resolve) and drift the ledger. Requested 2026-07-12.
+
+### Named-setlist targeting / multi-setlist (device model RE'd 2026-07-12)
+**Full findings + design:**
+`docs/superpowers/specs/2026-07-12-multisetlist-support-design.md` (the
+implemented design; supersedes the earlier
+`2026-07-12-helix-content-model-multisetlist-refactor.md` findings/handoff note).
+The first 2026-07-12 setlist-sync attempt was **backed out** (built on a wrong
+assumption — see #9); the reference-based redesign below then **shipped
+2026-07-12**.
+
+- **#8 Create a setlist** **[device-write][discovery]** — **still deferred.**
+  helixgen can *resolve* a user setlist by name (`client.resolve_setlist_cid`,
+  enumerating `cctp==1001` under -5) but cannot *create* one. The 2002 create
+  command is uncaptured (only the 2001 `/addContent` result was seen). Next:
+  `tcpdump` port 2002 while the Stadium app creates a setlist. Until then, the
+  user creates a new setlist by hand in the Stadium app; `device sync` resolves
+  it by name and errors clearly ("create '<name>' in the Stadium app first") when
+  it's absent. `device setlist create-local` / `add`'s auto-create only touch the
+  local manifest, not the device.
+- **#9 Install a preset INTO a setlist** — **✅ IMPLEMENTED (2026-07-12).**
+  Confirmed model: `/AddContentsToContainer(setlist,[poolCid],…)` creates a
+  **REFERENCE** (`cctp 1003`, `rcid`→pool preset), **not a copy**; deleting the
+  referenced pool preset **orphans** the reference (`RemoveContent -21`). Shipped
+  as `client.reference_into_setlist` / `remove_reference` / `mirror_setlist`, with
+  `install_into_pool` (`/CreateContent` in -2 only) and a `client.mutating()`
+  2001-subscription context for prompt propagation. Rolled into #10.
+- **#10 Multi-setlist support** — **✅ IMPLEMENTED (2026-07-12, this release).**
+  The device model — a **preset pool** in -2 (`cctp 1000`) + named setlists that
+  are **reference-lists** (`cctp 1003`) into it, so a tone can be referenced by
+  many setlists — is now live. A local manifest `~/.helixgen/setlists.json`
+  (override `$HELIXGEN_SETLISTS`, absorbs the old slot ledger) records
+  `setlist-name → [tone names]` + a `tones` path map; `device sync <setlist>` /
+  `--all [--gc]` reconciles the pool (install/update/skip by content hash) then
+  rebuilds each setlist's references in order, **never orphaning** a
+  still-referenced preset (GC only on `--all --gc`). CLI `device setlist
+  list|add|remove|create-local` + MCP `device_setlist_*` / `device_sync_setlist`
+  / `device_sync_all` manage/drive it; the retired directory-mirror `device sync
+  [dir]` + `device_sync_library` are removed. Includes the **device-client
+  refactor** (container/cctp enums, the `-5`-is-the-root correction, privatized
+  raw primitives, model-correct high-level ops, `client.mutating()`, bounded
+  auto-reconnect for the flaky network stack). See the design spec.
+  - **Follow-up — validate other category unifications.** The install bridge maps
+    interchangeable device slot families (`CATEGORY_MAP` in
+    `src/helixgen/device/bridge.py`): cab = `{ir, cab, cab_ir_interp}`, amp =
+    `{amp, preamp}`, etc. The **cab** unification (an `ir` cab installing onto a
+    modeled-cab slot) is what lets a plain factory full-rig template host IR
+    tones, and it's **hardware-validated**. The amp/preamp (and eq/filter,
+    pitch/synth, volume/pan) unions are mapped but **not yet hardware-confirmed** —
+    e.g. verify a helixgen amp installs onto a template `preamp` slot and sounds
+    right. Worth a validation pass before relying on them in a sync.
+
+### Quick-win (independent of the redesign)
+- ✅ **`device.model` load fix (2026-07-12, shipped 2.16.0)** — the user's
+  `preferences.json` had `device.model: "stadium_xl"` (MCP token), which the
+  validator **rejected**, so `load_preferences()` threw on the real file.
+  `preferences.py::_validate_device_model` now accepts display forms AND MCP
+  tokens case/separator-insensitively, normalizing to the display form
+  (`stadium_xl` → `Stadium XL`). (`resolve_setlist_cid` + the setlist-name
+  resolution shipped with #10.)
+
+### IR maintenance
+- **#11 IR cleanup command** **[device-write]** — `helixgen device ir-prune`
+  (or similar): delete IRs on the device that no preset references. Diff the
+  device's user IRs (`client.list_irs()`, container -11) against the `irhash`es
+  referenced by all presets currently on the device (across setlists), and
+  remove the orphans (`/RemoveContent` on -11). Dry-run first; confirm; report
+  freed slots. Guard against deleting an IR referenced by an off-device preset
+  the user still has locally.
 
 ### Slot ordering as its own skill
 - **#7 Explicit reordering skill + tools** **[device-write]** — the `device` skill

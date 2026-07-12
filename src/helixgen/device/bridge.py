@@ -40,6 +40,56 @@ def device_category(model_id: int) -> Optional[str]:
     return defs.load_defs().get("model_categories", {}).get(name)
 
 
+def _build_category_groups() -> Dict[str, str]:
+    """Union device categories that co-occur in any ``CATEGORY_MAP`` value set.
+
+    The device exposes some physically-interchangeable block slots under several
+    distinct category strings (a single Cab slot reports ``ir`` / ``cab`` /
+    ``cab_ir_interp`` depending on what it hosts; an amp slot reports ``amp`` or
+    ``preamp``; …). ``CATEGORY_MAP`` already records those equivalences (one
+    helixgen category -> the set of device categories that satisfy it), so we
+    derive the compatibility groups from it rather than hard-coding them. Two
+    device categories that share a group are interchangeable for slot matching.
+    Returns ``{device_category: group_key}``; a category in no value set is its
+    own group.
+    """
+    parent: Dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for cats in CATEGORY_MAP.values():
+        cats = list(cats)
+        for c in cats[1:]:
+            union(cats[0], c)
+    return {c: find(c) for c in parent}
+
+
+_CATEGORY_GROUPS = _build_category_groups()
+
+
+def _category_group(device_category: Optional[str]) -> Optional[str]:
+    """Canonical group key for a device category (interchangeable-slot family).
+
+    Categories in the same ``CATEGORY_MAP`` value set (transitively) share a key;
+    a category in no value set — or ``None`` — maps to itself.
+    """
+    if device_category is None:
+        return None
+    return _CATEGORY_GROUPS.get(device_category, device_category)
+
+
 def build_parm(model_id: int, overrides: Dict[str, Any]) -> List[dict]:
     """Full parm list for a model from defs, applying ``{param_name: value}``."""
     mp = defs.load_defs().get("model_params", {}).get(str(model_id), {})
@@ -114,18 +164,23 @@ def author_chain(doc: dict, chain: Sequence[Tuple[int, Dict[str, Any]]]) -> dict
     used = set()
     for model_id, params in chain:
         want = device_category(model_id)
-        # find the first unused slot whose category matches
+        want_group = _category_group(want)
+        # find the first unused slot whose category group matches (physically
+        # interchangeable slots — e.g. a Cab slot hosting ir/cab/cab_ir_interp —
+        # are compatible even though their category strings differ)
         pick = None
         for i, (pos, blk) in enumerate(slots):
             if i in used:
                 continue
-            if device_category((blk["mdls"][0]).get("id__")) == want:
+            slot_cat = device_category((blk["mdls"][0]).get("id__"))
+            if _category_group(slot_cat) == want_group:
                 pick = i
                 break
         if pick is None:
             raise ValueError(
                 f"no free template slot for model {model_id} "
-                f"(category {want!r}); choose a template with that block")
+                f"(category {want!r}, group {want_group!r}); "
+                f"choose a template with that block")
         used.add(pick)
         _pos, blk = slots[pick]
         m = blk["mdls"][0]
@@ -153,7 +208,7 @@ def install_chain(client, container: int, pos: int, name: str,
                   chain: Sequence[Tuple[int, Dict[str, Any]]]) -> Optional[int]:
     """Author ``chain`` onto ``template_blob`` and install it as a new preset."""
     blob = content_from_template(template_blob, chain)
-    return client.push_to_slot(container, pos, name, blob)
+    return client._raw.push_to_slot(container, pos, name, blob)
 
 
 # --- helixgen .hsp -> device chain ------------------------------------------

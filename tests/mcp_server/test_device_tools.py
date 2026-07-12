@@ -46,6 +46,12 @@ class FakeClient:
     def __exit__(self, *exc):
         return False
 
+    # production reaches raw primitives via client._raw.<name>; on this fake
+    # they live directly on the instance.
+    @property
+    def _raw(self):
+        return self
+
     def _maybe_raise(self, method):
         if self._raise_on == method:
             raise device.HelixError(f"boom in {method}")
@@ -221,49 +227,119 @@ def test_read_handler_maps_helixerror_to_valueerror(monkeypatch):
         tools.device_list_presets_handler(MODEL)
 
 
-# -- device_sync_library ------------------------------------------------------
+# -- create/delete reach the raw primitives via client._raw -------------------
 
-def test_sync_library_bad_model_raises():
-    with pytest.raises(ValueError):
-        tools.device_sync_library_handler(BAD_MODEL, directory="/some/dir")
+def test_create_preset_uses_raw_create_from(fake_client):
+    """device_create_preset must call the privatized _raw.create_from."""
+    result = tools.device_create_preset_handler(MODEL, src_cid=10, pos=3)
+    assert result == {"ok": True, "cid": 42}
 
 
-def test_sync_library_calls_sync_with_explicit_dir(monkeypatch):
-    from helixgen.device import sync as _sync
-    seen = {}
-    monkeypatch.setattr(_sync, "sync_library",
-                        lambda directory, **kw: seen.update(directory=directory, **kw)
-                        or {"ok": True, "deleted": [], "installed": [], "errors": []})
-    out = tools.device_sync_library_handler(
-        MODEL, ip="1.2.3.4", directory="/tones", setlist="throwaway",
-        exclude_irs=True)
+def test_delete_preset_uses_raw_delete(fake_client):
+    """device_delete_preset must call the privatized _raw.delete."""
+    assert tools.device_delete_preset_handler(MODEL, cid=10) == {"ok": True}
+    assert fake_client.record["cids"] == [10]
+
+
+# -- setlist manifest handlers (local, no device) -----------------------------
+
+def _fresh_manifest(monkeypatch, tmp_path):
+    """Point the manifest + legacy ledger at empty tmp paths so load() starts
+    empty and never reads the real user's files."""
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(tmp_path / "setlists.json"))
+    monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "device-slots.json"))
+
+
+def _write_hsp(path, name):
+    from helixgen.hsp import write_hsp
+    write_hsp(path, {"meta": {"name": name}})
+    return path
+
+
+def test_setlist_add_then_list(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    hsp = _write_hsp(tmp_path / "tone.hsp", "My Tone")
+    out = tools.device_setlist_add_handler(MODEL, "helixgen", str(hsp))
     assert out["ok"] is True
-    assert seen["directory"] == "/tones"
-    assert seen["ip"] == "1.2.3.4"
-    assert seen["setlist"] == "throwaway"
-    assert seen["exclude_irs"] is True
+    assert out["tone"] == "My Tone"
+    assert out["tones"] == ["My Tone"]
+
+    doc = tools.device_setlist_list_handler(MODEL)
+    assert doc["setlists"] == {"helixgen": ["My Tone"]}
+    assert "My Tone" in doc["tones"]
 
 
-def test_sync_library_defaults_dir_to_preset_output_dir(monkeypatch):
-    from helixgen.device import sync as _sync
-    from helixgen import preferences as _prefs
+def test_setlist_add_bad_model_raises(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    hsp = _write_hsp(tmp_path / "tone.hsp", "My Tone")
+    with pytest.raises(ValueError, match="unsupported model"):
+        tools.device_setlist_add_handler(BAD_MODEL, "helixgen", str(hsp))
 
-    class _P:
-        preset_output_dir = "/my/presets"
-    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
+
+def test_setlist_remove(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    hsp = _write_hsp(tmp_path / "tone.hsp", "My Tone")
+    tools.device_setlist_add_handler(MODEL, "helixgen", str(hsp))
+    out = tools.device_setlist_remove_handler(MODEL, "helixgen", "My Tone")
+    assert out["ok"] is True
+    assert out["tones"] == []
+
+
+def test_setlist_remove_absent_reports_not_ok(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    out = tools.device_setlist_remove_handler(MODEL, "helixgen", "Nope")
+    assert out["ok"] is False
+
+
+# -- reference-based sync handlers (engine monkeypatched) ---------------------
+
+_CANNED_SYNC = {"ok": True, "setlists": ["helixgen"],
+                "pool": {"installed": ["A"], "updated": [], "skipped": []},
+                "references": {"helixgen": {"added": [1], "removed": []}},
+                "gc": {"deleted": []}, "irs": [], "errors": []}
+
+
+def test_sync_setlist_calls_engine(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    from helixgen.device import setlist_sync as _ss
     seen = {}
-    monkeypatch.setattr(_sync, "sync_library",
-                        lambda directory, **kw: seen.update(directory=directory)
-                        or {"ok": True})
-    tools.device_sync_library_handler(MODEL)
-    assert seen["directory"] == "/my/presets"
+    monkeypatch.setattr(_ss, "sync_setlists",
+                        lambda manifest, **kw: seen.update(kw) or _CANNED_SYNC)
+    out = tools.device_sync_setlist_handler(
+        MODEL, "helixgen", ip="1.2.3.4", exclude_irs=True, template_cid=7)
+    assert out == _CANNED_SYNC
+    assert seen["setlists"] == ["helixgen"]
+    assert seen["ip"] == "1.2.3.4"
+    assert seen["exclude_irs"] is True
+    assert seen["template_cid"] == 7
+    assert "gc" not in seen  # single-setlist sync never passes gc
 
 
-def test_sync_library_no_dir_no_pref_raises(monkeypatch):
-    from helixgen import preferences as _prefs
+def test_sync_all_calls_engine_with_gc(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    from helixgen.device import setlist_sync as _ss
+    seen = {}
+    monkeypatch.setattr(_ss, "sync_setlists",
+                        lambda manifest, **kw: seen.update(kw) or _CANNED_SYNC)
+    out = tools.device_sync_all_handler(MODEL, ip="1.2.3.4", gc=True)
+    assert out == _CANNED_SYNC
+    assert seen["setlists"] is None
+    assert seen["gc"] is True
 
-    class _P:
-        preset_output_dir = None
-    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
-    with pytest.raises(ValueError, match="preset_output_dir"):
-        tools.device_sync_library_handler(MODEL)
+
+def test_sync_setlist_bad_model_raises(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="unsupported model"):
+        tools.device_sync_setlist_handler(BAD_MODEL, "helixgen")
+
+
+def test_sync_setlist_maps_helixerror_to_valueerror(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    from helixgen.device import setlist_sync as _ss
+
+    def _boom(manifest, **kw):
+        raise device.HelixError("unreachable")
+
+    monkeypatch.setattr(_ss, "sync_setlists", _boom)
+    with pytest.raises(ValueError, match="device error"):
+        tools.device_sync_setlist_handler(MODEL, "helixgen")
