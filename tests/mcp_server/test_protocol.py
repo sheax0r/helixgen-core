@@ -1,6 +1,6 @@
-"""Protocol-level smoke tests: verify the FastMCP server registers the four
-tools with the right names + arg schemas, and that calling them returns the
-expected content shapes. Does not exercise the HTTP transport.
+"""Protocol-level smoke tests: verify the FastMCP server registers the
+documented tools with the right names + arg schemas, and that calling them
+operates on `.hsp` file paths (no base64). Does not exercise the HTTP transport.
 """
 from __future__ import annotations
 
@@ -94,15 +94,8 @@ def test_list_blocks_via_server(mcp_library, monkeypatch):
     assert result  # non-empty
 
 
-def test_generate_preset_via_server_returns_embedded_resource(mcp_library, monkeypatch):
-    """Server-level generate_preset returns an MCP EmbeddedResource, not a raw dict.
-
-    This is the protocol-correctness check. The raw handler returns a plain
-    dict (tested in test_tools.py); the server wraps it so FastMCP's content
-    conversion produces a binary blob, not a JSON-in-text block.
-    """
-    import base64
-    from mcp.types import EmbeddedResource, BlobResourceContents
+def test_generate_preset_via_server_writes_file(mcp_library, monkeypatch, tmp_path):
+    """Server-level generate_preset writes a .hsp file and returns its path."""
     from helixgen.hsp import HSP_MAGIC
     from mcp_server import server as srv
 
@@ -114,26 +107,20 @@ def test_generate_preset_via_server_returns_embedded_resource(mcp_library, monke
         "name": "Protocol Test",
         "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
     }
+    out = tmp_path / "protocol.hsp"
 
-    if hasattr(srv.app, "_tool_manager"):
-        tool = srv.app._tool_manager.get_tool("generate_preset")
-        result = tool.fn(model="stadium_xl", recipe=spec)
-    else:
-        import pytest as _pytest_inner
-        _pytest_inner.skip("FastMCP._tool_manager not available on this SDK version")
+    if not hasattr(srv.app, "_tool_manager"):
+        pytest.skip("FastMCP._tool_manager not available on this SDK version")
+    tool = srv.app._tool_manager.get_tool("generate_preset")
+    result = tool.fn(model="stadium_xl", recipe=spec, out_path=str(out))
 
-    assert isinstance(result, EmbeddedResource), f"got {type(result).__name__}"
-    assert isinstance(result.resource, BlobResourceContents)
-    assert result.resource.mimeType == "application/octet-stream"
-    assert str(result.resource.uri).endswith(".hsp")
-    decoded = base64.b64decode(result.resource.blob)
-    assert decoded.startswith(HSP_MAGIC)
+    assert result == {"path": str(out), "warnings": []}
+    assert out.read_bytes().startswith(HSP_MAGIC)
 
 
-def test_view_then_patch_preset_via_server(mcp_library, monkeypatch):
-    """view_preset/patch_preset round-trip through the server dispatch on a
-    base64 .hsp blob — no spec dict anywhere in the loop."""
-    import base64
+def test_view_then_patch_preset_via_server(mcp_library, monkeypatch, tmp_path):
+    """generate → view → patch round-trip through the server dispatch on a
+    .hsp file path — no base64 anywhere in the loop."""
     from helixgen.hsp import HSP_MAGIC
     from mcp_server import server as srv
 
@@ -145,25 +132,27 @@ def test_view_then_patch_preset_via_server(mcp_library, monkeypatch):
         "name": "Protocol View/Patch",
         "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
     }
+    out = tmp_path / "vp.hsp"
 
     if not hasattr(srv.app, "_tool_manager"):
         pytest.skip("FastMCP._tool_manager not available on this SDK version")
 
     gen_tool = srv.app._tool_manager.get_tool("generate_preset")
-    embedded = gen_tool.fn(model="stadium_xl", recipe=recipe)
-    hsp_b64 = embedded.resource.blob
+    gen_tool.fn(model="stadium_xl", recipe=recipe, out_path=str(out))
+    before = out.read_bytes()
 
     view_tool = srv.app._tool_manager.get_tool("view_preset")
-    projection = view_tool.fn(model="stadium_xl", hsp_b64=hsp_b64)
+    projection = view_tool.fn(model="stadium_xl", hsp_path=str(out))
     assert projection["name"] == "Protocol View/Patch"
     assert projection["paths"][0]["blocks"][0]["block"] == amps[0].display_name
 
     patch_tool = srv.app._tool_manager.get_tool("patch_preset")
     patched = patch_tool.fn(
-        model="stadium_xl", hsp_b64=hsp_b64,
+        model="stadium_xl", hsp_path=str(out),
         operations=[{"op": "set_enabled", "block": amps[0].display_name, "enabled": False}],
     )
-    assert patched["warnings"] == []
-    decoded = base64.b64decode(patched["hsp_b64"])
-    assert decoded.startswith(HSP_MAGIC)
-    assert patched["hsp_b64"] != hsp_b64
+    assert patched == {"path": str(out), "warnings": []}
+    # The file was edited in place — bytes changed, still a valid .hsp.
+    after = out.read_bytes()
+    assert after.startswith(HSP_MAGIC)
+    assert after != before
