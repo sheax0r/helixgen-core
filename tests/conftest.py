@@ -19,6 +19,15 @@ def _isolate_irhash_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HELIXGEN_IRHASH_CACHE", str(tmp_path / "_irhash_cache.json"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_device_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Point the device slot ledger at a per-test tmp file, so no test ever
+    reads or writes the real `~/.helixgen/device-slots.json`. Tests that assert
+    on ledger-path resolution override this env themselves.
+    """
+    monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "_device_slots.json"))
+
+
 @pytest.fixture
 def tmp_library(tmp_path: Path) -> Path:
     """Empty library directory in a tmp dir."""

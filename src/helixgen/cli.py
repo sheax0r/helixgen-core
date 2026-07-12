@@ -631,6 +631,94 @@ def _auto_upload_irs(ip: str, hashes) -> None:
             click.echo(f"warning: failed to upload {path.name} ({hh})", err=True)
 
 
+def _utc_now() -> str:
+    """ISO-8601 UTC timestamp for ledger entries (injected so the module stays
+    deterministic)."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
+                      source_kind: str, source_path: str | None = None,
+                      model: str | None = None) -> None:
+    """Record a device placement in the slot ledger. Best-effort: a ledger
+    failure warns but never fails the device command (the write already
+    succeeded)."""
+    try:
+        from helixgen.device.ledger import SlotLedger
+
+        led = SlotLedger.load()
+        led.record(setlist=setlist, posi=posi, name=name, cid=cid,
+                   source_kind=source_kind, source_path=source_path, model=model,
+                   now=_utc_now())
+        led.save()
+    except Exception as e:  # noqa: BLE001 — ledger is advisory, never fatal
+        click.echo(f"warning: could not update slot ledger: {e}", err=True)
+
+
+def _ledger_rename(cid: int, new_name: str) -> None:
+    """Best-effort: reflect a device rename in the slot ledger."""
+    try:
+        from helixgen.device.ledger import SlotLedger
+
+        led = SlotLedger.load()
+        if led.rename(cid=cid, new_name=new_name, now=_utc_now()):
+            led.save()
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"warning: could not update slot ledger: {e}", err=True)
+
+
+def _ledger_remove(cid: int) -> None:
+    """Best-effort: drop a deleted preset from the slot ledger."""
+    try:
+        from helixgen.device.ledger import SlotLedger
+
+        led = SlotLedger.load()
+        if led.remove(cid=cid):
+            led.save()
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"warning: could not update slot ledger: {e}", err=True)
+
+
+def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
+                      setlist_label: str, template: int | None = None,
+                      auto_irs: bool = False, ip: str | None = None) -> int:
+    """Install a parsed .hsp ``body`` onto an already-open client at
+    ``(container, pos)`` and return the new cid. Shared by ``device install``
+    and ``device slots restore``. Raises ClickException on any failure.
+    """
+    from helixgen.device import bridge
+
+    if h.find_by_pos(container, pos) is not None:
+        raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
+    missing = sorted(bridge.check_irs(h, body)["missing"])
+    if missing and auto_irs:
+        _auto_upload_irs(ip, missing)
+    else:
+        for m in missing:
+            click.echo(
+                f"warning: IR {m} is referenced but not on the device; "
+                f"re-run with --auto-irs, or import it (helixgen register-irs / "
+                f"the editor), or the cab will be silent", err=True)
+    if template is not None:
+        if not h.load_preset(template):
+            raise click.ClickException(f"could not load template cid {template}")
+    template_blob = h.get_edit_buffer()
+    try:
+        cid = bridge.install_recipe(h, body, container, pos, name,
+                                    template_blob, strict=True)
+    except bridge.UnresolvedModel as e:
+        raise click.ClickException(str(e)) from e
+    except ValueError as e:
+        raise click.ClickException(
+            f"{e}. Try --template <cid> of a preset whose block chain "
+            f"covers this recipe.") from e
+    if cid is None:
+        raise click.ClickException("failed to install preset")
+    return cid
+
+
 @cli.group(name="device")
 def device() -> None:
     """Drive a networked Line 6 Helix Stadium over the LAN.
@@ -762,6 +850,8 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
         raise click.ClickException(
             f"failed to copy cid {src_cid} into {setlist} slot {pos}")
     click.echo(f"created cid {new_cid}")
+    _record_placement(setlist=setlist, posi=pos, name=f"(copy of cid {src_cid})",
+                      cid=new_cid, source_kind="copy")
 
 
 @device.command(name="rename")
@@ -782,6 +872,7 @@ def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
     if not ok:
         raise click.ClickException(f"failed to rename cid {cid}")
     click.echo(f"renamed cid {cid} -> {new_name!r}")
+    _ledger_rename(cid, new_name)
 
 
 @device.command(name="delete")
@@ -807,6 +898,7 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
     if not ok:
         raise click.ClickException(f"failed to delete cid {cid}")
     click.echo(f"deleted cid {cid}")
+    _ledger_remove(cid)
 
 
 @device.command(name="set-param")
@@ -882,6 +974,8 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     if new_cid is None:
         raise click.ClickException(f"failed to save edit buffer to {setlist} slot {pos}")
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
+    _record_placement(setlist=setlist, posi=pos, name=name, cid=new_cid,
+                      source_kind="edit-buffer")
 
 
 @device.command(name="list-irs")
@@ -979,46 +1073,21 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
     """
     from helixgen.hsp import read_hsp
     from helixgen.device import HelixClient, HelixError
-    from helixgen.device import bridge
 
     body = read_hsp(hsp_file)
     container = _setlist_container(setlist)
     try:
         with HelixClient(ip, port) as h:
-            if h.find_by_pos(container, pos) is not None:
-                raise click.ClickException(f"{setlist} slot {pos} is not empty")
-            # IRs the preset references that aren't on the device yet
-            ir_status = bridge.check_irs(h, body)
-            missing = sorted(ir_status["missing"])
-            if missing and auto_irs:
-                _auto_upload_irs(ip, missing)
-            else:
-                for m in missing:
-                    click.echo(
-                        f"warning: IR {m} is referenced but not on the device; "
-                        f"re-run with --auto-irs, or import it (helixgen "
-                        f"register-irs / the editor), or the cab will be silent",
-                        err=True)
-            if template is not None:
-                if not h.load_preset(template):
-                    raise click.ClickException(f"could not load template cid {template}")
-            template_blob = h.get_edit_buffer()
-            try:
-                cid = bridge.install_recipe(h, body, container, pos, name,
-                                            template_blob, strict=True)
-            except bridge.UnresolvedModel as e:
-                raise click.ClickException(str(e)) from e
-            except ValueError as e:
-                raise click.ClickException(
-                    f"{e}. Try --template <cid> of a preset whose block chain "
-                    f"covers this recipe.") from e
+            cid = _install_hsp_open(h, body, container, pos, name,
+                                    setlist_label=setlist, template=template,
+                                    auto_irs=auto_irs, ip=ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
-    if cid is None:
-        raise click.ClickException(f"failed to install {hsp_file.name}")
     click.echo(f"installed {hsp_file.name} as cid {cid} ({name!r}) in {setlist} slot {pos}")
+    _record_placement(setlist=setlist, posi=pos, name=name, cid=cid,
+                      source_kind="hsp", source_path=str(hsp_file.resolve()))
 
 
 @device.command(name="push")
@@ -1050,6 +1119,8 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     if new_cid is None:
         raise click.ClickException(f"failed to push {infile} into {setlist} slot {pos}")
     click.echo(f"pushed {infile.name} as cid {new_cid} ({name!r}) in {setlist} slot {pos}")
+    _record_placement(setlist=setlist, posi=pos, name=name, cid=new_cid,
+                      source_kind="sbe", source_path=str(infile.resolve()))
 
 
 @device.command(name="restore")
@@ -1074,6 +1145,130 @@ def device_restore(infile: Path, cid: int, ip: str, port: int) -> None:
     if not ok:
         raise click.ClickException(f"failed to restore content to cid {cid}")
     click.echo(f"restored content of cid {cid} from {infile.name}")
+
+
+@device.group(name="slots", invoke_without_command=True)
+@click.pass_context
+def device_slots(ctx: click.Context) -> None:
+    """The local record of which tone helixgen put in which device slot.
+
+    Placement commands (install / save / push / create) record here; rename and
+    delete keep it in sync. Bare `device slots` lists the record offline.
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(device_slots_list)
+
+
+@device_slots.command(name="list")
+@click.option("--verify", is_flag=True, default=False,
+              help="Cross-check the live device and flag drift (needs the Helix).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit raw JSON (entries, or verify records with --verify).")
+@_device_option
+def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
+    """List recorded placements in order. Offline unless --verify."""
+    from helixgen.device.ledger import SlotLedger
+
+    led = SlotLedger.load()
+    entries = led.entries_in_order()
+
+    if verify:
+        from helixgen.device import HelixClient, HelixError
+
+        device_presets = []
+        try:
+            with HelixClient(ip, port) as h:
+                for sl in sorted({e.get("setlist") for e in entries if e.get("setlist")}):
+                    container = _setlist_container(sl)
+                    for p in h.list_presets(container):
+                        device_presets.append({**p, "setlist": sl})
+        except (HelixError, OSError) as e:
+            raise click.ClickException(str(e)) from e
+        records = led.verify(device_presets)
+        if as_json:
+            click.echo(json.dumps(records, indent=2))
+        else:
+            for r in records:
+                click.echo(f"{r.get('slot_label', ''):<4} {r.get('status', ''):<9} "
+                           f"{r.get('name', '')}  cid={r.get('cid')}")
+        return
+
+    if as_json:
+        click.echo(json.dumps(entries, indent=2))
+        return
+    for e in entries:
+        click.echo(f"{e.get('slot_label', ''):<4} {e.get('name', ''):<28} "
+                   f"cid={e.get('cid')}  {e.get('source_kind', '')}")
+
+
+@device_slots.command(name="restore")
+@click.argument("target")
+@click.option("--pos", type=int, default=None,
+              help="Override the destination slot (default: the recorded slot).")
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default=None, help="Override the destination setlist.")
+@click.option("--force", is_flag=True, default=False,
+              help="Push even if the destination slot is occupied.")
+@_device_option
+def device_slots_restore(target: str, pos: int | None, setlist: str | None,
+                         force: bool, ip: str, port: int) -> None:
+    """Put a recorded tone back in its slot. TARGET is the tone name or slot label.
+
+    Re-installs the recorded source: an .hsp (from `install`) is re-authored; an
+    .sbe (from `push`) is re-pushed. Tones saved from the live edit buffer or
+    copied on-device have no local source and can't be restored this way.
+    """
+    from helixgen.device.ledger import SlotLedger
+
+    led = SlotLedger.load()
+    entry = led.find(name=target)
+    if entry is None:
+        entry = next((e for e in led.entries_in_order()
+                      if e.get("slot_label") == target), None)
+    if entry is None:
+        raise click.ClickException(f"no ledger entry matching {target!r} "
+                                   f"(try `helixgen device slots`)")
+
+    src_kind = entry.get("source_kind")
+    src_path = entry.get("source_path")
+    dest_setlist = setlist or entry.get("setlist")
+    dest_pos = pos if pos is not None else entry.get("posi")
+    container = _setlist_container(dest_setlist)
+
+    if src_kind not in ("hsp", "sbe") or not src_path:
+        raise click.ClickException(
+            f"no local source recorded for {entry.get('name')!r} "
+            f"(source_kind={src_kind!r}); back it up first (helixgen device pull / backup)")
+    src = Path(src_path)
+    if not src.is_file():
+        raise click.ClickException(f"recorded source no longer exists: {src}")
+
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            if src_kind == "sbe":
+                if h.find_by_pos(container, dest_pos) is not None and not force:
+                    raise click.ClickException(
+                        f"{dest_setlist} slot {dest_pos} is not empty (use --force)")
+                cid = h.push_to_slot(container, dest_pos, entry.get("name"),
+                                     src.read_bytes())
+            else:  # hsp
+                from helixgen.hsp import read_hsp
+
+                cid = _install_hsp_open(h, read_hsp(src), container, dest_pos,
+                                        entry.get("name"), setlist_label=dest_setlist, ip=ip)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if cid is None:
+        raise click.ClickException(f"failed to restore {entry.get('name')!r}")
+    click.echo(f"restored {entry.get('name')!r} to {dest_setlist} slot {dest_pos} "
+               f"(cid {cid}) from {src.name}")
+    _record_placement(setlist=dest_setlist, posi=dest_pos, name=entry.get("name"),
+                      cid=cid, source_kind=src_kind, source_path=str(src),
+                      model=entry.get("model"))
 
 
 @device.command(name="backup")

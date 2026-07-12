@@ -51,6 +51,31 @@ these verbs **mutate the device** — prefer an empty/expendable slot when testi
 - `helixgen device pull-ir <filename> <outfile>` — download an IR `.wav` by its on-device filename. EXPERIMENTAL.
 - `helixgen device install <preset.hsp> <name> --pos <N> [--template <cid>] [--auto-irs]` — **author a helixgen `.hsp` onto the device as a new, playable preset** (the `/tone` → on-your-amp path). Maps the preset's blocks onto a device template's same-category slots (v2.2: single serial chain; `--template` picks the skeleton preset, default = current edit buffer). Model/param names bridge helixgen↔device via `device/modelmap.py` + `device/defs.py`; writes are byte-faithful via `/SetContentData`. `--auto-irs` uploads any IRs the preset references that aren't already on the device (resolving each `irhash` to a local WAV via `mapping.json`, then `push-ir`). It uploads the **processed** IR so the device registers each under exactly the preset's `irhash` — the earlier "helixgen `irhash` disagrees with the device" symptom was `push-ir` uploading the **raw** WAV instead of the processed 8192-sample file the device hashes (see `docs/helix-sftp-access.md`). Registration is device-gated (see `push-ir` above): files may need an editor import or the device's scan to appear, but the hash is correct. EXPERIMENTAL.
 
+### `device slots` — the slot ledger (which tone lives where)
+
+Whenever helixgen places a tone on the device (`install` / `save` / `push` /
+`create`), it records the slot in a local **ledger** at
+`~/.helixgen/device-slots.json` (override `$HELIXGEN_DEVICE_SLOTS`); `rename` and
+`delete` keep it in sync. The ledger is a pure-local, advisory record — distinct
+from `device backup`'s `manifest.json` (a device snapshot) — that answers "which
+of my authored tones is in which slot" offline, and lets you put a tone back.
+
+- `helixgen device slots [list] [--verify] [--json]` — list recorded placements
+  in order (`slot_label  name  cid  source`). Offline unless `--verify`, which
+  cross-checks the live device and flags drift per entry: `ok` / `changed`
+  (slot now holds something else) / `missing` / `moved` (same cid at a different
+  slot) / `untracked` (device presets with no ledger entry). Bare `device slots`
+  runs `list`.
+- `helixgen device slots restore <name-or-slot> [--pos N] [--setlist S] [--force]`
+  — **put a recorded tone back in its slot.** Re-installs the recorded source:
+  an `.hsp` (from `install`) is re-authored, an `.sbe` (from `push`) is
+  re-pushed. Tones from `save` (live edit buffer) or `create` (on-device copy)
+  have no local source and report that they can't be restored this way.
+- *(Phase 2, planned)* `device slots reorder` + `device slots sync` — maintain a
+  desired order locally and reconcile the device's slot order to match
+  (dry-run-first, backup-first). See
+  `docs/superpowers/specs/2026-07-12-device-slot-ledger-design.md`.
+
 Presets are addressed by integer **CID**; setlists are virtual containers
 (`user`=-2, `factory`=-1, `throwaway`=-5); slot `posi` maps to the Helix
 `1A`..`8D` label. MCP mirrors these as `device_*` tools. Full-preset semantic
