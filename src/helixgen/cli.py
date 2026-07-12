@@ -1112,13 +1112,14 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
 @_device_option
 def device_sync(directory: Path | None, setlist: str, exclude_irs: bool,
                 template: int, ip: str, port: int) -> None:
-    """Bulk-sync a directory of authored .hsp tones onto the device.
+    """Mirror a directory of authored .hsp tones onto the device setlist.
 
-    Installs every .hsp into empty slots in the setlist (non-destructive — never
-    overwrites an occupied slot), uploads each tone's referenced IRs (unless
-    --exclude-irs), and records each placement in the slot ledger. Idempotent: a
-    tone already on the device (by name) is skipped, so re-running only adds
-    what's new. DIRECTORY defaults to your `preset_output_dir` preference.
+    DESTRUCTIVE: the target setlist (default `user`) is made to match the
+    library exactly — every preset already in the setlist is deleted, then each
+    .hsp is installed fresh (arbitrary slot order), referenced IRs uploaded
+    (unless --exclude-irs), and the ledger replaced. Only that setlist is
+    touched; no backup is taken; an empty/unreadable library deletes nothing.
+    DIRECTORY defaults to your `preset_output_dir` preference.
     """
     from helixgen.device import sync as _sync
     from helixgen.device import HelixError
@@ -1138,17 +1139,19 @@ def device_sync(directory: Path | None, setlist: str, exclude_irs: bool,
     except HelixError as e:
         raise click.ClickException(str(e)) from e
 
+    for dl in res.get("deleted", []):
+        slot = dl.get("slot") or "?"
+        click.echo(f"deleted {slot}: {dl['name']!r} (cid {dl['cid']})")
     for it in res["installed"]:
         irs = it.get("irs") or []
         ir_note = f"  (+{len(irs)} IRs)" if irs else ""
         click.echo(f"installed {it['slot']}: {it['name']!r} (cid {it['cid']}){ir_note}")
-    for sk in res["skipped"]:
-        click.echo(f"skipped {sk['name']!r} — {sk['reason']}")
     for er in res["errors"]:
         click.echo(f"error: {er.get('file', er.get('name', '?'))} — {er['error']}", err=True)
     n = len(res["installed"])
-    click.echo(f"synced {n} tone{'s' if n != 1 else ''} to {setlist}"
-               + (f" ({len(res['skipped'])} already present)" if res["skipped"] else ""))
+    d = len(res.get("deleted", []))
+    click.echo(f"mirrored {n} tone{'s' if n != 1 else ''} to {setlist}"
+               + (f" ({d} removed)" if d else ""))
     if res.get("note"):
         click.echo(res["note"])
 

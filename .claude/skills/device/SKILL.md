@@ -1,6 +1,6 @@
 ---
 name: device
-description: Use when the user wants to put helixgen presets ONTO their Helix Stadium over the network — install a tone, sync a whole tone library to the device, reorder slots, or back up / restore. Drives the `helixgen device` CLI and the `device_*` MCP tools (including the bulk `device sync` / `device_sync_library`). Runs after `tone` has authored the `.hsp` file(s) on disk. Triggers on "put this on my Helix", "sync my library to the device", "install these presets".
+description: Use when the user wants to put helixgen presets ONTO their Helix Stadium over the network — install a tone, sync a whole tone library to the device, or back up / restore. Drives the `helixgen device` CLI and the `device_*` MCP tools (including the bulk `device sync` / `device_sync_library`). Runs after `tone` has authored the `.hsp` file(s) on disk. Triggers on "put this on my Helix", "sync my library to the device", "install these presets".
 ---
 
 # device
@@ -10,22 +10,58 @@ description: Use when the user wants to put helixgen presets ONTO their Helix St
 This is the bridge from `.hsp` files **on disk** to **playable presets in a
 device slot**, over the LAN (no editor app). The `setup` and `tone` skills stop
 at writing `.hsp`/`.md` to disk; this skill drives the physical Stadium — install
-one tone, **bulk-sync a whole library**, order the slots, and back up / restore.
+one tone, **bulk-sync a whole library**, and back up / restore.
 
-There is **one command** for the common "get my tones onto the Helix" job —
-`device sync` — and it does the tedious, error-prone parts for you (empty-slot
-placement, IR upload, ledger recording, idempotent re-runs). **Do not hand-roll a
-per-preset install loop.** Your job with this skill is the *judgment* around that
-command: knowing which tones will install cleanly, choosing a template that covers
-them, and handling the per-tone failures it reports — because the installer is
-experimental and has one sharp edge (the **template precondition**, below) that
-you must plan around, not discover mid-run.
+## The default path: sync FIRST, then read `errors[]`
+
+For "get my tones onto the Helix," your **first real action is a single
+`device_sync_library` call** (MCP) or `helixgen device sync` (CLI). It **mirrors
+your library onto the `user` setlist**: it deletes every preset already in that
+setlist and installs the library fresh, uploads each tone's IRs, records the
+ledger, and **collects per-tone failures without aborting the run**. The result
+is `{deleted, installed, errors}`.
+
+> ⚠️ **Destructive — say so.** Sync makes the `user` setlist match your library
+> *exactly*: any preset on it that isn't one of your library `.hsp` tones is
+> **deleted**, with **no backup**. Only the `user` setlist is touched. This is
+> the intended behavior — just tell the user plainly ("this replaces everything
+> in the user setlist with your library") before/when you run it, so a deleted
+> on-device preset is never a surprise.
+
+**The sync run IS your analysis.** You do not study the tones or the device to
+predict what will fit — you run the sync and read `errors[]`, which names exactly
+which tones failed and why. Then you fix that subset and re-run (the mirror
+converges in 1–3 passes) and waste zero work on tones that install fine.
+
+**Do NOT front-load analysis before the first sync.** Everything you'd "analyze"
+is either done for you or reported by `errors[]`. Concretely:
+
+- **Never read or parse `.hsp` bytes** (no `json.loads` on the file, no
+  magic-stripping script). If you ever need a tone's contents, use `view_preset` —
+  but you do **not** need it before the first sync.
+- **Do not `view_preset` every tone up front** to bucket them. Run the sync;
+  `errors[]` is the only bucket that matters (the tones that didn't fit).
+- **Do not enumerate, read, or load factory presets to assess template coverage.**
+  You cannot verify coverage that way (no such API — see below); the sync tells you.
+- The **CLI not being on `PATH` is normal** (helixgen ships as a bundled MCP
+  server). That's not a blocker and not a reason to improvise — call
+  `device_sync_library` and the other `device_*` MCP tools.
+
+### Pre-flight is ONE step, not a study
+1. **List the target setlist once** (`device_list_presets(setlist="user")`) — so
+   your final slot map is real (don't assume empty even if the user said so).
+2. **Pick a template in one glance:** list a setlist, grab a **full rock-rig**
+   factory preset by name (drive→amp→cab→delay→reverb — covers the common case),
+   pass its cid as `--template`. Omit `--template` only if you know the edit
+   buffer is already a full rig. Do **not** assess per-category coverage here.
+3. **Run `device_sync_library`.** Then read `deleted` / `installed` / `errors`.
+   *Now* — and only now — analyze: `errors[]` is the exact list that needs work.
 
 ## When to use
 
 - User wants authored preset(s) **on the device** ("put White Limo on my Helix",
   "sync my tone library to the Stadium", "load these onto the device").
-- User wants to **reorder**, **back up**, **restore**, or **verify** device slots.
+- User wants to **back up** or **restore** device slots.
 - A generated preset "isn't loading on the device" and you need to (re)install it.
 
 When NOT to use:
@@ -34,34 +70,50 @@ When NOT to use:
 - Read-only device questions ("what's on my Helix?") — just call
   `device_list_presets` / `device_list_setlists` directly.
 
-## Read this first: the template precondition (the one sharp edge)
+## Red flags — STOP, you are going off the rails
 
-Installing a tone does **not** build a chain from scratch. It maps the tone's
-blocks onto a **template** — an existing device preset used as a slot skeleton —
-and the template **must already contain a free slot for every block category in
-the tone**. `device sync` uses **one template for the whole run** (the current
-edit buffer, or the `--template <cid>` you pass, loaded once). So if the run's
-template has no dynamics slot, every tone with a compressor fails with:
+If you catch yourself doing any of these **before your first `device_sync_library`
+call**, stop and just run the sync:
+
+- Writing a script that reads/parses `.hsp` files (`open(...).read()`,
+  `json.loads`, stripping the `rpshnosj` magic). **Never parse `.hsp` bytes.**
+- Calling `view_preset` on many/all tones to classify them.
+- Listing, reading, or loading factory presets "to find a template that covers
+  everything" / "to check coverage."
+- Building Simple/Rich/Quarantine buckets, or a per-tone template plan.
+- Treating "the `helixgen` CLI isn't on PATH" as a problem to solve instead of
+  reaching for the `device_*` MCP tools.
+
+All of these mean: **you are predicting failures you should be reading.** Run the
+sync; its `errors[]` is the analysis, and it costs one call.
+
+## Why tones land in `errors[]` (the template precondition)
+
+You don't need this to run the first sync — it's how you *read the results*.
+
+Installing a tone maps its blocks onto the run's **template** (an existing device
+preset used as a slot skeleton), which **must already contain a free slot for
+every block category in the tone**. When it doesn't, that tone — not the run —
+fails with:
 
 ```
 no free template slot for model <N> (category 'dynamics'); choose a template with that block
 ```
 
-**There is no API to ask "which template has a compressor slot."** You cannot
-discover it — you can only pick a template and read which tones fail. So the play
-is to **predict** the failures up front (step 1) and **choose one covering
-template** (step 2), *not* to guess-and-retry templates on the device. A past
-session with no skill did exactly that — probed template after template for one
-compressor preset and landed nothing on an empty device. `device sync` prevents
-the "landed nothing" part (per-tone failures don't abort the run), but it can't
-choose the template for you.
+**There is no API to ask "which template has a compressor slot."** That's exactly
+why you don't pre-select a perfect template or probe: you *can't*. You run once
+with a full rock-rig template (covers the Simple case: drive/amp/cab/delay/reverb),
+then `errors[]` tells you which tones need a richer template or a dropped block.
+Fix that subset (playbook below) and re-run. A past session ignored this and
+probed template after template on an empty device, landing nothing — the sync's
+non-aborting `errors[]` is what makes "run then react" strictly safer than predict.
 
-Two more hard limits of the installer:
+Two hard limits `errors[]` (or a thin-looking install) will surface:
 
 - **Parallel / dual-amp routing is flattened to a single serial chain** (only
   DSP-path 0 is read; the second lane is dropped). A tone that relies on a
-  parallel split will not reproduce on the device this way — it either errors or
-  installs wrong. **Quarantine those for manual HX Edit import.**
+  parallel split will not reproduce — **quarantine it for manual HX Edit import.**
+  You'll see it as an error or an install with far fewer blocks than the `.hsp`.
 - **Categories commonly missing from factory rig templates:** `dynamics`
   (comp/gate), and often `modulation`, `pitch`, `eq`. `amp` / `cab` / `drive` /
   `delay` / `reverb` are covered by almost any full-rig template.
@@ -74,19 +126,19 @@ Two more hard limits of the installer:
 helixgen device sync [<dir>] [--setlist user] [--exclude-irs] [--template <cid>]
 ```
 - Globs `*.hsp` in `<dir>` (default: the `preset_output_dir` preference).
-- Installs each into an **empty** slot of the setlist — **non-destructive, never
-  overwrites** an occupied slot.
-- **Idempotent:** a tone whose name already occupies a slot is **skipped**, so
-  re-running only adds what's new.
+- **Mirrors** the setlist to the library: **deletes every preset already in the
+  setlist**, then installs each `.hsp` fresh into empty slots (arbitrary order).
+  The library on disk is the source of truth. **No backup is taken.**
+- **Only the target setlist is touched** (default `user`); others are untouched.
+- **Guardrail:** an empty or all-unreadable library deletes **nothing**.
 - **Uploads each tone's referenced IRs first** (via instant `push_ir`) unless
   `--exclude-irs` — so cabs resolve immediately.
-- **Records every placement in the slot ledger** (enables `slots
-  verify`/`restore`/`reorder`/`sync` later).
+- **Replaces this setlist's ledger entries** with the new placements.
 - **Per-tone failures are collected and reported, and never abort the run** —
-  the result is `{ok, installed:[…], skipped:[…], errors:[…]}`. Read `errors`.
+  the result is `{ok, deleted:[…], installed:[…], errors:[…]}`. Read `errors`.
 
 The MCP mirror `device_sync_library(model, directory?, setlist?, exclude_irs?,
-template_cid?)` does the same (IRs + ledger included).
+template_cid?)` does the same (delete + install + IRs + ledger).
 
 **Single tone — `device install` (CLI) or `device_install_preset` (MCP):**
 Use for one-off placement into a chosen slot. **Prefer the CLI**
@@ -99,48 +151,50 @@ reads / interactive single ops (`device_list_presets`, `device_read_preset`,
 
 ## Workflow
 
-### 1. Pre-flight — predict the outcome before you run
+### 1. Run the sync (lean pre-flight, then go)
 
-`device sync` is safe to run blind (non-destructive, idempotent), but running it
-*informed* means you can pick the right template and tell the user what won't fit
-**before** the run instead of explaining `errors[]` after. Do this first:
+Don't study the tones first. Two cheap steps, then run:
 
-1. **Reachable + model.** Confirm the device model (from `preferences.json`, per
-   `setup`) and that it answers: `helixgen device list --setlist user`.
-2. **See what's already on the device.** `device sync` fills empty slots and skips
-   by name — so existing presets shape where new ones land. List first.
-3. **Classify the `.hsp` files** you intend to sync by block category — read each
-   with `helixgen view <preset.hsp>` (or the `view_preset` MCP tool):
+1. **List the target setlist once** (`device_list_presets(setlist="user")`) so the
+   slot map you report is real — don't assume empty even if the user said so.
+2. **Pick any full rock-rig template in one glance** — list a setlist, grab a
+   drive→amp→cab→delay→reverb factory preset by name, pass its cid as `--template`.
+   Don't assess per-category coverage. (Omit `--template` only if you know the
+   edit buffer is already a full rig.)
 
-   | Bucket | Test | Outcome under `device sync` |
-   |---|---|---|
-   | **Simple** | categories ⊆ `{drive, amp, cab, delay, reverb}` | installs against any full rock-rig template |
-   | **Rich** | also `dynamics` / `modulation` / `eq` / `pitch` | installs **only if the run's template covers those** (step 2) — else lands in `errors[]` |
-   | **Quarantine** | parallel / dual-amp routing (2 DSP lanes, split/join) | **not installable this way** — flag for HX Edit, keep it out of the synced dir or expect it in `errors[]` |
+```bash
+helixgen device sync <dir> --template <cid>
+# MCP: device_sync_library(model, directory=<dir>, setlist="user", template_cid=<cid>)
+```
 
-4. **Tell the user the plan up front** — which tones will sync, and which are
-   Quarantine (and why), *before* running.
+It **deletes everything in the `user` setlist**, then installs every `.hsp` into
+the freed slots in **arbitrary order**, uploads each tone's IRs, and records the
+placements in the ledger. **Ordering is not this skill's job** — tones land
+wherever there's room; imposing an order is a separate, planned reorder skill
+(see the backlog).
 
-### 2. Choose ONE covering template
+### 2. Read the result, fix `errors[]`, re-run
 
-`device sync` uses a single template for the whole run, so pick it to cover the
-categories you found — don't rely on whatever happens to be in the edit buffer.
+The result is `{deleted, installed, errors}`. This is your analysis:
 
-- **All Simple:** any full "rock rig" factory preset (drive→amp→cab→delay→reverb)
-  covers them. Find one with `helixgen device list --setlist factory`, note its
-  cid, pass `--template <cid>`. (Omit `--template` only if you know the current
-  edit buffer already has that shape.)
-- **Rich tones present (comp/gate/mod/eq):** the template must contain those
-  blocks. If no factory preset does, pick per tone — do **not** probe:
-  1. **Drop the inessential block** and re-sync. A front-of-chain compressor is
-     usually subtle polish; removing it (`helixgen remove-block …` on the file)
-     often makes the tone Simple with no audible loss. Note it in the report.
-  2. **Build one covering template in HX Edit** — assemble a preset with one slot
-     of every category you need, save it to the device, `device list` its cid,
-     and pass that cid as `--template` so all the Rich tones map.
-  3. **Quarantine to HX Edit import** if neither fits.
-- Treating a `category 'dynamics'` error as "try another template" is the trap —
-  if no device preset has that slot, no template will satisfy it.
+- **`deleted`** — presets removed to make the setlist match the library (mention
+  the count to the user; these are gone with no backup).
+- **`installed`** — what landed and where (`slot`, `cid`). Your slot map.
+- **`errors[]`** — the only work left. Each entry is one tone and why it failed.
+  Fix that tone and re-run (re-syncing re-mirrors — safe to repeat):
+  - **`no free template slot for model N (category 'dynamics'/'modulation'/…)`** —
+    the template lacks that block. Either **drop the inessential block** from that
+    tone (`remove-block` / `patch_preset` — a front-of-chain comp is usually subtle
+    polish) and re-sync, or pass a **richer `--template`** that has the slot (build
+    one in HX Edit if no factory preset does). **Do not probe templates** — if no
+    device preset has that slot, no template will satisfy it.
+  - **parallel / dual-amp tone** (errors, or installs with far fewer blocks than
+    the `.hsp`) — the installer flattens to one serial chain. **Quarantine it for
+    HX Edit import**; keep it out of the synced dir.
+  - **unregistered IR** (cab silent / "No Model") — `register-irs` the WAV, re-sync.
+- **If you delegate the run to a subagent, keep it tight:** sync *this* dir with
+  *this* template; report `deleted`/`installed`/`errors` verbatim; no template
+  probing, no improvising. Then check the device yourself.
 
 ### 3. IRs — usually automatic
 
@@ -153,48 +207,15 @@ under the tone's exact hash), so **you normally do nothing**. Two caveats:
 - `--exclude-irs` skips IR upload entirely (use only if the IRs are already known
   to be on the device and you want a faster run).
 
-### 4. Run it, then read the result
+### 4. Ordering — out of scope (deferred)
 
-```bash
-helixgen device sync ~/git/guitar-training/tones --template <cid>
-```
+`device sync` places tones in arbitrary fill-empty order and records where each
+landed in the ledger. **This skill does not reorder slots.** Imposing a desired
+order is a separate, planned reorder skill (backlog item #7); don't fold it into
+the install flow. If the user asks for a specific order now, install first, tell
+them the arbitrary slot map, and note that explicit reordering is coming.
 
-- **Watch the run and read `errors[]` / `skipped[]`** — this is the whole point.
-  `installed` tells you what landed and where (`slot`, `cid`); `skipped` is
-  already-present tones (idempotent re-run); `errors` is the work left:
-  template-coverage misses, unresolved models, parallel presets, unregistered
-  IRs. Handle each per step 2/3, then re-run (it only adds what's missing).
-- **Re-running is safe and expected** — fix the `errors`, sync again, converge.
-  It never overwrites or reorders; it only fills empty slots with what's not yet
-  on the device.
-- **If you delegate the run to a subagent, keep it tight and watch it:** sync
-  *this* dir with *this* template, report `installed`/`skipped`/`errors`
-  verbatim — no per-preset template probing, no improvising. Then check the
-  device yourself (`device list`). An unwatched agent left to "figure out
-  templates" is how the user ends up staring at an empty device.
-- **Verify** with `helixgen device slots list --verify` (ledger-aware:
-  `ok`/`changed`/`missing`/`moved`/`untracked`) or `device list`.
-
-### 5. Order the slots (optional)
-
-`device sync` fills empty slots in order — it does not sort by any scheme. To
-impose an order after the fact, use the ledger (populated by the sync):
-
-```bash
-helixgen device slots reorder "White Limo LP" --to 3   # local ledger only
-helixgen device slots sync --dry-run                   # preview device moves
-helixgen device slots sync                             # apply (confirms first)
-```
-
-- `reorder` rewrites **local** order; `slots sync` applies it to the device.
-- **`slots sync` only *reorders* already-tracked presets among the slots they
-  already occupy** — it never installs a tone and never touches untracked
-  presets. (Different command from `device sync`, which installs.)
-- It's destructive (pull → delete → re-push in order) but **backs up affected
-  setlists first** (unless `--no-backup`) and **verifies every pull before any
-  delete**, so an interruption is recoverable.
-
-### 6. Back up / restore
+### 5. Back up / restore
 
 - **Back up before any destructive reorg:** `helixgen device backup` pulls a whole
   setlist to local `.sbe` files + `manifest.json` (then works offline via
@@ -204,19 +225,17 @@ helixgen device slots sync                             # apply (confirms first)
   recorded from `save` (edit buffer) or `create` (on-device copy) have no local
   source and can't be restored this way — back them up first.
 
-### 7. Report back
+### 6. Report back
 
 Tightly:
 1. **What landed and where** — the slot map from `installed` / `device slots
-   list` (`1A White Limo LP · 1B …`).
-2. **What was skipped** — already-present tones (so the user knows the re-run was
-   idempotent, not broken).
-3. **What errored and the fix** — each `errors[]` entry with its remedy
-   (covering template, dropped comp block, or HX Edit for parallel presets).
+   list` (`1A White Limo LP · 1B …`), noting the order is arbitrary.
+2. **What was removed** — the `deleted` count (presets the mirror wiped to match
+   the library; no backup), so the user isn't surprised.
+3. **What errored and the fix** — each `errors[]` entry with its remedy (richer
+   template, dropped block, or HX Edit for parallel presets).
 4. **IRs** — uploaded vs any that couldn't be resolved (so the user registers
    them).
-5. **One next step** — e.g. "reorder with `slots reorder … --to N` then `slots
-   sync`," or "import the 2 dual-amp tones via HX Edit."
 
 ## Failure playbook — the exact errors
 
@@ -224,8 +243,8 @@ Tightly:
 |---|---|---|
 | `no free template slot for model N (category 'dynamics')` (in `errors[]`) | the run's template has no comp/gate slot | pass a `--template` that covers it, drop the block, or quarantine — **do not probe templates** |
 | `could not resolve helixgen model 'X'` | a block model doesn't bridge to the device | that tone isn't installable as-is; report it |
-| `no empty slot left in setlist` | the setlist filled up | free slots (delete) or target another setlist |
-| `user slot N is not empty` (single `device install` only) | chosen slot occupied | `device sync` avoids this (fills empty); for `install`, pick an empty `--pos` |
+| `no empty slot left in setlist` | the library has >128 tones for one setlist | split the library or target another setlist (the mirror already frees the whole setlist first) |
+| `user slot N is not empty` (single `device install` only) | chosen slot occupied | `device sync` mirrors the whole setlist; for a one-off `install`, pick an empty `--pos` |
 | an installed tone has far fewer blocks than the `.hsp`, or a parallel tone errors | parallel routing flattened / unsupported | HX Edit import that tone; keep it out of the synced dir |
 | cab silent / "No Model" after sync | referenced IR not in local `mapping.json` | `helixgen register-irs` the WAV, then re-sync (or import in HX Edit) |
 | a later `device slots sync` does nothing after installing via **MCP `device_install_preset`** | that MCP tool records no ledger entry | install via `device sync` or the CLI `device install` (both record the ledger) |
@@ -234,12 +253,15 @@ Tightly:
 
 | Mistake | Fix |
 |---|---|
-| Hand-rolling a per-preset install loop | Use `device sync` — it does empty-slot placement, IR upload, ledger recording, and idempotent re-runs in one command |
-| Probing template after template for a compressor tone | No factory template may have a dynamics slot — choose one covering `--template` up front, or drop the block |
-| Relying on the edit buffer as the template | `device sync` uses one template for the whole run — pass `--template <cid>` chosen to cover your tones' categories |
-| Ignoring the `errors[]` in the sync result | That list *is* the remaining work — read it, fix each, re-run (re-runs are safe/idempotent) |
+| Parsing `.hsp` files (`json.loads`, magic-strip) to classify tones | Never parse `.hsp` bytes — just run the sync; `errors[]` is the classification |
+| `view_preset`-ing every tone / listing factory presets **before** the first sync | The sync is safe and reports failures — run it first, analyze `errors[]` after |
+| Probing template after template for a compressor tone | No factory template may have a dynamics slot — run once, then drop the block or pass a richer `--template` for the ones in `errors[]` |
+| Hand-rolling a per-preset install loop | Use `device sync` — it mirrors the setlist, uploads IRs, and records the ledger in one call |
+| Ignoring the `errors[]` in the sync result | That list *is* the remaining work — read it, fix each, re-sync (re-mirroring is safe to repeat) |
+| Treating "CLI not on PATH" as a blocker | Expected — helixgen ships as a bundled MCP server; use the `device_*` MCP tools |
 | Delegating the sync to a background agent and not watching | Give it a tight, no-probing mandate and check the device yourself |
 | Syncing a dual-amp / parallel-split tone | It flattens to one serial chain (second lane lost) — quarantine for HX Edit |
 | Using the **MCP** `device_install_preset` for anything you want tracked | It uploads no IRs and records no ledger — use `device sync` or the CLI `device install --auto-irs` |
-| Expecting `slots sync` to install tones | `slots sync` only **reorders** already-tracked presets — `device sync` is what installs |
-| Assuming the device is empty because the user said so | `device sync` is non-destructive and fills around what's there — but still `device list` first so the plan and slot map are real |
+| Trying to order slots in this flow | Ordering is out of scope — sync places tones arbitrarily + records the ledger; a reorder skill is planned |
+| Forgetting sync is destructive | It **deletes** every `user`-setlist preset not in the library, no backup — tell the user before running |
+| Pointing sync at the wrong/empty directory | It mirrors *that* dir; an empty one is caught by the guardrail (deletes nothing), but a wrong non-empty dir would wipe + replace — confirm the directory |

@@ -233,7 +233,7 @@ def test_sync_library_calls_sync_with_explicit_dir(monkeypatch):
     seen = {}
     monkeypatch.setattr(_sync, "sync_library",
                         lambda directory, **kw: seen.update(directory=directory, **kw)
-                        or {"ok": True, "installed": [], "skipped": [], "errors": []})
+                        or {"ok": True, "deleted": [], "installed": [], "errors": []})
     out = tools.device_sync_library_handler(
         MODEL, ip="1.2.3.4", directory="/tones", setlist="throwaway",
         exclude_irs=True)

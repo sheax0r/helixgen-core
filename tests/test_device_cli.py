@@ -275,20 +275,20 @@ def test_device_sync_installs_and_prints_summary(tmp_path, monkeypatch):
     seen = {}
     summary = {
         "ok": True, "setlist": "user", "directory": str(tmp_path),
+        "deleted": [{"name": "Old Tone", "cid": 900, "slot": "1A"}],
         "installed": [
             {"file": "a.hsp", "name": "Tone A", "pos": 1, "slot": "1B",
              "cid": 101, "irs": [{"hash": "aa"}]},
         ],
-        "skipped": [{"file": "b.hsp", "name": "Tone B", "reason": "already on device"}],
         "errors": [],
     }
     monkeypatch.setattr(_sync, "sync_library",
                         lambda directory, **kw: seen.update(directory=directory, **kw) or summary)
     result = CliRunner().invoke(cli, ["device", "sync", str(tmp_path)])
     assert result.exit_code == 0, result.output
+    assert "deleted 1A: 'Old Tone' (cid 900)" in result.output
     assert "installed 1B: 'Tone A' (cid 101)  (+1 IRs)" in result.output
-    assert "skipped 'Tone B'" in result.output
-    assert "synced 1 tone to user (1 already present)" in result.output
+    assert "mirrored 1 tone to user (1 removed)" in result.output
     assert seen["directory"] == str(tmp_path)
     assert seen["exclude_irs"] is False
 
@@ -298,7 +298,7 @@ def test_device_sync_exclude_irs_flag(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(_sync, "sync_library",
                         lambda directory, **kw: seen.update(**kw) or
-                        {"ok": True, "setlist": "user", "installed": [], "skipped": [], "errors": []})
+                        {"ok": True, "setlist": "user", "deleted": [], "installed": [], "errors": []})
     CliRunner().invoke(cli, ["device", "sync", str(tmp_path), "--exclude-irs"])
     assert seen["exclude_irs"] is True
 
@@ -313,7 +313,7 @@ def test_device_sync_defaults_to_preset_output_dir(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(_sync, "sync_library",
                         lambda directory, **kw: seen.update(directory=directory) or
-                        {"ok": True, "setlist": "user", "installed": [], "skipped": [], "errors": []})
+                        {"ok": True, "setlist": "user", "deleted": [], "installed": [], "errors": []})
     result = CliRunner().invoke(cli, ["device", "sync"])
     assert result.exit_code == 0, result.output
     assert seen["directory"] == str(tmp_path)

@@ -640,13 +640,15 @@ def device_sync_library_handler(
     exclude_irs: bool = False,
     template_cid: int | None = None,
 ) -> dict[str, Any]:
-    """Bulk-sync a directory of authored .hsp tones onto the device.
+    """Mirror a directory of authored .hsp tones onto the device setlist.
 
-    Installs every ``.hsp`` in ``directory`` (default: the ``preset_output_dir``
-    preference) into empty slots of ``setlist`` — non-destructive — uploading
-    referenced IRs unless ``exclude_irs`` and recording each placement in the
-    slot ledger. Idempotent (a tone already on the device by name is skipped).
-    Returns ``{ok, setlist, directory, installed, skipped, errors}``.
+    DESTRUCTIVE: the target ``setlist`` (default ``user``) is made to match the
+    library (``directory``, default: the ``preset_output_dir`` preference)
+    exactly — every preset already in the setlist is deleted, then each ``.hsp``
+    is installed fresh, referenced IRs uploaded unless ``exclude_irs``, and the
+    ledger replaced. Only that setlist is touched; no backup is taken; an
+    empty/unreadable library deletes nothing. Returns
+    ``{ok, setlist, directory, deleted, installed, errors}``.
     """
     _validate_model(model)
     from helixgen.device import HelixError
