@@ -1140,7 +1140,13 @@ def device_setlist_list(as_json: bool) -> None:
 @click.option("--pos", type=int, default=None,
               help="Insert at this 0-based position (default: append).")
 def device_setlist_add_cmd(setlist: str, hsp_file: Path, pos: int | None) -> None:
-    """Add an authored .hsp tone to a setlist's membership (auto-creates the setlist)."""
+    """Add an authored .hsp tone to a setlist's membership (auto-creates the setlist).
+
+    A tone may belong to many setlists (it's referenced once in the device pool
+    and shared) — adding one that's already elsewhere is expected, not a dup.
+    Idempotent within a setlist; only errors if the tone's name is already
+    registered to a different .hsp file (names must be unique).
+    """
     from helixgen.device.manifest import SetlistManifest, ManifestError
 
     m = SetlistManifest.load()

@@ -464,9 +464,21 @@ def device_setlist_add(
     Required `model`: `"stadium"` or `"stadium_xl"`. `hsp_path` is a filesystem
     path to a `.hsp` file (path-based, no base64); its `meta.name` becomes the
     tone name. Appends the tone to `setlist` (at `pos` if given; the setlist is
-    auto-created in the manifest if new). Local-only — writes
-    `~/.helixgen/setlists.json`; run `device_sync_setlist` to push it to the
-    device. Returns `{ok, setlist, tone, tones}`.
+    auto-created in the manifest if new).
+
+    Membership semantics (safe to call in bulk without pre-checking):
+    - **The same tone may belong to many setlists** — adding a tone that already
+      exists (e.g. to both `library` and `Sarah`) is expected and correct; it is
+      referenced once in the device pool and shared. NOT a duplicate error.
+    - **Idempotent within a setlist** — re-adding a tone already in `setlist` is a
+      no-op (never duplicated); re-adding the same file refreshes its content
+      hash.
+    - The ONLY rejection is a name collision on a *different* file: if the tone's
+      `meta.name` is already registered to a different `.hsp` path, it raises
+      (names must be unique in the manifest) — rename the tone or reuse the entry.
+
+    Local-only — writes `~/.helixgen/setlists.json`; run `device_sync_setlist`
+    to push it to the device. Returns `{ok, setlist, tone, tones}`.
     """
     return _tools.device_setlist_add_handler(model, setlist, hsp_path, pos=pos)
 

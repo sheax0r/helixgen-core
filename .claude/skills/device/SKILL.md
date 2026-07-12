@@ -176,8 +176,12 @@ helixgen device setlist create-local <setlist>     # empty setlist in the manife
 ```
 
 - These touch only `~/.helixgen/setlists.json` — no device. A tone's identity is
-  its **display name** (`meta.name`); adding a name that already exists is
-  rejected.
+  its **display name** (`meta.name`). **The same tone can be in as many setlists
+  as you want** — it's referenced once in the device pool and shared — so adding
+  a tone that's already in another setlist is expected, and re-adding within one
+  setlist is a harmless no-op. `add` only errors when a name is already
+  registered to a *different* `.hsp` file (names must be unique). You never need
+  to pre-check membership or read the manifest to add safely.
 - `create-local` (and `add` auto-creating a setlist) only add it to the
   *manifest*. **Device-side creation is deferred (#8)** — the user must also
   create that setlist by hand in the Stadium app before `sync` can push to it.
@@ -319,7 +323,7 @@ Tightly:
 | an installed tone has far fewer blocks than the `.hsp`, or a parallel tone errors | parallel routing flattened / unsupported | HX Edit import that tone; keep it out of the setlist |
 | cab silent / "No Model" after sync | referenced IR not in local `mapping.json` | `helixgen register-irs` the WAV, then re-sync (or import in HX Edit) |
 | sync fails partway / device stops responding | the Stadium's flaky network stack dropped the connection | **re-run** the same sync (idempotent); if it persists, **reboot the Helix**, then re-run |
-| duplicate-name rejected by `device setlist add` | a tone with that display name is already in the manifest | rename the tone or reuse the existing entry |
+| `device setlist add` raises a name-collision error | the tone's `meta.name` is already registered to a **different** `.hsp` file (unique-name rule) — NOT triggered by adding the same tone to another setlist | rename one tone, or point at the already-registered file |
 
 ## Common Mistakes
 
@@ -332,6 +336,8 @@ Tightly:
 | Hand-rolling a per-preset install loop | Use `device sync <setlist>` — it reconciles the pool, rebuilds references, and uploads IRs in one call |
 | Trying to sync a setlist that isn't on the device | helixgen can't create setlists (#8) — the user creates it in the Stadium app first |
 | Hand-editing `~/.helixgen/setlists.json` | Manage it with `device setlist add/remove` (or the MCP tools / `tone` skill) |
+| Pre-checking whether a tone is already in a setlist before adding it | Don't — a tone belongs in as many setlists as you want (shared, referenced once in the pool). `device setlist add` is idempotent within a setlist and only errors on a name/different-file collision. Just add it |
+| Reading helixgen **source** (`SetlistManifest`, `setlists.json` schema, engine internals) to confirm behavior or guard against "version drift" | Don't source-dive. The running MCP is the **bundled** plugin (loaded from `${CLAUDE_PLUGIN_ROOT}`), **not** any checkout in the working directory — so reading cwd source can *mislead* about the actual version/schema. The `device_*` tool descriptions, `device setlist list`, and the sync **result dict** are the authoritative contract; operate through them |
 | Expecting sync to wipe the setlist like the old mirror | It doesn't — it reconciles pool + references and never orphans; GC only on `--all --gc` |
 | Diagnosing a dropped connection as a coverage failure | It's the flaky network stack — re-run the sync, reboot the Helix if it persists |
 | Ignoring the `errors[]` in the sync result | That list *is* the remaining work — read it, fix each, re-sync |

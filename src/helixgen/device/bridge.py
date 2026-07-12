@@ -275,6 +275,49 @@ def hsp_to_chain(hsp_body: dict, *, dsp: int = 0,
     return chain
 
 
+def hsp_to_chain_with_irs(
+    hsp_body: dict, *, dsp: int = 0,
+    resolve_model=_default_resolve_model,
+    strict: bool = True,
+) -> List[Tuple[int, Dict[str, Any], Optional[str]]]:
+    """Like :func:`hsp_to_chain`, but also carry each user block's IR hash.
+
+    Returns ``(device_model_id, {param_name: value}, irhash_or_None)`` in signal
+    order. ``irhash`` is the block's ``.hsp`` slot ``irhash`` string (32-hex) when
+    present (IR cab blocks), else ``None``. Additive sibling of
+    :func:`hsp_to_chain` — the latter's signature/behaviour is unchanged.
+    """
+    flow = hsp_body["preset"]["flow"][dsp]
+    chain: List[Tuple[int, Dict[str, Any], Optional[str]]] = []
+    for key in sorted(k for k in flow if isinstance(k, str) and k.startswith("b")):
+        b = flow[key]
+        if not isinstance(b, dict):
+            continue
+        slot = b.get("slot")
+        if not (isinstance(slot, list) and slot and isinstance(slot[0], dict)):
+            continue
+        model = slot[0].get("model")
+        if not model:
+            continue
+        dev_id = resolve_model(model)
+        if dev_id is None:
+            if strict:
+                raise UnresolvedModel(model)
+            continue
+        cat = device_category(dev_id)
+        if cat in (None, "input", "output"):
+            continue
+        raw = {}
+        for name, wrapped in (slot[0].get("params") or {}).items():
+            val = wrapped.get("value") if isinstance(wrapped, dict) else wrapped
+            if isinstance(val, (int, float)):
+                raw[name] = val
+        params = map_params(dev_id, raw)
+        irhash = slot[0].get("irhash") or None
+        chain.append((dev_id, params, irhash))
+    return chain
+
+
 def hsp_ir_hashes(hsp_body: dict) -> set:
     """Every IR hash (``irhash``) referenced by a helixgen ``.hsp`` body."""
     hashes = set()
