@@ -1281,6 +1281,121 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                       model=entry.get("model"))
 
 
+@device_slots.command(name="reorder")
+@click.argument("target")
+@click.option("--to", "to_index", type=int, required=True,
+              help="New 0-based position within the tone's setlist order.")
+def device_slots_reorder(target: str, to_index: int) -> None:
+    """Move a recorded tone to a new position in its setlist's order.
+
+    Local only — reorders the ledger; run `device slots sync` to apply it to the
+    device. TARGET is the tone name.
+    """
+    from helixgen.device.ledger import SlotLedger
+
+    led = SlotLedger.load()
+    if not led.reorder(name=target, to_index=to_index):
+        raise click.ClickException(f"no ledger entry matching {target!r} "
+                                   f"(try `helixgen device slots`)")
+    led.save()
+    seq = ", ".join(e.get("name", "") for e in led.entries_in_order())
+    click.echo(f"reordered; order is now: {seq}")
+
+
+@device_slots.command(name="sync")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the plan without touching the device.")
+@click.option("--yes", is_flag=True, default=False,
+              help="Skip the confirmation prompt.")
+@click.option("--no-backup", is_flag=True, default=False,
+              help="Skip the safety backup of affected setlists (not recommended).")
+@_device_option
+def device_slots_sync(dry_run: bool, yes: bool, no_backup: bool,
+                      ip: str, port: int) -> None:
+    """Reconcile the device so tracked tones sit in the ledger's order.
+
+    Rearranges each affected setlist's tracked presets **among the slots they
+    already occupy** — untracked presets are never disturbed. Destructive: it
+    pulls each preset's content, deletes it, and re-pushes it in order. Affected
+    setlists are backed up first (unless --no-backup), and every pull is verified
+    before any delete, so an interruption is recoverable. EXPERIMENTAL.
+    """
+    from helixgen.device.ledger import SlotLedger
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device.client import slot_label
+
+    led = SlotLedger.load()
+    entries = led.entries_in_order()
+    setlists = sorted({e.get("setlist") for e in entries if e.get("setlist")})
+
+    try:
+        with HelixClient(ip, port) as h:
+            device_presets = []
+            for sl in setlists:
+                for p in h.list_presets(_setlist_container(sl)):
+                    device_presets.append({**p, "setlist": sl})
+
+            plan = led.sync_plan(device_presets)
+            if not plan:
+                click.echo("device slots already in ledger order")
+                return
+
+            click.echo("planned moves:")
+            for m in plan:
+                click.echo(f"  {m['name']}: {slot_label(m['from'])} -> {slot_label(m['to'])}")
+            if dry_run:
+                click.echo("(dry run — no changes made)")
+                return
+            if not yes:
+                click.confirm(f"Rearrange {len(plan)} preset(s) on the device?",
+                              abort=True)
+
+            affected = sorted({m["setlist"] for m in plan})
+            dev_posi = {(p.get("setlist"), p.get("cid", p.get("cid_"))): p.get("posi")
+                        for p in device_presets}
+
+            if not no_backup:
+                from helixgen.device import backup as _backup
+                for sl in affected:
+                    _backup.backup_setlist(h, _setlist_container(sl), now=_utc_now())
+                click.echo(f"backed up {len(affected)} setlist(s) before reordering")
+
+            # Phase A — pull + verify EVERY affected blob before deleting anything.
+            work = {}
+            for sl in affected:
+                present = [e for e in entries if e.get("setlist") == sl
+                           and (sl, e.get("cid")) in dev_posi]
+                targets = sorted(dev_posi[(sl, e.get("cid"))] for e in present)
+                pulled = []
+                for e in present:
+                    h.load_preset(e.get("cid"))
+                    blob = h.get_edit_buffer()
+                    if not blob:
+                        raise click.ClickException(
+                            f"aborting: empty content pulled for {e.get('name')!r} "
+                            f"(cid {e.get('cid')}); device left unchanged")
+                    pulled.append((e, blob))
+                work[sl] = (present, targets, pulled)
+
+            # Phase B — delete then re-push in ledger order to the occupied slots.
+            for sl in affected:
+                container = _setlist_container(sl)
+                present, targets, pulled = work[sl]
+                for e in present:
+                    h.delete(container, [e.get("cid")])
+                for (e, blob), target in zip(pulled, targets):
+                    new_cid = h.push_to_slot(container, target, e.get("name"), blob)
+                    e["posi"] = target
+                    e["slot_label"] = slot_label(target)
+                    e["cid"] = new_cid
+            led.save()
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"synced {len(plan)} move(s) to the device")
+
+
 @device.command(name="backup")
 @click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
               default="user", show_default=True, help="Setlist to back up.")
