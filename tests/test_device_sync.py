@@ -1,4 +1,10 @@
-"""Unit tests for device.sync.sync_library (no real device)."""
+"""Unit tests for device.sync.sync_library (no real device).
+
+``sync_library`` mirrors a library directory onto the target setlist: it deletes
+every preset already in the setlist, then installs the library fresh. The library
+on disk is the source of truth; only the target setlist is touched; and an empty
+or unreadable library never deletes anything.
+"""
 from __future__ import annotations
 
 import json
@@ -17,9 +23,10 @@ class FakeClient:
     """Stand-in for HelixClient: canned container contents + edit buffer."""
 
     def __init__(self, occupied=(), missing=()):
-        # occupied: list of (posi, name) already on the device
-        self._occupied = list(occupied)
+        # occupied: list of (posi, name) already on the device; give each a cid
+        self._occupied = [(p, n, 900 + i) for i, (p, n) in enumerate(occupied)]
         self._missing = list(missing)
+        self.deleted = []  # cids passed to delete()
 
     def __enter__(self):
         return self
@@ -28,7 +35,14 @@ class FakeClient:
         return False
 
     def list_container(self, container):
-        return [{"posi": p, "name": n} for p, n in self._occupied]
+        return [{"posi": p, "name": n, "cid_": c} for p, n, c in self._occupied]
+
+    def delete(self, container, cids):
+        cids = list(cids)
+        self.deleted.extend(cids)
+        drop = set(cids)
+        self._occupied = [(p, n, c) for p, n, c in self._occupied if c not in drop]
+        return True
 
     def device_ir_hashes(self):
         return set()  # nothing on device → all referenced IRs "missing"
@@ -51,42 +65,75 @@ def _patch(monkeypatch, ledger_path, *, client, cids=(101, 102, 103),
                         lambda c, b: {"missing": list(missing_by_default), "present": set()})
 
 
-def test_sync_fills_empty_slots_and_records_ledger(tmp_path, monkeypatch):
+def test_sync_mirrors_setlist_to_library(tmp_path, monkeypatch):
     d = tmp_path / "tones"; d.mkdir()
     _write_hsp(d / "a.hsp", "Tone A")
     _write_hsp(d / "b.hsp", "Tone B")
     ledger = tmp_path / "ledger.json"
-    # device already has slot 0 occupied
-    _patch(monkeypatch, ledger, client=FakeClient(occupied=[(0, "Existing")]))
+    # device holds an unmanaged preset AND a stale copy of a library tone
+    client = FakeClient(occupied=[(0, "Existing"), (1, "Tone A")])
+    _patch(monkeypatch, ledger, client=client)
 
     res = _sync.sync_library(str(d), ip="1.2.3.4", exclude_irs=True)
 
     assert res["ok"] is True
-    # skipped occupied slot 0, filled the next empties 1 and 2
-    assert [i["pos"] for i in res["installed"]] == [1, 2]
+    # BOTH existing presets deleted — library is authoritative (delete unmanaged,
+    # overwrite managed == delete + reinstall)
+    assert {e["name"] for e in res["deleted"]} == {"Existing", "Tone A"}
+    assert sorted(client.deleted) == [900, 901]
+    # library installed fresh into the now-empty slots (arbitrary fill order)
     assert [i["name"] for i in res["installed"]] == ["Tone A", "Tone B"]
-    assert [i["slot"] for i in res["installed"]] == ["1B", "1C"]
-    assert res["skipped"] == [] and res["errors"] == []
-    # ledger persisted both placements
+    assert [i["pos"] for i in res["installed"]] == [0, 1]
+    assert [i["slot"] for i in res["installed"]] == ["1A", "1B"]
+    assert res["errors"] == []
+    # ledger holds exactly the new placements (stale entries replaced)
     led = json.loads(ledger.read_text())
-    recorded = {(e["posi"], e["name"], e["cid"]) for e in led["entries"]}
-    assert recorded == {(1, "Tone A", 101), (2, "Tone B", 102)}
+    recorded = {(e["name"], e["cid"]) for e in led["entries"]}
+    assert recorded == {("Tone A", 101), ("Tone B", 102)}
     assert all(e["source_kind"] == "hsp" for e in led["entries"])
 
 
-def test_sync_is_idempotent_skips_by_name(tmp_path, monkeypatch):
+def test_sync_deletes_nothing_when_device_empty(tmp_path, monkeypatch):
     d = tmp_path / "tones"; d.mkdir()
     _write_hsp(d / "a.hsp", "Tone A")
-    _write_hsp(d / "b.hsp", "Tone B")
     ledger = tmp_path / "ledger.json"
-    # "Tone A" already on the device → skip it, install only "Tone B"
-    _patch(monkeypatch, ledger, client=FakeClient(occupied=[(0, "Tone A")]))
+    client = FakeClient()  # empty device
+    _patch(monkeypatch, ledger, client=client)
 
     res = _sync.sync_library(str(d), ip="1.2.3.4", exclude_irs=True)
 
-    assert [i["name"] for i in res["installed"]] == ["Tone B"]
-    assert res["skipped"] == [{"file": "a.hsp", "name": "Tone A",
-                               "reason": "already on device"}]
+    assert res["deleted"] == [] and client.deleted == []
+    assert [i["name"] for i in res["installed"]] == ["Tone A"]
+
+
+def test_sync_empty_library_leaves_device_untouched(tmp_path, monkeypatch):
+    """Safety guard: an empty library must never wipe the device."""
+    d = tmp_path / "empty"; d.mkdir()
+    ledger = tmp_path / "ledger.json"
+    client = FakeClient(occupied=[(0, "Keep Me")])
+    _patch(monkeypatch, ledger, client=client)
+
+    res = _sync.sync_library(str(d), ip="1.2.3.4", exclude_irs=True)
+
+    assert res["installed"] == [] and res["deleted"] == []
+    assert client.deleted == []  # device never contacted for deletion
+    assert "nothing to mirror" in res["note"]
+
+
+def test_sync_all_unreadable_leaves_device_untouched(tmp_path, monkeypatch):
+    """If every .hsp fails to read, bail before deleting anything."""
+    d = tmp_path / "tones"; d.mkdir()
+    (d / "a.hsp").write_bytes(b"not a valid hsp")
+    ledger = tmp_path / "ledger.json"
+    client = FakeClient(occupied=[(0, "Keep Me")])
+    _patch(monkeypatch, ledger, client=client)
+
+    res = _sync.sync_library(str(d), ip="1.2.3.4", exclude_irs=True)
+
+    assert res["ok"] is False
+    assert res["installed"] == [] and res["deleted"] == []
+    assert client.deleted == []
+    assert res["errors"] and "read failed" in res["errors"][0]["error"]
 
 
 def test_sync_uploads_referenced_irs_unless_excluded(tmp_path, monkeypatch):
@@ -108,32 +155,9 @@ def test_sync_uploads_referenced_irs_unless_excluded(tmp_path, monkeypatch):
     calls.clear()
     ledger2 = tmp_path / "ledger2.json"
     monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(ledger2))
-    _write_hsp(d / "c.hsp", "Tone C")  # fresh name so it's not skipped
     res2 = _sync.sync_library(str(d), ip="9.9.9.9", exclude_irs=True)
     assert calls == []
     assert all(i["irs"] == [] for i in res2["installed"])
-
-
-def test_sync_reports_when_no_empty_slot(tmp_path, monkeypatch):
-    d = tmp_path / "tones"; d.mkdir()
-    _write_hsp(d / "a.hsp", "Tone A")
-    ledger = tmp_path / "ledger.json"
-    # every slot occupied
-    full = [(p, f"P{p}") for p in range(_sync.SETLIST_CAPACITY)]
-    _patch(monkeypatch, ledger, client=FakeClient(occupied=full))
-
-    res = _sync.sync_library(str(d), ip="1.2.3.4", exclude_irs=True)
-    assert res["ok"] is False
-    assert res["installed"] == []
-    assert res["errors"][0]["error"] == "no empty slot left in setlist"
-
-
-def test_sync_empty_directory(tmp_path, monkeypatch):
-    d = tmp_path / "empty"; d.mkdir()
-    monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "l.json"))
-    res = _sync.sync_library(str(d), ip="1.2.3.4")
-    assert res["ok"] and res["installed"] == []
-    assert "no .hsp" in res["note"]
 
 
 def test_sync_bad_directory_raises(tmp_path):

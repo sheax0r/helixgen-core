@@ -1,12 +1,16 @@
-"""Bulk-sync a directory of authored ``.hsp`` tones onto the device.
+"""Mirror a directory of authored ``.hsp`` tones onto a device setlist.
 
 There is no on-disk manifest of a user's authored tones — they are loose
 ``.hsp`` files (typically in ``preset_output_dir``). :func:`sync_library`
-enumerates a directory, installs every tone onto the device filling **empty
-slots** in a setlist (non-destructive), uploads each tone's referenced IRs
-(instant, via the 2001-subscription ``push_ir``) unless excluded, and records
-every placement in the slot ledger. Re-running it is idempotent: a tone whose
-name already occupies a slot in the setlist is skipped.
+**mirrors** that directory onto the target setlist (default ``user``): it
+deletes every preset already in the setlist and installs the library fresh, so
+the setlist ends up holding exactly the library's tones and nothing else. It
+uploads each tone's referenced IRs (instant, via the 2001-subscription
+``push_ir``) unless excluded and records every placement in the slot ledger.
+
+The library on disk is the source of truth; **only the target setlist is
+touched**, no backup is taken, and — as a guardrail — if the library has no
+installable tone (empty dir, or every ``.hsp`` unreadable) nothing is deleted.
 """
 from __future__ import annotations
 
@@ -38,6 +42,11 @@ def setlist_container(name: str) -> int:
 def _preset_name(body: dict, fallback: str) -> str:
     name = ((body.get("meta") or {}).get("name") or "").strip()
     return name or fallback
+
+
+def _cid(preset: dict):
+    """Device presets carry the content id as ``cid_`` (or ``cid``)."""
+    return preset.get("cid", preset.get("cid_"))
 
 
 def _empty_positions(occupied: set, count: int) -> List[int]:
@@ -93,20 +102,26 @@ def sync_library(
     exclude_irs: bool = False,
     template_cid: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Install every ``.hsp`` in ``directory`` onto the device.
+    """Mirror ``directory``'s ``.hsp`` tones onto the device ``setlist``.
 
-    - Fills **empty** slots in ``setlist`` in order (non-destructive; never
-      overwrites an occupied slot).
-    - Skips a tone whose name already occupies a slot in the setlist
-      (idempotent — safe to re-run).
+    **Destructive.** The target setlist (default ``user``) is made to match the
+    library exactly — the library on disk is the source of truth:
+
+    - **Deletes every preset currently in the setlist** (managed or not), then
+      installs each readable ``.hsp`` fresh into empty slots (arbitrary order).
+      Overwriting a tone == delete + reinstall, so the setlist ends up holding
+      exactly the library's tones and nothing else.
     - Uploads each tone's referenced IRs first (unless ``exclude_irs``); IRs
       register instantly via ``push_ir``.
-    - Records every placement in the slot ledger.
+    - Replaces this setlist's ledger entries with the new placements.
+    - **Only the target setlist is touched**; other setlists are never modified.
+    - **No backup is taken.** As a guardrail, if the library has no installable
+      tone (empty dir, or every ``.hsp`` unreadable) nothing is deleted.
 
-    Returns ``{ok, setlist, directory, installed:[...], skipped:[...],
-    errors:[...]}``. Each ``installed`` entry is ``{file, name, pos, slot, cid,
-    irs}``; ``skipped`` is ``{file, name, reason}``; ``errors`` is ``{file,
-    name?, error}``.
+    Returns ``{ok, setlist, directory, deleted:[...], installed:[...],
+    errors:[...]}``. Each ``deleted`` entry is ``{name, cid, slot}``;
+    ``installed`` is ``{file, name, pos, slot, cid, irs}``; ``errors`` is
+    ``{file, name?, error}``.
     """
     directory = Path(directory).expanduser()
     if not directory.is_dir():
@@ -115,10 +130,11 @@ def sync_library(
 
     result: Dict[str, Any] = {
         "ok": True, "setlist": setlist, "directory": str(directory),
-        "installed": [], "skipped": [], "errors": [],
+        "deleted": [], "installed": [], "errors": [],
     }
     if not hsp_files:
-        result["note"] = f"no .hsp files in {directory}"
+        result["note"] = (f"no .hsp files in {directory} — nothing to mirror; "
+                          f"device left untouched")
         return result
 
     container = setlist_container(setlist)
@@ -128,11 +144,9 @@ def sync_library(
     if port is not None:
         client_kwargs["port"] = port
     with HelixClient(**client_kwargs) as client:
-        existing = client.list_container(container)
-        occupied = {m.get("posi") for m in existing if m.get("posi") is not None}
-        existing_names = {m.get("name") for m in existing}
-
-        # Read + name every tone, skipping ones already on the device.
+        # Read + validate every library tone up front. If NONE are installable,
+        # bail before deleting anything — never let an empty/broken library wipe
+        # the device.
         pending: List[tuple] = []  # (path, body, name)
         for f in hsp_files:
             try:
@@ -140,14 +154,39 @@ def sync_library(
             except Exception as e:  # noqa: BLE001
                 result["errors"].append({"file": f.name, "error": f"read failed: {e}"})
                 continue
-            name = _preset_name(body, f.stem)
-            if name in existing_names:
-                result["skipped"].append({"file": f.name, "name": name,
-                                          "reason": "already on device"})
-                continue
-            pending.append((f, body, name))
+            pending.append((f, body, _preset_name(body, f.stem)))
 
-        # Allocate empty slots; report any that don't fit.
+        if not pending:
+            result["note"] = "no readable .hsp tones — device left untouched"
+            result["ok"] = False
+            return result
+
+        # 1. Delete everything currently in the setlist (mirror: library wins).
+        existing = [m for m in client.list_container(container)
+                    if _cid(m) is not None]
+        if existing:
+            cids = [_cid(m) for m in existing]
+            ok = client.delete(container, cids)
+            for m in existing:
+                posi = m.get("posi")
+                if ok:
+                    result["deleted"].append({
+                        "name": m.get("name"), "cid": _cid(m),
+                        "slot": slot_label(posi) if posi is not None else None,
+                    })
+                    ledger.remove(cid=_cid(m))
+                else:
+                    result["errors"].append(
+                        {"name": m.get("name"),
+                         "error": f"delete failed for cid {_cid(m)}"})
+        # Drop any remaining stale ledger entries for this setlist.
+        for e in list(ledger.entries_in_order()):
+            if e.get("setlist") == setlist:
+                ledger.remove(setlist=setlist, posi=e.get("posi"))
+
+        # 2. Install the whole library fresh into the now-empty slots.
+        occupied = {m.get("posi") for m in client.list_container(container)
+                    if m.get("posi") is not None}
         slots = _empty_positions(occupied, len(pending))
         for (f, _body, name) in pending[len(slots):]:
             result["errors"].append({"file": f.name, "name": name,

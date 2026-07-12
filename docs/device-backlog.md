@@ -34,6 +34,14 @@ auto-load shipped through **2.5.0**. Ordered loosely.
   **verify** the device registered it under the expected hash (warns if not).
   Closes the `/tone` → playable-on-amp loop for IRs.
 
+- **Library mirror sync** (`device sync` / `device_sync_library`, **destructive
+  in 2.15.0**) — makes the target setlist (default `user`) match a directory of
+  authored `.hsp` tones exactly: deletes every preset already in the setlist,
+  then installs the library fresh (arbitrary order), uploads referenced IRs, and
+  replaces the setlist's ledger entries. Only that setlist is touched; no backup;
+  an empty/all-unreadable library deletes nothing (guardrail).
+  (`src/helixgen/device/sync.py`)
+
 ## 🔲 Remaining
 
 Legend: **[local]** = pure local code, no device needed. **[device-write]** =
@@ -64,6 +72,42 @@ rule). **[discovery]** = also needs an OSC command we haven't captured yet.
   `~/.helixgen/cache/irhash.json` so reusing an IR across presets doesn't
   recompute the libsndfile round-trip + MD5. Invalidate on stat change. Ties into
   `mapping.json`, `compute_irhash`, and the bridge IR check. **No blocker.**
+
+### Single-tone install/remove parity with bulk sync
+- **#6 Single-tone IR-upload + ledger parity** **[device-write]** — bring the
+  *single-tone* paths up to the same behaviour as bulk `device_sync_library`,
+  which already uploads referenced IRs (via `push_ir`) and records the slot
+  ledger. Gaps today:
+  - **MCP `device_install_preset`** installs the recipe but uploads **no IRs**
+    and records **no ledger** entry (see `mcp_server/tools.py`
+    `device_install_preset_handler`). It should: diff the preset's referenced
+    `irhash`es, `push_ir` any missing (unless an `exclude_irs`/`auto_irs`
+    opt-out), and `ledger.record(...)` the placement — mirroring the per-tone
+    loop in `helixgen.device.sync.sync_library`. The CLI `device install
+    --auto-irs` already does both; MCP should reach the same behaviour (ideally
+    by extracting the sync per-tone core into a shared helper both call).
+  - **MCP `device_delete_preset`** should drop the deleted preset from the
+    ledger (the CLI `device delete` already calls `_ledger_remove`; MCP does
+    not — see the `device_delete_preset_handler`).
+  - **"Update" an already-installed tone** — decide + implement the semantics
+    (re-author over the existing slot vs. push local `.hsp` edits to the device
+    preset), uploading any newly-referenced IRs and updating (not duplicating)
+    the ledger entry. Needs its own brainstorm — no device-side "update" verb
+    exists yet; `device restore` (overwrite content from a file) is the closest
+    primitive. **Blocked on a design decision.**
+  - Rationale: the single-tone verbs are the ones an agent reaches for when
+    installing/replacing *one* tone; today they silently skip IRs (cabs won't
+    resolve) and drift the ledger. Requested 2026-07-12.
+
+### Slot ordering as its own skill
+- **#7 Explicit reordering skill + tools** **[device-write]** — the `device` skill
+  deliberately does **not** order slots: `device sync` installs tones in arbitrary
+  fill-empty order and records where each landed in the ledger. Ordering is a
+  separate concern — give it a dedicated skill (and firm up the
+  `device slots reorder` / `device slots sync` tools, which exist but whose
+  destructive reorg is not yet hardware-validated) so a user can impose and
+  reconcile a desired slot order as an explicit, opt-in step. Keep it out of the
+  install path. Requested 2026-07-12.
 
 ### Device-control breadth
 - **#1 Set the currently active tone** **[device-write][discovery]** — `load
