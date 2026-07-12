@@ -15,7 +15,7 @@ Turn a tone description into a `.hsp` Helix Stadium preset that's ready to load 
 - User wants a starting point to A/B against a reference
 - User mentions a guitar/bass and a role (rhythm, lead, clean, pad, solo boost)
 
-When NOT to use: editing an existing `.hsp` (load and modify directly outside this skill); ingesting new blocks (CLI's `helixgen ingest`); answering "what blocks do I have?" — just call `list_blocks` directly without the rest of the workflow.
+When NOT to use: editing an existing `.hsp` (load and modify directly outside this skill); ingesting new blocks (CLI's `helixgen ingest`); answering "what blocks do I have?" — just call `list_blocks` directly without the rest of the workflow; **putting an authored preset onto the physical Helix over the LAN, or syncing a library to the device** — that's the `device` skill (install / slots / backup), which picks up where this skill's saved `.hsp` leaves off.
 
 ## Prerequisites
 
@@ -408,7 +408,7 @@ Tell the user, in this order:
 3. **Levels** (from 5.7) — one line on the *intended* relative balance, e.g. `rhythm anchor; lead +~2 dB; clean bumped to match (fine-tune by ear)`. If normalization was skipped by preference, say `Levels: normalization off per preferences`.
 4. **Instrument** — `<guitar> — <one-clause why>` (skip the "why" if the user named the guitar themselves), then `Selector: <position> · Volume: <0–10> · Tone: <0–10>` in that guitar's real switch language, plus a one-clause note for any non-obvious move (roll-off, coil-split, pick attack)
 5. **Controls** (only if 5.6 wired any) — render every controller in **English (name + physical position)**, never a bare `FS#`: the footswitch map (`Footswitch 1 (top row, 1st from left) → Compulsive Drive`, …), the expression routing (`Expression Pedal 1 → wah Pedal`, …), and any toe-switch engage (`Expression pedal toe switch → Teardrop 310 Mono (bypass)`). Use `controllers.english_for_controller` / the `controller_mapping` tool for the exact strings. Conversely, if the **user** describes a switch in plain language, run it through the small-model controller-translation sub-agent (fed `controller_mapping(stadium_xl)`) to get the canonical identifier before wiring it, and validate the result against the canonical set.
-6. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder.
+6. **The files** — the `.hsp` saved locally (plus its companion `<slug>.md` description from step 7a). *"Open Line 6's HX Edit, connect your device via USB, and import that file."* Per user preference, run `open -R "<path>/<slug>.hsp"` so it's pre-selected in Finder. If the user instead wants it pushed **straight onto the Stadium over the LAN** (no HX Edit), hand off to the `device` skill — but read that skill's template-precondition warning first; a live install is more involved than a file drop.
 7. **One concrete tweak** they can try after loading (e.g. "if it's too dark, raise Treble to 0.65"; "for a thicker lead, push Tape Echo Mix to 0.25")
 
 Don't hedge with a list of 5 things to maybe try; pick one.

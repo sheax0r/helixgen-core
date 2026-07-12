@@ -22,6 +22,10 @@ before the agent invokes any `helixgen` MCP tool).
 When NOT to use:
 - Read-only questions ("what blocks do I have?") — just call the
   `list_blocks` MCP tool directly.
+- Installing/syncing an already-authored preset onto the physical Helix over
+  the LAN — that's the `device` skill (install / slots / backup), not a
+  generation pass. A quick device-model check (step 1) is still worth it if
+  this is the session's first exchange.
 
 ## Editing an existing preset (direct edits)
 
