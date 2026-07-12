@@ -225,6 +225,24 @@ class HelixClient:
         """The set of IR hashes (hex) present on the device."""
         return {m["hash"] for m in self.list_irs()}
 
+    def ir_path_for_hash(self, hash_hex: str) -> Optional[str]:
+        """Return the device's on-disk path for an IR ``hash`` (hex), or ``None``
+        if the device doesn't have it registered.
+
+        This is the **reliable** registration check — it reflects a newly
+        imported IR immediately, unlike ``list_irs``/``/GetContainerContents``
+        (whose container listing lags after a write). Uses the editor's own
+        ``/IrPathForHashGet`` (16-byte blob arg)."""
+        try:
+            blob = bytes.fromhex(hash_hex)
+        except ValueError:
+            return None
+        for _addr, args in self._rpc("/IrPathForHashGet", [("b", blob)]):
+            # reply /xxxIrxPathForHash1 [reqid, path]; empty path == not present
+            if len(args) >= 2 and isinstance(args[1], str):
+                return args[1] or None
+        return None
+
     def get_ref(self, cid: int) -> Optional[Dict[str, Any]]:
         for _addr, args in self._rpc("/GetContentRef", [("i", cid)]):
             for a in args:

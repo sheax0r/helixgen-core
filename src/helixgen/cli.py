@@ -602,25 +602,16 @@ def _auto_upload_irs(ip: str, hashes) -> None:
                        f"it (helixgen register-irs) — cab may be silent", err=True)
             continue
         res = _sftp.push_ir(ip, str(path))
-        dev_hash = res.get("device_hash")
+        # push_ir uploads the processed IR, so the device always registers it
+        # under helixgen's irhash (== hh) — no hash-mismatch case exists.
         if res.get("already"):
             click.echo(f"IR {hh} already on device")
-        elif res.get("ok") and res.get("registered") and dev_hash == hh:
-            # atomic upload → the device hashed the complete file → the
-            # registered hash matches what the preset references, so the cab
-            # will resolve.
-            click.echo(f"uploaded IR {res.get('name') or path.name} ({hh})")
-        elif res.get("ok") and res.get("registered") and dev_hash != hh:
-            # should not happen with atomic upload; surface loudly if it does
-            # (the preset references {hh} but the device registered {dev_hash},
-            # so the cab would not resolve).
-            click.echo(f"warning: {path.name} registered on device as {dev_hash} "
-                       f"but the preset references {hh} — cab may not resolve",
-                       err=True)
+        elif res.get("ok") and res.get("registered"):
+            click.echo(f"imported IR {res.get('name') or path.name} ({hh})")
         elif res.get("ok"):
-            click.echo(f"warning: uploaded {path.name} but registration "
-                       f"unconfirmed ({hh}); verify later with "
-                       f"`helixgen device list-irs`", err=True)
+            click.echo(f"warning: uploaded {path.name} ({hh}) but not yet "
+                       f"registered — open the editor's IR librarian or retry "
+                       f"`helixgen device list-irs` shortly", err=True)
         else:
             click.echo(f"warning: failed to upload {path.name} ({hh})", err=True)
 
@@ -903,10 +894,12 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
 @click.argument("wav", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84", show_default=True)
 def device_push_ir(wav: Path, ip: str) -> None:
-    """Upload an impulse-response .wav to the device (auto-registered).
+    """Import an impulse-response .wav onto the device.
 
-    Writes the file over SFTP; the device detects and registers it. Skips upload
-    if that IR (by hash) is already present.
+    Renders the device-canonical processed IR (the same 8192-sample file the
+    editor uploads, whose data-chunk MD5 is helixgen's irhash) and SFTPs it into
+    the device's IR directory. The device registers it under exactly that hash,
+    so a preset referencing the IR resolves. Skips upload if already present.
     """
     from helixgen.device import HelixError
     from helixgen.device import sftp as _sftp
@@ -917,16 +910,13 @@ def device_push_ir(wav: Path, ip: str) -> None:
         raise click.ClickException(str(e)) from e
     if not res.get("ok"):
         raise click.ClickException(f"upload of {wav.name} failed")
-    if res.get("registered", res.get("already")):
-        verb = "already on device" if res.get("already") else "uploaded + registered"
-        click.echo(f"{verb}: cid {res['cid']} ({res['name']}) device-hash {res['device_hash']}")
-        if res.get("hash_match") is False:
-            click.echo(
-                f"warning: helixgen's irhash ({res['helixgen_hash']}) != the "
-                f"device's ({res['device_hash']}) for this file — a preset "
-                f"referencing helixgen's hash won't resolve this IR", err=True)
+    hh = res.get("helixgen_hash")
+    if res.get("already"):
+        click.echo(f"already on device: {res['name']} ({hh})")
+    elif res.get("registered"):
+        click.echo(f"imported + registered: {res['name']} ({hh})")
     else:
-        click.echo(f"uploaded {wav.name} — {res.get('note')}")
+        click.echo(f"uploaded {res['name']} ({hh}) — {res.get('note')}")
 
 
 @device.command(name="pull-ir")

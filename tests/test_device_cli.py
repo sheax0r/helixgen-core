@@ -214,37 +214,34 @@ def _patch_auto(monkeypatch, table, push_results):
     return calls
 
 
-def test_auto_upload_irs_hash_match_ok(monkeypatch, capsys):
+def test_auto_upload_irs_registered_ok(monkeypatch, capsys):
     from pathlib import Path
     from helixgen.cli import _auto_upload_irs
     _patch_auto(monkeypatch, {"aa11": Path("/irs/a.wav")},
-                [{"ok": True, "registered": True, "device_hash": "aa11",
+                [{"ok": True, "registered": True, "helixgen_hash": "aa11",
                   "name": "a", "already": False}])
     _auto_upload_irs("1.2.3.4", ["aa11"])
     out = capsys.readouterr()
-    assert "uploaded IR a (aa11)" in out.out
+    assert "imported IR a (aa11)" in out.out
     assert "warning" not in (out.out + out.err).lower()
 
 
-def test_auto_upload_irs_hash_mismatch_warns(monkeypatch, capsys):
-    """If the device registers a different hash than the preset references,
-    the cab won't resolve — must warn loudly."""
+def test_auto_upload_irs_uploaded_not_yet_registered_warns(monkeypatch, capsys):
     from pathlib import Path
     from helixgen.cli import _auto_upload_irs
     _patch_auto(monkeypatch, {"aa11": Path("/irs/a.wav")},
-                [{"ok": True, "registered": True, "device_hash": "ZZZZ",
+                [{"ok": True, "registered": False, "helixgen_hash": "aa11",
                   "name": "a", "already": False}])
     _auto_upload_irs("1.2.3.4", ["aa11"])
     err = capsys.readouterr().err
-    assert "may not resolve" in err
-    assert "aa11" in err and "ZZZZ" in err
+    assert "not yet" in err and "aa11" in err
 
 
 def test_auto_upload_irs_already_present(monkeypatch, capsys):
     from pathlib import Path
     from helixgen.cli import _auto_upload_irs
     _patch_auto(monkeypatch, {"bb22": Path("/irs/b.wav")},
-                [{"already": True, "device_hash": "bb22"}])
+                [{"ok": True, "already": True, "helixgen_hash": "bb22"}])
     _auto_upload_irs("1.2.3.4", ["bb22"])
     assert "already on device" in capsys.readouterr().out
 

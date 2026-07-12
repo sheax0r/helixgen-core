@@ -155,6 +155,31 @@ def test_register_irs_force_overwrites(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_write_stadium_ir_data_chunk_md5_is_irhash(tmp_path):
+    """The processed IR file that write_stadium_ir emits is what the device
+    stores on import: MD5 of its data chunk MUST equal the source's irhash (this
+    is the invariant that makes a pushed IR register under the right hash)."""
+    import hashlib
+    from helixgen.ir import compute_stadium_irhash, write_stadium_ir
+
+    # a >8192-frame source so the truncation path (the one that used to break
+    # raw uploads) is exercised
+    src = _write_synth_wav(tmp_path / "long.wav", n_frames=24000)
+    out = tmp_path / "processed.wav"
+    returned = write_stadium_ir(src, out)
+
+    irhash = compute_stadium_irhash(src)
+    raw = out.read_bytes()
+    di = raw.find(b"data")
+    sz = struct.unpack("<I", raw[di + 4:di + 8])[0]
+    data_md5 = hashlib.md5(raw[di + 8:di + 8 + sz]).hexdigest()
+
+    assert returned == irhash == data_md5
+    # processed to the canonical 8192-sample IR (24-bit mono => 3 bytes/frame)
+    assert sz == 8192 * 3
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
 def test_register_irs_auto_computes_hash_from_wav(tmp_path, monkeypatch):
     """register-irs called with wav-only args (no preset) auto-computes hashes."""
     from helixgen.ir import compute_stadium_irhash

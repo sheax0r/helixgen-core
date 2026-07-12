@@ -252,30 +252,18 @@ def _next_pow2(n: int) -> int:
     return p
 
 
-def compute_stadium_irhash(wav_path: Path | str) -> str:
-    """Return the 32-char hex IR hash Helix Stadium would assign to this WAV.
-
-    Reproduces Stadium's import-time preprocessing pipeline (see module
-    comments for the full algorithm) and computes MD5 of the resulting
-    data chunk content. Output is the same hash that appears in `.hsp`
-    presets in the slot's `irhash` field.
-
-    Currently supports 48 kHz sources (the fast path Stadium takes for
-    most IR libraries). Non-48 kHz sources go through libsamplerate in
-    Stadium and are not yet supported here. Stereo input is reduced to
-    the left channel, matching Stadium's import behavior.
+def _render_processed_ir(sf, wav_path: Path, out_path: str) -> None:
+    """Run Stadium's import-time IR preprocessing and write the canonical IR to
+    ``out_path`` — the exact file the Helix editor uploads on import (source left
+    channel, truncated to 8192 samples / padded to next pow-2, exp fade, after
+    two libsndfile float round-trips). The device's ``irhash`` is MD5 of this
+    file's data chunk, and the device stores an IR *as* this processed file — so
+    uploading THIS (not the raw source) is what makes a pushed IR resolve.
+    Caller must have validated ``wav_path``.
     """
-    sf = _load_libsndfile()
-    wav_path = Path(wav_path)
-    if not wav_path.is_file():
-        raise FileNotFoundError(f"wav file not found: {wav_path}")
-    _validate_wav_front_door(wav_path)
-
     tmp1 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp1.close()
-    tmp2 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    tmp2.close()
-    open_handles: list = []  # libsndfile handles to close on any exit path
+    open_handles: list = []
 
     def _close_all():
         for h in open_handles:
@@ -355,31 +343,83 @@ def compute_stadium_irhash(wav_path: Path | str) -> str:
             for i in range(_FADE_LEN):
                 out[out_len - _FADE_LEN + i] *= math.exp(i * _FADE_K)
 
-        # --- Phase 3: write tmp2 as same bit depth / 48k / mono ---
+        # --- Phase 3: write the processed IR to out_path (48k / mono) ---
         t2_info = _SF_INFO(0, 48000, 1, out_format, 0, 0)
-        t2 = sf.sf_open(tmp2.name.encode(), _SFM_WRITE, ctypes.byref(t2_info))
+        t2 = sf.sf_open(str(out_path).encode(), _SFM_WRITE, ctypes.byref(t2_info))
         if not t2:
-            raise RuntimeError("libsndfile failed to open tmp2 for write")
+            raise RuntimeError("libsndfile failed to open output for write")
         open_handles.append(t2)
         sf.sf_command(t2, _SFC_SET_ADD_PEAK_CHUNK, None, 0)
         sf.sf_writef_float(t2, out, out_len)
         _close_all()
-
-        # --- Phase 4: MD5 of tmp2's data chunk content ---
-        with open(tmp2.name, "rb") as f:
-            raw = f.read()
-        di = raw.find(b"data")
-        if di < 0:
-            raise RuntimeError("no data chunk in tmp2 output")
-        sz = struct.unpack("<I", raw[di + 4:di + 8])[0]
-        return hashlib.md5(raw[di + 8:di + 8 + sz]).hexdigest()
     finally:
         _close_all()
-        for p in (tmp1.name, tmp2.name):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+        try:
+            os.unlink(tmp1.name)
+        except OSError:
+            pass
+
+
+def _md5_wav_data_chunk(wav_path: str) -> str:
+    """MD5 (hex) of a WAV's ``data`` chunk content — the Stadium irhash of a
+    processed IR file."""
+    with open(wav_path, "rb") as f:
+        raw = f.read()
+    di = raw.find(b"data")
+    if di < 0:
+        raise RuntimeError("no data chunk in WAV output")
+    sz = struct.unpack("<I", raw[di + 4:di + 8])[0]
+    return hashlib.md5(raw[di + 8:di + 8 + sz]).hexdigest()
+
+
+def write_stadium_ir(wav_path: Path | str, out_path: Path | str) -> str:
+    """Write the device-canonical processed IR for ``wav_path`` to ``out_path``
+    and return its ``irhash``.
+
+    This is the file the Helix editor uploads on import — the source truncated to
+    the Stadium's 8192-sample IR (with fade); its data-chunk MD5 IS the irhash,
+    and the device stores the IR as exactly this file. Upload THIS to the device
+    (not the raw WAV) so the device registers the IR under the hash helixgen and
+    presets reference.
+    """
+    sf = _load_libsndfile()
+    wav_path = Path(wav_path)
+    if not wav_path.is_file():
+        raise FileNotFoundError(f"wav file not found: {wav_path}")
+    _validate_wav_front_door(wav_path)
+    _render_processed_ir(sf, wav_path, str(out_path))
+    return _md5_wav_data_chunk(str(out_path))
+
+
+def compute_stadium_irhash(wav_path: Path | str) -> str:
+    """Return the 32-char hex IR hash Helix Stadium would assign to this WAV.
+
+    Reproduces Stadium's import-time preprocessing pipeline (see module
+    comments for the full algorithm) and computes MD5 of the resulting
+    data chunk content. Output is the same hash that appears in `.hsp`
+    presets in the slot's `irhash` field.
+
+    Currently supports 48 kHz sources (the fast path Stadium takes for
+    most IR libraries). Non-48 kHz sources go through libsamplerate in
+    Stadium and are not yet supported here. Stereo input is reduced to
+    the left channel, matching Stadium's import behavior.
+    """
+    sf = _load_libsndfile()
+    wav_path = Path(wav_path)
+    if not wav_path.is_file():
+        raise FileNotFoundError(f"wav file not found: {wav_path}")
+    _validate_wav_front_door(wav_path)
+
+    tmp2 = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp2.close()
+    try:
+        _render_processed_ir(sf, wav_path, tmp2.name)
+        return _md5_wav_data_chunk(tmp2.name)
+    finally:
+        try:
+            os.unlink(tmp2.name)
+        except OSError:
+            pass
 
 
 def extract_ir_hashes(preset_body: dict) -> list[str]:
