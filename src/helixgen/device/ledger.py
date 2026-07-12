@@ -162,6 +162,64 @@ class SlotLedger:
         for i, e in enumerate(self.entries_in_order()):
             e["order"] = i
 
+    def reorder(self, *, name: Optional[str] = None, cid: Optional[int] = None,
+                to_index: int) -> bool:
+        """Move an entry to ``to_index`` within its own setlist's sequence.
+
+        Local-only (no device write). Redistributes the setlist's existing
+        ``order`` values over the new sequence, so interleaving with other
+        setlists' entries is preserved. Returns False if no entry matched.
+        """
+        entry = self.find(name=name) if name is not None else self._match(cid=cid)
+        if entry is None:
+            return False
+        setlist = entry.get("setlist")
+        siblings = [e for e in self.entries_in_order() if e.get("setlist") == setlist]
+        order_values = sorted(e.get("order", 0) for e in siblings)
+        siblings.remove(entry)
+        to_index = max(0, min(to_index, len(siblings)))
+        siblings.insert(to_index, entry)
+        for e, order in zip(siblings, order_values):
+            e["order"] = order
+        return True
+
+    def sync_plan(self, device_presets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Compute the slot moves that would make the device match the ledger's
+        desired order — pure, no client, no writes.
+
+        Per setlist, the tracked presets that are actually on the device are
+        rearranged **among the slots they already occupy**: the i-th entry (in
+        ledger order) goes to the i-th smallest occupied slot. This never
+        disturbs untracked presets and never needs a slot outside the tracked
+        set. Missing (not-on-device) and untracked presets are excluded.
+
+        Returns a list of ``{setlist, cid, name, from, to}`` for slots that
+        change (in ledger order), skipping no-ops.
+        """
+        dev_posi: Dict[Any, int] = {}
+        for p in device_presets:
+            dev_posi[(p.get("setlist"), _dev_cid(p))] = p.get("posi")
+
+        by_setlist: Dict[str, List[Dict[str, Any]]] = {}
+        for e in self.entries_in_order():
+            by_setlist.setdefault(e.get("setlist"), []).append(e)
+
+        moves: List[Dict[str, Any]] = []
+        for setlist, entries in by_setlist.items():
+            present = [e for e in entries if (setlist, e.get("cid")) in dev_posi]
+            occupied = sorted(dev_posi[(setlist, e.get("cid"))] for e in present)
+            for e, target in zip(present, occupied):
+                current = dev_posi[(setlist, e.get("cid"))]
+                if current != target:
+                    moves.append({
+                        "setlist": setlist,
+                        "cid": e.get("cid"),
+                        "name": e.get("name"),
+                        "from": current,
+                        "to": target,
+                    })
+        return moves
+
     # -- verify ---------------------------------------------------------------
 
     def verify(self, device_presets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -71,10 +71,17 @@ of my authored tones is in which slot" offline, and lets you put a tone back.
   an `.hsp` (from `install`) is re-authored, an `.sbe` (from `push`) is
   re-pushed. Tones from `save` (live edit buffer) or `create` (on-device copy)
   have no local source and report that they can't be restored this way.
-- *(Phase 2, planned)* `device slots reorder` + `device slots sync` — maintain a
-  desired order locally and reconcile the device's slot order to match
-  (dry-run-first, backup-first). See
-  `docs/superpowers/specs/2026-07-12-device-slot-ledger-design.md`.
+- `helixgen device slots reorder <name> --to <N>` — move a tone to 0-based
+  position `N` within its setlist's order. **Local only** (rewrites the ledger's
+  order); run `sync` to apply it to the device.
+- `helixgen device slots sync [--dry-run] [--yes] [--no-backup]` — reconcile the
+  device so tracked tones sit in the ledger's order. Rearranges each affected
+  setlist's tracked presets **among the slots they already occupy** (untracked
+  presets are never disturbed). Destructive (pull content → delete → re-push in
+  order), so it backs up affected setlists first (unless `--no-backup`) and
+  verifies every pull before any delete — an interruption is recoverable.
+  `--dry-run` prints the plan and touches nothing; without `--yes` it confirms
+  first. EXPERIMENTAL. Design: `docs/superpowers/specs/2026-07-12-device-slot-ledger-design.md`.
 
 Presets are addressed by integer **CID**; setlists are virtual containers
 (`user`=-2, `factory`=-1, `throwaway`=-5); slot `posi` maps to the Helix
