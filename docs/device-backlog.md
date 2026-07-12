@@ -41,20 +41,38 @@ implementation is code, but *hardware validation* requires a device write
 (gated by the auto-mode classifier — run via `!` or grant a Bash permission
 rule). **[discovery]** = also needs an OSC command we haven't captured yet.
 
+### IR — trigger prompt registration (NEXT)
+- **★ Fix the IR-registration delay** **[device-write][discovery]** — **the next
+  thing to tackle.** As of 2.6.0, `push-ir` uploads the correct *processed* IR
+  and the device DOES register it (confirmed: 10 external uploads all eventually
+  registered as cids), but only on the device's **own slow, periodic scan** —
+  the editor's own import registers **instantly** (~0.15 s). We want that
+  instant path.
+  - **Hypothesis (Mike): the editor triggers a sync/rescan somehow after its
+    write.** Worth pinning down. What we've RULED OUT as the trigger (all
+    identical between editor and an external upload): file bytes, the
+    `INIT/OPEN/WRITE/CLOSE` SFTP protocol (captured via Frida on internal
+    `_libssh2_channel_write`), `0744` perms, key/user/IP, the `libssh2` client
+    banner, and persistent-vs-fresh session. The only OSC the editor sends near
+    an import is `/IrPathForHashGet` (a pure hash lookup — proven NOT to trigger
+    registration).
+  - **Where to dig next:** (a) hook the editor's *own* app-level functions
+    around the import (not just libssh2/OSC) — Ghidra/Frida on symbols matching
+    `import`/`sync`/`register`/`ir` — to see what it calls after the SFTP close;
+    (b) watch the 2001/2003 PUB streams during an editor import for a device→
+    editor event that reveals a device-side sync path; (c) probe whether the
+    device runs a periodic scanner (time the delay across several uploads) and
+    whether any safe OSC verb (e.g. a container-refresh / watched-dir command)
+    forces it. Needs the Frida-attachable debug editor build.
+  - Until solved: `push-ir`/`--auto-irs` upload correctly; registration
+    completes on the device's scan or the next editor import (hash is correct
+    whenever it lands). Documented in `helix-sftp-access.md` finding #3.
+
 ### IR polish
 - **#5 IR hash cache** **[local]** — cache `abspath (+ mtime/size) → irhash` in
   `~/.helixgen/cache/irhash.json` so reusing an IR across presets doesn't
   recompute the libsndfile round-trip + MD5. Invalidate on stat change. Ties into
   `mapping.json`, `compute_irhash`, and the bridge IR check. **No blocker.**
-- **Explicit post-upload rescan** **[device-write][discovery]** — after an IR
-  upload, mimic the editor's watched-dir rescan command so registration is
-  prompt instead of on the device's slow background scan. Needs the rescan OSC
-  verb (`/observeWatchedDirChange` / `/imports` / `/currentdir` are candidates —
-  capture the editor doing an import to confirm).
-- **On-device validation of atomic upload + repair stale `cid 947`**
-  **[device-write]** — validate rename→auto-register on hardware and re-register
-  `cid 947` (still holds the pre-fix `620d381f`). Script ready:
-  `tools/ir_device_repair.py` (fails safe — validates a throwaway first).
 
 ### Device-control breadth
 - **#1 Set the currently active tone** **[device-write][discovery]** — `load
