@@ -388,7 +388,39 @@ def write_stadium_ir(wav_path: Path | str, out_path: Path | str) -> str:
         raise FileNotFoundError(f"wav file not found: {wav_path}")
     _validate_wav_front_door(wav_path)
     _render_processed_ir(sf, wav_path, str(out_path))
-    return _md5_wav_data_chunk(str(out_path))
+    irhash = _md5_wav_data_chunk(str(out_path))
+    _insert_hash_chunk(str(out_path), irhash)
+    return irhash
+
+
+def _insert_hash_chunk(wav_path: str, irhash_hex: str) -> None:
+    """Insert a ``HASH`` chunk (the 32-char ASCII hex of the irhash) after the
+    ``fmt `` chunk, matching the file the Helix editor uploads on IR import.
+
+    The device reads this chunk and registers the IR under exactly this hash
+    instead of recomputing its own — so an externally-uploaded IR resolves the
+    preset that references helixgen's ``irhash``. Without it, the device assigns
+    its own (different) hash to the write.
+    """
+    with open(wav_path, "rb") as f:
+        raw = f.read()
+    if raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        return  # not a canonical WAV; leave it alone
+    insert_at = len(raw)
+    p = 12
+    while p + 8 <= len(raw):
+        cid = raw[p:p + 4]
+        sz = struct.unpack("<I", raw[p + 4:p + 8])[0]
+        end = p + 8 + sz + (sz & 1)  # chunks are word-aligned
+        if cid == b"fmt ":
+            insert_at = end
+            break
+        p = end
+    chunk = b"HASH" + struct.pack("<I", 32) + irhash_hex.encode("ascii")
+    new = raw[:insert_at] + chunk + raw[insert_at:]
+    new = new[:4] + struct.pack("<I", len(new) - 8) + new[8:]  # fix RIFF size
+    with open(wav_path, "wb") as f:
+        f.write(new)
 
 
 def compute_stadium_irhash(wav_path: Path | str) -> str:

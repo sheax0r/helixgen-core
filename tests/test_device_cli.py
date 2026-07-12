@@ -218,12 +218,27 @@ def test_auto_upload_irs_registered_ok(monkeypatch, capsys):
     from pathlib import Path
     from helixgen.cli import _auto_upload_irs
     _patch_auto(monkeypatch, {"aa11": Path("/irs/a.wav")},
-                [{"ok": True, "registered": True, "helixgen_hash": "aa11",
+                [{"ok": True, "registered": True, "hash_match": True,
+                  "helixgen_hash": "aa11", "device_hash": "aa11",
                   "name": "a", "already": False}])
     _auto_upload_irs("1.2.3.4", ["aa11"])
     out = capsys.readouterr()
     assert "imported IR a (aa11)" in out.out
     assert "warning" not in (out.out + out.err).lower()
+
+
+def test_auto_upload_irs_registered_but_hash_mismatch_warns(monkeypatch, capsys):
+    """Registered instantly, but the device's hash != the preset's hash — the
+    cab won't resolve, so warn (the irhash-algorithm edge case)."""
+    from pathlib import Path
+    from helixgen.cli import _auto_upload_irs
+    _patch_auto(monkeypatch, {"aa11": Path("/irs/a.wav")},
+                [{"ok": True, "registered": True, "hash_match": False,
+                  "helixgen_hash": "aa11", "device_hash": "ZZZZ",
+                  "name": "a", "already": False}])
+    _auto_upload_irs("1.2.3.4", ["aa11"])
+    err = capsys.readouterr().err
+    assert "won't resolve" in err and "aa11" in err and "ZZZZ" in err
 
 
 def test_auto_upload_irs_uploaded_not_yet_registered_warns(monkeypatch, capsys):

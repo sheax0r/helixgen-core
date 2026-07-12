@@ -41,32 +41,23 @@ implementation is code, but *hardware validation* requires a device write
 (gated by the auto-mode classifier — run via `!` or grant a Bash permission
 rule). **[discovery]** = also needs an OSC command we haven't captured yet.
 
-### IR — trigger prompt registration (NEXT)
-- **★ Fix the IR-registration delay** **[device-write][discovery]** — **the next
-  thing to tackle.** As of 2.6.0, `push-ir` uploads the correct *processed* IR
-  and the device DOES register it (confirmed: 10 external uploads all eventually
-  registered as cids), but only on the device's **own slow, periodic scan** —
-  the editor's own import registers **instantly** (~0.15 s). We want that
-  instant path.
-  - **Hypothesis (Mike): the editor triggers a sync/rescan somehow after its
-    write.** Worth pinning down. What we've RULED OUT as the trigger (all
-    identical between editor and an external upload): file bytes, the
-    `INIT/OPEN/WRITE/CLOSE` SFTP protocol (captured via Frida on internal
-    `_libssh2_channel_write`), `0744` perms, key/user/IP, the `libssh2` client
-    banner, and persistent-vs-fresh session. The only OSC the editor sends near
-    an import is `/IrPathForHashGet` (a pure hash lookup — proven NOT to trigger
-    registration).
-  - **Where to dig next:** (a) hook the editor's *own* app-level functions
-    around the import (not just libssh2/OSC) — Ghidra/Frida on symbols matching
-    `import`/`sync`/`register`/`ir` — to see what it calls after the SFTP close;
-    (b) watch the 2001/2003 PUB streams during an editor import for a device→
-    editor event that reveals a device-side sync path; (c) probe whether the
-    device runs a periodic scanner (time the delay across several uploads) and
-    whether any safe OSC verb (e.g. a container-refresh / watched-dir command)
-    forces it. Needs the Frida-attachable debug editor build.
-  - Until solved: `push-ir`/`--auto-irs` upload correctly; registration
-    completes on the device's scan or the next editor import (hash is correct
-    whenever it lands). Documented in `helix-sftp-access.md` finding #3.
+### IR — prompt registration (FIXED, 2.7.0)
+- **★ IR-registration delay — FIXED.** External uploads now register **instantly
+  and under helixgen's `irhash`**, exactly like the editor. Two device
+  behaviours, both reverse-engineered:
+  1. **Instant = a 2001 subscription.** The device only runs its IR-dir watcher
+     while a client is subscribed to the 2001 change stream; `push_ir` opens a
+     `HelixSubscriber` on 2001 first → the write registers in ~0.1 s (vs the
+     ~15-20 min periodic scan). Every "device treats the editor specially"
+     dead-end was really "our tests only used the 2002 RPC socket."
+  2. **Correct hash = a `HASH` chunk.** On the watched-dir path the device
+     computes its own IR hash *unless* the WAV carries a `HASH` chunk (32 ASCII
+     bytes = hex `irhash`), which the editor writes and the device trusts.
+     `write_stadium_ir` now embeds it (file layout `fmt `/`HASH`/`data`, matching
+     the editor byte-for-byte).
+  - Hardware-verified across multiple files: `push_ir` → `registered=True`,
+    `device_hash == helixgen irhash`, ~instant. See `helix-sftp-access.md`
+    finding #3.
 
 ### IR polish
 - **#5 IR hash cache** **[local]** — cache `abspath (+ mtime/size) → irhash` in

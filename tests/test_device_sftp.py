@@ -85,3 +85,17 @@ def test_upload_ir_wraps_transfer_error(tmp_path):
 
     with pytest.raises(sftp.HelixError, match="upload"):
         _sftp_with(_BoomSFTP()).upload_ir(str(wav))
+
+
+def test_addcontent_hash_extracts_16byte_blob():
+    from helixgen.device.sftp import _addcontent_hash
+    # /addContent payload decodes to a dict with a 16-byte 'hash'
+    args = [{"ccid": -11, "cctp": 1002, "cid_": 951,
+             "hash": bytes.fromhex("0fbe090d975dd8f6e31b16c06a80e2ac")}]
+    assert _addcontent_hash(args) == "0fbe090d975dd8f6e31b16c06a80e2ac"
+
+
+def test_addcontent_hash_none_when_absent():
+    from helixgen.device.sftp import _addcontent_hash
+    assert _addcontent_hash([{"cid_": 1}]) is None
+    assert _addcontent_hash([1, 2, "x"]) is None

@@ -185,58 +185,99 @@ class HelixSFTP:
         return remote
 
 
+def _addcontent_hash(args: list) -> Optional[str]:
+    """Pull the 32-hex IR hash out of an ``/addContent`` event's decoded args
+    (the payload is a msgpack dict carrying a 16-byte ``hash``)."""
+    for a in args:
+        if isinstance(a, dict) and "hash" in a:
+            h = a["hash"]
+            if isinstance(h, (bytes, bytearray)) and len(h) == 16:
+                return h.hex()
+            if isinstance(h, str) and len(h) == 32:
+                return h
+    return None
+
+
 def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
-            user: str = DEFAULT_USER, wait_timeout: float = 25.0) -> dict:
-    """Import an IR onto the device the way the editor does.
+            user: str = DEFAULT_USER, wait_timeout: float = 20.0) -> dict:
+    """Import an IR onto the device — **instantly**.
 
-    The editor does **not** upload the raw WAV — it uploads the *processed*
-    IR (source truncated to the Stadium's 8192-sample form + fade), and the
-    device registers it by MD5-ing that file's data chunk. That MD5 **is**
-    helixgen's ``irhash``. So we render the same processed file
-    (:func:`helixgen.ir.write_stadium_ir`) and SFTP it to ``ir/<stem>.wav``;
-    the device then registers it under exactly the hash a preset references.
+    The device only registers a new IR file promptly while a client is
+    subscribed to its 2001 change stream (that's what activates its watched-dir
+    monitor; without a subscriber, an external upload waits on the device's slow
+    ~15-20 min scan). So we open a :class:`HelixSubscriber` on 2001 **first**,
+    then SFTP the IR into ``ir/`` and wait for the device's ``/addContent``
+    broadcast — which lands in ~0.1-1 s and carries the hash the device
+    registered the IR under.
 
-    Registration is confirmed via ``/IrPathForHashGet`` (the reliable check —
-    the ``/GetContainerContents`` listing lags). Returns
-    ``{ok, name, helixgen_hash, device_path, registered, remote, already}``.
+    We upload the device-canonical processed IR (``helixgen.ir.write_stadium_ir``),
+    which embeds a ``HASH`` chunk holding helixgen's ``irhash`` — exactly as the
+    editor's own upload does. The device reads that chunk and registers the IR
+    under **helixgen's hash** (rather than recomputing a different one), so the
+    preset that references the ``irhash`` resolves. ``hash_match`` confirms it.
+    Returns ``{ok, name, helixgen_hash, device_hash, hash_match, registered, cid,
+    device_path, remote, already}``.
     """
     import tempfile
     import time
     from helixgen.ir import write_stadium_ir
     from .client import HelixClient
+    from .subscribe import HelixSubscriber
 
     stem = Path(local_wav).stem
+    fname = f"{stem}.wav"
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
     try:
-        # render the device-canonical processed IR; its data-chunk MD5 == irhash
         hg_hash = write_stadium_ir(local_wav, tmp.name)
 
         with HelixClient(ip) as h:
-            if h.ir_path_for_hash(hg_hash):
+            already = h.ir_path_for_hash(hg_hash)
+            if already:
                 return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
-                        "device_path": h.ir_path_for_hash(hg_hash),
-                        "registered": True, "remote": None, "already": True}
+                        "device_hash": hg_hash, "hash_match": True,
+                        "registered": True, "cid": None, "device_path": already,
+                        "remote": None, "already": True}
 
-        with HelixSFTP(ip, key_path=key_path, user=user) as s:
-            remote = s.upload_ir(tmp.name, remote_name=f"{stem}.wav")
-            on_disk = s.ir_file_exists(f"{stem}.wav")
+        # Subscribe to 2001 FIRST — this activates the device's watched-dir
+        # monitor so it registers our upload immediately (the delay fix).
+        with HelixSubscriber(ip, ports=(2001,)) as sub:
+            time.sleep(0.6)  # let the SUB subscription reach the device
+            with HelixSFTP(ip, key_path=key_path, user=user) as s:
+                remote = s.upload_ir(tmp.name, remote_name=fname)
+                on_disk = s.ir_file_exists(fname)
 
-        with HelixClient(ip) as h:
+            saw_our_file = False
+            dev_hash = None
             deadline = time.time() + wait_timeout
-            while time.time() < deadline:
-                path = h.ir_path_for_hash(hg_hash)
-                if path:
-                    return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
-                            "device_path": path, "registered": True,
-                            "remote": remote, "already": False}
-                time.sleep(1.5)
-        # uploaded but not yet registered — the device registers on its scan
+            while time.time() < deadline and dev_hash is None:
+                for ev in sub.poll(0.5):
+                    if ev.addr == "/observeWatchedDirChange" and \
+                            any(fname in str(a) for a in ev.args):
+                        saw_our_file = True
+                    elif ev.addr == "/addContent":
+                        hh = _addcontent_hash(ev.args)
+                        if hh is not None:
+                            dev_hash = hh  # our upload is the only dir change
+            if dev_hash is not None:
+                with HelixClient(ip) as h:
+                    path = h.ir_path_for_hash(dev_hash)
+                return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
+                        "device_hash": dev_hash,
+                        "hash_match": dev_hash == hg_hash,
+                        "registered": True, "cid": None,
+                        "device_path": path, "remote": remote, "already": False,
+                        "saw_watched_change": saw_our_file}
+
+        # No /addContent within the window — fell back to the slow path.
         return {"ok": bool(on_disk), "name": stem, "helixgen_hash": hg_hash,
-                "device_path": None, "registered": False, "remote": remote,
+                "device_hash": None, "hash_match": None, "registered": False,
+                "cid": None, "device_path": None, "remote": remote,
                 "already": False,
-                "note": "uploaded; not yet registered — open the editor's IR "
-                        "librarian or retry `device list-irs` shortly"}
+                "note": "uploaded; the device did not register it promptly — it "
+                        "will on its own scan (~15-20 min), or re-import via the "
+                        "editor. (Expected instant registration via the 2001 "
+                        "subscription; the device may not have been watching.)"}
     finally:
         try:
             os.unlink(tmp.name)

@@ -181,23 +181,32 @@ inotify I first assumed. Confirmed by uploading several IRs:
      `620d381f`/`44cf68fe` values matched no simple variant). Short IRs (≤8192)
      upload raw == processed, which is why the user's regular IRs never broke.
 
-   **Fix (2.6.0):** `helixgen.ir.write_stadium_ir(src, out)` emits the
-   device-canonical processed IR (data-chunk MD5 == `irhash`); `push_ir` uploads
-   **that** to `ir/<stem>.wav` via a direct write (mirroring the editor). The
-   device then registers the IR under exactly the hash a preset references.
+   **Fully fixed (2.7.0) — external upload now behaves exactly like the editor,
+   instant and correct.** Two device behaviours were reverse-engineered:
 
-   **Known limitation — registration timing is device-gated.** The editor's
-   import registers **instantly** (~0.15 s); an identical external SFTP write of
-   the identical processed file does **not** (confirmed against every replicable
-   variable: same file bytes, same `INIT/OPEN/WRITE/CLOSE` SFTP protocol, same
-   `0744` perms, same key/user/IP, same `libssh2` client banner, persistent vs
-   fresh session). The device correlates the write with the editor's own trusted
-   control session in a way not reproducible from an external client. External
-   uploads therefore register on the device's own (slower, unpredictable) scan,
-   or when the user next imports through the editor — but **when they register,
-   the hash is now correct**. The 2.5.0 atomic-upload was reverted (a rename
-   lands as `IN_MOVED_TO`, which does not trigger registration; the editor writes
-   directly).
+   1. **Instant registration = a 2001 subscription.** The device only runs its
+      IR-directory watcher **while a client is subscribed to its 2001 change
+      stream**. Without a subscriber an external upload waits on the device's
+      slow ~15-20 min periodic scan; *with* one, the write registers in ~0.1 s
+      (the device emits `/observeWatchedDirChange` naming the file, then
+      `/addContent`). Every earlier "the device treats the editor specially"
+      dead-end was this: those tests only used the 2002 RPC socket and never
+      subscribed to 2001.
+   2. **Correct hash = a `HASH` chunk.** On the watched-dir path the device
+      computes its *own* IR hash (which differs from helixgen's for many files) —
+      **unless** the uploaded WAV carries a `HASH` chunk (32 ASCII bytes = the
+      hex `irhash`), which the editor writes and the device trusts verbatim. With
+      the chunk the device registers under exactly that hash; without it, a
+      pushed IR registers under a hash no preset references.
+
+   **Fix:** `write_stadium_ir` embeds the `HASH` chunk after `fmt ` (matching the
+   editor's file byte-for-byte: `fmt `/`HASH`/`data`); `push_ir` opens a
+   `HelixSubscriber` on 2001, uploads, and reads the device's `/addContent` hash
+   to confirm. Result: instant registration under helixgen's `irhash`
+   (hardware-verified across multiple files). The earlier 2.6.0 "device-gated
+   timing / algorithm edge case" caveat is **superseded** — both were the missing
+   subscription + missing `HASH` chunk. (2.5.0's atomic-upload remains reverted;
+   the editor writes directly to `ir/<name>.wav`.)
 
 ## How this maps to helixgen
 
