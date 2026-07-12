@@ -166,7 +166,7 @@ def sync_library(
                     if _cid(m) is not None]
         if existing:
             cids = [_cid(m) for m in existing]
-            ok = client.delete(container, cids)
+            ok = client._raw.delete(container, cids)
             for m in existing:
                 posi = m.get("posi")
                 if ok:

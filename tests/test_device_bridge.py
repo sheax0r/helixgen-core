@@ -18,6 +18,9 @@ DELAY = 87   # HD2_DelaySimpleDelayStereo -> delay
 REVERB = 63  # HD2_ReverbPlateStereo   -> reverb
 INPUT = 769  # P35_InputInst1_2        -> input
 OUTPUT = 783  # P35_OutputMatrix       -> output
+CAB_IR_INTERP = 434  # HD2_CabMicIr_1x10USPrincessWithPan -> cab_ir_interp
+IR = 468     # HX2_ImpulseResponseWithPan -> ir (the hardware-validated case)
+PITCH = 324  # HD2_PitchDualPitchMono  -> pitch
 
 
 def _blk(model_id):
@@ -74,6 +77,62 @@ def test_author_chain_raises_without_matching_slot():
     MOD = defs.model_id_for("HD2_ModChorusStereo") or 0
     with pytest.raises(ValueError):
         bridge.author_chain(doc, [(REVERB, {}), (REVERB, {})])  # only one reverb slot
+
+
+def _cab_template():
+    # input, distortion, amp, cab_ir_interp, delay, reverb, output
+    blks = []
+    for i, mid in enumerate(
+            [INPUT, DIST, AMP, CAB_IR_INTERP, DELAY, REVERB, OUTPUT]):
+        blks.append(i)          # the flat list alternates int, dict
+        blks.append(_blk(mid))
+    return {"cg__": {}, "pm__": [], "sfg_": {"flow": [{"blks": blks}]}}
+
+
+def test_author_chain_places_ir_model_into_cab_ir_interp_slot():
+    # A user tone whose cab is an `ir` block must map onto a factory template
+    # whose cab slot is a `cab_ir_interp` model (hardware-validated: id 468 into
+    # a cab_ir_interp slot resolves correctly).
+    doc = _cab_template()
+    chain = [(DIST, {"Gain": 0.6}), (AMP, {}), (IR, {}), (REVERB, {"Mix": 0.2})]
+    bridge.author_chain(doc, chain)  # must not raise
+    slots = bridge._user_blocks(doc)
+    # the cab_ir_interp slot now hosts the ir model, enabled
+    cab_slot = next(b for _p, b in slots
+                    if bridge.device_category(b["mdls"][0]["id__"]) == "ir")
+    assert cab_slot["mdls"][0]["id__"] == IR
+    assert cab_slot["enbl"] == 1
+
+
+def test_author_chain_exact_category_still_maps():
+    # Regression: a chain that fits exactly by real category is unchanged.
+    doc = _cab_template()
+    bridge.author_chain(doc, [(DIST, {"Gain": 0.5}), (AMP, {}), (DELAY, {})])
+    slots = bridge._user_blocks(doc)
+    enabled = {bridge.device_category(b["mdls"][0]["id__"])
+               for _p, b in slots if b.get("enbl") == 1}
+    assert {"distortion", "amp", "delay"} <= enabled
+    # untouched cab/reverb slots got bypassed
+    disabled = {bridge.device_category(b["mdls"][0]["id__"])
+                for _p, b in slots if b.get("enbl") == 0}
+    assert "cab_ir_interp" in disabled and "reverb" in disabled
+
+
+def test_author_chain_raises_on_absent_category_group():
+    # A pitch block has no pitch/synth-group slot in this template -> still raises.
+    doc = _cab_template()
+    with pytest.raises(ValueError):
+        bridge.author_chain(doc, [(PITCH, {})])
+
+
+def test_category_group_families():
+    # ir / cab / cab_ir_interp are physically one Cab slot -> one group.
+    g = bridge._category_group
+    assert g("ir") == g("cab") == g("cab_ir_interp")
+    # amp / preamp share a group.
+    assert g("amp") == g("preamp")
+    # an unmapped category is its own group.
+    assert g("nope_not_a_category") == "nope_not_a_category"
 
 
 def test_map_params_name_then_positional():

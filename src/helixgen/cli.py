@@ -845,7 +845,7 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
     container = _setlist_container(setlist)
     try:
         with HelixClient(ip, port) as h:
-            new_cid = h.create_from(src_cid, container, pos)
+            new_cid = h._raw.create_from(src_cid, container, pos)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -894,7 +894,7 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
     container = _setlist_container(setlist)
     try:
         with HelixClient(ip, port) as h:
-            ok = h.delete(container, [cid])
+            ok = h._raw.delete(container, [cid])
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -970,7 +970,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
             if h.find_by_pos(container, pos) is not None:
                 raise click.ClickException(
                     f"{setlist} slot {pos} is not empty; refusing to overwrite")
-            new_cid = h.save_edit_buffer_to(container, pos, name)
+            new_cid = h._raw.save_edit_buffer_to(container, pos, name)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1100,60 +1100,158 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
                       source_kind="hsp", source_path=str(hsp_file.resolve()))
 
 
+# --- device setlist: the local manifest of desired setlist membership -------
+
+@device.group(name="setlist")
+def device_setlist() -> None:
+    """Manage the local setlist manifest (~/.helixgen/setlists.json).
+
+    A tone is added to a setlist here (desired membership); `device sync` then
+    pushes that membership onto the device as a preset pool + references. The
+    manifest is never hand-edited — use these verbs.
+    """
+
+
+@device_setlist.command(name="list")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the whole manifest document as JSON.")
+def device_setlist_list(as_json: bool) -> None:
+    """List the manifest's setlists with their tone counts and members."""
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    if as_json:
+        click.echo(json.dumps(m.to_dict(), indent=2))
+        return
+    setlists = m.setlists()
+    if not setlists:
+        click.echo("(no setlists in manifest)")
+        return
+    for sl in setlists:
+        tones = m.tones_in(sl)
+        click.echo(f"{sl}  ({len(tones)} tone{'s' if len(tones) != 1 else ''})")
+        for t in tones:
+            click.echo(f"    {t}")
+
+
+@device_setlist.command(name="add")
+@click.argument("setlist")
+@click.argument("hsp_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--pos", type=int, default=None,
+              help="Insert at this 0-based position (default: append).")
+def device_setlist_add_cmd(setlist: str, hsp_file: Path, pos: int | None) -> None:
+    """Add an authored .hsp tone to a setlist's membership (auto-creates the setlist)."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        name = m.add_tone(setlist, hsp_file, pos=pos)
+    except ManifestError as e:
+        raise click.ClickException(str(e)) from e
+    m.save()
+    where = "appended to" if pos is None else f"inserted at {pos} in"
+    click.echo(f"added {name!r} ({where} setlist {setlist!r})")
+
+
+@device_setlist.command(name="remove")
+@click.argument("setlist")
+@click.argument("tone_name")
+def device_setlist_remove_cmd(setlist: str, tone_name: str) -> None:
+    """Drop a tone from a setlist's membership (TONE_NAME is the tone's display name)."""
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    if not m.remove_tone(setlist, tone_name):
+        raise click.ClickException(
+            f"{tone_name!r} is not in setlist {setlist!r} "
+            f"(try `helixgen device setlist list`)")
+    m.save()
+    click.echo(f"removed {tone_name!r} from setlist {setlist!r}")
+
+
+@device_setlist.command(name="create-local")
+@click.argument("setlist")
+def device_setlist_create_local(setlist: str) -> None:
+    """Create an empty setlist in the LOCAL manifest.
+
+    Device-side setlist creation is deferred (backlog #8) — the 2002 create
+    command is uncaptured. Create the setlist by hand in the Stadium app too;
+    `device sync` then resolves it by name.
+    """
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    m.create_setlist(setlist)
+    m.save()
+    click.echo(f"created local setlist {setlist!r} — also create it in the "
+               f"Stadium app before syncing (device-side creation is deferred)")
+
+
 @device.command(name="sync")
-@click.argument("directory", type=click.Path(file_okay=False, path_type=Path), required=False)
-@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
-              default="user", show_default=True, help="Destination setlist.")
+@click.argument("setlist_name", metavar="SETLIST", required=False)
+@click.option("--all", "all_setlists", is_flag=True, default=False,
+              help="Sync every setlist in the manifest (the whole-library reconcile).")
+@click.option("--gc", is_flag=True, default=False,
+              help="Garbage-collect pool presets no setlist references (only with --all).")
 @click.option("--exclude-irs", is_flag=True, default=False,
               help="Install tones only; do not upload their referenced IRs.")
 @click.option("--template", type=int, default=None,
               help="CID of a device preset to use as the chain template "
                    "(defaults to the current edit buffer).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the raw engine result dict as JSON.")
 @_device_option
-def device_sync(directory: Path | None, setlist: str, exclude_irs: bool,
-                template: int, ip: str, port: int) -> None:
-    """Mirror a directory of authored .hsp tones onto the device setlist.
+def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
+                exclude_irs: bool, template: int, as_json: bool,
+                ip: str, port: int) -> None:
+    """Sync the manifest's setlists onto the device (pool + references).
 
-    DESTRUCTIVE: the target setlist (default `user`) is made to match the
-    library exactly — every preset already in the setlist is deleted, then each
-    .hsp is installed fresh (arbitrary slot order), referenced IRs uploaded
-    (unless --exclude-irs), and the ledger replaced. Only that setlist is
-    touched; no backup is taken; an empty/unreadable library deletes nothing.
-    DIRECTORY defaults to your `preset_output_dir` preference.
+    Give a single SETLIST name, or --all for every manifest setlist. The engine
+    reconciles the preset pool (install/update/skip), then rebuilds each
+    setlist's references to manifest order — never orphaning a still-referenced
+    pool preset. --gc (only with --all) prunes pool presets no setlist wants any
+    more. A setlist the device doesn't have is reported as a clear error (create
+    it in the Stadium app first). EXPERIMENTAL.
     """
-    from helixgen.device import sync as _sync
+    from helixgen.device.manifest import SetlistManifest
+    from helixgen.device.setlist_sync import sync_setlists
     from helixgen.device import HelixError
 
-    if directory is None:
-        from helixgen.preferences import load_preferences
-        pd = load_preferences().preset_output_dir
-        if not pd:
-            raise click.ClickException(
-                "no DIRECTORY given and no `preset_output_dir` preference set "
-                "(set it in ~/.helixgen/preferences.json or pass a directory)")
-        directory = Path(pd)
+    if bool(setlist_name) == bool(all_setlists):
+        raise click.ClickException(
+            "give exactly one of a SETLIST name or --all (not both, not neither)")
+    if gc and not all_setlists:
+        click.echo("warning: --gc is ignored without --all "
+                   "(a single-setlist sync never garbage-collects)", err=True)
+        gc = False
 
+    setlists = None if all_setlists else [setlist_name]
     try:
-        res = _sync.sync_library(str(directory), ip=ip, port=port, setlist=setlist,
-                                 exclude_irs=exclude_irs, template_cid=template)
+        res = sync_setlists(SetlistManifest.load(), ip=ip, port=port,
+                            setlists=setlists, gc=gc, exclude_irs=exclude_irs,
+                            template_cid=template)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
 
-    for dl in res.get("deleted", []):
-        slot = dl.get("slot") or "?"
-        click.echo(f"deleted {slot}: {dl['name']!r} (cid {dl['cid']})")
-    for it in res["installed"]:
-        irs = it.get("irs") or []
-        ir_note = f"  (+{len(irs)} IRs)" if irs else ""
-        click.echo(f"installed {it['slot']}: {it['name']!r} (cid {it['cid']}){ir_note}")
-    for er in res["errors"]:
-        click.echo(f"error: {er.get('file', er.get('name', '?'))} — {er['error']}", err=True)
-    n = len(res["installed"])
-    d = len(res.get("deleted", []))
-    click.echo(f"mirrored {n} tone{'s' if n != 1 else ''} to {setlist}"
-               + (f" ({d} removed)" if d else ""))
-    if res.get("note"):
-        click.echo(res["note"])
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+        return
+
+    pool = res.get("pool", {})
+    click.echo(f"pool: {len(pool.get('installed', []))} installed, "
+               f"{len(pool.get('updated', []))} updated, "
+               f"{len(pool.get('skipped', []))} skipped")
+    for sl, diff in res.get("references", {}).items():
+        click.echo(f"setlist {sl!r}: +{len(diff.get('added', []))} references, "
+                   f"-{len(diff.get('removed', []))} references")
+    deleted = res.get("gc", {}).get("deleted", [])
+    if deleted:
+        click.echo(f"gc: deleted {len(deleted)} orphan pool preset(s): "
+                   f"{', '.join(deleted)}")
+    for er in res.get("errors", []):
+        click.echo(f"error: {er}", err=True)
+    synced = res.get("setlists", [])
+    click.echo(f"synced {len(synced)} setlist(s): {', '.join(synced) or '(none)'}")
 
 
 @device.command(name="push")
@@ -1177,7 +1275,7 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
         with HelixClient(ip, port) as h:
             if h.find_by_pos(container, pos) is not None:
                 raise click.ClickException(f"{setlist} slot {pos} is not empty")
-            new_cid = h.push_to_slot(container, pos, name, blob)
+            new_cid = h._raw.push_to_slot(container, pos, name, blob)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1203,7 +1301,7 @@ def device_restore(infile: Path, cid: int, ip: str, port: int) -> None:
     blob = infile.read_bytes()
     try:
         with HelixClient(ip, port) as h:
-            ok = h.set_content_data(cid, blob)
+            ok = h._raw.set_content_data(cid, blob)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1317,7 +1415,7 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                 if h.find_by_pos(container, dest_pos) is not None and not force:
                     raise click.ClickException(
                         f"{dest_setlist} slot {dest_pos} is not empty (use --force)")
-                cid = h.push_to_slot(container, dest_pos, entry.get("name"),
+                cid = h._raw.push_to_slot(container, dest_pos, entry.get("name"),
                                      src.read_bytes())
             else:  # hsp
                 from helixgen.hsp import read_hsp
@@ -1438,9 +1536,9 @@ def device_slots_sync(dry_run: bool, yes: bool, no_backup: bool,
                 container = _setlist_container(sl)
                 present, targets, pulled = work[sl]
                 for e in present:
-                    h.delete(container, [e.get("cid")])
+                    h._raw.delete(container, [e.get("cid")])
                 for (e, blob), target in zip(pulled, targets):
-                    new_cid = h.push_to_slot(container, target, e.get("name"), blob)
+                    new_cid = h._raw.push_to_slot(container, target, e.get("name"), blob)
                     e["posi"] = target
                     e["slot_label"] = slot_label(target)
                     e["cid"] = new_cid

@@ -379,6 +379,33 @@ def test_device_model_null_is_unset(tmp_path):
     assert prefs.device_model is None
 
 
+@pytest.mark.parametrize(
+    "raw",
+    ["stadium_xl", "STADIUM XL", "stadium-xl", "Stadium XL"],
+)
+def test_device_model_xl_forms_normalize_to_display(tmp_path, raw):
+    """Both MCP-token and display forms (any case/separator) load and normalize."""
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"device": {"model": raw}}))
+    prefs = load_preferences(path)
+    assert prefs.device_model == "Stadium XL"
+
+
+@pytest.mark.parametrize("raw", ["stadium", "Stadium"])
+def test_device_model_base_forms_normalize_to_display(tmp_path, raw):
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"device": {"model": raw}}))
+    prefs = load_preferences(path)
+    assert prefs.device_model == "Stadium"
+
+
+def test_device_model_genuinely_invalid_still_raises(tmp_path):
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"device": {"model": "helix_lt"}}))
+    with pytest.raises(PreferencesError):
+        load_preferences(path)
+
+
 # ---------------------------------------------------------------------------
 # volume-normalization opt-out keys
 # ---------------------------------------------------------------------------

@@ -532,7 +532,7 @@ def device_create_preset_handler(
     container = _device_container(setlist)
     try:
         with HelixClient(ip=ip) as client:
-            new_cid = client.create_from(src_cid, container, pos)
+            new_cid = client._raw.create_from(src_cid, container, pos)
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
     return {"ok": new_cid is not None, "cid": new_cid}
@@ -562,7 +562,7 @@ def device_delete_preset_handler(
     container = _device_container(setlist)
     try:
         with HelixClient(ip=ip) as client:
-            return {"ok": bool(client.delete(container, [cid]))}
+            return {"ok": bool(client._raw.delete(container, [cid]))}
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
 
@@ -631,38 +631,126 @@ def device_install_preset_handler(
     return {"ok": cid is not None, "cid": cid}
 
 
-def device_sync_library_handler(
+# ---------------------------------------------------------------------------
+# setlist-manifest handlers (local, no device) + reference-based sync
+# ---------------------------------------------------------------------------
+
+
+def device_setlist_list_handler(model: str) -> dict[str, Any]:
+    """Return the local setlist manifest as a dict (desired membership +
+    observed device placement).
+
+    Mirrors ``helixgen device setlist list``: reads
+    ``~/.helixgen/setlists.json`` (via :meth:`SetlistManifest.load`) and returns
+    its full ``to_dict()`` document (``{version, tones, setlists, observed}``).
+    Local-only — never touches the device.
+    """
+    _validate_model(model)
+    from helixgen.device.manifest import SetlistManifest
+
+    return SetlistManifest.load().to_dict()
+
+
+def device_setlist_add_handler(
+    model: str, setlist: str, hsp_path: str, *, pos: int | None = None
+) -> dict[str, Any]:
+    """Register an authored ``.hsp`` tone and add it to ``setlist``'s membership.
+
+    Reads the file's ``meta.name`` as the tone name, records its path +
+    content hash in the manifest, and appends the name to ``setlist`` (at ``pos``
+    if given; the setlist is auto-created in the manifest if new). Local-only.
+    Returns ``{ok, setlist, tone, tones}`` (``tones`` = the setlist's new
+    ordered membership). A duplicate name bound to a different path raises
+    ValueError.
+    """
+    _validate_model(model)
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        name = m.add_tone(setlist, hsp_path, pos=pos)
+    except ManifestError as e:
+        raise ValueError(str(e)) from e
+    m.save()
+    return {"ok": True, "setlist": setlist, "tone": name,
+            "tones": m.tones_in(setlist)}
+
+
+def device_setlist_remove_handler(
+    model: str, setlist: str, tone_name: str
+) -> dict[str, Any]:
+    """Drop ``tone_name`` from ``setlist``'s membership in the local manifest.
+
+    Keeps the tone in the registry if another setlist still references it.
+    Local-only. Returns ``{ok, setlist, tone, tones}`` — ``ok`` is False if the
+    tone wasn't in that setlist.
+    """
+    _validate_model(model)
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    removed = m.remove_tone(setlist, tone_name)
+    m.save()
+    return {"ok": removed, "setlist": setlist, "tone": tone_name,
+            "tones": m.tones_in(setlist)}
+
+
+def device_sync_setlist_handler(
     model: str,
+    setlist: str,
     *,
     ip: str = _DEFAULT_DEVICE_IP,
-    directory: str | None = None,
-    setlist: str = "user",
     exclude_irs: bool = False,
     template_cid: int | None = None,
 ) -> dict[str, Any]:
-    """Mirror a directory of authored .hsp tones onto the device setlist.
+    """Sync ONE manifest setlist onto the device (pool-first, reference rebuild).
 
-    DESTRUCTIVE: the target ``setlist`` (default ``user``) is made to match the
-    library (``directory``, default: the ``preset_output_dir`` preference)
-    exactly — every preset already in the setlist is deleted, then each ``.hsp``
-    is installed fresh, referenced IRs uploaded unless ``exclude_irs``, and the
-    ledger replaced. Only that setlist is touched; no backup is taken; an
-    empty/unreadable library deletes nothing. Returns
-    ``{ok, setlist, directory, deleted, installed, errors}``.
+    Reconciles the pool for the tones ``setlist`` needs (install/update/skip),
+    then rebuilds that setlist's references to match manifest order — never
+    orphaning a still-referenced pool preset. A single-setlist sync never
+    garbage-collects. Returns the engine result dict (``{ok, setlists, pool,
+    references, gc, irs, errors}``). EXPERIMENTAL.
     """
     _validate_model(model)
     from helixgen.device import HelixError
-    from helixgen.device import sync as _sync
+    from helixgen.device.manifest import SetlistManifest
+    from helixgen.device.setlist_sync import sync_setlists
 
-    if directory is None:
-        from helixgen.preferences import load_preferences
-        directory = load_preferences().preset_output_dir
-        if not directory:
-            raise ValueError(
-                "no `directory` given and no `preset_output_dir` preference set")
     try:
-        return _sync.sync_library(directory, ip=ip, setlist=setlist,
-                                  exclude_irs=exclude_irs, template_cid=template_cid)
+        return sync_setlists(
+            SetlistManifest.load(), ip=ip, setlists=[setlist],
+            exclude_irs=exclude_irs, template_cid=template_cid,
+        )
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_sync_all_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    gc: bool = False,
+    exclude_irs: bool = False,
+    template_cid: int | None = None,
+) -> dict[str, Any]:
+    """Sync ALL manifest setlists onto the device (the whole-library reconcile).
+
+    Reconciles the pool for the union of every setlist's tones, rebuilds each
+    setlist's references, and — only when ``gc=True`` — garbage-collects pool
+    presets no setlist references any more (never orphaning). Returns the engine
+    result dict (``{ok, setlists, pool, references, gc, irs, errors}``).
+    EXPERIMENTAL.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixError
+    from helixgen.device.manifest import SetlistManifest
+    from helixgen.device.setlist_sync import sync_setlists
+
+    try:
+        return sync_setlists(
+            SetlistManifest.load(), ip=ip, setlists=None, gc=gc,
+            exclude_irs=exclude_irs, template_cid=template_cid,
+        )
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
 
@@ -688,7 +776,7 @@ def device_save_preset_handler(
         with HelixClient(ip=ip) as client:
             if client.find_by_pos(container, pos) is not None:
                 raise ValueError(f"{setlist} slot {pos} is not empty")
-            new_cid = client.save_edit_buffer_to(container, pos, name)
+            new_cid = client._raw.save_edit_buffer_to(container, pos, name)
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
     return {"ok": new_cid is not None, "cid": new_cid}

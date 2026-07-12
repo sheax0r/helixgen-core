@@ -22,6 +22,10 @@ class FakeClient:
     def __init__(self, *args, **kwargs):
         self.calls = []
 
+    @property
+    def _raw(self):  # production calls client._raw.<primitive>
+        return self
+
     def __enter__(self):
         return self
 

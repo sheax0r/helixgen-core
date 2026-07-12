@@ -29,6 +29,10 @@ class FakeClient:
         self.calls = []
         self.presets = getattr(type(self), "PRESETS", [])
 
+    @property
+    def _raw(self):  # production calls client._raw.<primitive>
+        return self
+
     def __enter__(self):
         return self
 
