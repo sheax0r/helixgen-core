@@ -68,9 +68,8 @@ def test_show_block_handler_unknown_name_raises_keyerror(mcp_library):
         show_block_handler(mcp_library, "stadium_xl", name_or_id="ThisBlockDoesNotExist")
 
 
-def test_generate_preset_handler_returns_base64_hsp(mcp_library):
-    """Returns a dict with mimeType, name, and base64 blob whose bytes start with HSP_MAGIC."""
-    import base64
+def test_generate_preset_handler_writes_hsp_file(mcp_library, tmp_path):
+    """Writes a .hsp file at out_path whose bytes start with HSP_MAGIC; returns its path."""
     from helixgen.hsp import HSP_MAGIC
     from mcp_server.tools import generate_preset_handler
 
@@ -90,19 +89,16 @@ def test_generate_preset_handler_returns_base64_hsp(mcp_library):
             }
         ],
     }
+    out = tmp_path / "sub" / "mcp-test.hsp"   # parent dir does not exist yet
 
-    result = generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
+    result = generate_preset_handler(mcp_library, "stadium_xl", recipe=spec, out_path=str(out))
 
-    assert isinstance(result, dict)
-    assert result["mimeType"] == "application/octet-stream"
-    assert result["name"].endswith(".hsp")
-    decoded = base64.b64decode(result["hsp_b64"])
-    assert decoded.startswith(HSP_MAGIC), (
-        f"expected HSP_MAGIC prefix; got {decoded[:8]!r}"
-    )
+    assert result == {"path": str(out), "warnings": []}
+    assert out.exists()
+    assert out.read_bytes().startswith(HSP_MAGIC)
 
 
-def test_generate_preset_handler_rejects_unknown_param(mcp_library):
+def test_generate_preset_handler_rejects_unknown_param(mcp_library, tmp_path):
     """Bad spec surfaces ParamValidationError unchanged."""
     import pytest as _pytest
     from helixgen.generate import ParamValidationError
@@ -117,25 +113,7 @@ def test_generate_preset_handler_rejects_unknown_param(mcp_library):
         ],
     }
     with _pytest.raises(ParamValidationError):
-        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
-
-
-def test_generate_preset_handler_sanitizes_filename(mcp_library):
-    """Spec names with path separators or unsafe chars yield safe filenames."""
-    from mcp_server.tools import generate_preset_handler
-
-    amps = mcp_library.list_blocks(category="amp")
-    cabs = mcp_library.list_blocks(category="cab")
-    spec = {
-        "name": "../../etc/passwd",
-        "paths": [{"blocks": [{"block": amps[0].display_name}, {"block": cabs[0].display_name}]}],
-    }
-    result = generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
-    # No path traversal, no slashes, no null bytes.
-    assert "/" not in result["name"]
-    assert "\\" not in result["name"]
-    assert ".." not in result["name"]
-    assert result["name"].endswith(".hsp")
+        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec, out_path=str(tmp_path / "x.hsp"))
 
 
 def test_show_block_handler_ambiguous_name_raises_lookuperror(monkeypatch, mcp_library):
@@ -152,7 +130,7 @@ def test_show_block_handler_ambiguous_name_raises_lookuperror(monkeypatch, mcp_l
         show_block_handler(mcp_library, "stadium_xl", name_or_id="Anything")
 
 
-def test_generate_preset_handler_rejects_malformed_spec(mcp_library):
+def test_generate_preset_handler_rejects_malformed_spec(mcp_library, tmp_path):
     """A spec missing required keys surfaces SpecError."""
     import pytest as _pytest
     from helixgen.spec import SpecError
@@ -161,10 +139,10 @@ def test_generate_preset_handler_rejects_malformed_spec(mcp_library):
     # Missing 'paths' is a structural failure caught by parse_spec.
     spec = {"name": "no paths here"}
     with _pytest.raises(SpecError):
-        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec, out_path=str(tmp_path / "x.hsp"))
 
 
-def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
+def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library, tmp_path):
     """Using a HX2_ImpulseResponse* block without an IR mapping raises GenerateError.
 
     The deploy ships no user IR registry, so With-Pan-style blocks have no
@@ -195,7 +173,7 @@ def test_generate_preset_handler_with_pan_raises_generate_error(mcp_library):
         ]}],
     }
     with _pytest.raises(GenerateError):
-        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec)
+        generate_preset_handler(mcp_library, "stadium_xl", recipe=spec, out_path=str(tmp_path / "x.hsp"))
 
 
 def test_list_irs_handler_empty_when_no_mapping(tmp_path):
@@ -268,7 +246,6 @@ def test_list_irs_handler_rejects_bad_model(tmp_path):
 # -- compute_irhash ------------------------------------------------------
 
 
-import base64 as _b64  # noqa: E402
 import struct as _struct  # noqa: E402
 
 
@@ -288,48 +265,39 @@ def _synth_wav_bytes(n_frames: int = 64, *, sr: int = 48000) -> bytes:
 
 
 @_pytest_top.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
-def test_compute_irhash_returns_hash_and_reminder():
-    """Happy path: synth WAV → 32-char hex hash + non-empty reminder."""
+def test_compute_irhash_returns_hash_and_reminder(tmp_path):
+    """Happy path: synth WAV file → 32-char hex hash + non-empty reminder."""
     from mcp_server.tools import compute_irhash_handler
-    wav_b64 = _b64.b64encode(_synth_wav_bytes()).decode("ascii")
-    result = compute_irhash_handler("stadium_xl", wav_b64)
+    wav = tmp_path / "ir.wav"
+    _write_synth_wav_file(wav, n_frames=64)
+    result = compute_irhash_handler("stadium_xl", str(wav))
     assert set(result.keys()) == {"irhash", "reminder"}
     assert len(result["irhash"]) == 32
     assert all(c in "0123456789abcdef" for c in result["irhash"])
     assert "Librarian" in result["reminder"]  # the upload-to-device reminder
 
 
-def test_compute_irhash_rejects_bad_model():
-    """Bad model → ValueError; we never reach libsndfile."""
+def test_compute_irhash_rejects_bad_model(tmp_path):
+    """Bad model → ValueError; we never touch the file."""
     from mcp_server.tools import compute_irhash_handler
-    wav_b64 = _b64.b64encode(_synth_wav_bytes()).decode("ascii")
     with _pytest_top.raises(ValueError, match="unsupported model"):
-        compute_irhash_handler("helix_floor", wav_b64)
+        compute_irhash_handler("helix_floor", str(tmp_path / "any.wav"))
 
 
-def test_compute_irhash_rejects_oversize():
-    """Decoded size > 2 MB → ValueError before libsndfile."""
+def test_compute_irhash_rejects_missing_file(tmp_path):
+    """Nonexistent path → ValueError before libsndfile."""
     from mcp_server.tools import compute_irhash_handler
-    oversize = b"\x00" * (3 * 1024 * 1024)
-    wav_b64 = _b64.b64encode(oversize).decode("ascii")
-    with _pytest_top.raises(ValueError, match=r"max .*2 MB"):
-        compute_irhash_handler("stadium_xl", wav_b64)
+    with _pytest_top.raises(ValueError, match="not found"):
+        compute_irhash_handler("stadium_xl", str(tmp_path / "missing.wav"))
 
 
-def test_compute_irhash_rejects_non_riff():
-    """Bytes without RIFF/WAVE magic → ValueError before libsndfile."""
+def test_compute_irhash_rejects_non_riff(tmp_path):
+    """A file without RIFF/WAVE magic → ValueError before libsndfile."""
     from mcp_server.tools import compute_irhash_handler
-    fake = b"NOT A WAVE FILE AT ALL" + b"\x00" * 100
-    wav_b64 = _b64.b64encode(fake).decode("ascii")
+    fake = tmp_path / "fake.wav"
+    fake.write_bytes(b"NOT A WAVE FILE AT ALL" + b"\x00" * 100)
     with _pytest_top.raises(ValueError, match="RIFF/WAVE magic"):
-        compute_irhash_handler("stadium_xl", wav_b64)
-
-
-def test_compute_irhash_rejects_invalid_base64():
-    """Garbage in wav_b64 → ValueError (not a crash)."""
-    from mcp_server.tools import compute_irhash_handler
-    with _pytest_top.raises(ValueError, match="valid base64"):
-        compute_irhash_handler("stadium_xl", "this is not base64 at all!!!")
+        compute_irhash_handler("stadium_xl", str(fake))
 
 
 # -- discover_irs --------------------------------------------------------
@@ -635,3 +603,64 @@ def test_controller_mapping_handler_rejects_unknown_model():
     import pytest as _pytest
     with _pytest.raises(ValueError):
         controller_mapping_handler("nord_stage")
+
+
+# -- device_install_preset (file-read path) ------------------------------
+
+
+def test_device_install_preset_rejects_missing_file(tmp_path):
+    """Nonexistent .hsp path → ValueError before any device connection."""
+    from mcp_server.tools import device_install_preset_handler
+    with _pytest_top.raises(ValueError, match="not found"):
+        device_install_preset_handler(
+            "stadium_xl", hsp_path=str(tmp_path / "nope.hsp"), name="X", pos=1)
+
+
+def test_device_install_preset_rejects_non_hsp(tmp_path):
+    """A file without .hsp magic → ValueError before any device connection."""
+    from mcp_server.tools import device_install_preset_handler
+    bad = tmp_path / "bad.hsp"
+    bad.write_bytes(b"NOTMAGIC{}")
+    with _pytest_top.raises(ValueError, match="not a .hsp"):
+        device_install_preset_handler(
+            "stadium_xl", hsp_path=str(bad), name="X", pos=1)
+
+
+def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hsp_library):
+    """Happy path with the device client + bridge stubbed: the handler reads the
+    .hsp body off disk and forwards it to bridge.install_recipe, returning the cid."""
+    import mcp_server.tools as tools_mod
+    from helixgen.generate import compose_preset
+    from helixgen.hsp import dumps_hsp
+    from helixgen.spec import parse_spec
+
+    preset = compose_preset(parse_spec(
+        {"name": "D", "paths": [{"blocks": [{"block": "Tube Drive"}]}]}),
+        hsp_library, source="t")
+    hsp = tmp_path / "d.hsp"
+    hsp.write_bytes(dumps_hsp(preset))
+
+    seen = {}
+
+    class _FakeClient:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def find_by_pos(self, container, pos): return None
+        def load_preset(self, cid): pass
+        def get_edit_buffer(self): return b"TEMPLATE"
+
+    def _fake_install_recipe(client, body, container, pos, name, template_blob, strict):
+        seen["template_blob"] = template_blob
+        seen["body"] = body
+        return 4242
+
+    import helixgen.device as device_mod
+    monkeypatch.setattr(device_mod, "HelixClient", lambda **kw: _FakeClient())
+    monkeypatch.setattr(device_mod.bridge, "install_recipe", _fake_install_recipe)
+
+    result = tools_mod.device_install_preset_handler(
+        "stadium_xl", hsp_path=str(hsp), name="D", pos=3)
+
+    assert result == {"ok": True, "cid": 4242}
+    assert seen["template_blob"] == b"TEMPLATE"
+    assert isinstance(seen["body"], dict) and "preset" in seen["body"]

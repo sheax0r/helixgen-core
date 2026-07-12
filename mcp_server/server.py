@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import BlobResourceContents, EmbeddedResource
 
 from helixgen.library import Library, default_library_path
 from mcp_server import tools as _tools
@@ -57,17 +56,19 @@ def show_block(model: str, name_or_id: str) -> str:
 
 
 @app.tool()
-def generate_preset(model: str, recipe: dict[str, Any]) -> EmbeddedResource:
-    """Generate a Helix Stadium .hsp preset from an inline JSON recipe.
+def generate_preset(model: str, recipe: dict[str, Any], out_path: str) -> dict[str, Any]:
+    """Generate a Helix Stadium .hsp preset from a JSON recipe and write it to disk.
 
     Required `model`: `"stadium"` or `"stadium_xl"`. Confirm the user's
     device before calling — see the `setup` skill.
 
-    The recipe follows the helixgen schema (see https://github.com/sheax0r/helixgen):
-    a `name`, optional `author`, 1-2 `paths` each with `blocks`, and optional
+    `out_path` is the filesystem path to write the `.hsp` to (required; parent
+    directories are created). The recipe follows the helixgen schema
+    (see https://github.com/sheax0r/helixgen): a `name`, optional `author`,
+    1-2 `paths` each with `blocks`, and optional
     `snapshots` / `footswitches` / `expression`. It is built directly against
     the library's Stadium chassis — no sidecar spec file is written; the
-    returned `.hsp` blob is the sole source of truth.
+    written `.hsp` file is the sole source of truth.
 
     **IR usage:** `With Pan` blocks accept an `ir` field with either a
     basename (resolved via the local IR mapping) or a 32-char hex hash
@@ -82,20 +83,11 @@ def generate_preset(model: str, recipe: dict[str, Any]) -> EmbeddedResource:
     names, then retry `generate_preset` with the corrected recipe. Param
     names are case-sensitive.
 
-    Returns an MCP `EmbeddedResource` whose `resource.blob` is the base64-
-    encoded `.hsp` bytes; `resource.uri` is `file:///<sanitized-name>.hsp`.
-    To apply further surgical edits, pass `resource.blob` as `hsp_b64` to
-    `patch_preset`.
+    Returns `{"path": <out_path>, "warnings": [...]}`. Pass `out_path` to
+    `view_preset` / `patch_preset` to inspect or edit the written file.
     """
-    result = _tools.generate_preset_handler(_resolve_library(), model, recipe=recipe)
-    return EmbeddedResource(
-        type="resource",
-        resource=BlobResourceContents(
-            uri=f"file:///{result['name']}",
-            mimeType=result["mimeType"],
-            blob=result["hsp_b64"],
-        ),
-    )
+    return _tools.generate_preset_handler(
+        _resolve_library(), model, recipe=recipe, out_path=out_path)
 
 
 @app.tool()
@@ -114,29 +106,27 @@ def list_irs(model: str) -> str:
 
 
 @app.tool()
-def compute_irhash(model: str, wav_b64: str) -> dict[str, str]:
-    """Compute Helix Stadium's IR hash for a base64-encoded WAV file.
+def compute_irhash(model: str, wav_path: str) -> dict[str, str]:
+    """Compute Helix Stadium's IR hash for a WAV file on disk.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    Stateless. Takes the WAV bytes as base64 (drag-and-drop friendly), runs
-    them through Stadium's exact import-preprocessing pipeline, and returns
-    the 32-char hex hash that would appear in a generated preset's `irhash`
-    field. Embed the returned hash in the `ir` field of a `With Pan` block
-    in a subsequent `generate_preset` call.
-
-    **Validation (security):** rejects files larger than 2 MB and files
-    that don't start with `RIFF`/`WAVE` magic before calling libsndfile.
+    `wav_path` is a filesystem path to a `.wav` file. Runs it through Stadium's
+    exact import-preprocessing pipeline and returns the 32-char hex hash that
+    would appear in a generated preset's `irhash` field. Embed the returned
+    hash in the `ir` field of a `With Pan` block in a subsequent
+    `generate_preset` call.
 
     **48 kHz sources only.** Non-48 kHz raises a clear error suggesting
-    `sox in.wav -r 48000 out.wav`. Stereo input is reduced to the left
-    channel (matches Stadium's import).
+    `sox in.wav -r 48000 out.wav`. Stereo input is reduced to the left channel
+    (matches Stadium's import). Rejects files without `RIFF`/`WAVE` magic before
+    calling libsndfile.
 
     Returns `{"irhash": "<32-char hex>", "reminder": "<upload-to-device note>"}`.
     Always surface the `reminder` text to the user — the hash is meaningless
     unless the matching WAV is also loaded onto their device's Cab IRs.
     """
-    return _tools.compute_irhash_handler(model, wav_b64)
+    return _tools.compute_irhash_handler(model, wav_path)
 
 
 @app.tool()
@@ -210,26 +200,25 @@ def register_irs(model: str, ir_directory: str, force: bool = False) -> dict[str
 
 
 @app.tool()
-def view_preset(model: str, hsp_b64: str) -> dict[str, Any]:
-    """Project a base64-encoded Stadium .hsp into a readable dict for agents/humans.
+def view_preset(model: str, hsp_path: str) -> dict[str, Any]:
+    """Project a Stadium `.hsp` file into a readable dict for agents/humans.
 
-    Use this to inspect an orphan/ingested preset's blocks, params,
-    snapshots, footswitches, and expression wiring before deciding what to
-    edit with `patch_preset`. Read-only — never writes a sidecar file; the
-    `.hsp` blob itself remains the sole source of truth.
+    Use this to inspect an orphan/ingested preset's blocks, params, snapshots,
+    footswitches, and expression wiring before deciding what to edit with
+    `patch_preset`. Read-only — never writes; the `.hsp` file remains the sole
+    source of truth.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    `hsp_b64` is the base64-encoded bytes of a `.hsp` file (the same blob
-    returned by `generate_preset`'s `resource.blob`, or `patch_preset`'s
-    `hsp_b64`).
+    `hsp_path` is a filesystem path to a `.hsp` file (the file written by
+    `generate_preset`, edited by `patch_preset`, or a user-supplied export).
 
     Returns a spec-shaped dict (`name`, `paths[*].blocks`, `snapshots`,
     `footswitches`, `expression`, ...) for comprehension only — it is NOT
     accepted back into `patch_preset` or `generate_preset`; edit the `.hsp`
-    blob itself via `patch_preset`'s `operations`.
+    file itself via `patch_preset`'s `operations`.
     """
-    return _tools.view_preset_handler(_resolve_library(), model, hsp_b64)
+    return _tools.view_preset_handler(_resolve_library(), model, hsp_path)
 
 
 @app.tool()
@@ -254,16 +243,15 @@ def controller_mapping(model: str) -> list[dict[str, Any]]:
 
 
 @app.tool()
-def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
-    """Apply surgical edits directly to a base64-encoded .hsp blob.
+def patch_preset(model: str, hsp_path: str, operations: list) -> dict[str, Any]:
+    """Apply surgical edits to a `.hsp` file, in place.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    `hsp_b64` is the base64-encoded bytes of a `.hsp` file (from
-    `generate_preset`'s `resource.blob`, a prior `patch_preset` call's
-    `hsp_b64`, or a user-supplied orphan export). Each op in `operations`
-    mutates the decoded body directly (no spec round-trip) via the matching
-    `helixgen.mutate` verb. Supported ops:
+    `hsp_path` is a filesystem path to a `.hsp` file (written by
+    `generate_preset`, a prior `patch_preset` call, or a user-supplied orphan
+    export). Each op in `operations` mutates the file's body directly (no spec
+    round-trip) via the matching `helixgen.mutate` verb. Supported ops:
     - `set_param` — `{op, block, param, value, [path], [lane], [pos]}`
     - `set_enabled` — `{op, block, enabled, [path], [lane], [pos], [snapshot]}`
     - `add_block` — `{op, block, [path], [after], [params]}`
@@ -277,13 +265,12 @@ def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
     raises a clear "matches N placements" error listing the candidates.
     Call `show_block` first to confirm exact, case-sensitive param names.
 
-    Returns `{"hsp_b64": <base64 .hsp bytes reflecting every op>, "warnings":
+    Returns `{"path": <the same hsp_path, now edited in place>, "warnings":
     [<str>, ...]}`. `warnings` collects any `swap_model` messages about
-    params/IRs that couldn't be carried over. Pass the returned `hsp_b64`
-    into another `patch_preset` call to keep editing, or `view_preset` to
-    inspect the result.
+    params/IRs that couldn't be carried over. Call `patch_preset` again on the
+    same path to keep editing, or `view_preset` to inspect the result.
     """
-    return _tools.patch_preset_handler(_resolve_library(), model, hsp_b64, operations)
+    return _tools.patch_preset_handler(_resolve_library(), model, hsp_path, operations)
 
 
 # ---------------------------------------------------------------------------
@@ -433,22 +420,23 @@ def device_save_preset(
 @app.tool()
 def device_install_preset(
     model: str,
-    hsp_b64: str,
+    hsp_path: str,
     name: str,
     pos: int,
     setlist: str = "user",
     template_cid: int | None = None,
     ip: str = _tools._DEFAULT_DEVICE_IP,
 ) -> dict[str, Any]:
-    """Author a helixgen `.hsp` (base64) onto the device as a new preset.
+    """Author a helixgen `.hsp` file onto the device as a new preset.
 
-    Required `model`: `"stadium"` or `"stadium_xl"`. Maps the preset's blocks
-    onto a device template's same-category slots and installs it into `setlist`
-    slot `pos` (must be empty). `template_cid` selects a device preset to use as
-    the chain template (defaults to the current edit buffer). EXPERIMENTAL.
+    Required `model`: `"stadium"` or `"stadium_xl"`. `hsp_path` is a filesystem
+    path to a `.hsp` file; it is read off disk, and its blocks are mapped onto a
+    device template's same-category slots and installed into `setlist` slot
+    `pos` (must be empty). `template_cid` selects a device preset to use as the
+    chain template (defaults to the current edit buffer). EXPERIMENTAL.
     Returns `{"ok": <bool>, "cid": <new cid>}`.
     """
     return _tools.device_install_preset_handler(
-        model, ip=ip, hsp_b64=hsp_b64, name=name, pos=pos,
+        model, ip=ip, hsp_path=hsp_path, name=name, pos=pos,
         setlist=setlist, template_cid=template_cid,
     )

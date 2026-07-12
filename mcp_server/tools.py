@@ -3,16 +3,12 @@ registration time. Importable + directly testable.
 """
 from __future__ import annotations
 
-import base64
-import json
 import os
-import re
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from helixgen import mutate
-from helixgen.hsp import HSP_MAGIC, dumps_hsp
+from helixgen.hsp import read_hsp, write_hsp
 from helixgen.ir import IrMapping, compute_stadium_irhash
 from helixgen.irhash_cache import IrHashCache, cached_irhash
 from helixgen.library import Library
@@ -21,16 +17,9 @@ from helixgen.spec import parse_spec
 from helixgen.view import view as view_projection
 
 
-_FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
-
 # Required `model` parameter on every tool. Allow-list; everything else errors.
 # Soft gate (agents can misreport); the setup skill is the real gate.
 _SUPPORTED_MODELS = frozenset({"stadium", "stadium_xl"})
-
-# 2 MB cap on incoming WAV bytes for compute_irhash. Real IRs are ≤200 KB
-# typically; the cap is well above realistic usage and well below
-# MCP/JSON-RPC per-message budgets.
-_WAV_BYTES_LIMIT = 2 * 1024 * 1024
 
 # Upload-to-device reminder returned alongside every computed irhash.
 _UPLOAD_REMINDER = (
@@ -107,32 +96,21 @@ def show_block_handler(library: Library, model: str, name_or_id: str) -> str:
     return "\n".join(lines)
 
 
-def _safe_filename(name: str) -> str:
-    """Convert an arbitrary preset name to a safe basename for the .hsp blob.
-
-    Strips path separators, collapses unsafe characters to underscores,
-    and falls back to 'preset' when the result would be empty.
-    """
-    cleaned = _FILENAME_SAFE.sub("_", name).strip("._-")
-    return f"{cleaned or 'preset'}.hsp"
-
-
 def generate_preset_handler(
-    library: Library, model: str, recipe: dict[str, Any], *, irs_dir: Path | None = None
+    library: Library, model: str, recipe: dict[str, Any], out_path: str,
+    *, irs_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Generate a Helix Stadium .hsp preset from an inline recipe dict.
+    """Generate a Helix Stadium .hsp preset from a recipe dict and write it to disk.
 
     Builds directly against the library's Stadium chassis via
-    `helixgen.recipe.generate_from_recipe` -- no temp files, no sidecar spec
-    is written (the `.hsp` itself is the sole source of truth post-redesign).
+    `helixgen.recipe.generate_from_recipe`, writes the `.hsp` bytes to
+    `out_path` (creating parent directories), and returns
+    `{"path": <out_path>, "warnings": []}`. The `.hsp` file is the sole source
+    of truth -- no sidecar spec is written.
 
-    Returns a dict suitable for an MCP EmbeddedResource:
-      - mimeType: application/octet-stream
-      - name:     safe basename ending in .hsp
-      - hsp_b64:  base64-encoded .hsp bytes (magic header + compact JSON)
-
-    Underlying SpecError / ParamValidationError / GenerateError propagate;
-    the MCP server boundary translates them to protocol errors.
+    Underlying SpecError / ParamValidationError / GenerateError propagate; the
+    MCP server boundary translates them to protocol errors (raised before any
+    file is written).
     """
     _validate_model(model)
     # Parse+validate the recipe before touching the chassis, so a malformed
@@ -144,12 +122,10 @@ def generate_preset_handler(
     raw = generate_from_recipe(
         spec, library, irs=irs, chassis=chassis, source="mcp:generate_preset"
     )
-
-    return {
-        "mimeType": "application/octet-stream",
-        "name":     _safe_filename(recipe.get("name", "preset")),
-        "hsp_b64":  base64.b64encode(raw).decode("ascii"),
-    }
+    out = Path(out_path).expanduser()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(raw)
+    return {"path": out_path, "warnings": []}
 
 
 def list_irs_handler(model: str, irs_dir: Path | None = None) -> str:
@@ -168,48 +144,28 @@ def list_irs_handler(model: str, irs_dir: Path | None = None) -> str:
     )
 
 
-def compute_irhash_handler(model: str, wav_b64: str) -> dict[str, str]:
-    """Compute Stadium's IR hash for a base64-encoded WAV file.
+def compute_irhash_handler(model: str, wav_path: str) -> dict[str, str]:
+    """Compute Stadium's IR hash for a WAV file on disk.
 
-    Stateless. Decodes the bytes, validates the size and WAV magic, writes
-    to a NamedTemporaryFile, and calls `compute_stadium_irhash`. Returns the
-    32-char hex hash plus an upload-to-device reminder.
+    Reads the first 12 bytes to check RIFF/WAVE magic (cheap defense-in-depth
+    before libsndfile, which has had CVEs), then calls `compute_stadium_irhash`.
+    Returns the 32-char hex hash plus an upload-to-device reminder.
 
-    Validation (defense in depth — libsndfile has had CVEs):
-      1. Model in the supported allow-list
-      2. Decoded size ≤ 2 MB (config: `_WAV_BYTES_LIMIT`)
-      3. First 4 bytes = `RIFF`, bytes 8–12 = `WAVE` (basic magic check
-         before libsndfile sees the input)
-
-    Returns: `{"irhash": "<hex>", "reminder": "<upload-to-device message>"}`.
-    Raises ValueError on any validation failure; FastMCP translates to an
-    `isError` text content block.
+    Raises ValueError on bad model / missing file / non-WAV magic; FastMCP
+    translates these to an `isError` text content block.
     """
     _validate_model(model)
-    try:
-        data = base64.b64decode(wav_b64, validate=True)
-    except (ValueError, base64.binascii.Error) as e:
-        raise ValueError(f"wav_b64 is not valid base64: {e}") from e
-    if len(data) > _WAV_BYTES_LIMIT:
-        raise ValueError(
-            f"WAV is {len(data)} bytes; max {_WAV_BYTES_LIMIT} (2 MB). "
-            "Real IRs are typically under 200 KB."
-        )
-    if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+    wav = Path(wav_path).expanduser()
+    if not wav.is_file():
+        raise ValueError(f"wav file not found: {wav_path}")
+    with wav.open("rb") as fh:
+        head = fh.read(12)
+    if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
         raise ValueError(
             "WAV bytes don't look valid (missing RIFF/WAVE magic). "
-            "Make sure the user dragged a .wav file, not another format."
+            "Make sure this is a .wav file, not another format."
         )
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-        tf.write(data)
-        tmp_path = tf.name
-    try:
-        irhash = compute_stadium_irhash(tmp_path)
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+    irhash = compute_stadium_irhash(wav)
     return {"irhash": irhash, "reminder": _UPLOAD_REMINDER}
 
 
@@ -349,31 +305,30 @@ def controller_mapping_handler(model: str) -> list[dict[str, Any]]:
     return controllers.controller_mapping(device)
 
 
-def _decode_hsp_b64(hsp_b64: str) -> dict[str, Any]:
-    """Decode a base64 `.hsp` blob into its parsed JSON body dict.
+def _read_hsp_body(hsp_path: str) -> dict[str, Any]:
+    """Read a `.hsp` file into its parsed JSON body dict.
 
-    Raises ValueError if the decoded bytes don't start with the `.hsp` magic
-    header.
+    Raises ValueError with an actionable message if the path doesn't exist
+    or the bytes don't start with the `.hsp` magic header.
     """
-    raw = base64.b64decode(hsp_b64)
-    if raw[:len(HSP_MAGIC)] != HSP_MAGIC:
-        raise ValueError("payload is not a .hsp blob (missing magic header)")
-    return json.loads(raw[len(HSP_MAGIC):].decode("utf-8"))
+    p = Path(hsp_path).expanduser()
+    if not p.is_file():
+        raise ValueError(f".hsp not found: {hsp_path}")
+    return read_hsp(p)
 
 
 def view_preset_handler(
-    library: Library, model: str, hsp_b64: str, *, irs_dir: Path | None = None
+    library: Library, model: str, hsp_path: str, *, irs_dir: Path | None = None
 ) -> dict[str, Any]:
-    """Decode a base64-encoded .hsp blob into its read-only projection dict.
+    """Read a `.hsp` file and return its read-only projection dict.
 
-    Mirrors `helixgen view`: unwraps the magic-prefixed JSON body, then
-    projects it via `helixgen.view.view` -- never reads/writes disk, no
-    sidecar spec is produced. IRs are resolved against the mapping at
-    `irs_dir` (or the default `$HELIXGEN_IRS`/`~/.helixgen/irs/` location)
-    so a registered IR block's `irhash` can be reported by wav basename.
+    Mirrors `helixgen view`: reads the magic-prefixed JSON body off disk, then
+    projects it via `helixgen.view.view`. IRs are resolved against the mapping
+    at `irs_dir` (or the default `$HELIXGEN_IRS`/`~/.helixgen/irs/`) so a
+    registered IR block's `irhash` can be reported by wav basename.
     """
     _validate_model(model)
-    body = _decode_hsp_b64(hsp_b64)
+    body = _read_hsp_body(hsp_path)
     irs = IrMapping.load(irs_dir)
     return view_projection(body, library, irs=irs)
 
@@ -430,31 +385,29 @@ _PATCH_OPS = {
 
 
 def patch_preset_handler(
-    library: Library, model: str, hsp_b64: str, operations: list
+    library: Library, model: str, hsp_path: str, operations: list
 ) -> dict[str, Any]:
-    """Apply a sequence of surgical edits directly to a base64-encoded .hsp blob.
+    """Apply a sequence of surgical edits to a `.hsp` file, in place.
 
-    Decodes `hsp_b64` to a body dict, applies each `{"op": ...}` entry in
-    `operations` via the matching `helixgen.mutate` verb (mutating the body
-    in place -- no spec round-trip), then re-encodes via
-    `helixgen.hsp.dumps_hsp`.
+    Reads `hsp_path`, applies each `{"op": ...}` entry in `operations` via the
+    matching `helixgen.mutate` verb (mutating the body in place -- no spec
+    round-trip), then writes the result back to the same path.
 
-    Returns `{"hsp_b64": <base64 .hsp bytes>, "warnings": [<str>, ...]}`.
-    `warnings` collects any `swap_model` messages about params/IRs that
-    couldn't be carried over to the new block.
+    Returns `{"path": <hsp_path>, "warnings": [<str>, ...]}`. `warnings`
+    collects any `swap_model` messages about params/IRs that couldn't be
+    carried over to the new block. An unknown op raises before any write, so a
+    bad op leaves the file untouched.
     """
     _validate_model(model)
-    body = _decode_hsp_b64(hsp_b64)
+    body = _read_hsp_body(hsp_path)
     warnings: list[str] = []
     for o in operations:
         op = o.get("op")
         if op not in _PATCH_OPS:
             raise ValueError(f"unknown patch op {op!r}; valid: {sorted(_PATCH_OPS)}")
         warnings.extend(_PATCH_OPS[op](body, library, o))
-    return {
-        "hsp_b64": base64.b64encode(dumps_hsp(body)).decode("ascii"),
-        "warnings": warnings,
-    }
+    write_hsp(hsp_path, body)
+    return {"path": hsp_path, "warnings": warnings}
 
 
 # ---------------------------------------------------------------------------
@@ -642,28 +595,24 @@ def device_install_preset_handler(
     model: str,
     *,
     ip: str = _DEFAULT_DEVICE_IP,
-    hsp_b64: str,
+    hsp_path: str,
     name: str,
     pos: int,
     setlist: str = "user",
     template_cid: int | None = None,
 ) -> dict[str, Any]:
-    """Author a helixgen .hsp (base64) onto the device as a new preset.
+    """Author a helixgen .hsp file onto the device as a new preset.
 
-    Maps the preset's blocks onto a device template's same-category slots
-    (v2.2: single serial chain) and installs it. ``template_cid`` picks a device
-    preset to use as the chain template (defaults to the current edit buffer).
-    Returns ``{"ok": <bool>, "cid": <new cid or None>}``. EXPERIMENTAL.
+    Reads the `.hsp` off ``hsp_path``, maps its blocks onto a device template's
+    same-category slots (v2.2: single serial chain), and installs it.
+    ``template_cid`` picks a device preset to use as the chain template
+    (defaults to the current edit buffer). Returns
+    ``{"ok": <bool>, "cid": <new cid or None>}``. EXPERIMENTAL.
     """
     _validate_model(model)
-    import json as _json
-    from helixgen.hsp import is_hsp_bytes
     from helixgen.device import HelixClient, HelixError, bridge
 
-    raw = base64.b64decode(hsp_b64)
-    if not is_hsp_bytes(raw):
-        raise ValueError("not a .hsp document (bad magic)")
-    body = _json.loads(raw[8:].decode("utf-8"))
+    body = _read_hsp_body(hsp_path)
     container = _device_container(setlist)
     try:
         with HelixClient(ip=ip) as client:
