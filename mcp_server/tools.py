@@ -14,6 +14,7 @@ from typing import Any
 from helixgen import mutate
 from helixgen.hsp import HSP_MAGIC, dumps_hsp
 from helixgen.ir import IrMapping, compute_stadium_irhash
+from helixgen.irhash_cache import IrHashCache, cached_irhash
 from helixgen.library import Library
 from helixgen.recipe import generate_from_recipe
 from helixgen.spec import parse_spec
@@ -228,7 +229,7 @@ def register_ir_handler(
     wav = Path(wav_path).expanduser().resolve()
     if not wav.is_file():
         raise ValueError(f"wav file not found: {wav_path}")
-    irhash = compute_stadium_irhash(wav)
+    irhash = cached_irhash(wav)
     mapping = IrMapping.load(irs_dir)
     mapping.register(irhash, wav, force=force)
     mapping.save()
@@ -268,6 +269,7 @@ def register_irs_handler(
     from helixgen.ir import IrMappingError
 
     mapping = IrMapping.load(irs_dir)
+    cache = IrHashCache.load()
     registered: list[str] = []
     already: list[str] = []
     conflicts: list[str] = []
@@ -277,7 +279,7 @@ def register_irs_handler(
         if not wav.is_file() or wav.suffix.lower() != ".wav":
             continue
         try:
-            h = compute_stadium_irhash(wav)
+            h = cached_irhash(wav, cache=cache)
         except (NotImplementedError, RuntimeError, FileNotFoundError) as e:
             failed.append({"basename": wav.name, "reason": str(e)})
             continue
@@ -294,6 +296,7 @@ def register_irs_handler(
             registered.append(wav.name)
 
     mapping.save()
+    cache.save()
     return {
         "registered": registered,
         "already_registered": already,
@@ -315,14 +318,16 @@ def discover_irs_handler(model: str, ir_directory: str) -> list[dict[str, str]]:
     if not root.is_dir():
         raise ValueError(f"not a directory: {ir_directory}")
     out: list[dict[str, str]] = []
+    cache = IrHashCache.load()
     for wav in sorted(root.rglob("*")):
         if not wav.is_file() or wav.suffix.lower() != ".wav":
             continue
         try:
-            h = compute_stadium_irhash(wav)
+            h = cached_irhash(wav, cache=cache)
         except (NotImplementedError, RuntimeError, FileNotFoundError):
             continue
         out.append({"hash": h, "path": str(wav), "basename": wav.name})
+    cache.save()
     return out
 
 
