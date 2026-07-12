@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from helixgen import mutate
-from helixgen.hsp import HSP_MAGIC, dumps_hsp
+from helixgen.hsp import dumps_hsp, is_hsp_bytes, read_hsp, write_hsp
 from helixgen.ir import IrMapping, compute_stadium_irhash
 from helixgen.irhash_cache import IrHashCache, cached_irhash
 from helixgen.library import Library
@@ -349,31 +349,30 @@ def controller_mapping_handler(model: str) -> list[dict[str, Any]]:
     return controllers.controller_mapping(device)
 
 
-def _decode_hsp_b64(hsp_b64: str) -> dict[str, Any]:
-    """Decode a base64 `.hsp` blob into its parsed JSON body dict.
+def _read_hsp_body(hsp_path: str) -> dict[str, Any]:
+    """Read a `.hsp` file into its parsed JSON body dict.
 
-    Raises ValueError if the decoded bytes don't start with the `.hsp` magic
-    header.
+    Raises ValueError with an actionable message if the path doesn't exist
+    or the bytes don't start with the `.hsp` magic header.
     """
-    raw = base64.b64decode(hsp_b64)
-    if raw[:len(HSP_MAGIC)] != HSP_MAGIC:
-        raise ValueError("payload is not a .hsp blob (missing magic header)")
-    return json.loads(raw[len(HSP_MAGIC):].decode("utf-8"))
+    p = Path(hsp_path).expanduser()
+    if not p.is_file():
+        raise ValueError(f".hsp not found: {hsp_path}")
+    return read_hsp(p)
 
 
 def view_preset_handler(
-    library: Library, model: str, hsp_b64: str, *, irs_dir: Path | None = None
+    library: Library, model: str, hsp_path: str, *, irs_dir: Path | None = None
 ) -> dict[str, Any]:
-    """Decode a base64-encoded .hsp blob into its read-only projection dict.
+    """Read a `.hsp` file and return its read-only projection dict.
 
-    Mirrors `helixgen view`: unwraps the magic-prefixed JSON body, then
-    projects it via `helixgen.view.view` -- never reads/writes disk, no
-    sidecar spec is produced. IRs are resolved against the mapping at
-    `irs_dir` (or the default `$HELIXGEN_IRS`/`~/.helixgen/irs/` location)
-    so a registered IR block's `irhash` can be reported by wav basename.
+    Mirrors `helixgen view`: reads the magic-prefixed JSON body off disk, then
+    projects it via `helixgen.view.view`. IRs are resolved against the mapping
+    at `irs_dir` (or the default `$HELIXGEN_IRS`/`~/.helixgen/irs/`) so a
+    registered IR block's `irhash` can be reported by wav basename.
     """
     _validate_model(model)
-    body = _decode_hsp_b64(hsp_b64)
+    body = _read_hsp_body(hsp_path)
     irs = IrMapping.load(irs_dir)
     return view_projection(body, library, irs=irs)
 
@@ -430,31 +429,29 @@ _PATCH_OPS = {
 
 
 def patch_preset_handler(
-    library: Library, model: str, hsp_b64: str, operations: list
+    library: Library, model: str, hsp_path: str, operations: list
 ) -> dict[str, Any]:
-    """Apply a sequence of surgical edits directly to a base64-encoded .hsp blob.
+    """Apply a sequence of surgical edits to a `.hsp` file, in place.
 
-    Decodes `hsp_b64` to a body dict, applies each `{"op": ...}` entry in
-    `operations` via the matching `helixgen.mutate` verb (mutating the body
-    in place -- no spec round-trip), then re-encodes via
-    `helixgen.hsp.dumps_hsp`.
+    Reads `hsp_path`, applies each `{"op": ...}` entry in `operations` via the
+    matching `helixgen.mutate` verb (mutating the body in place -- no spec
+    round-trip), then writes the result back to the same path.
 
-    Returns `{"hsp_b64": <base64 .hsp bytes>, "warnings": [<str>, ...]}`.
-    `warnings` collects any `swap_model` messages about params/IRs that
-    couldn't be carried over to the new block.
+    Returns `{"path": <hsp_path>, "warnings": [<str>, ...]}`. `warnings`
+    collects any `swap_model` messages about params/IRs that couldn't be
+    carried over to the new block. An unknown op raises before any write, so a
+    bad op leaves the file untouched.
     """
     _validate_model(model)
-    body = _decode_hsp_b64(hsp_b64)
+    body = _read_hsp_body(hsp_path)
     warnings: list[str] = []
     for o in operations:
         op = o.get("op")
         if op not in _PATCH_OPS:
             raise ValueError(f"unknown patch op {op!r}; valid: {sorted(_PATCH_OPS)}")
         warnings.extend(_PATCH_OPS[op](body, library, o))
-    return {
-        "hsp_b64": base64.b64encode(dumps_hsp(body)).decode("ascii"),
-        "warnings": warnings,
-    }
+    write_hsp(hsp_path, body)
+    return {"path": hsp_path, "warnings": warnings}
 
 
 # ---------------------------------------------------------------------------

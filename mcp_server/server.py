@@ -210,26 +210,25 @@ def register_irs(model: str, ir_directory: str, force: bool = False) -> dict[str
 
 
 @app.tool()
-def view_preset(model: str, hsp_b64: str) -> dict[str, Any]:
-    """Project a base64-encoded Stadium .hsp into a readable dict for agents/humans.
+def view_preset(model: str, hsp_path: str) -> dict[str, Any]:
+    """Project a Stadium `.hsp` file into a readable dict for agents/humans.
 
-    Use this to inspect an orphan/ingested preset's blocks, params,
-    snapshots, footswitches, and expression wiring before deciding what to
-    edit with `patch_preset`. Read-only — never writes a sidecar file; the
-    `.hsp` blob itself remains the sole source of truth.
+    Use this to inspect an orphan/ingested preset's blocks, params, snapshots,
+    footswitches, and expression wiring before deciding what to edit with
+    `patch_preset`. Read-only — never writes; the `.hsp` file remains the sole
+    source of truth.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    `hsp_b64` is the base64-encoded bytes of a `.hsp` file (the same blob
-    returned by `generate_preset`'s `resource.blob`, or `patch_preset`'s
-    `hsp_b64`).
+    `hsp_path` is a filesystem path to a `.hsp` file (the file written by
+    `generate_preset`, edited by `patch_preset`, or a user-supplied export).
 
     Returns a spec-shaped dict (`name`, `paths[*].blocks`, `snapshots`,
     `footswitches`, `expression`, ...) for comprehension only — it is NOT
     accepted back into `patch_preset` or `generate_preset`; edit the `.hsp`
-    blob itself via `patch_preset`'s `operations`.
+    file itself via `patch_preset`'s `operations`.
     """
-    return _tools.view_preset_handler(_resolve_library(), model, hsp_b64)
+    return _tools.view_preset_handler(_resolve_library(), model, hsp_path)
 
 
 @app.tool()
@@ -254,16 +253,15 @@ def controller_mapping(model: str) -> list[dict[str, Any]]:
 
 
 @app.tool()
-def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
-    """Apply surgical edits directly to a base64-encoded .hsp blob.
+def patch_preset(model: str, hsp_path: str, operations: list) -> dict[str, Any]:
+    """Apply surgical edits to a `.hsp` file, in place.
 
     Required `model`: `"stadium"` or `"stadium_xl"`.
 
-    `hsp_b64` is the base64-encoded bytes of a `.hsp` file (from
-    `generate_preset`'s `resource.blob`, a prior `patch_preset` call's
-    `hsp_b64`, or a user-supplied orphan export). Each op in `operations`
-    mutates the decoded body directly (no spec round-trip) via the matching
-    `helixgen.mutate` verb. Supported ops:
+    `hsp_path` is a filesystem path to a `.hsp` file (written by
+    `generate_preset`, a prior `patch_preset` call, or a user-supplied orphan
+    export). Each op in `operations` mutates the file's body directly (no spec
+    round-trip) via the matching `helixgen.mutate` verb. Supported ops:
     - `set_param` — `{op, block, param, value, [path], [lane], [pos]}`
     - `set_enabled` — `{op, block, enabled, [path], [lane], [pos], [snapshot]}`
     - `add_block` — `{op, block, [path], [after], [params]}`
@@ -277,13 +275,12 @@ def patch_preset(model: str, hsp_b64: str, operations: list) -> dict[str, Any]:
     raises a clear "matches N placements" error listing the candidates.
     Call `show_block` first to confirm exact, case-sensitive param names.
 
-    Returns `{"hsp_b64": <base64 .hsp bytes reflecting every op>, "warnings":
+    Returns `{"path": <the same hsp_path, now edited in place>, "warnings":
     [<str>, ...]}`. `warnings` collects any `swap_model` messages about
-    params/IRs that couldn't be carried over. Pass the returned `hsp_b64`
-    into another `patch_preset` call to keep editing, or `view_preset` to
-    inspect the result.
+    params/IRs that couldn't be carried over. Call `patch_preset` again on the
+    same path to keep editing, or `view_preset` to inspect the result.
     """
-    return _tools.patch_preset_handler(_resolve_library(), model, hsp_b64, operations)
+    return _tools.patch_preset_handler(_resolve_library(), model, hsp_path, operations)
 
 
 # ---------------------------------------------------------------------------
