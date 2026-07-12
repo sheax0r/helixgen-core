@@ -420,6 +420,59 @@ def test_ir_scan_warns_on_non_48k_but_continues(tmp_path, monkeypatch, capfd):
     assert mapping == {h_good: str(good)}
 
 
+def test_ir_scan_second_run_does_zero_recompute(tmp_path, monkeypatch):
+    """Re-scanning an unchanged directory hits the cache: zero hash recomputes.
+
+    Stubs the hash function (no libsndfile needed) and asserts the second scan
+    calls it zero times — the core acceptance criterion for the cache.
+    """
+    calls: list[str] = []
+
+    def _stub(p):
+        calls.append(str(p))
+        return "a" * 32
+
+    monkeypatch.setattr("helixgen.irhash_cache.compute_stadium_irhash", _stub)
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_dir = tmp_path / "library"
+    _write_wav(src_dir / "a.wav")
+
+    first = CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    assert first.exit_code == 0, first.output
+    assert len(calls) == 1  # one compute on the cold scan
+
+    calls.clear()
+    second = CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    assert second.exit_code == 0, second.output
+    assert calls == []  # warm re-scan recomputes nothing
+    assert "1 already cached" in second.output
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_recomputes_when_file_changes(tmp_path, monkeypatch):
+    """Editing a WAV (size change) invalidates its cache entry on next scan."""
+    from helixgen.ir import compute_stadium_irhash
+
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_dir = tmp_path / "library"
+    a = _write_synth_wav(src_dir / "a.wav", n_frames=64)
+
+    CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+
+    # replace with a different-size file → different hash; a plain re-scan
+    # (no --rescan) must notice the stat change and recompute.
+    _write_synth_wav(src_dir / "a.wav", n_frames=256)
+    h2 = compute_stadium_irhash(a)
+    result = CliRunner().invoke(cli, ["ir-scan", str(src_dir)])
+    assert result.exit_code == 0, result.output
+    assert "1 added" in result.output
+    assert "0 already cached" in result.output
+    mapping = json.loads((irs_dir / "mapping.json").read_text())
+    assert mapping[h2] == str(a)
+
+
 def test_ir_scan_remove_drops_entry_by_basename(tmp_path, monkeypatch):
     """--remove forgets an entry without needing libsndfile."""
     irs_dir = tmp_path / "irs"

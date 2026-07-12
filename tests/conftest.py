@@ -10,6 +10,15 @@ import pytest
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_irhash_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Point the IR-hash cache at a per-test tmp file for the whole suite, so
+    no test ever reads or writes the real `~/.helixgen/cache/irhash.json`.
+    Tests that assert on cache-path resolution override this env themselves.
+    """
+    monkeypatch.setenv("HELIXGEN_IRHASH_CACHE", str(tmp_path / "_irhash_cache.json"))
+
+
 @pytest.fixture
 def tmp_library(tmp_path: Path) -> Path:
     """Empty library directory in a tmp dir."""

@@ -411,6 +411,29 @@ def test_register_ir_writes_mapping(tmp_path):
     assert mapping[result["hash"]] == result["path"]
 
 
+def test_register_ir_uses_cache_across_calls(tmp_path, monkeypatch):
+    """A second register of an unchanged WAV serves the hash from the cache
+    (zero recomputes). Stubs the hash fn, so no libsndfile is needed."""
+    import helixgen.irhash_cache as ihc
+    from mcp_server.tools import register_ir_handler
+
+    calls: list[str] = []
+
+    def _stub(p):
+        calls.append(str(p))
+        return "b" * 32
+
+    monkeypatch.setattr(ihc, "compute_stadium_irhash", _stub)
+    irs_dir = tmp_path / "irs"
+    wav = tmp_path / "cab.wav"
+    wav.write_bytes(b"RIFF\0\0\0\0WAVE")
+
+    register_ir_handler("stadium_xl", str(wav), irs_dir=irs_dir)
+    register_ir_handler("stadium_xl", str(wav), irs_dir=irs_dir)
+
+    assert len(calls) == 1  # second call is a cache hit
+
+
 def test_register_ir_rejects_bad_model(tmp_path):
     from mcp_server.tools import register_ir_handler
     with _pytest_top.raises(ValueError, match="unsupported model"):

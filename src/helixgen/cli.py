@@ -20,6 +20,7 @@ from helixgen.ir import (
     default_irs_path,
     extract_ir_hashes,
 )
+from helixgen.irhash_cache import IrHashCache, cached_irhash
 from helixgen.library import Library, default_library_path
 from helixgen.mutate import MutateError
 from helixgen.recipe import generate_from_recipe
@@ -431,10 +432,12 @@ def register_irs_cmd(
                     f"unexpected non-wav arg: {p} "
                     "(only the first arg may be .hsp/.hlx)"
                 )
+        cache = IrHashCache.load()
         try:
-            hashes = [compute_stadium_irhash(w) for w in wav_paths]
+            hashes = [cached_irhash(w, cache=cache) for w in wav_paths]
         except (RuntimeError, NotImplementedError, FileNotFoundError) as e:
             raise click.ClickException(str(e)) from e
+        cache.save()
 
     mapping = _resolved_irs(irs_dir)
     try:
@@ -474,9 +477,11 @@ def ir_scan_cmd(
 ) -> None:
     """Recursively scan directories for .wav files and cache their Stadium hashes.
 
-    Skips files already cached (by absolute path) unless --rescan. Skips files
-    that can't be hashed (non-48 kHz, libsndfile errors) with a stderr warning;
-    does not abort the scan.
+    Skips a WAV only when it is already registered AND its cached hash is still
+    valid for the file on disk (matching mtime + size) — an edited or replaced
+    WAV is detected and re-hashed. Pass --rescan to recompute unconditionally.
+    Skips files that can't be hashed (non-48 kHz, libsndfile errors) with a
+    stderr warning; does not abort the scan.
 
     Use --remove <basename> to forget a single entry (no directory args).
     """
@@ -503,9 +508,11 @@ def ir_scan_cmd(
             "at least one directory required (or use --remove <basename>)"
         )
 
-    cached_paths = {Path(p).resolve() for p in mapping.entries.values() if Path(p).is_absolute()}
-    cached_paths |= {(mapping.irs_dir / p).resolve() for p in mapping.entries.values()
-                     if not Path(p).is_absolute()}
+    registered_paths = {Path(p).resolve() for p in mapping.entries.values() if Path(p).is_absolute()}
+    registered_paths |= {(mapping.irs_dir / p).resolve() for p in mapping.entries.values()
+                         if not Path(p).is_absolute()}
+
+    cache = IrHashCache.load()
 
     scanned = 0
     added = 0
@@ -517,11 +524,18 @@ def ir_scan_cmd(
                 continue
             scanned += 1
             wav_abs = wav.resolve()
-            if not rescan and wav_abs in cached_paths:
+            # Skip only when already registered AND the cached hash is still
+            # valid for the file on disk (stat unchanged). An edited/replaced
+            # WAV misses the cache and is recomputed below.
+            if not rescan and wav_abs in registered_paths and cache.get(wav) is not None:
                 skipped_cached += 1
                 continue
             try:
-                h = compute_stadium_irhash(wav)
+                if rescan:
+                    h = compute_stadium_irhash(wav)
+                    cache.put(wav, h)
+                else:
+                    h = cached_irhash(wav, cache=cache)
             except (NotImplementedError, RuntimeError, FileNotFoundError) as e:
                 click.echo(f"skip {wav}: {e}", err=True)
                 skipped_error += 1
@@ -532,10 +546,11 @@ def ir_scan_cmd(
                 click.echo(f"skip {wav}: {e}", err=True)
                 skipped_error += 1
                 continue
-            cached_paths.add(wav_abs)
+            registered_paths.add(wav_abs)
             added += 1
 
     mapping.save()
+    cache.save()
     click.echo(
         f"Scanned {scanned} wav(s): {added} added, "
         f"{skipped_cached} already cached, {skipped_error} skipped (errors)"
@@ -1128,6 +1143,43 @@ def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
+
+
+@cli.command(name="ir-cache")
+@click.option("--stats", is_flag=True, default=False,
+              help="Show entry count, cache path, and file size.")
+@click.option("--clear", "clear_", is_flag=True, default=False,
+              help="Delete the cache file.")
+@click.option("--prune", is_flag=True, default=False,
+              help="Drop entries whose backing WAV no longer exists.")
+def ir_cache_cmd(stats: bool, clear_: bool, prune: bool) -> None:
+    """Inspect or maintain the IR-hash cache (perf layer, not mapping.json).
+
+    The cache lives at $HELIXGEN_IRHASH_CACHE, else $HELIXGEN_CACHE/irhash.json,
+    else ~/.helixgen/cache/irhash.json. Exactly one action is required.
+    """
+    if sum((stats, clear_, prune)) != 1:
+        raise click.ClickException("choose exactly one of --stats, --clear, --prune")
+
+    cache = IrHashCache.load()
+
+    if stats:
+        size = cache.path.stat().st_size if cache.path.exists() else 0
+        click.echo(f"entries: {len(cache.entries)}")
+        click.echo(f"path:    {cache.path}")
+        click.echo(f"size:    {size} bytes")
+        return
+
+    if clear_:
+        n = len(cache.entries)
+        cache.clear()
+        click.echo(f"Cleared IR-hash cache ({n} entr{'y' if n == 1 else 'ies'}) at {cache.path}")
+        return
+
+    # prune
+    dropped = cache.prune_missing()
+    cache.save()
+    click.echo(f"Pruned {dropped} missing entr{'y' if dropped == 1 else 'ies'}")
 
 
 if __name__ == "__main__":  # allow `python -m helixgen.cli ...`
