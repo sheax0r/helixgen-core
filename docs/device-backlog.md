@@ -99,6 +99,50 @@ rule). **[discovery]** = also needs an OSC command we haven't captured yet.
     installing/replacing *one* tone; today they silently skip IRs (cabs won't
     resolve) and drift the ledger. Requested 2026-07-12.
 
+### Named-setlist targeting / multi-setlist (device model RE'd 2026-07-12)
+**Full findings + design + a fresh-session kickoff prompt:**
+`docs/superpowers/specs/2026-07-12-helix-content-model-multisetlist-refactor.md`.
+The 2026-07-12 setlist-sync attempt was **backed out** — it was built on a wrong
+assumption (see #9). Nothing shipped.
+
+- **#8 Create a setlist** **[device-write][discovery]** — helixgen can *resolve*
+  a user setlist by name (`client.resolve_setlist_cid`, enumerating `cctp==1001`
+  under -5) but cannot *create* one. The 2002 create command is uncaptured (only
+  the 2001 `/addContent` result was seen). Next: `tcpdump` port 2002 while the
+  Stadium app creates a setlist. Until then, the user creates setlists by hand.
+- **#9 Install a preset INTO a setlist** **[device-write]** — **CORRECTION to an
+  earlier note:** `/AddContentsToContainer(setlist,[poolCid],…)` creates a
+  **REFERENCE** (`cctp 1003`, `rcid`→pool preset), **not a copy**. Deleting the
+  pool preset **orphans** the reference (`RemoveContent -21`, UI-invisible). So
+  "stage in -2 then delete staging" is **wrong**. Also: `/CreateContent` only
+  works in -2 (setlist → `-47`), and prompt propagation needs an open 2001
+  subscription (the push_ir pattern; install/sync doesn't do it). Folds into #10.
+- **#10 Multi-setlist support** **[device-write]** — the real model: a **library
+  pool** in -2 (`cctp 1000`) + named setlists that are **reference-lists**
+  (`cctp 1003`) into it; a tone can be referenced by many setlists. Local
+  manifest `setlist-name → [tone names]`; `device sync <setlist>` rebuilds that
+  setlist's references pool-first, never orphaning a still-referenced preset.
+  Absorbs #9. Pairs with the **device-client refactor** (privatize raw
+  primitives, add model-correct high-level ops + a `client.mutating()`
+  2001-subscription context, container/cctp enums, guardrails) — see the spec.
+
+### Quick-win (independent of the redesign)
+- **`device.model` load fix** — the user's `preferences.json` has
+  `device.model: "stadium_xl"` (MCP token), which the current validator
+  **rejects**, so `load_preferences()` throws on the real file. Fix: accept
+  display forms AND MCP tokens case/separator-insensitively, normalizing to the
+  display form. ~10 lines in `preferences.py::_validate_device_model`. Shippable
+  alone. (Also keep `device.setlist` pref + `resolve_setlist_cid` for #10.)
+
+### IR maintenance
+- **#11 IR cleanup command** **[device-write]** — `helixgen device ir-prune`
+  (or similar): delete IRs on the device that no preset references. Diff the
+  device's user IRs (`client.list_irs()`, container -11) against the `irhash`es
+  referenced by all presets currently on the device (across setlists), and
+  remove the orphans (`/RemoveContent` on -11). Dry-run first; confirm; report
+  freed slots. Guard against deleting an IR referenced by an off-device preset
+  the user still has locally.
+
 ### Slot ordering as its own skill
 - **#7 Explicit reordering skill + tools** **[device-write]** — the `device` skill
   deliberately does **not** order slots: `device sync` installs tones in arbitrary
