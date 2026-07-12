@@ -440,3 +440,30 @@ def device_install_preset(
         model, ip=ip, hsp_path=hsp_path, name=name, pos=pos,
         setlist=setlist, template_cid=template_cid,
     )
+
+
+@app.tool()
+def device_sync_library(
+    model: str,
+    directory: str | None = None,
+    setlist: str = "user",
+    exclude_irs: bool = False,
+    template_cid: int | None = None,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Bulk-sync a directory of authored `.hsp` tones onto the device.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Installs every `.hsp` in
+    `directory` (default: the `preset_output_dir` preference) into **empty**
+    slots of `setlist` — non-destructive, never overwriting an occupied slot —
+    uploading each tone's referenced IRs first (unless `exclude_irs=True`) and
+    recording every placement in the slot ledger. Idempotent: a tone already on
+    the device (matched by name) is skipped, so re-running only adds what's new.
+    `template_cid` selects the chain template (defaults to the current edit
+    buffer). EXPERIMENTAL. Returns `{ok, setlist, directory, installed:[...],
+    skipped:[...], errors:[...]}`.
+    """
+    return _tools.device_sync_library_handler(
+        model, ip=ip, directory=directory, setlist=setlist,
+        exclude_irs=exclude_irs, template_cid=template_cid,
+    )

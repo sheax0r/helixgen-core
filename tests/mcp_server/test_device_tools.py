@@ -219,3 +219,51 @@ def test_read_handler_maps_helixerror_to_valueerror(monkeypatch):
     monkeypatch.setattr(device, "HelixClient", _raising_client("list_presets"))
     with pytest.raises(ValueError, match="device error"):
         tools.device_list_presets_handler(MODEL)
+
+
+# -- device_sync_library ------------------------------------------------------
+
+def test_sync_library_bad_model_raises():
+    with pytest.raises(ValueError):
+        tools.device_sync_library_handler(BAD_MODEL, directory="/some/dir")
+
+
+def test_sync_library_calls_sync_with_explicit_dir(monkeypatch):
+    from helixgen.device import sync as _sync
+    seen = {}
+    monkeypatch.setattr(_sync, "sync_library",
+                        lambda directory, **kw: seen.update(directory=directory, **kw)
+                        or {"ok": True, "installed": [], "skipped": [], "errors": []})
+    out = tools.device_sync_library_handler(
+        MODEL, ip="1.2.3.4", directory="/tones", setlist="throwaway",
+        exclude_irs=True)
+    assert out["ok"] is True
+    assert seen["directory"] == "/tones"
+    assert seen["ip"] == "1.2.3.4"
+    assert seen["setlist"] == "throwaway"
+    assert seen["exclude_irs"] is True
+
+
+def test_sync_library_defaults_dir_to_preset_output_dir(monkeypatch):
+    from helixgen.device import sync as _sync
+    from helixgen import preferences as _prefs
+
+    class _P:
+        preset_output_dir = "/my/presets"
+    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
+    seen = {}
+    monkeypatch.setattr(_sync, "sync_library",
+                        lambda directory, **kw: seen.update(directory=directory)
+                        or {"ok": True})
+    tools.device_sync_library_handler(MODEL)
+    assert seen["directory"] == "/my/presets"
+
+
+def test_sync_library_no_dir_no_pref_raises(monkeypatch):
+    from helixgen import preferences as _prefs
+
+    class _P:
+        preset_output_dir = None
+    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
+    with pytest.raises(ValueError, match="preset_output_dir"):
+        tools.device_sync_library_handler(MODEL)

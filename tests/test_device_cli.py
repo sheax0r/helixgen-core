@@ -266,3 +266,65 @@ def test_auto_upload_irs_not_registered_locally(monkeypatch, capsys):
     _patch_auto(monkeypatch, {}, [])  # resolve_by_hash raises -> skipped
     _auto_upload_irs("1.2.3.4", ["nope"])
     assert "not found locally" in capsys.readouterr().err
+
+
+# -- device sync (bulk-sync a directory of .hsp tones) ------------------------
+
+def test_device_sync_installs_and_prints_summary(tmp_path, monkeypatch):
+    from helixgen.device import sync as _sync
+    seen = {}
+    summary = {
+        "ok": True, "setlist": "user", "directory": str(tmp_path),
+        "installed": [
+            {"file": "a.hsp", "name": "Tone A", "pos": 1, "slot": "1B",
+             "cid": 101, "irs": [{"hash": "aa"}]},
+        ],
+        "skipped": [{"file": "b.hsp", "name": "Tone B", "reason": "already on device"}],
+        "errors": [],
+    }
+    monkeypatch.setattr(_sync, "sync_library",
+                        lambda directory, **kw: seen.update(directory=directory, **kw) or summary)
+    result = CliRunner().invoke(cli, ["device", "sync", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "installed 1B: 'Tone A' (cid 101)  (+1 IRs)" in result.output
+    assert "skipped 'Tone B'" in result.output
+    assert "synced 1 tone to user (1 already present)" in result.output
+    assert seen["directory"] == str(tmp_path)
+    assert seen["exclude_irs"] is False
+
+
+def test_device_sync_exclude_irs_flag(tmp_path, monkeypatch):
+    from helixgen.device import sync as _sync
+    seen = {}
+    monkeypatch.setattr(_sync, "sync_library",
+                        lambda directory, **kw: seen.update(**kw) or
+                        {"ok": True, "setlist": "user", "installed": [], "skipped": [], "errors": []})
+    CliRunner().invoke(cli, ["device", "sync", str(tmp_path), "--exclude-irs"])
+    assert seen["exclude_irs"] is True
+
+
+def test_device_sync_defaults_to_preset_output_dir(monkeypatch, tmp_path):
+    from helixgen.device import sync as _sync
+    from helixgen import preferences as _prefs
+
+    class _P:
+        preset_output_dir = str(tmp_path)
+    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
+    seen = {}
+    monkeypatch.setattr(_sync, "sync_library",
+                        lambda directory, **kw: seen.update(directory=directory) or
+                        {"ok": True, "setlist": "user", "installed": [], "skipped": [], "errors": []})
+    result = CliRunner().invoke(cli, ["device", "sync"])
+    assert result.exit_code == 0, result.output
+    assert seen["directory"] == str(tmp_path)
+
+
+def test_device_sync_no_dir_no_pref_errors(monkeypatch):
+    from helixgen import preferences as _prefs
+
+    class _P:
+        preset_output_dir = None
+    monkeypatch.setattr(_prefs, "load_preferences", lambda *a, **k: _P())
+    result = CliRunner().invoke(cli, ["device", "sync"])
+    assert result.exit_code != 0
+    assert "preset_output_dir" in result.output

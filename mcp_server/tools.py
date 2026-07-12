@@ -631,6 +631,40 @@ def device_install_preset_handler(
     return {"ok": cid is not None, "cid": cid}
 
 
+def device_sync_library_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    directory: str | None = None,
+    setlist: str = "user",
+    exclude_irs: bool = False,
+    template_cid: int | None = None,
+) -> dict[str, Any]:
+    """Bulk-sync a directory of authored .hsp tones onto the device.
+
+    Installs every ``.hsp`` in ``directory`` (default: the ``preset_output_dir``
+    preference) into empty slots of ``setlist`` — non-destructive — uploading
+    referenced IRs unless ``exclude_irs`` and recording each placement in the
+    slot ledger. Idempotent (a tone already on the device by name is skipped).
+    Returns ``{ok, setlist, directory, installed, skipped, errors}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixError
+    from helixgen.device import sync as _sync
+
+    if directory is None:
+        from helixgen.preferences import load_preferences
+        directory = load_preferences().preset_output_dir
+        if not directory:
+            raise ValueError(
+                "no `directory` given and no `preset_output_dir` preference set")
+    try:
+        return _sync.sync_library(directory, ip=ip, setlist=setlist,
+                                  exclude_irs=exclude_irs, template_cid=template_cid)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
 def device_save_preset_handler(
     model: str,
     *,
