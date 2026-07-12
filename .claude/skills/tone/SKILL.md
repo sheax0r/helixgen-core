@@ -28,7 +28,7 @@ When NOT to use: editing an existing `.hsp` (load and modify directly outside th
 |---|---|---|
 | `list_blocks` | `category?` (amp/cab/drive/delay/reverb/modulation/filter/eq/dynamics/pitch/volume/send) | text, grouped by category, one `<display_name>  [<model_id>]` per line |
 | `show_block` | `name_or_id` (display name, model id, or alias) | text: header, category, aliases, params with types/defaults/ranges |
-| `generate_preset` | `model`, `recipe` (inline JSON dict — full helixgen schema) | `EmbeddedResource` with base64-encoded `.hsp` blob |
+| `generate_preset` | `model`, `recipe` (inline JSON dict — full helixgen schema), `out_path` | `{path, warnings}` — the `.hsp` is written to `out_path` |
 | `list_irs` | — | text, one `<hash>  <wav-path>` per registered IR; empty on the public deploy |
 
 ## Workflow
@@ -376,19 +376,9 @@ If nothing is known about the user's lineup (no preferences file, no memory, no 
 
 ### 7. Generate
 
-Call `generate_preset(model, recipe=<the dict you built in step 5>)` (`model` is the device model string, e.g. `"stadium_xl"`). The return value is an MCP `EmbeddedResource` containing the `.hsp` bytes as a base64 blob.
+Call `generate_preset(model, recipe=<the dict you built in step 5>, out_path="<dir>/<slug>.hsp")` (`model` is the device model string, e.g. `"stadium_xl"`; pick `out_path` per the **Save location** note below). It writes the `.hsp` directly to `out_path` (creating parent dirs) and returns `{"path": ..., "warnings": [...]}` — no base64, no manual file extraction. Surface any `warnings` to the user.
 
 If the validator errors with `Unknown param(s) [...]`, re-run `show_block` on the offending block, fix the spec, retry. Never guess the corrected name.
-
-If you're running in Claude Code (local MCP server, the user expects a file on disk to load via HX Edit), extract the blob to `/tmp/<slug>.hsp` so the load step has a real path:
-
-```bash
-python3 -c "
-import base64
-b64 = '<the blob string from the EmbeddedResource>'
-open('/tmp/<slug>.hsp', 'wb').write(base64.b64decode(b64))
-"
-```
 
 #### 7a. Write a companion markdown description — REQUIRED
 
@@ -474,27 +464,25 @@ from a fresh description. The `.hsp` is the source of truth — edit it in place
 with a single `patch_preset` call. There is **no** decompile→edit-spec→
 regenerate round-trip.
 
-1. Get the current `.hsp` as a base64 blob (`hsp_b64`): re-read the file you
-   saved (base64-encode its bytes), or use the blob returned by the last
-   `generate_preset` / `patch_preset` call. If the user only has an `.hsp` file
-   on disk (an orphan they imported), just read + base64-encode it — no
-   recovery step needed.
-2. Call `patch_preset(model, hsp_b64, operations)` with the smallest set of ops
-   that expresses the change (batch multiple changes into one call):
+1. You already have the `.hsp` file's path (the one you saved, or an orphan the
+   user imported) — no recovery or base64 step needed.
+2. Call `patch_preset(model, hsp_path="<dir>/<slug>.hsp", operations=[...])` with
+   the smallest set of ops that expresses the change (batch multiple changes into
+   one call):
    - "brighter" → `set_param` on the cab `HighCut` (raise it).
    - "swap to a Plexi" → `swap_model` (old → new amp; same category required).
    - "kill the reverb" → `set_enabled` with `enabled: false` on the reverb block.
    - "add a delay" → `add_block` with the delay block, `after` the amp/cab.
-3. `patch_preset` returns the **mutated `.hsp` blob** (plus any `warnings`).
-   Decode it to the same file path so the user just re-imports. To inspect the
-   result in recipe shape, call `view_preset(model, hsp_b64)` (read-only) on the
-   returned blob.
+3. `patch_preset` edits the file **in place** and returns `{"path": ...,
+   "warnings": [...]}` — the user just re-imports the same file. To inspect the
+   result in recipe shape, call `view_preset(model, hsp_path)` (read-only) on the
+   same path.
 4. Surface any `warnings` from `patch_preset` (e.g. dropped params on a swap)
    to the user.
 
 Prefer one `patch_preset` call with multiple `operations` over several edits.
-The `.hsp` blob is the thing you mutate and re-save — the recipe/spec dict is
-author-input only and is not read back as truth.
+The `.hsp` file is the thing you mutate — the recipe/spec dict is author-input
+only and is not read back as truth.
 
 ### Addressing duplicate blocks
 

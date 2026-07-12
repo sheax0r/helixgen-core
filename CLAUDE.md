@@ -385,13 +385,15 @@ in the preset (e.g. dual-cab, both lanes of a split). (`--index` was removed in
 1.0.0 — block addressing is `(path, lane, pos)`.) `--snapshot` applies only to
 `enable`/`disable`.
 
-MCP tools mirror the CLI for agent-driven edits, operating directly on a base64
-`.hsp` blob: `patch_preset(model, hsp_b64, operations)` applies a list of
-`{op, ...}` operations (`set_param`, `set_enabled`, `add_block`, `remove_block`,
-`swap_model`) and returns the mutated `.hsp` blob; `view_preset(model, hsp_b64)`
-returns the read-only recipe-shape projection; `generate_preset(model, recipe)`
-authors a `.hsp` from a recipe. The agent edit loop is just a single
-`patch_preset` call — no decompile/regenerate round-trip.
+MCP tools mirror the CLI for agent-driven edits, operating on `.hsp` **file
+paths** (no base64 — the bytes never round-trip through agent context):
+`generate_preset(model, recipe, out_path)` authors a `.hsp` from a recipe,
+writes it to `out_path`, and returns `{path, warnings}`; `patch_preset(model,
+hsp_path, operations)` applies a list of `{op, ...}` operations (`set_param`,
+`set_enabled`, `add_block`, `remove_block`, `swap_model`) to the file **in
+place** and returns `{path, warnings}`; `view_preset(model, hsp_path)` returns
+the read-only recipe-shape projection. The agent edit loop is just a single
+`patch_preset` call on the file — no decompile/regenerate round-trip.
 
 ### Worked examples
 
