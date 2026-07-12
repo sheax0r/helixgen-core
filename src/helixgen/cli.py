@@ -1100,6 +1100,59 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
                       source_kind="hsp", source_path=str(hsp_file.resolve()))
 
 
+@device.command(name="sync")
+@click.argument("directory", type=click.Path(file_okay=False, path_type=Path), required=False)
+@click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
+              default="user", show_default=True, help="Destination setlist.")
+@click.option("--exclude-irs", is_flag=True, default=False,
+              help="Install tones only; do not upload their referenced IRs.")
+@click.option("--template", type=int, default=None,
+              help="CID of a device preset to use as the chain template "
+                   "(defaults to the current edit buffer).")
+@_device_option
+def device_sync(directory: Path | None, setlist: str, exclude_irs: bool,
+                template: int, ip: str, port: int) -> None:
+    """Bulk-sync a directory of authored .hsp tones onto the device.
+
+    Installs every .hsp into empty slots in the setlist (non-destructive — never
+    overwrites an occupied slot), uploads each tone's referenced IRs (unless
+    --exclude-irs), and records each placement in the slot ledger. Idempotent: a
+    tone already on the device (by name) is skipped, so re-running only adds
+    what's new. DIRECTORY defaults to your `preset_output_dir` preference.
+    """
+    from helixgen.device import sync as _sync
+    from helixgen.device import HelixError
+
+    if directory is None:
+        from helixgen.preferences import load_preferences
+        pd = load_preferences().preset_output_dir
+        if not pd:
+            raise click.ClickException(
+                "no DIRECTORY given and no `preset_output_dir` preference set "
+                "(set it in ~/.helixgen/preferences.json or pass a directory)")
+        directory = Path(pd)
+
+    try:
+        res = _sync.sync_library(str(directory), ip=ip, port=port, setlist=setlist,
+                                 exclude_irs=exclude_irs, template_cid=template)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+
+    for it in res["installed"]:
+        irs = it.get("irs") or []
+        ir_note = f"  (+{len(irs)} IRs)" if irs else ""
+        click.echo(f"installed {it['slot']}: {it['name']!r} (cid {it['cid']}){ir_note}")
+    for sk in res["skipped"]:
+        click.echo(f"skipped {sk['name']!r} — {sk['reason']}")
+    for er in res["errors"]:
+        click.echo(f"error: {er.get('file', er.get('name', '?'))} — {er['error']}", err=True)
+    n = len(res["installed"])
+    click.echo(f"synced {n} tone{'s' if n != 1 else ''} to {setlist}"
+               + (f" ({len(res['skipped'])} already present)" if res["skipped"] else ""))
+    if res.get("note"):
+        click.echo(res["note"])
+
+
 @device.command(name="push")
 @click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("name")
