@@ -617,16 +617,20 @@ def _auto_upload_irs(ip: str, hashes) -> None:
                        f"it (helixgen register-irs) — cab may be silent", err=True)
             continue
         res = _sftp.push_ir(ip, str(path))
-        # push_ir uploads the processed IR, so the device always registers it
-        # under helixgen's irhash (== hh) — no hash-mismatch case exists.
+        # push_ir registers instantly (2001 subscription). The device computes
+        # its own hash; if it differs from the preset's hash (hh) the cab won't
+        # resolve — surface that (it's the irhash-algorithm edge case).
         if res.get("already"):
             click.echo(f"IR {hh} already on device")
-        elif res.get("ok") and res.get("registered"):
+        elif res.get("ok") and res.get("registered") and res.get("hash_match"):
             click.echo(f"imported IR {res.get('name') or path.name} ({hh})")
+        elif res.get("ok") and res.get("registered"):
+            click.echo(f"warning: {path.name} registered as {res.get('device_hash')} "
+                       f"but the preset references {hh} — cab won't resolve "
+                       f"(irhash-algorithm edge case for this file)", err=True)
         elif res.get("ok"):
             click.echo(f"warning: uploaded {path.name} ({hh}) but not yet "
-                       f"registered — open the editor's IR librarian or retry "
-                       f"`helixgen device list-irs` shortly", err=True)
+                       f"registered — retry shortly", err=True)
         else:
             click.echo(f"warning: failed to upload {path.name} ({hh})", err=True)
 
@@ -1003,12 +1007,14 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
 @click.argument("wav", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84", show_default=True)
 def device_push_ir(wav: Path, ip: str) -> None:
-    """Import an impulse-response .wav onto the device.
+    """Import an impulse-response .wav onto the device — instantly, like the editor.
 
-    Renders the device-canonical processed IR (the same 8192-sample file the
-    editor uploads, whose data-chunk MD5 is helixgen's irhash) and SFTPs it into
-    the device's IR directory. The device registers it under exactly that hash,
-    so a preset referencing the IR resolves. Skips upload if already present.
+    Two things make an external upload behave exactly like the editor's own
+    import: (1) subscribing to the device's 2001 change stream activates its
+    watched-directory monitor, so the file registers in ~0.1-1 s instead of on
+    the device's slow ~15-20 min scan; (2) the uploaded IR embeds a ``HASH``
+    chunk holding helixgen's ``irhash`` (as the editor's file does), so the
+    device registers it under exactly that hash and the preset resolves.
     """
     from helixgen.device import HelixError
     from helixgen.device import sftp as _sftp
@@ -1020,12 +1026,16 @@ def device_push_ir(wav: Path, ip: str) -> None:
     if not res.get("ok"):
         raise click.ClickException(f"upload of {wav.name} failed")
     hh = res.get("helixgen_hash")
+    dh = res.get("device_hash")
     if res.get("already"):
         click.echo(f"already on device: {res['name']} ({hh})")
+    elif res.get("registered") and res.get("hash_match"):
+        click.echo(f"imported + registered instantly: {res['name']} ({hh})")
     elif res.get("registered"):
-        click.echo(f"imported + registered: {res['name']} ({hh})")
+        click.echo(f"registered {res['name']} but under {dh}, not the expected "
+                   f"{hh} — the preset may not resolve this IR", err=True)
     else:
-        click.echo(f"uploaded {res['name']} ({hh}) — {res.get('note')}")
+        click.echo(f"uploaded {res['name']} ({hh}) — {res.get('note')}", err=True)
 
 
 @device.command(name="pull-ir")

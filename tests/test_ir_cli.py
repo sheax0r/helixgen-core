@@ -519,3 +519,28 @@ def test_ir_scan_remove_with_directory_arg_errors(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["ir-scan", "--remove", "a.wav", str(tmp_path)])
     assert result.exit_code != 0
     assert "takes no directory" in result.output
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_write_stadium_ir_embeds_hash_chunk(tmp_path):
+    """write_stadium_ir must embed a `HASH` chunk (32-char ASCII hex of the
+    irhash) after `fmt ` — that's what makes the device register a pushed IR
+    under helixgen's hash instead of recomputing its own. The data chunk (and
+    thus the irhash) must be unchanged by the chunk insertion."""
+    import struct
+    from helixgen.ir import write_stadium_ir, compute_stadium_irhash
+    src = _write_synth_wav(tmp_path / "long.wav", n_frames=24000)
+    out = tmp_path / "processed.wav"
+    irhash = write_stadium_ir(src, out)
+
+    raw = out.read_bytes()
+    assert raw[:4] == b"RIFF" and raw[8:12] == b"WAVE"
+    i = raw.find(b"HASH")
+    assert i > 0, "no HASH chunk"
+    sz = struct.unpack("<I", raw[i + 4:i + 8])[0]
+    assert sz == 32
+    assert raw[i + 8:i + 8 + 32] == irhash.encode("ascii")
+    # HASH sits after fmt, before data; data chunk (irhash) unchanged
+    assert raw.find(b"fmt ") < i < raw.find(b"data")
+    assert write_stadium_ir.__module__  # sanity
+    assert irhash == compute_stadium_irhash(src)
