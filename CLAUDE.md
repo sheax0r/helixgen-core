@@ -84,6 +84,19 @@ of my authored tones is in which slot" offline, and lets you put a tone back.
   `--dry-run` prints the plan and touches nothing; without `--yes` it confirms
   first. EXPERIMENTAL. Design: `docs/superpowers/specs/2026-07-12-device-slot-ledger-design.md`.
 
+**Pushing tones to the device is driven by the `device` skill**
+(`.claude/skills/device/`), which runs after `tone` has authored the `.hsp`.
+It centers on `device sync` / `device_sync_library` (the fill-empty, IR-uploading,
+ledger-recording, idempotent bulk path) and adds the judgment those verbs need:
+the `install` **template precondition** (the run's template must already hold a
+free slot for every block category in each tone — no discovery API, so *don't
+probe templates*; coverage misses surface as per-tone `errors[]`), the
+serial-chain flattening of parallel/dual-amp presets, the fact that the
+single-tone **MCP** `device_install_preset` uploads no IRs and records no ledger
+(use `device sync` or the CLI `install --auto-irs` instead), and that `slots
+sync` only *reorders* tracked presets (it never installs). Read it before
+scripting a library sync.
+
 Presets are addressed by integer **CID**; setlists are virtual containers
 (`user`=-2, `factory`=-1, `throwaway`=-5); slot `posi` maps to the Helix
 `1A`..`8D` label. MCP mirrors these as `device_*` tools. Full-preset semantic
