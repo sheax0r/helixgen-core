@@ -1,6 +1,14 @@
 # `.hsp` → device transcoder (template-free install) — design spec
 
-Status: **approved design, building** (2026-07-12).
+Status: **SHIPPED 2.17.0** (2026-07-12). Rollout steps 1–4 complete: the
+transcoder is wired into `device install` / `device sync` (CLI + MCP), the
+template/bridge authoring path and dead `sync.py` are deleted, `--template` /
+`template_cid` are gone, and the `device` skill + CLAUDE.md are stripped of the
+template precondition. Hardware-validated serial+IR on a Stadium XL (param
+fidelity + audio). **Still pending (follow-ups):** dual-amp/parallel synthesis
+(install flattens to DSP-path 0), snapshots/controllers synthesis (the codec
+round-trips them; synthesis is serial-only), and the §4a non-activating
+content-read for `backup`/`pull`.
 
 ## 1. Why
 
