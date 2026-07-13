@@ -1,6 +1,6 @@
 # Snapshots + controllers synthesis for the `.hsp` → device transcoder — design spec
 
-Status: **approved design, building** (2026-07-13). Snapshot deltas are capture-free; FS/EXP controllers need the shared device-RE session (§4).
+Status: **SHIPPED 2.18.0** (2026-07-13) — hardware-validated on Stadium XL vs HX Edit's own import. Snapshot deltas are capture-free; FS/EXP controllers need the shared device-RE session (§4).
 
 ## 1. Problem
 

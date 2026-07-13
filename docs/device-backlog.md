@@ -260,15 +260,27 @@ assumption — see #9); the reference-based redesign below then **shipped
     "how does X work / where does Y live" from the contract, not the source tree.
     Keep it maintained as the code evolves (stale resolver = worse than none).
 
-### Authoring-bridge depth (bridge is single serial chain / base params today)
-- **Snapshots over the network** **[device-write]** — push the 8-snapshot scenes
-  (per-snapshot bypass + param overrides) so an installed preset carries its
-  verse/chorus/lead scenes, not just the base state.
-- **Controllers over the network** **[device-write]** — push footswitch and
-  EXP-pedal assignments so the installed preset is stomp-ready without on-device
-  wiring.
-- **Multi-chain / parallel routing** **[device-write]** — the bridge maps one
-  serial chain; add parallel A/B splits + the second DSP path.
+### Authoring-bridge depth — ✅ SHIPPED 2.18.0 (template-free transcoder synthesis)
+- ✅ **Snapshots over the network** — the transcoder synthesizes the 8-snapshot
+  scenes (per-snapshot bypass + param deltas) into `cg__.entt`.
+- ✅ **Controllers over the network** — footswitch + EXP-pedal assignments
+  synthesized (1-based `srcs`/`trgs`/`ctrl`, `scid` keyed by source id; FS
+  `locl=24+N` ctxt 1, EXP `locl=42`).
+- ✅ **Multi-chain / parallel routing** — dual-DSP AND intra-flow split/join
+  synthesized onto the real 28-slot device grid (`bmap[gridpos]=id`; split.bblk
+  = first lane-1 slot, join.bblk = 14 + join.pos). Hardware-validated vs HX
+  Edit's own import.
+
+### Double-click a `.hsp` to load onto the Helix's ACTIVE slot **[device-write]**
+- Requested 2026-07-13. A macOS file-association / tiny app wrapper so
+  double-clicking a `.hsp` transcodes it and pushes it onto the Helix's
+  **currently-active** edit-buffer/slot — something HX Edit itself can't do.
+- Now feasible: the transcoder produces device content; install/`SetContentData`
+  works. The one gap is targeting the *active* slot — needs either a
+  **set-edit-buffer** write command (RE: capture what HX Edit sends when it
+  pushes an edit to the live buffer) or the still-open **active-preset-cid query**
+  (backlog #1) so we can `SetContentData` into it + reload. Ship as a
+  `helixgen device load-hsp <file>` verb first, then the double-click wrapper.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

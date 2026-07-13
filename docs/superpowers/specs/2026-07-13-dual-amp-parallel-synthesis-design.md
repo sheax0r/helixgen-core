@@ -1,6 +1,6 @@
 # Dual-amp / parallel synthesis for the `.hsp` → device transcoder — design spec
 
-Status: **approved design, building** (2026-07-13). Capture-free (no device RE).
+Status: **SHIPPED 2.18.0** (2026-07-13) — hardware-validated on Stadium XL vs HX Edit's own import. Capture-free (no device RE).
 
 ## 1. Problem
 

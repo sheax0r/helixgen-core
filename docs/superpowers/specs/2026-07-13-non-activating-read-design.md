@@ -1,6 +1,6 @@
 # Non-activating device content read — design spec
 
-Status: **approved design, building** (2026-07-13). Needs the shared device-RE session.
+Status: **SHIPPED 2.18.0** (2026-07-13) — hardware-validated on Stadium XL vs HX Edit's own import. Needs the shared device-RE session.
 
 ## 1. Problem (§4a of the transcoder design spec)
 
