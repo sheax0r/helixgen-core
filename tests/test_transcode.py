@@ -142,10 +142,22 @@ def _assert_structurally_valid(doc: dict):
     assert doc2["sfg_"]["flow"], "no flows"
     for fi, flow in enumerate(doc2["sfg_"]["flow"]):
         blks = flow["blks"]
-        dicts = [b for b in blks if isinstance(b, dict)]
-        # bcnt counts the block dicts (flat grid is [idx, block, ...])
-        assert flow["bcnt"] == len(blks) // 2 == len(dicts), f"flow {fi} bcnt"
-        assert len(flow["bmap"]) == flow["bcnt"], f"flow {fi} bmap length"
+        # The device uses a FIXED 28-slot grid per flow with an identity bmap
+        # (bmap[gridpos] == the block id at that grid position). blks alternates
+        # [gridpos, block, ...] for occupied positions only.
+        assert flow["bcnt"] == 28, f"flow {fi} bcnt must be the fixed 28-slot grid"
+        assert len(flow["bmap"]) == 28, f"flow {fi} bmap must be 28-wide"
+        base = flow["bmap"][0]
+        assert flow["bmap"] == [base + i for i in range(28)], f"flow {fi} bmap not identity"
+        dicts = []
+        i = 0
+        while i < len(blks):
+            gp, b = blks[i], blks[i + 1]
+            assert isinstance(gp, int) and 0 <= gp < 28, f"flow {fi} gridpos {gp} off-grid"
+            assert isinstance(b, dict), f"flow {fi} expected block after gridpos"
+            assert flow["bmap"][gp] == b["id__"], f"flow {fi} bmap[{gp}] != block id"
+            dicts.append(b)
+            i += 2
         for b in dicts:
             assert "hrns" in b and "id__" in b["hrns"], "block missing hrns"
             assert "type" in b, "block missing type"

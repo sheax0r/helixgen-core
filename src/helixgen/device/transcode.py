@@ -582,21 +582,46 @@ def _endpoint(template: dict, inst_id: int) -> dict:
     return e
 
 
-def _assemble_flow(blocks: List[dict]) -> dict:
-    """Wrap ordered block dicts into a flow: flat ``blks`` grid + ``bmap``.
+# A DSP flow is a FIXED 28-slot grid: two rows of 14. Row 0 = grid positions
+# 0..13 (input at 0, output at 13); row 1 = 14..27 (input at 14, output at 27).
+# The device wires a path from this grid — the old "len(blocks) slots, sequential
+# positions, id-list bmap" scheme drew NO connecting lines (hardware-confirmed
+# 2026-07-13). See docs/superpowers/specs/2026-07-13-device-re-findings.md.
+_GRID_SLOTS = 28
+_ROW0_INPUT = 0
+_ROW0_OUTPUT = 13
+_ROW1_INPUT = 14
+_ROW1_OUTPUT = 27
+_ROW0_LAST_USER = 12   # row 0 user blocks live at grid positions 1..12
+_ROW1_LAST_USER = 26   # row 1 user blocks live at grid positions 15..26
 
-    Each block's ``id__`` is taken as already-assigned (globally monotonic).
-    The flat ``blks`` alternate ``[slot_index, block, …]``; ``bmap[slot]`` is the
-    block's instance id; ``bcnt`` == number of blocks.
+
+def _canonical_flow(placements: List[Tuple[int, dict]], base: int) -> dict:
+    """Assemble a flow from ``(gridpos, block)`` placements onto the real 28-slot
+    device grid.
+
+    Each block's ``id__``/``tid_`` is set to ``base + gridpos`` so the identity
+    ``bmap = [base .. base+27]`` is self-consistent (``bmap[gridpos] == id at
+    gridpos`` — the encoding real device presets use, verified against fixtures
+    151/152). ``bcnt`` is the fixed grid size, NOT the block count. ``blks``
+    alternates ``[gridpos, block, …]`` for occupied positions only.
     """
     blks: List[Any] = []
-    bmap: List[int] = []
-    for slot, blk in enumerate(blocks):
-        blks.append(slot)
+    for gp, blk in sorted(placements, key=lambda t: t[0]):
+        blk["id__"] = base + gp
+        blk["tid_"] = base + gp
+        blks.append(gp)
         blks.append(blk)
-        bmap.append(blk["id__"])
-    return {"bcnt": len(blocks), "blks": blks, "bmap": bmap,
+    return {"bcnt": _GRID_SLOTS, "blks": blks,
+            "bmap": [base + i for i in range(_GRID_SLOTS)],
             "cid_": 0, "enbl": 1, "snap": False, "tid_": 0}
+
+
+def _assemble_flow(blocks: List[dict]) -> dict:
+    """Legacy contiguous assembler (kept for callers/tests that pass a flat block
+    list); placements land at grid positions 0,1,2,… Prefer :func:`_canonical_flow`
+    for device-faithful routing."""
+    return _canonical_flow([(i, b) for i, b in enumerate(blocks)], 0)
 
 
 def _default_input_mode(path_index: int) -> str:
@@ -638,53 +663,76 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
     device instance id (``eID_``) — the coupling point the snapshot/controller
     synthesis consumes.
     """
-    next_id = 0
     instance_ids: Dict[Tuple[int, int, int], int] = {}
     flows: List[dict] = []
 
     n_flows = max(2, len(paths))  # device always carries fcnt == 2 DSP flows
     for pi in range(n_flows):
+        base = _GRID_SLOTS * pi
         path = paths[pi] if pi < len(paths) else {}
         modeled = path.get("blocks") or []
         structural = path.get("structural") or []
         mode = path.get("input") or _default_input_mode(pi)
 
-        blocks: List[dict] = []
-        blocks.append(_make_input_endpoint(mode, next_id)); next_id += 1
-        for bi, spec in enumerate(modeled):
-            lane = int(spec.get("lane", 0))
-            pos = int(spec.get("pos", bi))
-            blocks.append(_make_user_block(spec, next_id))
-            instance_ids[(pi, lane, pos)] = next_id
-            next_id += 1
-        # Split/join routing skeleton: emit each structural block with a fresh
-        # id, then re-point split<->join partners at each other (best effort).
-        split_id = join_id = None
-        for scaffold in structural:
-            typ = scaffold.get("type")
-            blk = _make_structural_block(scaffold, next_id)
-            if typ == 3:
-                split_id = next_id
-            elif typ == 4:
-                join_id = next_id
-            blocks.append(blk); next_id += 1
-        if split_id is not None and join_id is not None:
-            for blk in blocks:
-                if blk.get("type") == 3:
-                    blk["bblk"], blk["bflw"] = join_id, pi
-                elif blk.get("type") == 4:
-                    blk["bblk"], blk["bflw"] = split_id, pi
-        # A flow with a split also needs the lane-A output endpoint group.
-        if structural:
-            for tmpl in (_OUTPUT_PATH2A, _INPUT_NONE, _OUTPUT_NONE):
-                blocks.append(_endpoint(tmpl, next_id)); next_id += 1
-        for tmpl in (_OUTPUT_MATRIX, _INPUT_NONE, _OUTPUT_NONE):
-            blocks.append(_endpoint(tmpl, next_id)); next_id += 1
+        # (gridpos, block) placements on this flow's 28-slot grid.
+        placements: List[Tuple[int, dict]] = [
+            (_ROW0_INPUT, _make_input_endpoint(mode, 0))]
 
-        flows.append(_assemble_flow(blocks))
+        if not structural:
+            # SERIAL / dual-DSP path: user blocks fill row 0 (positions 1..12),
+            # then the OutputMatrix group. (Hardware-confirmed 2026-07-13.)
+            gp = 1
+            for bi, spec in enumerate(modeled):
+                if gp > _ROW0_LAST_USER:
+                    break  # row 0 is full; overflow blocks are dropped
+                lane = int(spec.get("lane", 0))
+                pos = int(spec.get("pos", bi))
+                placements.append((gp, _make_user_block(spec, 0)))
+                instance_ids[(pi, lane, pos)] = base + gp
+                gp += 1
+            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_MATRIX, 0)))
+            placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
+            placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+        else:
+            # SPLIT path (best-effort, hardware-iterated): lane-0 blocks in row 0,
+            # lane-1 blocks in row 1, split/join between them, OutputPath2A at the
+            # row-0 output. Split routing bytes (bblk/bflw) remain the residual
+            # RE risk — see spec §5.
+            lane0 = [s for s in modeled if int(s.get("lane", 0)) == 0]
+            lane1 = [s for s in modeled if int(s.get("lane", 0)) == 1]
+            gp = 1
+            for bi, spec in enumerate(lane0):
+                if gp > _ROW0_LAST_USER - 1:
+                    break
+                placements.append((gp, _make_user_block(spec, 0)))
+                instance_ids[(pi, 0, int(spec.get("pos", bi)))] = base + gp
+                gp += 1
+            split_gp = gp
+            join_gp = gp + 1
+            gp1 = 15
+            for bi, spec in enumerate(lane1):
+                if gp1 > _ROW1_LAST_USER:
+                    break
+                placements.append((gp1, _make_user_block(spec, 0)))
+                instance_ids[(pi, 1, int(spec.get("pos", bi)))] = base + gp1
+                gp1 += 1
+            for scaffold in structural:
+                typ = scaffold.get("type")
+                slot = split_gp if typ == 3 else join_gp
+                blk = _make_structural_block(scaffold, 0)
+                if typ == 3:
+                    blk["bblk"], blk["bflw"] = base + join_gp, pi
+                elif typ == 4:
+                    blk["bblk"], blk["bflw"] = base + split_gp, pi
+                placements.append((slot, blk))
+            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_PATH2A, 0)))
+            placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
+            placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+
+        flows.append(_canonical_flow(placements, base))
 
     sfg = {"enbl": 1, "fcnt": n_flows, "flow": flows}
-    return sfg, next_id, instance_ids
+    return sfg, _GRID_SLOTS * n_flows, instance_ids
 
 
 def synthesize_serial_sfg(paths: List[dict]) -> Tuple[dict, int]:
