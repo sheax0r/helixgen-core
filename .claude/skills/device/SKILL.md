@@ -41,10 +41,11 @@ precondition.** Any block chain installs at full fidelity; you never pick a
 `--template` and never worry about whether some factory preset "has a
 compressor slot."
 
-The one real limit today: **synthesis is serial (single-chain) only.** A
-parallel / dual-amp `.hsp` installs only its first DSP path (the second lane is
-dropped). Everything else — drives, amps, IR cabs, mod/delay/reverb, EQ,
-dynamics, pitch — transcodes faithfully.
+The transcoder synthesizes the **full signal graph** onto the device's real
+28-slot grid: serial chains, **dual-amp / dual-DSP**, **intra-flow parallel
+splits**, **snapshots** (per-scene bypass + param deltas), and **footswitch/EXP
+assignments** all transcode faithfully (hardware-validated byte-for-byte vs HX
+Edit's own import). There is no serial-only limit any more.
 
 ## The default path: manage membership, then `device sync <setlist>`
 
@@ -150,13 +151,8 @@ A tone lands in `errors[]` for one of a small, concrete set of reasons:
 - **dropped connection / device unresponsive** — not a tone failure at all; the
   flaky network stack. Re-run the sync; reboot the Helix if it persists.
 
-One structural limit that is **not** an error but a silent reduction:
-
-- **Parallel / dual-amp routing is flattened to a single serial chain** (only
-  DSP-path 0 is transcoded; the second lane is dropped). A tone that relies on a
-  parallel split will install with fewer blocks than the `.hsp` and won't
-  reproduce the split — **quarantine it for manual HX Edit import.** (Dual-amp
-  synthesis is a tracked follow-up.)
+(Dual-amp, parallel splits, snapshots, and footswitch/EXP assignments all
+synthesize faithfully as of 2.18.0 — no quarantine needed.)
 
 ## The tools
 
@@ -256,9 +252,6 @@ The result dict's `errors[]` is your analysis. Fix that subset and re-run
 
 - **`could not resolve helixgen model 'X'`** — a block model doesn't bridge to
   the device; that tone isn't installable as-is. Report it.
-- **parallel / dual-amp tone** (installs with far fewer blocks than the `.hsp`) —
-  the transcoder flattens to one serial chain. **Quarantine it for HX Edit
-  import**; keep it out of the setlist.
 - **unregistered IR** (cab silent / "No Model") — `register-irs` the WAV, re-sync.
 - **dropped connection / device unresponsive** — not a tone failure; **re-run**
   the sync, and if it keeps dropping, **reboot the Helix** and re-run.
@@ -294,7 +287,7 @@ Tightly:
 2. **Pool changes** — installed / updated / skipped counts (and any `gc` deletions
    if you ran `--all --gc`).
 3. **What errored and the fix** — each `errors[]` entry with its remedy
-   (unresolvable model, HX Edit for parallel presets, register an IR, or
+   (unresolvable model, register an IR, or
    re-run/reboot for a dropped connection).
 4. **IRs** — uploaded vs any that couldn't be resolved (so the user registers
    them).
@@ -305,7 +298,6 @@ Tightly:
 |---|---|---|
 | `create '<name>' in the Stadium app first` (or "setlist not found") | the named setlist isn't on the device; helixgen can't create it (#8) | have the user create it by hand in the Stadium app, then re-sync |
 | `could not resolve helixgen model 'X'` | a block model doesn't bridge to the device | that tone isn't installable as-is; report it |
-| an installed tone has far fewer blocks than the `.hsp`, or a parallel tone under-installs | parallel / dual-amp routing flattened to serial (path 0 only) | HX Edit import that tone; keep it out of the setlist |
 | cab silent / "No Model" after sync | referenced IR not in local `mapping.json` | `helixgen register-irs` the WAV, then re-sync (or import in HX Edit) |
 | sync fails partway / device stops responding | the Stadium's flaky network stack dropped the connection | **re-run** the same sync (idempotent); if it persists, **reboot the Helix**, then re-run |
 | `device setlist add` raises a name-collision error | the tone's `meta.name` is already registered to a **different** `.hsp` file (unique-name rule) — NOT triggered by adding the same tone to another setlist | rename one tone, or point at the already-registered file |
@@ -327,4 +319,3 @@ Tightly:
 | Ignoring the `errors[]` in the sync result | That list *is* the remaining work — read it, fix each, re-sync |
 | Treating "CLI not on PATH" as a blocker | Expected — helixgen ships as a bundled MCP server; use the `device_*` MCP tools |
 | Using the **MCP** `device_install_preset` for anything you want tracked | It uploads no IRs and records no ledger — use `device sync` or the CLI `device install --auto-irs` |
-| Syncing a dual-amp / parallel-split tone | It flattens to one serial chain (second lane lost) — quarantine for HX Edit |

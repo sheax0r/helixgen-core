@@ -1,0 +1,4 @@
+# Reverse-engineering / device-capture tools only (NOT a helixgen runtime dep).
+# Install into whatever Python drives tools/re_capture.py and the frida_* hooks:
+#   pip install -r tools/requirements-re.txt
+frida>=16

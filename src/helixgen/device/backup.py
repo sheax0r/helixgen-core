@@ -11,9 +11,12 @@ On-disk layout (all under one backup dir, default ``~/.helixgen/device-backups/`
         01-1B-lead-tone.sbe
         manifest.json                # index: {"version": ..., "entries": [ ... ]}
 
-Each ``.sbe`` file is the raw ``_sbepgsm`` content blob pulled from the device's
-edit buffer.  ``fmt`` is a first-class per-entry field so a future ``.hsp``
-export can live in the same manifest alongside ``.sbe`` blobs.
+Each ``.sbe`` file is the raw content blob read from the device via the
+non-activating ``get_content(cid)`` (``/GetContentData``) — the device's
+**stored** content form (``\xff\xff\xff\xffpgsm``), which ``device push`` /
+``device restore`` accept unchanged via ``content.to_content_data``.  ``fmt`` is
+a first-class per-entry field so a future ``.hsp`` export can live in the same
+manifest alongside ``.sbe`` blobs.
 
 Manifest entry schema (one dict per backed-up preset)::
 
@@ -87,21 +90,18 @@ def backup_setlist(client, container: int = USER,
                    now: Optional[str] = None) -> List[Dict[str, Any]]:
     """Back up every preset in ``container`` to files under ``out_dir``.
 
-    For each preset: ``load_preset(cid)`` to make it active, pull its ``.sbe``
-    blob via ``get_edit_buffer()``, write ``<NN-slot>-<safe-name>.sbe``, and
-    record a manifest entry.  The manifest at ``out_dir/manifest.json`` is
-    merged (entries with the same ``file`` are replaced) and rewritten.
+    For each preset: read its ``.sbe`` content blob via the **non-activating**
+    ``get_content(cid)`` (``/GetContentData`` — it never changes the device's
+    active preset), write ``<NN-slot>-<safe-name>.sbe``, and record a manifest
+    entry.  The manifest at ``out_dir/manifest.json`` is merged (entries with
+    the same ``file`` are replaced) and rewritten.
 
     ``now`` is an injected ISO-timestamp string used verbatim as each entry's
     ``saved_at``; when ``None`` the field is omitted (this function never calls
     ``datetime`` itself, so callers control the clock / determinism).
 
-    Best-effort restore: loading a preset changes the device's active preset,
-    so we snapshot the position that was active before the run and reload it at
-    the end.  The current client surface exposes no "which preset is active"
-    read, so we approximate with the first preset in the setlist; if even that
-    can't be determined the device is simply left on the last-backed-up preset.
-    The restore is wrapped so a failure never masks a successful backup.
+    Because ``get_content`` is non-activating, backing up a setlist no longer
+    disturbs the musician's live tone — there is no load/restore dance.
 
     Returns the list of entries written this run (in setlist order).
     """
@@ -110,9 +110,6 @@ def backup_setlist(client, container: int = USER,
 
     presets = client.list_presets(container)
 
-    # Best-effort: remember a preset to restore to afterwards.
-    restore_cid = presets[0].get("cid_") if presets else None
-
     setlist = _setlist_name(container)
     entries: List[Dict[str, Any]] = []
     for p in presets:
@@ -120,8 +117,7 @@ def backup_setlist(client, container: int = USER,
         name = p.get("name", "") or ""
         posi = p.get("posi")
 
-        client.load_preset(cid)
-        blob = client.get_edit_buffer()
+        blob = client.get_content(cid)
 
         fname = _entry_filename(posi, name, DEFAULT_FMT)
         (out_dir / fname).write_bytes(blob)
@@ -140,13 +136,6 @@ def backup_setlist(client, container: int = USER,
         if now is not None:
             entry["saved_at"] = now
         entries.append(entry)
-
-    # Best-effort restore of the originally-active preset.
-    if restore_cid is not None:
-        try:
-            client.load_preset(restore_cid)
-        except Exception:  # noqa: BLE001 — restore must never fail the backup
-            pass
 
     _write_manifest(out_dir, entries)
     return entries

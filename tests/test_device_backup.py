@@ -40,6 +40,11 @@ class FakeClient:
         self.calls.append(("get_edit_buffer",))
         return self.blob
 
+    def get_content(self, cid):
+        # non-activating read: return the canned blob without loading anything
+        self.calls.append(("get_content", cid))
+        return self.blob
+
 
 def test_backup_writes_files_and_manifest(tmp_path):
     client = FakeClient()
@@ -69,14 +74,16 @@ def test_backup_writes_files_and_manifest(tmp_path):
     assert {e["cid"] for e in manifest["entries"]} == {101, 102, 103}
 
 
-def test_backup_loads_each_preset(tmp_path):
+def test_backup_reads_each_preset_non_activating(tmp_path):
     client = FakeClient()
     bk.backup_setlist(client, bk.USER, tmp_path, now="t")
-    loaded = [cid for (name, cid) in
-              ((c[0], c[1]) for c in client.calls if c[0] == "load_preset")]
-    # each preset loaded, plus a best-effort restore to the first cid
-    assert loaded[:3] == [101, 102, 103]
-    assert loaded[-1] == 101  # restore
+    read = [cid for (name, cid) in
+            ((c[0], c[1]) for c in client.calls if c[0] == "get_content")]
+    # each preset read via the non-activating get_content, in setlist order
+    assert read == [101, 102, 103]
+    # the read must NOT activate anything: no load_preset (and thus no restore)
+    assert not any(c[0] == "load_preset" for c in client.calls)
+    assert not any(c[0] == "get_edit_buffer" for c in client.calls)
 
 
 def test_saved_at_omitted_when_now_none(tmp_path):

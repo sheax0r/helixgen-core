@@ -26,32 +26,40 @@ def _norm(s: str) -> str:
     return "".join(ch for ch in s.lower() if ch.isalnum())
 
 
-def map_params(model_id: int, src_params: Dict[str, Any]) -> Dict[str, Any]:
-    """Map helixgen param names -> device param names for a model.
+def param_name_map(model_id: int, src_names: List[str]) -> Dict[str, str]:
+    """``{helixgen_param_name: device_param_name}`` for a model.
 
     Device and helixgen mostly share param names (Tone/Level/Bass/Mix/…) but a
     few differ (helixgen "Drive" vs device "Gain"). Strategy: exact/normalized
-    name match first, then assign any leftover helixgen params to the remaining
-    device params by position (both are in canonical param order). Returns
-    ``{device_param_name: value}``.
+    name match first, then assign any leftover helixgen names to the remaining
+    device params by position (both are in canonical param order). A helixgen
+    name that maps nowhere is omitted. Shared by base-param and snapshot-array
+    mapping so the two never disagree on a block's device names.
     """
     dev = defs.load_defs().get("model_params", {}).get(str(model_id), {})
     dev_names = list(dev.keys())
     by_norm = {_norm(n): n for n in dev_names}
-    out: Dict[str, Any] = {}
-    leftover: List[Tuple[str, Any]] = []
+    mapping: Dict[str, str] = {}
+    leftover: List[str] = []
     used = set()
-    for hn, v in src_params.items():
+    for hn in src_names:
         dn = by_norm.get(_norm(hn))
-        if dn is not None:
-            out[dn] = v
+        if dn is not None and dn not in used:
+            mapping[hn] = dn
             used.add(dn)
         else:
-            leftover.append((hn, v))
+            leftover.append(hn)
     remaining = [n for n in dev_names if n not in used]
-    for (_hn, v), dn in zip(leftover, remaining):
-        out[dn] = v
-    return out
+    for hn, dn in zip(leftover, remaining):
+        mapping[hn] = dn
+    return mapping
+
+
+def map_params(model_id: int, src_params: Dict[str, Any]) -> Dict[str, Any]:
+    """Map helixgen param names -> device param names for a model. Returns
+    ``{device_param_name: value}`` (see :func:`param_name_map`)."""
+    mapping = param_name_map(model_id, list(src_params.keys()))
+    return {mapping[hn]: v for hn, v in src_params.items() if hn in mapping}
 
 
 # --- helixgen .hsp -> device chain ------------------------------------------
@@ -159,6 +167,196 @@ def hsp_to_chain_with_irs(
         irhash = slot[0].get("irhash") or None
         chain.append((dev_id, params, irhash))
     return chain
+
+
+def _lane_pos(key: str) -> Tuple[int, int]:
+    """``.hsp`` ``bNN`` key -> ``(lane, pos)`` (lane-1 blocks live at 14+pos)."""
+    num = int(key[1:])
+    lane = 1 if num >= 14 else 0
+    return lane, num - 14 * lane
+
+
+def _snapshot_arrays(slot: dict, bnn: dict, dev_id: int,
+                     n_snaps: int) -> Tuple[Optional[List[Any]], Dict[str, List[Any]]]:
+    """Extract a block's per-snapshot bypass + param arrays, mapped to device
+    param names. Returns ``(bypass_list_or_None, {device_param: [values]})``.
+
+    Only the first ``n_snaps`` slots (the named snapshots) are considered. A
+    param whose per-snapshot array is entirely ``None`` (no override) is skipped.
+    """
+    bypass: Optional[List[Any]] = None
+    en = bnn.get("@enabled")
+    if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
+        arr = en["snapshots"][:n_snaps]
+        if any(v is not None for v in arr):
+            bypass = [bool(v) for v in arr]
+
+    src_params = slot.get("params") or {}
+    name_map = param_name_map(dev_id, list(src_params.keys()))
+    params: Dict[str, List[Any]] = {}
+    for pname, wrapped in src_params.items():
+        if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
+            continue
+        arr = wrapped["snapshots"][:n_snaps]
+        if not any(v is not None for v in arr):
+            continue
+        dev_name = name_map.get(pname)
+        if dev_name is None:
+            continue
+        base = wrapped.get("value")
+        params[dev_name] = [base if v is None else v for v in arr]
+    return bypass, params
+
+
+def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
+                 strict: bool = True) -> List[Dict[str, Any]]:
+    """Read EVERY DSP flow of a ``.hsp`` body into per-path recipe entries
+    (dual-amp spec §3.1) — the multi-path successor to :func:`hsp_to_chain`.
+
+    Each returned path dict is ``{"blocks": [...], "input": <mode|None>,
+    "structural": [...]}`` where every block carries its device model-name
+    string, mapped params, ``irhash``, ``(lane, pos)`` coordinate, and (when it
+    varies) ``snap_bypass`` / ``snap_params`` arrays. ``structural`` holds each
+    split/join as ``{"kind", "model", "params"}`` for the transcoder to
+    materialize. Signal order within a lane is preserved; endpoints (b00
+    input / outputs / looper / None) are skipped as user blocks (the b00 input
+    mode drives ``input``).
+    """
+    preset = hsp_body.get("preset") or {}
+    flows = preset.get("flow") or []
+    device_id = (hsp_body.get("meta") or {}).get("device_id") or "stadium_xl"
+    # Number of NAMED snapshots (trailing "Snap N" placeholders don't count).
+    raw_snaps = preset.get("snapshots") or []
+    n_named = 0
+    for i, s in enumerate(raw_snaps):
+        if s.get("name") != f"Snap {i + 1}":
+            n_named = i + 1
+    n_snaps = n_named or len(raw_snaps)
+
+    from .. import controllers as _controllers
+
+    out: List[Dict[str, Any]] = []
+    for flow in flows:
+        if not isinstance(flow, dict):
+            continue
+        blocks: List[Dict[str, Any]] = []
+        structural: List[Dict[str, Any]] = []
+        input_mode: Optional[str] = None
+        for key in sorted(k for k in flow if isinstance(k, str)
+                          and k.startswith("b") and k[1:].isdigit()):
+            b = flow[key]
+            if not isinstance(b, dict):
+                continue
+            slot_list = b.get("slot")
+            if not (isinstance(slot_list, list) and slot_list
+                    and isinstance(slot_list[0], dict)):
+                continue
+            slot = slot_list[0]
+            model = slot.get("model")
+            if not model:
+                continue
+            typ = b.get("type")
+            if typ in ("split", "join"):
+                sp = {n: (w.get("value") if isinstance(w, dict) else w)
+                      for n, w in (slot.get("params") or {}).items()}
+                slane, spos = _lane_pos(key)
+                structural.append({"kind": typ, "model": model, "params": sp,
+                                   "lane": slane, "pos": spos})
+                continue
+            if key == "b00":
+                input_mode = _controllers.input_mode_for_model(device_id, model)
+                continue
+            dev_id = resolve_model(model)
+            if dev_id is None:
+                if strict:
+                    raise UnresolvedModel(model)
+                continue
+            cat = device_category(dev_id)
+            if cat in (None, "input", "output"):
+                continue
+            raw = {}
+            for name, wrapped in (slot.get("params") or {}).items():
+                val = wrapped.get("value") if isinstance(wrapped, dict) else wrapped
+                if isinstance(val, (int, float)):
+                    raw[name] = val
+            lane, pos = _lane_pos(key)
+            name_map = param_name_map(dev_id, list((slot.get("params") or {}).keys()))
+            spec: Dict[str, Any] = {
+                "block": defs.model_name_for(dev_id),
+                "params": {name_map[n]: v for n, v in raw.items() if n in name_map},
+                "lane": lane, "pos": pos,
+            }
+            irhash = slot.get("irhash") or None
+            if irhash:
+                spec["irhash"] = irhash
+            if n_snaps:
+                bypass, snap_params = _snapshot_arrays(slot, b, dev_id, n_snaps)
+                if bypass is not None:
+                    spec["snap_bypass"] = bypass
+                if snap_params:
+                    spec["snap_params"] = snap_params
+            # Controller assignments (spec 2 Part B): FS->bypass + EXP->param.
+            en = b.get("@enabled")
+            if isinstance(en, dict) and isinstance(en.get("controller"), dict):
+                c = en["controller"]
+                if c.get("type") == "targetbypass" and c.get("source") is not None:
+                    spec["fs_bypass"] = {"source": c["source"],
+                                         "behavior": c.get("behavior", "latching")}
+            exp: Dict[str, Any] = {}
+            for pname, wrapped in (slot.get("params") or {}).items():
+                if not (isinstance(wrapped, dict)
+                        and isinstance(wrapped.get("controller"), dict)):
+                    continue
+                cc = wrapped["controller"]
+                if cc.get("type") != "param" or cc.get("source") is None:
+                    continue
+                dev_name = name_map.get(pname)
+                if dev_name is None:
+                    continue
+                exp[dev_name] = {"source": cc["source"],
+                                 "min": cc.get("min", 0.0), "max": cc.get("max", 1.0)}
+            if exp:
+                spec["exp_params"] = exp
+            blocks.append(spec)
+        path_entry: Dict[str, Any] = {"blocks": blocks}
+        if input_mode is not None:
+            path_entry["input"] = input_mode
+        if structural:
+            path_entry["structural"] = structural
+        out.append(path_entry)
+    return out
+
+
+def hsp_snapshot_meta(hsp_body: dict) -> List[Dict[str, Any]]:
+    """Named-snapshot metadata (``name``/``exsw``/``bpm``) from a ``.hsp`` body,
+    in snapshot order, for the transcoder's ``cg__`` synthesis."""
+    preset = hsp_body.get("preset") or {}
+    raw = preset.get("snapshots") or []
+    n_named = 0
+    for i, s in enumerate(raw):
+        if s.get("name") != f"Snap {i + 1}":
+            n_named = i + 1
+    meta: List[Dict[str, Any]] = []
+    for s in raw[:n_named]:
+        meta.append({"name": s.get("name"), "exsw": s.get("expsw", -1),
+                     "bpm": s.get("tempo", 120.0)})
+    return meta
+
+
+def hsp_sources(hsp_body: dict) -> Dict[int, Dict[str, Any]]:
+    """The ``preset.sources`` scribble-strip config keyed by integer source id.
+
+    Each value carries ``fs_color``/``fs_label``/``fs_topidx`` (and ``bypass``)
+    for the footswitch that source drives — synthesized into
+    ``pm__.floorboard.stomp.*`` (spec 2 Part B)."""
+    raw = (hsp_body.get("preset") or {}).get("sources") or {}
+    out: Dict[int, Dict[str, Any]] = {}
+    for k, v in raw.items():
+        try:
+            out[int(k)] = v
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def hsp_ir_hashes(hsp_body: dict) -> set:

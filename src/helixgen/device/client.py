@@ -424,6 +424,32 @@ class HelixClient:
         """Decode the current edit buffer into a nested dict (4CC string keys)."""
         return _content.decode_content(self.get_edit_buffer())
 
+    def get_content(self, cid: int) -> bytes:
+        """Return preset ``cid``'s stored content blob **without activating it**.
+
+        Sends ``/GetContentData [reqid, cid]`` — the non-activating GET
+        counterpart to ``/SetContentData [cid, blob]`` — and returns the raw
+        content blob. Unlike :meth:`get_edit_buffer` (which reads only the
+        *active* edit buffer, and so requires a preceding :meth:`load_preset`
+        that changes the musician's live tone), this reads any preset by cid and
+        does NOT change the device's active preset.
+
+        The device returns the **stored** content form
+        (``\\xff\\xff\\xff\\xffpgsm``); the ``.sbe`` consumers
+        (``device push`` / ``device restore``) accept it unchanged via
+        :func:`content.to_content_data`. The large (~14 KB) reply is reassembled
+        over multiple socket frames by the same ``_rpc`` reply-reader that
+        :meth:`get_edit_buffer` relies on.
+        """
+        for _addr, args in self._rpc(
+                "/GetContentData", [("i", int(cid))], raw_blobs=True):
+            for v in args:
+                if isinstance(v, (bytes, bytearray)) and bytes(v[:8]) in (
+                        _content.MAGIC, _content.CONTENT_DATA_MAGIC):
+                    return bytes(v)
+        raise HelixError(
+            f"no content blob in /GetContentData reply for cid {cid}")
+
     # -- writes (proven commands) -----------------------------------------
     def load_preset(self, cid: int) -> bool:
         return self._ok(self._rpc("/LoadPresetWithCID", [("i", cid)]))

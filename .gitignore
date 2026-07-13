@@ -5,3 +5,7 @@ __pycache__/
 
 # Captured device _sbepgsm reference presets (round-trip fixtures; not committed)
 tests/fixtures/device_content/
+
+# local dev venv + macOS cruft (never commit)
+.venv/
+.DS_Store

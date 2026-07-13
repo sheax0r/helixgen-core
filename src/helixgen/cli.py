@@ -931,14 +931,16 @@ def device_set_param(path: int, block: int, param_id: int, value: float,
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
 @_device_option
 def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
-    """Load a preset and save its raw edit-buffer content blob (a .sbe backup)."""
+    """Save a preset's raw content blob (a .sbe backup) without activating it.
+
+    Reads via the non-activating ``/GetContentData`` — the device's live tone is
+    never disturbed.
+    """
     from helixgen.device import HelixClient, HelixError
 
     try:
         with HelixClient(ip, port) as h:
-            if not h.load_preset(cid):
-                raise click.ClickException(f"failed to load preset cid {cid}")
-            blob = h.get_edit_buffer()
+            blob = h.get_content(cid)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1517,8 +1519,7 @@ def device_slots_sync(dry_run: bool, yes: bool, no_backup: bool,
                 targets = sorted(dev_posi[(sl, e.get("cid"))] for e in present)
                 pulled = []
                 for e in present:
-                    h.load_preset(e.get("cid"))
-                    blob = h.get_edit_buffer()
+                    blob = h.get_content(e.get("cid"))
                     if not blob:
                         raise click.ClickException(
                             f"aborting: empty content pulled for {e.get('name')!r} "
@@ -1555,8 +1556,8 @@ def device_slots_sync(dry_run: bool, yes: bool, no_backup: bool,
 def device_backup(setlist: str, out_dir, ip: str, port: int) -> None:
     """Back up every preset in a setlist to local .sbe files + a manifest.
 
-    Note: this loads each preset in turn (changes the device's active preset),
-    then restores the first one. Works offline afterwards via `device local-list`.
+    Reads each preset via the non-activating `/GetContentData`, so the device's
+    live tone is never disturbed. Works offline afterwards via `device local-list`.
     """
     from helixgen.device import HelixClient, HelixError
     from helixgen.device import backup as _backup

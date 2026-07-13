@@ -142,10 +142,22 @@ def _assert_structurally_valid(doc: dict):
     assert doc2["sfg_"]["flow"], "no flows"
     for fi, flow in enumerate(doc2["sfg_"]["flow"]):
         blks = flow["blks"]
-        dicts = [b for b in blks if isinstance(b, dict)]
-        # bcnt counts the block dicts (flat grid is [idx, block, ...])
-        assert flow["bcnt"] == len(blks) // 2 == len(dicts), f"flow {fi} bcnt"
-        assert len(flow["bmap"]) == flow["bcnt"], f"flow {fi} bmap length"
+        # The device uses a FIXED 28-slot grid per flow with an identity bmap
+        # (bmap[gridpos] == the block id at that grid position). blks alternates
+        # [gridpos, block, ...] for occupied positions only.
+        assert flow["bcnt"] == 28, f"flow {fi} bcnt must be the fixed 28-slot grid"
+        assert len(flow["bmap"]) == 28, f"flow {fi} bmap must be 28-wide"
+        base = flow["bmap"][0]
+        assert flow["bmap"] == [base + i for i in range(28)], f"flow {fi} bmap not identity"
+        dicts = []
+        i = 0
+        while i < len(blks):
+            gp, b = blks[i], blks[i + 1]
+            assert isinstance(gp, int) and 0 <= gp < 28, f"flow {fi} gridpos {gp} off-grid"
+            assert isinstance(b, dict), f"flow {fi} expected block after gridpos"
+            assert flow["bmap"][gp] == b["id__"], f"flow {fi} bmap[{gp}] != block id"
+            dicts.append(b)
+            i += 2
         for b in dicts:
             assert "hrns" in b and "id__" in b["hrns"], "block missing hrns"
             assert "type" in b, "block missing type"
@@ -154,22 +166,31 @@ def _assert_structurally_valid(doc: dict):
             mid = m0.get("id__")
             assert mid is not None, "block missing model id"
             assert defs.model_name_for(mid) is not None, f"unresolvable model {mid}"
-    # endpoints present in flow 0
-    f0_models = {(b["mdls"][0]["id__"])
-                 for b in doc2["sfg_"]["flow"][0]["blks"] if isinstance(b, dict)}
-    assert defs.model_id_for("P35_InputInst1") in f0_models, "no input endpoint"
-    assert defs.model_id_for("P35_OutputMatrix") in f0_models, "no output endpoint"
+    # endpoints present in flow 0 (an input-category + an output-category block;
+    # the exact input model now follows the path's routing — inst1/inst2/both).
+    cats = defs.load_defs()["model_categories"]
+    f0_cats = {cats.get(defs.model_name_for(b["mdls"][0]["id__"]))
+               for b in doc2["sfg_"]["flow"][0]["blks"] if isinstance(b, dict)}
+    assert "input" in f0_cats, "no input endpoint"
+    assert "output" in f0_cats, "no output endpoint"
     # cg__ present with an 8-slot snapshot array
     assert "cg__" in doc2, "cg__ missing"
     assert len(doc2["cg__"]["entt"]["snps"]) == 8, "cg__ needs 8 snapshot slots"
 
 
-@pytest.mark.parametrize("name", ["preset_151", "preset_157"])
+def _flow_block_cats(doc: dict, fi: int):
+    """The device ``type`` ints of every block dict in flow ``fi``."""
+    return [b.get("type") for b in doc["sfg_"]["flow"][fi]["blks"]
+            if isinstance(b, dict)]
+
+
+@pytest.mark.parametrize("name", ["preset_151", "preset_152", "preset_157"])
 def test_synthesis_recipe_roundtrips(name):
     """Drop the device-origin ``raw`` from a modeled recipe, run the synthesis
     path, and assert the MODELED content (block model strings + params, in
-    order) survives a decode round-trip. tid_/bmap/hrns will differ from the
-    real preset — that is expected; only the modeled content must be faithful."""
+    order) survives a decode round-trip, for EVERY DSP path (dual-amp). tid_/
+    bmap/hrns will differ from the real preset — that is expected; only the
+    modeled content must be faithful."""
     D = _load(name)
     R = transcode.sbepgsm_to_recipe(D)
     original = _modeled_paths(R)
@@ -180,10 +201,44 @@ def test_synthesis_recipe_roundtrips(name):
     synth = transcode.recipe_to_sbepgsm(authored)
     _assert_structurally_valid(synth)
 
-    # decode the synthesized doc back into a recipe; its path 0 must carry the
-    # same modeled blocks (serial synthesis collapses to a single modeled path)
+    # decode the synthesized doc back into a recipe; EVERY path's modeled blocks
+    # must survive in order (dual-DSP synth emits one populated flow per path).
     back = transcode.sbepgsm_to_recipe(synth)
-    assert _modeled_paths(back)[0] == original[0], f"{name}: modeled path 0 diverged"
+    back_paths = _modeled_paths(back)
+    for pi in range(len(original)):
+        got = back_paths[pi] if pi < len(back_paths) else []
+        assert got == original[pi], f"{name}: modeled path {pi} diverged"
+
+
+def test_synthesis_preserves_dual_amp_split_join():
+    """preset_152 is a dual-DSP + intra-flow split/join preset. Synthesizing it
+    from its raw-less recipe must emit BOTH paths' modeled blocks AND keep the
+    split (type 3) + join (type 4) routing structure in flow 0."""
+    D = _load("preset_152")
+    R = transcode.sbepgsm_to_recipe(D)
+
+    # sbepgsm_to_recipe surfaces the split/join skeleton OUTSIDE raw so it
+    # survives a raw drop.
+    assert R["paths"][0].get("structural"), "flow-0 split/join skeleton not surfaced"
+    kinds = {defs.load_defs()['model_categories'][transcode.defs.model_name_for(
+        s['mdls'][0]['id__'])] for s in R["paths"][0]["structural"]}
+    assert kinds == {"split", "join"}, kinds
+
+    authored = {"name": R["name"], "paths": copy.deepcopy(R["paths"])}
+    synth = transcode.recipe_to_sbepgsm(authored)
+    _assert_structurally_valid(synth)
+
+    # both DSP flows are populated (not a fixed-empty flow 1)
+    assert synth["sfg_"]["fcnt"] == 2
+    assert len(synth["sfg_"]["flow"]) == 2
+    # flow 0 carries a type-3 split and a type-4 join
+    f0_types = _flow_block_cats(synth, 0)
+    assert 3 in f0_types, "synth lost the split block"
+    assert 4 in f0_types, "synth lost the join block"
+    # both paths keep their two amps / their effect chain
+    back = transcode.sbepgsm_to_recipe(synth)
+    assert _modeled_paths(back)[0], "path 0 empty after synth"
+    assert _modeled_paths(back)[1], "path 1 empty after synth"
 
 
 def test_synthesis_is_only_triggered_without_raw():
@@ -224,6 +279,173 @@ def test_hsp_to_sbepgsm_smoke():
 
     # blues-lead-lp-jr = drive -> amp -> cab(IR) -> delay -> reverb, in order
     assert got == ["distortion", "amp", "ir", "delay", "reverb"], got
+
+
+# --- Phase 3 / snapshots spec Part A: snapshot deltas ------------------------
+
+def _trg_by(entt, **match):
+    """Find the single trg matching every key in ``match`` (e.g. type=1)."""
+    hits = [t for t in entt["trgs"]
+            if all(t.get(k) == v for k, v in match.items())]
+    assert len(hits) == 1, f"expected 1 trg for {match}, got {len(hits)}"
+    return hits[0]
+
+
+def _tamv_map(snap):
+    """A snapshot's ``tamv`` flat list -> ``{trg_id: value}``."""
+    tamv = snap["tamv"]
+    return {tamv[i]: tamv[i + 1] for i in range(0, len(tamv), 2)}
+
+
+def test_snapshot_delta_synthesis():
+    """Author a recipe with a 2-snapshot bypass delta AND a param delta -> synth
+    -> decode -> assert the ``cg__`` carries a bypass trg + a param trg, that
+    each snapshot's ``tamv`` holds the right (trg, value) pairs, and ctm_.stid /
+    ptid match. Part A of the snapshots/controllers spec (capture-free)."""
+    recipe = {
+        "name": "snap test",
+        "snapshots": [{"name": "Rhythm"}, {"name": "Lead"}],
+        "paths": [{"blocks": [
+            {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.4},
+             "snap_bypass": [True, False]},
+            {"block": "HD2_AmpBritPlexiNrm", "params": {"Bass": 0.45},
+             "snap_params": {"Bass": [0.45, 0.38]}},
+        ]}],
+    }
+    doc = content.decode_any(
+        content.encode_content_data(transcode.recipe_to_sbepgsm(recipe)))
+    entt = doc["cg__"]["entt"]
+
+    # exactly two tracked targets: one bypass (type1), one param (type2)
+    assert len(entt["trgs"]) == 2, entt["trgs"]
+    byp = _trg_by(entt, type=1)
+    par = _trg_by(entt, type=2)
+    assert byp["enty"] == 2 and byp["pid_"] == 0
+    assert par["enty"] == 3 and par["pid_"] == defs.load_defs()[
+        "model_params"][str(defs.model_id_for("HD2_AmpBritPlexiNrm"))]["Bass"]["id"]
+
+    # the two trgs are keyed by DISTINCT device instance ids (from Phase 1 map)
+    assert byp["eID_"] != par["eID_"]
+
+    # ctm_.stid lists both tracked trg ids; ptid packs the param target
+    assert set(entt["ctm_"]["stid"]) == {byp["id__"], par["id__"]}
+    packed = (par["eID_"] << 16) | par["pid_"]
+    ptid = entt["ctm_"]["ptid"]
+    assert dict(zip(ptid[::2], ptid[1::2])) == {packed: par["id__"]}
+
+    # snapshot 0 (Rhythm) and 1 (Lead) carry the authored per-scene values
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    assert snps[0]["name"] == "Rhythm" and snps[1]["name"] == "Lead"
+    s0, s1 = _tamv_map(snps[0]), _tamv_map(snps[1])
+    assert s0[byp["id__"]] is True and s1[byp["id__"]] is False
+    assert s0[par["id__"]] == 0.45 and s1[par["id__"]] == 0.38
+    # unnamed snapshots 2..7 hold the last (Lead) value (padded)
+    assert _tamv_map(snps[7])[byp["id__"]] is False
+
+
+def test_no_snapshot_variation_yields_blank8():
+    """A recipe with no per-snapshot variation still produces the blank-8
+    ``cg__`` (no trgs), matching the pre-Part-A behaviour."""
+    recipe = {"name": "flat", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.4}},
+    ]}]}
+    doc = transcode.recipe_to_sbepgsm(recipe)
+    entt = doc["cg__"]["entt"]
+    assert entt["trgs"] == [] and entt["ctm_"]["stid"] == []
+    assert len(entt["snps"]) == 8
+    assert all(s["tamv"] == [] for s in entt["snps"])
+
+
+# --- Phase 3 / snapshots spec Part B: FS/EXP controller graph ----------------
+
+def test_controller_graph_synthesis():
+    """Author a recipe with a known FS->bypass (A1 + A5) and an EXP1->param sweep
+    -> synth -> decode -> assert the srcs (locl/ctxt), trgs, and ctrl (behv/
+    min_/max_) match the device-RE mapping, plus sm__.scid + pm__ scribble."""
+    amp_mid = defs.model_id_for("HD2_AmpBritPlexiNrm")
+    bass_pid = defs.load_defs()["model_params"][str(amp_mid)]["Bass"]["id"]
+    recipe = {
+        "name": "ctrl test",
+        "sources": {0x01010100: {"fs_color": "auto", "fs_label": "DRV",
+                                 "fs_topidx": 0}},
+        "paths": [{"blocks": [
+            {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+             "fs_bypass": {"source": 0x01010100, "behavior": "latching"}},   # A1
+            {"block": "HD2_DistVerminDistMono", "params": {},
+             "fs_bypass": {"source": 0x01010104, "behavior": "momentary"}},   # A5
+            {"block": "HD2_AmpBritPlexiNrm", "params": {"Bass": 0.5},
+             "exp_params": {"Bass": {"source": 0x01020100, "min": 0.1,
+                                     "max": 0.8}}},                            # EXP1
+        ]}],
+    }
+    doc = content.decode_any(
+        content.encode_content_data(transcode.recipe_to_sbepgsm(recipe)))
+    entt = doc["cg__"]["entt"]
+
+    # three sources: A1 (locl 25, ctxt 1, bypass), A5 (locl 29, ctxt 1, bypass),
+    # EXP1 (locl 42, ctxt 0, param sweep -> byps False).
+    by_locl = {s["locl"]: s for s in entt["srcs"]}
+    assert set(by_locl) == {25, 29, 42}
+    assert by_locl[25]["ctxt"] == 1 and by_locl[25]["byps"] is True
+    assert by_locl[29]["ctxt"] == 1 and by_locl[29]["byps"] is True
+    assert by_locl[42]["ctxt"] == 0 and by_locl[42]["byps"] is False
+
+    # ctrl entries: two bypass (behv 0 / type 1) + one param (behv 2 / type 3).
+    byp_ctrls = [c for c in entt["ctrl"] if c["type"] == 1]
+    par_ctrls = [c for c in entt["ctrl"] if c["type"] == 3]
+    assert len(byp_ctrls) == 2 and len(par_ctrls) == 1
+    for c in byp_ctrls:
+        assert c["behv"] == 0 and c["min_"] is False and c["max_"] is True
+        assert c["curv"] == 5
+    pc = par_ctrls[0]
+    assert pc["behv"] == 2 and pc["min_"] == 0.1 and pc["max_"] == 0.8
+
+    # the momentary A5 bypass sets togl True; latching A1 sets togl False
+    a5_src = by_locl[29]["id__"]
+    a1_src = by_locl[25]["id__"]
+    assert next(c for c in byp_ctrls if c["trig"] == a5_src)["togl"] is True
+    assert next(c for c in byp_ctrls if c["trig"] == a1_src)["togl"] is False
+
+    # the EXP param trg is a type2/enty3 target on the amp's Bass pid, packed
+    # into ptid.
+    par_trg = next(t for t in entt["trgs"] if t["id__"] == pc["tid_"])
+    assert par_trg["type"] == 2 and par_trg["enty"] == 3
+    assert par_trg["pid_"] == bass_pid and par_trg["mmid"] == amp_mid
+    packed = (par_trg["eID_"] << 16) | bass_pid
+    ptid = entt["ctm_"]["ptid"]
+    assert dict(zip(ptid[::2], ptid[1::2])).get(packed) == par_trg["id__"]
+
+    # sm__.scid links each target to its driving ctrl id
+    scid = dict(zip(entt["sm__"]["scid"][::2], entt["sm__"]["scid"][1::2]))
+    assert scid[pc["tid_"]] == [pc["cid_"]]
+
+    # pm__ scribble strip for A1 (stomp a.1) carries the source label
+    pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
+    assert pm["preset.floorboard.stomp.a.1.label"] == "DRV"
+
+
+def test_hsp_to_sbepgsm_controllers_from_hsp():
+    """End-to-end: a real authored .hsp with footswitch + wah/EXP assignments
+    transcodes into the controller graph (bridge extraction + Part B synth)."""
+    hsp = pytest.importorskip("helixgen.hsp")
+    path = Path("/Users/michael.shea/git/guitar-training/tones/thunder-kiss-65.hsp")
+    if not path.exists():
+        pytest.skip(f"authored .hsp fixture absent: {path}")
+    body = hsp.read_hsp(path)
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    entt = doc["cg__"]["entt"]
+
+    # A-bank footswitches map to locl 25.. ctxt 1; the wah EXP toe+pedal to
+    # locl 42 ctxt 0.
+    locls = {s["locl"] for s in entt["srcs"]}
+    assert {25, 26, 27, 28} <= locls, locls   # FS1-4 bypasses
+    assert 42 in locls                          # EXP1 (toe + pedal)
+    assert any(s["ctxt"] == 0 and s["locl"] == 42 for s in entt["srcs"])
+    # a param-sweep ctrl (the wah pedal) is present
+    assert any(c["type"] == 3 and c["behv"] == 2 for c in entt["ctrl"])
+    # scribble strip carried through
+    pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
+    assert pm.get("preset.floorboard.stomp.a.1.label") == "GTR1->"
 
 
 # --- IR-hash injection (irmd) ------------------------------------------------

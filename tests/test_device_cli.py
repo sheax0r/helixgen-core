@@ -60,6 +60,11 @@ class FakeClient:
         self.calls.append(("get_edit_buffer",))
         return b"_sbepgsm-fake-content-blob"
 
+    def get_content(self, cid):
+        # non-activating read used by `pull` / `backup` / sync Phase A
+        self.calls.append(("get_content", cid))
+        return b"_sbepgsm-fake-content-blob"
+
     # writes
     def load_preset(self, cid):
         self.calls.append(("load_preset", cid))
@@ -163,6 +168,24 @@ def test_device_pull_writes_blob(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert out.read_bytes() == b"_sbepgsm-fake-content-blob"
     assert "wrote" in result.output.lower()
+
+
+def test_device_pull_is_non_activating(monkeypatch, tmp_path):
+    # pull must read via the non-activating get_content and NEVER load_preset
+    captured = {}
+
+    class Recorder(FakeClient):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            captured["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    out = tmp_path / "backup.sbe"
+    result = CliRunner().invoke(cli, ["device", "pull", "101", str(out)])
+    assert result.exit_code == 0
+    calls = captured["client"].calls
+    assert ("get_content", 101) in calls
+    assert not any(c[0] == "load_preset" for c in calls)
 
 
 def test_device_delete_requires_confirmation(monkeypatch):
