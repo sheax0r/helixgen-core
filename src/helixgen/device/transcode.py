@@ -739,6 +739,35 @@ def _param_pid(model_id: int, param_name: str) -> Optional[int]:
     return meta.get("id") if isinstance(meta, dict) else None
 
 
+def _controller_locl_ctxt(source: Any) -> Optional[Tuple[int, int]]:
+    """Map a ``.hsp`` controller source id -> device ``(locl, ctxt)``.
+
+    Confirmed by the 2026-07-13 device-RE capture (packet-verified vs preset
+    cid 1064): A-bank footswitch ``0x010101NN`` -> ``(25 + NN, 1)``; the
+    expression toe switch ``0x01010500`` (EXP1Toe) and EXP pedals ``0x0102010M``
+    -> ``(42, ctxt)`` with ctxt 0 for EXP1, 1 for EXP2. Returns ``None`` for
+    out-of-scope sources (stomp bank B ``0x010102NN``, looper command
+    ``0x010104NN``) so the caller can skip them."""
+    if not isinstance(source, int) or isinstance(source, bool):
+        return None
+    if source == 0x01010500:            # EXP1Toe (wah toe switch)
+        return (42, 0)
+    hi = source & 0xFFFFFF00
+    lo = source & 0xFF
+    if hi == 0x01010100:                # stomp bank A footswitch (NN = FS#-1)
+        return (25 + lo, 1)
+    if hi == 0x01020100:                # EXP1 / EXP2 pedal (M = 0/1)
+        return (42, 0 if lo == 0 else 1)
+    return None                          # bank B / looper command -> out of scope
+
+
+def _make_src(src_id: int, locl: int, ctxt: int, byps: bool) -> dict:
+    """A controller ``srcs`` entry (mirrors the fixture shape)."""
+    return {"byps": byps, "cmds": [-1, -1], "cnt1": 0, "cnt2": 0, "cnt3": 0,
+            "ctxt": ctxt, "id__": src_id, "locl": locl, "mtms": 0, "mtyp": 0,
+            "type": 1}
+
+
 def _synth_cg_from_recipe(
     recipe: dict,
     instance_ids: Dict[Tuple[int, int, int], int],
@@ -763,8 +792,19 @@ def _synth_cg_from_recipe(
     stid: List[int] = []
     ptid: List[int] = []
     tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
+    trg_index: Dict[Tuple[int, int, int], int] = {}  # (eID_, pid_, type) -> trg id
     next_trg = 0
 
+    def _new_trg(entry: dict, key: Tuple[int, int, int]) -> int:
+        nonlocal next_trg
+        tid = next_trg
+        next_trg += 1
+        entry["id__"] = tid
+        trgs.append(entry)
+        trg_index[key] = tid
+        return tid
+
+    # 1) Snapshot-tracked targets (Part A).
     for pi, path in enumerate(recipe.get("paths") or []):
         for bi, spec in enumerate(path.get("blocks") or []):
             lane = int(spec.get("lane", 0))
@@ -777,9 +817,8 @@ def _synth_cg_from_recipe(
                 continue
             bypass = spec.get("snap_bypass")
             if isinstance(bypass, list) and len({bool(x) for x in bypass}) > 1:
-                tid = next_trg; next_trg += 1
-                trgs.append({"eID_": eid, "enty": 2, "id__": tid, "mmid": mid,
-                             "pid_": 0, "slot": 0, "type": 1})
+                tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
+                                "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 1))
                 stid.append(tid)
                 tracked.append((tid, [bool(x) for x in bypass]))
             for pname, pvals in (spec.get("snap_params") or {}).items():
@@ -788,15 +827,71 @@ def _synth_cg_from_recipe(
                 pid = _param_pid(mid, pname)
                 if pid is None:
                     continue
-                tid = next_trg; next_trg += 1
-                trgs.append({"eID_": eid, "enty": 3, "id__": tid, "mmid": mid,
-                             "pid_": pid, "pmid": mid, "ppid": pid,
-                             "slot": 0, "type": 2})
+                tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid, "pid_": pid,
+                                "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
+                               (eid, pid, 2))
                 stid.append(tid)
                 ptid.extend([(eid << 16) | pid, tid])
                 tracked.append((tid, list(pvals)))
 
-    if not tracked:
+    # 2) FS/EXP controller graph (Part B). Reuse a snapshot trg when the same
+    #    target is both scene-tracked and controller-driven.
+    srcs: List[dict] = []
+    ctrl: List[dict] = []
+    scid: List[Any] = []
+    next_src = 0
+    next_ctrl = 0
+    for pi, path in enumerate(recipe.get("paths") or []):
+        for bi, spec in enumerate(path.get("blocks") or []):
+            lane = int(spec.get("lane", 0))
+            pos = int(spec.get("pos", bi))
+            eid = instance_ids.get((pi, lane, pos))
+            if eid is None:
+                continue
+            mid = _resolve_model_id(spec["block"])
+            if mid is None:
+                continue
+            fsb = spec.get("fs_bypass")
+            if isinstance(fsb, dict):
+                lc = _controller_locl_ctxt(fsb.get("source"))
+                if lc is not None:
+                    locl, ctxt = lc
+                    sid = next_src; next_src += 1
+                    srcs.append(_make_src(sid, locl, ctxt, byps=True))
+                    tid = trg_index.get((eid, 0, 1))
+                    if tid is None:
+                        tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
+                                        "pid_": 0, "slot": 0, "type": 1},
+                                       (eid, 0, 1))
+                    cid = next_ctrl; next_ctrl += 1
+                    ctrl.append({"behv": 0, "cid_": cid, "curv": 5, "dlay": 0,
+                                 "goid": 0, "max_": True, "min_": False,
+                                 "thrs": 0.0, "tid_": tid,
+                                 "togl": fsb.get("behavior") == "momentary",
+                                 "trig": sid, "type": 1})
+                    scid.extend([tid, [cid]])
+            for pname, meta in (spec.get("exp_params") or {}).items():
+                lc = _controller_locl_ctxt(meta.get("source"))
+                pid = _param_pid(mid, pname)
+                if lc is None or pid is None:
+                    continue
+                locl, ctxt = lc
+                sid = next_src; next_src += 1
+                srcs.append(_make_src(sid, locl, ctxt, byps=False))
+                tid = trg_index.get((eid, pid, 2))
+                if tid is None:
+                    tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
+                                    "pid_": pid, "pmid": mid, "ppid": pid,
+                                    "slot": 0, "type": 2}, (eid, pid, 2))
+                    ptid.extend([(eid << 16) | pid, tid])
+                cid = next_ctrl; next_ctrl += 1
+                ctrl.append({"behv": 2, "cid_": cid, "curv": 5, "dlay": 0,
+                             "goid": 0, "max_": float(meta.get("max", 1.0)),
+                             "min_": float(meta.get("min", 0.0)), "thrs": 0.0,
+                             "tid_": tid, "togl": False, "trig": sid, "type": 3})
+                scid.extend([tid, [cid]])
+
+    if not tracked and not ctrl:
         return _synth_cg(max_id)
 
     snps: List[dict] = []
@@ -816,24 +911,45 @@ def _synth_cg_from_recipe(
         "entt": {
             "cmnd": [],
             "ctm_": {"htid": [], "ptid": ptid, "sirt": [], "stid": stid},
-            "ctrl": [],
-            "sm__": {"scid": [], "ssi_": []},
+            "ctrl": ctrl,
+            "sm__": {"scid": scid, "ssi_": []},
             "snps": snps,
-            "srcs": [],
+            "srcs": srcs,
             "trgs": trgs,
         },
-        "nxtc": max_id + 1,
+        "nxtc": max(max_id + 1, next_ctrl),
         "nxti": 0,
         "nxtm": 1,
-        "nxts": 8,
+        "nxts": max(8, next_src),
         "nxtt": next_trg,
     }
 
 
-def _synth_pm() -> List[dict]:
+def _scribble_for(sources: Optional[Dict[int, dict]]) -> Dict[Tuple[str, int], dict]:
+    """Map a recipe ``sources`` dict (``{source_id: {fs_color,fs_label,
+    fs_topidx}}``) onto ``(row, stomp_index)`` scribble-strip entries.
+
+    Stomp bank A source ``0x010101NN`` -> row ``a`` stomp ``NN+1``; bank B
+    ``0x010102NN`` -> row ``b`` (spec 2 Part B). Out-of-scope sources are
+    ignored."""
+    out: Dict[Tuple[str, int], dict] = {}
+    for src, cfg in (sources or {}).items():
+        if not isinstance(src, int):
+            continue
+        hi, lo = src & 0xFFFFFF00, src & 0xFF
+        if hi == 0x01010100:
+            out[("a", lo + 1)] = cfg
+        elif hi == 0x01010200:
+            out[("b", lo + 1)] = cfg
+    return out
+
+
+def _synth_pm(sources: Optional[Dict[int, dict]] = None) -> List[dict]:
     """A minimal valid ``pm__`` preset-param list, mirroring the standard key set
     an HX Edit import emits (clip, 2x12 floorboard stomps, tempo, exp-switch,
-    instrument impedance, xy-controller) with neutral values."""
+    instrument impedance, xy-controller). Footswitch scribble-strip colour/label/
+    topidx come from ``sources`` (spec 2 Part B) when supplied, else neutral."""
+    scrib = _scribble_for(sources)
     pm: List[dict] = [
         {"key_": "preset.clip.end", "type": "f", "val_": 0.0},
         {"key_": "preset.clip.filename", "type": "s", "val_": ""},
@@ -844,9 +960,15 @@ def _synth_pm() -> List[dict]:
     for row in ("a", "b"):
         for n in range(1, 13):
             base = f"preset.floorboard.stomp.{row}.{n}"
-            pm.append({"key_": f"{base}.color", "type": "i", "val_": 1})
-            pm.append({"key_": f"{base}.label", "type": "s", "val_": ""})
-            pm.append({"key_": f"{base}.topidx", "type": "i", "val_": 0})
+            cfg = scrib.get((row, n)) or {}
+            color = cfg.get("fs_color", 1)
+            if not isinstance(color, int) or isinstance(color, bool):
+                color = 1  # "auto" / non-int -> default palette slot
+            pm.append({"key_": f"{base}.color", "type": "i", "val_": color})
+            pm.append({"key_": f"{base}.label", "type": "s",
+                       "val_": str(cfg.get("fs_label", ""))})
+            pm.append({"key_": f"{base}.topidx", "type": "i",
+                       "val_": int(cfg.get("fs_topidx", 0))})
     pm += [
         {"key_": "preset.inst1.z", "type": "i", "val_": 1},
         {"key_": "preset.inst2.z", "type": "i", "val_": 1},
@@ -877,7 +999,8 @@ def _synthesize(recipe: dict) -> dict:
             spec.setdefault("pos", bi)
     sfg, next_id, instance_ids = synthesize_sfg(paths)
     cg = _synth_cg_from_recipe(recipe, instance_ids, next_id - 1)
-    return {"cg__": cg, "pm__": _synth_pm(), "sfg_": sfg}
+    pm = _synth_pm(recipe.get("sources"))
+    return {"cg__": cg, "pm__": pm, "sfg_": sfg}
 
 
 # --- authored .hsp -> device _sbepgsm bytes ----------------------------------
@@ -930,5 +1053,8 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
     snaps = bridge.hsp_snapshot_meta(hsp_body)
     if snaps:
         recipe["snapshots"] = snaps
+    sources = bridge.hsp_sources(hsp_body)
+    if sources:
+        recipe["sources"] = sources
     doc = recipe_to_sbepgsm(recipe)
     return content.encode_content_data(doc)

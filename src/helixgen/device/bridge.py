@@ -278,9 +278,10 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 if isinstance(val, (int, float)):
                     raw[name] = val
             lane, pos = _lane_pos(key)
+            name_map = param_name_map(dev_id, list((slot.get("params") or {}).keys()))
             spec: Dict[str, Any] = {
                 "block": defs.model_name_for(dev_id),
-                "params": map_params(dev_id, raw),
+                "params": {name_map[n]: v for n, v in raw.items() if n in name_map},
                 "lane": lane, "pos": pos,
             }
             irhash = slot.get("irhash") or None
@@ -292,6 +293,28 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     spec["snap_bypass"] = bypass
                 if snap_params:
                     spec["snap_params"] = snap_params
+            # Controller assignments (spec 2 Part B): FS->bypass + EXP->param.
+            en = b.get("@enabled")
+            if isinstance(en, dict) and isinstance(en.get("controller"), dict):
+                c = en["controller"]
+                if c.get("type") == "targetbypass" and c.get("source") is not None:
+                    spec["fs_bypass"] = {"source": c["source"],
+                                         "behavior": c.get("behavior", "latching")}
+            exp: Dict[str, Any] = {}
+            for pname, wrapped in (slot.get("params") or {}).items():
+                if not (isinstance(wrapped, dict)
+                        and isinstance(wrapped.get("controller"), dict)):
+                    continue
+                cc = wrapped["controller"]
+                if cc.get("type") != "param" or cc.get("source") is None:
+                    continue
+                dev_name = name_map.get(pname)
+                if dev_name is None:
+                    continue
+                exp[dev_name] = {"source": cc["source"],
+                                 "min": cc.get("min", 0.0), "max": cc.get("max", 1.0)}
+            if exp:
+                spec["exp_params"] = exp
             blocks.append(spec)
         path_entry: Dict[str, Any] = {"blocks": blocks}
         if input_mode is not None:
@@ -316,6 +339,22 @@ def hsp_snapshot_meta(hsp_body: dict) -> List[Dict[str, Any]]:
         meta.append({"name": s.get("name"), "exsw": s.get("expsw", -1),
                      "bpm": s.get("tempo", 120.0)})
     return meta
+
+
+def hsp_sources(hsp_body: dict) -> Dict[int, Dict[str, Any]]:
+    """The ``preset.sources`` scribble-strip config keyed by integer source id.
+
+    Each value carries ``fs_color``/``fs_label``/``fs_topidx`` (and ``bypass``)
+    for the footswitch that source drives — synthesized into
+    ``pm__.floorboard.stomp.*`` (spec 2 Part B)."""
+    raw = (hsp_body.get("preset") or {}).get("sources") or {}
+    out: Dict[int, Dict[str, Any]] = {}
+    for k, v in raw.items():
+        try:
+            out[int(k)] = v
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def hsp_ir_hashes(hsp_body: dict) -> set:

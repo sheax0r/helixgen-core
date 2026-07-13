@@ -344,6 +344,98 @@ def test_no_snapshot_variation_yields_blank8():
     assert all(s["tamv"] == [] for s in entt["snps"])
 
 
+# --- Phase 3 / snapshots spec Part B: FS/EXP controller graph ----------------
+
+def test_controller_graph_synthesis():
+    """Author a recipe with a known FS->bypass (A1 + A5) and an EXP1->param sweep
+    -> synth -> decode -> assert the srcs (locl/ctxt), trgs, and ctrl (behv/
+    min_/max_) match the device-RE mapping, plus sm__.scid + pm__ scribble."""
+    amp_mid = defs.model_id_for("HD2_AmpBritPlexiNrm")
+    bass_pid = defs.load_defs()["model_params"][str(amp_mid)]["Bass"]["id"]
+    recipe = {
+        "name": "ctrl test",
+        "sources": {0x01010100: {"fs_color": "auto", "fs_label": "DRV",
+                                 "fs_topidx": 0}},
+        "paths": [{"blocks": [
+            {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+             "fs_bypass": {"source": 0x01010100, "behavior": "latching"}},   # A1
+            {"block": "HD2_DistVerminDistMono", "params": {},
+             "fs_bypass": {"source": 0x01010104, "behavior": "momentary"}},   # A5
+            {"block": "HD2_AmpBritPlexiNrm", "params": {"Bass": 0.5},
+             "exp_params": {"Bass": {"source": 0x01020100, "min": 0.1,
+                                     "max": 0.8}}},                            # EXP1
+        ]}],
+    }
+    doc = content.decode_any(
+        content.encode_content_data(transcode.recipe_to_sbepgsm(recipe)))
+    entt = doc["cg__"]["entt"]
+
+    # three sources: A1 (locl 25, ctxt 1, bypass), A5 (locl 29, ctxt 1, bypass),
+    # EXP1 (locl 42, ctxt 0, param sweep -> byps False).
+    by_locl = {s["locl"]: s for s in entt["srcs"]}
+    assert set(by_locl) == {25, 29, 42}
+    assert by_locl[25]["ctxt"] == 1 and by_locl[25]["byps"] is True
+    assert by_locl[29]["ctxt"] == 1 and by_locl[29]["byps"] is True
+    assert by_locl[42]["ctxt"] == 0 and by_locl[42]["byps"] is False
+
+    # ctrl entries: two bypass (behv 0 / type 1) + one param (behv 2 / type 3).
+    byp_ctrls = [c for c in entt["ctrl"] if c["type"] == 1]
+    par_ctrls = [c for c in entt["ctrl"] if c["type"] == 3]
+    assert len(byp_ctrls) == 2 and len(par_ctrls) == 1
+    for c in byp_ctrls:
+        assert c["behv"] == 0 and c["min_"] is False and c["max_"] is True
+        assert c["curv"] == 5
+    pc = par_ctrls[0]
+    assert pc["behv"] == 2 and pc["min_"] == 0.1 and pc["max_"] == 0.8
+
+    # the momentary A5 bypass sets togl True; latching A1 sets togl False
+    a5_src = by_locl[29]["id__"]
+    a1_src = by_locl[25]["id__"]
+    assert next(c for c in byp_ctrls if c["trig"] == a5_src)["togl"] is True
+    assert next(c for c in byp_ctrls if c["trig"] == a1_src)["togl"] is False
+
+    # the EXP param trg is a type2/enty3 target on the amp's Bass pid, packed
+    # into ptid.
+    par_trg = next(t for t in entt["trgs"] if t["id__"] == pc["tid_"])
+    assert par_trg["type"] == 2 and par_trg["enty"] == 3
+    assert par_trg["pid_"] == bass_pid and par_trg["mmid"] == amp_mid
+    packed = (par_trg["eID_"] << 16) | bass_pid
+    ptid = entt["ctm_"]["ptid"]
+    assert dict(zip(ptid[::2], ptid[1::2])).get(packed) == par_trg["id__"]
+
+    # sm__.scid links each target to its driving ctrl id
+    scid = dict(zip(entt["sm__"]["scid"][::2], entt["sm__"]["scid"][1::2]))
+    assert scid[pc["tid_"]] == [pc["cid_"]]
+
+    # pm__ scribble strip for A1 (stomp a.1) carries the source label
+    pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
+    assert pm["preset.floorboard.stomp.a.1.label"] == "DRV"
+
+
+def test_hsp_to_sbepgsm_controllers_from_hsp():
+    """End-to-end: a real authored .hsp with footswitch + wah/EXP assignments
+    transcodes into the controller graph (bridge extraction + Part B synth)."""
+    hsp = pytest.importorskip("helixgen.hsp")
+    path = Path("/Users/michael.shea/git/guitar-training/tones/thunder-kiss-65.hsp")
+    if not path.exists():
+        pytest.skip(f"authored .hsp fixture absent: {path}")
+    body = hsp.read_hsp(path)
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    entt = doc["cg__"]["entt"]
+
+    # A-bank footswitches map to locl 25.. ctxt 1; the wah EXP toe+pedal to
+    # locl 42 ctxt 0.
+    locls = {s["locl"] for s in entt["srcs"]}
+    assert {25, 26, 27, 28} <= locls, locls   # FS1-4 bypasses
+    assert 42 in locls                          # EXP1 (toe + pedal)
+    assert any(s["ctxt"] == 0 and s["locl"] == 42 for s in entt["srcs"])
+    # a param-sweep ctrl (the wah pedal) is present
+    assert any(c["type"] == 3 and c["behv"] == 2 for c in entt["ctrl"])
+    # scribble strip carried through
+    pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
+    assert pm.get("preset.floorboard.stomp.a.1.label") == "GTR1->"
+
+
 # --- IR-hash injection (irmd) ------------------------------------------------
 
 BLUES_HSP = Path("/Users/michael.shea/git/guitar-training/tones/blues-lead-lp-jr.hsp")
