@@ -174,6 +174,42 @@ def test_set_content_data_converts_and_sends():
     assert C.CONTENT_DATA_MAGIC in sent and C.MAGIC not in sent  # converted
 
 
+def test_get_content_sends_getcontentdata_and_returns_blob():
+    # /GetContentData [reqid, cid] is the NON-activating read: it must send
+    # /GetContentData and NEVER /LoadPresetWithCID, and return the raw blob.
+    from helixgen.device import content as C
+    h = HelixClient()
+    stored = C.encode_content_data({"cg__": {}, "pm__": [], "sfg_": {}})
+    reply = osc_encode("/GetContentData", [("i", 1000), ("b", stored)])
+    _wire(h, [reply])
+
+    blob = h.get_content(1064)
+    assert blob == stored
+    assert len(h.sock.sent) == 1  # exactly one RPC — no separate load_preset
+    sent = h.sock.sent[0]
+    assert b"/GetContentData" in sent
+    assert b"/LoadPresetWithCID" not in sent
+
+
+def test_get_content_accepts_edit_buffer_magic_too():
+    # If the device happened to answer with the edit-buffer (_sbepgsm) form,
+    # get_content must still accept it.
+    from helixgen.device import content as C
+    h = HelixClient()
+    sbe = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    reply = osc_encode("/GetContentData", [("i", 1000), ("b", sbe)])
+    _wire(h, [reply])
+    assert h.get_content(1064) == sbe
+
+
+def test_get_content_raises_when_no_blob():
+    h = HelixClient()
+    reply = osc_encode("/GetContentData", [("i", 1000), ("i", 0)])
+    _wire(h, [reply])
+    with pytest.raises(HelixError):
+        h.get_content(1064)
+
+
 def test_malformed_reply_frame_raises_helixerror():
     # a frame that starts an OSC address but is never NUL-terminated -> the
     # parser raises ValueError, which _rpc must wrap as HelixError (not leak).
