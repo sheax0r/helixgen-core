@@ -686,13 +686,17 @@ def _ledger_remove(cid: int) -> None:
 
 
 def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
-                      setlist_label: str, template: int | None = None,
-                      auto_irs: bool = False, ip: str | None = None) -> int:
+                      setlist_label: str, auto_irs: bool = False,
+                      ip: str | None = None) -> int:
     """Install a parsed .hsp ``body`` onto an already-open client at
     ``(container, pos)`` and return the new cid. Shared by ``device install``
     and ``device slots restore``. Raises ClickException on any failure.
+
+    Template-free: the ``.hsp`` is transcoded straight into a device
+    ``_sbepgsm`` blob (:func:`transcode.hsp_to_sbepgsm`) and written into an
+    empty slot — no device template is loaded, so the active tone is untouched.
     """
-    from helixgen.device import bridge
+    from helixgen.device import bridge, transcode
 
     if h.find_by_pos(container, pos) is not None:
         raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
@@ -705,19 +709,12 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
                 f"warning: IR {m} is referenced but not on the device; "
                 f"re-run with --auto-irs, or import it (helixgen register-irs / "
                 f"the editor), or the cab will be silent", err=True)
-    if template is not None:
-        if not h.load_preset(template):
-            raise click.ClickException(f"could not load template cid {template}")
-    template_blob = h.get_edit_buffer()
     try:
-        cid = bridge.install_recipe(h, body, container, pos, name,
-                                    template_blob, strict=True)
+        blob = transcode.hsp_to_sbepgsm(body, strict=True)
     except bridge.UnresolvedModel as e:
         raise click.ClickException(str(e)) from e
-    except ValueError as e:
-        raise click.ClickException(
-            f"{e}. Try --template <cid> of a preset whose block chain "
-            f"covers this recipe.") from e
+    with h.mutating():
+        cid = h._raw.push_to_slot(container, pos, name, blob)
     if cid is None:
         raise click.ClickException("failed to install preset")
     return cid
@@ -1065,21 +1062,17 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
 @click.option("--pos", type=int, required=True, help="Destination slot (posi); must be empty.")
 @click.option("--setlist", type=click.Choice(["user", "factory", "throwaway"]),
               default="user", show_default=True, help="Destination setlist.")
-@click.option("--template", type=int, default=None,
-              help="CID of a device preset to use as the chain template "
-                   "(defaults to the device's current edit buffer). Its block "
-                   "chain must cover the recipe's block categories.")
 @click.option("--auto-irs", is_flag=True, default=False,
               help="Upload any referenced IRs that aren't on the device yet "
                    "(resolved from your local IR mapping.json).")
 @_device_option
 def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
-                   template: int, auto_irs: bool, ip: str, port: int) -> None:
+                   auto_irs: bool, ip: str, port: int) -> None:
     """Author a helixgen .hsp onto the device as a new, playable preset.
 
-    Maps the .hsp's blocks onto a device template's same-category slots (v2.2:
-    single serial chain), then installs it. With --auto-irs, missing IRs are
-    uploaded first. EXPERIMENTAL.
+    Transcodes the .hsp straight into the device's native content format and
+    installs it into an empty slot — any block chain, full fidelity, no
+    template. With --auto-irs, missing IRs are uploaded first. EXPERIMENTAL.
     """
     from helixgen.hsp import read_hsp
     from helixgen.device import HelixClient, HelixError
@@ -1089,7 +1082,7 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
     try:
         with HelixClient(ip, port) as h:
             cid = _install_hsp_open(h, body, container, pos, name,
-                                    setlist_label=setlist, template=template,
+                                    setlist_label=setlist,
                                     auto_irs=auto_irs, ip=ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
@@ -1140,7 +1133,13 @@ def device_setlist_list(as_json: bool) -> None:
 @click.option("--pos", type=int, default=None,
               help="Insert at this 0-based position (default: append).")
 def device_setlist_add_cmd(setlist: str, hsp_file: Path, pos: int | None) -> None:
-    """Add an authored .hsp tone to a setlist's membership (auto-creates the setlist)."""
+    """Add an authored .hsp tone to a setlist's membership (auto-creates the setlist).
+
+    A tone may belong to many setlists (it's referenced once in the device pool
+    and shared) — adding one that's already elsewhere is expected, not a dup.
+    Idempotent within a setlist; only errors if the tone's name is already
+    registered to a different .hsp file (names must be unique).
+    """
     from helixgen.device.manifest import SetlistManifest, ManifestError
 
     m = SetlistManifest.load()
@@ -1195,14 +1194,11 @@ def device_setlist_create_local(setlist: str) -> None:
               help="Garbage-collect pool presets no setlist references (only with --all).")
 @click.option("--exclude-irs", is_flag=True, default=False,
               help="Install tones only; do not upload their referenced IRs.")
-@click.option("--template", type=int, default=None,
-              help="CID of a device preset to use as the chain template "
-                   "(defaults to the current edit buffer).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw engine result dict as JSON.")
 @_device_option
 def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
-                exclude_irs: bool, template: int, as_json: bool,
+                exclude_irs: bool, as_json: bool,
                 ip: str, port: int) -> None:
     """Sync the manifest's setlists onto the device (pool + references).
 
@@ -1228,8 +1224,7 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     setlists = None if all_setlists else [setlist_name]
     try:
         res = sync_setlists(SetlistManifest.load(), ip=ip, port=port,
-                            setlists=setlists, gc=gc, exclude_irs=exclude_irs,
-                            template_cid=template)
+                            setlists=setlists, gc=gc, exclude_irs=exclude_irs)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
 

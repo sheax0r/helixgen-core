@@ -627,8 +627,9 @@ def test_device_install_preset_rejects_non_hsp(tmp_path):
 
 
 def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hsp_library):
-    """Happy path with the device client + bridge stubbed: the handler reads the
-    .hsp body off disk and forwards it to bridge.install_recipe, returning the cid."""
+    """Happy path with the device client + transcoder stubbed: the handler reads
+    the .hsp body off disk, transcodes it (no template), pushes the blob into the
+    target slot, and returns the cid."""
     import mcp_server.tools as tools_mod
     from helixgen.generate import compose_preset
     from helixgen.hsp import dumps_hsp
@@ -642,25 +643,33 @@ def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hs
 
     seen = {}
 
+    class _Raw:
+        def push_to_slot(self, container, pos, name, blob):
+            seen["push"] = (container, pos, name, blob)
+            return 4242
+
     class _FakeClient:
+        _raw = _Raw()
+
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def find_by_pos(self, container, pos): return None
-        def load_preset(self, cid): pass
-        def get_edit_buffer(self): return b"TEMPLATE"
 
-    def _fake_install_recipe(client, body, container, pos, name, template_blob, strict):
-        seen["template_blob"] = template_blob
+        def mutating(self):
+            import contextlib
+            return contextlib.nullcontext(self)
+
+    def _fake_transcode(body, *, strict=True):
         seen["body"] = body
-        return 4242
+        return b"XCODED"
 
     import helixgen.device as device_mod
     monkeypatch.setattr(device_mod, "HelixClient", lambda **kw: _FakeClient())
-    monkeypatch.setattr(device_mod.bridge, "install_recipe", _fake_install_recipe)
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm", _fake_transcode)
 
     result = tools_mod.device_install_preset_handler(
         "stadium_xl", hsp_path=str(hsp), name="D", pos=3)
 
     assert result == {"ok": True, "cid": 4242}
-    assert seen["template_blob"] == b"TEMPLATE"
+    assert seen["push"][1:] == (3, "D", b"XCODED")   # (container, pos, name, blob)
     assert isinstance(seen["body"], dict) and "preset" in seen["body"]

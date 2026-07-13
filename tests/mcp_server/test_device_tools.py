@@ -306,12 +306,11 @@ def test_sync_setlist_calls_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(_ss, "sync_setlists",
                         lambda manifest, **kw: seen.update(kw) or _CANNED_SYNC)
     out = tools.device_sync_setlist_handler(
-        MODEL, "helixgen", ip="1.2.3.4", exclude_irs=True, template_cid=7)
+        MODEL, "helixgen", ip="1.2.3.4", exclude_irs=True)
     assert out == _CANNED_SYNC
     assert seen["setlists"] == ["helixgen"]
     assert seen["ip"] == "1.2.3.4"
     assert seen["exclude_irs"] is True
-    assert seen["template_cid"] == 7
     assert "gc" not in seen  # single-setlist sync never passes gc
 
 

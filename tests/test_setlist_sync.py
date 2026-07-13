@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from helixgen.device import setlist_sync as ss
+from helixgen.device import transcode as _tc
 from helixgen.device.client import Container, Cctp
 from helixgen.device.manifest import SetlistManifest
 
@@ -173,12 +174,10 @@ class FakeClient:
 
 
 def _stub_bridge(monkeypatch):
-    """Stub the authoring bridge + read_hsp so no .hsp is parsed and no models
-    are resolved — every tone authors a trivial blob."""
+    """Stub the transcoder + read_hsp so no .hsp is parsed and no models are
+    resolved — every tone transcodes to a trivial blob."""
     monkeypatch.setattr(ss, "read_hsp", lambda path: {"_hsp": str(path)})
-    monkeypatch.setattr(ss.bridge, "hsp_to_chain", lambda body, strict=True: [])
-    monkeypatch.setattr(ss.bridge, "content_from_template",
-                        lambda template_blob, chain: b"BLOB")
+    monkeypatch.setattr(_tc, "hsp_to_sbepgsm", lambda body, strict=True: b"BLOB")
     monkeypatch.setattr(ss.bridge, "check_irs",
                         lambda client, body: {"present": set(), "missing": set()})
 
@@ -395,7 +394,7 @@ def test_non_connection_error_has_no_hint(tmp_path, monkeypatch):
     def _boom(body, strict=True):
         raise UnresolvedModel("HD2_Whatever")
 
-    monkeypatch.setattr(ss.bridge, "hsp_to_chain", _boom)
+    monkeypatch.setattr(_tc, "hsp_to_sbepgsm", _boom)
     m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Bad Tone"]},
                   hashes={"Bad Tone": "sha256:x"})
     client = FakeClient(setlists={"helixgen": 42})
@@ -413,7 +412,7 @@ def test_unresolvable_model_is_per_tone_error(tmp_path, monkeypatch):
     def _boom(body, strict=True):
         raise UnresolvedModel("HD2_Whatever")
 
-    monkeypatch.setattr(ss.bridge, "hsp_to_chain", _boom)
+    monkeypatch.setattr(_tc, "hsp_to_sbepgsm", _boom)
     m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Bad Tone"]},
                   hashes={"Bad Tone": "sha256:x"})
     client = FakeClient(setlists={"helixgen": 42})

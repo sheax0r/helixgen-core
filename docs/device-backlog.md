@@ -4,6 +4,44 @@ Future work for the network device-control feature. Base capability (preset CRUD
 + content read/save + live param edits) shipped in **2.0.0**; IR transfer +
 auto-load shipped through **2.5.0**. Ordered loosely.
 
+## Corrected mental models — READ THIS FIRST (2026-07-12)
+
+Recurring places agents (incl. this project's own assistant) got the model wrong
+and had to be redirected. Start here so future work begins from the right model.
+
+1. **A `.hsp` *is* a complete device preset — there is no "template."** `.hsp` is
+   Line 6's **JSON file format** (`rpshnosj` magic); the device stores/accepts
+   presets as **`_sbepgsm` msgpack** (numeric model/param ids, flat block grid,
+   `cg__`/`pm__`/`sfg_`). Same preset, two serializations; HX Edit transcodes on
+   import. Getting a tone on the device = **transcode `.hsp` → `_sbepgsm` and
+   `/SetContentData` it** (see #12). The old `device install` "map blocks onto a
+   template preset's slots" was a shortcut for the missing transcoder — it is the
+   sole source of the template precondition, coverage failures, and dual-amp
+   flattening. Do NOT reason about templates.
+2. **The `device` skill is library management, not authoring.** Its job: get a
+   `.hsp` on the device + manage it across setlists. It must have **no opinions
+   about device contents** (which factory preset to use, coverage buckets, what
+   "fits"). Authoring `.hsp` files is the `tone`/`setup` skills' job.
+3. **IRs are identified only by hash.** The `.hsp` carries the `irhash`; the
+   device references it in content as **`mdls[0].irmd` = the 16-byte hash**
+   (`bytes.fromhex(irhash)`); the WAV is uploaded/registered by hash separately.
+   File↔hash caching is `mapping.json`'s job — **local only, never inside the
+   `.hsp`**. (The pre-2.16 bridge set the cab *model* but never wrote `irmd` — a
+   latent bug the transcoder fixes.)
+4. **Device ops must NOT change the active tone unless the user asks.** Reading OR
+   writing content via the edit buffer (`load_preset` = `/LoadPresetWithCID`)
+   makes a preset active. Install via `CreateContent`+`SetContentData` is
+   non-activating (use it). `backup`/`pull` still activate → needs a
+   non-activating content-read command (RE) or save-and-restore (#13).
+5. **Don't source-dive to answer behavior/format questions.** The running MCP is
+   the **bundled** plugin (`${CLAUDE_PLUGIN_ROOT}`), NOT the cwd checkout —
+   reading source can mislead about the live version/schema. The **tool
+   descriptions, CLI `--help`, `device setlist list`, and the sync result dict**
+   are the authoritative contract. (See the resolver pattern, #14.)
+6. **A tone belongs in as many setlists as you want.** `device setlist add` is
+   idempotent within a setlist; it errors ONLY on a name/**different-file**
+   collision. Never pre-check membership or read the manifest to add safely.
+
 ## ✅ Shipped
 
 - **Preset CRUD + content read/save + live param edits** (2.0.0) — `device
@@ -183,6 +221,44 @@ assumption — see #9); the reference-based redesign below then **shipped
   <cid>` fills the edit buffer; confirm whether there's a separate
   active-preset-index command and expose it (`device select <cid>` + MCP). OSC
   command names live in `client.py`; the active-preset verb isn't captured yet.
+
+### `.hsp` → device transcoder (replaces the template bridge)
+- **#12 `.hsp` → `_sbepgsm` transcoder** **[in progress 2026-07-12]** — the real
+  fix behind mental-model #1: faithfully transcode a `.hsp` into the device's
+  stored `_sbepgsm` and `/SetContentData` it into the pool. No template, no
+  coverage limits, full fidelity. Design +
+  progress: `docs/superpowers/specs/2026-07-12-hsp-to-device-transcoder-design.md`.
+  Module `src/helixgen/device/transcode.py` (`sbepgsm_to_recipe` /
+  `recipe_to_sbepgsm` / `hsp_to_sbepgsm`), gated by an offline
+  `_sbepgsm → recipe → _sbepgsm` byte-fidelity net. Hardware-confirmed so far:
+  device tolerates synthesized `tid_`/identity `bmap`; harness (`hrns`) varies by
+  block kind (not constant); IR = `mdls[0].irmd` 16-byte hash. Remaining:
+  snapshots/controllers (`snps`/`srcs`/`trgs` + per-param `tid_`), dual-amp
+  (split/join), wire `install`/`sync` onto it + delete the template/bridge, strip
+  templates from the skill, device audio-validate.
+- **#13 Non-activating content read** **[device-read][discovery]** — `backup`/
+  `pull` (and any content read) currently `load_preset` first, which changes the
+  active tone (mental-model #4). Capture HX Edit's content-read/export command
+  (a `/GetContentData`-style GET counterpart to `/SetContentData`) so reads don't
+  activate; else save-and-restore the active preset around the read. Product
+  paths must preserve the active tone.
+
+### Resolver pattern — single source of truth for agents + skill
+- **#14 Implement + maintain a "resolver" pattern** **[infra]** — so future
+  developer-agents AND the runtime skill get authoritative answers without
+  source-diving or re-deriving (mental-model #5). Two faces of one idea:
+  - **Code-level resolvers** (one canonical function/table per mapping, reused
+    everywhere — never re-implemented ad hoc): model name↔device id + param
+    name↔`pid` (`defs`), setlist name→cid (`resolve_setlist_cid`), `irhash`↔wav
+    (`mapping.json`) and `irhash`↔device `irmd`, and `.hsp`↔`_sbepgsm` (the #12
+    transcoder). Audit for duplicated/divergent mapping logic and consolidate.
+  - **Contract-level resolver for agents:** behavioral/format facts live at the
+    point of use — **MCP tool descriptions, CLI `--help`, and the result dicts** —
+    and a short authoritative index (this "mental models" block + the protocol
+    doc) that a skill/agent consults FIRST. The `device` skill should point at
+    the resolver and explicitly forbid source-diving. Goal: an agent can answer
+    "how does X work / where does Y live" from the contract, not the source tree.
+    Keep it maintained as the code evolves (stale resolver = worse than none).
 
 ### Authoring-bridge depth (bridge is single serial chain / base params today)
 - **Snapshots over the network** **[device-write]** — push the 8-snapshot scenes

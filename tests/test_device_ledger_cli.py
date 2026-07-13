@@ -38,6 +38,10 @@ class FakeClient:
     def get_edit_buffer(self):
         return b"_sbepgsm-template"
 
+    def mutating(self):
+        import contextlib
+        return contextlib.nullcontext(self)
+
     def load_preset(self, cid):
         return True
 
@@ -117,11 +121,13 @@ def test_create_records_placement(monkeypatch):
 
 def test_install_records_placement(monkeypatch, tmp_path):
     _patch_client(monkeypatch)
-    # stub the heavy content bridge — we're testing the ledger hook, not bridge
+    # stub the transcoder + IR check — we're testing the ledger hook, not the
+    # .hsp -> _sbepgsm transcode (install pushes the blob via _raw.push_to_slot,
+    # whose FakeClient stub returns cid 502).
     import helixgen.device.bridge as bridge
     monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
-    monkeypatch.setattr(bridge, "install_recipe",
-                        lambda h, body, container, pos, name, blob, strict=True: 777)
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
 
     hsp = tmp_path / "White Limo Lead.hsp"
     hsp.write_bytes(HSP_MAGIC + json.dumps({"meta": {"name": "t"},
@@ -131,7 +137,7 @@ def test_install_records_placement(monkeypatch, tmp_path):
     assert r.exit_code == 0, r.output
     e = _ledger().find(setlist="user", posi=12)
     assert e["name"] == "White Limo Lead"
-    assert e["cid"] == 777
+    assert e["cid"] == 502
     assert e["source_kind"] == "hsp"
     assert Path(e["source_path"]).name == "White Limo Lead.hsp"
     assert e["slot_label"] == "4A"

@@ -424,21 +424,19 @@ def device_install_preset(
     name: str,
     pos: int,
     setlist: str = "user",
-    template_cid: int | None = None,
     ip: str = _tools._DEFAULT_DEVICE_IP,
 ) -> dict[str, Any]:
     """Author a helixgen `.hsp` file onto the device as a new preset.
 
     Required `model`: `"stadium"` or `"stadium_xl"`. `hsp_path` is a filesystem
-    path to a `.hsp` file; it is read off disk, and its blocks are mapped onto a
-    device template's same-category slots and installed into `setlist` slot
-    `pos` (must be empty). `template_cid` selects a device preset to use as the
-    chain template (defaults to the current edit buffer). EXPERIMENTAL.
-    Returns `{"ok": <bool>, "cid": <new cid>}`.
+    path to a `.hsp` file; it is read off disk, transcoded straight into the
+    device's native content format (any block chain, full fidelity, no
+    template), and installed into `setlist` slot `pos` (must be empty).
+    EXPERIMENTAL. Returns `{"ok": <bool>, "cid": <new cid>}`.
     """
     return _tools.device_install_preset_handler(
         model, ip=ip, hsp_path=hsp_path, name=name, pos=pos,
-        setlist=setlist, template_cid=template_cid,
+        setlist=setlist,
     )
 
 
@@ -464,9 +462,21 @@ def device_setlist_add(
     Required `model`: `"stadium"` or `"stadium_xl"`. `hsp_path` is a filesystem
     path to a `.hsp` file (path-based, no base64); its `meta.name` becomes the
     tone name. Appends the tone to `setlist` (at `pos` if given; the setlist is
-    auto-created in the manifest if new). Local-only — writes
-    `~/.helixgen/setlists.json`; run `device_sync_setlist` to push it to the
-    device. Returns `{ok, setlist, tone, tones}`.
+    auto-created in the manifest if new).
+
+    Membership semantics (safe to call in bulk without pre-checking):
+    - **The same tone may belong to many setlists** — adding a tone that already
+      exists (e.g. to both `library` and `Sarah`) is expected and correct; it is
+      referenced once in the device pool and shared. NOT a duplicate error.
+    - **Idempotent within a setlist** — re-adding a tone already in `setlist` is a
+      no-op (never duplicated); re-adding the same file refreshes its content
+      hash.
+    - The ONLY rejection is a name collision on a *different* file: if the tone's
+      `meta.name` is already registered to a different `.hsp` path, it raises
+      (names must be unique in the manifest) — rename the tone or reuse the entry.
+
+    Local-only — writes `~/.helixgen/setlists.json`; run `device_sync_setlist`
+    to push it to the device. Returns `{ok, setlist, tone, tones}`.
     """
     return _tools.device_setlist_add_handler(model, setlist, hsp_path, pos=pos)
 
@@ -491,7 +501,6 @@ def device_sync_setlist(
     setlist: str,
     ip: str = _tools._DEFAULT_DEVICE_IP,
     exclude_irs: bool = False,
-    template_cid: int | None = None,
 ) -> dict[str, Any]:
     """Sync ONE manifest setlist onto the device (pool-first, reference rebuild).
 
@@ -500,12 +509,11 @@ def device_sync_setlist(
     unchanged), then rebuilds that setlist's references to match manifest order —
     never orphaning a still-referenced pool preset. Uploads each tone's IRs
     unless `exclude_irs=True`. A single-setlist sync never garbage-collects.
-    `template_cid` selects the chain template (defaults to the current edit
-    buffer). EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
+    EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
     references, gc, irs, errors}`).
     """
     return _tools.device_sync_setlist_handler(
-        model, setlist, ip=ip, exclude_irs=exclude_irs, template_cid=template_cid,
+        model, setlist, ip=ip, exclude_irs=exclude_irs,
     )
 
 
@@ -515,7 +523,6 @@ def device_sync_all(
     ip: str = _tools._DEFAULT_DEVICE_IP,
     gc: bool = False,
     exclude_irs: bool = False,
-    template_cid: int | None = None,
 ) -> dict[str, Any]:
     """Sync ALL manifest setlists onto the device (the whole-library reconcile).
 
@@ -523,10 +530,9 @@ def device_sync_all(
     for the union of every setlist's tones, rebuilds each setlist's references,
     and — only when `gc=True` — garbage-collects pool presets no setlist
     references any more (never orphaning). Uploads IRs unless `exclude_irs=True`.
-    `template_cid` selects the chain template (defaults to the current edit
-    buffer). EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
+    EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
     references, gc, irs, errors}`).
     """
     return _tools.device_sync_all_handler(
-        model, ip=ip, gc=gc, exclude_irs=exclude_irs, template_cid=template_cid,
+        model, ip=ip, gc=gc, exclude_irs=exclude_irs,
     )

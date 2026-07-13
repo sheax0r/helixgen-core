@@ -149,11 +149,16 @@ def _looks_like_connection_drop(msg: str) -> bool:
             or "connection dropped" in m)
 
 
-def _build_blob(client, template_blob, body):
-    """Author a tone body onto the template into a stored-content blob (may raise
-    UnresolvedModel / ValueError)."""
-    chain = bridge.hsp_to_chain(body, strict=True)
-    return bridge.content_from_template(template_blob, chain)
+def _build_blob(body):
+    """Transcode a tone body into a stored-content blob (may raise
+    UnresolvedModel / ValueError).
+
+    Template-free: :func:`transcode.hsp_to_sbepgsm` synthesizes the device
+    ``_sbepgsm`` document straight from the ``.hsp`` (models/params/IRs), so no
+    device template is loaded and the write path never changes the active tone.
+    """
+    from . import transcode
+    return transcode.hsp_to_sbepgsm(body, strict=True)
 
 
 def sync_setlists(
@@ -164,7 +169,6 @@ def sync_setlists(
     setlists: Optional[List[str]] = None,
     gc: bool = False,
     exclude_irs: bool = False,
-    template_cid: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Sync one or more manifest setlists onto the device (pool-first, reference
     rebuild, optional GC).
@@ -215,14 +219,7 @@ def sync_setlists(
                 resolved.append(name)
             result["setlists"] = resolved
 
-            # 2. Build the template skeleton once.
-            template_blob = None
-            if resolved:
-                if template_cid is not None:
-                    client.load_preset(template_cid)
-                template_blob = client.get_edit_buffer()
-
-            # 3. Reconcile the pool for the union of tones the targets need.
+            # 2. Reconcile the pool for the union of tones the targets need.
             union = manifest.union_tones(resolved)
             pool_by_name = {m.get("name"): m
                             for m in client.list_presets(Container.POOL)}
@@ -243,7 +240,7 @@ def sync_setlists(
                     missing = sorted(bridge.check_irs(client, body).get("missing", []))
                     if missing:
                         result["irs"].extend(_upload_missing_irs(ip, missing))
-                return _build_blob(client, template_blob, body)
+                return _build_blob(body)
 
             for name in plan["install"]:
                 try:
@@ -281,7 +278,7 @@ def sync_setlists(
                         name, _cid(m), m.get("posi"),
                         synced_hash=manifest.content_hash(name))
 
-            # 4. Rebuild each resolved setlist's references (manifest order).
+            # 3. Rebuild each resolved setlist's references (manifest order).
             for name in resolved:
                 setlist_cid = setlist_cids[name]
                 desired = plan_references(manifest.tones_in(name))
@@ -308,7 +305,7 @@ def sync_setlists(
                                                "posi": item.get("posi")}
                 manifest.record_observed_setlist(name, setlist_cid, refs)
 
-            # 5. Garbage-collect orphan pool presets (only on the --all run).
+            # 4. Garbage-collect orphan pool presets (only on the --all run).
             if do_gc:
                 referenced = _device_referenced_names(client, pool_by_name)
                 union_all = manifest.union_tones(manifest.setlists())

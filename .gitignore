@@ -2,3 +2,6 @@
 captures/
 __pycache__/
 *.pyc
+
+# Captured device _sbepgsm reference presets (round-trip fixtures; not committed)
+tests/fixtures/device_content/
