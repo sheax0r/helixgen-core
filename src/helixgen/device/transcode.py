@@ -841,7 +841,10 @@ def _synth_cg_from_recipe(
     ptid: List[int] = []
     tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
     trg_index: Dict[Tuple[int, int, int], int] = {}  # (eID_, pid_, type) -> trg id
-    next_trg = 0
+    # Controller/target/source ids are 1-BASED — the device treats id 0 as
+    # null/unassigned, so a 0-based id silently kills the binding (hardware-
+    # confirmed against HX Edit's own encoding, 2026-07-13).
+    next_trg = 1
 
     def _new_trg(entry: dict, key: Tuple[int, int, int]) -> int:
         nonlocal next_trg
@@ -887,8 +890,8 @@ def _synth_cg_from_recipe(
     srcs: List[dict] = []
     ctrl: List[dict] = []
     scid: List[Any] = []
-    next_src = 0
-    next_ctrl = 0
+    next_src = 1        # 1-based (0 == null on the device)
+    next_ctrl = 1       # 1-based
     for pi, path in enumerate(recipe.get("paths") or []):
         for bi, spec in enumerate(path.get("blocks") or []):
             lane = int(spec.get("lane", 0))
@@ -965,11 +968,11 @@ def _synth_cg_from_recipe(
             "srcs": srcs,
             "trgs": trgs,
         },
-        "nxtc": max(max_id + 1, next_ctrl),
+        "nxtc": next_ctrl,   # next-free controller id (not tied to block ids)
         "nxti": 0,
         "nxtm": 1,
-        "nxts": max(8, next_src),
-        "nxtt": next_trg,
+        "nxts": next_src,    # next-free source id
+        "nxtt": next_trg,    # next-free target id
     }
 
 
