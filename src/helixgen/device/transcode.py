@@ -693,11 +693,38 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
             placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_MATRIX, 0)))
             placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
             placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+        elif all("_pos" in s for s in structural) and \
+                all("pos" in s for s in modeled):
+            # SPLIT path, faithful placement from .hsp grid coordinates
+            # (hardware-derived 2026-07-13): lane-0 blocks/split/join at
+            # gridpos == pos (row 0), lane-1 blocks at gridpos == 14 + pos
+            # (row 1). The split's branch pointer (bblk) is the first lane-1
+            # grid slot; the join's is the row-1 slot beneath the join
+            # (14 + join.pos). A normal OutputMatrix terminates row 0.
+            for spec in modeled:
+                lane = int(spec.get("lane", 0))
+                pos = int(spec["pos"])
+                gp = pos if lane == 0 else _ROW1_INPUT + pos
+                placements.append((gp, _make_user_block(spec, 0)))
+                instance_ids[(pi, lane, pos)] = base + gp
+            lane1_gps = [_ROW1_INPUT + int(s["pos"]) for s in modeled
+                         if int(s.get("lane", 0)) == 1]
+            first_lane1_gp = min(lane1_gps) if lane1_gps else _ROW1_INPUT + 1
+            for scaffold in structural:
+                blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
+                spos = int(scaffold["_pos"])
+                if blk.get("type") == 3:      # split -> first lane-1 slot
+                    blk["bblk"], blk["bflw"] = base + first_lane1_gp, pi
+                elif blk.get("type") == 4:    # join <- row-1 slot beneath it
+                    blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
+                placements.append((spos, blk))
+            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_MATRIX, 0)))
+            placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
+            placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
         else:
-            # SPLIT path (best-effort, hardware-iterated): lane-0 blocks in row 0,
-            # lane-1 blocks in row 1, split/join between them, OutputPath2A at the
-            # row-0 output. Split routing bytes (bblk/bflw) remain the residual
-            # RE risk — see spec §5.
+            # SPLIT path without .hsp coordinates (round-trip of a device preset
+            # whose modeled blocks lost their grid pos): best-effort contiguous
+            # placement — lane-0 in row 0, lane-1 in row 1, split/join between.
             lane0 = [s for s in modeled if int(s.get("lane", 0)) == 0]
             lane1 = [s for s in modeled if int(s.get("lane", 0)) == 1]
             gp = 1
@@ -707,9 +734,8 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
                 placements.append((gp, _make_user_block(spec, 0)))
                 instance_ids[(pi, 0, int(spec.get("pos", bi)))] = base + gp
                 gp += 1
-            split_gp = gp
-            join_gp = gp + 1
-            gp1 = 15
+            split_gp, join_gp = gp, gp + 1
+            gp1 = _ROW1_INPUT + 1
             for bi, spec in enumerate(lane1):
                 if gp1 > _ROW1_LAST_USER:
                     break
@@ -719,13 +745,13 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
             for scaffold in structural:
                 typ = scaffold.get("type")
                 slot = split_gp if typ == 3 else join_gp
-                blk = _make_structural_block(scaffold, 0)
+                blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
                 if typ == 3:
-                    blk["bblk"], blk["bflw"] = base + join_gp, pi
+                    blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
                 elif typ == 4:
-                    blk["bblk"], blk["bflw"] = base + split_gp, pi
+                    blk["bblk"], blk["bflw"] = base + join_gp, pi
                 placements.append((slot, blk))
-            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_PATH2A, 0)))
+            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_MATRIX, 0)))
             placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
             placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
 
@@ -1098,8 +1124,16 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
         paths = paths[dsp:dsp + 1]
     for path in paths:
         if path.get("structural"):
-            path["structural"] = [_build_structural_block(e)
-                                  for e in path["structural"]]
+            built = []
+            for e in path["structural"]:
+                blk = _build_structural_block(e)
+                # Carry the .hsp grid coordinate so synthesize_sfg can place the
+                # split/join faithfully (private keys, stripped before emit).
+                if e.get("pos") is not None:
+                    blk["_pos"] = int(e["pos"])
+                    blk["_lane"] = int(e.get("lane", 0))
+                built.append(blk)
+            path["structural"] = built
     recipe: Dict[str, Any] = {"name": None, "paths": paths or [{"blocks": []}]}
     snaps = bridge.hsp_snapshot_meta(hsp_body)
     if snaps:

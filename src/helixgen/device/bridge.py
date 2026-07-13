@@ -259,7 +259,9 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             if typ in ("split", "join"):
                 sp = {n: (w.get("value") if isinstance(w, dict) else w)
                       for n, w in (slot.get("params") or {}).items()}
-                structural.append({"kind": typ, "model": model, "params": sp})
+                slane, spos = _lane_pos(key)
+                structural.append({"kind": typ, "model": model, "params": sp,
+                                   "lane": slane, "pos": spos})
                 continue
             if key == "b00":
                 input_mode = _controllers.input_mode_for_model(device_id, model)
