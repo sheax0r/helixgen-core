@@ -163,13 +163,18 @@ def sbepgsm_to_recipe(doc: dict) -> dict:
         raw_flow = {k: v for k, v in flow.items() if k != "blks"}
         raw_blks: List[Any] = []
         path_blocks: List[dict] = []
+        structural: List[dict] = []
+        input_mode: Optional[str] = None
         for item in flow.get("blks", []):
             if not isinstance(item, dict):
                 raw_blks.append(item)  # scalar bmap index
                 continue
             m0 = (item.get("mdls") or [{}])[0]
             mid = m0.get("id__")
-            if _is_user_block(_category_for(mid)):
+            category = _category_for(mid)
+            if category == "input" and input_mode is None:
+                input_mode = _INPUT_MODEL_INV.get(mid)
+            if _is_user_block(category):
                 name, params, irhash, stripped = _lift_block(item)
                 block_spec: Dict[str, Any] = {"block": name, "params": params}
                 if irhash is not None:
@@ -177,10 +182,20 @@ def sbepgsm_to_recipe(doc: dict) -> dict:
                 path_blocks.append(block_spec)
                 raw_blks.append(stripped)
             else:
+                # Split/join are ALSO surfaced (verbatim) as a routing skeleton
+                # OUTSIDE raw, so the synthesis path can re-emit the parallel
+                # structure after ``raw`` is dropped (dual-amp spec §3.1).
+                if category in ("split", "join"):
+                    structural.append(copy.deepcopy(item))
                 raw_blks.append(item)  # endpoint / unknown -> verbatim
         raw_flow["blks"] = raw_blks
         raw_flows.append(raw_flow)
-        recipe["paths"].append({"blocks": path_blocks})
+        path_entry: Dict[str, Any] = {"blocks": path_blocks}
+        if input_mode is not None:
+            path_entry["input"] = input_mode
+        if structural:
+            path_entry["structural"] = structural
+        recipe["paths"].append(path_entry)
 
     raw_sfg["flow"] = raw_flows
     raw: Dict[str, Any] = {"sfg_": raw_sfg}
@@ -286,14 +301,20 @@ def _rebuild_from_raw(recipe: dict) -> dict:
 #     (fx) blocks fall back to the constant 420 scaffold.
 #   * the four endpoint block dicts a serial path needs, captured verbatim.
 
-# Block-slot ``type`` int keyed by device model category (from the fixtures:
-# input=8, output=9, fx=1, amp=5, preamp=3, cab=6, looper=2).
+# Block-slot ``type`` int keyed by device model category. Read out of the real
+# fixtures (input=8, output=9, fx=1, amp=5, cab=6, looper=2, split=3, join=4).
+#
+# NOTE (bugfix, dual-amp spec §3.3): ``preamp`` was previously mapped to 3, which
+# COLLIDES with the split type-int. A preamp is an amp head without the power/cab
+# stage, so it takes the amp slot-type (5); ``split``/``join`` own 3/4.
 _CATEGORY_TYPE = {
     "input": 8,
     "output": 9,
     "looper": 2,
+    "split": 3,
+    "join": 4,
     "amp": 5,
-    "preamp": 3,
+    "preamp": 5,
     "cab": 6,
     "cab_ir_interp": 6,
     "ir": 6,
@@ -319,6 +340,9 @@ _HRNS_BY_CATEGORY = {
     "cab_ir_interp": (473, "std"),
     "ir": (473, "std"),
     "looper": (813, "std"),
+    # split/join carry hrns id 479 with a single pid-11 bypass flag (from 152).
+    "split": (479, "split"),
+    "join": (479, "split"),
 }
 _DEFAULT_FX_HRNS = (420, "std")
 
@@ -333,6 +357,9 @@ def _hrns(hid: int, shape: str) -> dict:
     """
     if shape == "empty":
         parm: List[dict] = []
+    elif shape == "split":
+        parm = [{"accs": 0, "cid_": 0, "mid_": hid, "pid_": 11,
+                 "snap": False, "tid_": 0, "valu": False}]
     elif shape == "amp":
         parm = [{"accs": 0, "cid_": 0, "mid_": hid, "pid_": 13,
                  "snap": False, "tid_": 0, "valu": -1}]
@@ -411,6 +438,94 @@ _OUTPUT_NONE = {
 }
 
 
+# ``P35_OutputPath2A`` (model 779) — the lane-A output of an intra-flow split,
+# captured verbatim from ``preset_152`` flow 0. Paired with a second
+# InputNone/OutputNone group when a flow carries a split.
+_OUTPUT_PATH2A = {
+    "cid_": 0, "enbl": 1, "favo": 0, "hasb": False,
+    "hrns": {"cid_": 0, "enbl": 1, "id__": 793, "lbid": -1, "parm": [],
+             "snap": False, "tid_": 0, "vers": 0},
+    "id__": 13,
+    "mdls": [{"cid_": 0, "enbl": 1, "id__": 779, "lbid": -1, "parm": [
+        {"accs": 0, "cid_": 0, "mid_": 779, "pid_": 1, "snap": False, "tid_": 0, "valu": 0.5},
+        {"accs": 0, "cid_": 0, "mid_": 779, "pid_": 2, "snap": False, "tid_": 0, "valu": 0.0},
+    ], "snap": False, "tid_": 0, "vers": 0}],
+    "snap": False, "tid_": 0, "type": 9,
+}
+
+# Split (``P35_AppDSPSplitY`` model 475) / join (``P35_AppDSPJoin`` model 478)
+# scaffolds captured verbatim from ``preset_152`` flow 0. ``bblk``/``bflw`` are
+# partner cross-references the device uses to pair a split with its join; the
+# exact semantics are not decoded offline (see the module note + spec §5), so on
+# synthesis we re-point them at the emitted partner's id as a best effort.
+_SPLIT_SCAFFOLD = {
+    "bblk": 0, "bflw": 0, "cid_": 0, "enbl": 1, "favo": 0, "hasb": True,
+    "hrns": {"cid_": 0, "enbl": 1, "id__": 479, "lbid": -1,
+             "parm": [{"accs": 0, "cid_": 0, "mid_": 479, "pid_": 11,
+                       "snap": False, "tid_": 0, "valu": False}],
+             "snap": False, "tid_": 0, "vers": 0},
+    "id__": 0,
+    "mdls": [{"cid_": 0, "enbl": 1, "id__": 475, "lbid": -1, "parm": [
+        {"accs": 0, "cid_": 0, "mid_": 475, "pid_": 1, "snap": False, "tid_": 0, "valu": 0.5},
+        {"accs": 0, "cid_": 0, "mid_": 475, "pid_": 2, "snap": False, "tid_": 0, "valu": 0.5},
+        {"accs": 0, "cid_": 0, "mid_": 475, "pid_": 3, "snap": False, "tid_": 0, "valu": False},
+    ], "snap": False, "tid_": 0, "vers": 0}],
+    "snap": False, "tid_": 0, "type": 3,
+}
+_JOIN_SCAFFOLD = {
+    "bblk": 0, "bflw": 0, "cid_": 0, "enbl": 1, "favo": 0, "hasb": True,
+    "hrns": {"cid_": 0, "enbl": 1, "id__": 479, "lbid": -1,
+             "parm": [{"accs": 0, "cid_": 0, "mid_": 479, "pid_": 11,
+                       "snap": False, "tid_": 0, "valu": False}],
+             "snap": False, "tid_": 0, "vers": 0},
+    "id__": 0,
+    "mdls": [{"cid_": 0, "enbl": 1, "id__": 478, "lbid": -1, "parm": [
+        {"accs": 0, "cid_": 0, "mid_": 478, "pid_": 1, "snap": False, "tid_": 0, "valu": 0.0},
+        {"accs": 0, "cid_": 0, "mid_": 478, "pid_": 2, "snap": False, "tid_": 0, "valu": 0.0},
+        {"accs": 0, "cid_": 0, "mid_": 478, "pid_": 3, "snap": False, "tid_": 0, "valu": 0.0},
+        {"accs": 0, "cid_": 0, "mid_": 478, "pid_": 4, "snap": False, "tid_": 0, "valu": 1.0},
+        {"accs": 0, "cid_": 0, "mid_": 478, "pid_": 5, "snap": False, "tid_": 0, "valu": False},
+        {"accs": 0, "cid_": 0, "mid_": 478, "pid_": 6, "snap": False, "tid_": 0, "valu": 0.0},
+    ], "snap": False, "tid_": 0, "vers": 0}],
+    "snap": False, "tid_": 0, "type": 4,
+}
+
+# Live-input endpoint device model id per recipe ``input`` routing keyword.
+_INPUT_MODEL = {
+    "inst1": 770,   # P35_InputInst1
+    "inst2": 774,   # P35_InputInst2
+    "both": 769,    # P35_InputInst1_2 (stereo, both jacks)
+    "none": 771,    # P35_InputNone
+}
+_INPUT_MODEL_INV = {v: k for k, v in _INPUT_MODEL.items()}
+
+
+def _make_endpoint_model(model_id: int) -> dict:
+    """Synthesize an endpoint's ``mdls[0]`` from ``defs`` defaults (for the
+    input variants — inst2/both — we did not capture verbatim templates for)."""
+    return {"cid_": 0, "enbl": 1, "id__": model_id, "lbid": -1,
+            "parm": _synth_parm(model_id, {}), "snap": False, "tid_": 0, "vers": 0}
+
+
+def _make_input_endpoint(mode: Optional[str], inst_id: int) -> dict:
+    """Build the live-input endpoint block for a flow given its ``input`` mode.
+
+    ``inst1``/``none`` reuse the verbatim captured templates; ``inst2``/``both``
+    are synthesized from ``defs`` (valid model + default params)."""
+    if mode in (None, "inst1"):
+        return _endpoint(_INPUT_INST1, inst_id)
+    if mode == "none":
+        return _endpoint(_INPUT_NONE, inst_id)
+    model_id = _INPUT_MODEL.get(mode, _INPUT_MODEL["inst1"])
+    return {
+        "cid_": 0, "enbl": 1, "favo": 0, "hasb": False,
+        "hrns": _hrns_for("input"),
+        "id__": inst_id,
+        "mdls": [_make_endpoint_model(model_id)],
+        "snap": False, "tid_": 0, "type": 8,
+    }
+
+
 def _synth_parm(model_id: int, params: Dict[str, Any]) -> List[dict]:
     """Full parm list for ``model_id`` from ``defs``, in pid order.
 
@@ -484,31 +599,101 @@ def _assemble_flow(blocks: List[dict]) -> dict:
             "cid_": 0, "enbl": 1, "snap": False, "tid_": 0}
 
 
-def synthesize_serial_sfg(paths: List[dict]) -> Tuple[dict, int]:
-    """Build an ``sfg_`` dict for a single serial modeled path.
+def _default_input_mode(path_index: int) -> str:
+    """Default live-input routing per DSP path when the recipe omits ``input``.
 
-    Flow 0 = input endpoint + each user block + output endpoints
-    (``OutputMatrix``, ``InputNone``, ``OutputNone``); flow 1 = a valid empty
-    path (``InputNone``, ``OutputMatrix``, ``InputNone``, ``OutputNone``), as the
-    real serial fixtures carry. Instance ids are globally monotonic across both
-    flows. Returns ``(sfg_dict, next_free_id)``.
+    Path 0 defaults to the mono Instrument-1 jack (matches the historical serial
+    behaviour + the offline structural gate); every later path defaults to
+    ``none`` (a valid empty carrier, as the serial fixtures show)."""
+    return "inst1" if path_index == 0 else "none"
+
+
+def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
+    """Emit a split/join block from a scaffold (verbatim device dict OR one of
+    the captured ``_SPLIT_SCAFFOLD``/``_JOIN_SCAFFOLD`` templates), stamping a
+    fresh instance id. ``bblk``/``bflw`` are re-pointed by the caller."""
+    blk = copy.deepcopy(scaffold)
+    blk["id__"] = inst_id
+    blk["tid_"] = inst_id
+    return blk
+
+
+def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, int], int]]:
+    """Build an ``sfg_`` dict for every modeled DSP path (dual-amp spec §3.2).
+
+    Emits ONE populated ``sfg_.flow`` per path (not a fixed empty carrier): each
+    flow gets its live input endpoint (per the path's ``input`` routing), its
+    user blocks, any split/join routing skeleton (``paths[i]["structural"]``),
+    and an ``OutputMatrix``/``InputNone``/``OutputNone`` group (both paths sum at
+    the matrix). The device always carries ``fcnt`` = 2 DSP flows, so a single
+    modeled path still emits a second (empty) flow.
+
+    Instance ids (``id__``/``tid_``) are globally monotonic across flows and the
+    ``bmap`` is the ordered id grid — the sequential/identity scheme the serial
+    path already proved hardware-tolerant (split/join routing is the residual
+    hardware-validation risk; see the module note + spec §5).
+
+    Returns ``(sfg_dict, next_free_id, instance_ids)`` where ``instance_ids`` maps
+    each user block's ``(path_index, lane, pos)`` coordinate to its assigned
+    device instance id (``eID_``) — the coupling point the snapshot/controller
+    synthesis consumes.
     """
-    modeled = (paths[0].get("blocks") if paths else None) or []
     next_id = 0
+    instance_ids: Dict[Tuple[int, int, int], int] = {}
+    flows: List[dict] = []
 
-    f0: List[dict] = []
-    f0.append(_endpoint(_INPUT_INST1, next_id)); next_id += 1
-    for spec in modeled:
-        f0.append(_make_user_block(spec, next_id)); next_id += 1
-    for tmpl in (_OUTPUT_MATRIX, _INPUT_NONE, _OUTPUT_NONE):
-        f0.append(_endpoint(tmpl, next_id)); next_id += 1
+    n_flows = max(2, len(paths))  # device always carries fcnt == 2 DSP flows
+    for pi in range(n_flows):
+        path = paths[pi] if pi < len(paths) else {}
+        modeled = path.get("blocks") or []
+        structural = path.get("structural") or []
+        mode = path.get("input") or _default_input_mode(pi)
 
-    f1: List[dict] = []
-    for tmpl in (_INPUT_NONE, _OUTPUT_MATRIX, _INPUT_NONE, _OUTPUT_NONE):
-        f1.append(_endpoint(tmpl, next_id)); next_id += 1
+        blocks: List[dict] = []
+        blocks.append(_make_input_endpoint(mode, next_id)); next_id += 1
+        for bi, spec in enumerate(modeled):
+            lane = int(spec.get("lane", 0))
+            pos = int(spec.get("pos", bi))
+            blocks.append(_make_user_block(spec, next_id))
+            instance_ids[(pi, lane, pos)] = next_id
+            next_id += 1
+        # Split/join routing skeleton: emit each structural block with a fresh
+        # id, then re-point split<->join partners at each other (best effort).
+        split_id = join_id = None
+        for scaffold in structural:
+            typ = scaffold.get("type")
+            blk = _make_structural_block(scaffold, next_id)
+            if typ == 3:
+                split_id = next_id
+            elif typ == 4:
+                join_id = next_id
+            blocks.append(blk); next_id += 1
+        if split_id is not None and join_id is not None:
+            for blk in blocks:
+                if blk.get("type") == 3:
+                    blk["bblk"], blk["bflw"] = join_id, pi
+                elif blk.get("type") == 4:
+                    blk["bblk"], blk["bflw"] = split_id, pi
+        # A flow with a split also needs the lane-A output endpoint group.
+        if structural:
+            for tmpl in (_OUTPUT_PATH2A, _INPUT_NONE, _OUTPUT_NONE):
+                blocks.append(_endpoint(tmpl, next_id)); next_id += 1
+        for tmpl in (_OUTPUT_MATRIX, _INPUT_NONE, _OUTPUT_NONE):
+            blocks.append(_endpoint(tmpl, next_id)); next_id += 1
 
-    sfg = {"enbl": 1, "fcnt": 2,
-           "flow": [_assemble_flow(f0), _assemble_flow(f1)]}
+        flows.append(_assemble_flow(blocks))
+
+    sfg = {"enbl": 1, "fcnt": n_flows, "flow": flows}
+    return sfg, next_id, instance_ids
+
+
+def synthesize_serial_sfg(paths: List[dict]) -> Tuple[dict, int]:
+    """Back-compat shim: single-path serial synthesis (drops the instance map).
+
+    Superseded by :func:`synthesize_sfg`, which reads every DSP path and returns
+    the ``(path, lane, pos) -> instance id`` map. Retained so existing callers /
+    tests that only want ``(sfg, next_id)`` keep working."""
+    sfg, next_id, _ = synthesize_sfg(paths[:1] if paths else [])
     return sfg, next_id
 
 
@@ -538,10 +723,233 @@ def _synth_cg(max_id: int) -> dict:
     }
 
 
-def _synth_pm() -> List[dict]:
+def _snap_meta(meta: dict, i: int) -> Tuple[str, int, float]:
+    """``(name, exsw, bpm_)`` for snapshot ``i`` from a recipe snapshot-meta dict
+    (accepts both device keys ``exsw``/``bpm_`` and ``.hsp`` keys
+    ``expsw``/``bpm``/``tempo``)."""
+    name = meta.get("name") or f"SNAPSHOT {i + 1}"
+    exsw = meta.get("exsw", meta.get("expsw", -1))
+    bpm = meta.get("bpm", meta.get("bpm_", meta.get("tempo", 120.0)))
+    return name, exsw, float(bpm)
+
+
+def _param_pid(model_id: int, param_name: str) -> Optional[int]:
+    mp = defs.load_defs().get("model_params", {}).get(str(model_id), {})
+    meta = mp.get(param_name)
+    return meta.get("id") if isinstance(meta, dict) else None
+
+
+def _controller_locl_ctxt(source: Any) -> Optional[Tuple[int, int]]:
+    """Map a ``.hsp`` controller source id -> device ``(locl, ctxt)``.
+
+    Confirmed by the 2026-07-13 device-RE capture (packet-verified vs preset
+    cid 1064): A-bank footswitch ``0x010101NN`` -> ``(25 + NN, 1)``; the
+    expression toe switch ``0x01010500`` (EXP1Toe) and EXP pedals ``0x0102010M``
+    -> ``(42, ctxt)`` with ctxt 0 for EXP1, 1 for EXP2. Returns ``None`` for
+    out-of-scope sources (stomp bank B ``0x010102NN``, looper command
+    ``0x010104NN``) so the caller can skip them."""
+    if not isinstance(source, int) or isinstance(source, bool):
+        return None
+    if source == 0x01010500:            # EXP1Toe (wah toe switch)
+        return (42, 0)
+    hi = source & 0xFFFFFF00
+    lo = source & 0xFF
+    if hi == 0x01010100:                # stomp bank A footswitch (NN = FS#-1)
+        return (25 + lo, 1)
+    if hi == 0x01020100:                # EXP1 / EXP2 pedal (M = 0/1)
+        return (42, 0 if lo == 0 else 1)
+    return None                          # bank B / looper command -> out of scope
+
+
+def _make_src(src_id: int, locl: int, ctxt: int, byps: bool) -> dict:
+    """A controller ``srcs`` entry (mirrors the fixture shape)."""
+    return {"byps": byps, "cmds": [-1, -1], "cnt1": 0, "cnt2": 0, "cnt3": 0,
+            "ctxt": ctxt, "id__": src_id, "locl": locl, "mtms": 0, "mtyp": 0,
+            "type": 1}
+
+
+def _synth_cg_from_recipe(
+    recipe: dict,
+    instance_ids: Dict[Tuple[int, int, int], int],
+    max_id: int,
+) -> dict:
+    """Build the device ``cg__`` snapshot machinery from a recipe's inline
+    snapshot arrays (snapshots spec Part A).
+
+    Each user block may carry ``snap_bypass`` (per-snapshot bool list) and
+    ``snap_params`` (``{device_param_name: per-snapshot value list}``). For every
+    block/param that ACTUALLY VARIES across snapshots we emit one ``trgs`` target
+    (type1/enty2/pid0 bypass, or type2/enty3/pidN param), keyed by that block's
+    device instance id (``eID_``, from ``instance_ids``). Each snapshot's
+    ``tamv`` is the flat ``[trg_id, value, …]`` over every tracked target,
+    ``ctm_.stid`` lists them, and ``ctm_.ptid`` packs the param targets
+    (``(eID_<<16 | pid_) -> trg_id``).
+
+    A tone with no snapshot variation falls back to the blank-8 ``cg__``.
+    """
+    snap_meta = recipe.get("snapshots") or []
+    trgs: List[dict] = []
+    stid: List[int] = []
+    ptid: List[int] = []
+    tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
+    trg_index: Dict[Tuple[int, int, int], int] = {}  # (eID_, pid_, type) -> trg id
+    next_trg = 0
+
+    def _new_trg(entry: dict, key: Tuple[int, int, int]) -> int:
+        nonlocal next_trg
+        tid = next_trg
+        next_trg += 1
+        entry["id__"] = tid
+        trgs.append(entry)
+        trg_index[key] = tid
+        return tid
+
+    # 1) Snapshot-tracked targets (Part A).
+    for pi, path in enumerate(recipe.get("paths") or []):
+        for bi, spec in enumerate(path.get("blocks") or []):
+            lane = int(spec.get("lane", 0))
+            pos = int(spec.get("pos", bi))
+            eid = instance_ids.get((pi, lane, pos))
+            if eid is None:
+                continue
+            mid = _resolve_model_id(spec["block"])
+            if mid is None:
+                continue
+            bypass = spec.get("snap_bypass")
+            if isinstance(bypass, list) and len({bool(x) for x in bypass}) > 1:
+                tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
+                                "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 1))
+                stid.append(tid)
+                tracked.append((tid, [bool(x) for x in bypass]))
+            for pname, pvals in (spec.get("snap_params") or {}).items():
+                if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
+                    continue
+                pid = _param_pid(mid, pname)
+                if pid is None:
+                    continue
+                tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid, "pid_": pid,
+                                "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
+                               (eid, pid, 2))
+                stid.append(tid)
+                ptid.extend([(eid << 16) | pid, tid])
+                tracked.append((tid, list(pvals)))
+
+    # 2) FS/EXP controller graph (Part B). Reuse a snapshot trg when the same
+    #    target is both scene-tracked and controller-driven.
+    srcs: List[dict] = []
+    ctrl: List[dict] = []
+    scid: List[Any] = []
+    next_src = 0
+    next_ctrl = 0
+    for pi, path in enumerate(recipe.get("paths") or []):
+        for bi, spec in enumerate(path.get("blocks") or []):
+            lane = int(spec.get("lane", 0))
+            pos = int(spec.get("pos", bi))
+            eid = instance_ids.get((pi, lane, pos))
+            if eid is None:
+                continue
+            mid = _resolve_model_id(spec["block"])
+            if mid is None:
+                continue
+            fsb = spec.get("fs_bypass")
+            if isinstance(fsb, dict):
+                lc = _controller_locl_ctxt(fsb.get("source"))
+                if lc is not None:
+                    locl, ctxt = lc
+                    sid = next_src; next_src += 1
+                    srcs.append(_make_src(sid, locl, ctxt, byps=True))
+                    tid = trg_index.get((eid, 0, 1))
+                    if tid is None:
+                        tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
+                                        "pid_": 0, "slot": 0, "type": 1},
+                                       (eid, 0, 1))
+                    cid = next_ctrl; next_ctrl += 1
+                    ctrl.append({"behv": 0, "cid_": cid, "curv": 5, "dlay": 0,
+                                 "goid": 0, "max_": True, "min_": False,
+                                 "thrs": 0.0, "tid_": tid,
+                                 "togl": fsb.get("behavior") == "momentary",
+                                 "trig": sid, "type": 1})
+                    scid.extend([tid, [cid]])
+            for pname, meta in (spec.get("exp_params") or {}).items():
+                lc = _controller_locl_ctxt(meta.get("source"))
+                pid = _param_pid(mid, pname)
+                if lc is None or pid is None:
+                    continue
+                locl, ctxt = lc
+                sid = next_src; next_src += 1
+                srcs.append(_make_src(sid, locl, ctxt, byps=False))
+                tid = trg_index.get((eid, pid, 2))
+                if tid is None:
+                    tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
+                                    "pid_": pid, "pmid": mid, "ppid": pid,
+                                    "slot": 0, "type": 2}, (eid, pid, 2))
+                    ptid.extend([(eid << 16) | pid, tid])
+                cid = next_ctrl; next_ctrl += 1
+                ctrl.append({"behv": 2, "cid_": cid, "curv": 5, "dlay": 0,
+                             "goid": 0, "max_": float(meta.get("max", 1.0)),
+                             "min_": float(meta.get("min", 0.0)), "thrs": 0.0,
+                             "tid_": tid, "togl": False, "trig": sid, "type": 3})
+                scid.extend([tid, [cid]])
+
+    if not tracked and not ctrl:
+        return _synth_cg(max_id)
+
+    snps: List[dict] = []
+    for i in range(8):
+        tamv: List[Any] = []
+        for tid, vals in tracked:
+            v = vals[i] if i < len(vals) else vals[-1]
+            tamv.extend([tid, v])
+        meta = snap_meta[i] if i < len(snap_meta) else {}
+        name, exsw, bpm = _snap_meta(meta, i)
+        snps.append({"bpm_": bpm, "camv": [], "colr": 1, "exsw": exsw,
+                     "iras": [], "name": name, "si__": i, "tamv": tamv,
+                     "tgls": [], "vald": True})
+
+    return {
+        "asnp": 0,
+        "entt": {
+            "cmnd": [],
+            "ctm_": {"htid": [], "ptid": ptid, "sirt": [], "stid": stid},
+            "ctrl": ctrl,
+            "sm__": {"scid": scid, "ssi_": []},
+            "snps": snps,
+            "srcs": srcs,
+            "trgs": trgs,
+        },
+        "nxtc": max(max_id + 1, next_ctrl),
+        "nxti": 0,
+        "nxtm": 1,
+        "nxts": max(8, next_src),
+        "nxtt": next_trg,
+    }
+
+
+def _scribble_for(sources: Optional[Dict[int, dict]]) -> Dict[Tuple[str, int], dict]:
+    """Map a recipe ``sources`` dict (``{source_id: {fs_color,fs_label,
+    fs_topidx}}``) onto ``(row, stomp_index)`` scribble-strip entries.
+
+    Stomp bank A source ``0x010101NN`` -> row ``a`` stomp ``NN+1``; bank B
+    ``0x010102NN`` -> row ``b`` (spec 2 Part B). Out-of-scope sources are
+    ignored."""
+    out: Dict[Tuple[str, int], dict] = {}
+    for src, cfg in (sources or {}).items():
+        if not isinstance(src, int):
+            continue
+        hi, lo = src & 0xFFFFFF00, src & 0xFF
+        if hi == 0x01010100:
+            out[("a", lo + 1)] = cfg
+        elif hi == 0x01010200:
+            out[("b", lo + 1)] = cfg
+    return out
+
+
+def _synth_pm(sources: Optional[Dict[int, dict]] = None) -> List[dict]:
     """A minimal valid ``pm__`` preset-param list, mirroring the standard key set
     an HX Edit import emits (clip, 2x12 floorboard stomps, tempo, exp-switch,
-    instrument impedance, xy-controller) with neutral values."""
+    instrument impedance, xy-controller). Footswitch scribble-strip colour/label/
+    topidx come from ``sources`` (spec 2 Part B) when supplied, else neutral."""
+    scrib = _scribble_for(sources)
     pm: List[dict] = [
         {"key_": "preset.clip.end", "type": "f", "val_": 0.0},
         {"key_": "preset.clip.filename", "type": "s", "val_": ""},
@@ -552,9 +960,15 @@ def _synth_pm() -> List[dict]:
     for row in ("a", "b"):
         for n in range(1, 13):
             base = f"preset.floorboard.stomp.{row}.{n}"
-            pm.append({"key_": f"{base}.color", "type": "i", "val_": 1})
-            pm.append({"key_": f"{base}.label", "type": "s", "val_": ""})
-            pm.append({"key_": f"{base}.topidx", "type": "i", "val_": 0})
+            cfg = scrib.get((row, n)) or {}
+            color = cfg.get("fs_color", 1)
+            if not isinstance(color, int) or isinstance(color, bool):
+                color = 1  # "auto" / non-int -> default palette slot
+            pm.append({"key_": f"{base}.color", "type": "i", "val_": color})
+            pm.append({"key_": f"{base}.label", "type": "s",
+                       "val_": str(cfg.get("fs_label", ""))})
+            pm.append({"key_": f"{base}.topidx", "type": "i",
+                       "val_": int(cfg.get("fs_topidx", 0))})
     pm += [
         {"key_": "preset.inst1.z", "type": "i", "val_": 1},
         {"key_": "preset.inst2.z", "type": "i", "val_": 1},
@@ -569,35 +983,78 @@ def _synth_pm() -> List[dict]:
 
 
 def _synthesize(recipe: dict) -> dict:
-    """Synthesize a fresh serial ``_sbepgsm`` dict from a raw-less recipe."""
+    """Synthesize a fresh ``_sbepgsm`` dict from a raw-less recipe.
+
+    Reads every DSP path (dual-amp), synthesizes the ``sfg_`` (with any
+    split/join routing), and builds the ``cg__`` snapshot machinery from the
+    recipe's inline snapshot arrays (falling back to a blank-8 ``cg__`` when the
+    tone has no snapshot variation)."""
+    recipe = copy.deepcopy(recipe)
     paths = recipe.get("paths") or []
-    sfg, next_id = synthesize_serial_sfg(paths)
-    return {"cg__": _synth_cg(next_id - 1), "pm__": _synth_pm(), "sfg_": sfg}
+    # Normalize block coordinates so the instance-id map and the snapshot
+    # lookups key off identical ``(path, lane, pos)`` tuples.
+    for path in paths:
+        for bi, spec in enumerate(path.get("blocks") or []):
+            spec.setdefault("lane", 0)
+            spec.setdefault("pos", bi)
+    sfg, next_id, instance_ids = synthesize_sfg(paths)
+    cg = _synth_cg_from_recipe(recipe, instance_ids, next_id - 1)
+    pm = _synth_pm(recipe.get("sources"))
+    return {"cg__": cg, "pm__": pm, "sfg_": sfg}
 
 
 # --- authored .hsp -> device _sbepgsm bytes ----------------------------------
 
-def hsp_to_sbepgsm(hsp_body: dict, *, dsp: int = 0,
+def _build_structural_block(entry: dict) -> dict:
+    """Materialize a split/join routing block from a bridge structural descriptor
+    (``{"kind", "model", "params"}``) into a full device block dict.
+
+    ``id__``/``bblk``/``bflw`` are placeholders; :func:`synthesize_sfg` stamps the
+    instance id and re-points the split<->join partners."""
+    kind = entry.get("kind")
+    scaffold = copy.deepcopy(_SPLIT_SCAFFOLD if kind == "split" else _JOIN_SCAFFOLD)
+    mid = _resolve_model_id(entry.get("model", ""))
+    if mid is not None:
+        scaffold["mdls"][0]["id__"] = mid
+        # Re-map helixgen split/join param names -> device + fill defaults.
+        from . import bridge as _bridge
+        params = entry.get("params") or {}
+        dev_params = _bridge.map_params(mid, {
+            k: v for k, v in params.items() if isinstance(v, (int, float, bool))
+        })
+        scaffold["mdls"][0]["parm"] = _synth_parm(mid, dev_params)
+    return scaffold
+
+
+def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
                    strict: bool = False) -> bytes:
     """Transcode a helixgen ``.hsp`` body into stored device content bytes.
 
-    SERIAL only (path ``dsp``, default 0): resolve each user block's helixgen
-    model to a device model + device param names via
-    :func:`bridge.hsp_to_chain_with_irs`, build a modeled recipe, synthesize the
-    ``_sbepgsm`` structure (:func:`recipe_to_sbepgsm`), and serialize with
-    :func:`content.encode_content_data`. This is the offline blob the device
-    install path installs; no template, no device.
+    Reads EVERY DSP flow (dual-amp) via :func:`bridge.hsp_to_paths`: each flow's
+    user blocks (device model + device param names + IR hash), its live-input
+    routing, its split/join routing skeleton, and its per-snapshot bypass/param
+    deltas. Builds a modeled recipe, synthesizes the ``_sbepgsm`` structure
+    (:func:`recipe_to_sbepgsm`), and serializes with
+    :func:`content.encode_content_data`. No template, no device.
+
+    ``dsp`` is retained for back-compat: pass an int to transcode only that one
+    DSP path (legacy serial behaviour); the default (``None``) reads all paths.
     """
     from . import bridge
 
-    chain = bridge.hsp_to_chain_with_irs(hsp_body, dsp=dsp, strict=strict)
-    blocks: List[Dict[str, Any]] = []
-    for dev_id, params, irhash in chain:
-        spec: Dict[str, Any] = {"block": defs.model_name_for(dev_id),
-                                "params": params}
-        if irhash:
-            spec["irhash"] = irhash
-        blocks.append(spec)
-    recipe = {"name": None, "paths": [{"blocks": blocks}]}
+    paths = bridge.hsp_to_paths(hsp_body, strict=strict)
+    if dsp is not None:
+        paths = paths[dsp:dsp + 1]
+    for path in paths:
+        if path.get("structural"):
+            path["structural"] = [_build_structural_block(e)
+                                  for e in path["structural"]]
+    recipe: Dict[str, Any] = {"name": None, "paths": paths or [{"blocks": []}]}
+    snaps = bridge.hsp_snapshot_meta(hsp_body)
+    if snaps:
+        recipe["snapshots"] = snaps
+    sources = bridge.hsp_sources(hsp_body)
+    if sources:
+        recipe["sources"] = sources
     doc = recipe_to_sbepgsm(recipe)
     return content.encode_content_data(doc)
