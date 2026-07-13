@@ -920,7 +920,7 @@ def _synth_cg_from_recipe(
                                  "thrs": 0.0, "tid_": tid,
                                  "togl": fsb.get("behavior") == "momentary",
                                  "trig": sid, "type": 1})
-                    scid.extend([tid, [cid]])
+                    scid.extend([sid, [cid]])
             for pname, meta in (spec.get("exp_params") or {}).items():
                 lc = _controller_locl_ctxt(meta.get("source"))
                 pid = _param_pid(mid, pname)
@@ -940,7 +940,7 @@ def _synth_cg_from_recipe(
                              "goid": 0, "max_": float(meta.get("max", 1.0)),
                              "min_": float(meta.get("min", 0.0)), "thrs": 0.0,
                              "tid_": tid, "togl": False, "trig": sid, "type": 3})
-                scid.extend([tid, [cid]])
+                scid.extend([sid, [cid]])
 
     if not tracked and not ctrl:
         return _synth_cg(max_id)
