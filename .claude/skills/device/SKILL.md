@@ -30,6 +30,22 @@ It also absorbs the old slot ledger, so it's the single source of truth for
 `device setlist` verbs, the `device_setlist_*` MCP tools, or the `tone` skill
 (which offers to add a freshly-authored tone to a setlist).
 
+## How a tone becomes a device preset: the transcoder (no template)
+
+helixgen installs a tone by **transcoding** its `.hsp` straight into the
+device's native content format (`_sbepgsm`) and writing that into an empty pool
+slot. The `.hsp` **is** a complete Line 6 preset; the transcoder just
+re-serializes it — models, params, and IR references — into the on-device
+encoding. **There is no template, no slot skeleton, and no coverage
+precondition.** Any block chain installs at full fidelity; you never pick a
+`--template` and never worry about whether some factory preset "has a
+compressor slot."
+
+The one real limit today: **synthesis is serial (single-chain) only.** A
+parallel / dual-amp `.hsp` installs only its first DSP path (the second lane is
+dropped). Everything else — drives, amps, IR cabs, mod/delay/reverb, EQ,
+dynamics, pitch — transcodes faithfully.
+
 ## The default path: manage membership, then `device sync <setlist>`
 
 For "get my tones onto the Helix":
@@ -68,8 +84,6 @@ is either done for you or reported by `errors[]`. Concretely:
   but you do **not** need it before a sync.
 - **Do not `view_preset` every tone up front** to bucket them. Run the sync;
   `errors[]` is the only bucket that matters (the tones that didn't fit).
-- **Do not enumerate, read, or load factory presets to assess template coverage.**
-  You cannot verify coverage that way (no such API — see below); the sync tells you.
 - The **CLI not being on `PATH` is normal** (helixgen ships as a bundled MCP
   server). That's not a blocker and not a reason to improvise — call
   `device_sync_setlist` / `device_sync_all` and the other `device_*` MCP tools.
@@ -87,8 +101,8 @@ sync is built for it: it **auto-reconnects (bounded)** on a dropped RPC and is
 > the user to REBOOT the Helix** (power-cycle / restart it) — that reliably
 > clears the wedged network stack. Then re-run the sync once more.
 
-Don't treat a dropped connection as a tone/coverage failure or start
-diagnosing the protocol — re-run first, reboot second.
+Don't treat a dropped connection as a tone failure or start diagnosing the
+protocol — re-run first, reboot second.
 
 ## When to use
 
@@ -111,11 +125,10 @@ just run it:
 - Writing a script that reads/parses `.hsp` files (`open(...).read()`,
   `json.loads`, stripping the `rpshnosj` magic). **Never parse `.hsp` bytes.**
 - Calling `view_preset` on many/all tones to classify them.
-- Listing, reading, or loading factory presets "to find a template that covers
-  everything" / "to check coverage."
-- Building Simple/Rich/Quarantine buckets, or a per-tone template plan.
-- Probing template after template hunting for a slot — **there is no discovery
-  API** (below); the sync tells you.
+- Listing, reading, or loading factory presets "to find a template" or "to check
+  coverage" — **there are no templates anymore** (the transcoder is
+  template-free); this is pure wasted work.
+- Building Simple/Rich/Quarantine buckets, or a per-tone install plan.
 - Treating "the `helixgen` CLI isn't on PATH" as a problem to solve instead of
   reaching for the `device_*` MCP tools.
 - Diagnosing a dropped connection instead of just re-running (then rebooting).
@@ -123,45 +136,27 @@ just run it:
 All of these mean: **you are predicting failures you should be reading.** Run the
 sync; its `errors[]` is the analysis, and it costs one call.
 
-## Why tones land in `errors[]` (the template precondition)
+## Why a tone lands in `errors[]`
 
 You don't need this to run the first sync — it's how you *read the results*.
+Because install is a faithful, template-free transcode, most tones just install.
+A tone lands in `errors[]` for one of a small, concrete set of reasons:
 
-Installing a tone into the pool maps its blocks onto a **template** (an existing
-device preset used as a slot skeleton, `--template <cid>` / `template_cid`;
-default = the current edit buffer), which **must already contain a free slot for
-every block CATEGORY the tone uses**. When it doesn't, that tone — not the run —
-fails with:
+- **`could not resolve helixgen model 'X'`** — a block model has no device
+  equivalent in the bridge. That tone isn't installable as-is; report it.
+- **unregistered IR** (cab silent / "No Model" after install) — the referenced
+  IR isn't on the device and isn't in your local `mapping.json`, so it can't be
+  uploaded. `register-irs` the WAV (or import it in HX Edit), then re-sync.
+- **dropped connection / device unresponsive** — not a tone failure at all; the
+  flaky network stack. Re-run the sync; reboot the Helix if it persists.
 
-```
-no free template slot for model <N> (category 'dynamics'); choose a template with that block
-```
-
-**Cab-family nuance (why a plain factory rig usually works).** Slot matching is
-by category *family*, and the cab family is unified: an IR cab (`ir`) maps onto a
-template's Cab slot **even if that slot currently hosts a modeled cab**
-(`cab`/`cab_ir_interp`), and amp/preamp are likewise interchangeable. So a normal
-factory "full rig" preset (amp → drive → cab → delay → reverb) is a fine
-`--template` for typical IR-based tones — you don't need a template whose cab is
-already an IR. What the template still must cover is every *other* category the
-tone uses: a tone with a `dynamics` (comp/gate) block needs a template that has a
-compressor slot; `modulation`, `pitch`, `eq` are also commonly missing from
-factory rigs.
-
-**There is no API to ask "which template has a compressor slot."** That's exactly
-why you don't pre-select a perfect template or probe: you *can't*. Run once with a
-full rock-rig template (covers the common case), then `errors[]` names the tones
-that need a richer template or a dropped block. Fix that subset (playbook below)
-and re-run. A past session ignored this and probed template after template on an
-empty device, landing nothing — the sync's non-aborting `errors[]` is what makes
-"run then react" strictly safer than predict.
-
-One more hard limit `errors[]` (or a thin-looking install) will surface:
+One structural limit that is **not** an error but a silent reduction:
 
 - **Parallel / dual-amp routing is flattened to a single serial chain** (only
-  DSP-path 0 is read; the second lane is dropped). A tone that relies on a
-  parallel split will not reproduce — **quarantine it for manual HX Edit import.**
-  You'll see it as an error or an install with far fewer blocks than the `.hsp`.
+  DSP-path 0 is transcoded; the second lane is dropped). A tone that relies on a
+  parallel split will install with fewer blocks than the `.hsp` and won't
+  reproduce the split — **quarantine it for manual HX Edit import.** (Dual-amp
+  synthesis is a tracked follow-up.)
 
 ## The tools
 
@@ -191,15 +186,16 @@ helixgen device setlist create-local <setlist>     # empty setlist in the manife
 ### Sync a setlist onto the device (pool + references)
 
 ```bash
-helixgen device sync <setlist> [--exclude-irs] [--template <cid>]
-helixgen device sync --all [--gc] [--exclude-irs] [--template <cid>]
+helixgen device sync <setlist> [--exclude-irs]
+helixgen device sync --all [--gc] [--exclude-irs]
 ```
 
 - **Resolves the setlist by name** under `-5`. If the device doesn't have it,
   the run errors clearly ("create '<name>' in the Stadium app first, then
   re-sync") — that's the deferred-creation guardrail, not a bug.
-- **Pool-first, idempotent:** installs tones missing from the pool, re-pushes
-  ones whose `.hsp` content hash changed, skips unchanged ones.
+- **Pool-first, idempotent:** installs tones missing from the pool (transcoded,
+  template-free), re-pushes ones whose `.hsp` content hash changed, skips
+  unchanged ones.
 - **Rebuilds references:** adds/removes/reorders the setlist's references to
   match manifest order — **never orphaning** a pool preset another setlist still
   references.
@@ -210,8 +206,8 @@ helixgen device sync --all [--gc] [--exclude-irs] [--template <cid>]
 - **Per-tone failures are collected and never abort the run.** Result:
   `{ok, setlists, pool:{installed,updated,skipped}, references:{added,removed},
   gc:{deleted}, irs:[…], errors:[…]}`. Read `errors`.
-- MCP mirrors: `device_sync_setlist(model, setlist, exclude_irs?, template_cid?)`
-  and `device_sync_all(model, gc?, exclude_irs?, template_cid?)`. Path-based like
+- MCP mirrors: `device_sync_setlist(model, setlist, exclude_irs?)`
+  and `device_sync_all(model, gc?, exclude_irs?)`. Path-based like
   the rest (no base64).
 
 > The old directory-mirror `device sync [dir]` and the `device_sync_library` MCP
@@ -221,7 +217,7 @@ helixgen device sync --all [--gc] [--exclude-irs] [--template <cid>]
 ### Single tone — `device install` (CLI) or `device_install_preset` (MCP)
 
 Use for one-off placement into a chosen pool slot. **Prefer the CLI**
-`helixgen device install <hsp> <name> --pos N [--template <cid>] [--auto-irs]`:
+`helixgen device install <hsp> <name> --pos N [--auto-irs]`:
 it uploads IRs (`--auto-irs`) and records the ledger. The **MCP**
 `device_install_preset` does **neither** — no IR upload, no ledger entry (use
 `device sync` or the CLI `install --auto-irs` when you want IRs + tracking).
@@ -241,17 +237,11 @@ Reserve the other `device_*` MCP tools for reads / interactive single ops
    Stadium app now. (Syncing an existing setlist like a factory `user` setlist
    needs no creation step.)
 
-### 2. Pick a template in one glance, then sync
-
-1. **Pick any full rock-rig template** — list a setlist, grab a
-   drive→amp→cab→delay→reverb factory preset by name, pass its cid as
-   `--template`. The unified cab family means its modeled cab slot still hosts
-   your IR cabs — don't hunt for an IR-cab template. Omit `--template` only if
-   you know the edit buffer is already a full rig.
+### 2. Sync
 
 ```bash
-helixgen device sync <setlist> --template <cid>
-# MCP: device_sync_setlist(model, setlist="<setlist>", template_cid=<cid>)
+helixgen device sync <setlist>
+# MCP: device_sync_setlist(model, setlist="<setlist>")
 ```
 
 The engine reconciles the pool (install/update/skip), rebuilds the setlist's
@@ -264,21 +254,17 @@ on-device reordering of *untracked* presets is a separate concern (backlog #7).
 The result dict's `errors[]` is your analysis. Fix that subset and re-run
 (re-syncing is idempotent — installed tones are skipped):
 
-- **`no free template slot for model N (category 'dynamics'/'modulation'/…)`** —
-  the template lacks that block. Either **drop the inessential block** from that
-  tone (`remove-block` / `patch_preset` — a front-of-chain comp is usually subtle
-  polish) and re-sync, or pass a **richer `--template`** that has the slot (build
-  one in HX Edit if no factory preset does). **Do not probe templates** — if no
-  device preset has that slot, no template will satisfy it.
-- **parallel / dual-amp tone** (errors, or installs with far fewer blocks than
-  the `.hsp`) — the installer flattens to one serial chain. **Quarantine it for
-  HX Edit import**; keep it out of the setlist.
+- **`could not resolve helixgen model 'X'`** — a block model doesn't bridge to
+  the device; that tone isn't installable as-is. Report it.
+- **parallel / dual-amp tone** (installs with far fewer blocks than the `.hsp`) —
+  the transcoder flattens to one serial chain. **Quarantine it for HX Edit
+  import**; keep it out of the setlist.
 - **unregistered IR** (cab silent / "No Model") — `register-irs` the WAV, re-sync.
 - **dropped connection / device unresponsive** — not a tone failure; **re-run**
   the sync, and if it keeps dropping, **reboot the Helix** and re-run.
-- **If you delegate the run to a subagent, keep it tight:** sync *this* setlist
-  with *this* template; report `pool`/`references`/`errors` verbatim; no template
-  probing, no improvising. Then check the device yourself.
+- **If you delegate the run to a subagent, keep it tight:** sync *this* setlist;
+  report `pool`/`references`/`errors` verbatim; no improvising. Then check the
+  device yourself.
 
 ### 4. IRs — usually automatic
 
@@ -307,9 +293,9 @@ Tightly:
    result's `references` / `device setlist list`).
 2. **Pool changes** — installed / updated / skipped counts (and any `gc` deletions
    if you ran `--all --gc`).
-3. **What errored and the fix** — each `errors[]` entry with its remedy (richer
-   template, dropped block, HX Edit for parallel presets, or re-run/reboot for a
-   dropped connection).
+3. **What errored and the fix** — each `errors[]` entry with its remedy
+   (unresolvable model, HX Edit for parallel presets, register an IR, or
+   re-run/reboot for a dropped connection).
 4. **IRs** — uploaded vs any that couldn't be resolved (so the user registers
    them).
 
@@ -318,9 +304,8 @@ Tightly:
 | Error / symptom | What it means | Do |
 |---|---|---|
 | `create '<name>' in the Stadium app first` (or "setlist not found") | the named setlist isn't on the device; helixgen can't create it (#8) | have the user create it by hand in the Stadium app, then re-sync |
-| `no free template slot for model N (category 'dynamics')` (in `errors[]`) | the run's template has no comp/gate slot | pass a `--template` that covers it, drop the block, or quarantine — **do not probe templates** |
 | `could not resolve helixgen model 'X'` | a block model doesn't bridge to the device | that tone isn't installable as-is; report it |
-| an installed tone has far fewer blocks than the `.hsp`, or a parallel tone errors | parallel routing flattened / unsupported | HX Edit import that tone; keep it out of the setlist |
+| an installed tone has far fewer blocks than the `.hsp`, or a parallel tone under-installs | parallel / dual-amp routing flattened to serial (path 0 only) | HX Edit import that tone; keep it out of the setlist |
 | cab silent / "No Model" after sync | referenced IR not in local `mapping.json` | `helixgen register-irs` the WAV, then re-sync (or import in HX Edit) |
 | sync fails partway / device stops responding | the Stadium's flaky network stack dropped the connection | **re-run** the same sync (idempotent); if it persists, **reboot the Helix**, then re-run |
 | `device setlist add` raises a name-collision error | the tone's `meta.name` is already registered to a **different** `.hsp` file (unique-name rule) — NOT triggered by adding the same tone to another setlist | rename one tone, or point at the already-registered file |
@@ -331,8 +316,7 @@ Tightly:
 |---|---|
 | Parsing `.hsp` files (`json.loads`, magic-strip) to classify tones | Never parse `.hsp` bytes — just run the sync; `errors[]` is the classification |
 | `view_preset`-ing every tone / listing factory presets **before** the sync | The sync reports failures — run it, analyze `errors[]` after |
-| Probing template after template for a compressor tone | No factory template may have a dynamics slot — run once, then drop the block or pass a richer `--template` for the ones in `errors[]` |
-| Hunting for a template whose cab is already an IR | Not needed — the cab family is unified, so a modeled-cab slot hosts your IR cabs; any full-rig template works |
+| Looking for a "template" or checking factory-preset "coverage" | There are no templates — install is a faithful, template-free transcode; just sync |
 | Hand-rolling a per-preset install loop | Use `device sync <setlist>` — it reconciles the pool, rebuilds references, and uploads IRs in one call |
 | Trying to sync a setlist that isn't on the device | helixgen can't create setlists (#8) — the user creates it in the Stadium app first |
 | Hand-editing `~/.helixgen/setlists.json` | Manage it with `device setlist add/remove` (or the MCP tools / `tone` skill) |

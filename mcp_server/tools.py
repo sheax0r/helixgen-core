@@ -599,18 +599,16 @@ def device_install_preset_handler(
     name: str,
     pos: int,
     setlist: str = "user",
-    template_cid: int | None = None,
 ) -> dict[str, Any]:
     """Author a helixgen .hsp file onto the device as a new preset.
 
-    Reads the `.hsp` off ``hsp_path``, maps its blocks onto a device template's
-    same-category slots (v2.2: single serial chain), and installs it.
-    ``template_cid`` picks a device preset to use as the chain template
-    (defaults to the current edit buffer). Returns
+    Reads the `.hsp` off ``hsp_path``, transcodes it straight into the device's
+    native content format (any block chain, full fidelity, no template), and
+    installs it into the empty slot ``pos``. Returns
     ``{"ok": <bool>, "cid": <new cid or None>}``. EXPERIMENTAL.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError, bridge
+    from helixgen.device import HelixClient, HelixError, bridge, transcode
 
     body = _read_hsp_body(hsp_path)
     container = _device_container(setlist)
@@ -618,14 +616,12 @@ def device_install_preset_handler(
         with HelixClient(ip=ip) as client:
             if client.find_by_pos(container, pos) is not None:
                 raise ValueError(f"{setlist} slot {pos} is not empty")
-            if template_cid is not None:
-                client.load_preset(template_cid)
-            template_blob = client.get_edit_buffer()
             try:
-                cid = bridge.install_recipe(client, body, container, pos, name,
-                                            template_blob, strict=True)
+                blob = transcode.hsp_to_sbepgsm(body, strict=True)
             except (bridge.UnresolvedModel, ValueError) as e:
                 raise ValueError(str(e)) from e
+            with client.mutating():
+                cid = client._raw.push_to_slot(container, pos, name, blob)
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
     return {"ok": cid is not None, "cid": cid}
@@ -701,7 +697,6 @@ def device_sync_setlist_handler(
     *,
     ip: str = _DEFAULT_DEVICE_IP,
     exclude_irs: bool = False,
-    template_cid: int | None = None,
 ) -> dict[str, Any]:
     """Sync ONE manifest setlist onto the device (pool-first, reference rebuild).
 
@@ -719,7 +714,7 @@ def device_sync_setlist_handler(
     try:
         return sync_setlists(
             SetlistManifest.load(), ip=ip, setlists=[setlist],
-            exclude_irs=exclude_irs, template_cid=template_cid,
+            exclude_irs=exclude_irs,
         )
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
@@ -731,7 +726,6 @@ def device_sync_all_handler(
     ip: str = _DEFAULT_DEVICE_IP,
     gc: bool = False,
     exclude_irs: bool = False,
-    template_cid: int | None = None,
 ) -> dict[str, Any]:
     """Sync ALL manifest setlists onto the device (the whole-library reconcile).
 
@@ -749,7 +743,7 @@ def device_sync_all_handler(
     try:
         return sync_setlists(
             SetlistManifest.load(), ip=ip, setlists=None, gc=gc,
-            exclude_irs=exclude_irs, template_cid=template_cid,
+            exclude_irs=exclude_irs,
         )
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e

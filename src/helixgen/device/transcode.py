@@ -583,7 +583,7 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: int = 0,
 
     SERIAL only (path ``dsp``, default 0): resolve each user block's helixgen
     model to a device model + device param names via
-    :func:`bridge.hsp_to_chain`, build a modeled recipe, synthesize the
+    :func:`bridge.hsp_to_chain_with_irs`, build a modeled recipe, synthesize the
     ``_sbepgsm`` structure (:func:`recipe_to_sbepgsm`), and serialize with
     :func:`content.encode_content_data`. This is the offline blob the device
     install path installs; no template, no device.

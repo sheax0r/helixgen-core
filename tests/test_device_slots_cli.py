@@ -52,14 +52,28 @@ class FakeClient:
     def get_edit_buffer(self):
         return b"_sbepgsm-template"
 
+    def mutating(self):
+        import contextlib
+        return contextlib.nullcontext(self)
+
     def push_to_slot(self, container, pos, name, blob):
         self.calls.append(("push_to_slot", container, pos, name))
         return 900
 
 
 def _patch_client(monkeypatch, cls=FakeClient):
+    """Patch HelixClient to ``cls`` and return a list that captures each created
+    instance (so a test can inspect the calls the CLI made)."""
     import helixgen.device as device_mod
-    monkeypatch.setattr(device_mod, "HelixClient", cls)
+    created = []
+
+    def factory(*a, **k):
+        inst = cls(*a, **k)
+        created.append(inst)
+        return inst
+
+    monkeypatch.setattr(device_mod, "HelixClient", factory)
+    return created
 
 
 # -- list (offline) -----------------------------------------------------------
@@ -142,16 +156,16 @@ def test_slots_restore_hsp_source_reinstalls(monkeypatch, tmp_path):
 
     import helixgen.device.bridge as bridge
     monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
-    called = {}
-    def _install(h, body, container, pos, name, blob, strict=True):
-        called["install"] = (container, pos, name)
-        return 950
-    monkeypatch.setattr(bridge, "install_recipe", _install)
+    # Transcoder is stubbed (the seeded body has an empty flow); restore should
+    # transcode then push into the recorded slot via _raw.push_to_slot.
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
 
-    _patch_client(monkeypatch)
+    created = _patch_client(monkeypatch)
     r = CliRunner().invoke(cli, ["device", "slots", "restore", "White Limo Lead"])
     assert r.exit_code == 0, r.output
-    assert called["install"][1] == 12
+    pushes = [c for inst in created for c in inst.calls if c[0] == "push_to_slot"]
+    assert pushes and pushes[-1][2] == 12  # (op, container, pos, name)
 
 
 def test_slots_restore_no_local_source_errors(monkeypatch):
