@@ -50,6 +50,11 @@ class SyncClient:
         self.calls.append(("get_edit_buffer",))
         return b"_sbepgsm-blob"
 
+    def get_content(self, cid):
+        # non-activating read used by sync Phase A
+        self.calls.append(("get_content", cid))
+        return b"_sbepgsm-blob"
+
     def delete(self, container, cids):
         self.calls.append(("delete", container, tuple(cids)))
         return True
@@ -137,10 +142,12 @@ def test_sync_executes_and_updates_ledger(monkeypatch):
     calls = calls_holder["calls"]
     kinds = [c[0] for c in calls]
     assert "delete" in kinds and "push_to_slot" in kinds
-    # all pulls happen before any delete (recoverability)
+    # all pulls happen before any delete (recoverability); reads are
+    # non-activating (get_content), never load_preset+get_edit_buffer
     first_delete = kinds.index("delete")
-    assert "get_edit_buffer" in kinds[:first_delete]
-    assert "delete" not in kinds[:kinds.index("get_edit_buffer")]
+    assert "get_content" in kinds[:first_delete]
+    assert "delete" not in kinds[:kinds.index("get_content")]
+    assert "load_preset" not in kinds
 
     # ledger now reflects C at slot 0, A at 1, B at 2
     led = SlotLedger.load()
@@ -157,8 +164,8 @@ def test_sync_aborts_before_delete_on_empty_blob(monkeypatch):
         PRESETS = [{"posi": 0, "name": "A", "cid_": 1},
                    {"posi": 1, "name": "B", "cid_": 2}]
 
-        def get_edit_buffer(self):
-            self.calls.append(("get_edit_buffer",))
+        def get_content(self, cid):
+            self.calls.append(("get_content", cid))
             return b""  # empty -> must abort before any delete
 
     _patch(monkeypatch, C)
