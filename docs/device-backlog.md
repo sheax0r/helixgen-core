@@ -236,12 +236,12 @@ assumption — see #9); the reference-based redesign below then **shipped
   snapshots/controllers (`snps`/`srcs`/`trgs` + per-param `tid_`), dual-amp
   (split/join), wire `install`/`sync` onto it + delete the template/bridge, strip
   templates from the skill, device audio-validate.
-- **#13 Non-activating content read** **[device-read][discovery]** — `backup`/
-  `pull` (and any content read) currently `load_preset` first, which changes the
-  active tone (mental-model #4). Capture HX Edit's content-read/export command
-  (a `/GetContentData`-style GET counterpart to `/SetContentData`) so reads don't
-  activate; else save-and-restore the active preset around the read. Product
-  paths must preserve the active tone.
+- **#13 Non-activating content read** — **✅ SHIPPED 2.18.0.** Captured HX Edit's
+  content-read command: `client.get_content(cid)` sends `/GetContentData [reqid,
+  cid]` (the non-activating GET counterpart to `/SetContentData`) and returns the
+  content blob **without** `load_preset`, so the device's live tone is untouched
+  (mental-model #4). `backup`/`pull` now route through it (`device/backup.py`,
+  `cli.py` `pull`/`backup`).
 
 ### Resolver pattern — single source of truth for agents + skill
 - **#14 Implement + maintain a "resolver" pattern** **[infra]** — so future
