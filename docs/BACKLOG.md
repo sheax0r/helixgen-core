@@ -260,6 +260,22 @@ assumption — see #9); the reference-based redesign below then **shipped
   = first lane-1 slot, join.bblk = 14 + join.pos). Hardware-validated vs HX
   Edit's own import.
 
+### Transcoder snapshot residuals (from the 2.21.1 bypass-semantics fix review)
+
+- **#23 Input-block state is dropped on transcode** — `bridge.hsp_to_paths`
+  skips `b00` after reading its input mode, so an input block's `@enabled`
+  base value and per-snapshot array never reach the synthesizer (the Stadium
+  app's own import snapshot-tracks the DSP-B input as a bypass target). A
+  `.hsp` that mutes an input per-snapshot, or loads with an input bypassed,
+  silently loses that on `device install`/`sync`. Found by the 2.21.1
+  adversarial review (protocol lens); inert for typical tones.
+- **#24 EXP-driven param leaves don't carry their target id** — on real device
+  blobs a controller-driven param leaf carries `tid_=<trg id>` with
+  `snap=False` (all three `preset_15x` fixtures); helixgen stamps `tid_` only
+  on snapshot-tracked leaves. EXP sweeps were HW-validated at 2.18.0 with
+  `tid_=0`, so this is presumed inert — but it's the symmetric case to the
+  block-level binding the 2.21.1 fix added. Match the device convention.
+
 ### Double-click a `.hsp` to load onto the Helix's ACTIVE slot **[device-write]**
 - Requested 2026-07-13. A macOS file-association / tiny app wrapper so
   double-clicking a `.hsp` transcodes it and pushes it onto the Helix's
