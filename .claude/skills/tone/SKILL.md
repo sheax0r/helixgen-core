@@ -299,6 +299,8 @@ If the user says "no footswitches" or "leave the controls alone," skip this step
 
 **MIDI CC control (only on request):** if the user wants a param or bypass driven by an external MIDI controller / DAW, add a top-level `midi` list (see the CLAUDE.md "MIDI CC control" section) — each `{"cc": 0-127, "targets": [...]}` sweeps a param (`{"block", "param", "min", "max"}`) or toggles a bypass (`{"block", "bypass": true}`). CC-only, EXPERIMENTAL, and realized on `device install`/`sync`. Do **not** auto-wire MIDI by default — only when asked; it does not consume the FS/EXP budget, and a `(block, param)` still gets only one controller across FS/EXP/MIDI.
 
+**Command Center commands (only on request):** if the user wants a footswitch (or Instant slot) to **send** a MIDI message (PC/CC/Note/MMC) or a Preset/Snapshot action to the device / external gear — as opposed to toggling a block — add a top-level `commands` list (see the CLAUDE.md "Command Center commands" section). Each `{"switch": "FS1".."FS11"|"Instant1".."Instant6", "command": <family>, ...fields}`. EXPERIMENTAL, storage-validated, realized on `device install`/`sync`. Do **not** auto-wire commands by default — only when asked. A command switch is distinct from a block-bypass footswitch (a switch can't do both in helixgen yet), so don't put a command on a switch already used in `footswitches`.
+
 ### 5.7. Volume-normalization pass
 
 A final level pass so the preset's loudness is sane and — especially when

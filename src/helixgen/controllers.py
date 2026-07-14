@@ -177,6 +177,39 @@ CONTROLLER_SOURCE_IDS: dict[str, dict[str, int]] = {
 }
 
 
+# Command Center "Instant" command slots (backlog #16). These are command-only
+# footswitch-mode slots — they carry MIDI/Preset-Snapshot commands, they do NOT
+# bypass a block, so they live outside CONTROLLER_META (which is block-targeting
+# FS/EXP). Source ids anchored by `Epic Lots of EQ.hsp` (Instant 1/2 =
+# 0x04040100/0x04040101) + the ZZCAP-CC device capture (Instant 1 = device
+# locl 0, srcs type 4). Instant N = 0x04040100 + (N-1), N in 1..6.
+INSTANT_SOURCE_IDS: dict[str, dict[str, int]] = {
+    "stadium_xl": {f"Instant{n}": 0x04040100 + (n - 1) for n in range(1, 7)},
+}
+
+
+def resolve_command_source(device_id, switch: str) -> int:
+    """Resolve a Command Center ``switch`` identifier to its ``.hsp`` source id
+    (backlog #16). Accepts the assignable footswitches ``FS1``–``FS5`` /
+    ``FS7``–``FS11`` (same source ids as controllers) and ``Instant1``–
+    ``Instant6``. Reserved ``FS6``/``FS12`` raise the tailored error. EXP
+    continuous commands are out of scope (no ``.hsp`` source anchored), and are
+    rejected with a clear message rather than silently accepted."""
+    device = _resolve_device(device_id)
+    instants = INSTANT_SOURCE_IDS.get(device, {})
+    if switch in instants:
+        return instants[switch]
+    if switch in ("EXP1", "EXP2", "EXP1Toe"):
+        raise ControllerError(
+            f"{switch} continuous/expression commands are out of scope for "
+            f"Command Center authoring; assignable command slots are "
+            f"FS1–FS5, FS7–FS11 and Instant1–Instant6."
+        )
+    # Footswitches (and reserved-switch tailored errors) reuse the controller
+    # resolver's table + messages.
+    return resolve_controller_source(device_id, switch)
+
+
 # Observed `meta.device_id` values that identify Stadium XL hardware. Real
 # exports carry a numeric id (e.g. 2490368), not the canonical string —
 # this set lets us recognise those without warning. Add new values as they
@@ -319,4 +352,18 @@ def controller_name_for_source(device_id, source_id: int) -> str | None:
     for name, sid in table.items():
         if sid == source_id:
             return name
+    return None
+
+
+def command_switch_for_source(device_id, source_id: int) -> str | None:
+    """Reverse of resolve_command_source: source id → command switch name
+    (``FS*`` or ``Instant*``). Returns None for an unrecognised source."""
+    device = _resolve_device(device_id)
+    for name, sid in INSTANT_SOURCE_IDS.get(device, {}).items():
+        if sid == source_id:
+            return name
+    name = controller_name_for_source(device_id, source_id)
+    # Only footswitches carry commands in scope (EXP continuous out of scope).
+    if name is not None and name.startswith("FS"):
+        return name
     return None

@@ -458,6 +458,41 @@ def hsp_sources(hsp_body: dict) -> Dict[int, Dict[str, Any]]:
     return out
 
 
+def hsp_commands(hsp_body: dict) -> List[Dict[str, Any]]:
+    """Command Center commands from ``preset.commands`` (backlog #16), flattened
+    to a list of ``{source, type, func, channel, params}`` records for the
+    transcoder's ``cg__.entt`` cmnd synthesis. ``source`` is the integer switch
+    source id; ``type`` the family (``PresetSnapshot``/``MIDI``); ``func`` the
+    native ``Command`` subtype; ``params`` the raw ``{name: value}`` map.
+    Malformed entries are skipped. Ordinal order per source is preserved."""
+    raw = (hsp_body.get("preset") or {}).get("commands")
+    out: List[Dict[str, Any]] = []
+    if not isinstance(raw, dict):
+        return out
+    for key, records in raw.items():
+        try:
+            source = int(key)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(records, list):
+            continue
+        for rec in sorted(
+                (r for r in records if isinstance(r, dict)),
+                key=lambda r: r.get("ordinal", 0)):
+            params_raw = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+            params = {name: (w.get("value") if isinstance(w, dict) else w)
+                      for name, w in params_raw.items()}
+            out.append({
+                "source": source,
+                "type": rec.get("type"),
+                "func": params.get("Command", 0),
+                "behavior": rec.get("behavior", "latching"),
+                "toggle": bool(rec.get("toggle", False)),
+                "params": params,
+            })
+    return out
+
+
 def _hsp_midi_by_coord(hsp_body: dict) -> Dict[Tuple[int, int, int], Dict[str, Any]]:
     """Group ``preset._helixgen_midi`` records by ``(path, lane, pos)`` block
     coordinate (backlog #33). Each value is ``{"bypass_cc": int|None,

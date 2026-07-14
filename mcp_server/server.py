@@ -91,6 +91,21 @@ def generate_preset(model: str, recipe: dict[str, Any], out_path: str) -> dict[s
     content); it is not written as a device-native `.hsp` controller. One param
     is driven by at most one controller across footswitch/expression/MIDI.
 
+    **Command Center (EXPERIMENTAL, #16):** an optional top-level `commands`
+    list binds a footswitch or Instant slot to a command sent on press — a MIDI
+    message or a snapshot action (targets the device / external gear, not
+    a block). Each entry is `{"switch": "FS1".."FS11"|"Instant1".."Instant6",
+    "command": <family>, ...fields}`: `midi_cc` (`cc`,`value`,`channel`),
+    `midi_pc` (`program`,`channel`,`bank_msb`/`bank_lsb`), `midi_note`
+    (`note`,`velocity`,`channel`,`note_off`), `midi_mmc` (`message`,`channel`),
+    `snapshot` (`snapshot` 0-7); plus optional `behavior`/`toggle`/`label`/
+    `color`. Same-switch entries merge (max 2). A recall-preset family is
+    deferred (unanchored). Authored NATIVELY into `preset.commands` (the
+    encoding real exports carry) and transcoded to the device `cg__.entt` on
+    install/sync. Storage HW-validated; audible response uncharacterized.
+    Reserved `FS6`/`FS12` and a switch shared with a `footswitches` entry are
+    rejected.
+
     **IR usage:** `With Pan` blocks accept an `ir` field with either a
     basename (resolved via the local IR mapping) or a 32-char hex hash
     (used literally). For factory IRs, use a `Mic Ir_*` cab block.

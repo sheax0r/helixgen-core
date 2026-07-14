@@ -933,6 +933,67 @@ def _make_src(src_id: int, locl: int, ctxt: int, byps: bool) -> dict:
             "type": 1}
 
 
+# Command Center (#16). Switch source id -> device (locl, ctxt, srcs-type),
+# anchored by the live Mandarin Fuzz (FS1 = locl 25, ctxt 1, type 1) + ZZCAP-CC
+# (Instant 1 = locl 0, ctxt 0, type 4) content pulls, 2026-07-14.
+def _command_locl_ctxt_type(source: Any) -> Optional[Tuple[int, int, int]]:
+    if not isinstance(source, int) or isinstance(source, bool):
+        return None
+    hi, lo = source & 0xFFFFFF00, source & 0xFF
+    if hi == 0x01010100:            # footswitch bank A
+        return (25 + lo, 1, 1)
+    if hi == 0x04040100 and 0 <= lo <= 5:   # Instant 1..6
+        return (lo, 0, 4)
+    return None
+
+
+def _command_payload(ctype: Any, func: int, params: dict) -> Optional[dict]:
+    """The family-specific ``cg__`` ``cmnd`` payload — ``type`` + ``pvl*`` int
+    slots + ``psp*`` bool slots — for a native ``preset.commands`` record.
+
+    Byte-exact anchors (live pulls 2026-07-14): PresetSnapshot (5 int + 5 bool,
+    Mandarin Fuzz all-zero) and MIDI footswitch/Instant (12 int + 12 bool,
+    ZZCAP-CC Instant PC: ``[0, ch, msb, lsb, -1, 0,0,0, 100, 1, 0,0]``). The
+    MIDI PC + snapshot cases reproduce those pulls byte-for-byte; the CC / Note /
+    MMC slot placements are a documented hypothesis (no non-PC MIDI footswitch
+    example was captured) — see the #16 design spec §5. Continuous/EXP MIDI
+    (a different 5-slot layout) is not authored (out of scope)."""
+    def _pv(prefix: str, vals: list) -> dict:
+        return {f"{prefix}{chr(ord('a') + i)}": v for i, v in enumerate(vals)}
+
+    def _g(name: str, default: int = 0) -> int:
+        v = params.get(name, default)
+        return v if isinstance(v, int) and not isinstance(v, bool) else default
+
+    if ctype == "PresetSnapshot":
+        pvl = [_g("Action"), _g("Command"), _g("Preset"), _g("Setlist"),
+               _g("Snapshot")]
+        out = {"type": 1, "func": int(func)}
+        out.update(_pv("pvl", pvl))
+        out.update(_pv("psp", [False] * 5))
+        return out
+    if ctype == "MIDI":
+        ch = _g("MIDI Ch", 1)
+        msb, lsb = _g("MSB"), _g("LSB")
+        pvl = [0, ch, msb, lsb, -1, 0, 0, 0, 100, 1, 0, 0]
+        if func == 0:      # PC
+            pvl[0] = _g("PC")
+        elif func == 1:    # CC
+            pvl[5] = _g("CC#")
+            pvl[6] = _g("Value")
+        elif func == 3:    # Note
+            pvl[8] = _g("Velocity", 100)
+            pvl[10] = _g("Note")
+            pvl[11] = _g("NoteOff")
+        elif func == 2:    # MMC
+            pvl[7] = _g("Message")
+        out = {"type": 6, "func": int(func)}
+        out.update(_pv("pvl", pvl))
+        out.update(_pv("psp", [False] * 12))
+        return out
+    return None
+
+
 def _synth_cg_from_recipe(
     recipe: dict,
     instance_ids: Dict[Tuple[int, int, int], int],
@@ -1194,7 +1255,49 @@ def _synth_cg_from_recipe(
     for sid in sorted(src_cids):
         scid.extend([sid, src_cids[sid]])
 
-    if not tracked and not ctrl:
+    # 3) Command Center commands (#16): each command is an ENTITY (its
+    #    ``cmnd.cid_`` == its trg ``eID_``, ``enty`` 6, ``type`` 4). Authored
+    #    NATIVELY in ``preset.commands``; here we synthesize the ``cg__``
+    #    srcs->cmnd->trgs relational records. Command ``srcs`` are APPENDED after
+    #    the controller srcs — helixgen rejects a switch shared by a footswitch
+    #    controller AND a command, so the two never contend for one srcs entry,
+    #    and ``sm__.scid`` (controllers only) is untouched.
+    cmnd: List[dict] = []
+    next_cmd_entity = max(instance_ids.values(), default=0) + 1
+    cmd_src_index: Dict[int, int] = {}       # source id -> srcs id
+    cmd_src_cmds: Dict[int, List[int]] = {}   # srcs id -> [command entity ids]
+    for cmd in (recipe.get("commands") or []):
+        lct = _command_locl_ctxt_type(cmd.get("source"))
+        payload = _command_payload(cmd.get("type"), cmd.get("func", 0),
+                                   cmd.get("params") or {})
+        if lct is None or payload is None:
+            continue
+        locl, ctxt, srtype = lct
+        entity = next_cmd_entity
+        next_cmd_entity += 1
+        tid = next_trg
+        next_trg += 1
+        trgs.append({"eID_": entity, "enty": 6, "id__": tid, "pid_": 0,
+                     "slot": 0, "type": 4})
+        src = cmd["source"]
+        sid = cmd_src_index.get(src)
+        if sid is None:
+            sid = len(srcs) + 1
+            cmd_src_index[src] = sid
+            srcs.append({"byps": False, "cmds": [-1, -1], "cnt1": 0, "cnt2": 0,
+                         "cnt3": 0, "ctxt": ctxt, "id__": sid, "locl": locl,
+                         "mtms": 0, "mtyp": 0, "type": srtype})
+            cmd_src_cmds[sid] = []
+        cmd_src_cmds[sid].append(entity)
+        rec = {"behv": _behv(cmd.get("behavior"), 0), "cid_": entity, "curv": 5,
+               "dlay": 0, "goid": 0, "thrs": 0.0, "tid_": tid,
+               "togl": bool(cmd.get("toggle", False)), "trig": sid}
+        rec.update(payload)
+        cmnd.append(rec)
+    for sid, cids in cmd_src_cmds.items():
+        srcs[sid - 1]["cmds"] = cids + [-1] * max(0, 2 - len(cids))
+
+    if not tracked and not ctrl and not cmnd:
         return _synth_cg(max_id), bindings
 
     snps: List[dict] = []
@@ -1212,7 +1315,7 @@ def _synth_cg_from_recipe(
     return {
         "asnp": 0,
         "entt": {
-            "cmnd": [],
+            "cmnd": cmnd,
             "ctm_": {"htid": [], "ptid": ptid, "sirt": [], "stid": stid},
             "ctrl": ctrl,
             "sm__": {"scid": scid, "ssi_": []},
@@ -1222,9 +1325,12 @@ def _synth_cg_from_recipe(
         },
         "nxtc": next_ctrl,      # next-free controller id (not tied to block ids)
         "nxti": 0,
-        "nxtm": 1,
-        "nxts": len(srcs) + 1,  # next-free source id
-        "nxtt": next_trg,       # next-free target id
+        # Command entities extend the entity space; a command-free preset keeps
+        # the historical nxtm=1 (the 2.21.1-blessed snapshot/controller output)
+        # so this change is a no-op for every non-command tone.
+        "nxtm": next_cmd_entity if cmnd else 1,
+        "nxts": len(srcs) + 1,  # next-free source id (incl. command srcs)
+        "nxtt": next_trg,       # next-free target id (incl. command trgs)
     }, bindings
 
 
@@ -1431,6 +1537,9 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
     sources = bridge.hsp_sources(hsp_body)
     if sources:
         recipe["sources"] = sources
+    commands = bridge.hsp_commands(hsp_body)
+    if commands:
+        recipe["commands"] = commands
     preset_params = (hsp_body.get("preset") or {}).get("params") or {}
     inst_z = {jack: preset_params[f"{jack}Z"]
               for jack in ("inst1", "inst2")

@@ -191,6 +191,23 @@ class MidiAssignment:
 
 
 @dataclass
+class CommandAssignment:
+    """A Command Center command (backlog #16) bound to a footswitch or Instant
+    slot: a MIDI message (PC/CC/Note/MMC) or a Preset/Snapshot action sent when
+    the switch is pressed. Unlike footswitch/expression *controllers* (which
+    drive a block bypass/param), a command targets the device / external MIDI
+    gear / preset-snapshot state. Authored NATIVELY into ``preset.commands``
+    (the encoding real exports carry — see BACKLOG #16)."""
+    switch: str
+    command: str  # midi_cc|midi_pc|midi_note|midi_mmc|snapshot|preset
+    behavior: str = "latching"
+    toggle: bool = False
+    label: str | None = None
+    color: str | None = None
+    fields: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class Spec:
     name: str
     paths: list[PathEntry]
@@ -199,6 +216,7 @@ class Spec:
     footswitches: list[FootswitchAssignment] = field(default_factory=list)
     expression: list[ExpressionAssignment] = field(default_factory=list)
     midi: list[MidiAssignment] = field(default_factory=list)
+    commands: list[CommandAssignment] = field(default_factory=list)
 
 
 SNAPSHOT_MAX = 8  # Stadium hardware cap
@@ -278,10 +296,24 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
                     f"another controller and MIDI CC {m.cc}; one controller per param.",
                 )
             param_drivers.append(key)
+    commands = _parse_commands(data.get("commands"), source=source)
+    # A switch may drive a block (footswitches) OR carry Command Center commands,
+    # but helixgen does not compose both stores on one switch yet (the device
+    # allows it — Mandarin Fuzz's FS1 does both — but the two writers would need
+    # to share the source's srcs entry). Reject the overlap with a clear error.
+    fs_switches = {f.switch for f in footswitches}
+    for c in commands:
+        if c.switch in fs_switches:
+            raise _err(
+                source,
+                f"switch {c.switch!r} is used by both a footswitch (block "
+                f"bypass/param) and a Command Center command; helixgen does not "
+                f"compose both on one switch yet (author them on separate switches).",
+            )
     return Spec(
         name=name, paths=paths, author=author,
         snapshots=snapshots, footswitches=footswitches, expression=expression,
-        midi=midi,
+        midi=midi, commands=commands,
     )
 
 
@@ -680,6 +712,107 @@ def _parse_midi_target(data: Any, *, source: str) -> MidiTarget:
     return MidiTarget(block=block, param=(param if not bypass else None),
                       bypass=bypass, min=float(mn), max=float(mx),
                       path=path, lane=lane, pos=pos)
+
+
+# Command Center families -> their author-facing fields. Each field is
+# (min, max, default); default None means REQUIRED. ``note_off`` is a bool.
+# Snapshot indices are 0..7 (Stadium's 8 snapshots); MIDI channels 1..16.
+_COMMAND_FAMILIES: dict[str, dict[str, tuple]] = {
+    "midi_cc":   {"cc": (0, 127, None), "value": (0, 127, 0), "channel": (1, 16, 1)},
+    "midi_pc":   {"program": (0, 127, None), "channel": (1, 16, 1),
+                  "bank_msb": (-1, 127, -1), "bank_lsb": (-1, 127, -1)},
+    "midi_note": {"note": (0, 127, None), "velocity": (0, 127, 64),
+                  "channel": (1, 16, 1)},
+    "midi_mmc":  {"message": (0, 127, None), "channel": (1, 16, 1)},
+    "snapshot":  {"snapshot": (0, 7, None)},
+    # NB: a "preset" (recall-preset) family is intentionally NOT offered — it is
+    # unanchored (no corpus example; the sole PresetSnapshot example is a
+    # snapshot) and, without a decoded Action/Command discriminator, a
+    # recall-preset command to preset 0 would be byte-indistinguishable from
+    # snapshot 0 on the device. Deferred; see BACKLOG #16.
+}
+# The device's command slot stores at most 2 commands per switch (a merged
+# switch) — observed 2 on ZZCAP-CC, never more. Cap authoring at 2.
+_COMMAND_MERGE_MAX = 2
+_COMMAND_META_KEYS = {"switch", "command", "behavior", "toggle", "label", "color"}
+
+
+def _parse_commands(raw: Any, *, source: str) -> list[CommandAssignment]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise _err(source, '"commands" must be a list.')
+    out: list[CommandAssignment] = []
+    per_switch: dict[str, int] = {}
+    for i, entry in enumerate(raw):
+        cmd = _parse_command(entry, source=f"{source} commands[{i}]")
+        per_switch[cmd.switch] = per_switch.get(cmd.switch, 0) + 1
+        if per_switch[cmd.switch] > _COMMAND_MERGE_MAX:
+            raise _err(
+                f"{source} commands[{i}]",
+                f"switch {cmd.switch!r} has more than {_COMMAND_MERGE_MAX} "
+                f"commands; the device stores at most {_COMMAND_MERGE_MAX} per "
+                f"switch (a merged switch).",
+            )
+        out.append(cmd)
+    return out
+
+
+def _parse_command(data: Any, *, source: str) -> CommandAssignment:
+    if not isinstance(data, dict):
+        raise _err(source, "must be an object.")
+    switch = data.get("switch")
+    if not isinstance(switch, str) or not switch:
+        raise _err(source, '"switch" is required and must be a non-empty string.')
+    command = data.get("command")
+    if command not in _COMMAND_FAMILIES:
+        raise _err(
+            source,
+            f'"command" must be one of {sorted(_COMMAND_FAMILIES)} (got {command!r}).',
+        )
+    behavior = data.get("behavior", "latching")
+    if behavior not in VALID_FS_BEHAVIORS:
+        raise _err(source, f'"behavior" must be one of {list(VALID_FS_BEHAVIORS)} '
+                           f'(got {behavior!r}).')
+    toggle = data.get("toggle", False)
+    if not isinstance(toggle, bool):
+        raise _err(source, '"toggle" must be a boolean if provided.')
+    label = data.get("label")
+    if label is not None and not isinstance(label, str):
+        raise _err(source, '"label" must be a string if provided.')
+    color = data.get("color")
+    if color is not None and not isinstance(color, str):
+        raise _err(source, '"color" must be a string if provided.')
+
+    spec_fields = _COMMAND_FAMILIES[command]
+    # note_off is a bool flag for midi_note only.
+    allowed = set(spec_fields) | _COMMAND_META_KEYS
+    if command == "midi_note":
+        allowed.add("note_off")
+    unknown = set(data) - allowed
+    if unknown:
+        valid = sorted(set(spec_fields) | ({"note_off"} if command == "midi_note" else set()))
+        raise _err(source, f'unknown field(s) {sorted(unknown)} for command '
+                           f'{command!r}; valid: {valid}.')
+
+    fields: dict[str, Any] = {}
+    for name, (lo, hi, default) in spec_fields.items():
+        val = data.get(name, default)
+        if val is None:
+            raise _err(source, f'command {command!r} requires "{name}".')
+        if not isinstance(val, int) or isinstance(val, bool):
+            raise _err(source, f'"{name}" must be an integer (got {val!r}).')
+        if not (lo <= val <= hi):
+            raise _err(source, f'"{name}" must be in {lo}..{hi} (got {val}).')
+        fields[name] = val
+    if command == "midi_note":
+        note_off = data.get("note_off", False)
+        if not isinstance(note_off, bool):
+            raise _err(source, '"note_off" must be a boolean if provided.')
+        fields["note_off"] = note_off
+
+    return CommandAssignment(switch=switch, command=command, behavior=behavior,
+                             toggle=toggle, label=label, color=color, fields=fields)
 
 
 def _parse_lane_pos(data: dict, *, source: str) -> tuple[int, int | None]:

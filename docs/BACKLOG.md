@@ -377,15 +377,49 @@ orthogonal to it.
   (golden-tested) + HW-validated (all 3 outputs × 7 bands, `/success`). Write-only
   over the network (no `/PropertyValueGet` read-back → no `get`). Findings:
   `docs/superpowers/specs/2026-07-14-parity-capture-findings.md` §2. Matrix §8.
-- **P2 · #16 Command Center** **[device-write] — PROTOCOL DECODED 2026-07-14,
-  ready to implement.** The footswitch-command subsystem. Wire path pinned:
-  `/attachCommandWithType` (2-byte-length framing) → device returns a handle →
-  `/setCommandParamVal(seq,handle,paramIdx,val)`; type families 1=Preset/Snapshot,
-  4=HotKey/Utility, 6=MIDI (subtype via param idx1: 0=PC,1=CC,3=Note,2=MMC);
-  slot = `locl` int (FS 25/26/27, Instant1=0, EXP A=43). Preset-side storage is
-  `cg__.entt` (`srcs`→`cmnd`(`type`/`func`/`pvla..pvll`)→`trgs`). Next: extend
-  the transcoder to synthesize `cg__.entt` command records + (optionally) a live
-  authoring verb. Findings spec §5. Matrix §6.
+- **P2 · #16 Command Center** **[device-write] — ✅ SHIPPED 2026-07-14
+  (EXPERIMENTAL, native+transcode path).** The footswitch/Instant command
+  subsystem. **Route: NATIVE `.hsp`** — corpus recon found `preset.commands` in
+  real exports (`Mandarin Fuzz` = PresetSnapshot on FS1, `Epic Lots of EQ` =
+  MIDI CC/PC on Instant 1/2), so commands are authored NATIVELY (no sidecar,
+  unlike #33). Shipped: a top-level recipe `commands` list (families midi_cc /
+  midi_pc / midi_note / midi_mmc / snapshot on `FS1`–`FS5`/`FS7`–`FS11`
+  + `Instant1`–`Instant6`, ≤2 per switch) → `mutate.wire_command` →
+  `preset.commands`; `view`
+  lift-back; commands survive block edits (switch-keyed, not block-keyed);
+  transcoder synthesizes `cg__.entt` `srcs`→`cmnd`→`trgs`. CLI/MCP/CLAUDE.md/
+  tone-skill in sync. Design + decoded ground truth: `docs/superpowers/specs/
+  2026-07-14-command-center-design.md`.
+  **Decoding note:** the live device pulls (Mandarin + the `ZZCAP-CC` parity
+  preset, non-activating GetContentData) **corrected findings §5** — the `cmnd`
+  slot layout is **type-dependent**: PresetSnapshot = 5 int (`pvla..pvle`) + 5
+  bool; MIDI footswitch/Instant = 12 (`pvla..pvll`) + 12 bool
+  (`[0,ch,msb,lsb,-1,0,0,0,100,1,0,0]` for PC); NOT the uniform 12 §5 guessed.
+  Each command is an entity (`cmnd.cid_` == its trg `eID_`, `enty 6`, `type 4`).
+  **HW-validated:** a snapshot (FS1) + MIDI PC (Instant2) preset
+  SetContentData'd → GetContentData'd back preserved both `cmnd` + `srcs`
+  byte-for-byte (the #33 bar; the create-path hit the #38 anomaly, restore path
+  worked).
+  **Residuals (honest):** no live authoring verb (the wire path
+  `/attachCommandWithType` + `/setCommandParamVal` stays unimplemented);
+  **recall-`preset` family deferred** (unanchored + byte-indistinguishable from
+  snapshot 0 without a decoded discriminator — adversarial-review H1/H2);
+  HotKey/Utility (family 4) + EXP continuous commands out of scope (no anchor);
+  footswitch CC/Note/MMC 12-slot placements are a HYPOTHESIS (only PC captured);
+  audible/functional response uncharacterized (like #33); FS command-src
+  `locl` for FS2–FS11 is EXTRAPOLATED from the single FS1 anchor (`25+NN`
+  controller progression); a switch shared by `footswitches` + `commands` is
+  rejected at AUTHORING time (device allows it; composing the two stores is
+  deferred) — on READ, `view` keeps such a command under `unknown_controllers`
+  (parseable, labeled) so a composed device export (Mandarin Fuzz) still
+  round-trips. Adversarial review (2026-07-14, two rounds): round 1 fixed an
+  `nxtm` divergence for command-free presets (M1), capped merged commands at 2
+  (M2), added the `.hlx` warning (M3); round 2 found 1 Critical — the
+  FS-collision projection broke the 211-export acceptance net (210/211) —
+  fixed via the `unknown_controllers` bucket, nets re-verified 211/211.
+  Design + review:
+  `docs/superpowers/specs/2026-07-14-command-center-design.md`. Findings spec §5.
+  Matrix §6.
 - **P3 · #17 Matrix Mixer** — **🚫 CLOSED 2026-07-14: NOT an app feature.** The
   manual + app-bundle surveys confirm the desktop app has no mixer view (only
   the Output block's Pan+Level); per-output fader/pan/mute/solo is a

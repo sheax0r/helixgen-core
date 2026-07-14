@@ -129,7 +129,7 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Clear controllers / assignments | Action Panel | remove src/trg | partial | partial | partial | 🟡 | via re-authoring |
 | MIDI CC / Note assignment | midiassign | `/attachParamController`/`/attachBlockBypassController` + `/ControllerMIDISourceAdd` | none | none | recipe `midi` → transcode | 🔴→🟡 | **#33 MOSTLY SHIPPED 2026-07-14 (EXPERIMENTAL, CC-only)**: recipe `midi` list → `spec`/`mutate.wire_midi` (namespaced `preset._helixgen_midi`) → `view` round-trip → transcoder synthesizes `cg__.entt/ctrl`(`cnt2`/`midi`/`type`/`tid_`)+`ctm_.ptid` per §6. STORAGE HW-validated (install→SetContentData→GetContentData round-trip persisted both ctrl records byte-for-byte on Stadium XL 2026-07-14). Residuals: `.hsp`-native encoding not invented (transcode-only route); audible CC response uncharacterized (no external CC sent); MIDI Note out of scope; no live verb |
 | XY controller | XY screen | `/SetBatchedParamValues` (zone = block-level param batch) | none | none | none | 🔴→🔍 | **#34 activation decoded 2026-07-14**: selecting a zone pushes the block's whole param set (no zone index). ⚠️ inactive-zone **storage** still unresolved (not in `.sbe`) |
-| **Command Center** (Preset/Snap, MIDI CC/PC/Note/MMC, HotKey, Utility, Instant, EXP→MIDI) | view_command_center | `/attachCommandWithType`+`/setCommandParamVal` (2-byte-len framing) | none | none | none | 🔴→🔍 | **#16 protocol decoded 2026-07-14**: type families 1=Preset/Snap,4=HotKey/Utility,6=MIDI (subtype via param idx1: 0=PC,1=CC,3=Note,2=MMC); slot=`locl`; `.sbe` `cg__.entt` (srcs→cmnd→trgs). Ready to implement |
+| **Command Center** (Preset/Snap, MIDI CC/PC/Note/MMC, Instant) | view_command_center | `/attachCommandWithType`+`/setCommandParamVal` (2-byte-len framing) | recipe `commands` → `preset.commands` | `preset.commands` (native) | recipe `commands` → transcode | 🔴→🟡 | **#16 SHIPPED 2026-07-14 (EXPERIMENTAL)**: NATIVE `.hsp` route — `preset.commands` (corpus-proven: Mandarin Fuzz + Epic Lots of EQ). Recipe `commands` list (midi_cc/pc/note/mmc + snapshot on FS1-5/FS7-11 + Instant1-6, ≤2/switch) → `spec`/`mutate.wire_command` → `view` round-trip → transcoder synthesizes `cg__.entt` srcs→cmnd→trgs. Live pulls (Mandarin + ZZCAP-CC) CORRECTED findings §5: `cmnd` slots are type-dependent (PresetSnapshot 5+5, MIDI FS/Instant 12+12); command = entity (`cid_`==trg `eID_`, enty 6/type 4). STORAGE HW-validated (snapshot+PC round-trip byte-for-byte; create-path hit #38, restore worked). Residuals: no live verb; recall-preset family deferred (unanchored/ambiguous); HotKey/Utility + EXP-continuous out of scope; FS CC/Note/MMC slots a hypothesis (PC anchored); audible response uncharacterized; FS shared with `footswitches` rejected |
 
 ## 7. IR (impulse response) management
 
@@ -226,7 +226,6 @@ non-activating read/backup, live param set.
 
 **🔴 missing (in-scope), by size:**
 - **Global settings** (§8) — 8 pages, ~150 relevant keys; the biggest gap.
-- **Command Center** (§6) — whole footswitch-command subsystem.
 - **Matrix Mixer** (§3) — per-output mixing/mute/solo.
 - Live device ops — snapshot recall/copy, model set, block bypass.
 - IR folders (§7), controller MIDI/XY sources (§6 — #33/#34).

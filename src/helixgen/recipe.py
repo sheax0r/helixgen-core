@@ -370,6 +370,12 @@ def apply_recipe(
             for t in assignment.targets
         ]
         mutate.wire_midi(body, assignment.cc, midi_targets, library)
+    for cmd in spec.commands:
+        mutate.wire_command(
+            body, cmd.switch, cmd.command, cmd.fields,
+            behavior=cmd.behavior, toggle=cmd.toggle,
+            label=cmd.label, color=cmd.color,
+        )
 
     # --- snapshot metadata + active-snapshot pointer -----------------------
     body["preset"]["snapshots"] = _build_snapshot_metadata(spec)

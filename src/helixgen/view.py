@@ -629,6 +629,140 @@ def _recover_midi(body: dict, library: Library, idx: dict) -> list[dict[str, Any
     return [{"cc": cc, "targets": by_cc[cc]} for cc in order]
 
 
+def _recover_commands(
+    body: dict, device_id: Any,
+    footswitches: list[dict[str, Any]], unknowns: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Recover Command Center commands from ``preset.commands`` back into the
+    recipe ``commands`` shape (backlog #16). Each source key resolves to a
+    switch name (FS*/Instant*); each record's ``type`` + native params map back
+    to a friendly ``command`` family. Records on an unrecognised source or an
+    unknown family are skipped (kept round-trip safe). Ordinal order within a
+    source is preserved.
+
+    A command whose switch ALSO carries a recovered footswitch (block bypass /
+    param toggle) assignment — a device-legal combination (Mandarin Fuzz's FS1
+    does both) that helixgen cannot yet AUTHOR (`parse_spec` rejects it) — is
+    NOT emitted as a first-class ``commands`` entry. It goes into
+    ``unknown_controllers`` (which ``parse_spec`` ignores) with a stderr
+    warning, the same never-drop / never-emit-unparseable idiom the FS/EXP
+    recovery uses, so the projection stays round-trip safe."""
+    preset = body.get("preset") or {}
+    raw = preset.get("commands")
+    if not isinstance(raw, dict):
+        return []
+    sources = preset.get("sources") or {}
+    fs_switches = {f.get("switch") for f in footswitches}
+    out: list[dict[str, Any]] = []
+    for key in raw:
+        try:
+            source_id = int(key)
+        except (TypeError, ValueError):
+            continue
+        switch = controllers.command_switch_for_source(device_id, source_id)
+        if switch is None:
+            continue
+        records = raw[key]
+        if not isinstance(records, list):
+            continue
+        scrib = sources.get(key) if isinstance(sources.get(key), dict) else {}
+        for rec in sorted(
+                (r for r in records if isinstance(r, dict)),
+                key=lambda r: r.get("ordinal", 0)):
+            entry = _recover_one_command(rec, switch, scrib)
+            if entry is None:
+                continue
+            if switch in fs_switches:
+                what = entry.get("command", "command")
+                print(
+                    f"warning: {switch} carries a Command Center {what} command "
+                    f"AND a footswitch assignment; composing both on one switch "
+                    f"is not yet authorable — command kept under "
+                    f"unknown_controllers.",
+                    file=sys.stderr,
+                )
+                unknowns.append({
+                    "kind": "command",
+                    "source": f"0x{source_id:08x}",
+                    "switch": switch,
+                    "label": (f"Command Center {what} command on a switch also "
+                              f"carrying a footswitch assignment; composing "
+                              f"both is not yet authorable"),
+                    "command": {k: v for k, v in entry.items() if k != "switch"},
+                })
+                continue
+            out.append(entry)
+    return out
+
+
+def _cmd_val(params: dict, name: str) -> int:
+    w = params.get(name)
+    if isinstance(w, dict) and isinstance(w.get("value"), int):
+        return w["value"]
+    return 0
+
+
+def _recover_one_command(rec: dict, switch: str,
+                         scrib: dict) -> dict[str, Any] | None:
+    ctype = rec.get("type")
+    params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+    # Mirror parse_spec's ranges so a hand-corrupted / params-incomplete record
+    # can't project a `commands` entry the parser would then reject (the #33
+    # residual-2 discipline). MIDI needs a 1..16 channel; snapshot 0..7.
+    if ctype == "MIDI" and _cmd_val(params, "MIDI Ch") not in range(1, 17):
+        return None
+    if ctype == "PresetSnapshot" and not (0 <= _cmd_val(params, "Snapshot") <= 7):
+        return None
+    entry: dict[str, Any] = {"switch": switch}
+    if ctype == "PresetSnapshot":
+        # Only the snapshot sub-action is in scope. A recall-PRESET command
+        # (Preset/Setlist set) is a different, unanchored sub-action helixgen
+        # does not author — skip it rather than misproject it as a snapshot.
+        if _cmd_val(params, "Preset") or _cmd_val(params, "Setlist"):
+            print(
+                f"warning: {switch} carries a Command Center recall-preset "
+                f"command (out of scope); dropped from the projection.",
+                file=sys.stderr,
+            )
+            return None
+        entry["command"] = "snapshot"
+        entry["snapshot"] = _cmd_val(params, "Snapshot")
+    elif ctype == "MIDI":
+        sub = _cmd_val(params, "Command")
+        channel = _cmd_val(params, "MIDI Ch")
+        if sub == 1:
+            entry.update(command="midi_cc", cc=_cmd_val(params, "CC#"),
+                         value=_cmd_val(params, "Value"), channel=channel)
+        elif sub == 0:
+            entry.update(command="midi_pc", program=_cmd_val(params, "PC"),
+                         channel=channel, bank_msb=_cmd_val(params, "MSB"),
+                         bank_lsb=_cmd_val(params, "LSB"))
+        elif sub == 3:
+            entry.update(command="midi_note", note=_cmd_val(params, "Note"),
+                         velocity=_cmd_val(params, "Velocity"), channel=channel,
+                         note_off=bool(_cmd_val(params, "NoteOff")))
+        elif sub == 2:
+            entry.update(command="midi_mmc", message=_cmd_val(params, "Message"),
+                         channel=channel)
+        else:
+            return None
+    else:
+        return None
+    behavior = rec.get("behavior")
+    if behavior == "momentary":
+        entry["behavior"] = behavior
+    if rec.get("toggle") is True:
+        entry["toggle"] = True
+    if switch.startswith("FS"):
+        label = scrib.get("fs_label")
+        if isinstance(label, str) and label:
+            entry["label"] = label
+        color = scrib.get("fs_color")
+        if isinstance(color, str) and color not in (None, "auto"):
+            entry["color"] = color
+    return entry
+
+
 def _entry_for(key, bnn, library, irs):
     """Build a spec entry dict (block/split/join) with explicit lane/pos."""
     num = int(key[1:])
@@ -864,6 +998,10 @@ def view(body: dict, library: Library, *, irs: IrMapping | None = None) -> dict[
     midi = _recover_midi(body, library, idx)
     if midi:
         spec["midi"] = midi
+
+    commands = _recover_commands(body, device_id, fs, unknowns)
+    if commands:
+        spec["commands"] = commands
 
     if unknowns:
         spec["unknown_controllers"] = unknowns

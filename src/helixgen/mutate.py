@@ -1218,6 +1218,106 @@ def wire_midi(
     midi.extend(records)
 
 
+# Command Center MIDI subtype -> the native ``Command`` param value that selects
+# it (findings §5, confirmed by `Epic Lots of EQ.hsp`): PC=0, CC=1, MMC=2, Note=3.
+_MIDI_SUBTYPE = {"midi_pc": 0, "midi_cc": 1, "midi_mmc": 2, "midi_note": 3}
+
+
+def _command_native_record(command: str, fields: dict[str, Any], *,
+                           behavior: str, toggle: bool, ordinal: int) -> dict[str, Any]:
+    """Build one ``preset.commands`` record (the encoding real exports carry;
+    see BACKLOG #16). ``PresetSnapshot`` and ``MIDI`` param sets mirror the
+    corpus byte-for-byte (all keys always present)."""
+    def wrap(d: dict[str, int]) -> dict[str, dict[str, int]]:
+        return {k: {"value": v} for k, v in d.items()}
+
+    if command == "snapshot":
+        params = {"Action": 0, "Command": 0, "Preset": 0, "Setlist": 0,
+                  "Snapshot": fields["snapshot"]}
+        ctype = "PresetSnapshot"
+    else:
+        # MIDI: all 11 params present; ``Command`` selects the subtype.
+        params = {"CC#": 0, "Command": _MIDI_SUBTYPE[command], "LSB": 0,
+                  "MIDI Ch": fields["channel"], "MSB": 0, "Message": 0,
+                  "Note": 0, "NoteOff": 0, "PC": 0, "Value": 0, "Velocity": 0}
+        if command == "midi_cc":
+            params["CC#"] = fields["cc"]
+            params["Value"] = fields["value"]
+        elif command == "midi_pc":
+            params["PC"] = fields["program"]
+            params["MSB"] = fields["bank_msb"]
+            params["LSB"] = fields["bank_lsb"]
+        elif command == "midi_note":
+            params["Note"] = fields["note"]
+            params["Velocity"] = fields["velocity"]
+            params["NoteOff"] = 1 if fields["note_off"] else 0
+        elif command == "midi_mmc":
+            params["Message"] = fields["message"]
+        ctype = "MIDI"
+
+    return {"behavior": behavior, "curve": "linear", "delay": 0, "goid": 0,
+            "ordinal": ordinal, "params": wrap(params), "threshold": 0.0,
+            "toggle": toggle, "type": ctype}
+
+
+def wire_command(
+    body: dict[str, Any],
+    switch: str,
+    command: str,
+    fields: dict[str, Any],
+    *,
+    behavior: str = "latching",
+    toggle: bool = False,
+    label: str | None = None,
+    color: str | None = None,
+) -> None:
+    """Author a Command Center command onto a footswitch/Instant slot, in place
+    (backlog #16). Writes NATIVELY into ``preset.commands`` (the encoding real
+    exports carry — corpus-proven; unlike #33 MIDI-CC which needed a sidecar),
+    keyed by the switch's ``.hsp`` source id, and registers the source in
+    ``preset.sources``.
+
+    ``switch`` is ``FS1``–``FS5`` / ``FS7``–``FS11`` or ``Instant1``–``Instant6``
+    (resolved via :func:`controllers.resolve_command_source`; reserved
+    ``FS6``/``FS12`` rejected). ``command`` is one of ``midi_cc``/``midi_pc``/
+    ``midi_note``/``midi_mmc``/``snapshot``/``preset`` and ``fields`` its
+    validated family params (see :mod:`spec`). Several commands may share a
+    switch (a merged switch) — each gets the next ``ordinal`` in call order.
+
+    ``label``/``color`` set the FS scribble strip (``preset.sources``); on an
+    Instant slot (no strip) they warn and are ignored.
+    """
+    if color is not None and color not in controllers.FS_COLORS:
+        raise MutateError(
+            f"Unknown footswitch color {color!r}; "
+            f"must be one of {sorted(controllers.FS_COLORS)}."
+        )
+    device_id = _chassis_device_id(body)
+    source_id = controllers.resolve_command_source(device_id, switch)
+    is_footswitch = switch.startswith("FS")
+
+    commands = body.setdefault("preset", {}).setdefault("commands", {})
+    key = str(source_id)
+    records = commands.setdefault(key, [])
+    records.append(_command_native_record(
+        command, fields, behavior=behavior, toggle=toggle,
+        ordinal=len(records)))
+
+    sources = body["preset"].setdefault("sources", {})
+    entry = sources.setdefault(key, {"bypass": False})
+    entry.setdefault("bypass", False)
+    if is_footswitch:
+        entry.setdefault("fs_topidx", 0)
+        entry["fs_label"] = label if label is not None else entry.get("fs_label", "")
+        entry["fs_color"] = color if color is not None else entry.get("fs_color", "auto")
+    elif label is not None or color is not None:
+        import sys
+        print(
+            f"warning: {switch} has no scribble strip; label/color ignored.",
+            file=sys.stderr,
+        )
+
+
 def wire_wah_toe(
     body: dict[str, Any],
     block: str,

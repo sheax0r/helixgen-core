@@ -472,6 +472,55 @@ CC# instead of pedal:
   MIDI assignment yet (author it into the preset). Stadium-only; ignored for
   `.hlx` (legacy Helix) chassis output.
 
+### Optional: Command Center commands (EXPERIMENTAL — #16)
+
+Bind a **footswitch or Instant slot** to a Command Center command — a MIDI
+message (PC/CC/Note/MMC) or a Preset/Snapshot action — sent when the switch is
+pressed. Unlike `footswitches` (which toggle a block's bypass/param), a command
+targets the **device / external MIDI gear / preset-snapshot state**, not a
+block. Add a top-level `commands` list:
+
+```json
+"commands": [
+  {"switch": "FS1",      "command": "snapshot", "snapshot": 2, "label": "SNAP", "color": "red"},
+  {"switch": "Instant1", "command": "midi_cc",  "cc": 85, "value": 127, "channel": 2, "toggle": true},
+  {"switch": "Instant2", "command": "midi_pc",  "program": 44, "channel": 4},
+  {"switch": "FS3",      "command": "midi_note", "note": 60, "velocity": 100, "channel": 1}
+]
+```
+
+- `switch` — `FS1`–`FS5`/`FS7`–`FS11` or `Instant1`–`Instant6`. Reserved
+  `FS6`/`FS12` rejected; EXP continuous commands are out of scope.
+- `command` + its fields:
+  - `midi_cc` — `cc` (0–127, required), `value` (0–127), `channel` (1–16).
+  - `midi_pc` — `program` (0–127, required), `channel`, `bank_msb`/`bank_lsb` (−1=off).
+  - `midi_note` — `note` (0–127, required), `velocity`, `channel`, `note_off` (bool).
+  - `midi_mmc` — `message` (0–127, required), `channel`. **EXPERIMENTAL.**
+  - `snapshot` — `snapshot` (0–7, required).
+  - (A recall-`preset` family is **not** offered — it is unanchored and, without
+    a decoded Action discriminator, byte-indistinguishable from `snapshot 0` on
+    the device. Deferred — see BACKLOG #16.)
+- At most **2 commands per switch** (a merged switch — the device's cap).
+- `behavior` (`latching`/`momentary`), `toggle` (bool). `label`/`color` set the
+  FS scribble strip (Instant slots have no strip — a warning is emitted).
+- Several entries may share one `switch` (a **merged switch** — ordinals assigned
+  in list order).
+- A switch used by BOTH `footswitches` (block bypass/param) AND `commands` is
+  rejected (the device allows it; helixgen doesn't compose the two stores yet).
+  On read, `view` keeps a device export's command-on-a-footswitch-switch under
+  `unknown_controllers` (labeled, ignored by the parser) so the projection
+  stays round-trip safe.
+- **How it's realized:** authored NATIVELY into `preset.commands` — the encoding
+  real exports carry (corpus-proven), NOT a sidecar. The transcoder synthesizes
+  the device `cg__.entt` `srcs`/`cmnd`/`trgs` on `device install`/`sync`;
+  `view` lifts it back. Commands are switch-keyed, so surgical block edits
+  (`add-block`/`remove-block`/`swap-model`) leave them untouched.
+- **EXPERIMENTAL.** STORAGE hardware-validated on Stadium XL (a snapshot + MIDI
+  PC command round-tripped byte-for-byte); audible/functional response
+  uncharacterized, and the footswitch CC/Note/MMC slot placements are a
+  hypothesis (only PC/snapshot are byte-anchored). No live `device` verb.
+  Stadium-only; ignored for `.hlx` chassis output.
+
 ### Optional: per-block IR reference
 
 For IR blocks (`"block": "With Pan"` and other `HX2_ImpulseResponse*` variants),

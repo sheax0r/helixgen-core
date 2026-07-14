@@ -199,10 +199,12 @@ def _compose_preset_hlx(
     """
     if (any(p.input is not None for p in spec.paths)
             or any(p.output is not None for p in spec.paths)
-            or spec.footswitches or spec.expression):
+            or spec.footswitches or spec.expression or spec.midi
+            or spec.commands):
         print(
             "warning: input routing / output level-pan / footswitches / "
-            "expression are Stadium-only; ignored for .hlx chassis output.",
+            "expression / MIDI CC / Command Center commands are Stadium-only; "
+            "ignored for .hlx chassis output.",
             file=sys.stderr,
         )
     resolved = resolve_blocks(spec, library)
