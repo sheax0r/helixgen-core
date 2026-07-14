@@ -123,12 +123,23 @@ rule). **[discovery]** = also needs an OSC command we haven't captured yet.
   placement in the tone-library manifest (registers the tone, sets its slot +
   observed device); the `SlotLedger` it used to drift is gone — one manifest is
   the single writer, kept in sync by both CLI and MCP. Remaining open:
-  - **MCP `device_install_preset` IR upload** — still uploads no IRs (the CLI
-    `device install --auto-irs` and `device sync` do). Fold the shared per-tone
-    IR-upload core in.
-  - **"Update" an already-installed tone** — still needs its own brainstorm (no
-    device-side "update" verb; `device restore` is the closest primitive).
-    **Blocked on a design decision.**
+  - **MCP `device_install_preset` IR upload** — **✅ SHIPPED (2026-07-15).**
+    The shared per-tone IR-upload core (diff referenced irhashes vs
+    `device_ir_hashes()`, resolve via `mapping.json`, `push_ir`, verify the
+    registered hash) now lives in one place —
+    `helixgen.device.ir_upload.upload_missing_irs`/`sync_preset_irs` — and
+    backs all three call sites: CLI `device install --auto-irs` / `device
+    slots restore` (`cli._auto_upload_irs`, now a thin echo wrapper — still
+    aborts the whole install on a hard `push_ir` failure, matching its old
+    behavior, just via a clean `ClickException` instead of a raw traceback),
+    `device sync` (`setlist_sync._upload_missing_irs`, now a thin wrapper —
+    incidentally fixes a latent bug where a hash-mismatch upload was
+    misreported `ok: True`), and MCP `device_install_preset`, which gained an
+    `auto_irs` param (default `True`) and returns per-IR results in the
+    tool's `irs` field.
+  - **"Update" an already-installed tone** — needs user input: design
+    decision (no device-side "update" verb; `device restore` is the closest
+    primitive).
 
 ### Named-setlist targeting / multi-setlist (device model RE'd 2026-07-12)
 **Full findings + design:**

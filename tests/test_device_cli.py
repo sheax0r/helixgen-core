@@ -301,6 +301,57 @@ def test_auto_upload_irs_not_registered_locally(monkeypatch, capsys):
     assert "not found locally" in capsys.readouterr().err
 
 
+def test_auto_upload_irs_no_mapping_aborts_command(monkeypatch, capsys):
+    """A broken/unreadable local mapping.json aborts the whole `--auto-irs`
+    install with a ClickException (matching the original upfront-check
+    behavior) — and since the no_mapping outcome applies identically to
+    every hash, nothing is echoed per-hash first."""
+    import click
+    import pytest
+    from helixgen.cli import _auto_upload_irs
+    import helixgen.ir as _ir
+
+    def _broken_load(cls):
+        raise OSError("mapping.json is corrupt")
+
+    monkeypatch.setattr(_ir.IrMapping, "load", classmethod(_broken_load))
+
+    with pytest.raises(click.ClickException,
+                       match="mapping.json") as excinfo:
+        _auto_upload_irs("1.2.3.4", ["aa11", "bb22"])
+    assert "--auto-irs needs your local IR mapping.json" in str(excinfo.value)
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == ""  # aborts before any per-hash echo
+
+
+def test_auto_upload_irs_push_error_aborts_command(monkeypatch, capsys):
+    """A hard push_ir failure (e.g. a dropped connection) still aborts the
+    whole `--auto-irs` install with a ClickException — unlike `device sync`,
+    which tolerates a per-IR failure and keeps going, a preset shouldn't
+    silently install missing one of its referenced IRs."""
+    import click
+    import pytest
+    from pathlib import Path
+    from helixgen.cli import _auto_upload_irs
+    from helixgen.device import HelixError
+    import helixgen.ir as _ir
+    from helixgen.device import sftp as _sftp
+
+    monkeypatch.setattr(_ir.IrMapping, "load",
+                        classmethod(lambda cls: _FakeMapping(
+                            {"aa11": Path("/irs/a.wav")})))
+
+    def _raise(ip, path, **kw):
+        raise HelixError("connection dropped")
+
+    monkeypatch.setattr(_sftp, "push_ir", _raise)
+
+    with pytest.raises(click.ClickException, match="connection dropped"):
+        _auto_upload_irs("1.2.3.4", ["aa11"])
+    # the failure is echoed as a warning before the command aborts
+    assert "connection dropped" in capsys.readouterr().err
+
+
 # -- device setlist: local manifest membership --------------------------------
 
 def _fresh_manifest_env(monkeypatch, tmp_path):

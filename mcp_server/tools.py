@@ -864,27 +864,44 @@ def device_install_preset_handler(
     name: str,
     pos: int,
     setlist: str = "user",
+    auto_irs: bool = True,
 ) -> dict[str, Any]:
     """Author a helixgen .hsp file onto the device as a new preset.
 
     Reads the `.hsp` off ``hsp_path``, transcodes it straight into the device's
     native content format (any block chain, full fidelity, no template), and
-    installs it into the empty slot ``pos``. Returns
-    ``{"ok": <bool>, "cid": <new cid or None>}``. EXPERIMENTAL.
+    installs it into the empty slot ``pos``. When ``auto_irs`` (default
+    True), any IRs the preset references that aren't already on the device
+    are uploaded FIRST — resolved via the local IR mapping.json, then pushed
+    (the same shared core `device sync` / CLI `device install --auto-irs`
+    use) — so the installed preset's cabs resolve immediately. Pass
+    ``auto_irs=False`` to skip this (e.g. the IRs are already known to be on
+    the device). Returns ``{"ok": <bool>, "cid": <new cid or None>,
+    "irs": [<per-IR result>, ...]}`` — `irs` is `[]` when the preset
+    references no IRs, or none are missing; otherwise each entry is
+    `{hash, ok, outcome, note, ...}` (see `helixgen.device.ir_upload`).
+    EXPERIMENTAL.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError, bridge, transcode
+    from helixgen.device import HelixClient, HelixError, bridge, ir_upload, transcode
 
     body = _read_hsp_body(hsp_path)
     container = _device_container(setlist)
+    # Transcode/validate FIRST — it's pure-offline, so an untranscodable
+    # .hsp (e.g. an unresolved model) fails before ANY device work: no IRs
+    # uploaded for a preset that was never going to install, and no IR
+    # results lost to an escaping transcode error.
+    try:
+        blob = transcode.hsp_to_sbepgsm(body, strict=True)
+    except (bridge.UnresolvedModel, ValueError) as e:
+        raise ValueError(str(e)) from e
+    irs_results: list[dict[str, Any]] = []
     try:
         with HelixClient(ip=ip) as client:
             if client.find_by_pos(container, pos) is not None:
                 raise ValueError(f"{setlist} slot {pos} is not empty")
-            try:
-                blob = transcode.hsp_to_sbepgsm(body, strict=True)
-            except (bridge.UnresolvedModel, ValueError) as e:
-                raise ValueError(str(e)) from e
+            irs_results = ir_upload.sync_preset_irs(
+                client, body, ip, auto_irs=auto_irs)
             with client.mutating():
                 cid = client._raw.push_to_slot(container, pos, name, blob)
     except HelixError as e:
@@ -905,7 +922,7 @@ def device_install_preset_handler(
             m.save()
         except Exception:  # noqa: BLE001 — ledger/manifest record is advisory
             pass
-    return {"ok": cid is not None, "cid": cid}
+    return {"ok": cid is not None, "cid": cid, "irs": irs_results}
 
 
 def device_import_hss_handler(

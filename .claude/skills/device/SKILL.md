@@ -309,12 +309,15 @@ helixgen device sync --all [--gc] [--exclude-irs] [--repush]
 
 ### Single tone — `device install` (CLI) or `device_install_preset` (MCP)
 
-Use for one-off placement into a chosen pool slot. **Prefer the CLI**
-`helixgen device install <hsp> <name> --pos N [--auto-irs]`:
-it uploads IRs (`--auto-irs`) and records the tone library. The **MCP**
-`device_install_preset` now **records the tone library** (registers the tone +
-its slot) but still uploads **no IRs** — use `device sync` or the CLI `install
---auto-irs` when you want IRs uploaded too.
+Use for one-off placement into a chosen pool slot. Both surfaces now record
+the tone library **and** upload referenced IRs by default: the CLI is
+`helixgen device install <hsp> <name> --pos N [--auto-irs]` (pass
+`--auto-irs` to upload); the **MCP** `device_install_preset` uploads
+referenced IRs automatically (`auto_irs` defaults to `True` — pass
+`auto_irs=False` to skip it) and reports the per-IR outcome in the result's
+`irs` field. Both share the same per-tone IR-upload core `device sync` uses,
+so behavior (resolve via `mapping.json`, `push_ir`, verify the registered
+hash) is identical across all three paths.
 Reserve the other `device_*` MCP tools for reads / interactive single ops
 (`device_list_presets`, `device_read_preset`, `device_load_preset`,
 `device_set_param`).
@@ -454,4 +457,4 @@ Tightly:
 | Diagnosing a dropped connection as a coverage failure | It's the flaky network stack — re-run the sync, reboot the Helix if it persists |
 | Ignoring the `errors[]` in the sync result | That list *is* the remaining work — read it, fix each, re-sync |
 | Treating "CLI not on PATH" as a blocker | Expected — helixgen ships as a bundled MCP server; use the `device_*` MCP tools |
-| Using the **MCP** `device_install_preset` for anything you want tracked | It uploads no IRs and records no ledger — use `device sync` or the CLI `device install --auto-irs` |
+| Expecting the **MCP** `device_install_preset` to reconcile a whole setlist | It installs/records **one** tone (IRs included, `auto_irs` default True) but doesn't rebuild a setlist's full reference order the way `device sync <setlist>` does — use sync for batch/whole-setlist work |

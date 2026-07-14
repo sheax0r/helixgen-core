@@ -654,6 +654,7 @@ def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hs
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def find_by_pos(self, container, pos): return None
+        def device_ir_hashes(self): return set()
 
         def mutating(self):
             import contextlib
@@ -670,9 +671,197 @@ def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hs
     result = tools_mod.device_install_preset_handler(
         "stadium_xl", hsp_path=str(hsp), name="D", pos=3)
 
-    assert result == {"ok": True, "cid": 4242}
+    # this preset references no IRs, so the (default auto_irs=True) IR check
+    # runs but finds nothing missing -> irs comes back empty.
+    assert result == {"ok": True, "cid": 4242, "irs": []}
     assert seen["push"][1:] == (3, "D", b"XCODED")   # (container, pos, name, blob)
     assert isinstance(seen["body"], dict) and "preset" in seen["body"]
+
+
+def _fake_client_cls(cid=4242):
+    """Build a minimal fake HelixClient class for the auto_irs wiring tests
+    below — device_ir_hashes is stubbed by the caller via bridge.check_irs
+    (monkeypatched directly), so this fake's device_ir_hashes is never
+    actually consulted."""
+    class _Raw:
+        def push_to_slot(self, container, pos, name, blob):
+            return cid
+
+    class _FakeClient:
+        _raw = _Raw()
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def find_by_pos(self, container, pos): return None
+        def device_ir_hashes(self): return set()
+
+        def mutating(self):
+            import contextlib
+            return contextlib.nullcontext(self)
+
+    return _FakeClient
+
+
+def test_device_install_preset_auto_irs_default_uploads_missing(
+        tmp_path, monkeypatch, hsp_library):
+    """auto_irs defaults to True: a missing IR is diffed + uploaded (via the
+    shared ir_upload core) BEFORE the preset is pushed, and the per-IR result
+    lands in result['irs']."""
+    import mcp_server.tools as tools_mod
+    from helixgen.generate import compose_preset
+    from helixgen.hsp import dumps_hsp
+    from helixgen.spec import parse_spec
+
+    preset = compose_preset(parse_spec(
+        {"name": "D", "paths": [{"blocks": [{"block": "Tube Drive"}]}]}),
+        hsp_library, source="t")
+    hsp = tmp_path / "d.hsp"
+    hsp.write_bytes(dumps_hsp(preset))
+
+    import helixgen.device as device_mod
+    monkeypatch.setattr(device_mod, "HelixClient", lambda **kw: _fake_client_cls()())
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+    monkeypatch.setattr("helixgen.device.bridge.check_irs",
+                        lambda client, body: {"present": set(), "missing": {"aa11"}})
+
+    calls = []
+
+    def _fake_upload(ip, hashes):
+        calls.append((ip, list(hashes)))
+        return [{"hash": h, "ok": True, "outcome": "imported",
+                 "note": f"imported IR x ({h})"} for h in hashes]
+
+    monkeypatch.setattr("helixgen.device.ir_upload.upload_missing_irs", _fake_upload)
+
+    result = tools_mod.device_install_preset_handler(
+        "stadium_xl", hsp_path=str(hsp), name="D", pos=3, ip="9.9.9.9")
+
+    assert calls == [("9.9.9.9", ["aa11"])]
+    assert result["ok"] is True
+    assert result["cid"] == 4242
+    assert result["irs"] == [{"hash": "aa11", "ok": True, "outcome": "imported",
+                              "note": "imported IR x (aa11)"}]
+
+
+def test_device_install_preset_auto_irs_false_skips_upload(
+        tmp_path, monkeypatch, hsp_library):
+    """auto_irs=False: the missing IR is reported but never uploaded — the
+    shared upload core is not invoked at all."""
+    import mcp_server.tools as tools_mod
+    from helixgen.generate import compose_preset
+    from helixgen.hsp import dumps_hsp
+    from helixgen.spec import parse_spec
+
+    preset = compose_preset(parse_spec(
+        {"name": "D", "paths": [{"blocks": [{"block": "Tube Drive"}]}]}),
+        hsp_library, source="t")
+    hsp = tmp_path / "d.hsp"
+    hsp.write_bytes(dumps_hsp(preset))
+
+    import helixgen.device as device_mod
+    monkeypatch.setattr(device_mod, "HelixClient", lambda **kw: _fake_client_cls()())
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+    monkeypatch.setattr("helixgen.device.bridge.check_irs",
+                        lambda client, body: {"present": set(), "missing": {"aa11"}})
+
+    calls = []
+    monkeypatch.setattr("helixgen.device.ir_upload.upload_missing_irs",
+                        lambda ip, hashes: calls.append((ip, list(hashes))))
+
+    result = tools_mod.device_install_preset_handler(
+        "stadium_xl", hsp_path=str(hsp), name="D", pos=3, auto_irs=False)
+
+    assert calls == []  # upload core never invoked
+    assert result["ok"] is True
+    assert result["irs"] == [{
+        "hash": "aa11", "ok": False, "outcome": "skipped_auto_irs_off",
+        "note": ("IR aa11 is referenced but not on the device; enable "
+                 "auto_irs, or import it (helixgen register-irs / the "
+                 "editor), or the cab will be silent"),
+    }]
+
+
+def test_device_install_preset_untranscodable_hsp_touches_no_device(
+        tmp_path, monkeypatch, hsp_library):
+    """Transcode/validate runs FIRST (it's pure-offline): an untranscodable
+    .hsp fails before ANY device work — no client connection, no IR uploads
+    for a preset that was never going to install (and no IR results lost to
+    an escaping transcode error)."""
+    import mcp_server.tools as tools_mod
+    from helixgen.generate import compose_preset
+    from helixgen.hsp import dumps_hsp
+    from helixgen.spec import parse_spec
+
+    preset = compose_preset(parse_spec(
+        {"name": "D", "paths": [{"blocks": [{"block": "Tube Drive"}]}]}),
+        hsp_library, source="t")
+    hsp = tmp_path / "d.hsp"
+    hsp.write_bytes(dumps_hsp(preset))
+
+    device_touched = []
+
+    def _no_client(**kw):
+        device_touched.append("client")
+        raise AssertionError("HelixClient must not be constructed")
+
+    import helixgen.device as device_mod
+    monkeypatch.setattr(device_mod, "HelixClient", _no_client)
+    monkeypatch.setattr("helixgen.device.ir_upload.upload_missing_irs",
+                        lambda ip, hashes: device_touched.append("irs"))
+
+    def _bad_transcode(body, *, strict=True):
+        raise ValueError("unresolved model HD2_DoesNotExist")
+
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm", _bad_transcode)
+
+    with _pytest_top.raises(ValueError, match="unresolved model"):
+        tools_mod.device_install_preset_handler(
+            "stadium_xl", hsp_path=str(hsp), name="D", pos=3)
+
+    assert device_touched == []  # no client, no IR uploads — nothing at all
+
+
+def test_device_install_preset_missing_mapping_surfaces_error_but_still_installs(
+        tmp_path, monkeypatch, hsp_library):
+    """If the local IR mapping.json can't be loaded, the install still
+    proceeds (unlike the CLI's hard `--auto-irs` abort) — the failure is
+    surfaced per-hash in result['irs'] with outcome 'no_mapping' instead."""
+    import mcp_server.tools as tools_mod
+    from helixgen.generate import compose_preset
+    from helixgen.hsp import dumps_hsp
+    from helixgen.spec import parse_spec
+
+    preset = compose_preset(parse_spec(
+        {"name": "D", "paths": [{"blocks": [{"block": "Tube Drive"}]}]}),
+        hsp_library, source="t")
+    hsp = tmp_path / "d.hsp"
+    hsp.write_bytes(dumps_hsp(preset))
+
+    import helixgen.device as device_mod
+    monkeypatch.setattr(device_mod, "HelixClient", lambda **kw: _fake_client_cls()())
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+    monkeypatch.setattr("helixgen.device.bridge.check_irs",
+                        lambda client, body: {"present": set(), "missing": {"aa11"}})
+
+    import helixgen.ir as _ir
+
+    def _broken_load(cls):
+        raise OSError("mapping.json is corrupt")
+
+    monkeypatch.setattr(_ir.IrMapping, "load", classmethod(_broken_load))
+
+    result = tools_mod.device_install_preset_handler(
+        "stadium_xl", hsp_path=str(hsp), name="D", pos=3)
+
+    assert result["ok"] is True
+    assert result["cid"] == 4242
+    assert len(result["irs"]) == 1
+    assert result["irs"][0]["hash"] == "aa11"
+    assert result["irs"][0]["outcome"] == "no_mapping"
+    assert result["irs"][0]["ok"] is False
 
 
 def test_generate_preset_handler_surfaces_generate_warnings(mcp_library, tmp_path):

@@ -298,7 +298,8 @@ setlist create <name>` away), the **template-free transcode** install (any
 block chain, full fidelity, no template/coverage step), the **never-orphan**
 guarantee, the **full-graph synthesis** (dual-amp, parallel splits, snapshots,
 footswitch/EXP assignments all transcode), the fact that the single-tone **MCP**
-`device_install_preset` uploads no IRs and records no ledger (use `device sync`
-or the CLI `install --auto-irs` instead), and the **flaky-hardware** rule
-(re-run a dropped sync; reboot the Helix if it persists). Read it before
-scripting a setlist sync.
+`device_install_preset` now also uploads referenced IRs (`auto_irs`, default
+`True` — shares the same per-tone IR-upload core as `device sync` and the CLI
+`install --auto-irs`; results land in the tool's `irs` field) and records the
+tone-library manifest, and the **flaky-hardware** rule (re-run a dropped sync;
+reboot the Helix if it persists). Read it before scripting a setlist sync.

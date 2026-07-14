@@ -626,6 +626,7 @@ def device_install_preset(
     name: str,
     pos: int,
     setlist: str = "user",
+    auto_irs: bool = True,
     ip: str = _tools._DEFAULT_DEVICE_IP,
 ) -> dict[str, Any]:
     """Author a helixgen `.hsp` file onto the device as a new preset.
@@ -634,11 +635,23 @@ def device_install_preset(
     path to a `.hsp` file; it is read off disk, transcoded straight into the
     device's native content format (any block chain, full fidelity, no
     template), and installed into `setlist` slot `pos` (must be empty).
-    EXPERIMENTAL. Returns `{"ok": <bool>, "cid": <new cid>}`.
+
+    `auto_irs` (default `True`): any IRs the preset references that aren't
+    already on the device are uploaded FIRST, resolved via the local IR
+    mapping.json then pushed (instant registration) — the same shared core
+    `device sync` / CLI `device install --auto-irs` use — so the installed
+    preset's cabs resolve immediately. Set `auto_irs=False` to skip this.
+
+    EXPERIMENTAL. Returns `{"ok": <bool>, "cid": <new cid>, "irs": [...]}`.
+    `irs` is `[]` when the preset references no IRs (or none were missing);
+    otherwise one result dict per IR: `{hash, ok, outcome, note, ...}` — a
+    non-ok entry (unregistered locally, hash mismatch, upload failure, or,
+    with `auto_irs=False`, `outcome: "skipped_auto_irs_off"`) means that cab
+    may come up silent until it's imported.
     """
     return _tools.device_install_preset_handler(
         model, ip=ip, hsp_path=hsp_path, name=name, pos=pos,
-        setlist=setlist,
+        setlist=setlist, auto_irs=auto_irs,
     )
 
 

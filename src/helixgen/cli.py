@@ -616,39 +616,39 @@ def _setlist_container(name: str) -> int:
 
 def _auto_upload_irs(ip: str, hashes) -> None:
     """Upload each missing IR hash by resolving it to a local wav via the
-    helixgen IR mapping, then SFTP-pushing it (device auto-registers)."""
-    from helixgen.ir import IrMapping
-    from helixgen.device import sftp as _sftp
+    helixgen IR mapping, then SFTP-pushing it (device auto-registers).
 
-    try:
-        irmap = IrMapping.load()
-    except Exception as e:  # noqa: BLE001
-        raise click.ClickException(
-            f"--auto-irs needs your local IR mapping.json: {e}")
-    for hh in hashes:
-        try:
-            path = irmap.resolve_by_hash(hh)
-        except Exception:  # noqa: BLE001 - not registered locally
-            click.echo(f"warning: referenced IR {hh} not found locally; register "
-                       f"it (helixgen register-irs) — cab may be silent", err=True)
-            continue
-        res = _sftp.push_ir(ip, str(path))
-        # push_ir registers instantly (2001 subscription). The device computes
-        # its own hash; if it differs from the preset's hash (hh) the cab won't
-        # resolve — surface that (it's the irhash-algorithm edge case).
-        if res.get("already"):
-            click.echo(f"IR {hh} already on device")
-        elif res.get("ok") and res.get("registered") and res.get("hash_match"):
-            click.echo(f"imported IR {res.get('name') or path.name} ({hh})")
-        elif res.get("ok") and res.get("registered"):
-            click.echo(f"warning: {path.name} registered as {res.get('device_hash')} "
-                       f"but the preset references {hh} — cab won't resolve "
-                       f"(irhash-algorithm edge case for this file)", err=True)
-        elif res.get("ok"):
-            click.echo(f"warning: uploaded {path.name} ({hh}) but not yet "
-                       f"registered — retry shortly", err=True)
+    Thin echo-formatting wrapper around the shared core in
+    ``helixgen.device.ir_upload`` (backlog #6 — the same core also backs
+    ``device sync`` and the MCP ``device_install_preset``). Unlike those two
+    (which tolerate a per-IR upload failure and keep going — a preset install
+    or sync run shouldn't be all-or-nothing on IR trouble), the CLI's
+    ``--auto-irs`` still **aborts the whole install** on a hard upload error
+    (``push_ir`` itself failing, e.g. a dropped connection) — matching the
+    original behavior of never installing a preset when an IR it references
+    couldn't be pushed. It now does so via a clean ``ClickException`` instead
+    of letting the raw exception surface, and after echoing every hash's
+    outcome (not just the first failure) so the user sees the full picture
+    before the command exits non-zero."""
+    from helixgen.device import ir_upload
+
+    upload_errors = []
+    for entry in ir_upload.upload_missing_irs(ip, list(hashes)):
+        outcome = entry.get("outcome")
+        if outcome == "no_mapping":
+            # Applies identically to every hash (mapping.json itself failed
+            # to load) — abort the whole command, matching the original
+            # upfront-check behavior.
+            raise click.ClickException(entry["note"])
+        if outcome in ("already", "imported"):
+            click.echo(entry["note"])
         else:
-            click.echo(f"warning: failed to upload {path.name} ({hh})", err=True)
+            click.echo(f"warning: {entry['note']}", err=True)
+            if outcome == "upload_error":
+                upload_errors.append(entry["note"])
+    if upload_errors:
+        raise click.ClickException(
+            "IR upload failed: " + "; ".join(upload_errors))
 
 
 def _utc_now() -> str:

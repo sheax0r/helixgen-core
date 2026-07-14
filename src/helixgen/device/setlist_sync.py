@@ -134,40 +134,19 @@ def assign_slots(manifest: SetlistManifest, occupied) -> Dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# IR upload helper (copied from sync.py — resolves each irhash to a local WAV)
+# IR upload helper — thin wrapper around the shared core in ir_upload.py
+# (backlog #6; the same core also backs `device install --auto-irs` and the
+# MCP `device_install_preset`). Kept under this name/signature so existing
+# call sites (and tests) can keep monkeypatching it directly.
 # ---------------------------------------------------------------------------
 
 def _upload_missing_irs(ip: str, hashes: List[str]) -> List[dict]:
-    """Resolve each missing irhash to a local WAV and push it (instant register).
-    Returns one result dict per hash: ``{hash, ok, hash_match?, note?}``."""
-    from helixgen.ir import IrMapping
+    """Resolve each missing irhash to a local WAV and push it (instant
+    register). Returns one result dict per hash — see
+    :func:`helixgen.device.ir_upload.upload_missing_irs`."""
+    from . import ir_upload
 
-    from . import sftp
-
-    try:
-        irmap = IrMapping.load()
-    except Exception as e:  # noqa: BLE001 - surface as per-IR notes, don't abort
-        return [{"hash": h, "ok": False,
-                 "note": f"no local mapping.json ({e})"} for h in hashes]
-
-    results: List[dict] = []
-    for hh in hashes:
-        try:
-            path = irmap.resolve_by_hash(hh)
-        except Exception:  # noqa: BLE001 - not registered locally
-            results.append({"hash": hh, "ok": False,
-                            "note": "not found locally (helixgen register-irs)"})
-            continue
-        try:
-            res = sftp.push_ir(ip, str(path))
-        except HelixError as e:
-            results.append({"hash": hh, "ok": False, "note": str(e)})
-            continue
-        results.append({"hash": hh,
-                        "ok": bool(res.get("registered")) or bool(res.get("already")),
-                        "hash_match": res.get("hash_match"),
-                        "name": res.get("name")})
-    return results
+    return ir_upload.upload_missing_irs(ip, hashes)
 
 
 # ---------------------------------------------------------------------------
