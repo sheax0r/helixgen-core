@@ -13,7 +13,7 @@ A **tone** is content + identity + management state (design
   device preset key.
 * **management state** — ``source`` (provenance), ``slot`` (desired on-device
   address; ``null`` = off device, ``"auto"`` = wants device, address TBD, or a
-  concrete ``"1A".."8D"``), and ``device`` (observed cid/posi, rebuilt on sync).
+  concrete ``"1A".."128D"``), and ``device`` (observed cid/posi, rebuilt on sync).
 
 Setlists are ordered membership plus a ``synced`` flag (mirrored to the device
 or a local-only draft). ``"On the device"`` ⟺ ``slot != null``.
@@ -25,7 +25,7 @@ On-disk shape (version 2)::
                           "content_hash": "sha256:…" | null,
                           "doc": <abs .md | null>,
                           "source": "authored"|"import-local"|"import-device"|"save"|"create",
-                          "slot": "1A".."8D" | "auto" | null,
+                          "slot": "1A".."128D" | "auto" | null,
                           "device": {"cid": int, "posi": int} | null}},
      "setlists": {"<setlist>": {"tones": ["<tone name>", …], "synced": bool}}}
 
@@ -50,8 +50,14 @@ _VALID_SOURCES = ("authored", "import-local", "import-device", "save", "create",
                   "hsp", "push")  # last two are legacy synonyms kept for migration
 _PATHLESS_SOURCES = ("save", "create")
 
-# every physical user-setlist slot label, in device posi order: "1A".."8D"
-_SLOT_LABELS = tuple(f"{b}{c}" for b in range(1, 9) for c in "ABCD")
+# Every user-setlist slot label, in device posi order: "1A".."128D".
+# The device labels a posi as ``f"{posi//4 + 1}{'ABCD'[posi%4]}"`` (uncapped —
+# see ``client.slot_label``). A Helix setlist holds up to 128 banks of 4 (the
+# Stadium XL's full user bank goes to 128D = 512 slots); base models simply fill
+# fewer. Sizing to the max keeps slot validation + auto-assign from imposing an
+# artificial "device full" ceiling — the hardware is the real capacity check.
+_SLOT_BANKS = 128
+_SLOT_LABELS = tuple(f"{b}{c}" for b in range(1, _SLOT_BANKS + 1) for c in "ABCD")
 
 
 class ManifestError(Exception):
@@ -87,7 +93,7 @@ def _empty_observed() -> Dict[str, Any]:
 
 
 def _posi_to_slot(posi: Any) -> Optional[str]:
-    """Map a device 0-based posi to its user-setlist slot label ("1A".."8D")."""
+    """Map a device 0-based posi to its user-setlist slot label ("1A".."128D")."""
     if not isinstance(posi, int) or not (0 <= posi < len(_SLOT_LABELS)):
         return None
     return _SLOT_LABELS[posi]
@@ -314,7 +320,7 @@ class SetlistManifest:
         if name not in self.tones:
             raise ManifestError(f"unknown tone {name!r}")
         if slot != "auto" and slot not in _SLOT_LABELS:
-            raise ManifestError(f"invalid slot {slot!r} (expected '1A'..'8D' or 'auto')")
+            raise ManifestError(f"invalid slot {slot!r} (expected '1A'..'128D' or 'auto')")
         self.tones[name]["slot"] = slot
 
     def unsync(self, name: str) -> List[str]:

@@ -1284,7 +1284,7 @@ def register_cmd(hsp_path: Path, doc: Path | None) -> None:
 @device.command(name="add")
 @click.argument("tone")
 @click.option("--slot", default="auto",
-              help="Desired user slot ('1A'..'8D') or 'auto' (default; sync picks).")
+              help="Desired user slot ('1A'..'128D') or 'auto' (default; sync picks).")
 def device_add_cmd(tone: str, slot: str) -> None:
     """Mark a library tone for the device (placed on the next `device sync`)."""
     from helixgen.device.manifest import SetlistManifest, ManifestError
