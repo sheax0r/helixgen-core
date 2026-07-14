@@ -336,6 +336,9 @@ assumption — see #9); the reference-based redesign below then **shipped
 
 ## Stadium-app parity (2026-07-13)
 
+> **Capture plan (2026-07-14):** the argument shapes / stream schemas for the capture-gated parity items (#1, #16, #17, #19, #31, #33, #34, Global EQ) are enumerated in `docs/superpowers/specs/2026-07-14-parity-capture-plan.md`, driven by `tools/re_capture_parity.py`. Run that session, then decode into `docs/captures/` before implementing any of these.
+
+
 Full app-function inventory + coverage matrix: **`docs/stadium-app-parity.md`**
 (app v1.3.2.9805). These items close the 🔴/🟡/🔍 rows so the desktop app is
 never needed. Ranked by impact (how often the app is the *only* way to do it) ×
