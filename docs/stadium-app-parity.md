@@ -89,8 +89,8 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Output block level/pan | Output Inspector | per-path output params | full | full | full | ✅ | `output: {level, pan}` + `set-param output` (#18) |
 | Output block destination (Matrix/XLR/1-4"/Path-2) | Output Inspector | output endpoint model | partial | partial | partial | 🟡 | not authorable; round-trips verbatim via `structural` entries — deliberate scope in the #18 design spec |
 | FX Loop / Send / Return | block Inspector | loop block + Trails | full | full | full | ✅ | Send/Return/Mix/DryThru are ordinary block params; `trails` now covers `HD2_FXLoop*` (#18). Caveat: authoring an FX-Loop block needs an `HD2_FXLoop*` exemplar in the block library — no corpus export carries one, so ingest a preset containing an FX Loop first |
-| Live block bypass on device | click block | `/BlockEnableSet` `[cmd,dsp,block,enable]` | none | none | none | 🔍 | offline enable/disable ✅; **live toggle arg decoded 2026-07-14**; verb not yet wired |
-| Live model set on device | Model List | `/ModelSet` `[cmd,dsp,block,sub,modelId]` | none | none | none | 🔴 | offline swap ✅; **live arg + cascade decoded 2026-07-14** (re-attach bypass ctrl + push defaults); verb not yet wired |
+| Live block bypass on device | click block | `/BlockEnableSet` `[cmd,dsp,block,enable]` | full | full | n-a | ✅ | **SHIPPED 2026-07-14** `device bypass PATH BLOCK on\|off` (+ MCP `device_bypass`, `device_blocks` lister). HW-confirmed via the `/setBlockEnable` echo; live toggle is volatile until save |
+| Live model set on device | Model List | `/ModelSet` `[cmd,dsp,block,sub,modelId]` | full | full | n-a | ✅ | **SHIPPED 2026-07-14** `device model PATH BLOCK <model>` (+ MCP `device_model`); numeric id or model-id string. Device rejects cross-category. (Controller re-attach + default push from the app cascade not replayed) |
 | Matrix Mixer (per-output mix/mute/solo) | **device screen only** | device-hardware UI | n-a | n-a | n-a | 🚫 | **NOT an app feature** (confirmed 2026-07-14 by manual + app-bundle survey: the desktop app has no mixer view — only the Output block's Pan+Level). Device-screen-only, out of app-parity scope |
 
 ## 4. Block & parameter editing (authoring)
@@ -111,7 +111,7 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 |---|---|---|---|---|---|---|---|
 | Create / name / color 8 snapshots | popup_snapshot | `snps` synth / `/SetSnapshotName` | full | full | full | ✅ | snapshot synth (2.18); color 🟡 (name yes, color field 🔴) |
 | Per-snapshot bypass + param delta | snapshot edit | `cg__.entt` synth | full | full | full | ✅ | recipe `snapshots` |
-| Recall snapshot live on device | switch | `/activateSnapshot` `[cmd, index]` | none | none | none | 🔍 | **arg decoded 2026-07-14** (absolute 0-based index); verb not yet wired |
+| Recall snapshot live on device | switch | `/activateSnapshot` `[cmd, index]` | full | full | n-a | ✅ | **SHIPPED 2026-07-14** `device snapshot <index>` (0-based, +MCP `device_snapshot`); absolute index |
 | Copy / paste / swap snapshot | panel | (no atomic opcode) | none | none | none | 🔴 | **2026-07-14: no `/CopySnapshot` exists** — the app copies via preset duplication or a batch of property writes. Replicate by reading source deltas → writing onto target |
 | Discard-edits / reselect behavior | panel + global | `global.snapshot.*` | none | none | none | 🔴 | via §8 property path |
 

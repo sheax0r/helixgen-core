@@ -391,19 +391,21 @@ orthogonal to it.
   the device's self-described enum). Design + evidence:
   `docs/superpowers/specs/2026-07-14-signal-flow-param-depth-design.md`.
   Matrix §3 rows all ✅.
-- **P5 · #19 Live device ops** **[device-write] — ARGS DECODED 2026-07-14, ready
-  to implement.** All arg shapes pinned (findings spec §1,§3,§4):
-  - snapshot recall `/activateSnapshot [cmd, index]` (absolute); **no `/CopySnapshot`
-    exists** (copy = duplicate or batch property writes)
-  - block bypass `/BlockEnableSet [cmd, dsp, block, enable]`
-  - model set `/ModelSet [cmd, dsp, block, sub, modelId]` (+ cascade)
-  - **tempo** = property `global.tempo.bpm` — already works via `device settings`
-    (no `/SetTempo` needed); **time signature** = Song property over SFTP (not OSC)
-  - **tuner/meters** = 2003 `/dspEvent` (`eid_10/mid_796` = fractional-MIDI pitch;
-    `eid_1/mid_796|800` = 128-float meters) — implementable as a `device tuner`/
-    `device meters` 2003-subscribe (no engage needed; pitch stream is always live)
-  Next: wire `device snapshot`, `device bypass`, `device model`, `device tuner`.
-  Matrix §5/§9/§10.
+- **P5 · #19 Live device ops** **[device-write] — ✅ MOSTLY SHIPPED 2026-07-14.**
+  Shipped (all HW-validated on a Stadium XL):
+  - **`device snapshot <index>`** — `/activateSnapshot [cmd, index]` (absolute).
+  - **`device bypass PATH BLOCK on|off`** + **`device blocks`** lister —
+    `/BlockEnableSet [cmd, dsp, block, enable]`; confirmed via the `/setBlockEnable`
+    2001 echo. Live toggle is volatile until save.
+  - **`device model PATH BLOCK <model>`** — `/ModelSet [cmd, dsp, block, sub, modelId]`.
+  - **`device tuner`** — 2003 `/dspEvent` `eid_10/mid_796` fractional-MIDI pitch
+    (network tuner, no engage needed). MCP mirrors for all.
+  - **tempo** already works via `device settings set global.tempo.bpm`.
+  Still open: **no `/CopySnapshot`** exists (copy = duplicate/batch writes);
+  **time signature** = Song property over SFTP (not OSC); **meters** (`eid_1/
+  mid_796|800` 128-float arrays) — decoder exists in spirit, no `device meters`
+  verb yet; the `/ModelSet` cascade (controller re-attach + default push) is not
+  replayed. Reorder left to the library agent. Matrix §5/§9/§10.
 - **P6 · #20 IR + library polish** — **🟡 MOSTLY SHIPPED (2026-07-14).**
   Shipped: IR delete/rename/prune (**#11** ✅), setlist
   create/rename/delete/duplicate (**#8** ✅ — creation cracked, no capture
