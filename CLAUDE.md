@@ -53,39 +53,43 @@ these verbs **mutate the device** — prefer an empty/expendable slot when testi
 - `helixgen device setlist list|add <setlist> <tone.hsp> [--pos N]|remove <setlist> <tone>|create-local <setlist>` — **manage the local setlist manifest** (`~/.helixgen/setlists.json`, override `$HELIXGEN_SETLISTS`). The device stores a preset **pool** (container `-2`) plus named **setlists** that hold **references** into it, so one authored tone can belong to many setlists. The manifest records, per setlist, an ordered list of tone names backed by a `tones` path map; it also **absorbs the old slot ledger** (one file now). `add` registers a tone's `.hsp` (by its `meta.name`) and appends it to the setlist's membership; `remove` drops membership (keeping the tone in the pool if other setlists still use it); `create-local` makes an empty setlist in the manifest only. **Never hand-edit the file** — use these verbs (or the MCP tools / `tone` skill). Device-side setlist *creation* is deferred (backlog #8): `create-local` and `add` only touch the manifest; a new setlist must also be created by hand in the Stadium app before it can be synced.
 - `helixgen device sync <setlist> [--exclude-irs]` / `helixgen device sync --all [--gc] [--exclude-irs]` — **push the manifest's setlist(s) onto the device** (reference-based; **not** a destructive mirror). Resolves the named setlist under `-5` (errors clearly, telling the user to create it in the Stadium app first, if the device doesn't have it — #8). Then reconciles the **pool first** — installs tones missing from the pool, re-pushes ones whose `.hsp` content hash changed, skips unchanged ones (idempotent) — and **rebuilds the setlist's references** to manifest order, adding/removing/reordering as needed and **never orphaning** a pool preset another setlist still references. Uploads each tone's referenced IRs (unless `--exclude-irs`). `--all` reconciles every manifest setlist; `--gc` (only with `--all`) deletes pool presets no setlist references any more. Install **transcodes** each tone's `.hsp` straight into device content (no template, full fidelity — dual-amp, parallel splits, snapshots, and footswitch/EXP assignments all synthesized). Per-tone install/IR failures are reported in `errors[]` without aborting; result is `{ok, setlists, pool, references, gc, irs, errors}`. **The Stadium's network stack is flaky — if a sync drops or stalls, just re-run it (idempotent, auto-reconnecting); if it keeps dropping, reboot the Helix.** EXPERIMENTAL.
 
-### `device slots` — the slot ledger (which tone lives where)
+### The tone library (which tone lives where)
 
-Whenever helixgen places a tone on the device (`install` / `save` / `push` /
-`create`), it records the slot in a local **ledger**, now folded into the
-setlist manifest `~/.helixgen/setlists.json` (override `$HELIXGEN_SETLISTS`; the
-legacy `~/.helixgen/device-slots.json` is migrated in on first load); `rename`
-and `delete` keep it in sync. The ledger is a pure-local, advisory record —
-distinct from `device backup`'s `manifest.json` (a device snapshot) — that
-answers "which of my authored tones is in which slot" offline, and lets you put
-a tone back.
+Every tone helixgen **generates auto-registers** into the **tone library** — the
+manifest `~/.helixgen/setlists.json` (override `$HELIXGEN_SETLISTS`; a legacy
+`device-slots.json` / v1 manifest is migrated on first load). A **tone** is
+*content + identity + management state*: its `.hsp` (or nothing, if it came off
+the device), a unique name (also the device preset key), a desired **user slot**
+(`null` = off device, `"auto"` = wants device / address TBD, or `"1A".."8D"`),
+its **setlist memberships** (ordered), provenance `source`, and observed device
+placement. **"On the device" ⟺ the tone has a slot.** There is **no separate
+slot ledger** — this one manifest is the single management record (design
+`docs/superpowers/specs/2026-07-13-tone-library-model-redesign.md`).
 
-- `helixgen device slots [list] [--verify] [--json]` — list recorded placements
-  in order (`slot_label  name  cid  source`). Offline unless `--verify`, which
-  cross-checks the live device and flags drift per entry: `ok` / `changed`
-  (slot now holds something else) / `missing` / `moved` (same cid at a different
-  slot) / `untracked` (device presets with no ledger entry). Bare `device slots`
-  runs `list`.
+- `helixgen register <tone.hsp> [--doc <md>]` — import an existing local `.hsp`
+  into the library (off-device; `source: import-local`).
+- `helixgen device add <tone> [--slot auto|5A]` — mark a library tone for the
+  device (default `--slot auto`; placed on the next `device sync`).
+- `helixgen device unsync <tone>` — clear a tone's slot so the next sync
+  **deletes it from the device** (it stays in the library); cascades it out of
+  any *synced* setlist.
+- `helixgen device library [--json]` / `helixgen device slots [list] [--verify]`
+  — list every tone: slot, on/off-device, and setlist memberships. Offline
+  unless `--verify`, which cross-checks the live user setlist and flags
+  `ok` / `missing` / `offline` / `untracked`.
 - `helixgen device slots restore <name-or-slot> [--pos N] [--setlist S] [--force]`
-  — **put a recorded tone back in its slot.** Re-installs the recorded source:
-  an `.hsp` (from `install`) is re-authored, an `.sbe` (from `push`) is
-  re-pushed. Tones from `save` (live edit buffer) or `create` (on-device copy)
-  have no local source and report that they can't be restored this way.
-- `helixgen device slots reorder <name> --to <N>` — move a tone to 0-based
-  position `N` within its setlist's order. **Local only** (rewrites the ledger's
-  order); run `sync` to apply it to the device.
-- `helixgen device slots sync [--dry-run] [--yes] [--no-backup]` — reconcile the
-  device so tracked tones sit in the ledger's order. Rearranges each affected
-  setlist's tracked presets **among the slots they already occupy** (untracked
-  presets are never disturbed). Destructive (pull content → delete → re-push in
-  order), so it backs up affected setlists first (unless `--no-backup`) and
-  verifies every pull before any delete — an interruption is recoverable.
-  `--dry-run` prints the plan and touches nothing; without `--yes` it confirms
-  first. EXPERIMENTAL. Design: `docs/superpowers/specs/2026-07-12-device-slot-ledger-design.md`.
+  — re-install a tone from its recorded `.hsp` (re-authored) or `.sbe` (re-pushed).
+  Pathless `save`/`create` tones have no local source and can't be restored.
+- `helixgen device slots reorder <tone> --to <N> [--setlist S]` — move a tone
+  within a setlist's order (default `user`). **Local only**; run `device sync
+  <setlist>` to apply it to the device.
+- `helixgen device setlist sync-on|sync-off <setlist>` — mark a named setlist as
+  device-mirrored (marks all its members on-device) or a local-only draft.
+
+**Sync is a managed-set mirror.** `device sync` installs/updates/reorders/**deletes**
+only the tones helixgen manages (matched by name), auto-assigns `"auto"` slots to
+free addresses, and **never touches untracked device presets** — a preset helixgen
+didn't place is invisible to sync (not moved, not deleted, its slot not reused).
 
 **Pushing tones to the device is driven by the `device` skill**
 (`.claude/skills/device/`), which runs after `tone` has authored the `.hsp`.

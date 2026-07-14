@@ -23,12 +23,17 @@ reference — the pool preset (and any other setlist that references it) is
 untouched.
 
 helixgen mirrors this with one local manifest, `~/.helixgen/setlists.json`
-(override `$HELIXGEN_SETLISTS`): for each setlist, an **ordered list of tone
-names**, backed by a `tones` registry that maps each name to its `.hsp` path.
-It also absorbs the old slot ledger, so it's the single source of truth for
-"which of my tones goes where." **Never hand-edit it** — manage it through the
-`device setlist` verbs, the `device_setlist_*` MCP tools, or the `tone` skill
-(which offers to add a freshly-authored tone to a setlist).
+(override `$HELIXGEN_SETLISTS`) — the **tone library**. Each tone is a record
+(content `.hsp` + name + management state): a desired **user slot** (`null` =
+off device, `"auto"`, or `"1A".."8D"`), ordered **setlist memberships**, and
+observed device placement. **"On the device" ⟺ the tone has a slot.** There is
+**no separate slot ledger** — this one manifest is the single source of truth for
+"which of my tones goes where." Every generated tone **auto-registers** here
+(off-device by default); `device add`/`unsync` set the slot; `device sync` is a
+**managed-set mirror** (installs/updates/reorders/deletes only helixgen-managed
+tones, never touches untracked device presets). **Never hand-edit it** — manage
+it through the `register` / `device add` / `device unsync` / `device setlist`
+verbs, the `device_setlist_*` MCP tools, or the `tone` skill.
 
 ## How a tone becomes a device preset: the transcoder (no template)
 
@@ -214,9 +219,10 @@ helixgen device sync --all [--gc] [--exclude-irs]
 
 Use for one-off placement into a chosen pool slot. **Prefer the CLI**
 `helixgen device install <hsp> <name> --pos N [--auto-irs]`:
-it uploads IRs (`--auto-irs`) and records the ledger. The **MCP**
-`device_install_preset` does **neither** — no IR upload, no ledger entry (use
-`device sync` or the CLI `install --auto-irs` when you want IRs + tracking).
+it uploads IRs (`--auto-irs`) and records the tone library. The **MCP**
+`device_install_preset` now **records the tone library** (registers the tone +
+its slot) but still uploads **no IRs** — use `device sync` or the CLI `install
+--auto-irs` when you want IRs uploaded too.
 Reserve the other `device_*` MCP tools for reads / interactive single ops
 (`device_list_presets`, `device_read_preset`, `device_load_preset`,
 `device_set_param`).
@@ -311,7 +317,8 @@ Tightly:
 | Looking for a "template" or checking factory-preset "coverage" | There are no templates — install is a faithful, template-free transcode; just sync |
 | Hand-rolling a per-preset install loop | Use `device sync <setlist>` — it reconciles the pool, rebuilds references, and uploads IRs in one call |
 | Trying to sync a setlist that isn't on the device | helixgen can't create setlists (#8) — the user creates it in the Stadium app first |
-| Hand-editing `~/.helixgen/setlists.json` | Manage it with `device setlist add/remove` (or the MCP tools / `tone` skill) |
+| Hand-editing `~/.helixgen/setlists.json` | Manage it with `register` / `device add` / `device unsync` / `device setlist add/remove` (or the MCP tools / `tone` skill) |
+| Expecting `device sync` to touch presets helixgen didn't place | It won't — sync is a managed-set mirror keyed by tone name; untracked device presets are never moved, deleted, or overwritten |
 | Pre-checking whether a tone is already in a setlist before adding it | Don't — a tone belongs in as many setlists as you want (shared, referenced once in the pool). `device setlist add` is idempotent within a setlist and only errors on a name/different-file collision. Just add it |
 | Reading helixgen **source** (`SetlistManifest`, `setlists.json` schema, engine internals) to confirm behavior or guard against "version drift" | Don't source-dive. The running MCP is the **bundled** plugin (loaded from `${CLAUDE_PLUGIN_ROOT}`), **not** any checkout in the working directory — so reading cwd source can *mislead* about the actual version/schema. The `device_*` tool descriptions, `device setlist list`, and the sync **result dict** are the authoritative contract; operate through them |
 | Expecting sync to wipe the setlist like the old mirror | It doesn't — it reconciles pool + references and never orphans; GC only on `--all --gc` |
