@@ -87,11 +87,19 @@ class Snapshot:
 
 @dataclass
 class FootswitchAssignment:
-    """A single FS-to-block bypass assignment.
+    """A single footswitch assignment.
 
     `switch` is a logical name (e.g. "FS3"); the chassis-specific source
     ID is resolved at generate time.  Optional `path`/`lane`/`pos` disambiguate
     when multiple placed blocks share the same display_name.
+
+    Without `param` the switch toggles the block's **bypass**. With `param`
+    (plus required numeric `min`/`max`, in raw param units) the switch toggles
+    that param between the two values instead — the device's "assign a switch
+    to a knob" behavior, corpus-real (77 instances across the 211 exports).
+    Several assignments may share one `switch` (a merge switch). `label` /
+    `color` set the switch's scribble strip; `curve` / `threshold` tune the
+    controller response.
     """
     switch: str
     block: str
@@ -99,6 +107,13 @@ class FootswitchAssignment:
     path: int | None = None
     lane: int | None = None
     pos: int | None = None
+    param: str | None = None
+    min: float | None = None
+    max: float | None = None
+    curve: str | None = None
+    threshold: float | None = None
+    label: str | None = None
+    color: str | None = None
 
 
 @dataclass
@@ -110,6 +125,8 @@ class ExpressionTarget:
     path: int | None = None
     lane: int | None = None
     pos: int | None = None
+    curve: str | None = None
+    threshold: float | None = None
 
 
 @dataclass
@@ -168,6 +185,22 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
     snapshots = _parse_snapshots(data.get("snapshots"), source=source)
     footswitches = _parse_footswitches(data.get("footswitches"), source=source)
     expression = _parse_expression(data.get("expression"), source=source)
+    # A (block, param) may be driven by ONE controller: reject a param that
+    # is both a footswitch toggle target and an expression sweep target.
+    # Coordinate wildcards (None) alias explicit coordinates — see
+    # _refs_may_alias — so `{"block": "X", "param": "P"}` collides with
+    # `{"block": "X", "param": "P", "path": 0}`.
+    fs_params = [(f.block, f.param, f.path, f.lane, f.pos)
+                 for f in footswitches if f.param is not None]
+    for a in expression:
+        for t in a.targets:
+            key = (t.block, t.param, t.path, t.lane, t.pos)
+            if any(_refs_may_alias(key, fp) for fp in fs_params):
+                raise _err(
+                    source,
+                    f"param {t.param!r} on block {t.block!r} is assigned to both "
+                    f"a footswitch and pedal {a.pedal}; one controller per param.",
+                )
     return Spec(
         name=name, paths=paths, author=author,
         snapshots=snapshots, footswitches=footswitches, expression=expression,
@@ -255,22 +288,52 @@ def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
     return Snapshot(name=name, disable=disable, params=params)
 
 
+def _refs_may_alias(a: tuple, b: tuple) -> bool:
+    """True when two (block, param, path, lane, pos) references can resolve to
+    the same placed target. block/param compare exactly; a coordinate that is
+    None is a WILDCARD (an entry without coordinates targets the unique block
+    of that name — the same block an explicitly-coordinated entry may name).
+    Treating None as "different" would let a duplicate slip through as
+    `{"block": "X"}` + `{"block": "X", "path": 0}`."""
+    if a[0] != b[0] or a[1] != b[1]:
+        return False
+    return all(x is None or y is None or x == y for x, y in zip(a[2:], b[2:]))
+
+
 def _parse_footswitches(raw: Any, *, source: str) -> list[FootswitchAssignment]:
     if raw is None:
         return []
     if not isinstance(raw, list):
         raise _err(source, '"footswitches" must be a list.')
     out: list[FootswitchAssignment] = []
-    seen_blocks: set[tuple] = set()
+    # One switch may drive many targets (a merge switch — corpus-real; dozens
+    # of the 211 exports carry one); the duplicate guard therefore keys on the
+    # TARGET (block + param + coordinates), not the switch.
+    seen_targets: list[tuple] = []
+    # label/color are per-SWITCH (one scribble strip); conflicting values
+    # across a merge switch's entries are a spec error.
+    strip: dict[str, tuple] = {}
     for i, entry in enumerate(raw):
         fs = _parse_footswitch(entry, source=f"{source} footswitches[{i}]")
-        block_key = (fs.block, fs.path, fs.lane, fs.pos)
-        if block_key in seen_blocks:
+        target_key = (fs.block, fs.param, fs.path, fs.lane, fs.pos)
+        if any(_refs_may_alias(target_key, seen) for seen in seen_targets):
+            what = f"param {fs.param!r} on block {fs.block!r}" if fs.param else f"block {fs.block!r}"
             raise _err(
                 f"{source} footswitches[{i}]",
-                f"duplicate block {fs.block!r}; one block per footswitch.",
+                f"duplicate footswitch target ({what}); "
+                f"each block/param may be assigned once.",
             )
-        seen_blocks.add(block_key)
+        seen_targets.append(target_key)
+        if fs.label is not None or fs.color is not None:
+            prev = strip.get(fs.switch)
+            if prev is not None and prev != (fs.label, fs.color):
+                raise _err(
+                    f"{source} footswitches[{i}]",
+                    f"conflicting label/color for switch {fs.switch!r}; a merge "
+                    f"switch has ONE scribble strip — set label/color on one "
+                    f"entry (or identically on all).",
+                )
+            strip[fs.switch] = (fs.label, fs.color)
         out.append(fs)
     return out
 
@@ -299,8 +362,62 @@ def _parse_footswitch(data: Any, *, source: str) -> FootswitchAssignment:
     pos = data.get("pos")
     if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
         raise _err(source, '"pos" must be a non-negative integer if provided.')
+
+    def _num(v: Any) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    param = data.get("param")
+    mn, mx = data.get("min"), data.get("max")
+    if param is not None:
+        if not isinstance(param, str) or not param:
+            raise _err(source, '"param" must be a non-empty string if provided.')
+        if not _num(mn) or not _num(mx):
+            raise _err(
+                source,
+                '"param" footswitch entries require numeric "min" and "max" '
+                '(the two raw param values the switch toggles between).',
+            )
+        # Deliberately NOT coerced to float: the corpus-real use of FS param
+        # toggles includes INT params (Interval 2→4, Transport 0→1), and the
+        # device encodes their min/max as ints — float-coercing here breaks
+        # exact round-trip and flips the device blob's msgpack type.
+    elif mn is not None or mx is not None:
+        raise _err(
+            source,
+            '"min"/"max" apply only to "param" footswitch entries; a bypass '
+            'assignment toggles the block on/off.',
+        )
+
+    curve = data.get("curve")
+    if curve is not None:
+        from helixgen.controllers import CURVES
+        if curve not in CURVES:
+            raise _err(source, f'"curve" must be one of {list(CURVES)} (got {curve!r}).')
+
+    threshold = data.get("threshold")
+    if threshold is not None:
+        if not _num(threshold):
+            raise _err(source, '"threshold" must be a number if provided.')
+        threshold = float(threshold)
+
+    label = data.get("label")
+    if label is not None and not isinstance(label, str):
+        raise _err(source, '"label" must be a string if provided.')
+
+    color = data.get("color")
+    if color is not None:
+        from helixgen.controllers import FS_COLORS
+        if color not in FS_COLORS:
+            raise _err(
+                source,
+                f'"color" must be one of {sorted(FS_COLORS)} (got {color!r}).',
+            )
+
     return FootswitchAssignment(switch=switch, block=block, behavior=behavior,
-                                path=path, lane=lane, pos=pos)
+                                path=path, lane=lane, pos=pos,
+                                param=param, min=mn, max=mx,
+                                curve=curve, threshold=threshold,
+                                label=label, color=color)
 
 
 def _parse_expression(raw: Any, *, source: str) -> list[ExpressionAssignment]:
@@ -310,7 +427,7 @@ def _parse_expression(raw: Any, *, source: str) -> list[ExpressionAssignment]:
         raise _err(source, '"expression" must be a list.')
     out: list[ExpressionAssignment] = []
     seen_pedals: set[str] = set()
-    seen_targets: set[tuple] = set()
+    seen_targets: list[tuple] = []
     for i, entry in enumerate(raw):
         assignment = _parse_expression_assignment(
             entry, source=f"{source} expression[{i}]"
@@ -323,16 +440,19 @@ def _parse_expression(raw: Any, *, source: str) -> list[ExpressionAssignment]:
         seen_pedals.add(assignment.pedal)
         for j, t in enumerate(assignment.targets):
             # Include coordinate fields so two same-name blocks at different
-            # positions can each carry an EXP target on the same param name
-            # (mirrors the coordinate-aware FS duplicate check from task 9).
+            # positions can each carry an EXP target on the same param name.
+            # None coordinates are WILDCARDS (see _refs_may_alias): a bare
+            # reference and an explicitly-coordinated reference to the same
+            # unique block are the same target — comparing them unequal would
+            # let two pedals silently last-wins on one param.
             key = (t.block, t.param, t.path, t.lane, t.pos)
-            if key in seen_targets:
+            if any(_refs_may_alias(key, seen) for seen in seen_targets):
                 raise _err(
                     f"{source} expression[{i}] targets[{j}]",
                     f"duplicate (block, param, pos) {(t.block, t.param, t.pos)!r}; "
                     f"one param per pedal per block-coordinate across the spec.",
                 )
-            seen_targets.add(key)
+            seen_targets.append(key)
         out.append(assignment)
     return out
 
@@ -378,8 +498,19 @@ def _parse_expression_target(data: Any, *, source: str) -> ExpressionTarget:
     pos = data.get("pos")
     if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
         raise _err(source, '"pos" must be a non-negative integer if provided.')
+    curve = data.get("curve")
+    if curve is not None:
+        from helixgen.controllers import CURVES
+        if curve not in CURVES:
+            raise _err(source, f'"curve" must be one of {list(CURVES)} (got {curve!r}).')
+    threshold = data.get("threshold")
+    if threshold is not None:
+        if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+            raise _err(source, '"threshold" must be a number if provided.')
+        threshold = float(threshold)
     return ExpressionTarget(block=block, param=param, min=float(mn), max=float(mx),
-                            path=path, lane=lane, pos=pos)
+                            path=path, lane=lane, pos=pos, curve=curve,
+                            threshold=threshold)
 
 
 def _parse_lane_pos(data: dict, *, source: str) -> tuple[int, int | None]:

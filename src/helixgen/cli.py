@@ -834,6 +834,48 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
         click.echo(f"cid={m.get('cid_')}  {m.get('name', '')}")
 
 
+@device.command(name="info")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the device info as JSON (includes the raw reply).")
+@_device_option
+def device_info(as_json: bool, ip: str, port: int) -> None:
+    """Show the connected device's identity: model, firmware, serial, storage.
+
+    Read-only (`/ProductInfoGet` — part of the editor's own connect
+    handshake); never touches presets or the edit buffer.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            info = h.product_info()
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(info, indent=2))
+        return
+
+    def _gb(n):
+        return f"{n / 1e9:.1f} GB" if isinstance(n, (int, float)) else "?"
+
+    model = info.get("model") or "?"
+    if info.get("helixgen_model"):
+        model = f"{model} ({info['helixgen_model']})"
+    click.echo(f"model:     {model}")
+    click.echo(f"device id: {info.get('device_id')}")
+    click.echo(f"serial:    {info.get('serial')}")
+    fw = info.get("firmware") or "?"
+    build = info.get("firmware_build")
+    date = info.get("firmware_date")
+    extra = " ".join(str(x) for x in (f"build {build}" if build else None,
+                                      date) if x)
+    click.echo(f"firmware:  {fw}{f'  ({extra})' if extra else ''}")
+    click.echo(f"storage:   {_gb(info.get('sd_available_bytes'))} free of "
+               f"{_gb(info.get('sd_total_bytes'))}")
+
+
 @device.group(name="settings")
 def device_settings() -> None:
     """Read/write the device's **Global Settings** over the network.

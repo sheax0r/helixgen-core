@@ -83,9 +83,11 @@ A tone spec is a JSON document. Minimal example:
   (wire values: 0–1 floats for amp gain, integer Hz for cut frequencies,
   strings for enums like mic types).
 
-For the full spec surface — input routing, snapshots, footswitch assignment,
+For the full spec surface — input routing, snapshots, footswitch assignment
+(incl. merge switches, param toggles, scribble label/color, response curves),
 expression pedal targets, per-block IR references — see the project
-[`CLAUDE.md`](../CLAUDE.md) which documents every field.
+[`CLAUDE.md`](../CLAUDE.md) which documents every field. Device-network verbs
+(`helixgen device …`, incl. `device info`) are likewise documented there.
 
 ## IR commands
 

@@ -399,6 +399,24 @@ def device_set_param(
 
 
 @app.tool()
+def device_info(model: str, ip: str = _tools._DEFAULT_DEVICE_IP) -> dict[str, Any]:
+    """Show the connected Helix device's identity: model, firmware, serial,
+    storage.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`.
+
+    Read-only (`/ProductInfoGet` -- part of the editor's own connect
+    handshake); never touches presets or the edit buffer. Returns
+    `{"model", "device_id", "helixgen_model", "serial", "firmware",
+    "firmware_build", "firmware_date", "sd_total_bytes",
+    "sd_available_bytes", "raw"}` -- `helixgen_model` is the chassis key
+    (`"stadium_xl"`) when the numeric device id is recognized. CLI mirror:
+    `helixgen device info`.
+    """
+    return _tools.device_info_handler(model, ip=ip)
+
+
+@app.tool()
 def device_settings_list(
     page: str | None = None,
     values: bool = False,

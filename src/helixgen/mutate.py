@@ -29,6 +29,7 @@ from helixgen.generate import (
     ParamValidationError,
     _build_exp_controller,
     _build_fs_controller,
+    _build_fs_param_controller,
     _chassis_device_id,
     _coerce_param_value,
     _is_stereo_param,
@@ -659,27 +660,62 @@ def wire_footswitch(
     path: int | None = None,
     lane: int | None = None,
     pos: int | None = None,
+    param: str | None = None,
+    min: float | None = None,
+    max: float | None = None,
+    curve: str | None = None,
+    threshold: float | None = None,
+    label: str | None = None,
+    color: str | None = None,
 ) -> None:
-    """Assign a physical footswitch to a placed block's bypass, in place.
+    """Assign a physical footswitch to a placed block, in place.
 
-    Ports `generate._build_fs_controller` + `_build_fs_assignments`: writes
-    a `targetbypass` controller dict onto the block's bNN-level `@enabled`
-    wrapper (the same wrapper `set_enabled` mutates) and registers the
-    resolved source id in `preset.sources`. `switch` is a logical name — one of
-    the assignable footswitches "FS1".."FS5" / "FS7".."FS11" (FS6 = MODE and
-    FS12 = TAP/Tuner are reserved and rejected), or "EXP1Toe" for the
-    expression-pedal toe/position switch (see `wire_wah_toe`) — resolved via
-    `controllers.resolve_controller_source` against the chassis device_id.
+    Without `param`, writes a `targetbypass` controller dict onto the block's
+    bNN-level `@enabled` wrapper (the same wrapper `set_enabled` mutates).
+    With `param` (plus numeric `min`/`max` in raw param units), writes a
+    `param`-type controller onto that param's value wrapper instead — the
+    switch then toggles the param between the two values (corpus-real; see
+    `generate._build_fs_param_controller`). Either way the resolved source id
+    is registered in `preset.sources`; `label`/`color` set that switch's
+    scribble strip there (`fs_label` / `fs_color`).
+
+    `switch` is a logical name — one of the assignable footswitches
+    "FS1".."FS5" / "FS7".."FS11" (FS6 = MODE and FS12 = TAP/Tuner are reserved
+    and rejected), or "EXP1Toe" for the expression-pedal toe/position switch
+    (see `wire_wah_toe`) — resolved via `controllers.resolve_controller_source`
+    against the chassis device_id. `curve` is a `controllers.CURVES` name;
+    `threshold` sets the switch's flip point (both optional).
 
     Assignment is permissive (matches the device-validated original
-    `generate._build_fs_assignments`): one switch may drive multiple blocks (a
-    footswitch group), and re-wiring a block to a different switch is
-    last-wins. Only an invalid `behavior` or an unresolvable `switch`/`block`
-    raises `MutateError`.
+    `generate._build_fs_assignments`): one switch may drive multiple blocks
+    and params (a merge switch), and re-wiring a target to a different switch
+    is last-wins. Only an invalid `behavior`/`curve`/`color` or an
+    unresolvable `switch`/`block`/`param` raises `MutateError`.
     """
     if behavior not in ("latching", "momentary"):
         raise MutateError(
             f"Unknown footswitch behavior {behavior!r}; must be 'latching' or 'momentary'."
+        )
+    if curve is not None and curve not in controllers.CURVES:
+        raise MutateError(
+            f"Unknown curve {curve!r}; must be one of {list(controllers.CURVES)}."
+        )
+    if color is not None and color not in controllers.FS_COLORS:
+        raise MutateError(
+            f"Unknown footswitch color {color!r}; "
+            f"must be one of {sorted(controllers.FS_COLORS)}."
+        )
+    if param is not None and not all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) for v in (min, max)
+    ):
+        raise MutateError(
+            f"FS param target {block!r}.{param!r} requires numeric min and max "
+            f"(the two raw param values the switch toggles between)."
+        )
+    if param is None and (min is not None or max is not None):
+        raise MutateError(
+            "min/max apply only to param footswitch targets; a bypass "
+            "assignment toggles the block on/off (mirrors spec validation)."
         )
     fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     device_id = _chassis_device_id(body)
@@ -689,23 +725,75 @@ def wire_footswitch(
         raise MutateError(str(exc)) from exc
 
     bnn = body["preset"]["flow"][fi][key]
-    wrapped = bnn.get("@enabled")
-    if not isinstance(wrapped, dict):
-        wrapped = {"value": True}
-        bnn["@enabled"] = wrapped
+    if param is not None:
+        # FS → param toggle: attach the controller to the param's value wrapper.
+        slot = _slot_dict(body, fi, key, si)
+        lib_block = library.load_block(_translate_model_id(slot.get("model", "")))
+        if param not in lib_block.params:
+            raise MutateError(
+                f"FS target {switch} → {block!r}.{param!r}: unknown param. "
+                f"Known params: {sorted(lib_block.params.keys())}."
+            )
+        wrapped = (slot.get("params") or {}).get(param)
+        if not isinstance(wrapped, dict):
+            raise MutateError(
+                f"Block {block!r} has no existing value for param {param!r}."
+            )
+        if _is_stereo_param(wrapped):
+            raise MutateError(
+                f"FS target {block!r}.{param!r}: stereo-shaped params are "
+                f"not supported for footswitch assignment."
+            )
+        controller = _build_fs_param_controller(
+            source_id, behavior, min, max, curve=curve, threshold=threshold)
+    else:
+        wrapped = bnn.get("@enabled")
+        if not isinstance(wrapped, dict):
+            wrapped = {"value": True}
+            bnn["@enabled"] = wrapped
+        controller = _build_fs_controller(
+            source_id, behavior,
+            position=controllers.is_position_switch(switch),
+            curve=curve, threshold=threshold,
+        )
 
     # Assignment is permissive, matching the device-validated behavior of the
     # original `generate._build_fs_assignments` (keyed by block; its source-id
-    # set is deduped): the Stadium allows ONE switch to drive MULTIPLE blocks
-    # (a footswitch group -- e.g. a wah and a volume both bound to `EXP1Toe`),
-    # and re-wiring a block to a different switch is last-wins. Real exports
-    # rely on both, so no conflict is raised here -- that would reject valid
-    # hardware configurations and break faithful round-tripping.
+    # set is deduped): the Stadium allows ONE switch to drive MULTIPLE targets
+    # (a merge switch -- e.g. a wah and a volume both bound to `EXP1Toe`, or a
+    # bypass plus a param), and re-wiring a target to a different switch is
+    # last-wins. Real exports rely on both, so no conflict is raised here --
+    # that would reject valid hardware configurations and break faithful
+    # round-tripping.
     sources = body.setdefault("preset", {}).setdefault("sources", {})
-    wrapped["controller"] = _build_fs_controller(
-        source_id, behavior, position=controllers.is_position_switch(switch)
-    )
-    sources.setdefault(str(source_id), {"bypass": False})
+    wrapped["controller"] = controller
+    entry = sources.setdefault(str(source_id), {"bypass": False})
+    if label is not None or color is not None:
+        import sys
+        # Only the stomp banks (A 0x010101NN / B 0x010102NN) have scribble
+        # strips; a label/color on the toe switch or an EXP pedal would be
+        # silently invisible on the device — warn and keep the sources entry
+        # corpus-shaped (toe/EXP entries carry no fs_* keys).
+        if (source_id & 0xFFFFFF00) not in (0x01010100, 0x01010200):
+            print(
+                f"warning: switch {switch!r} has no scribble strip on the "
+                f"device; its label/color will not be shown (only FS1–FS5 / "
+                f"FS7–FS11 have strips).",
+                file=sys.stderr,
+            )
+        else:
+            if label is not None and len(label) > controllers.FS_LABEL_MAX:
+                print(
+                    f"warning: footswitch label {label!r} is "
+                    f"{len(label)} chars; the device shows at most "
+                    f"{controllers.FS_LABEL_MAX}.",
+                    file=sys.stderr,
+                )
+            # Full scribble-strip shape observed across real exports:
+            # {bypass, fs_color, fs_label, fs_topidx}.
+            entry.setdefault("fs_topidx", 0)
+            entry["fs_label"] = label if label is not None else entry.get("fs_label", "")
+            entry["fs_color"] = color if color is not None else entry.get("fs_color", "auto")
 
 
 def wire_expression(
@@ -718,7 +806,8 @@ def wire_expression(
 
     Ports `generate._build_exp_controller` + `_build_exp_assignments`: each
     target dict is `{"block", "param", "min"=0.0, "max"=1.0}` (plus optional
-    `"path"`/`"lane"`/`"pos"` to disambiguate, matching `resolve_slot`).
+    `"path"`/`"lane"`/`"pos"` to disambiguate, matching `resolve_slot`, and
+    optional `"curve"` — a `controllers.CURVES` name, default "linear").
     Writes a `param`-type controller dict onto the param's existing value
     wrapper and registers the pedal's source id in `preset.sources`.
 
@@ -739,7 +828,7 @@ def wire_expression(
     except ControllerError as exc:
         raise MutateError(str(exc)) from exc
 
-    resolved: list[tuple[dict[str, Any], float, float]] = []
+    resolved: list[tuple] = []
     for target in targets:
         block = target["block"]
         param = target["param"]
@@ -748,6 +837,12 @@ def wire_expression(
         # it through untouched, so it is NOT rejected here.
         min_val = target.get("min", 0.0)
         max_val = target.get("max", 1.0)
+        curve = target.get("curve")
+        if curve is not None and curve not in controllers.CURVES:
+            raise MutateError(
+                f"Unknown curve {curve!r}; must be one of {list(controllers.CURVES)}."
+            )
+        threshold = target.get("threshold")
 
         fi, key, si = resolve_slot(
             body, block, library,
@@ -776,12 +871,13 @@ def wire_expression(
         # an earlier one). A duplicate (block, param) within `targets`, or a
         # second pedal driving the same param, resolves to the last write --
         # real exports contain both, so raising would break round-tripping.
-        resolved.append((wrapped, min_val, max_val))
+        resolved.append((wrapped, min_val, max_val, curve, threshold))
 
     # Commit only after every target validates, so a failure partway through
     # `targets` leaves the body untouched.
-    for wrapped, min_val, max_val in resolved:
-        wrapped["controller"] = _build_exp_controller(source_id, min_val, max_val)
+    for wrapped, min_val, max_val, curve, threshold in resolved:
+        wrapped["controller"] = _build_exp_controller(
+            source_id, min_val, max_val, curve=curve, threshold=threshold)
 
     sources = body.setdefault("preset", {}).setdefault("sources", {})
     sources.setdefault(str(source_id), {"bypass": False})

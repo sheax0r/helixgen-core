@@ -44,6 +44,7 @@ def test_server_registers_documented_tools():
         "patch_preset",
         "controller_mapping",
         # device_* tools — networked Helix Stadium control.
+        "device_info",
         "device_list_presets",
         "device_list_setlists",
         "device_read_preset",

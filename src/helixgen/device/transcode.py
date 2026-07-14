@@ -825,23 +825,74 @@ def _param_pid(model_id: int, param_name: str) -> Optional[int]:
 def _controller_locl_ctxt(source: Any) -> Optional[Tuple[int, int]]:
     """Map a ``.hsp`` controller source id -> device ``(locl, ctxt)``.
 
-    Confirmed by the 2026-07-13 device-RE capture (packet-verified vs preset
-    cid 1064): A-bank footswitch ``0x010101NN`` -> ``(25 + NN, 1)``; the
-    expression toe switch ``0x01010500`` (EXP1Toe) and EXP pedals ``0x0102010M``
-    -> ``(42, ctxt)`` with ctxt 0 for EXP1, 1 for EXP2. Returns ``None`` for
-    out-of-scope sources (stomp bank B ``0x010102NN``, looper command
-    ``0x010104NN``) so the caller can skip them."""
+    Every mapping is anchored by pairing factory presets' ``.hsp`` exports with
+    their live device content (non-activating ``GetContentData`` pulls,
+    2026-07-14) plus the ``preset_151/152/157`` fixtures:
+
+    - stomp bank A ``0x010101NN`` -> ``(25 + NN, 1)``
+    - stomp bank B ``0x010102NN`` -> ``(25 + NN, 2)``
+    - looper-function bank ``0x010104NN`` -> ``(25 + NN, 9)`` (Nash Sesh's 7
+      looper controllers map NN 0,1,2,3,7,8,9 -> locl 25,26,27,28,32,33,34
+      exactly)
+    - expression toe switch ``0x01010500`` (EXP1Toe) -> ``(37, 0)``
+      (Deconstructed Bliss's only (37,0) src is its wah-toe bypass; the old
+      ``(42, 0)`` mapping collided with EXP1)
+    - EXP pedals ``0x0102010M`` -> ``(42, M)`` for M in {0, 1} ONLY (EXP1 /
+      EXP2). ``0x01020102`` (likely EXP3) has no anchored device encoding —
+      it is skipped, NOT collapsed onto EXP2 (corpus-real: `Marshall and
+      vh4` sweeps a wah from it while using real EXP2 elsewhere).
+
+    Returns ``None`` for anything else so the caller can skip it."""
     if not isinstance(source, int) or isinstance(source, bool):
         return None
     if source == 0x01010500:            # EXP1Toe (wah toe switch)
-        return (42, 0)
+        return (37, 0)
     hi = source & 0xFFFFFF00
     lo = source & 0xFF
     if hi == 0x01010100:                # stomp bank A footswitch (NN = FS#-1)
         return (25 + lo, 1)
-    if hi == 0x01020100:                # EXP1 / EXP2 pedal (M = 0/1)
-        return (42, 0 if lo == 0 else 1)
-    return None                          # bank B / looper command -> out of scope
+    if hi == 0x01010200:                # stomp bank B footswitch
+        return (25 + lo, 2)
+    if hi == 0x01010400:                # looper-function switch bank
+        return (25 + lo, 9)
+    if hi == 0x01020100 and lo in (0, 1):   # EXP1 / EXP2 pedal
+        return (42, lo)
+    return None                              # EXP3 etc.: un-anchored, skip
+
+
+# ``.hsp`` behavior string -> device ``ctrl.behv`` enum index. Anchored:
+# latching=0 (pervasive), momentary=1 (Deconstructed Bliss's Transport ctrl),
+# continuous=2 (every EXP sweep). "toedown"=3 presumed from the app binary's
+# enum table order (0 corpus uses). ``togl`` is NOT the momentary flag — it
+# varies freely on latching controllers across real device presets (volatile
+# latch state with no ``.hsp`` counterpart) and is always synthesized False.
+_BEHV_INDEX = {"latching": 0, "momentary": 1, "continuous": 2, "toedown": 3}
+
+
+def _behv(behavior: Any, default: int) -> int:
+    return _BEHV_INDEX.get(behavior, default)
+
+
+def _curv(meta: dict) -> int:
+    """Device ``ctrl.curv`` = 0-based index into the curve vocabulary
+    (linear = 5; see ``controllers.curve_index``). An unknown curve string
+    (future firmware vocabulary in a device-written ``.hsp``) falls back to
+    linear rather than failing the whole transcode."""
+    from ..controllers import ControllerError, curve_index
+    curve = meta.get("curve")
+    if not isinstance(curve, str):
+        return 5  # linear
+    try:
+        return curve_index(curve)
+    except ControllerError:
+        return 5  # linear
+
+
+def _thrs(meta: dict) -> float:
+    thr = meta.get("threshold")
+    if isinstance(thr, (int, float)) and not isinstance(thr, bool):
+        return float(thr)
+    return 0.0
 
 
 def _make_src(src_id: int, locl: int, ctxt: int, byps: bool) -> dict:
@@ -930,13 +981,58 @@ def _synth_cg_from_recipe(
                 tracked.append((tid, list(pvals)))
                 bindings["param"][(eid, pid)] = tid
 
-    # 2) FS/EXP controller graph (Part B). Reuse a snapshot trg when the same
-    #    target is both scene-tracked and controller-driven.
+    # 2) Controller graph (Part B): source->bypass + source->param (EXP sweeps
+    #    and footswitch param toggles). One physical source gets ONE ``srcs``
+    #    entry no matter how many controllers it drives (a merge switch);
+    #    ``sm__.scid`` maps the source to the LIST of its ctrl ids — the exact
+    #    shape real device presets carry (fixtures: ``1, [1, 3]``). A snapshot
+    #    trg is reused when the same target is also controller-driven.
     srcs: List[dict] = []
     ctrl: List[dict] = []
-    scid: List[Any] = []
-    next_src = 1        # 1-based (0 == null on the device)
-    next_ctrl = 1       # 1-based
+    src_index: Dict[Tuple[int, int], int] = {}  # (locl, ctxt) -> src id
+    src_cids: Dict[int, List[int]] = {}         # src id -> [ctrl ids]
+    next_ctrl = 1       # 1-based (0 == null on the device)
+    hsp_sources = recipe.get("sources") or {}
+
+    src_explicit: set = set()  # src ids whose byps came from an explicit .hsp flag
+
+    def _src_for(source: Any, *, drives_bypass: bool) -> Optional[int]:
+        lc = _controller_locl_ctxt(source)
+        if lc is None:
+            return None
+        sid = src_index.get(lc)
+        if sid is None:
+            sid = len(srcs) + 1  # 1-based
+            # ``byps`` mirrors the ``.hsp`` ``preset.sources[sid].bypass``
+            # flag when present (paired evidence: Stadium Rock Rig's sources
+            # flags match its device srcs exactly; the flag is functionally
+            # inert either way — factory presets toggle fine with both values,
+            # e.g. 2 Guitar Rig's working FS bypasses carry byps=False); else
+            # the historical default (bypass-driving sources True, param
+            # sources False).
+            cfg = hsp_sources.get(source)
+            byps = cfg.get("bypass") if isinstance(cfg, dict) else None
+            if isinstance(byps, bool):
+                src_explicit.add(sid)
+            else:
+                byps = drives_bypass
+            srcs.append(_make_src(sid, lc[0], lc[1], byps=byps))
+            src_index[lc] = sid
+        elif drives_bypass and sid not in src_explicit:
+            # A merged source created by a param controller later gains a
+            # bypass target: upgrade the default so the result is
+            # order-independent (an explicit .hsp flag still wins).
+            srcs[sid - 1]["byps"] = True
+        return sid
+
+    def _new_ctrl(entry: dict, sid: int) -> None:
+        nonlocal next_ctrl
+        entry["cid_"] = next_ctrl
+        next_ctrl += 1
+        entry["trig"] = sid
+        ctrl.append(entry)
+        src_cids.setdefault(sid, []).append(entry["cid_"])
+
     for pi, path in enumerate(recipe.get("paths") or []):
         for bi, spec in enumerate(path.get("blocks") or []):
             lane = int(spec.get("lane", 0))
@@ -949,43 +1045,46 @@ def _synth_cg_from_recipe(
                 continue
             fsb = spec.get("fs_bypass")
             if isinstance(fsb, dict):
-                lc = _controller_locl_ctxt(fsb.get("source"))
-                if lc is not None:
-                    locl, ctxt = lc
-                    sid = next_src; next_src += 1
-                    srcs.append(_make_src(sid, locl, ctxt, byps=True))
+                sid = _src_for(fsb.get("source"), drives_bypass=True)
+                if sid is not None:
                     tid = trg_index.get((eid, 0, 1))
                     if tid is None:
                         tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
                                         "pid_": 0, "slot": 0, "type": 1},
                                        (eid, 0, 1))
-                    cid = next_ctrl; next_ctrl += 1
-                    ctrl.append({"behv": 0, "cid_": cid, "curv": 5, "dlay": 0,
-                                 "goid": 0, "max_": True, "min_": False,
-                                 "thrs": 0.0, "tid_": tid,
-                                 "togl": fsb.get("behavior") == "momentary",
-                                 "trig": sid, "type": 1})
-                    scid.extend([sid, [cid]])
-            for pname, meta in (spec.get("exp_params") or {}).items():
-                lc = _controller_locl_ctxt(meta.get("source"))
+                    _new_ctrl({"behv": _behv(fsb.get("behavior"), 0),
+                               "curv": _curv(fsb), "dlay": 0, "goid": 0,
+                               "max_": True, "min_": False,
+                               "thrs": _thrs(fsb), "tid_": tid,
+                               "togl": False, "type": 1}, sid)
+            # ``ctl_params``: EXP sweeps AND footswitch param toggles (the
+            # behavior string tells them apart; min/max are raw param units
+            # either way). ``exp_params`` is the pre-#21 spelling, still read.
+            params_ctl = spec.get("ctl_params") or spec.get("exp_params") or {}
+            for pname, meta in params_ctl.items():
                 pid = _param_pid(mid, pname)
-                if lc is None or pid is None:
+                if pid is None:
                     continue
-                locl, ctxt = lc
-                sid = next_src; next_src += 1
-                srcs.append(_make_src(sid, locl, ctxt, byps=False))
+                behavior = meta.get("behavior", "continuous")
+                sid = _src_for(meta.get("source"), drives_bypass=False)
+                if sid is None:
+                    continue
                 tid = trg_index.get((eid, pid, 2))
                 if tid is None:
                     tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
                                     "pid_": pid, "pmid": mid, "ppid": pid,
                                     "slot": 0, "type": 2}, (eid, pid, 2))
                     ptid.extend([(eid << 16) | pid, tid])
-                cid = next_ctrl; next_ctrl += 1
-                ctrl.append({"behv": 2, "cid_": cid, "curv": 5, "dlay": 0,
-                             "goid": 0, "max_": float(meta.get("max", 1.0)),
-                             "min_": float(meta.get("min", 0.0)), "thrs": 0.0,
-                             "tid_": tid, "togl": False, "trig": sid, "type": 3})
-                scid.extend([sid, [cid]])
+                _new_ctrl({"behv": _behv(behavior, 2), "curv": _curv(meta),
+                           "dlay": 0, "goid": 0,
+                           "max_": meta.get("max", 1.0),
+                           "min_": meta.get("min", 0.0),
+                           "thrs": _thrs(meta), "tid_": tid,
+                           "togl": False, "type": 3}, sid)
+
+    scid: List[Any] = []
+    for sid in sorted(src_cids):
+        scid.extend([sid, src_cids[sid]])
 
     if not tracked and not ctrl:
         return _synth_cg(max_id), bindings
@@ -1013,11 +1112,11 @@ def _synth_cg_from_recipe(
             "srcs": srcs,
             "trgs": trgs,
         },
-        "nxtc": next_ctrl,   # next-free controller id (not tied to block ids)
+        "nxtc": next_ctrl,      # next-free controller id (not tied to block ids)
         "nxti": 0,
         "nxtm": 1,
-        "nxts": next_src,    # next-free source id
-        "nxtt": next_trg,    # next-free target id
+        "nxts": len(srcs) + 1,  # next-free source id
+        "nxtt": next_trg,       # next-free target id
     }, bindings
 
 
@@ -1053,16 +1152,27 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None) -> List[dict]:
         {"key_": "preset.clip.start", "type": "f", "val_": 0.0},
         {"key_": "preset.expsw.active", "type": "i", "val_": 1},
     ]
+    from ..controllers import ControllerError, FS_LABEL_MAX, color_int
     for row in ("a", "b"):
         for n in range(1, 13):
             base = f"preset.floorboard.stomp.{row}.{n}"
             cfg = scrib.get((row, n)) or {}
             color = cfg.get("fs_color", 1)
+            if isinstance(color, str):
+                # .hsp color name -> device palette int (anchored by live
+                # pulls pairing factory exports with device content: auto=1,
+                # red=2, dkorange=3, ltorange=4, purple=9, white=11).
+                try:
+                    color = color_int(color)
+                except ControllerError:
+                    color = 1  # unknown name -> "auto" palette slot
             if not isinstance(color, int) or isinstance(color, bool):
-                color = 1  # "auto" / non-int -> default palette slot
+                color = 1  # unknown -> "auto" palette slot
+            # The device stores at most 12 scribble chars (a 13-char .hsp
+            # label was observed truncated on the hardware).
+            label = str(cfg.get("fs_label", ""))[:FS_LABEL_MAX]
             pm.append({"key_": f"{base}.color", "type": "i", "val_": color})
-            pm.append({"key_": f"{base}.label", "type": "s",
-                       "val_": str(cfg.get("fs_label", ""))})
+            pm.append({"key_": f"{base}.label", "type": "s", "val_": label})
             pm.append({"key_": f"{base}.topidx", "type": "i",
                        "val_": int(cfg.get("fs_topidx", 0))})
     pm += [

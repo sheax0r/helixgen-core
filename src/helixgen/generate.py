@@ -282,28 +282,35 @@ def _chassis_device_id(chassis: dict[str, Any]) -> str:
     return (chassis.get("meta") or {}).get("device_id") or "stadium_xl"
 
 
-def _build_exp_controller(source_id: int, min_val: float, max_val: float) -> dict[str, Any]:
+def _build_exp_controller(
+    source_id: int, min_val: float, max_val: float,
+    curve: str | None = None, threshold: float | None = None,
+) -> dict[str, Any]:
     """Build the controller dict that wraps a param value for an EXP assignment.
 
     Shape derived from real Stadium XL exports (type=param, behavior=continuous,
-    numeric delay/goid/threshold).
+    numeric delay/goid/threshold). `curve` is a name from `controllers.CURVES`
+    (default "linear" — the only corpus-observed value).
     """
     return {
         "behavior":   "continuous",
         "bypassed":   False,
-        "curve":      "linear",
+        "curve":      curve or "linear",
         "delay":      0,
         "goid":       0,
         "max":        max_val,
         "midisource": 0,
         "min":        min_val,
         "source":     source_id,
-        "threshold":  0.0,
+        "threshold":  threshold if threshold is not None else 0.0,
         "type":       "param",
     }
 
 
-def _build_fs_controller(source_id: int, behavior: str, *, position: bool = False) -> dict[str, Any]:
+def _build_fs_controller(
+    source_id: int, behavior: str, *, position: bool = False,
+    curve: str | None = None, threshold: float | None = None,
+) -> dict[str, Any]:
     """Build the controller dict that wraps @enabled for an FS assignment.
 
     Shape derived from real Stadium XL exports.
@@ -314,19 +321,51 @@ def _build_fs_controller(source_id: int, behavior: str, *, position: bool = Fals
     device ignores the binding and the toe reverts to its EXP1/EXP2 default,
     leaving the target (e.g. a wah) stuck bypassed. min=False/max=True are the
     two @enabled states the toe toggles between; delay/goid go to 0.
+
+    An explicit `threshold` (the position at which the switch flips) forces
+    the explicit-bounds shape too — the corpus-majority encoding
+    (min=False/max=True/threshold=0.0 on 566 of the corpus's 951 bypass
+    controllers; 360 carry null bounds, 25 carry 0.0/1.0).
+    """
+    explicit = position or threshold is not None
+    return {
+        "behavior":   behavior,
+        "bypassed":   False,
+        "curve":      curve or "linear",
+        "delay":      0 if explicit else None,
+        "goid":       0 if explicit else None,
+        "max":        True if explicit else None,
+        "midisource": 0,
+        "min":        False if explicit else None,
+        "source":     source_id,
+        "threshold":  (threshold if threshold is not None else 0.0) if explicit else None,
+        "type":       "targetbypass",
+    }
+
+
+def _build_fs_param_controller(
+    source_id: int, behavior: str, min_val: float, max_val: float,
+    curve: str | None = None, threshold: float | None = None,
+) -> dict[str, Any]:
+    """Build the controller dict for a footswitch-toggled PARAM assignment.
+
+    The switch toggles the param between `min_val` and `max_val` (raw param
+    units — e.g. a Level in dB). Corpus-real: 77 of the 211 exports' controllers
+    are exactly this shape (type=param with a stomp source, behavior latching/
+    momentary, raw min/max, threshold 0.0).
     """
     return {
         "behavior":   behavior,
         "bypassed":   False,
-        "curve":      "linear",
-        "delay":      0 if position else None,
-        "goid":       0 if position else None,
-        "max":        True if position else None,
+        "curve":      curve or "linear",
+        "delay":      0,
+        "goid":       0,
+        "max":        max_val,
         "midisource": 0,
-        "min":        False if position else None,
+        "min":        min_val,
         "source":     source_id,
-        "threshold":  0.0 if position else None,
-        "type":       "targetbypass",
+        "threshold":  threshold if threshold is not None else 0.0,
+        "type":       "param",
     }
 
 

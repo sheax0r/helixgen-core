@@ -111,13 +111,13 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Assign footswitch → block bypass | ctrlassign | `srcs`/`trgs` synth | full | full | full | ✅ | footswitch synth, HW-validated (2.18) |
 | Assign EXP pedal → param(s) | ctrlassign | `/ControllerSourceSet`+`/CidBehaviorSet` | full | full | full | ✅ | EXP synth incl. EXP1Toe wah |
 | Momentary / latching | assign popup | `behv` | full | full | full | ✅ | recipe `behavior` |
-| Min/max range | Parameter Panel | `/ControllerBoundsSet` | partial | partial | partial | 🟡 | EXP min/max authored |
-| Curve / reverse / threshold | assign | `/ControllerCurveSet`/`ThresholdSet` | none | none | none | 🔴 | not modeled |
-| Merge switch (multi-block per FS) | Assign to Switch | multi-target | none | none | none | 🔴 | not modeled |
-| FS label / color | Label/Color | `/SetContentInfo` (scribble) | none | none | none | 🔴 | not modeled |
+| Min/max range | Parameter Panel | `/ControllerBoundsSet` | full | full | full | ✅ | EXP min/max + FS **param toggles** with raw-unit min/max (#21; corpus 77/211, HW-persisted) |
+| Curve / reverse / threshold | assign | `/ControllerCurveSet`/`ThresholdSet` | full | full | full | 🟡 | `curve`/`threshold` authored + round-tripped (#21); vocabulary from app-binary enum table, `curv` index anchored (linear=5); non-linear values EXPERIMENTAL (persistence HW-validated, response not characterized). Reverse = `min>max` (corpus-real) |
+| Merge switch (multi-block per FS) | Assign to Switch | multi-target | full | full | full | ✅ | #21: N entries share one `switch`; one `srcs` + `scid → [cids]` (fixture + live-persisted) |
+| FS label / color | Label/Color | `preset.sources` → `pm__` scribble | full | full | full | ✅ | #21: `label`/`color` per switch; color-int palette anchored by live pulls (red=2, dkorange=3, ltorange=4, purple=9, white=11; rest order-inferred EXPERIMENTAL) |
 | Clear controllers / assignments | Action Panel | remove src/trg | partial | partial | partial | 🟡 | via re-authoring |
-| MIDI CC / Note assignment | midiassign | `/ControllerMIDISourceAdd` | none | none | none | 🔴 | not modeled |
-| XY controller | XY screen | `/SnapshotSourceSet` XY / ctrl | none | none | none | 🔴 | not modeled |
+| MIDI CC / Note assignment | midiassign | `/ControllerMIDISourceAdd` | none | none | none | 🔴 | **backlog #33** — `midisource` is 0 in all 1553 corpus controllers; encoding underivable without mutating the live edit buffer |
+| XY controller | XY screen | `/SnapshotSourceSet` XY / ctrl | none | none | none | 🔴 | **backlog #34** — all 84 corpus `xyctrl` dicts are defaults; no XY-sourced controller observed |
 | **Command Center** (Preset/Snap, Song, Looper, Utility, ExtAmp, MIDI CC/PC/Note/MMC, HotKey) | view_command_center | `commanddefs` + `/ExecuteCommand`/`/CommandTypeSet` | none | none | none | 🔴 | **whole subsystem missing**; 2 cmds/switch, 16 instant, EXP MIDI, per-cmd channel |
 
 ## 7. IR (impulse response) management
@@ -191,7 +191,7 @@ enum) via `/PropertyDefWithKeyGet`, so the catalog is live, not hardcoded.
 | Backup a setlist to local files | Librarian export | `/GetContentData` | ✅ | `device backup` (non-activating, 2.18) |
 | Restore preset content from file | Import | `/SetContentData` | ✅ | `device restore` |
 | Full-device backup/restore (microSD) | device Maintenance | on-device only | 🚫 | microSD-side; app equivalent = librarian export (covered) |
-| Product / device info (fw, model) | Help ▸ About | `/ProductInfoGet` | 🔴 | quick win: `device info` |
+| Product / device info (fw, model) | Help ▸ About | `/ProductInfoGet` | ✅ | `helixgen device info` / MCP `device_info` (#21, HW-validated live: fw/serial/model/storage) |
 | Connect / auto-connect / manual IP | Connect dialog | discovery | ✅ | `--ip`/`$HELIXGEN_HELIX_IP` |
 | Firmware update / factory reset / SD format | Update / Maintenance | cloud + flash | 🚫 | brick/destructive; out of scope |
 | LED / scribble-strip control | — | `/LEDSet`/`/LEDSetBlink` | 🚫 | niche performance lighting |
@@ -219,9 +219,10 @@ non-activating read/backup, live param set.
 - **Matrix Mixer** (§3) — per-output mixing/mute/solo.
 - Signal-flow param depth (§3) — input/output/split/merge/loop params.
 - Live device ops — snapshot recall/copy, model set, block bypass.
-- IR folders (§7), device info (§12), controller curve/MIDI/label (§6).
+- IR folders (§7), controller MIDI/XY sources (§6 — #33/#34).
   (IR prune/rename, setlist create/rename/delete/duplicate, preset
-  color/notes all ✅ shipped 2026-07-14 — #20/#11/#8.)
+  color/notes all ✅ shipped 2026-07-14 — #20/#11/#8; device info (§12) and
+  controller curve/label/merge/min-max depth (§6) ✅ — #21.)
 
 **🔍 needs-capture (command known, arg shape only):** `/SetTempo`,
 `/SetTimeSignature`, global-EQ write, tuner engage+readout,

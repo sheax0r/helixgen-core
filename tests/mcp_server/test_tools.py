@@ -673,3 +673,25 @@ def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hs
     assert result == {"ok": True, "cid": 4242}
     assert seen["push"][1:] == (3, "D", b"XCODED")   # (container, pos, name, blob)
     assert isinstance(seen["body"], dict) and "preset" in seen["body"]
+
+
+def test_generate_preset_handler_surfaces_generate_warnings(mcp_library, tmp_path):
+    """Generate-time stderr diagnostics (e.g. an unshowable EXP1Toe scribble
+    label, a >12-char label) come back in the returned `warnings` list — an
+    MCP caller cannot read the server's stderr."""
+    from mcp_server.tools import generate_preset_handler
+
+    amps = mcp_library.list_blocks(category="amp")
+    spec = {
+        "name": "MCP Warn Preset",
+        "paths": [{"blocks": [{"block": amps[0].display_name}]}],
+        "footswitches": [
+            {"switch": "FS3", "block": amps[0].display_name,
+             "label": "THIRTEEN CHR."},
+        ],
+    }
+    out = tmp_path / "warn.hsp"
+    result = generate_preset_handler(
+        mcp_library, "stadium_xl", recipe=spec, out_path=str(out))
+    assert out.exists()
+    assert any("at most 12" in w for w in result["warnings"]), result["warnings"]

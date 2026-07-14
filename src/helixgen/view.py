@@ -286,6 +286,45 @@ def _source_hex(source: Any) -> str:
     return str(source)
 
 
+def _controller_extras(ctrl: dict) -> dict[str, Any]:
+    """Non-default `curve`/`threshold` fields from a controller dict, for a
+    recovered footswitch/expression entry. Defaults ("linear"/0.0/None) are
+    omitted so specs stay minimal."""
+    extras: dict[str, Any] = {}
+    curve = ctrl.get("curve")
+    if isinstance(curve, str) and curve != "linear":
+        extras["curve"] = curve
+    thr = ctrl.get("threshold")
+    if isinstance(thr, (int, float)) and not isinstance(thr, bool) and thr != 0.0:
+        extras["threshold"] = thr
+    return extras
+
+
+def _attach_scribble_strips(body: dict, device_id: Any, entries: list[dict[str, Any]]) -> None:
+    """Lift `preset.sources` scribble-strip config (`fs_label`/`fs_color`) onto
+    the FIRST recovered entry of each switch (a merge switch has one strip)."""
+    sources = (body.get("preset") or {}).get("sources") or {}
+    seen: set = set()
+    for entry in entries:
+        switch = entry.get("switch")
+        if switch in seen:
+            continue
+        seen.add(switch)
+        try:
+            sid = controllers.resolve_controller_source(device_id, switch)
+        except controllers.ControllerError:
+            continue
+        cfg = sources.get(str(sid))
+        if not isinstance(cfg, dict):
+            continue
+        label = cfg.get("fs_label")
+        if isinstance(label, str) and label:
+            entry["label"] = label
+        color = cfg.get("fs_color")
+        if isinstance(color, str) and color not in ("", "auto") and color in controllers.FS_COLORS:
+            entry["color"] = color
+
+
 def _recover_footswitches(
     body: dict, library: Library, device_id: Any, idx: dict, unknowns: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -301,25 +340,37 @@ def _recover_footswitches(
             continue
         num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
         name = controllers.controller_name_for_source(device_id, ctrl.get("source"))
-        if name is None:
-            # Un-tabled bypass source (EXP3, the 0x010104NN bank, a reserved
-            # switch, ...). Keep it, labeled, instead of silently dropping it.
+        behavior = ctrl.get("behavior", "latching")
+        if name is None or behavior not in ("latching", "momentary"):
+            # Un-tabled bypass source (EXP3, the stomp-bank-B 0x010102NN page,
+            # the looper-function 0x010104NN bank, a reserved switch, ...) or
+            # an out-of-vocabulary behavior (toedown / future firmware) the
+            # spec cannot re-author. Keep it, labeled, instead of silently
+            # dropping it — and never emit an entry parse_spec would reject.
             src = _source_hex(ctrl.get("source"))
+            what = (f"unknown control behavior {behavior!r} (source {src})"
+                    if name is not None else f"unknown control (source {src})")
             unknowns.append({
                 "kind": "footswitch",
                 "source": src,
-                "label": f"unknown control (source {src})",
+                "label": what,
                 "block": _ref_name(block),
             })
             continue
         out.append({"switch": name, **_ref(_ref_name(block), pi, lane, pos, idx),
-                    "behavior": ctrl.get("behavior", "latching")})
+                    "behavior": behavior,
+                    **_controller_extras(ctrl)})
     return out
 
 
 def _recover_expression(
-    body: dict, library: Library, device_id: Any, idx: dict, unknowns: list[dict[str, Any]]
+    body: dict, library: Library, device_id: Any, idx: dict,
+    unknowns: list[dict[str, Any]], footswitches: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Recover `param`-type controllers: EXP-pedal sweeps into the spec's
+    `expression` list, footswitch/toe param TOGGLES (corpus-real; the switch
+    flips the param between min and max) appended to `footswitches`, and
+    anything un-tabled kept in `unknown_controllers`."""
     flow = (body.get("preset") or {}).get("flow") or []
     by_pedal: dict[str, list[dict[str, Any]]] = {}
     for pi, key, _bnn, slot in _iter_blocks(flow):
@@ -331,11 +382,37 @@ def _recover_expression(
             ctrl = wrapped.get("controller") if isinstance(wrapped, dict) else None
             if not (isinstance(ctrl, dict) and ctrl.get("type") == "param"):
                 continue
-            pedal = controllers.controller_name_for_source(device_id, ctrl.get("source"))
-            if pedal not in ("EXP1", "EXP2"):
-                # A param-driven controller that isn't a known EXP pedal —
-                # either an un-tabled source or a footswitch-as-parameter (out
-                # of v1 authoring scope). Keep it labeled rather than dropping.
+            source_name = controllers.controller_name_for_source(device_id, ctrl.get("source"))
+            lo, hi = ctrl.get("min", 0.0), ctrl.get("max", 1.0)
+
+            def _numeric(x: Any) -> bool:
+                return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+            if source_name in ("EXP1", "EXP2"):
+                if not (_numeric(lo) and _numeric(hi)):
+                    print(f"warning: skipping expression target on {block.display_name!r}."
+                          f"{pname!r}: non-numeric sweep range ({lo!r}..{hi!r}) unsupported in v1.",
+                          file=sys.stderr)
+                    continue
+                by_pedal.setdefault(source_name, []).append({
+                    **_ref(_ref_name(block), pi, lane, pos, idx),
+                    "param": pname,
+                    "min": lo, "max": hi,
+                    **_controller_extras(ctrl)})
+            elif (source_name is not None and _numeric(lo) and _numeric(hi)
+                    and ctrl.get("behavior", "latching") in ("latching", "momentary")):
+                # A footswitch (or toe switch) toggling a param between two
+                # values — first-class since the controller-depth work.
+                footswitches.append({
+                    "switch": source_name,
+                    **_ref(_ref_name(block), pi, lane, pos, idx),
+                    "param": pname,
+                    "min": lo, "max": hi,
+                    "behavior": ctrl.get("behavior", "latching"),
+                    **_controller_extras(ctrl)})
+            else:
+                # Un-tabled source (looper bank, stomp bank B, ...) or a
+                # non-numeric toggle range. Keep it labeled rather than dropping.
                 src = _source_hex(ctrl.get("source"))
                 unknowns.append({
                     "kind": "expression",
@@ -344,21 +421,6 @@ def _recover_expression(
                     "block": _ref_name(block),
                     "param": pname,
                 })
-                continue
-            lo, hi = ctrl.get("min", 0.0), ctrl.get("max", 1.0)
-
-            def _numeric(x: Any) -> bool:
-                return isinstance(x, (int, float)) and not isinstance(x, bool)
-
-            if not (_numeric(lo) and _numeric(hi)):
-                print(f"warning: skipping expression target on {block.display_name!r}."
-                      f"{pname!r}: non-numeric sweep range ({lo!r}..{hi!r}) unsupported in v1.",
-                      file=sys.stderr)
-                continue
-            by_pedal.setdefault(pedal, []).append({
-                **_ref(_ref_name(block), pi, lane, pos, idx),
-                "param": pname,
-                "min": lo, "max": hi})
     return [{"pedal": p, "targets": t} for p, t in by_pedal.items()]
 
 
@@ -579,10 +641,12 @@ def view(body: dict, library: Library, *, irs: IrMapping | None = None) -> dict[
     unknowns: list[dict[str, Any]] = []
 
     fs = _recover_footswitches(body, library, device_id, idx, unknowns)
-    if fs:
-        spec["footswitches"] = fs
 
-    exp = _recover_expression(body, library, device_id, idx, unknowns)
+    # _recover_expression also appends footswitch-param TOGGLE entries to `fs`.
+    exp = _recover_expression(body, library, device_id, idx, unknowns, fs)
+    if fs:
+        _attach_scribble_strips(body, device_id, fs)
+        spec["footswitches"] = fs
     if exp:
         spec["expression"] = exp
 

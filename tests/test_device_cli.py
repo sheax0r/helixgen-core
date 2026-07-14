@@ -809,3 +809,37 @@ def test_device_setlist_duplicate_records_created_target(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     from helixgen.device.manifest import SetlistManifest
     assert "ZZC-copy" in SetlistManifest.load().setlists()
+
+# --- device info --------------------------------------------------------------
+
+CANNED_INFO = {
+    "model": "stadium", "device_id": 2490368, "helixgen_model": "stadium_xl",
+    "serial": "47292244582131381", "firmware": "1.3.2",
+    "firmware_build": 1340, "firmware_date": "2026-04-13",
+    "sd_total_bytes": 23340777472, "sd_available_bytes": 23338147840,
+    "raw": {"clid": 14},
+}
+
+
+class InfoClient(FakeClient):
+    def product_info(self):
+        self.calls.append(("product_info",))
+        return dict(CANNED_INFO)
+
+
+def test_device_info_human(monkeypatch):
+    _patch_client(monkeypatch, InfoClient)
+    result = CliRunner().invoke(cli, ["device", "info"])
+    assert result.exit_code == 0, result.output
+    assert "stadium (stadium_xl)" in result.output
+    assert "1.3.2" in result.output and "build 1340" in result.output
+    assert "47292244582131381" in result.output
+    assert "23.3 GB free of 23.3 GB" in result.output
+
+
+def test_device_info_json(monkeypatch):
+    _patch_client(monkeypatch, InfoClient)
+    result = CliRunner().invoke(cli, ["device", "info", "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data == CANNED_INFO

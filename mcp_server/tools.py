@@ -119,13 +119,28 @@ def generate_preset_handler(
     spec = parse_spec(recipe, source="mcp:generate_preset")
     irs = IrMapping.load(irs_dir)
     chassis = library.load_chassis()
-    raw = generate_from_recipe(
-        spec, library, irs=irs, chassis=chassis, source="mcp:generate_preset"
-    )
+    # Generate-time diagnostics (unshowable scribble labels, >12-char labels,
+    # unregistered IR hashes, ...) are stderr prints in the CLI; capture them
+    # here so the MCP caller sees them in the returned `warnings` instead of
+    # a stderr stream it cannot read. They are re-emitted to the real stderr.
+    import contextlib
+    import io
+    import sys as _sys
+
+    captured = io.StringIO()
+    with contextlib.redirect_stderr(captured):
+        raw = generate_from_recipe(
+            spec, library, irs=irs, chassis=chassis, source="mcp:generate_preset"
+        )
     out = Path(out_path).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(raw)
     warnings: list[str] = []
+    for line in captured.getvalue().splitlines():
+        print(line, file=_sys.stderr)
+        line = line.strip()
+        if line:
+            warnings.append(line[len("warning: "):] if line.startswith("warning: ") else line)
     try:
         from helixgen.device.manifest import SetlistManifest
 
@@ -467,6 +482,22 @@ def device_list_presets_handler(
     try:
         with HelixClient(ip=ip) as client:
             return client.list_presets(container=container)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_info_handler(model: str, *, ip: str = _DEFAULT_DEVICE_IP) -> dict[str, Any]:
+    """Query the device's product info (``/ProductInfoGet`` -- a read).
+
+    Returns model, device_id, helixgen_model, serial, firmware (+build/date),
+    sd storage totals, and the full 4CC-decoded reply under ``raw``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return client.product_info()
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
 

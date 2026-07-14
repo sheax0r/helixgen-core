@@ -220,6 +220,20 @@ def _snapshot_arrays(slot: dict, bnn: dict,
     return bypass, params
 
 
+def _ctl_meta(c: dict, *, behavior_default: str) -> Dict[str, Any]:
+    """Common controller metadata lifted off a ``.hsp`` controller dict:
+    source id, behavior, and (when non-default) curve / threshold."""
+    meta: Dict[str, Any] = {"source": c["source"],
+                            "behavior": c.get("behavior", behavior_default)}
+    curve = c.get("curve")
+    if isinstance(curve, str) and curve != "linear":
+        meta["curve"] = curve
+    thr = c.get("threshold")
+    if isinstance(thr, (int, float)) and not isinstance(thr, bool) and thr != 0.0:
+        meta["threshold"] = thr
+    return meta
+
+
 def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                  strict: bool = True) -> List[Dict[str, Any]]:
     """Read EVERY DSP flow of a ``.hsp`` body into per-path recipe entries
@@ -301,7 +315,9 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     spec["snap_bypass"] = bypass
                 if snap_params:
                     spec["snap_params"] = snap_params
-            # Controller assignments (spec 2 Part B): FS->bypass + EXP->param.
+            # Controller assignments (spec 2 Part B): source->bypass +
+            # source->param (EXP sweeps AND footswitch param toggles — both
+            # are `param`-type controllers; behavior tells them apart).
             en = b.get("@enabled")
             # Base bypass: a block whose ``@enabled.value`` is falsy (False or
             # a degenerate 0) loads bypassed — carried so the transcoder can
@@ -313,9 +329,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             if isinstance(en, dict) and isinstance(en.get("controller"), dict):
                 c = en["controller"]
                 if c.get("type") == "targetbypass" and c.get("source") is not None:
-                    spec["fs_bypass"] = {"source": c["source"],
-                                         "behavior": c.get("behavior", "latching")}
-            exp: Dict[str, Any] = {}
+                    spec["fs_bypass"] = _ctl_meta(c, behavior_default="latching")
+            ctl: Dict[str, Any] = {}
             for pname, wrapped in (slot.get("params") or {}).items():
                 if not (isinstance(wrapped, dict)
                         and isinstance(wrapped.get("controller"), dict)):
@@ -326,10 +341,12 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 dev_name = name_map.get(pname)
                 if dev_name is None:
                     continue
-                exp[dev_name] = {"source": cc["source"],
-                                 "min": cc.get("min", 0.0), "max": cc.get("max", 1.0)}
-            if exp:
-                spec["exp_params"] = exp
+                meta = _ctl_meta(cc, behavior_default="continuous")
+                meta["min"] = cc.get("min", 0.0)
+                meta["max"] = cc.get("max", 1.0)
+                ctl[dev_name] = meta
+            if ctl:
+                spec["ctl_params"] = ctl
             blocks.append(spec)
         path_entry: Dict[str, Any] = {"blocks": blocks}
         if input_mode is not None:

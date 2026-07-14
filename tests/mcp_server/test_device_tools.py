@@ -99,6 +99,14 @@ class FakeClient:
         FakeClient.record.update(path=path, block=block, param_id=param_id, value=value)
         return True
 
+    def product_info(self):
+        self._maybe_raise("product_info")
+        return {"model": "stadium", "device_id": 2490368,
+                "helixgen_model": "stadium_xl", "serial": "SN",
+                "firmware": "1.3.2", "firmware_build": 1340,
+                "firmware_date": "2026-04-13",
+                "sd_total_bytes": 1, "sd_available_bytes": 1, "raw": {}}
+
 
 @pytest.fixture
 def fake_client(monkeypatch):
@@ -549,3 +557,21 @@ def test_device_setlist_duplicate_records_created_target(
     assert res["created"] is True
     from helixgen.device.manifest import SetlistManifest
     assert "ZZC-copy" in SetlistManifest.load().setlists()
+
+# --- device info ---------------------------------------------------------------
+
+def test_device_info_returns_curated(fake_client):
+    info = tools.device_info_handler(MODEL)
+    assert info["firmware"] == "1.3.2"
+    assert info["helixgen_model"] == "stadium_xl"
+
+
+def test_device_info_bad_model(fake_client):
+    with pytest.raises(ValueError):
+        tools.device_info_handler(BAD_MODEL)
+
+
+def test_device_info_maps_helixerror(monkeypatch):
+    monkeypatch.setattr(device, "HelixClient", _raising_client("product_info"))
+    with pytest.raises(ValueError, match="device error"):
+        tools.device_info_handler(MODEL)

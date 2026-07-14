@@ -106,6 +106,58 @@ CONTROLLER_META: dict[str, dict[str, dict]] = {
 }
 
 
+# Controller response-curve vocabulary, in the device's own enum order.
+# Source of evidence: the Stadium app binary's serializer string table (1.3.2)
+# lists exactly these 11 names contiguously with the other controller enums
+# (`targetbypass`, `latching`, `continuous`, ...); the device content format's
+# `ctrl.curv` int is the 0-based index into this table (every real controller
+# observed carries curv=5 == "linear", the only value in the 211-export
+# corpus). Non-"linear" values are EXPERIMENTAL: vocabulary-evidenced, not
+# corpus-observed.
+CURVES = (
+    "slow5", "slow4", "slow3", "slow2", "slow1",
+    "linear",
+    "fast1", "fast2", "fast3", "fast4", "fast5",
+)
+
+# Footswitch scribble-strip color palette: `.hsp` name -> device `pm__`
+# `preset.floorboard.stomp.*.color` int. Anchored by live device pulls paired
+# with the same presets' .hsp exports (auto=1, red=2, dkorange=3, ltorange=4,
+# purple=9, white=11); the remaining names are inferred from the app binary's
+# palette-order string table (EXPERIMENTAL: none, yellow, green, turquoise,
+# blue, pink).
+FS_COLORS = {
+    "none": 0, "auto": 1, "red": 2, "dkorange": 3, "ltorange": 4,
+    "yellow": 5, "green": 6, "turquoise": 7, "blue": 8, "purple": 9,
+    "pink": 10, "white": 11,
+}
+
+# The device stores at most 12 scribble-strip characters (a 13-char .hsp
+# label was observed truncated to 12 on the hardware).
+FS_LABEL_MAX = 12
+
+
+def curve_index(name: str) -> int:
+    """0-based device enum index for a curve name. Raises ControllerError."""
+    try:
+        return CURVES.index(name)
+    except ValueError:
+        raise ControllerError(
+            f"Unknown curve {name!r}. Valid curves: {list(CURVES)}."
+        ) from None
+
+
+def color_int(name: str) -> int:
+    """Device palette int for a scribble-strip color name. Raises ControllerError."""
+    try:
+        return FS_COLORS[name]
+    except KeyError:
+        raise ControllerError(
+            f"Unknown footswitch color {name!r}. "
+            f"Valid colors: {sorted(FS_COLORS)}."
+        ) from None
+
+
 # Reserved footswitches: physically present, addressable-looking, but NOT
 # assignable to a block. Resolving one raises a tailored ControllerError.
 # Keyed identifier → (source_id, human label).

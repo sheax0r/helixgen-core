@@ -169,16 +169,32 @@ def apply_recipe(
         _emit_structural(path_dict, path_entry)
 
     # --- controller wiring (mutate verbs) ----------------------------------
+    # Reset chassis-carryover scribble strips: the cloned chassis carries the
+    # ORIGINATING preset's fs_label/fs_color values, which would silently leak
+    # stale labels onto an authored tone (and read back out of `view` as if
+    # the recipe had set them). Authored output carries only what the recipe
+    # declares; bypass/fs_topidx keep the chassis shape.
+    for entry in (body.get("preset", {}).get("sources") or {}).values():
+        if isinstance(entry, dict):
+            if "fs_label" in entry:
+                entry["fs_label"] = ""
+            if "fs_color" in entry:
+                entry["fs_color"] = "auto"
+
     for fs in spec.footswitches:
         mutate.wire_footswitch(
             body, fs.switch, fs.block, fs.behavior, library,
             path=fs.path, lane=fs.lane, pos=fs.pos,
+            param=fs.param, min=fs.min, max=fs.max,
+            curve=fs.curve, threshold=fs.threshold,
+            label=fs.label, color=fs.color,
         )
     for assignment in spec.expression:
         targets = [
             {
                 "block": t.block, "param": t.param, "min": t.min, "max": t.max,
-                "path": t.path, "lane": t.lane, "pos": t.pos,
+                "path": t.path, "lane": t.lane, "pos": t.pos, "curve": t.curve,
+                "threshold": t.threshold,
             }
             for t in assignment.targets
         ]

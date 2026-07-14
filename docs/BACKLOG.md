@@ -280,6 +280,8 @@ assumption — see #9); the reference-based redesign below then **shipped
   on snapshot-tracked leaves. EXP sweeps were HW-validated at 2.18.0 with
   `tid_=0`, so this is presumed inert — but it's the symmetric case to the
   block-level binding the 2.21.1 fix added. Match the device convention.
+  (The #21 controller-depth pass kept the same behavior for its FS→param
+  toggle leaves — fix both together.)
 
 - **#25 `device slots restore --force` doesn't force for `.hsp` sources** —
   `_install_hsp_open` unconditionally refuses an occupied slot, so `--force`
@@ -377,9 +379,40 @@ orthogonal to it.
   - IR folders / move-to-folder (matrix §7) — content-path surface not RE'd.
   - Active-preset select (**#1**) — unchanged, still open.
   - Setlist reorder (`/ReorderContainerContent`) — arg shape still 🔍.
-- **P7 · #21 Quick wins** **[device-write]** — `helixgen device info`
-  (`/ProductInfoGet`: firmware/model/capabilities); controller depth
-  (curve/threshold/MIDI-CC/label/merge/XY assignment). Matrix §6/§12.
+- **P7 · #21 Quick wins** — **✅ SHIPPED (2026-07-14).** `helixgen device
+  info` / MCP `device_info` (`/ProductInfoGet` — model/device-id/serial/
+  firmware/storage; HW-validated live) + controller depth: FS→**param
+  toggles** (raw-unit min/max), **merge switches** (N targets per switch; one
+  `srcs` + `scid → [cids]`), **scribble label/color** (palette ints anchored
+  by live pulls), **curve/threshold** authoring + round-trip (non-linear
+  curves EXPERIMENTAL — vocabulary + `curv` index anchored, audible response
+  uncharacterized). Also fixed en route: EXP1Toe device `locl` 42→37 (was
+  colliding with EXP1), momentary encoding `behv=1` (was `togl=True` — `togl`
+  is volatile latch state), authored tones no longer inherit the chassis's
+  stale scribble labels. Design + evidence:
+  `docs/superpowers/specs/2026-07-14-controller-depth-device-info-design.md`.
+  ZZB install→pull cycle persisted every field byte-exact. MIDI/XY sources
+  split out to **#33**/**#34**. Matrix §6/§12.
+- **#33 MIDI CC/Note controller source** **[device-write][discovery]** — drive
+  a block's bypass/param from an incoming MIDI CC/Note
+  (`/ControllerMIDISourceAdd`; `.hsp` `midisource` int). **Deferred for lack
+  of evidence:** all 1553 controllers across the 211-export corpus carry
+  `midisource: 0`; no on-device preset (66 factory + 28 pool, checked
+  2026-07-14) has one; the app-binary string table names the UI options (MIDI
+  Note On/Off, CC, PC) but not the int encoding; deriving it live requires
+  mutating the edit buffer (active-tone rule) or a Stadium-app frida capture
+  of `/ControllerMIDISourceAdd` — do the capture when this is picked up.
+  Matrix §6.
+- **#34 XY-controller assignment** **[device-write][discovery]** — assign the
+  XY pad's axes as controller sources (app strings `X-Axis (XYPad)` /
+  `Y-Axis (XYPad)`; `preset.xyctrl` block). **Deferred for lack of evidence:**
+  all 84 corpus `xyctrl` dicts are factory defaults and no controller in any
+  export or on-device preset carries an XY source id, so the source-id bank is
+  unknown; same capture path as #33. (Related: stomp **bank B**
+  `0x010102NN` — encoding fully mapped (ctxt 2, live-anchored) and
+  transcoded, but not exposed as an authoring identifier: the physical
+  second-stomp-page layout/English naming is undecided; `view` keeps bank-B
+  controls labeled in `unknown_controllers`.) Matrix §6.
 
 **Out of scope** (matrix 🚫, listed for honesty): firmware update, factory
 reset, SD format, full-device microSD backup, Showcase multitrack player,

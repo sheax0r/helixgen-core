@@ -893,3 +893,50 @@ def test_create_setlist_falls_back_to_reply_cid_with_warning(monkeypatch, caplog
     with caplog.at_level(logging.WARNING):
         assert h.create_setlist("ZZC-x") == 930
     assert any("unreliable" in r.message for r in caplog.records)
+
+# --- product info (/ProductInfoGet) ------------------------------------------
+
+def _product_info_reply(reqid=1000):
+    # 4CC int keys exactly as the live device replies (fw 1.3.2 capture).
+    def cc(s):
+        return int.from_bytes(s.encode(), "big")
+    info = {
+        cc("clid"): 14,
+        cc("host"): {
+            cc("ctyp"): 1, cc("hoid"): 1, cc("id__"): 2490368,
+            cc("name"): "stadium",
+            cc("res_"): [{cc("path"): "/dev/p35-scribble"}],
+            cc("sdas"): 23338147840, cc("sdcs"): 3, cc("sdts"): 23340777472,
+            cc("snum"): "47292244582131381",
+            cc("vers"): {cc("buld"): 1340, cc("date"): 1776097298,
+                         cc("majo"): 1, cc("mino"): 3, cc("patc"): 2,
+                         cc("targ"): 0},
+        },
+        cc("nexs"): [],
+    }
+    return osc_encode("/getProductInfo",
+                      [("i", reqid), ("b", msgpack.packb(info, use_bin_type=True))])
+
+
+def test_product_info_decodes_and_curates():
+    h = HelixClient()
+    _wire(h, [_product_info_reply()])
+    info = h.product_info()
+    assert info["model"] == "stadium"
+    assert info["device_id"] == 2490368
+    assert info["helixgen_model"] == "stadium_xl"
+    assert info["serial"] == "47292244582131381"
+    assert info["firmware"] == "1.3.2"
+    assert info["firmware_build"] == 1340
+    assert info["firmware_date"] == "2026-04-13"
+    assert info["sd_total_bytes"] == 23340777472
+    assert info["sd_available_bytes"] == 23338147840
+    # full 4CC-decoded reply available for anything uncurated
+    assert info["raw"]["host"]["sdcs"] == 3
+
+
+def test_product_info_raises_without_reply():
+    h = HelixClient()
+    _wire(h, [])
+    with pytest.raises(HelixError, match="getProductInfo"):
+        h.product_info()

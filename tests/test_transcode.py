@@ -390,21 +390,25 @@ def test_controller_graph_synthesis():
     assert by_locl[29]["ctxt"] == 1 and by_locl[29]["byps"] is True
     assert by_locl[42]["ctxt"] == 0 and by_locl[42]["byps"] is False
 
-    # ctrl entries: two bypass (behv 0 / type 1) + one param (behv 2 / type 3).
+    # ctrl entries: two bypass (type 1) + one param (behv 2 / type 3).
     byp_ctrls = [c for c in entt["ctrl"] if c["type"] == 1]
     par_ctrls = [c for c in entt["ctrl"] if c["type"] == 3]
     assert len(byp_ctrls) == 2 and len(par_ctrls) == 1
     for c in byp_ctrls:
-        assert c["behv"] == 0 and c["min_"] is False and c["max_"] is True
+        assert c["min_"] is False and c["max_"] is True
         assert c["curv"] == 5
     pc = par_ctrls[0]
     assert pc["behv"] == 2 and pc["min_"] == 0.1 and pc["max_"] == 0.8
 
-    # the momentary A5 bypass sets togl True; latching A1 sets togl False
+    # behv is the behavior enum index (latching=0, momentary=1 — anchored by
+    # Deconstructed Bliss's momentary ctrl); togl is volatile latch state,
+    # always synthesized False.
     a5_src = by_locl[29]["id__"]
     a1_src = by_locl[25]["id__"]
-    assert next(c for c in byp_ctrls if c["trig"] == a5_src)["togl"] is True
-    assert next(c for c in byp_ctrls if c["trig"] == a1_src)["togl"] is False
+    a5 = next(c for c in byp_ctrls if c["trig"] == a5_src)
+    a1 = next(c for c in byp_ctrls if c["trig"] == a1_src)
+    assert a5["behv"] == 1 and a5["togl"] is False
+    assert a1["behv"] == 0 and a1["togl"] is False
 
     # the EXP param trg is a type2/enty3 target on the amp's Bass pid, packed
     # into ptid.
@@ -415,9 +419,11 @@ def test_controller_graph_synthesis():
     ptid = entt["ctm_"]["ptid"]
     assert dict(zip(ptid[::2], ptid[1::2])).get(packed) == par_trg["id__"]
 
-    # sm__.scid links each target to its driving ctrl id
+    # sm__.scid maps each SOURCE to the list of ctrl ids it drives
     scid = dict(zip(entt["sm__"]["scid"][::2], entt["sm__"]["scid"][1::2]))
-    assert scid[pc["tid_"]] == [pc["cid_"]]
+    assert scid[by_locl[42]["id__"]] == [pc["cid_"]]
+    assert scid[a1_src] == [a1["cid_"]]
+    assert scid[a5_src] == [a5["cid_"]]
 
     # pm__ scribble strip for A1 (stomp a.1) carries the source label
     pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
@@ -439,8 +445,11 @@ def test_hsp_to_sbepgsm_controllers_from_hsp():
     # locl 42 ctxt 0.
     locls = {s["locl"] for s in entt["srcs"]}
     assert {25, 26, 27, 28} <= locls, locls   # FS1-4 bypasses
-    assert 42 in locls                          # EXP1 (toe + pedal)
+    assert 42 in locls                          # EXP1 pedal sweep
     assert any(s["ctxt"] == 0 and s["locl"] == 42 for s in entt["srcs"])
+    # the wah toe switch is its own source at locl 37 (NOT 42 — anchored by
+    # Deconstructed Bliss's device content)
+    assert any(s["ctxt"] == 0 and s["locl"] == 37 for s in entt["srcs"])
     # a param-sweep ctrl (the wah pedal) is present
     assert any(c["type"] == 3 and c["behv"] == 2 for c in entt["ctrl"])
     # scribble strip carried through
@@ -739,3 +748,188 @@ def test_param_snapshots_without_base_value_never_emit_none():
     doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
     for s in doc["cg__"]["entt"]["snps"]:
         assert None not in s["tamv"], s["tamv"]
+
+# --- controller depth (parity #21): merge, FS-param, curve, colors, banks ----
+
+def _entt(recipe):
+    doc = content.decode_any(
+        content.encode_content_data(transcode.recipe_to_sbepgsm(recipe)))
+    return doc, doc["cg__"]["entt"]
+
+
+def test_merge_switch_one_src_many_ctrls():
+    """Two bypasses + one param toggle on ONE footswitch -> a single srcs
+    entry whose scid lists all three ctrl ids (fixture shape `1, [1, 3]`)."""
+    recipe = {"name": "m", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "fs_bypass": {"source": 0x01010102, "behavior": "latching"},
+         "ctl_params": {"Gain": {"source": 0x01010102, "min": 0.2, "max": 0.8,
+                                 "behavior": "latching"}}},
+        {"block": "HD2_DistVerminDistMono", "params": {},
+         "fs_bypass": {"source": 0x01010102, "behavior": "latching"}},
+    ]}]}
+    _doc, entt = _entt(recipe)
+    a3 = [s for s in entt["srcs"] if (s["locl"], s["ctxt"]) == (27, 1)]
+    assert len(a3) == 1, entt["srcs"]
+    scid = dict(zip(entt["sm__"]["scid"][::2], entt["sm__"]["scid"][1::2]))
+    assert sorted(scid[a3[0]["id__"]]) == sorted(c["cid_"] for c in entt["ctrl"])
+    assert len(entt["ctrl"]) == 3
+
+
+def test_fs_param_toggle_encoding():
+    """A footswitch param toggle -> ctrl type 3 with behv from the behavior
+    enum and RAW min/max (2 Guitar Rig anchor: type:3, behv:0, dB values)."""
+    recipe = {"name": "p", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "ctl_params": {"Gain": {"source": 0x01010104, "min": -7.0,
+                                 "max": -5.2, "behavior": "latching"}}},
+    ]}]}
+    _doc, entt = _entt(recipe)
+    (pc,) = entt["ctrl"]
+    assert pc["type"] == 3 and pc["behv"] == 0
+    assert pc["min_"] == -7.0 and pc["max_"] == -5.2
+    src = next(s for s in entt["srcs"] if s["id__"] == pc["trig"])
+    assert (src["locl"], src["ctxt"]) == (29, 1)
+
+
+def test_curve_threshold_and_toe_locl():
+    """curve name -> curv index; threshold -> thrs; EXP1Toe -> locl 37 ctxt 0
+    (Deconstructed Bliss anchor — NOT 42, which is the EXP pedal)."""
+    recipe = {"name": "c", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "fs_bypass": {"source": 0x01010500, "behavior": "latching",
+                       "curve": "fast2", "threshold": 0.65}},
+    ]}]}
+    _doc, entt = _entt(recipe)
+    (c,) = entt["ctrl"]
+    assert c["curv"] == 7          # ["slow5".."linear"(5), "fast1"(6), "fast2"(7)]
+    assert c["thrs"] == 0.65
+    src = next(s for s in entt["srcs"] if s["id__"] == c["trig"])
+    assert (src["locl"], src["ctxt"]) == (37, 0)
+
+
+def test_bank_b_and_looper_contexts():
+    """Stomp bank B -> ctxt 2; looper-function bank -> ctxt 9 (Nash Sesh /
+    2 Guitar Rig anchors)."""
+    recipe = {"name": "b", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "fs_bypass": {"source": 0x01010203, "behavior": "latching"},
+         "ctl_params": {"Gain": {"source": 0x01010407, "min": 0, "max": 1,
+                                 "behavior": "latching"}}},
+    ]}]}
+    _doc, entt = _entt(recipe)
+    pairs = {(s["locl"], s["ctxt"]) for s in entt["srcs"]}
+    assert (28, 2) in pairs   # bank B FS4
+    assert (32, 9) in pairs   # looper RecordOverdub switch (NN=7)
+
+
+def test_src_byps_follows_hsp_sources():
+    """srcs.byps mirrors preset.sources[sid].bypass (Stadium Rock Rig anchor);
+    falls back to True for bypass-driving sources when absent."""
+    recipe = {"name": "s",
+              "sources": {0x01010100: {"bypass": False, "fs_label": "X"}},
+              "paths": [{"blocks": [
+                  {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+                   "fs_bypass": {"source": 0x01010100, "behavior": "latching"}},
+                  {"block": "HD2_DistVerminDistMono", "params": {},
+                   "fs_bypass": {"source": 0x01010101, "behavior": "latching"}},
+              ]}]}
+    _doc, entt = _entt(recipe)
+    by_locl = {s["locl"]: s for s in entt["srcs"]}
+    assert by_locl[25]["byps"] is False   # explicit .hsp sources flag wins
+    assert by_locl[26]["byps"] is True    # default for a bypass-driving source
+
+
+def test_pm_color_name_mapping_and_label_truncation():
+    """.hsp color names map to the anchored palette ints; labels truncate to
+    the device's 12-char scribble limit."""
+    recipe = {"name": "pm",
+              "sources": {0x01010104: {"fs_color": "red",
+                                       "fs_label": ".8th VintDigi",
+                                       "fs_topidx": 0},
+                          0x01010108: {"fs_color": "purple", "fs_label": "KoT"}},
+              "paths": [{"blocks": []}]}
+    doc = transcode.recipe_to_sbepgsm(recipe)
+    pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
+    assert pm["preset.floorboard.stomp.a.5.color"] == 2       # red
+    assert pm["preset.floorboard.stomp.a.5.label"] == ".8th VintDig"  # 12 chars
+    assert pm["preset.floorboard.stomp.a.9.color"] == 9       # purple
+
+
+def test_src_byps_order_independent_upgrade():
+    """A merged source first seen via a param controller still gets byps=True
+    once a bypass controller joins (no explicit .hsp flag) — order-independent."""
+    recipe = {"name": "o", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "ctl_params": {"Gain": {"source": 0x01010102, "min": 0.2, "max": 0.8,
+                                 "behavior": "latching"}}},
+        {"block": "HD2_DistVerminDistMono", "params": {},
+         "fs_bypass": {"source": 0x01010102, "behavior": "latching"}},
+    ]}]}
+    _doc, entt = _entt(recipe)
+    (src,) = [s for s in entt["srcs"] if (s["locl"], s["ctxt"]) == (27, 1)]
+    assert src["byps"] is True
+
+
+def test_fs_param_int_min_max_reach_device_blob():
+    """Int min/max on an FS param toggle stay ints in the ctrl entry (the
+    device encodes int-param toggles as msgpack ints — Deconstructed Bliss)."""
+    recipe = {"name": "i", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "ctl_params": {"Gain": {"source": 0x01010104, "min": 2, "max": 4,
+                                 "behavior": "latching"}}},
+    ]}]}
+    _doc, entt = _entt(recipe)
+    (pc,) = entt["ctrl"]
+    assert pc["min_"] == 2 and not isinstance(pc["min_"], float)
+    assert pc["max_"] == 4 and not isinstance(pc["max_"], float)
+
+
+def test_exp3_source_is_skipped_not_merged_onto_exp2():
+    """F2: EXP3 (0x01020102) has no anchored device (locl, ctxt); it must be
+    SKIPPED, not collapsed onto EXP2 (42, 1)."""
+    recipe = {"name": "e3", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "ctl_params": {"Gain": {"source": 0x01020102, "min": 0.0, "max": 1.0,
+                                 "behavior": "continuous"}}},
+        {"block": "HD2_DistVerminDistMono", "params": {},
+         "ctl_params": {"Gain": {"source": 0x01020101, "min": 0.0, "max": 1.0,
+                                 "behavior": "continuous"}}},
+    ]}]}
+    _doc, entt = _entt(recipe)
+    exp2 = [s for s in entt["srcs"] if (s["locl"], s["ctxt"]) == (42, 1)]
+    assert len(exp2) == 1
+    scid = dict(zip(entt["sm__"]["scid"][::2], entt["sm__"]["scid"][1::2]))
+    assert len(scid[exp2[0]["id__"]]) == 1          # only the real EXP2 ctrl
+    assert len(entt["ctrl"]) == 1                    # EXP3 skipped entirely
+
+
+def test_marshall_vh4_exp3_not_merged_onto_exp2():
+    """F2 corpus shape: 'Marshall and vh4' sweeps a wah from EXP3 while using
+    real EXP2 elsewhere. Transcoding must not merge the EXP3 controllers onto
+    the (42, 1) source."""
+    import json
+    path = Path(__file__).resolve().parent.parent / "data" / "Marshall and vh4.hsp"
+    if not path.exists():
+        pytest.skip(f"real-export fixture absent: {path}")
+    from helixgen.hsp import read_hsp
+    body = read_hsp(path)
+    # count .hsp controllers whose source is the REAL EXP2 (0x01020101)
+    n_exp2 = 0
+    def walk(o):
+        nonlocal n_exp2
+        if isinstance(o, dict):
+            c = o.get("controller")
+            if isinstance(c, dict) and c.get("source") == 0x01020101:
+                n_exp2 += 1
+            for v in o.values(): walk(v)
+        elif isinstance(o, list):
+            for v in o: walk(v)
+    walk(body["preset"]["flow"])
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    entt = doc["cg__"]["entt"]
+    srcs = {s["id__"]: (s["locl"], s["ctxt"]) for s in entt["srcs"]}
+    on_exp2 = [c for c in entt["ctrl"] if srcs.get(c["trig"]) == (42, 1)]
+    assert len(on_exp2) == n_exp2, (
+        f"(42,1) drives {len(on_exp2)} ctrls but the .hsp has {n_exp2} EXP2 "
+        f"controllers — EXP3 leaked onto EXP2")

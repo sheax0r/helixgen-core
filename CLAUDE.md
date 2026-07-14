@@ -37,6 +37,7 @@ these verbs **mutate the device** — prefer an empty/expendable slot when testi
 
 - `helixgen device list [--setlist user|factory|throwaway] [--json]` — presets in a setlist.
 - `helixgen device setlists [--json]` — the device's setlist containers.
+- `helixgen device info [--json]` — the device's identity over the network: model (+ helixgen chassis key), numeric device id, serial, firmware version/build/date, SD storage free/total (`/ProductInfoGet`; read-only, never touches presets or the edit buffer). MCP mirror: `device_info`.
 - `helixgen device read <cid> [--json]` — a preset's metadata (name/slot/parent).
 - `helixgen device load <cid>` — load a preset into the edit buffer.
 - `helixgen device create --from <src_cid> --setlist <name> --pos <N>` — copy a preset into a slot.
@@ -250,8 +251,10 @@ pedal fully forward to click it).
 
 ```json
 "footswitches": [
-  {"switch": "FS3", "block": "Compulsive Drive"},
-  {"switch": "FS4", "block": "Tape Echo Stereo", "behavior": "momentary"},
+  {"switch": "FS3", "block": "Compulsive Drive", "label": "DRIVE", "color": "red"},
+  {"switch": "FS3", "block": "Tape Echo Stereo"},
+  {"switch": "FS4", "block": "Brit Plexi Brt", "param": "Drive",
+   "min": 0.45, "max": 0.7, "behavior": "momentary"},
   {"switch": "EXP1Toe", "block": "Teardrop 310 Mono"}
 ]
 ```
@@ -261,7 +264,25 @@ pedal fully forward to click it).
   (MODE / TAP-Tuner) and not assignable.
 - `block` — must reference a block placed in `paths`.
 - `behavior` — `"latching"` (default; toggle) or `"momentary"` (on while held).
-- One switch may be assigned at most one block; one block may be on at most one switch.
+- **Merge switch**: several entries may share one `switch` — the switch then
+  toggles all of its targets at once (blocks and/or params). Each target
+  (block, or block+param) may appear only once across all entries.
+- **Param toggle**: add `param` plus **required numeric `min`/`max`** (raw
+  param units — a Level is in dB, a knob 0..1) and the switch toggles that
+  param between the two values instead of the block's bypass. A single-knob
+  stomp is a param toggle; a multi-param change is a snapshot.
+- **Scribble strip**: `label` (device shows ≤12 chars; longer warns) and
+  `color` — one of `none auto red dkorange ltorange yellow green turquoise
+  blue purple pink white`. Per switch: on a merged switch set label/color on
+  one entry (or identically on all); conflicting values are a spec error.
+  Only `FS1`–`FS5`/`FS7`–`FS11` have strips — label/color on `EXP1Toe` (or a
+  pedal) warns and is not written.
+- `curve` — controller response curve: `"linear"` (default) or `slow5`…`slow1`
+  / `fast1`…`fast5`. Non-linear values are EXPERIMENTAL (vocabulary from the
+  device's own enum table; persistence hardware-validated, audible response
+  not yet characterized).
+- `threshold` — flip point (float) for position switches like `EXP1Toe`;
+  EXPERIMENTAL. Forces the explicit-bounds controller encoding.
 - **Wah/expression auto-engage:** assign the wah's bypass to `EXP1Toe` (with
   `EXP1` sweeping its `Pedal` param) so pressing the pedal toe-down engages the
   wah — the standard Helix wah behavior. A regular `FS` works too but requires a
@@ -306,8 +327,12 @@ exposes `EXP1` and `EXP2`.
 
 - `pedal` — `"EXP1"` or `"EXP2"`.
 - `targets` — non-empty list. Each target sweeps one param on one block.
-- `min`/`max` — normalized 0..1 floats; default `0.0`/`1.0`; must satisfy `min ≤ max`.
-- One pedal may have many targets. One `(block, param)` pair may be driven by at most one pedal.
+- `min`/`max` — normalized 0..1 floats; default `0.0`/`1.0`. **Reverse sweep**
+  = `min > max` (heel = max effect, toe = min) — corpus-real and supported.
+- `curve` — per-target response curve, same vocabulary as footswitches
+  (default `"linear"`; non-linear EXPERIMENTAL).
+- One pedal may have many targets. One `(block, param)` pair may be driven by
+  at most one controller (pedal OR footswitch param-toggle) across the spec.
 - v1 only sweeps 0..1-style float params (knob values). Hz/int/bool params are out of scope.
 
 ### Optional: per-block IR reference

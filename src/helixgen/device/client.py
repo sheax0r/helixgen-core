@@ -483,6 +483,56 @@ class HelixClient:
         raise HelixError(
             f"no content blob in /GetContentData reply for cid {cid}")
 
+    def product_info(self) -> Dict[str, Any]:
+        """Device identity + firmware + storage (``/ProductInfoGet``).
+
+        Read-only and side-effect free (part of the editor's connect
+        handshake). The reply is a 4CC-keyed map; the full decoded map is
+        returned under ``"raw"`` alongside curated fields:
+
+        ``model`` (device's own name, e.g. ``"stadium"``), ``device_id``
+        (numeric — 2490368 = Stadium XL), ``helixgen_model`` (helixgen's
+        chassis key when recognized), ``serial``, ``firmware``
+        (``"major.minor.patch"``), ``firmware_build``, ``firmware_date``
+        (ISO date), ``sd_total_bytes`` / ``sd_available_bytes``.
+        """
+        import datetime as _dt
+
+        from helixgen.controllers import STADIUM_XL_DEVICE_IDS
+
+        for addr, args in self._rpc("/ProductInfoGet", []):
+            if addr != "/getProductInfo" or len(args) < 2 or not isinstance(args[1], dict):
+                continue
+            raw = _content._keys_to_str(args[1])
+            host = raw.get("host")
+            if not isinstance(host, dict):
+                host = {}
+            vers = host.get("vers")
+            if not isinstance(vers, dict):
+                vers = {}
+            device_id = host.get("id__")
+            fw = None
+            if all(vers.get(k) is not None for k in ("majo", "mino", "patc")):
+                fw = f"{vers.get('majo')}.{vers.get('mino')}.{vers.get('patc')}"
+            fw_date = None
+            if isinstance(vers.get("date"), int):
+                fw_date = _dt.datetime.fromtimestamp(
+                    vers["date"], _dt.timezone.utc).date().isoformat()
+            return {
+                "model": host.get("name"),
+                "device_id": device_id,
+                "helixgen_model": (
+                    "stadium_xl" if device_id in STADIUM_XL_DEVICE_IDS else None),
+                "serial": host.get("snum"),
+                "firmware": fw,
+                "firmware_build": vers.get("buld"),
+                "firmware_date": fw_date,
+                "sd_total_bytes": host.get("sdts"),
+                "sd_available_bytes": host.get("sdas"),
+                "raw": raw,
+            }
+        raise HelixError("no /getProductInfo reply from device")
+
     # -- global settings / properties (reads) ------------------------------
     def _property_blob(self, addr: str, reply: str, key: str) -> bytes:
         """Send ``addr [reqid, key]`` and return the blob from ``reply``."""
