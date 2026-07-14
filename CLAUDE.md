@@ -32,123 +32,76 @@ Example: `helixgen ir-scan ~/IRs && helixgen list-irs | wc -l`.
 Talks to a **Stadium** over the LAN directly (OSC-over-ZeroMQ; no editor app).
 Requires the `device` extra (`pip install 'helixgen[device]'` → pyzmq+msgpack).
 Point at the device with `--ip`/`--port` or `$HELIXGEN_HELIX_IP` (default
-`192.168.4.84`). Protocol reference: `docs/helix-protocol.md`. **Stadium-only**;
-these verbs **mutate the device** — prefer an empty/expendable slot when testing.
+`192.168.4.84`). **Stadium-only**; these verbs **mutate the device** — prefer an
+empty/expendable slot when testing.
 
-- `helixgen device list [--setlist user|factory|throwaway] [--json]` — presets in a setlist.
-- `helixgen device setlists [--json]` — the device's setlist containers.
-- `helixgen device info [--json]` — the device's identity over the network: model (+ helixgen chassis key), numeric device id, serial, firmware version/build/date, SD storage free/total (`/ProductInfoGet`; read-only, never touches presets or the edit buffer). MCP mirror: `device_info`.
-- `helixgen device read <cid> [--json]` — a preset's metadata (name/slot/parent).
-- `helixgen device load <cid>` — load a preset into the edit buffer.
-- `helixgen device create --from <src_cid> --setlist <name> --pos <N>` — copy a preset into a slot.
-- `helixgen device save <name> --setlist <name> --pos <N>` — save the live edit buffer as a new preset (slot must be empty).
-- `helixgen device rename <cid> <new_name>` — rename a preset.
-- `helixgen device delete <cid> [--setlist <name>] [--yes]` — delete a preset.
-- `helixgen device set-param <path> <block> <param_id> <value>` — set one edit-buffer param (`/ParamValueSet`).
-- `helixgen device blocks [--json]` — list the **live edit buffer's blocks** with their `(path, block)` coordinates, model name, and saved base on/off. Read-only. These are the coordinates `device bypass`/`device model`/`device set-param` address. MCP: `device_blocks`.
-- `helixgen device snapshot <index>` — **recall a snapshot** (0-based, 0..7) on the live device (`/activateSnapshot`; absolute index) — changes the ACTIVE tone's snapshot immediately, like stepping the snapshot footswitch. MCP: `device_snapshot`. **These live-ops verbs mutate the ACTIVE tone** (decoded + HW-validated 2026-07-14).
-- `helixgen device bypass <path> <block> <on|off>` — **bypass/enable a block** in the live edit buffer (`/BlockEnableSet [dsp, block, enable]`). Coordinates from `device blocks`. HW-confirmed via the `/setBlockEnable` echo. The toggle is *volatile* (audible at once, not written to the preset until you save, so `device blocks` won't reflect it). MCP: `device_bypass`.
-- `helixgen device model <path> <block> <model>` — **swap a block's model** live (`/ModelSet [dsp, block, sub, modelId]`). `<model>` is a numeric model id or a model-id string like `HD2_AmpBritPlexiNrm` (see `list-blocks`). The device rejects a cross-category swap; the app's re-attach-controllers + push-defaults cascade is not replayed. MCP: `device_model`.
-- `helixgen device reorder <setlist> <target> --to <N>` — **move a preset to a new position within a setlist** (`/ReorderContainerContent [container, [cids], newPos]`, decoded 2026-07-14, HW-validated). `<setlist>` is a setlist display name (resolved the way `device setlist rename/delete/duplicate` resolve setlists) or a literal container cid (`-2` = the pool, whose `cctp==PRESET` entries also resolve by their own names); `<target>` is a preset display name or a literal cid within it. Pass `setlists` as `<setlist>` to instead reorder the top-level setlist list itself (`<target>` is then a setlist name/cid) — the keyword is checked before name resolution, so a real setlist literally named "setlists" must be addressed by its container cid. **Numeric arguments are cid-first**: a purely-digit `<target>`/`<setlist>` is always parsed as a cid, never a display name. If an item is display-named that digit string, the cid reading wins with a stderr/result **warning** when the cid itself resolves in the container, and the command **errors** (pointing at the named item's real cid) when it doesn't. `--to` is bounds-validated against the container's current length before anything is sent. **This is a direct, immediate DEVICE-side write** — distinct from the local-manifest `device slots reorder`, which only edits the tone library's recorded order and takes effect on the device on the next `device sync` (which can then reorder things right back to the manifest's order). MCP: `device_reorder`.
-- `helixgen device settings list [--page <p>] [--values]` / `get <key>` / `set <key> <value>` — read/write the device's **Global Settings** over the network (no Stadium app). Every Global Settings page — Ins/Outs, Switches/Pedals, Displays, Preferences, Songs, Tempo/Click, MIDI, Date/Time — plus Tuner and Wireless is exposed as a device *property* in the `global.*` namespace (161 curated keys) and read/written via `/PropertyValueGet` / `/PropertyValueSet`. `list` browses the curated page→key catalog (offline; `--values` also fetches each key's live value + range from the device; `--page` narrows to one page); `get` reads one value with its device-supplied name/type/range/enum labels; `set` writes one — `<value>` may be a number or, for enum settings, a label (e.g. `set global.tuner.type Strobe`) or index, validated against the property's range/enum before sending. The device self-describes each key via `/PropertyDefWithKeyGet`, so the catalog is live, not hardcoded. Protocol RE + hardware-validation: `docs/superpowers/specs/2026-07-13-global-settings-re-findings.md`. **Global EQ** (`dsp.globaleq.*`) has its own verb — see `device globaleq` below (it IS property-based, just a variant value shape). MCP mirrors: `device_settings_list` / `device_settings_get` / `device_settings_set`.
-- `helixgen device globaleq list` / `set <output> <band> <param> <value>` — write the device's **Global EQ** over the network (no Stadium app). The Stadium has three independent Global EQs, one per output layer: 1/4" (`qtr`), XLR (`xlr`), Phones (`pho`) — each a 7-band EQ (`lowcut`, `lowshelf`, `low`, `mid`, `high`, `highshelf`, `highcut`) plus an output level. Each param is a device property `dsp.globaleq.<out>.<band>.<param>` written via `/PropertyValueSet` with a **variant `{parm,valu}`** blob (byte-exact codec, HW-validated 2026-07-14). `list` prints the offline catalog; `set` writes one param (e.g. `device globaleq set qtr low gain 3.5`, or `set pho - level -2.0` for the output level). **Write-only over the network** — the device serves no `/PropertyValueGet` read-back for `dsp.globaleq.*`, so there is no `get`. Findings: `docs/superpowers/specs/2026-07-14-parity-capture-findings.md` §2. MCP mirrors: `device_globaleq_list` / `device_globaleq_set`.
-- `helixgen device save <name> --setlist <n> --pos <N>` — save the live edit buffer as a new preset (slot must be empty).
-- `helixgen device pull <cid> <outfile.sbe>` — back up a preset's raw content blob.
-- `helixgen device push <file.sbe> <name> --pos <N>` — install a local content file into a new slot (restore/clone).
-- `helixgen device restore <file.sbe> <cid>` — overwrite an existing preset's content from a file.
-- `helixgen device backup [--setlist <n>] [--dir <D>]` — pull a whole setlist to local `.sbe` files + `manifest.json` (offline backup).
-- `helixgen device local-list [--dir <D>]` — list locally backed-up presets (works with the Helix disconnected).
-- `helixgen device watch [--seconds N] [--filter <addr>]` — stream the device's live property/telemetry events (2001/2003).
-- `helixgen device tuner [--seconds N] [--json]` — **live network tuner** (no Stadium app, no hardware-tuner engage needed). The Stadium runs an always-on background pitch detector and streams it on 2003 as `/dspEvent {eid_:10,mid_:796}` = a single **fractional-MIDI** float (int = note, frac×100 = cents, `-1` = silence). Prints a live note/cents/Hz readout with an in-tune meter; `--json` emits one reading per line. HW-validated (stream+decode); pitch math golden-tested. MCP mirror: `device_tuner` (sampling one-shot → `{signal, note, cents, hz, midi, samples}`).
-- `helixgen device meters [--seconds N] [--json]` — **live network level meters** (no Stadium app needed), read-only. Same always-on `/dspEvent` burst as the tuner also carries two grid-level meter arrays, `{eid_:1,mid_:796}` and `{eid_:1,mid_:800}` — each a **128-float** array — which this decodes into a live bar readout; `--json` emits one reading per line (`{mid, peak, values}`). The semantic split between the two `mid_`s (input/output, path 1/2, …) isn't characterized, so both are shown by their raw id. MCP mirror: `device_meters` (sampling one-shot → `{meters: [{mid, peak, values}], samples}`).
-- `helixgen device push-ir <file.wav>` — import an impulse response onto the device **instantly**, exactly like the editor. Uploads the device-canonical processed IR (`helixgen.ir.write_stadium_ir`), which embeds a `HASH` chunk carrying helixgen's `irhash` — the device reads that and registers under exactly that hash. And `push_ir` subscribes to the device's **2001 change stream first**, which activates the device's watched-dir monitor so the file registers in ~0.1 s (without a 2001 subscriber, external uploads wait on the device's slow ~15-20 min scan). Confirms via the `/addContent` broadcast; result reports `device_hash`/`hash_match`. See `docs/helix-sftp-access.md`.
-- `helixgen device pull-ir <filename> <outfile>` — download an IR `.wav` by its on-device filename. EXPERIMENTAL.
-- `helixgen device delete-ir <name-or-hash> [--yes] [--force-wedge]` — delete one user IR from the device **completely**: the registry entry (`/RemoveContent` on `-11`) plus its backing `.wav` (the device only garbage-collects the file lazily, which makes a quick re-import think it's "already on device"; removing the file closes that window). Presets that referenced it show a silent cab until it's re-imported. `--force-wedge` (32-hex hash only) additionally cleans the *wedged* state a delete→quick-re-import can leave (file + path index resolving, no registry entry) — never use it on a just-imported IR, whose listing may merely be lagging.
-- `helixgen device rename-ir <name-or-hash> <new-name>` — rename a user IR on the device. Display-name only; the hash presets reference is untouched, so nothing breaks.
-- `helixgen device ir-prune [--yes] [--force] [--ignore-warnings] [--only <name-or-hash>] [--json]` — delete device IRs **no preset references any more** (backlog #11). Diffs the device's user IRs against the `irmd` hashes referenced by every pool preset (non-activating `get_content` scan), by the **live edit buffer**, and by local tone-library `.hsp` files. Hardened to fail closed: every listing it trusts is strict (a timeout/partial listing aborts rather than reading as "no presets"), the pool listing is cross-checked against setlist references (a **dangling** reference — one pointing at a deleted pool preset — aborts with an actionable "remove the stale reference" error, not a misleading reboot hint), and execute mode re-scans + re-verifies the plan immediately before deleting (a disagreement aborts with nothing deleted). **Dry-run by default**; `--yes` executes. Two **independent** consents: `--force` also deletes IRs referenced only by a local off-device tone (*protected*); `--ignore-warnings` proceeds when a local tone's `.hsp` can't be read to verify its protection (executing over warnings). `--only` narrows to a single IR. MCP mirrors: `device_delete_ir` / `device_rename_ir` / `device_ir_prune` (`ignore_warnings` arg).
-- `helixgen device set-info <cid>... [--color <name|0-11>] [--notes <text>]` — set preset **color** and/or **notes** on one or more CIDs (batch-capable). Color is the `colr` content attr (int enum; names `auto, white, red, dark orange, light orange, yellow, green, turquoise, blue, violet, pink, off` — order inferred from the app menu, pass the raw index if a name renders unexpectedly). Notes are the Preset Info text, stored as the `preset.meta.info` property inside the content blob and written via a **non-activating** content round-trip. MCP mirror: `device_set_info`.
-- `helixgen device install <preset.hsp> <name> --pos <N> [--auto-irs]` — **author a helixgen `.hsp` onto the device as a new, playable preset** (the `/tone` → on-your-amp path). **Transcodes** the `.hsp` straight into the device's native content format (`_sbepgsm`) via `device/transcode.py` and `/SetContentData`s it into the empty pool slot — **no template, any block chain, full fidelity** (models/params/IRs); model/param names bridge helixgen↔device via `device/modelmap.py` + `device/defs.py`. Synthesizes the **full signal graph** — dual-amp / dual-DSP, **intra-flow parallel splits**, **snapshots** (per-scene bypass + param deltas), and **footswitch/EXP assignments** all transcode faithfully onto the device's real 28-slot grid (hardware-validated byte-for-byte vs HX Edit's own import, 2.18.0). `--auto-irs` uploads any IRs the preset references that aren't already on the device (resolving each `irhash` to a local WAV via `mapping.json`, then `push-ir`). Each `push-ir` registers instantly under the preset's `irhash` (via the `HASH` chunk + 2001 subscription — see `push-ir` above), so the installed preset's cabs resolve immediately with no editor step. EXPERIMENTAL.
-- `helixgen device setlist list|add <setlist> <tone.hsp> [--pos N]|remove <setlist> <tone>|create-local <setlist>` — **manage the local setlist manifest** (`~/.helixgen/setlists.json`, override `$HELIXGEN_SETLISTS`). The device stores a preset **pool** (container `-2`) plus named **setlists** that hold **references** into it, so one authored tone can belong to many setlists. The manifest records, per setlist, an ordered list of tone names backed by a `tones` path map; it also **absorbs the old slot ledger** (one file now). `add` registers a tone's `.hsp` (by its `meta.name`) and appends it to the setlist's membership; `remove` drops membership (keeping the tone in the pool if other setlists still use it); `create-local` makes an empty setlist in the manifest only. **Never hand-edit the file** — use these verbs (or the MCP tools / `tone` skill). `create-local` and `add`'s auto-create only touch the manifest — use `device setlist create` (below) to also create the setlist on the device.
-- `helixgen device setlist create <name>` / `rename <old> <new>` / `delete <name> [--yes]` / `duplicate <src> <dst>` — **device-side setlist management** (backlog #8 **shipped**: `/CreateContent` under the setlists root with the setlist ctype, live-validated — no Stadium app needed). `create` makes an empty setlist on the device (and records it in the manifest); `rename` renames it on the device (and in the manifest, if tracked); `delete` removes the setlist container — its references die with it but the **pool presets they point at are never deleted** (never-orphan); `duplicate` copies `src`'s references into `dst` (auto-created when absent; must be empty otherwise) — references are pointers, so the pool presets are shared, not copied. MCP mirrors: `device_setlist_create` / `device_setlist_rename` / `device_setlist_delete` / `device_setlist_duplicate`.
-- `helixgen device setlist import-hss <file.hss> [--list] [--setlist <name>] [--dry-run]` — **EXPERIMENTAL: import a Stadium-app `.hss` setlist-bundle export** (backlog #31, READ side). A `.hss` is a 24-byte Line 6 header + gzip + POSIX tar of `manifest.json` + 128 fixed `.N` slot files (empty = 1-byte `0x00` sentinel; filled = the preset's stored content blob), decoded via a hardware capture — findings spec §8. `--list` decodes the bundle fully offline (no device needed) and prints each slot's filled/empty state and preset name. Without `--list`, each filled slot is installed into the device **pool** (non-activating) and referenced into a device setlist (named `--setlist`, or the bundle's own name if omitted; created if absent) — reusing the same install + setlist-create + reference primitives as `device install`/`device sync`; `--dry-run` previews without writing. New references are **appended after whatever the destination setlist already has** (never a raw slot-index write), so importing into an already-populated setlist never collides with/overwrites its existing members. A filled slot whose payload doesn't look like recognized preset content (`helixgen.device.content`'s magic check) is skipped with a clear per-slot error instead of being sent to the device. Per-slot install/reference failures are reported without aborting the rest. **Container framing (header/gzip/tar/manifest/128-slot/empty-sentinel) is pinned against a real captured (empty) export; the FILLED-slot byte framing is an inferred assumption**, proven only against synthesized fixtures — no non-empty `.hss` export exists yet to confirm it (a byte-faithful *writer* remains out of scope until one does). Imported presets **are recorded in the tone library** as *pathless* tones (source `import-hss`) with membership in the destination setlist — load-bearing, so a later `device sync <setlist>` keeps their references instead of stripping them; having no local `.hsp`, they can't be restored by `device slots restore`. **Not idempotent on retry**: re-running after a partial failure duplicates the already-succeeded slots (pool presets + references) — delete the setlist + orphaned pool presets, or import into a fresh setlist, before retrying. MCP mirror: `device_import_hss`.
-- `helixgen device sync <setlist> [--exclude-irs]` / `helixgen device sync --all [--gc] [--exclude-irs]` — **push the manifest's setlist(s) onto the device** (reference-based; **not** a destructive mirror). Resolves the named setlist under `-5` (errors clearly, pointing at `device setlist create <name>`, if the device doesn't have it). Then reconciles the **pool first** — installs tones missing from the pool, re-pushes ones whose `.hsp` content hash changed, skips unchanged ones (idempotent) — and **rebuilds the setlist's references** to manifest order, adding/removing/reordering as needed and **never orphaning** a pool preset another setlist still references. Uploads each tone's referenced IRs (unless `--exclude-irs`). `--all` reconciles every **synced** manifest setlist (local-only drafts are skipped; a targeted `sync <setlist>` marks that setlist synced); `--gc` (only with `--all`) deletes pool presets no setlist references any more. Install **transcodes** each tone's `.hsp` straight into device content (no template, full fidelity — dual-amp, parallel splits, snapshots, and footswitch/EXP assignments all synthesized). Per-tone install/IR failures are reported in `errors[]` without aborting; result is `{ok, setlists, pool, references, gc, irs, errors}`. **The Stadium's network stack is flaky — if a sync drops or stalls, just re-run it (idempotent, auto-reconnecting); if it keeps dropping, reboot the Helix.** EXPERIMENTAL.
+**The full per-verb reference — every flag, gotcha, and MCP-mirror name — lives
+in [`docs/CLI.md`](docs/CLI.md) "Device commands".** The rest of this section is
+the verb index plus the mental-model rules that must stay in front of an agent.
 
-### The tone library (which tone lives where)
+- **Preset + edit buffer:** `device list` / `setlists` / `info` / `read` /
+  `load` / `create` / `save` / `rename` / `delete` / `set-param` / `blocks` /
+  `pull` / `push` / `restore` / `backup` / `local-list` / `watch` / `set-info` /
+  `install`. `install` transcodes a helixgen `.hsp` straight into device content
+  (`_sbepgsm`) — no template, full fidelity (dual-amp, parallel splits,
+  snapshots, footswitch/EXP assignments all synthesized); `--auto-irs` uploads
+  referenced IRs (EXPERIMENTAL).
+- **Live device ops (mutate the ACTIVE tone):** `device snapshot <index>`
+  (recall a snapshot), `device bypass <path> <block> <on|off>` (volatile block
+  bypass), `device model <path> <block> <model>` (live model swap), `device
+  reorder <setlist> <target> --to <N>` (direct DEVICE-side preset reorder —
+  distinct from the local-manifest `device slots reorder`; numeric args are
+  **cid-first**), `device tuner` / `device meters` (read-only 2003 telemetry).
+  Decoded + HW-validated 2026-07-14.
+- **Global Settings + Global EQ:** `device settings list|get|set` (161 `global.*`
+  keys; enum labels validated) and `device globaleq list|set <output> <band>
+  <param> <value>` (three per-output-layer 7-band EQs; **write-only** — no
+  network read-back).
+- **IRs on the device:** `device list-irs` (read-only; the device's user IRs —
+  distinct from the local `helixgen list-irs`), `device push-ir` (instant import
+  under helixgen's exact `irhash`), `device pull-ir` (EXPERIMENTAL), `device
+  delete-ir`, `device rename-ir`, `device ir-prune` (delete unreferenced IRs;
+  dry-run by default, two independent consents `--force` / `--ignore-warnings`).
+- **Setlists + sync:** `device setlist create|rename|delete|duplicate`
+  (device-side; never orphan pool presets), `device setlist
+  list|add|remove|create-local` (local manifest membership), `device setlist
+  import-hss` (EXPERIMENTAL `.hss` bundle import, READ side), `device sync
+  <setlist>` / `device sync --all [--gc]` (pool-first, reference-rebuilding,
+  IR-uploading, idempotent; **not** a destructive mirror).
+- **Tone library / slots:** `helixgen register`, `device add` / `unsync` /
+  `library` / `slots [list|restore|reorder] [--verify]`, `device setlist
+  sync-on|sync-off`.
 
-Every tone helixgen **generates auto-registers** into the **tone library** — the
-manifest `~/.helixgen/setlists.json` (override `$HELIXGEN_SETLISTS`; a legacy
-`device-slots.json` / v1 manifest is migrated on first load). A **tone** is
-*content + identity + management state*: its `.hsp` (or nothing, if it came off
-the device), a unique name (also the device preset key), a desired **user slot**
-(`null` = off device, `"auto"` = wants device / address TBD, or `"1A".."8D"`),
-its **setlist memberships** (ordered), provenance `source`, and observed device
-placement. **"On the device" ⟺ the tone has a slot.** There is **no separate
-slot ledger** — this one manifest is the single management record (design
-`docs/superpowers/specs/2026-07-13-tone-library-model-redesign.md`).
+**Device-write gating.** Verbs that only read or list device state are safe —
+e.g. `info`, `read`, `list`, `list-irs`, `blocks`, `settings list`/`get`,
+`tuner`, `meters`, `watch`, `backup`, `pull`/`pull-ir`, plus the offline verbs
+(`local-list`, `library`, `slots list`, `globaleq list`, `--list`/`--dry-run`
+variants). Anything that writes content, properties, or files **mutates the
+device** — the live-ops verbs change the ACTIVE tone immediately. When unsure,
+check the verb's entry in [`docs/CLI.md`](docs/CLI.md). Prefer an
+empty/expendable slot when testing.
 
-- `helixgen register <tone.hsp> [--doc <md>]` — import an existing local `.hsp`
-  into the library (off-device; `source: import-local`).
-- `helixgen device add <tone> [--slot auto|5A]` — mark a library tone for the
-  device (default `--slot auto`; placed on the next `device sync`).
-- `helixgen device unsync <tone>` — clear a tone's slot so the next sync
-  **deletes it from the device** (it stays in the library); cascades it out of
-  any *synced* setlist.
-- `helixgen device library [--json]` / `helixgen device slots [list] [--verify]`
-  — list every tone: slot, on/off-device, and setlist memberships. Offline
-  unless `--verify`, which cross-checks the live user setlist and flags
-  `ok` / `missing` / `offline` / `untracked`.
-- `helixgen device slots restore <name-or-slot> [--pos N] [--setlist S] [--force]`
-  — re-install a tone from its recorded `.hsp` (re-authored) or `.sbe` (re-pushed).
-  Pathless `save`/`create` tones have no local source and can't be restored.
-  `--force` pushes into an occupied destination slot (for **both** `.hsp` and
-  `.sbe` sources) — it skips the emptiness check; the occupant is **not
-  deleted**. The destination is an explicit `--pos`, else the recorded slot
-  label, else the last observed `device.posi`. That observed posi can be
-  stale (the device may have been reorganized since) — when in doubt,
-  especially with `--force`, pass `--pos` explicitly.
-- `helixgen device slots reorder <tone> --to <N> [--setlist S]` — move a tone
-  within a setlist's order (default `user`). **Local only**; run `device sync
-  <setlist>` to apply it to the device. For an immediate, direct DEVICE-side
-  reorder that skips the manifest entirely, see `device reorder` above.
-- `helixgen device setlist sync-on|sync-off <setlist>` — mark a named setlist as
-  device-mirrored (marks all its members on-device) or a local-only draft.
+**The Stadium's network stack is flaky — if a sync/verb drops or stalls, just
+re-run it (the mutating paths are idempotent + auto-reconnecting); if it keeps
+dropping, reboot the Helix.**
 
-**Sync is a managed-set mirror.** `device sync` installs/updates/reorders/**deletes**
-only the tones helixgen manages (matched by name), auto-assigns `"auto"` slots to
-free addresses, and **never touches untracked device presets** — a preset helixgen
-didn't place is invisible to sync (not moved, not deleted, its slot not reused).
+**The tone library is the single management record.** Every tone helixgen
+generates auto-registers into the manifest `~/.helixgen/setlists.json` (override
+`$HELIXGEN_SETLISTS`). A **tone** = content + identity + management state; its
+desired **user slot** (`null` = off device, `"auto"` = wants device, or
+`"1A".."8D"`) plus its **setlist memberships**. **"On the device" ⟺ the tone has
+a slot.** There is no separate slot ledger. Presets are addressed by integer
+**CID**; a preset lives once in the **pool** (`-2`) and is referenced by
+**setlists** under the setlists root `-5`. **Sync is a managed-set mirror** —
+it installs/updates/reorders/deletes only the tones helixgen manages and
+**never touches untracked device presets**.
 
 **Pushing tones to the device is driven by the `device` skill**
-(`.claude/skills/device/`), which runs after `tone` has authored the `.hsp`.
-It centers on `device sync <setlist>` / `device_sync_setlist` (the pool-first,
-reference-rebuilding, IR-uploading, idempotent path) — the retired
-directory-mirror `device sync [dir]` and `device_sync_library` tool are **gone**.
-The skill adds the judgment those verbs need: manifest membership via `device
-setlist add/remove` (the `tone` skill can add a freshly-authored tone to a
-setlist), the **setlist-must-exist-first** rule (a missing device setlist is one
-`device setlist create <name>` away — #8 shipped; no Stadium app needed), the
-**template-free transcode** install (the `.hsp` is re-serialized straight into
-device content — any block chain, full fidelity, no template/coverage step; so
-*don't hunt for templates or check factory-preset coverage*), the **never-orphan**
-guarantee, the **full-graph synthesis** (dual-amp, parallel splits, snapshots,
-and footswitch/EXP assignments all transcode — no serial-only limit any more),
-the fact that the
-single-tone **MCP** `device_install_preset` uploads no IRs and records no ledger
-(use `device sync` or the CLI `install --auto-irs` instead), and the
-**flaky-hardware** rule (re-run a dropped sync; reboot the Helix if it persists).
-Read it before scripting a setlist sync.
-
-Presets are addressed by integer **CID**; a preset lives once in the **pool**
-(container `-2`) and is referenced by **setlists** enumerated under the setlists
-root `-5` (`-5` is the *root*, **not** a setlist — `factory`=-1; `user`,
-`throwaway`, and any user-created setlist like `helixgen` are child setlists with
-their own positive cids under `-5`); slot `posi` maps to the Helix
-`1A`..`8D` label. MCP mirrors these as `device_*` tools (`device_setlist_list`,
-`device_setlist_add`, `device_setlist_remove`, `device_sync_setlist`,
-`device_sync_all`). Full-preset semantic
-authoring (helixgen `.hsp` → device) is a documented follow-up — the device's
-native content format (`_sbepgsm`) is a separate schema from `.hsp`; see
-`docs/helix-protocol.md` and `docs/superpowers/specs/2026-07-11-helix-device-v2-plan.md`.
+(`.claude/skills/device/`), which runs after `tone` has authored the `.hsp` and
+centers on `device sync <setlist>` / `device_sync_setlist`. Read it before
+scripting a setlist sync. Design + protocol refs:
+[`docs/CLI.md`](docs/CLI.md), `docs/helix-protocol.md`, and
+`docs/superpowers/specs/2026-07-13-tone-library-model-redesign.md`.
 
 ## IR cab-pack catalog (character reference)
 
@@ -193,6 +146,9 @@ similar preset), use `helixgen view <preset.hsp>` — a read-only projection.
 
 ## recipe shape (author input to `generate`)
 
+The **recipe** is the JSON author-input to `generate` / `generate_preset`. It is
+input-only — never written to disk, never read back as truth. The base shape:
+
 ```json
 {
   "name": "Preset Display Name",
@@ -211,390 +167,45 @@ similar preset), use `helixgen view <preset.hsp>` — a read-only projection.
 }
 ```
 
-- `paths` is 1–2 entries (each maps to one DSP). Parallel splits inside a path use `split`/`join` entries (see "parallel splits" below).
-- `block` matches the display_name from `list-blocks` (e.g. "Brit Plexi Brt") — case-sensitive. If ambiguous, use the model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
+- `paths` is 1–2 entries (each maps to one DSP).
+- `block` matches the display_name from `list-blocks` — case-sensitive. If ambiguous, use the model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
 - `params` values are floats 0.0–1.0 for most knobs; some are ints/bools/Hz. Verify ranges with `show-block`.
 
-### Optional: per-path input routing + input block params
+**The exhaustive per-field reference — every optional section with its full
+schema, defaults, ranges, and examples — lives in
+[`docs/recipe-reference.md`](docs/recipe-reference.md).** The optional top-level
+/ per-path fields, one line each:
 
-Each path entry may carry an optional `"input"` field. The simple form is a
-mode string:
-- `"inst1"` — Instrument 1 jack only
-- `"inst2"` — Instrument 2 jack only
-- `"both"` — both jacks (stereo) — **default on paths[0]**
-- `"none"` — input disabled — **default on paths[1]**
+- **`input`** (per path) — jack routing (`inst1`/`inst2`/`both`/`none`) plus the Input-block params (impedance ladder, pad, trim, gate, StereoLink).
+- **`output`** (per path) — output block `level` (dB) + `pan`.
+- **`split`/`join`** (in `blocks`) — parallel splits: split `type` (`y`/`ab`/`crossover`/`dynamic`) + merge-mixer wire params (`"A Level"`, `"B Pan"`, master `"Level"` — default **+3 dB**, write `0.0` for unity).
+- **`snapshots`** (top-level, ≤8) — named scenes: per-scene `disable` + `params` deltas; snapshot 0 active on load.
+- **`footswitches`** (top-level) — assign blocks/params to `FS1`–`FS5`/`FS7`–`FS11`/`EXP1Toe` (FS6/FS12 reserved); merge switches, param toggles, scribble `label`/`color`, response `curve`.
+- **`expression`** (top-level) — sweep params with `EXP1`/`EXP2`; per-target `min`/`max` (reverse sweep supported).
+- **`midi`** (top-level, EXPERIMENTAL #33) — bind MIDI CC# to param sweeps / bypass toggles. CC-only; realized on `device install`/`sync`.
+- **`commands`** (top-level, EXPERIMENTAL #16) — Command Center: a footswitch / `Instant` slot **sends** a MIDI PC/CC/Note/MMC message or a Preset/Snapshot action.
+- **`ir`** (per IR block) — load a registered user IR by wav basename or 32-hex hash.
+- **`trails`** (per delay/reverb/FX-loop block) — bool: whether the wet tail rings out on bypass / snapshot switch.
+- **`raw`** (per block) — verbatim unmodeled bNN state (`harness`, extra `slots`); emitted by `view`, consumed by `generate`. Editing an existing `.hsp` never needs it.
 
-The object form adds the Input-block params (impedance / pad / trim / gate):
+**One-controller-per-param.** A `(block, param)` is driven by at most one of
+footswitch-param / expression / MIDI across the whole spec (a block's *bypass*
+may have several sources).
 
-```json
-"input": {
-  "source": "inst1",
-  "impedance": "1M",
-  "pad": true,
-  "trim": -6.0,
-  "gate": {"enabled": true, "threshold": -55.0, "decay": 0.2},
-  "link": false
-}
-```
-
-- `source` — same vocabulary as the string form; optional (same defaults).
-- `impedance` — `"FirstBlock"` / `"FirstEnabled"` (the auto modes), `"10K"`,
-  `"22K"`, `"32K"`, `"70K"`, `"90K"`, `"136K"`, `"230K"`, `"1M"` (the device's
-  full self-described ladder — no 3.5M on Stadium). Preset-level, per jack:
-  applies to the jack(s) the source uses (with `"both"`, a per-jack object
-  `{"inst1": ..., "inst2": ...}` is accepted). Omitted → the device default
-  `"FirstEnabled"`; an omission never conflicts with another path's explicit
-  value (explicit wins). Two paths giving the same jack **different explicit**
-  values is an error.
-- `pad` — bool (instrument sources only).
-- `trim` — float dB, −24..6.
-- `gate` — `true`/`false` shorthand, or `{"enabled", "threshold" (−96..0 dB),
-  "decay" (0.01..1)}`. Giving the gate **object** implies `enabled: true`
-  unless you set `"enabled": false` explicitly.
-- `link` — StereoLink; `"both"` source only.
-- With `"both"`, `pad`/`trim`/`gate.*` also accept per-channel values
-  `{"1": x, "2": y}` (a scalar writes both channels).
-
-`generate` always writes the **full** input-endpoint param set (defaults +
-your overrides) and the used jacks' impedance — the chassis's gate/trim/pad
-state and used-jack impedance never leak into an authored preset. (Scope:
-an **unused** jack's impedance and an unused chassis flow's input *model*
-keep their chassis values — only their endpoint params are normalized.)
-`view` lifts non-default input params back into this object form
-(all-default inputs stay the readable string).
-
-Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
-
-### Optional: per-path output level/pan
-
-```json
-"output": {"level": -3.0, "pan": 0.4}
-```
-
-- `level` — float dB, −120..20 (the output block's `gain`).
-- `pan` — float 0..1 (0.5 = center).
-- Applies to the path's primary (lane-0 `b13`) output block. The output
-  **destination** (Matrix/XLR/1/4"/Path-2 feed…) is not authored here — it
-  round-trips verbatim via `structural` entries; an explicit `output` wins
-  over a stale structural copy.
-
-### Optional: parallel splits — split TYPE + merge mixer
-
-A path's `blocks` may carry one or two `split`…`join` regions (lane-1 entries
-between them form the B branch). The split takes a friendly `type` and
-per-type params; the join is the merge mixer:
-
-```json
-{"split": {"type": "crossover", "params": {"Frequency": 800.0, "Reverse": false}}},
-{"block": "Tape Echo Stereo", "lane": 1},
-{"join": {"params": {"A Level": 0.0, "B Level": -2.0, "B Pan": 0.5,
-                     "B Polarity": false, "Level": 0.0}}}
-```
-
-- Split types → params (validated; unknown names error and list the valid set):
-  - `"y"` — `BalanceA`, `BalanceB` (0..1), `enable`
-  - `"ab"` — `RouteTo` (0..1), `enable`
-  - `"crossover"` — `Frequency` (25..15000 Hz), `Reverse`, `enable`
-  - `"dynamic"` — `Threshold` (−60..0 dB), `Attack`/`Decay` (0.05..5 s),
-    `Reverse`, `enable`
-- A raw `model` string is still accepted (must agree with `type` if both are
-  given); unknown models pass params through unvalidated.
-- Join (merge-mixer) params — literal wire names **with spaces**: `"A Level"`,
-  `"A Pan"`, `"B Level"`, `"B Pan"` (0..1), `"B Polarity"` (bool), `"Level"`
-  (−60..12 dB). The device default for the master `"Level"` is **+3 dB** —
-  omit it and the merged signal comes out 3 dB hot; write `"Level": 0.0`
-  for unity.
-- FX Loop / Send / Return block params (`Send`, `Return`, `Mix`, `DryThru`)
-  are ordinary block params — author them like any other block.
-
-### Optional: snapshots (Stadium scenes)
-
-Add a top-level `snapshots` array (up to 8 entries) to define named scenes that override block bypass and param values within one preset:
-
-```json
-"snapshots": [
-  {"name": "Rhythm"},
-  {"name": "Lead",  "params": {"Brit Plexi Brt": {"Drive": 0.85}, "Tape Echo Stereo": {"Mix": 0.30}}},
-  {"name": "Clean", "disable": ["Compulsive Drive"], "params": {"Brit Plexi Brt": {"Drive": 0.30}}}
-]
-```
-
-- Each snapshot is a delta from path-level base values. Snapshot 0 (the first) is active on load.
-- `disable: [...]` bypasses those blocks in that snapshot; `params` overrides values.
-- Block references must resolve to a block already placed in `paths`.
-- Omit `snapshots` entirely to use the device's defaults (8 unnamed slots, no variation).
-
-When a snapshot references a block whose display name is ambiguous (multiple
-placed blocks humanize to the same name, e.g. two "Stereo" blocks across a
-split), carry a `(lane, pos)` coordinate:
-
-- `disable` entries may be objects instead of bare strings:
-  `"disable": [{"block": "Stereo", "lane": 1, "pos": 2}]`
-- `params` may be a list instead of a name-keyed object:
-  `"params": [{"block": "Stereo", "lane": 1, "pos": 2, "params": {"Mix": 0.3}}]`
-
-Coordinates are only needed to disambiguate; the bare string / name-keyed object
-forms remain valid for uniquely-named blocks. `path` (0 or 1) is added only when
-the same name is ambiguous across both DSP paths.
-
-### Optional: footswitches
-
-Assign blocks to physical footswitches on the device. The Stadium XL has 12
-capacitive footswitches in **2 rows × 6 columns** (top row FS1–FS6, bottom row
-FS7–FS12), but only **10 are assignable**: `FS1`–`FS5` (top row) and
-`FS7`–`FS11` (bottom row). `FS6` (**MODE**) and `FS12` (**TAP/Tuner**) are
-reserved and rejected with a tailored error if you try to assign them. There is
-also `EXP1Toe` — the toe switch under the onboard expression pedal (push the
-pedal fully forward to click it).
-
-```json
-"footswitches": [
-  {"switch": "FS3", "block": "Compulsive Drive", "label": "DRIVE", "color": "red"},
-  {"switch": "FS3", "block": "Tape Echo Stereo"},
-  {"switch": "FS4", "block": "Brit Plexi Brt", "param": "Drive",
-   "min": 0.45, "max": 0.7, "behavior": "momentary"},
-  {"switch": "EXP1Toe", "block": "Teardrop 310 Mono"}
-]
-```
-
-- `switch` — an assignable footswitch `"FS1"`–`"FS5"` or `"FS7"`–`"FS11"`, or
-  `"EXP1Toe"` (expression-pedal toe switch). `"FS6"`/`"FS12"` are reserved
-  (MODE / TAP-Tuner) and not assignable.
-- `block` — must reference a block placed in `paths`.
-- `behavior` — `"latching"` (default; toggle) or `"momentary"` (on while held).
-- **Merge switch**: several entries may share one `switch` — the switch then
-  toggles all of its targets at once (blocks and/or params). Each target
-  (block, or block+param) may appear only once across all entries.
-- **Param toggle**: add `param` plus **required numeric `min`/`max`** (raw
-  param units — a Level is in dB, a knob 0..1) and the switch toggles that
-  param between the two values instead of the block's bypass. A single-knob
-  stomp is a param toggle; a multi-param change is a snapshot.
-- **Scribble strip**: `label` (device shows ≤12 chars; longer warns) and
-  `color` — one of `none auto red dkorange ltorange yellow green turquoise
-  blue purple pink white`. Per switch: on a merged switch set label/color on
-  one entry (or identically on all); conflicting values are a spec error.
-  Only `FS1`–`FS5`/`FS7`–`FS11` have strips — label/color on `EXP1Toe` (or a
-  pedal) warns and is not written.
-- `curve` — controller response curve: `"linear"` (default) or `slow5`…`slow1`
-  / `fast1`…`fast5`. Non-linear values are EXPERIMENTAL (vocabulary from the
-  device's own enum table; persistence hardware-validated, audible response
-  not yet characterized).
-- `threshold` — flip point (float) for position switches like `EXP1Toe`;
-  EXPERIMENTAL. Forces the explicit-bounds controller encoding.
-- **Wah/expression auto-engage:** assign the wah's bypass to `EXP1Toe` (with
-  `EXP1` sweeping its `Pedal` param) so pressing the pedal toe-down engages the
-  wah — the standard Helix wah behavior. A regular `FS` works too but requires a
-  separate stomp.
-
-**Controller vocabulary & English rendering.** `helixgen controllers`
-(add `--json` for the machine-readable table) lists every assignable
-controller with its English name + physical position, e.g.
-`Footswitch 5 (top row, 5th from left)`. When reporting a tone to a human,
-render controllers in this English form (via
-`controllers.english_for_controller` / the `controller_mapping` MCP tool),
-never a bare `FS#`. When a human *describes* a control in plain language
-("the top-left switch", "second from right on the bottom", "the wah toe"),
-translate it to a canonical identifier with a dedicated small-model
-translation sub-agent fed `controller_mapping(stadium_xl)` — it returns exactly
-one identifier (or `AMBIGUOUS`/`NONE`); validate the result against the
+**Controller vocabulary & English rendering (agent behavior).** When reporting a
+tone to a human, render controllers in English (via
+`controllers.english_for_controller` / the `controller_mapping` MCP tool), never
+a bare `FS#` (e.g. `Footswitch 5 (top row, 5th from left)`). When a human
+*describes* a control in plain language, translate it to a canonical identifier
+with a dedicated small-model sub-agent fed `controller_mapping(stadium_xl)` — it
+returns exactly one identifier (or `AMBIGUOUS`/`NONE`); validate it against the
 canonical set before writing it into a recipe. `view` never drops controls it
-can't map: an un-tabled/out-of-v1-scope source is kept and labeled under a
-separate top-level `unknown_controllers` list (ignored by `parse_spec`, so it
-stays round-trip safe).
+can't map — it keeps them under a top-level `unknown_controllers` list
+(round-trip safe). Full detail in [`docs/recipe-reference.md`](docs/recipe-reference.md).
 
-### Optional: expression pedal
-
-Sweep one or more parameters with the expression pedal(s). Stadium XL
-exposes `EXP1` and `EXP2`.
-
-```json
-"expression": [
-  {
-    "pedal": "EXP1",
-    "targets": [{"block": "Teardrop 310 Mono", "param": "Pedal"}]
-  },
-  {
-    "pedal": "EXP2",
-    "targets": [
-      {"block": "Brit Plexi Brt",   "param": "Master", "min": 0.0, "max": 0.7},
-      {"block": "Tape Echo Stereo", "param": "Mix",    "min": 0.0, "max": 0.4}
-    ]
-  }
-]
-```
-
-- `pedal` — `"EXP1"` or `"EXP2"`.
-- `targets` — non-empty list. Each target sweeps one param on one block.
-- `min`/`max` — normalized 0..1 floats; default `0.0`/`1.0`. **Reverse sweep**
-  = `min > max` (heel = max effect, toe = min) — corpus-real and supported.
-- `curve` — per-target response curve, same vocabulary as footswitches
-  (default `"linear"`; non-linear EXPERIMENTAL).
-- One pedal may have many targets. One `(block, param)` pair may be driven by
-  at most one controller (pedal OR footswitch param-toggle) across the spec.
-- v1 only sweeps 0..1-style float params (knob values). Hz/int/bool params are out of scope.
-
-### Optional: MIDI CC control (EXPERIMENTAL — #33)
-
-Bind incoming **MIDI Control Change** messages to param sweeps and block-bypass
-toggles. Add a top-level `midi` list — shape analogous to `expression`, keyed by
-CC# instead of pedal:
-
-```json
-"midi": [
-  {"cc": 61, "targets": [{"block": "Brit Plexi Brt", "param": "Drive",
-                          "min": 0.0, "max": 1.0}]},
-  {"cc": 79, "targets": [{"block": "Tape Echo Stereo", "bypass": true}]}
-]
-```
-
-- `cc` — the CC number, integer `0`–`127`. Each CC appears once (list several
-  `targets` under it). The MIDI channel is the device's **global base channel**
-  (`global.midi.channel`) — not authored per-preset (the parity capture found no
-  channel on the wire).
-- `targets` — non-empty list. Each target is either a **param sweep**
-  (`{"block", "param", "min", "max"}`, normalized 0..1 like `expression`;
-  `min`/`max` default `0.0`/`1.0`) or a **bypass toggle**
-  (`{"block", "bypass": true}`). A target is one or the other, not both.
-  `path`/`lane`/`pos` disambiguate a duplicate block name.
-- **One controller per param:** a `(block, param)` is driven by at most one of
-  footswitch-param / expression / MIDI across the whole spec. (A block's
-  **bypass** may be driven by several sources — e.g. an FS *and* a MIDI CC — the
-  device supports multi-source bypass.)
-- **CC-only.** MIDI Note controller sources are out of scope (the parity capture
-  pinned only the CC source encoding; a `note` field errors).
-- **How it's realized:** the binding is NOT written as a device-native `.hsp`
-  controller (the `.hsp` `midisource` encoding is 0 across the whole corpus and
-  the parity capture pinned only the *device* `.sbe`/wire encoding, so inventing
-  an `.hsp` shape is out of scope). It is recorded in a helixgen-namespaced
-  `preset._helixgen_midi` list that the **transcoder** turns into the device
-  `cg__.entt` `ctrl`/`ctm_` records on `device install`/`sync`. `view` lifts it
-  back into this `midi` recipe shape. The surgical edit verbs keep the records
-  reconciled: `add-block`/`remove-block` remap their coordinates on renumbering
-  (removing a MIDI-bound block drops its binding with a warning), and
-  `swap-model` drops a binding whose param the new model lacks (warning).
-- **EXPERIMENTAL** until hardware-validated. There is no live `device` verb for
-  MIDI assignment yet (author it into the preset). Stadium-only; ignored for
-  `.hlx` (legacy Helix) chassis output.
-
-### Optional: Command Center commands (EXPERIMENTAL — #16)
-
-Bind a **footswitch or Instant slot** to a Command Center command — a MIDI
-message (PC/CC/Note/MMC) or a Preset/Snapshot action — sent when the switch is
-pressed. Unlike `footswitches` (which toggle a block's bypass/param), a command
-targets the **device / external MIDI gear / preset-snapshot state**, not a
-block. Add a top-level `commands` list:
-
-```json
-"commands": [
-  {"switch": "FS1",      "command": "snapshot", "snapshot": 2, "label": "SNAP", "color": "red"},
-  {"switch": "Instant1", "command": "midi_cc",  "cc": 85, "value": 127, "channel": 2, "toggle": true},
-  {"switch": "Instant2", "command": "midi_pc",  "program": 44, "channel": 4},
-  {"switch": "FS3",      "command": "midi_note", "note": 60, "velocity": 100, "channel": 1}
-]
-```
-
-- `switch` — `FS1`–`FS5`/`FS7`–`FS11` or `Instant1`–`Instant6`. Reserved
-  `FS6`/`FS12` rejected; EXP continuous commands are out of scope.
-- `command` + its fields:
-  - `midi_cc` — `cc` (0–127, required), `value` (0–127), `channel` (1–16).
-  - `midi_pc` — `program` (0–127, required), `channel`, `bank_msb`/`bank_lsb` (−1=off).
-  - `midi_note` — `note` (0–127, required), `velocity`, `channel`, `note_off` (bool).
-  - `midi_mmc` — `message` (0–127, required), `channel`. **EXPERIMENTAL.**
-  - `snapshot` — `snapshot` (0–7, required).
-  - (A recall-`preset` family is **not** offered — it is unanchored and, without
-    a decoded Action discriminator, byte-indistinguishable from `snapshot 0` on
-    the device. Deferred — see BACKLOG #16.)
-- At most **2 commands per switch** (a merged switch — the device's cap).
-- `behavior` (`latching`/`momentary`), `toggle` (bool). `label`/`color` set the
-  FS scribble strip (Instant slots have no strip — a warning is emitted).
-- Several entries may share one `switch` (a **merged switch** — ordinals assigned
-  in list order).
-- A switch used by BOTH `footswitches` (block bypass/param) AND `commands` is
-  rejected (the device allows it; helixgen doesn't compose the two stores yet).
-  On read, `view` keeps a device export's command-on-a-footswitch-switch under
-  `unknown_controllers` (labeled, ignored by the parser) so the projection
-  stays round-trip safe.
-- **How it's realized:** authored NATIVELY into `preset.commands` — the encoding
-  real exports carry (corpus-proven), NOT a sidecar. The transcoder synthesizes
-  the device `cg__.entt` `srcs`/`cmnd`/`trgs` on `device install`/`sync`;
-  `view` lifts it back. Commands are switch-keyed, so surgical block edits
-  (`add-block`/`remove-block`/`swap-model`) leave them untouched.
-- **EXPERIMENTAL.** STORAGE hardware-validated on Stadium XL (a snapshot + MIDI
-  PC command round-tripped byte-for-byte); audible/functional response
-  uncharacterized, and the footswitch CC/Note/MMC slot placements are a
-  hypothesis (only PC/snapshot are byte-anchored). No live `device` verb.
-  Stadium-only; ignored for `.hlx` chassis output.
-
-### Optional: per-block IR reference
-
-For IR blocks (`"block": "With Pan"` and other `HX2_ImpulseResponse*` variants),
-add an optional `ir` field to load a registered user IR:
-
-```json
-{"block": "With Pan", "ir": "YA DXVB 112 Mix 01.wav",
- "params": {"HighCut": 6500.0, "LowCut": 90.0, "Mix": 1.0}}
-```
-
-- `ir` accepts a wav basename (looked up in `mapping.json` values) or a
-  32-char hex hash (looked up in keys).
-- If `ir` is omitted, the block uses the canonical `irhash` recorded during
-  ingest of an IR-bearing preset.
-- Register IRs first with `helixgen register-irs`; see `list-irs` for what's
-  available.
-
-Stadium-only; ignored without warning for `.hlx` (legacy Helix) chassis output.
-
-### Optional: delay/reverb/FX-loop trails (`trails`)
-
-Delay, reverb, and FX-Loop blocks may carry an optional `"trails"` boolean that controls
-harness spillover — whether the block's echoes / reverb tail keep ringing when
-the block is **bypassed** (manually or via a footswitch):
-
-```json
-{"block": "Tape Echo Stereo", "params": {"Mix": 0.25}, "trails": true},
-{"block": "Plate Stereo",     "params": {"Mix": 0.15}, "trails": true}
-```
-
-- `trails: true` / `false` sets the block's bNN `harness.params.Trails`.
-  - `true` → tail rings out and fades when you bypass the block.
-  - `false` → tail cuts off abruptly the instant you bypass the block.
-- Trails governs tail spillover on **block bypass** (footswitch or manual) —
-  and also across **snapshot switches** within the same preset (the tail rings
-  through a scene change instead of cutting). It never bridges a **preset**
-  change. To hear the bypass case, bypass the block — ideally while palm-muting
-  so the guitar's natural sustain doesn't mask the wet tail. (Footswitch/
-  manual-bypass behavior is hardware-validated on Stadium XL.)
-- Omitting `trails` leaves the device default (or whatever a decompiled
-  `raw.harness` carried) untouched.
-- **Delay, reverb, and FX-Loop blocks only** (FX-Loop = `HD2_FXLoop*`; the
-  device manual documents Trails there too). Setting `trails` on any other
-  block — including Send-/Return-only blocks — is a generate error.
-- `view` lifts an existing `Trails` out of `raw.harness` into this clean
-  `trails` field (same delay/reverb/FX-loop scope), so it round-trips as a
-  first-class setting. If both `trails` and a `raw.harness` are present,
-  `trails` wins.
-- Stadium-only; ignored for `.hlx` (legacy Helix) chassis (no harness emitted).
-- Editing an existing `.hsp` never needs `trails`: `set-param`/edit verbs
-  preserve the block's `harness` (and its `Trails`) verbatim in place.
-
-### Optional: per-block verbatim state (`raw`)
-
-A recipe block may carry an optional `"raw"` object holding verbatim Stadium bNN
-state that helixgen does not model, so that *authoring* a preset from a recipe
-can reproduce it:
-
-- `"harness"` — the bNN-level `harness` dict (carries structural fields like
-  `dual`, `upper`, `bypass`, `EvtIdx`, and its own `@enabled`). Non-deterministic;
-  preserved verbatim. The one author-facing harness field, `Trails`
-  (delay/reverb spillover), is modeled separately as the block-level `trails`
-  field above and is lifted out of `raw.harness` by `view`.
-- `"slots"` — additional slots beyond the first (`slot[1:]`), i.e. the second
-  cab of a dual-cab block.
-
-`raw` is emitted by `view` and consumed by `generate`. **Editing an existing
-`.hsp` never needs `raw`** — in-place mutation leaves every unmodeled field
-untouched by construction; `raw` matters only for authoring a fresh preset that
-carries such state. Stadium-only.
+All recipe fields are **Stadium-only** unless noted; the legacy `.hlx` chassis
+ignores the Stadium-specific ones (with or without a warning per field — see the
+reference).
 
 ## User preferences (`preferences.json`)
 
@@ -711,7 +322,7 @@ op.
 - `mcp_server/` — the MCP server the plugin bundles; tool descriptions here are agent-facing behavioral contracts
 - `.claude/skills/` — the three plugin skills: `setup` (device/prefs onboarding), `tone` (author a `.hsp` from a tone request), `device` (push/sync authored tones onto the hardware)
 - `.claude-plugin/` — `plugin.json` + `marketplace.json`; bumping the version here on `main` is what triggers a release (see Releasing)
-- `docs/` — `BACKLOG.md` (THE backlog), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
+- `docs/` — `BACKLOG.md` (THE backlog), `CLI.md` (the full CLI + per-verb **device** reference), `recipe-reference.md` (the exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports
@@ -719,11 +330,12 @@ op.
 
 ## Development workflow
 
-- **Worktrees, branched from fresh `origin/main`.** All non-trivial work happens
-  in a git worktree whose branch starts from freshly-fetched `origin/main` —
-  never commit directly on local `main`; it may be stale. Fetch again before
-  picking a release version number (a concurrent PR once released 2.10.0
-  mid-flight and collided with an in-progress bump).
+- **Worktrees, branched from fresh `github/main`.** All non-trivial work happens
+  in a git worktree whose branch starts from freshly-fetched `github/main` (the
+  GitHub remote is named **`github`**, not `origin`) — never commit directly on
+  local `main`; it may be stale. Fetch again before picking a release version
+  number (a concurrent PR once released 2.10.0 mid-flight and collided with an
+  in-progress bump).
 - **Adversarial review before shipping.** Before merging a PR, dispatch at least
   one independent review subagent prompted to *break* the change (find bugs,
   regressions, spec violations — not summarize it). Confirmed findings are fixed

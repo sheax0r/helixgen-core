@@ -117,7 +117,7 @@ Skipping this is the #1 way to waste a generation cycle. Param names are case-se
 
 ### 5. Build the spec dict
 
-Construct the spec inline as a Python/JSON dict — no temp files involved. The schema is the same as the helixgen CLI spec.json (see CLAUDE.md at repo root).
+Construct the spec inline as a Python/JSON dict — no temp files involved. The schema is the same as the helixgen CLI spec.json (base shape + optional-field index in CLAUDE.md "recipe shape"; full per-field reference in `docs/recipe-reference.md`).
 
 Minimal shape:
 
@@ -141,8 +141,8 @@ Minimal shape:
 
 #### Signal-flow params (input / output / split / merge) — use when the tone calls for them
 
-The spec also models the signal-flow layer (full field reference: CLAUDE.md
-"recipe shape"). Reach for these when the tone needs them — don't add them
+The spec also models the signal-flow layer (full field reference:
+`docs/recipe-reference.md`). Reach for these when the tone needs them — don't add them
 ritually:
 
 - **Input noise gate** — for high-gain tones, prefer the input-block gate over
@@ -284,7 +284,7 @@ By default, wire the chain for live use: give every toggle-able effect a footswi
 - Skip amp, cab, EQ, comp/dynamics, and other always-on/utility blocks — they never get a footswitch. Tonal boosts belong in a snapshot (5.5), not a stomp.
 - Cap at **10 assignable switches** (FS1–FS5, FS7–FS11). If more than 10 toggle-able blocks exist, either **merge** related toggles onto one switch (several `footswitches` entries may share a `switch` — e.g. a boost + its delay bump on one stomp) or wire the first 10 in chain order and tell the user in the report which ones were left un-switched.
 - Use `momentary` only when the user explicitly asks for a hold gesture (e.g. a boost or pitch dive you only want while your foot is down); everything else is `latching`.
-- **Label every wired switch**: set a short `label` (≤12 chars — the device truncates longer) naming the effect (`"label": "Tape Echo"`), and a `color` when it aids grouping (e.g. all dirt `red`); the valid color names are listed in the CLAUDE.md footswitches section. One scribble strip per switch — on a merged switch, set label/color on one entry only.
+- **Label every wired switch**: set a short `label` (≤12 chars — the device truncates longer) naming the effect (`"label": "Tape Echo"`), and a `color` when it aids grouping (e.g. all dirt `red`); the valid color names are listed in the `docs/recipe-reference.md` footswitches section. One scribble strip per switch — on a merged switch, set label/color on one entry only.
 - A switch can also toggle a **param** between two values instead of a bypass — add `"param"` + numeric `"min"`/`"max"` (raw param units) to the entry (e.g. FS kicks amp `Drive` 0.45→0.7). Use it when the user asks for a single-knob stomp (a multi-param change is a snapshot, 5.5).
 
 **Expression pedals — wah/whammy → EXP1, volume → EXP2:**
@@ -297,9 +297,9 @@ By default, wire the chain for live use: give every toggle-able effect a footswi
 
 If the user says "no footswitches" or "leave the controls alone," skip this step.
 
-**MIDI CC control (only on request):** if the user wants a param or bypass driven by an external MIDI controller / DAW, add a top-level `midi` list (see the CLAUDE.md "MIDI CC control" section) — each `{"cc": 0-127, "targets": [...]}` sweeps a param (`{"block", "param", "min", "max"}`) or toggles a bypass (`{"block", "bypass": true}`). CC-only, EXPERIMENTAL, and realized on `device install`/`sync`. Do **not** auto-wire MIDI by default — only when asked; it does not consume the FS/EXP budget, and a `(block, param)` still gets only one controller across FS/EXP/MIDI.
+**MIDI CC control (only on request):** if the user wants a param or bypass driven by an external MIDI controller / DAW, add a top-level `midi` list (see the `docs/recipe-reference.md` "MIDI CC control" section) — each `{"cc": 0-127, "targets": [...]}` sweeps a param (`{"block", "param", "min", "max"}`) or toggles a bypass (`{"block", "bypass": true}`). CC-only, EXPERIMENTAL, and realized on `device install`/`sync`. Do **not** auto-wire MIDI by default — only when asked; it does not consume the FS/EXP budget, and a `(block, param)` still gets only one controller across FS/EXP/MIDI.
 
-**Command Center commands (only on request):** if the user wants a footswitch (or Instant slot) to **send** a MIDI message (PC/CC/Note/MMC) or a Preset/Snapshot action to the device / external gear — as opposed to toggling a block — add a top-level `commands` list (see the CLAUDE.md "Command Center commands" section). Each `{"switch": "FS1".."FS11"|"Instant1".."Instant6", "command": <family>, ...fields}`. EXPERIMENTAL, storage-validated, realized on `device install`/`sync`. Do **not** auto-wire commands by default — only when asked. A command switch is distinct from a block-bypass footswitch (a switch can't do both in helixgen yet), so don't put a command on a switch already used in `footswitches`.
+**Command Center commands (only on request):** if the user wants a footswitch (or Instant slot) to **send** a MIDI message (PC/CC/Note/MMC) or a Preset/Snapshot action to the device / external gear — as opposed to toggling a block — add a top-level `commands` list (see the `docs/recipe-reference.md` "Command Center commands" section). Each `{"switch": "FS1".."FS11"|"Instant1".."Instant6", "command": <family>, ...fields}`. EXPERIMENTAL, storage-validated, realized on `device install`/`sync`. Do **not** auto-wire commands by default — only when asked. A command switch is distinct from a block-bypass footswitch (a switch can't do both in helixgen yet), so don't put a command on a switch already used in `footswitches`.
 
 ### 5.7. Volume-normalization pass
 

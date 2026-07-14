@@ -610,11 +610,19 @@ LED control, focus-view/UI cosmetics.
   skill-level contract note in each of the three `.claude/skills/*` files. No
   Python git automation — the skills operate through the agent running `git`
   itself; only the preference key is code.
-- **#27 CLAUDE.md freshness + best practices** — audit CLAUDE.md against the
-  shipped surface (it has drifted before: duplicate `device save` bullet, verbs
-  described aspirationally vs actually). Ensure it stays current, add missing
-  best practices, and trim/reshape per Claude Code CLAUDE.md guidance (it is
-  very long; consider moving deep reference into docs/ and linking).
+- **#27 CLAUDE.md freshness + best practices** — **✅ SHIPPED (2026-07-14).**
+  Audited CLAUDE.md against the merged surface (PRs #45–#50): removed the
+  duplicate `device save` bullet, fixed the stale `origin/main` → `github/main`
+  remote name in the Development workflow, and confirmed the six just-merged
+  verbs/fields (`device reorder`/`meters`/`setlist import-hss`, recipe
+  `midi`/`commands`, `ir-prune --ignore-warnings`, `git_commit_tones`) are
+  present + accurate. Restructured for length (768 → ~374 lines): the exhaustive
+  recipe field reference moved to `docs/recipe-reference.md` and the full
+  per-verb device reference to `docs/CLI.md`, leaving CLAUDE.md the project map,
+  mental models, concise verb/field indexes with links, and the rules. All
+  agent-critical guardrails (show-block-first, naming convention,
+  `.hsp`-is-source-of-truth, device-write gating, flaky-network) stay in
+  CLAUDE.md; skill pointers updated to the moved sections.
 - **#28 Full code review + refactor pass** — a structured review of the whole
   codebase for structure, readability, and maintainability (module boundaries,
   duplicated mapping logic per the resolver pattern #14, `cli.py` size, dead
