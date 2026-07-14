@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from .osc import osc_encode, parse_osc_message
 from . import content as _content
+from . import settings as _settings
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +451,53 @@ class HelixClient:
         raise HelixError(
             f"no content blob in /GetContentData reply for cid {cid}")
 
+    # -- global settings / properties (reads) ------------------------------
+    def _property_blob(self, addr: str, reply: str, key: str) -> bytes:
+        """Send ``addr [reqid, key]`` and return the blob from ``reply``."""
+        for raddr, args in self._rpc(addr, [("s", key)], raw_blobs=True):
+            if raddr == reply:
+                for v in args:
+                    if isinstance(v, (bytes, bytearray)):
+                        return bytes(v)
+            if raddr == "/error":
+                raise HelixError(
+                    f"device rejected {addr} for {key!r}: "
+                    f"{args[-1] if args else '?'}")
+        raise HelixError(f"no blob in {reply} reply for property {key!r}")
+
+    def get_property(self, key: str) -> _settings.PropertyValue:
+        """Read a property's **current** value (``/PropertyValueGet``)."""
+        return _settings.decode_value_blob(
+            self._property_blob("/PropertyValueGet", "/getPropertyValue", key))
+
+    def get_property_def(self, key: str) -> _settings.PropertyDef:
+        """Read a property's definition — name, type, range, enum, default
+        (``/PropertyDefWithKeyGet``). Self-describing catalog straight from the
+        device."""
+        return _settings.decode_property_def(
+            self._property_blob(
+                "/PropertyDefWithKeyGet", "/keyPropertyDefinition", key))
+
     # -- writes (proven commands) -----------------------------------------
+    def set_property(self, key: str, typ: str, value: Any) -> bool:
+        """Write a property value (``/PropertyValueSet [reqid, ctx=0, blob]``).
+
+        ``typ`` is ``'f'``/``'i'`` (from the property's definition). Returns
+        ``True`` when the device replies ``/success [reqid, 0]``. Refuses keys
+        whose write would sever this control channel (see
+        :data:`settings.DANGEROUS_KEYS`).
+        """
+        _settings.guard_key(key)
+        blob = _settings.encode_value_blob(key, typ, value)
+        for addr, args in self._rpc("/PropertyValueSet", [("i", 0), ("b", blob)]):
+            if addr == "/success":
+                return len(args) >= 2 and args[1] == 0
+            if addr == "/error":
+                raise HelixError(
+                    f"device rejected /PropertyValueSet for {key!r}: "
+                    f"{args[-1] if args else '?'}")
+        return False
+
     def load_preset(self, cid: int) -> bool:
         return self._ok(self._rpc("/LoadPresetWithCID", [("i", cid)]))
 

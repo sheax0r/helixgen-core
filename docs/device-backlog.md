@@ -269,6 +269,62 @@ assumption — see #9); the reference-based redesign below then **shipped
   (backlog #1) so we can `SetContentData` into it + reload. Ship as a
   `helixgen device load-hsp <file>` verb first, then the double-click wrapper.
 
+## Stadium-app parity (2026-07-13)
+
+Full app-function inventory + coverage matrix: **`docs/stadium-app-parity.md`**
+(app v1.3.2.9805). These items close the 🔴/🟡/🔍 rows so the desktop app is
+never needed. Ranked by impact (how often the app is the *only* way to do it) ×
+effort. The complete OSC command namespace + 251 `global.*` keys are already
+known from the app binary — most 🔍 items need only a targeted frida capture of
+an **argument shape**, run at implementation time.
+
+**⚠️ Coordinate with the in-flight tone-library-model-redesign (PR #31 / 2.19.0).**
+It is actively reworking the preset/setlist/library CLI. Parity items that touch
+setlist/preset CRUD (#20 create-setlist/#1, setlist rename/delete) must sequence
+**after** it merges to avoid collisions. The P1 item below is deliberately
+orthogonal to it.
+
+- **P1 · #15 Global settings read/write** — **✅ SHIPPED 2.20.0.** The 8 Global
+  Settings pages + Tuner + Wireless (161 curated `global.*` keys) are read/written
+  over `/PropertyValueGet` / `/PropertyValueSet` via `helixgen device settings
+  list|get|set` + MCP `device_settings_*`. Protocol RE'd + hardware-validated
+  (get/set/def, enum-by-label, range validation, round-trip) — see
+  `docs/superpowers/specs/2026-07-13-global-settings-re-findings.md`. The device
+  self-describes each key (name/type/range/enum) via `/PropertyDefWithKeyGet`, so
+  the catalog is live. **Remaining follow-up: Global EQ** (`dsp.globaleq.*` +
+  `/GraphEnableSet`) is a separate, non-property screen — its param-write path
+  still needs a capture. Matrix §8.
+- **P2 · #16 Command Center** **[device-write][discovery]** — the footswitch-
+  command subsystem (`commanddefs` families: PresetSnapshot, Song, Looper,
+  Utility, ExtAmp, MIDI CC/PC/Note/MMC, HotKey; 2 cmds/switch, 16 instant
+  commands, EXP MIDI, per-command channel). Extend the authoring/transcode path
+  (`cg__`/command graph) + capture `/ExecuteCommand`/`/CommandTypeSet`. Matrix §6.
+- **P3 · #17 Matrix Mixer** **[device-write][discovery]** — per-output-layer
+  (1/4"/XLR/Phones) mixing of paths + 8 Song tracks + click + USB/BT/aux, with
+  fader/pan/mute/solo and output linking (`/MixerSave`). Matrix §3.
+- **P4 · #18 Signal-flow param depth** **[local]** — first-class authoring of
+  input params (impedance/pad/trim/gate), output level/pan, split TYPE
+  (Y/A-B/Crossover/Dynamic) params, merge mixer params, FX-loop send/return/mix.
+  Pure `.hsp` authoring; no device needed. Matrix §3.
+- **P5 · #19 Live device ops** **[device-write][discovery]** — live snapshot
+  recall/copy (`/ActiveSnapshotIndexSet`/`/CopySnapshot`), live block bypass
+  (`/BlockEnableSet`), live model set (`/ModelSet`), tempo (`/SetTempo`,
+  `/SetTimeSignature`), tuner engage + readout (2001/2003 stream schema). The
+  performance surface. Matrix §5/§9/§10.
+- **P6 · #20 IR + library polish** **[device-write]** — IR delete/prune
+  (see **#11**), IR rename/folders; setlist rename/delete/duplicate; import/
+  export `.hss`/single-file bundles; preset color/notes. **Sequence after
+  PR #31.** Also folds in active-preset select (**#1**) and create-setlist
+  (**#8**). Matrix §1/§2/§7.
+- **P7 · #21 Quick wins** **[device-write]** — `helixgen device info`
+  (`/ProductInfoGet`: firmware/model/capabilities); controller depth
+  (curve/threshold/MIDI-CC/label/merge/XY assignment). Matrix §6/§12.
+
+**Out of scope** (matrix 🚫, listed for honesty): firmware update, factory
+reset, SD format, full-device microSD backup, Showcase multitrack player,
+Clones/Proxy captures, block favorites, preset templates, cloud/Remote-Access,
+LED control, focus-view/UI cosmetics.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

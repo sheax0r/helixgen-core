@@ -834,6 +834,154 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
         click.echo(f"cid={m.get('cid_')}  {m.get('name', '')}")
 
 
+@device.group(name="settings")
+def device_settings() -> None:
+    """Read/write the device's **Global Settings** over the network.
+
+    The Stadium exposes its Global Settings pages (Ins/Outs, Switches/Pedals,
+    Displays, Preferences, Songs, Tempo/Click, MIDI, Date/Time) plus Tuner and
+    Wireless as device *properties*. `list` browses the catalog, `get` reads a
+    live value, `set` writes one — no Stadium app needed. Keys are grouped into
+    pages; run `helixgen device settings list` to see them.
+    """
+
+
+@device_settings.command(name="list")
+@click.option("--page", "page", default=None,
+              help="Only this page (e.g. ins-outs, midi, tuner). Omit for all.")
+@click.option("--values", is_flag=True, default=False,
+              help="Also fetch each key's live value + range from the device.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit as JSON.")
+@_device_option
+def device_settings_list(page, values, as_json, ip, port):
+    """List Global-Settings keys, grouped by page (offline unless --values)."""
+    from helixgen.device import settings as S
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        catalog = {page: S.keys_for_page(page)} if page else S.pages()
+    except KeyError:
+        raise click.ClickException(
+            f"unknown page {page!r}; choose from {', '.join(S.page_names())}")
+
+    if not values:
+        if as_json:
+            click.echo(json.dumps(catalog, indent=2))
+            return
+        for pg in sorted(catalog):
+            click.echo(f"\n[{pg}]")
+            for k in catalog[pg]:
+                click.echo(f"  {k}")
+        return
+
+    rows = []
+    aborted = None
+    try:
+        with HelixClient(ip, port) as h:
+            for pg in sorted(catalog):
+                for k in catalog[pg]:
+                    try:
+                        d = h.get_property_def(k)
+                        v = h.get_property(k)
+                        rows.append({"page": pg, "key": k, "name": d.name,
+                                     "value": v.value,
+                                     "display": S.render_value(d, v.value),
+                                     "type": d.type, "min": d.vmin, "max": d.vmax,
+                                     "enum": d.enum})
+                    except (HelixError, ValueError) as e:
+                        rows.append({"page": pg, "key": k, "error": str(e)})
+                    # a dead socket (reconnect exhausted) makes every remaining
+                    # key fast-fail — stop and report a clean partial result.
+                    if h.sock is None:
+                        aborted = k
+                        break
+                if aborted:
+                    break
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        out = {"settings": rows}
+        if aborted:
+            out["aborted_at"] = aborted
+        click.echo(json.dumps(out, indent=2))
+        return
+    cur = None
+    for r in rows:
+        if r["page"] != cur:
+            cur = r["page"]
+            click.echo(f"\n[{cur}]")
+        if "error" in r:
+            click.echo(f"  {r['key']:<40} <err: {r['error']}>")
+        else:
+            rng = (f"  {{{', '.join(r['enum'])}}}" if r["enum"]
+                   else f"  [{r['min']}..{r['max']}]")
+            click.echo(f"  {r['key']:<40} = {r['display']:<16} {r['name']}{rng}")
+    if aborted:
+        click.echo(f"\n(connection lost — stopped at {aborted}; re-run to continue)")
+
+
+@device_settings.command(name="get")
+@click.argument("key")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit as JSON.")
+@_device_option
+def device_settings_get(key, as_json, ip, port):
+    """Read one Global-Settings value (with its name, range, and enum labels)."""
+    from helixgen.device import settings as S
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            d = h.get_property_def(key)
+            v = h.get_property(key)
+    except (HelixError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps({
+            "key": key, "name": d.name, "value": v.value,
+            "display": S.render_value(d, v.value), "type": d.type,
+            "min": d.vmin, "max": d.vmax, "default": d.default,
+            "enum": d.enum, "page": S.page_for_key(key)}, indent=2))
+        return
+    rng = (f"{{{', '.join(d.enum)}}}" if d.enum else f"[{d.vmin}..{d.vmax}]")
+    click.echo(f"{key}")
+    click.echo(f"  name    {d.name}")
+    click.echo(f"  value   {S.render_value(d, v.value)}")
+    click.echo(f"  range   {rng}   (default {d.default})")
+
+
+@device_settings.command(name="set")
+@click.argument("key")
+@click.argument("value")
+@_device_option
+def device_settings_set(key, value, ip, port):
+    """Write one Global-Settings value. VALUE may be a number or an enum label
+    (e.g. `helixgen device settings set global.tuner.type Strobe`)."""
+    from helixgen.device import settings as S
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            d = h.get_property_def(key)
+            coerced = S.coerce_value(d, value)
+            ok = h.set_property(key, d.type, coerced)
+            readback = h.get_property(key)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"device did not confirm the write to {key}")
+    click.echo(f"{key} = {S.render_value(d, readback.value)}  ({d.name})")
+
+
 @device.command(name="read")
 @click.argument("cid", type=int)
 @click.option("--json", "as_json", is_flag=True, default=False,

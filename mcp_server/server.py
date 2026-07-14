@@ -399,6 +399,53 @@ def device_set_param(
 
 
 @app.tool()
+def device_settings_list(
+    page: str | None = None,
+    values: bool = False,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """List the device's **Global Settings** property keys, grouped by page
+    (ins-outs, switches-pedals, displays, preferences, songs, tempo-click,
+    midi, date-time, tuner, wireless).
+
+    Offline by default (bundled catalog). Pass `values=True` to also fetch each
+    key's live value + range from the device. `page` narrows to one page.
+    Returns `{"pages": {...}}` or, with values, `{"settings": [...]}`.
+    """
+    return _tools.device_settings_list_handler(page=page, values=values, ip=ip)
+
+
+@app.tool()
+def device_settings_get(
+    key: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Read one Global-Settings value over the network, with its definition.
+
+    `key` is a device property key like `global.tuner.reference.pitch` or
+    `global.midi.channel` (see `device_settings_list`). Returns the current
+    value plus name, type, min/max, default, and enum labels.
+    """
+    return _tools.device_settings_get_handler(key, ip=ip)
+
+
+@app.tool()
+def device_settings_set(
+    key: str,
+    value: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Write one Global-Settings value over the network (no Stadium app needed).
+
+    `key` is a device property key (see `device_settings_list`). `value` may be
+    a number, or for enum settings a label (e.g. `"Strobe"`) or its index. The
+    value is validated against the property's range/enum before sending.
+    Returns `{"ok", "key", "value", "display", "name"}`.
+    """
+    return _tools.device_settings_set_handler(key, value, ip=ip)
+
+
+@app.tool()
 def device_save_preset(
     model: str,
     name: str,

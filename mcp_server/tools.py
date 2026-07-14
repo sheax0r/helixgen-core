@@ -471,6 +471,87 @@ def device_list_presets_handler(
         raise ValueError(f"device error: {e}") from e
 
 
+def device_settings_list_handler(
+    *, page: str | None = None, values: bool = False, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """List Global-Settings property keys grouped by page.
+
+    Without ``values`` this is offline (the bundled catalog). With
+    ``values=True`` it fetches each key's live value + range from the device.
+    """
+    from helixgen.device import settings as S
+
+    try:
+        catalog = {page: S.keys_for_page(page)} if page else S.pages()
+    except KeyError:
+        raise ValueError(
+            f"unknown page {page!r}; choose from {', '.join(S.page_names())}")
+    if not values:
+        return {"pages": catalog}
+
+    from helixgen.device import HelixClient, HelixError
+    rows: list[dict[str, Any]] = []
+    try:
+        with HelixClient(ip=ip) as client:
+            for pg in sorted(catalog):
+                for k in catalog[pg]:
+                    try:
+                        d = client.get_property_def(k)
+                        v = client.get_property(k)
+                        rows.append({"page": pg, "key": k, "name": d.name,
+                                     "value": v.value, "type": d.type,
+                                     "min": d.vmin, "max": d.vmax,
+                                     "enum": d.enum})
+                    except (HelixError, ValueError) as e:
+                        rows.append({"page": pg, "key": k, "error": str(e)})
+                    if client.sock is None:  # connection lost — stop cleanly
+                        return {"settings": rows, "aborted_at": k}
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"settings": rows}
+
+
+def device_settings_get_handler(
+    key: str, *, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Read one Global-Settings value with its definition (name/range/enum)."""
+    from helixgen.device import settings as S
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            d = client.get_property_def(key)
+            v = client.get_property(key)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"key": key, "name": d.name, "value": v.value,
+            "display": S.render_value(d, v.value), "type": d.type,
+            "min": d.vmin, "max": d.vmax, "default": d.default,
+            "enum": d.enum, "page": S.page_for_key(key)}
+
+
+def device_settings_set_handler(
+    key: str, value: str, *, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Write one Global-Settings value. ``value`` may be a number or (for enum
+    properties) a label like ``"Strobe"`` or its index. Validated against the
+    property's range/enum before sending. Returns ``{ok, key, value, display}``.
+    """
+    from helixgen.device import settings as S
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            d = client.get_property_def(key)
+            coerced = S.coerce_value(d, str(value))
+            ok = client.set_property(key, d.type, coerced)
+            readback = client.get_property(key)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": bool(ok), "key": key, "value": readback.value,
+            "display": S.render_value(d, readback.value), "name": d.name}
+
+
 def device_list_setlists_handler(
     model: str, *, ip: str = _DEFAULT_DEVICE_IP
 ) -> list[dict[str, Any]]:

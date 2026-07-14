@@ -601,3 +601,68 @@ def test_mutating_opens_and_closes_subscriber(monkeypatch):
     assert events.count(("connect",)) == 1  # only the outermost opened one
     assert events.count(("close",)) == 1
     assert events.index(("close",)) > events.index(("connect",))
+
+
+# --- global-settings property methods -------------------------------------
+
+from helixgen.device import settings as _S  # noqa: E402
+
+
+def test_get_property_parses_value_blob():
+    h = HelixClient()
+    blob = _S.encode_value_blob("global.midi.channel", "i", 7)
+    reply = osc_encode("/getPropertyValue",
+                       [("i", 1000), ("s", "global.midi.channel"), ("b", blob)])
+    _wire(h, [reply])
+    pv = h.get_property("global.midi.channel")
+    assert pv.key == "global.midi.channel" and pv.value == 7 and pv.type == "i"
+    # request went out as /PropertyValueGet [reqid, key]
+    assert h.sock.sent[0].startswith(b"/PropertyValueGet")
+
+
+def test_get_property_def_parses_def_blob():
+    h = HelixClient()
+    # golden def blob for global.tuner.type (enum Needle/Strobe)
+    defblob = bytes.fromhex(
+        "666564707067736d8ace64697370a0ce6476616c83ce6b65795fb1676c6f6261"
+        "6c2e74756e65722e74797065ce74797065a169ce76616c5f01ce69645f5fcce3"
+        "ce6e616d65aa54756e65722054797065ce73687274a0ce7479706500ce756e74"
+        "730fce766d617801ce766d696e00ce766e6d6592a64e6565646c65a65374726f"
+        "6265")
+    reply = osc_encode("/keyPropertyDefinition",
+                       [("i", 1000), ("s", "global.tuner.type"), ("b", defblob)])
+    _wire(h, [reply])
+    d = h.get_property_def("global.tuner.type")
+    assert d.enum == ["Needle", "Strobe"] and d.vmax == 1
+
+
+def test_set_property_true_on_success():
+    h = HelixClient()
+    reply = osc_encode("/success", [("i", 1000), ("i", 0)])
+    _wire(h, [reply])
+    assert h.set_property("global.midi.channel", "i", 5) is True
+    assert h.sock.sent[0].startswith(b"/PropertyValueSet")
+
+
+def test_set_property_raises_on_error():
+    h = HelixClient()
+    reply = osc_encode("/error", [("i", 1000), ("i", 0), ("s", "NOPE")])
+    _wire(h, [reply])
+    with pytest.raises(HelixError):
+        h.set_property("global.bad.key", "i", 1)
+
+
+def test_get_property_raises_on_error():
+    h = HelixClient()
+    reply = osc_encode("/error", [("i", 1000), ("i", 0), ("s", "NOPE")])
+    _wire(h, [reply])
+    with pytest.raises(HelixError):
+        h.get_property("global.bad.key")
+
+
+def test_set_property_refuses_self_severing_key():
+    h = HelixClient()
+    # no socket wired — guard must fire BEFORE any RPC attempt (ValueError,
+    # same type coerce_value raises, so the CLI/MCP set paths surface it cleanly)
+    with pytest.raises(ValueError):
+        h.set_property("global.wifi.enable", "i", 0)
