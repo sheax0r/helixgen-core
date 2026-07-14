@@ -2218,11 +2218,16 @@ def device_library_cmd(as_json: bool) -> None:
               help="Garbage-collect pool presets no setlist references (only with --all).")
 @click.option("--exclude-irs", is_flag=True, default=False,
               help="Install tones only; do not upload their referenced IRs.")
+@click.option("--repush", is_flag=True, default=False,
+              help="Force re-transcode + re-push every in-scope tone's content, "
+                   "even when its recorded .hsp hash already matches the pool "
+                   "(use after a transcoder upgrade to refresh already-synced "
+                   "tones).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw engine result dict as JSON.")
 @_device_option
 def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
-                exclude_irs: bool, as_json: bool,
+                exclude_irs: bool, repush: bool, as_json: bool,
                 ip: str, port: int) -> None:
     """Sync the manifest's setlists onto the device (pool + references).
 
@@ -2230,7 +2235,12 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     reconciles the preset pool (install/update/skip), then rebuilds each
     setlist's references to manifest order — never orphaning a still-referenced
     pool preset. --gc (only with --all) prunes pool presets no setlist wants any
-    more. A setlist the device doesn't have is reported as a clear error (create
+    more. --repush treats every in-scope tone already in the pool as changed —
+    re-pushing its content via the same non-activating SetContentData-on-the-
+    existing-cid path an ordinary hash-triggered update uses — even when its
+    .hsp content hash hasn't changed (a transcoder upgrade can change what an
+    unchanged .hsp produces, which hash-based change detection can't see).
+    A setlist the device doesn't have is reported as a clear error (create
     it first with `helixgen device setlist create <name>`). EXPERIMENTAL.
     """
     from helixgen.device.manifest import SetlistManifest
@@ -2248,7 +2258,8 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     setlists = None if all_setlists else [setlist_name]
     try:
         res = sync_setlists(SetlistManifest.load(), ip=ip, port=port,
-                            setlists=setlists, gc=gc, exclude_irs=exclude_irs)
+                            setlists=setlists, gc=gc, exclude_irs=exclude_irs,
+                            repush=repush)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
 

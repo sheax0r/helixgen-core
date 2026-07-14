@@ -44,6 +44,49 @@ def test_plan_pool_install_update_skip():
     assert plan["skip"] == ["Same"]
 
 
+def test_plan_pool_force_updates_even_when_hash_matches():
+    # #25 residual: --repush forces a content re-push for every in-scope tone
+    # already in the pool, even when the recorded hash agrees (a transcoder
+    # upgrade changed what .hsp -> device content produces without changing
+    # the .hsp itself, so hash-based change detection never notices).
+    hashes = {"New": "sha256:n", "Same": "sha256:s"}
+    synced = {"Same": "sha256:s"}
+
+    class M:
+        def content_hash(self, name):
+            return hashes.get(name)
+
+    plan = ss.plan_pool(
+        M(),
+        tone_names=["New", "Same"],
+        device_pool_names=["Same"],
+        observed_hash_of=lambda n: synced.get(n),
+        force=True,
+    )
+    # "New" isn't in the pool yet -> still an install, not an update.
+    assert plan["install"] == ["New"]
+    # "Same" hash matches but force=True bumps it into update anyway.
+    assert plan["update"] == ["Same"]
+    assert plan["skip"] == []
+
+
+def test_plan_pool_force_false_is_unchanged():
+    # default (no force) behaves exactly like before: hash-matching tones skip.
+    hashes = {"Same": "sha256:s"}
+    synced = {"Same": "sha256:s"}
+
+    class M:
+        def content_hash(self, name):
+            return hashes.get(name)
+
+    plan = ss.plan_pool(
+        M(), tone_names=["Same"], device_pool_names=["Same"],
+        observed_hash_of=lambda n: synced.get(n), force=False,
+    )
+    assert plan["update"] == []
+    assert plan["skip"] == ["Same"]
+
+
 def test_plan_references_returns_desired_order():
     assert ss.plan_references(["A", "B", "C"], device_refs={}) == ["A", "B", "C"]
 
@@ -259,6 +302,115 @@ def test_changed_hash_updates_not_reinstalls(tmp_path, monkeypatch):
     # updated via SetContentData on the EXISTING cid, not a fresh install
     assert client.set_content_data_calls == [(5000, b"BLOB")]
     assert m.observed_pool_hash("Tone A") == "sha256:NEW"
+
+
+def test_repush_forces_content_update_for_hash_matching_tone(tmp_path, monkeypatch):
+    # #25 residual: `device sync <setlist> --repush` re-transcodes + re-pushes
+    # a tone's content even though its recorded hash matches the pool.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Tone A"]},
+                  hashes={"Tone A": "sha256:a"})
+    m.record_observed_pool("Tone A", cid=5000, posi=0, synced_hash="sha256:a")
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Tone A", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"], repush=True)
+
+    assert res["ok"] is True
+    assert res["pool"]["installed"] == []
+    assert res["pool"]["updated"] == ["Tone A"]
+    assert res["pool"]["skipped"] == []
+    # content refreshed via SetContentData into the EXISTING cid (the
+    # non-activating `device restore` primitive) -- not delete+recreate.
+    assert client.set_content_data_calls == [(5000, b"BLOB")]
+    assert 5000 not in client.deleted
+    # references + hash bookkeeping proceed exactly as a normal update would.
+    assert m.observed_pool_hash("Tone A") == "sha256:a"
+
+
+def test_repush_false_default_leaves_matching_hash_untouched(tmp_path, monkeypatch):
+    # Without --repush, an unchanged tone is still skipped (no behavior change).
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Tone A"]},
+                  hashes={"Tone A": "sha256:a"})
+    m.record_observed_pool("Tone A", cid=5000, posi=0, synced_hash="sha256:a")
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Tone A", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["updated"] == []
+    assert res["pool"]["skipped"] == ["Tone A"]
+    assert client.set_content_data_calls == []
+
+
+def test_repush_still_installs_missing_tones_normally(tmp_path, monkeypatch):
+    # repush only forces re-push of tones ALREADY in the pool; a tone missing
+    # from the pool still goes through the normal install path.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Old", "New"]},
+                  hashes={"Old": "sha256:o", "New": "sha256:n"})
+    m.record_observed_pool("Old", cid=5000, posi=0, synced_hash="sha256:o")
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Old", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"], repush=True)
+
+    assert res["pool"]["installed"] == ["New"]
+    assert res["pool"]["updated"] == ["Old"]
+    assert client.set_content_data_calls == [(5000, b"BLOB")]
+
+
+def test_repush_pathless_pool_present_tone_is_per_tone_error(tmp_path, monkeypatch):
+    # A pathless tone (device save/create — no local .hsp) present in the pool
+    # is bumped into the update bucket by --repush, but there is nothing local
+    # to transcode from: it must surface as a per-tone error (bucket-agnostic
+    # wording, not "cannot install"), while other tones still repush and the
+    # run never aborts.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Tone A"]},
+                  hashes={"Tone A": "sha256:a"})
+    m.record_observed_pool("Tone A", cid=5000, posi=0, synced_hash="sha256:a")
+    m.tones["MySave"] = {"path": None, "content_hash": None, "doc": None,
+                         "source": "save", "slot": "3C", "device": None}
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Tone A", 5000, 0), ("MySave", 5009, 9)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"], repush=True)
+
+    # the pathless tone errored per-tone; the .hsp-backed tone still repushed
+    assert res["ok"] is False
+    assert any("MySave" in e for e in res["errors"])
+    assert not any("cannot install" in e for e in res["errors"])
+    assert any("no .hsp source" in e for e in res["errors"])
+    assert res["pool"]["updated"] == ["Tone A"]
+    assert client.set_content_data_calls == [(5000, b"BLOB")]
+    # nothing was deleted or recreated for the pathless tone
+    assert client.deleted == []
+
+
+def test_repush_does_not_change_references_or_ir_behavior(tmp_path, monkeypatch):
+    # repush is purely a pool-content decision; reference rebuild and IR
+    # upload behavior are identical to a normal sync.
+    _stub_bridge(monkeypatch)
+    monkeypatch.setattr(ss.bridge, "check_irs",
+                        lambda client, body: {"present": set(), "missing": {"aa11"}})
+    calls = []
+    monkeypatch.setattr(ss, "_upload_missing_irs",
+                        lambda ip, hashes: calls.append((ip, hashes)) or
+                        [{"hash": h, "ok": True} for h in hashes])
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Tone A"]},
+                  hashes={"Tone A": "sha256:a"})
+    m.record_observed_pool("Tone A", cid=5000, posi=0, synced_hash="sha256:a")
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Tone A", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"], repush=True)
+
+    assert client.mirror_calls == [(42, [5000])]
+    assert calls == [("1.2.3.4", ["aa11"])]
+    assert len(res["irs"]) == 1
 
 
 def test_unresolved_setlist_errors_without_aborting(tmp_path, monkeypatch):

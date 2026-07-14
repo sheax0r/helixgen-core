@@ -272,8 +272,8 @@ helixgen device set-info <cid>... --color green --notes "..."   # batch color + 
 ### Sync a setlist onto the device (pool + references)
 
 ```bash
-helixgen device sync <setlist> [--exclude-irs]
-helixgen device sync --all [--gc] [--exclude-irs]
+helixgen device sync <setlist> [--exclude-irs] [--repush]
+helixgen device sync --all [--gc] [--exclude-irs] [--repush]
 ```
 
 - **Resolves the setlist by name** under `-5`. If the device doesn't have it,
@@ -289,11 +289,18 @@ helixgen device sync --all [--gc] [--exclude-irs]
   `--exclude-irs`, so cabs resolve immediately.
 - **`--gc` (only with `--all`)** deletes pool presets that no manifest setlist
   references any more. A single-setlist sync never garbage-collects.
+- **`--repush`** forces a content refresh of every in-scope tone already in the
+  pool, even when its recorded `.hsp` hash is unchanged (same non-activating
+  existing-cid update path as a normal hash-triggered update). **After a
+  helixgen transcoder upgrade**, `device sync <setlist> --repush` refreshes
+  device content that a plain sync would skip as unchanged — hash-based change
+  detection compares the `.hsp`, not the transcoder's output, so it can't see a
+  transcoder fix on its own.
 - **Per-tone failures are collected and never abort the run.** Result:
   `{ok, setlists, pool:{installed,updated,skipped}, references:{added,removed},
   gc:{deleted}, irs:[…], errors:[…]}`. Read `errors`.
-- MCP mirrors: `device_sync_setlist(model, setlist, exclude_irs?)`
-  and `device_sync_all(model, gc?, exclude_irs?)`. Path-based like
+- MCP mirrors: `device_sync_setlist(model, setlist, exclude_irs?, repush?)`
+  and `device_sync_all(model, gc?, exclude_irs?, repush?)`. Path-based like
   the rest (no base64).
 
 > The old directory-mirror `device sync [dir]` and the `device_sync_library` MCP

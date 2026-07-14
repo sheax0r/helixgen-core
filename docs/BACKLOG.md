@@ -297,10 +297,17 @@ assumption — see #9); the reference-based redesign below then **shipped
   passes `--force`) so an occupied slot can be overwritten for `.hsp` sources,
   not just `.sbe`; and restore's slot resolution falls back to the last
   observed `device.posi` when the manifest `slot` doesn't resolve (so a synced
-  tone no longer reports "no recorded slot"). Remaining note (out of scope
-  here): `device sync` change detection hashes the `.hsp`, so a transcoder fix
-  never re-pushes already-synced tones — consider a `--repush`/transcode-hash
-  mode.
+  tone no longer reports "no recorded slot"). Remaining note: `device sync`
+  change detection hashes the `.hsp`, so a transcoder fix never re-pushes
+  already-synced tones. **✅ SHIPPED (2026-07-15).** Added `--repush` to
+  `device sync <setlist>` / `device sync --all` (+ `repush: bool` on MCP
+  `device_sync_setlist` / `device_sync_all`) — an explicit flag that forces
+  every in-scope pool-present tone into the update bucket regardless of hash
+  agreement; the content refresh reuses the existing `SetContentData`-on-the-
+  existing-cid path (`plan_pool(..., force=True)` in `setlist_sync.py`), never
+  delete+recreate and never `/CreateContent` (unreliable per #38). A persisted
+  transcode-hash scheme (auto-detecting a transcoder-version bump) was
+  considered and rejected for now in favor of the simpler explicit flag.
 
 ### Double-click a `.hsp` to load onto the Helix's ACTIVE slot **[device-write]**
 - Requested 2026-07-13. A macOS file-association / tiny app wrapper so

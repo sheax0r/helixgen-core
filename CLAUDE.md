@@ -67,7 +67,11 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   list|add|remove|create-local` (local manifest membership), `device setlist
   import-hss` (EXPERIMENTAL `.hss` bundle import, READ side), `device sync
   <setlist>` / `device sync --all [--gc]` (pool-first, reference-rebuilding,
-  IR-uploading, idempotent; **not** a destructive mirror).
+  IR-uploading, idempotent; **not** a destructive mirror). `--repush` (either
+  form) forces a content re-push of every in-scope tone already in the pool
+  even when its `.hsp` hash is unchanged — use once after a helixgen
+  transcoder upgrade, since hash-based change detection can't see a
+  transcoder-output change on its own (backlog #25 residual).
 - **Tone library / slots:** `helixgen register`, `device add` / `unsync` /
   `library` / `slots [list|restore|reorder] [--verify]`, `device setlist
   sync-on|sync-off`.

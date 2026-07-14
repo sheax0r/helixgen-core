@@ -1092,14 +1092,20 @@ def device_sync_setlist_handler(
     *,
     ip: str = _DEFAULT_DEVICE_IP,
     exclude_irs: bool = False,
+    repush: bool = False,
 ) -> dict[str, Any]:
     """Sync ONE manifest setlist onto the device (pool-first, reference rebuild).
 
     Reconciles the pool for the tones ``setlist`` needs (install/update/skip),
     then rebuilds that setlist's references to match manifest order — never
-    orphaning a still-referenced pool preset. A single-setlist sync never
-    garbage-collects. Returns the engine result dict (``{ok, setlists, pool,
-    references, gc, irs, errors}``). EXPERIMENTAL.
+    orphaning a still-referenced pool preset. ``repush=True`` forces every
+    in-scope tone already in the pool into the update bucket (re-pushed via the
+    same non-activating existing-cid path), even when its recorded hash
+    matches — use after a transcoder upgrade to refresh already-synced tones,
+    since hash-based change detection can't see a transcoder-output change for
+    an unchanged ``.hsp``. A single-setlist sync never garbage-collects.
+    Returns the engine result dict (``{ok, setlists, pool, references, gc,
+    irs, errors}``). EXPERIMENTAL.
     """
     _validate_model(model)
     from helixgen.device import HelixError
@@ -1109,7 +1115,7 @@ def device_sync_setlist_handler(
     try:
         return sync_setlists(
             SetlistManifest.load(), ip=ip, setlists=[setlist],
-            exclude_irs=exclude_irs,
+            exclude_irs=exclude_irs, repush=repush,
         )
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
@@ -1121,14 +1127,17 @@ def device_sync_all_handler(
     ip: str = _DEFAULT_DEVICE_IP,
     gc: bool = False,
     exclude_irs: bool = False,
+    repush: bool = False,
 ) -> dict[str, Any]:
     """Sync ALL manifest setlists onto the device (the whole-library reconcile).
 
     Reconciles the pool for the union of every setlist's tones, rebuilds each
     setlist's references, and — only when ``gc=True`` — garbage-collects pool
-    presets no setlist references any more (never orphaning). Returns the engine
-    result dict (``{ok, setlists, pool, references, gc, irs, errors}``).
-    EXPERIMENTAL.
+    presets no setlist references any more (never orphaning). ``repush=True``
+    forces every in-scope tone already in the pool to be re-pushed even when
+    its recorded hash matches (see ``device_sync_setlist``'s docstring for
+    why). Returns the engine result dict (``{ok, setlists, pool, references,
+    gc, irs, errors}``). EXPERIMENTAL.
     """
     _validate_model(model)
     from helixgen.device import HelixError
@@ -1138,7 +1147,7 @@ def device_sync_all_handler(
     try:
         return sync_setlists(
             SetlistManifest.load(), ip=ip, setlists=None, gc=gc,
-            exclude_irs=exclude_irs,
+            exclude_irs=exclude_irs, repush=repush,
         )
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e

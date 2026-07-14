@@ -42,6 +42,7 @@ def plan_pool(
     device_pool_names: Sequence[str],
     *,
     observed_hash_of: Callable[[str], Optional[str]],
+    force: bool = False,
 ) -> Dict[str, List[str]]:
     """Decide, for each desired tone, whether to install / update / skip it in
     the pool.
@@ -49,7 +50,12 @@ def plan_pool(
     * name not present in ``device_pool_names`` → **install**.
     * present but its ``manifest.content_hash`` differs from the last-synced hash
       (``observed_hash_of(name)``) → **update** (re-push content in place).
-    * present and hashes agree → **skip** (idempotent, fast).
+    * present and hashes agree → **skip** (idempotent, fast) — unless
+      ``force=True`` (the ``--repush`` mode, #25 residual), which bumps every
+      already-present tone into **update** regardless of hash agreement, so a
+      transcoder-output change that the ``.hsp`` hash can't see still gets
+      re-pushed. A tone not yet in the pool is unaffected by ``force`` — it is
+      still a plain **install**.
     """
     have = set(device_pool_names)
     install: List[str] = []
@@ -58,7 +64,7 @@ def plan_pool(
     for name in tone_names:
         if name not in have:
             install.append(name)
-        elif manifest.content_hash(name) != observed_hash_of(name):
+        elif force or manifest.content_hash(name) != observed_hash_of(name):
             update.append(name)
         else:
             skip.append(name)
@@ -197,6 +203,7 @@ def sync_setlists(
     setlists: Optional[List[str]] = None,
     gc: bool = False,
     exclude_irs: bool = False,
+    repush: bool = False,
 ) -> Dict[str, Any]:
     """Sync one or more manifest setlists onto the device (pool-first, reference
     rebuild, optional GC).
@@ -204,6 +211,16 @@ def sync_setlists(
     ``setlists`` names the setlists to sync, or ``None`` for **all** manifest
     setlists (the ``--all`` case). ``gc`` is honored **only** on the all-setlists
     run — a single/subset sync never garbage-collects the pool.
+
+    ``repush`` (the ``--repush`` flag, #25 residual) forces every in-scope tone
+    already present in the pool into the **update** bucket, even when its
+    recorded ``.hsp`` content hash matches — the content refresh reuses the
+    exact same ``SetContentData``-on-the-existing-cid path a normal hash-driven
+    update uses (see the ``plan["update"]`` loop below), so it stays
+    non-activating; only the *decision* to treat the tone as changed is
+    different. Use this after a transcoder upgrade whose output differs for a
+    ``.hsp`` that itself didn't change, since hash-based change detection can't
+    see that. References/IR-upload/GC behavior are unaffected.
 
     ``setlists=None`` (the ``--all`` run) maintains only setlists opted into
     mirroring (``synced=True``); local-only drafts are never touched on the
@@ -302,6 +319,7 @@ def sync_setlists(
             plan = plan_pool(
                 manifest, union, list(pool_by_name.keys()),
                 observed_hash_of=manifest.observed_pool_hash,
+                force=repush,
             )
             result["pool"]["skipped"] = list(plan["skip"])
 
@@ -309,8 +327,12 @@ def sync_setlists(
                 """Read the tone, upload its IRs, return its stored-content blob."""
                 path = manifest.tone_path(name)
                 if not path:
+                    # Bucket-agnostic wording: this serves both the install
+                    # loop and the update loop (--repush can bump a pathless
+                    # pool-present tone into update).
                     raise ValueError(
-                        f"tone {name!r} has no .hsp source (pathless); cannot install")
+                        f"tone {name!r} has no .hsp source (pathless); "
+                        f"nothing local to transcode its content from")
                 body = read_hsp(path)
                 if not exclude_irs:
                     missing = sorted(bridge.check_irs(client, body).get("missing", []))

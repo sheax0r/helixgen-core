@@ -420,6 +420,37 @@ def test_device_sync_requires_exactly_one_of_setlist_or_all(monkeypatch, tmp_pat
     assert seen == {}  # engine never called
 
 
+def test_device_sync_repush_flag_threads_through(monkeypatch, tmp_path):
+    # #25 residual: `device sync <setlist> --repush` forces content refresh
+    # of already-synced tones (hash-based change detection never re-pushes
+    # a tone whose .hsp is unchanged but whose transcoder output would differ).
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    seen = {}
+    _patch_sync(monkeypatch, seen)
+    res = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--repush"])
+    assert res.exit_code == 0, res.output
+    assert seen["repush"] is True
+
+
+def test_device_sync_repush_defaults_false(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    seen = {}
+    _patch_sync(monkeypatch, seen)
+    res = CliRunner().invoke(cli, ["device", "sync", "helixgen"])
+    assert res.exit_code == 0, res.output
+    assert seen["repush"] is False
+
+
+def test_device_sync_repush_with_all(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    seen = {}
+    _patch_sync(monkeypatch, seen)
+    res = CliRunner().invoke(cli, ["device", "sync", "--all", "--repush"])
+    assert res.exit_code == 0, res.output
+    assert seen["setlists"] is None
+    assert seen["repush"] is True
+
+
 def test_device_sync_gc_ignored_without_all(monkeypatch, tmp_path):
     _fresh_manifest_env(monkeypatch, tmp_path)
     seen = {}

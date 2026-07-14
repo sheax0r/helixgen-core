@@ -752,6 +752,7 @@ def device_sync_setlist(
     setlist: str,
     ip: str = _tools._DEFAULT_DEVICE_IP,
     exclude_irs: bool = False,
+    repush: bool = False,
 ) -> dict[str, Any]:
     """Sync ONE manifest setlist onto the device (pool-first, reference rebuild).
 
@@ -765,13 +766,18 @@ def device_sync_setlist(
     touched) are deleted from the device, kept in the library; never-orphan
     skips are reported in `pool.delete_skipped`. Targeting a setlist marks it
     `synced` (mirrored by future `device_sync_all` runs). Uploads each tone's
-    IRs unless `exclude_irs=True`. A single-setlist sync never
+    IRs unless `exclude_irs=True`. `repush=True` forces every in-scope tone
+    already in the pool to be re-transcoded + re-pushed (via the same
+    non-activating existing-cid content update a normal hash-triggered update
+    uses) even when its recorded `.hsp` hash still matches — use this once
+    after a helixgen transcoder upgrade to refresh tones a plain sync would
+    otherwise skip as unchanged. A single-setlist sync never
     garbage-collects. EXPERIMENTAL. Returns the engine result dict
     (`{ok, setlists, pool:{installed,updated,skipped,deleted,delete_skipped},
     references, gc, irs, errors}`).
     """
     return _tools.device_sync_setlist_handler(
-        model, setlist, ip=ip, exclude_irs=exclude_irs,
+        model, setlist, ip=ip, exclude_irs=exclude_irs, repush=repush,
     )
 
 
@@ -781,6 +787,7 @@ def device_sync_all(
     ip: str = _tools._DEFAULT_DEVICE_IP,
     gc: bool = False,
     exclude_irs: bool = False,
+    repush: bool = False,
 ) -> dict[str, Any]:
     """Sync ALL manifest setlists onto the device (the whole-library reconcile).
 
@@ -791,11 +798,14 @@ def device_sync_all(
     that helixgen previously placed from the pool, and — only when `gc=True` —
     garbage-collects pool presets no setlist references and no slot-marked
     tone wants (never orphaning). Uploads IRs unless `exclude_irs=True`.
-    EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
+    `repush=True` forces every in-scope tone already in the pool to be
+    re-pushed even when its recorded hash matches — see `device_sync_setlist`
+    for why (a transcoder upgrade a hash comparison can't see). EXPERIMENTAL.
+    Returns the engine result dict (`{ok, setlists, pool,
     references, gc, irs, errors}`).
     """
     return _tools.device_sync_all_handler(
-        model, ip=ip, gc=gc, exclude_irs=exclude_irs,
+        model, ip=ip, gc=gc, exclude_irs=exclude_irs, repush=repush,
     )
 
 

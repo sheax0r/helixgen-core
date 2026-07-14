@@ -340,6 +340,41 @@ def test_sync_all_calls_engine_with_gc(monkeypatch, tmp_path):
     assert seen["gc"] is True
 
 
+def test_sync_setlist_passes_repush_flag(monkeypatch, tmp_path):
+    # #25 residual: MCP `device_sync_setlist(repush=True)` threads through to
+    # the engine so a transcoder upgrade can force-refresh already-synced tones.
+    _fresh_manifest(monkeypatch, tmp_path)
+    from helixgen.device import setlist_sync as _ss
+    seen = {}
+    monkeypatch.setattr(_ss, "sync_setlists",
+                        lambda manifest, **kw: seen.update(kw) or _CANNED_SYNC)
+    out = tools.device_sync_setlist_handler(
+        MODEL, "helixgen", ip="1.2.3.4", repush=True)
+    assert out == _CANNED_SYNC
+    assert seen["repush"] is True
+
+
+def test_sync_setlist_repush_defaults_false(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    from helixgen.device import setlist_sync as _ss
+    seen = {}
+    monkeypatch.setattr(_ss, "sync_setlists",
+                        lambda manifest, **kw: seen.update(kw) or _CANNED_SYNC)
+    tools.device_sync_setlist_handler(MODEL, "helixgen")
+    assert seen["repush"] is False
+
+
+def test_sync_all_passes_repush_flag(monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    from helixgen.device import setlist_sync as _ss
+    seen = {}
+    monkeypatch.setattr(_ss, "sync_setlists",
+                        lambda manifest, **kw: seen.update(kw) or _CANNED_SYNC)
+    out = tools.device_sync_all_handler(MODEL, ip="1.2.3.4", repush=True)
+    assert out == _CANNED_SYNC
+    assert seen["repush"] is True
+
+
 def test_sync_setlist_bad_model_raises(monkeypatch, tmp_path):
     _fresh_manifest(monkeypatch, tmp_path)
     with pytest.raises(ValueError, match="unsupported model"):
