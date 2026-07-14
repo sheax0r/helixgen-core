@@ -455,8 +455,27 @@ class HelixClient:
                     return a
         return None
 
-    def find_by_pos(self, container: int, pos: int) -> Optional[Dict[str, Any]]:
-        for m in self.list_container(container):
+    def find_by_pos(self, container: int, pos: int, *,
+                    strict: bool = False) -> Optional[Dict[str, Any]]:
+        """Return the item occupying ``pos`` in ``container``, or ``None``.
+
+        ``strict=False`` (the default) keeps the legacy behavior of
+        ``list_container`` — a timeout/undecodable listing silently reads as
+        "container empty", so an occupied slot can look free.  That is fine
+        for a best-effort lookup, but every real caller of this method uses
+        it to gate a **write**: "is slot ``pos`` empty, so it is safe to
+        ``/CreateContent``/``/SetContentData`` into it?" (``device
+        install``/``save``/``push``/``slots restore`` and their MCP mirrors).
+        Under the lenient default, a silently-truncated listing would make an
+        **occupied** slot look empty and let the write through — a positional
+        collision, the same failure class backlog #40 fixed in
+        ``_lowest_empty_posi``. Every such call site passes ``strict=True``.
+        The one caller that intentionally wants the lenient default is
+        ``_find_by_pos_retry`` (post-write cid recovery, see below) — it
+        already has its own retry loop and doesn't need a listing failure to
+        raise.
+        """
+        for m in self.list_container(container, strict=strict):
             if m.get("posi") == pos:
                 return m
         return None
@@ -738,11 +757,21 @@ class HelixClient:
         container's full re-ordered listing. A ``/error`` reply — or a
         ``/status`` whose code field is non-zero (the :meth:`_ok` convention)
         — raises :class:`HelixError` instead of being mistaken for the
-        "confirmation landed on the 2001 PUB stream" case. Only when *no*
-        listing reply is observed at all is the container re-listed to recover
-        the confirmed order, mirroring the "reply unreliable, re-list to
-        confirm" pattern used elsewhere in this client (``_create_from``,
-        ``create_setlist``, …).
+        "confirmation landed on the 2001 PUB stream" case. When *some* reply
+        arrived but none of it was the ``/updateContainerContent`` confirmation,
+        the container is re-listed (non-strict — #40 audit) to recover the
+        confirmed order, mirroring the "reply unreliable, re-list to confirm"
+        pattern used elsewhere in this client (``_create_from``,
+        ``create_setlist``, …); a reply frame having arrived at all means the
+        device processed the request (the earlier ``/error``/non-zero-``/status``
+        checks would have already raised otherwise), so this re-list is pure
+        post-write bookkeeping, not a write gate. A **total** timeout (zero
+        reply frames — the RPC-level ``/status``/``/error``/confirmation are
+        all equally absent, so the write's actual outcome is genuinely
+        unknown) is a *different* case and raises instead of silently reading
+        as "it must have worked" (#40 review finding — the non-strict re-list
+        alone can't distinguish a confirmed reorder from one the device never
+        even received).
         """
         msgpack = self._load_msgpack()
         replies = self._rpc(
@@ -770,6 +799,26 @@ class HelixClient:
                 elif isinstance(a, dict):
                     items.append(a)
         if not seen_update:
+            if not replies:
+                # Total timeout: no /error, no /status, no confirmation — the
+                # device may never have received/processed the request at
+                # all. Unlike the "some reply, just not the confirmation
+                # frame" case below, there is nothing here to indicate the
+                # write happened, so raise rather than silently re-listing
+                # and returning a possibly-unchanged order as if it were
+                # confirmed (#40 review finding).
+                raise HelixError(
+                    f"no reply to /ReorderContainerContent for container "
+                    f"{container} (timeout or connection drop); the reorder's "
+                    "outcome is unknown — retry, and check `device list`/"
+                    "`device setlist list` before assuming it didn't happen")
+            # Some reply arrived (so the device did process the request — the
+            # /error / non-zero-/status checks above would have already
+            # raised otherwise) but none of it was the /updateContainerContent
+            # confirmation. Deliberately non-strict re-list (#40 audit): this
+            # is pure post-write bookkeeping to recover the confirmed order
+            # for the return value, same as the post-write reference listing
+            # #39 left lenient in setlist_sync.py.
             items = self.list_container(container)
         items.sort(key=lambda m: m.get("posi", 1 << 30))
         return items
@@ -800,7 +849,15 @@ class HelixClient:
                            tries: int = 4, delay: float = 0.25
                            ) -> Optional[Dict[str, Any]]:
         """find_by_pos with a few retries — the device may re-index the
-        container slightly after a write lands."""
+        container slightly after a write lands.
+
+        Deliberately calls ``find_by_pos`` with its lenient default
+        (``strict=False``, #40 audit): this runs *after* the write it's
+        recovering a cid for (``_create_from``'s ``/CreateContent`` already
+        succeeded), so a transient listing failure here means "not yet
+        re-indexed, keep polling" — exactly like a clean listing that doesn't
+        have the entry yet — not "collision risk" (there's nothing left to
+        gate)."""
         for i in range(tries):
             m = self.find_by_pos(container, pos)
             if m is not None:
@@ -1017,8 +1074,37 @@ class HelixClient:
 
     # -- model-correct write surface (pool + reference lifecycle) ----------
     def _lowest_empty_posi(self, container: int) -> int:
-        """Lowest ``posi`` not currently occupied in ``container``."""
-        used = {m.get("posi") for m in self.list_container(container)}
+        """Lowest ``posi`` not currently occupied in ``container``.
+
+        Feeds ``install_into_pool``/``create_setlist`` whenever the caller
+        doesn't pin an explicit ``pos`` — i.e. it picks the slot that the very
+        next ``/CreateContent`` will target. Listed **strictly** (backlog
+        #40): with the legacy non-strict default, a timed-out/undecodable
+        listing reads as "container empty" and this would return posi 0 even
+        when the container is full — the subsequent ``/CreateContent`` then
+        targets an already-occupied slot, a *positional* collision distinct
+        from the *name* duplication #39 fixed (that one made an existing
+        setlist look absent by name; this one makes an existing occupant at a
+        given posi look absent by position). A strict failure here raises
+        ``HelixError`` before any create is attempted, so both callers abort
+        cleanly instead of writing into a real occupant.
+
+        What the device does on an actual posi collision is unconfirmed: the
+        protocol's non-zero `/status` error taxonomy is uncatalogued (see
+        ``docs/helix-protocol.md`` §9 "Known-unknowns / TODO"), and the one
+        non-zero code caught live so far — the transient #38 ``code == 1`` anomaly
+        (``docs/superpowers/specs/2026-07-15-createcontent-status1-findings.md``)
+        — happened once during ordinary hardware validation, not a deliberate
+        occupied-slot write; a targeted attempt to reproduce it via rapid
+        create/delete cycling explicitly **failed** (5/5 cycles returned
+        ``code == 0``). So it is only *plausible*, not evidenced, that a
+        slot-occupied rejection would ride the same non-zero-code path
+        ``_create_status_error`` already handles — that has not been tested
+        against the hardware and is not assumed here. Either way, an
+        actually-occupied posi is exactly what this strict listing now
+        prevents from being chosen in the first place.
+        """
+        used = {m.get("posi") for m in self.list_container(container, strict=True)}
         p = 0
         while p in used:
             p += 1

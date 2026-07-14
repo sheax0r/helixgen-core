@@ -42,7 +42,7 @@ class FakeClient:
         self.calls.append(("list_presets", container))
         return self.presets
 
-    def find_by_pos(self, container, pos):
+    def find_by_pos(self, container, pos, *, strict=False):
         return None
 
     def load_preset(self, cid):
@@ -190,7 +190,7 @@ def test_slots_restore_hsp_occupied_slot_refused_without_force(monkeypatch, tmp_
                         lambda body, strict=True: b"XCODED")
 
     class Occupied(FakeClient):
-        def find_by_pos(self, container, pos):
+        def find_by_pos(self, container, pos, *, strict=False):
             return {"cid_": 5, "posi": pos}  # slot taken
 
     _patch_client(monkeypatch, Occupied)
@@ -214,7 +214,7 @@ def test_slots_restore_hsp_force_pushes_into_occupied_posi(monkeypatch, tmp_path
                         lambda body, strict=True: b"XCODED")
 
     class Occupied(FakeClient):
-        def find_by_pos(self, container, pos):
+        def find_by_pos(self, container, pos, *, strict=False):
             return {"cid_": 5, "posi": pos}  # slot taken
 
     created = _patch_client(monkeypatch, Occupied)

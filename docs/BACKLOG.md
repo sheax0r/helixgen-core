@@ -818,21 +818,52 @@ LED control, focus-view/UI cosmetics.
   proceeds to a write, and — for the per-item gates — doesn't abort sibling
   setlists/tones in the same run.
 - **#40 `_lowest_empty_posi` picks a write position off a non-strict listing**
-  (found auditing #39, 2026-07-15, not fixed here — different failure class,
-  deferred to keep #39's blast radius contained). `install_into_pool` and
-  `create_setlist` (`src/helixgen/device/client.py`) both choose their target
-  slot via `_lowest_empty_posi`, which calls `list_container(container)`
-  **non-strict**. If that listing is silently truncated/timed-out, the
-  computed "lowest empty" position could actually be occupied by an existing
-  preset/setlist, and the subsequent `/CreateContent` would target an
-  already-used slot — a positional collision rather than a name-based
-  duplicate, so it's a distinct risk from what #39 fixed (and touches two
-  widely-shared low-level write primitives, not setlist-name resolution
-  specifically). Needs its own scoped pass: likely `strict=True` on the
-  `list_container` call inside `_lowest_empty_posi`, plus a check for whether
-  callers that already retry-by-name-after-write (`_pool_cid_by_name`,
-  `create_setlist`'s relist) would tolerate the stricter failure the same way
-  #39 handled its own analogous retry loop.
+  — **✅ SHIPPED (2026-07-15).** `_lowest_empty_posi`
+  (`src/helixgen/device/client.py`) — which `install_into_pool` and
+  `create_setlist` call whenever the caller doesn't pin an explicit `pos` —
+  now lists its container with `strict=True`, so a timeout/undecodable
+  listing raises `HelixError` instead of silently reading as "container
+  empty" and returning posi 0 into an already-full container. This is a
+  **positional** collision, distinct from the **name**-based duplication #39
+  fixed (that one made an existing setlist look absent *by name*; this one
+  made an existing occupant look absent *by position*). Both callers already
+  had exactly the right error-handling shape for this (no code changes
+  needed there): `create_setlist`'s CLI/MCP sites already catch `HelixError`
+  and abort with a clean message (`device setlist create`/`duplicate`, their
+  MCP mirrors), and `install_into_pool`'s two batch callers
+  (`setlist_sync.py`, `hss.py`) already catch it per-tone/per-slot into
+  `errors[]` without aborting the rest of the run — the existing #38/#39
+  resilience contract absorbs the new strict failure for free.
+  What the device actually does on a genuine posi collision remains
+  **unconfirmed** — the `/status` non-zero error taxonomy is uncatalogued
+  (`docs/helix-protocol.md` §9), and the one non-zero code caught live so far
+  (the transient #38 `code == 1` anomaly) happened once during ordinary
+  hardware validation, not a deliberate occupied-slot write — a targeted
+  attempt to reproduce it via rapid create/delete cycling explicitly *failed*
+  (5/5 cycles returned `code == 0`). So it's only *plausible*, not evidenced,
+  that a collision would ride that same code path; the strict listing here
+  prevents an already-occupied posi from ever being chosen in the first
+  place, which is the actual fix regardless.
+  **Wider audit (per the #40 filing's ask), site-by-site:**
+  | site | verdict | why |
+  |---|---|---|
+  | `_lowest_empty_posi`'s listing | **hardened → strict=True** | picks the exact posi the next `/CreateContent` targets |
+  | `find_by_pos` (6 call sites: CLI `device install`/`save`/`push`/`slots restore`, MCP `device_install_preset`/`device_save_preset`) | **hardened → `strict=True` param, all 6 callers updated** | each gates "is this slot empty, safe to write?" — the same silent-empty-on-timeout risk as `_lowest_empty_posi`, just checking a caller-supplied `pos` instead of computing one |
+  | `find_by_pos`'s own default | **left `strict=False`** | preserves the one legitimate lenient caller, `_find_by_pos_retry` (below); every real external caller now passes `strict=True` explicitly |
+  | `_find_by_pos_retry` (→ `_create_from`) | **left lenient** | runs *after* its `/CreateContent`-equivalent already succeeded, polling for the device to re-index; a listing hiccup there means "not yet visible, keep polling," not "collision risk" — same shape as `create_setlist`'s own post-create relist (#39) |
+  | `reorder_container`'s post-write fallback listing (~client.py:800), the "some reply, not the confirmation frame" case | **left lenient** | a reply frame having arrived at all proves the device processed the request (`/error`/non-zero-`/status` both raise first); pure bookkeeping to recover the confirmed order for the return value, not a write gate — same precedent as #39's post-write reference listing |
+  | `reorder_container`'s fallback on a **total** timeout (zero reply frames) | **hardened → raises `HelixError`** (adversarial-review finding, fixed same PR) | the initial audit's "left lenient" reasoning didn't cover this sub-case: with *no* reply at all there is no `/error`/`/status` to have raised, so the original code silently re-listed and returned as if the reorder were confirmed — a false-success gap on a device-mutating write, distinct from (and worse than) plain "left lenient" bookkeeping |
+  Tests: strict-default-preserved + strict-propagation unit tests for both
+  `find_by_pos` and `_lowest_empty_posi`, abort-before-create tests for
+  `install_into_pool`/`create_setlist` (assert no `/CreateContent` frame sent
+  on a listing failure), an explicit-`pos` test proving that path skips
+  `_lowest_empty_posi` entirely, a lenient-fallback regression test for
+  `reorder_container`'s "some reply" case plus a raise-on-total-timeout test
+  for its zero-reply case, and CLI + MCP abort-before-write tests for `device
+  save`/`push`/`install`/`slots restore` and
+  `device_install_preset`/`device_save_preset`
+  (assert the write primitive — `save_edit_buffer_to`/`push_to_slot` — was
+  never called). Full suite green.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

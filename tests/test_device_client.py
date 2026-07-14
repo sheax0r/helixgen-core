@@ -1108,3 +1108,145 @@ def test_product_info_raises_without_reply():
     _wire(h, [])
     with pytest.raises(HelixError, match="getProductInfo"):
         h.product_info()
+
+
+# --- #40: strict positional resolution (find_by_pos / _lowest_empty_posi) --
+
+def test_find_by_pos_default_lenient_on_listing_timeout():
+    """Legacy behavior preserved: strict=False (the default) reads a listing
+    timeout the same as an empty container, so find_by_pos returns None
+    rather than raising."""
+    h = HelixClient()
+    _wire(h, [])
+    assert h.find_by_pos(-2, 3) is None
+
+
+def test_find_by_pos_strict_raises_on_listing_timeout():
+    """#40: a write-gating caller must pass strict=True so a listing timeout
+    raises instead of silently reading as 'slot empty' — the exact failure
+    class that could let a write land on a real occupant."""
+    h = HelixClient()
+    _wire(h, [])
+    with pytest.raises(HelixError, match="no reply"):
+        h.find_by_pos(-2, 3, strict=True)
+
+
+def test_find_by_pos_strict_forwarded_to_list_container(monkeypatch):
+    h = HelixClient()
+    seen = []
+
+    def fake_list(cid, *, strict=False):
+        seen.append(strict)
+        return []
+
+    monkeypatch.setattr(h, "list_container", fake_list)
+    h.find_by_pos(-2, 3, strict=True)
+    h.find_by_pos(-2, 3)
+    assert seen == [True, False]
+
+
+def test_lowest_empty_posi_raises_on_listing_timeout():
+    """#40: _lowest_empty_posi must not silently read a listing timeout as
+    'container empty' — that would return posi 0 even when the container is
+    full, and the caller would then /CreateContent into a real occupant."""
+    h = HelixClient()
+    _wire(h, [])
+    with pytest.raises(HelixError, match="no reply"):
+        h._lowest_empty_posi(-2)
+
+
+def test_lowest_empty_posi_lists_strictly(monkeypatch):
+    h = HelixClient()
+    seen = []
+
+    def fake_list(cid, *, strict=False):
+        seen.append((cid, strict))
+        return [{"posi": 0}, {"posi": 1}]
+
+    monkeypatch.setattr(h, "list_container", fake_list)
+    assert h._lowest_empty_posi(-2) == 2
+    assert seen == [(-2, True)]
+
+
+def test_install_into_pool_aborts_before_create_on_listing_failure(monkeypatch):
+    """#40: install_into_pool with pos=None picks the target slot via
+    _lowest_empty_posi. A strict listing failure there must raise BEFORE any
+    /CreateContent is attempted — never write to a computed-but-unconfirmed
+    position."""
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    _wire(h, [])  # the pool listing itself times out
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+
+    with pytest.raises(HelixError, match="no reply"):
+        h.install_into_pool(blob, "White Limo Lead")
+    # nothing was ever sent to /CreateContent — abort-before-create
+    assert not any(b"/CreateContent" in s for s in h.sock.sent)
+
+
+def test_create_setlist_aborts_before_create_on_listing_failure(monkeypatch):
+    """#40: create_setlist with pos=None picks the target slot via
+    _lowest_empty_posi. A strict listing failure there must raise BEFORE any
+    /CreateContent is attempted."""
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    _wire(h, [])  # the setlists-root listing itself times out
+
+    with pytest.raises(HelixError, match="no reply"):
+        h.create_setlist("ZZC-x")
+    assert not any(b"/CreateContent" in s for s in h.sock.sent)
+
+
+def test_install_into_pool_explicit_pos_skips_lowest_empty_posi(monkeypatch):
+    """An explicit pos= bypasses _lowest_empty_posi entirely — a listing
+    failure elsewhere must not block a caller that already knows its slot."""
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    name = "White Limo Lead"
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    setdata = osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])
+    presets = [{"cid_": 777, "name": name, "cctp": 1000, "posi": 3}]
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(presets, use_bin_type=True))])
+    _wire_seq(h, [[create], [setdata], [listrep]])
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    assert h.install_into_pool(blob, name, pos=3) == 777
+
+
+def test_reorder_container_fallback_listing_stays_lenient(monkeypatch):
+    """#40 audit verdict: when SOME reply arrived (proving the device
+    processed the request — /error and non-zero /status both raise first)
+    but none of it was the /updateContainerContent confirmation, the post-write
+    fallback re-list inside reorder_container is deliberately left non-strict
+    — pure bookkeeping for the return value, not a write gate."""
+    h = HelixClient()
+    seen = []
+
+    def fake_list(cid, *, strict=False):
+        seen.append(strict)
+        return []
+
+    ok = osc_encode("/status", [("i", 1000), ("i", 0)])
+    _wire(h, [ok])
+    monkeypatch.setattr(h, "list_container", fake_list)
+    items = h.reorder_container(-2, [5], 1)
+    assert items == []
+    assert seen == [False]
+
+
+def test_reorder_container_raises_on_total_timeout():
+    """#40 review finding: a TOTAL timeout (zero reply frames at all — no
+    /error, no /status, no confirmation) must raise instead of silently
+    re-listing and returning as if the reorder had been confirmed — nothing
+    here indicates the device ever received/processed the request, unlike the
+    'some reply, just not the confirmation frame' case above."""
+    h = HelixClient()
+    _wire(h, [])
+    with pytest.raises(HelixError, match="no reply"):
+        h.reorder_container(-2, [5], 1)

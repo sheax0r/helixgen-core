@@ -898,7 +898,9 @@ def device_install_preset_handler(
     irs_results: list[dict[str, Any]] = []
     try:
         with HelixClient(ip=ip) as client:
-            if client.find_by_pos(container, pos) is not None:
+            # strict (backlog #40): a listing timeout must raise, not read as
+            # "empty" and let the write through into an actually-occupied slot.
+            if client.find_by_pos(container, pos, strict=True) is not None:
                 raise ValueError(f"{setlist} slot {pos} is not empty")
             irs_results = ir_upload.sync_preset_irs(
                 client, body, ip, auto_irs=auto_irs)
@@ -1180,8 +1182,9 @@ def device_save_preset_handler(
 ) -> dict[str, Any]:
     """Save the device's CURRENT edit buffer as a new preset at ``pos``.
 
-    Mirrors the editor's "Save As New". The target slot must be empty. Returns
-    ``{"ok": <bool>, "cid": <new cid or None>}``.
+    Mirrors the editor's "Save As New". The target slot must be empty (checked
+    strictly — backlog #40 — so a listing timeout raises instead of reading as
+    empty). Returns ``{"ok": <bool>, "cid": <new cid or None>}``.
     """
     _validate_model(model)
     from helixgen.device import HelixClient, HelixError
@@ -1189,7 +1192,7 @@ def device_save_preset_handler(
     container = _device_container(setlist)
     try:
         with HelixClient(ip=ip) as client:
-            if client.find_by_pos(container, pos) is not None:
+            if client.find_by_pos(container, pos, strict=True) is not None:
                 raise ValueError(f"{setlist} slot {pos} is not empty")
             new_cid = client._raw.save_edit_buffer_to(container, pos, name)
     except HelixError as e:

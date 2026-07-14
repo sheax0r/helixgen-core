@@ -90,6 +90,19 @@ class FakeClient:
         self.calls.append(("set_param", path, block, param_id, value))
         return True
 
+    # slot-emptiness gate (#40) + the writes it guards
+    def find_by_pos(self, container, pos, *, strict=False):
+        self.calls.append(("find_by_pos", container, pos, strict))
+        return None
+
+    def push_to_slot(self, container, pos, name, blob):
+        self.calls.append(("push_to_slot", container, pos, name))
+        return 900
+
+    def save_edit_buffer_to(self, container, pos, name):
+        self.calls.append(("save_edit_buffer_to", container, pos, name))
+        return 901
+
 
 class RaisingClient(FakeClient):
     """A fake whose reads raise HelixError to exercise error paths."""
@@ -1078,3 +1091,111 @@ def test_device_reorder_setlists_keyword(monkeypatch):
         cli, ["device", "reorder", "setlists", "Mike", "--to", "0"])
     assert result.exit_code == 0, result.output
     assert "moved cid 1014" in result.output
+
+
+# -- #40: strict slot-emptiness gate — abort before any write ----------------
+
+class RaisingFindByPosClient(FakeClient):
+    """A fake whose ``find_by_pos`` raises HelixError ONLY when called with
+    ``strict=True`` — simulating a listing timeout (backlog #40) instead of
+    silently reading the slot as empty. Raising unconditionally (regardless of
+    ``strict``) would let a test pass even if the production call site
+    regressed to the lenient default, so a lenient call instead returns None
+    (slot "empty") and lets the write proceed — the abort tests below would
+    then fail on an unexpected write, catching that regression. Records the
+    received ``strict`` value and any write attempted afterward on CLASS-level
+    lists — the CLI instantiates a fresh instance per invocation, so
+    per-instance ``calls``/state can't be inspected after the fact."""
+
+    STRICT_SEEN: list = []
+    WRITE_CALLS: list = []
+
+    def find_by_pos(self, container, pos, *, strict=False):
+        type(self).STRICT_SEEN.append(strict)
+        if strict:
+            raise HelixError("no reply listing container -2 (timeout or "
+                             "connection drop); refusing to treat it as empty")
+        return None
+
+    def push_to_slot(self, container, pos, name, blob):
+        type(self).WRITE_CALLS.append(("push_to_slot", container, pos, name))
+        return 900
+
+    def save_edit_buffer_to(self, container, pos, name):
+        type(self).WRITE_CALLS.append(("save_edit_buffer_to", container, pos, name))
+        return 901
+
+
+def test_device_save_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):
+    """A timeout checking slot emptiness must abort `device save` before any
+    /CreateContent-equivalent write — never silently treat the unconfirmed
+    slot as empty and save into it."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    RaisingFindByPosClient.WRITE_CALLS = []
+    RaisingFindByPosClient.STRICT_SEEN = []
+    _patch_client(monkeypatch, RaisingFindByPosClient)
+    result = CliRunner().invoke(
+        cli, ["device", "save", "X", "--pos", "3"])
+    assert result.exit_code != 0
+    assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
+    assert RaisingFindByPosClient.WRITE_CALLS == []
+    # prove the abort came from a strict=True call, not an accidental
+    # lenient-default one that happened to raise anyway
+    assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+def test_device_push_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):
+    """Same #40 gate for `device push` (installs an .sbe backup)."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    infile = tmp_path / "backup.sbe"
+    infile.write_bytes(b"_sbepgsm-fake")
+    RaisingFindByPosClient.WRITE_CALLS = []
+    RaisingFindByPosClient.STRICT_SEEN = []
+    _patch_client(monkeypatch, RaisingFindByPosClient)
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(infile), "X", "--pos", "3"])
+    assert result.exit_code != 0
+    assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
+    assert RaisingFindByPosClient.WRITE_CALLS == []
+    assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+def test_device_install_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):
+    """Same #40 gate for `device install` (transcodes a .hsp straight onto the
+    device) — the emptiness check runs before transcoding, so a listing
+    timeout aborts before any device write is attempted."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "White Limo Lead")
+    RaisingFindByPosClient.WRITE_CALLS = []
+    RaisingFindByPosClient.STRICT_SEEN = []
+    _patch_client(monkeypatch, RaisingFindByPosClient)
+    result = CliRunner().invoke(
+        cli, ["device", "install", str(hsp), "White Limo Lead", "--pos", "3"])
+    assert result.exit_code != 0
+    assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
+    assert RaisingFindByPosClient.WRITE_CALLS == []
+    assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(
+        monkeypatch, tmp_path):
+    """#40 gate for the `device slots restore` .sbe branch — the one
+    hardened call site that previously had no dedicated regression test."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    from helixgen.device.manifest import SetlistManifest
+
+    sbe = tmp_path / "lead.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    m = SetlistManifest.load()
+    m.tones["Lead"] = {"path": str(sbe), "content_hash": None, "doc": None,
+                       "source": "push", "slot": "2B", "device": None}
+    m.save()
+
+    RaisingFindByPosClient.WRITE_CALLS = []
+    RaisingFindByPosClient.STRICT_SEEN = []
+    _patch_client(monkeypatch, RaisingFindByPosClient)
+    result = CliRunner().invoke(cli, ["device", "slots", "restore", "Lead"])
+    assert result.exit_code != 0
+    assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
+    assert RaisingFindByPosClient.WRITE_CALLS == []
+    assert RaisingFindByPosClient.STRICT_SEEN == [True]

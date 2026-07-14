@@ -751,11 +751,13 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     ``force`` skips the slot-emptiness check so the push proceeds at an
     occupied posi (``device slots restore --force`` — #25; the occupant is
     NOT deleted, matching the ``.sbe`` path); without it an occupied slot is
-    refused.
+    refused. The check is strict (backlog #40): a listing timeout raises
+    instead of reading as "empty", so it never proceeds to write into a slot
+    it couldn't actually confirm was free.
     """
     from helixgen.device import bridge, transcode
 
-    if not force and h.find_by_pos(container, pos) is not None:
+    if not force and h.find_by_pos(container, pos, strict=True) is not None:
         raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
     missing = sorted(bridge.check_irs(h, body)["missing"])
     if missing and auto_irs:
@@ -1433,14 +1435,16 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     """Save the device's CURRENT edit buffer as a new preset; prints the new CID.
 
     Mirrors the editor's "Save Preset As -> Save As New". The target slot must be
-    empty. Whatever preset/edits are live on the device are persisted.
+    empty (checked strictly — backlog #40 — so a listing timeout raises instead
+    of reading as empty). Whatever preset/edits are live on the device are
+    persisted.
     """
     from helixgen.device import HelixClient, HelixError
 
     container = _setlist_container(setlist)
     try:
         with HelixClient(ip, port) as h:
-            if h.find_by_pos(container, pos) is not None:
+            if h.find_by_pos(container, pos, strict=True) is not None:
                 raise click.ClickException(
                     f"{setlist} slot {pos} is not empty; refusing to overwrite")
             new_cid = h._raw.save_edit_buffer_to(container, pos, name)
@@ -2307,7 +2311,8 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     """Install a local content file (.sbe backup) into a new preset slot.
 
     Restores a backup / clones a preset / installs authored content. The target
-    slot must be empty.
+    slot must be empty (checked strictly — backlog #40 — so a listing timeout
+    raises instead of reading as empty).
     """
     from helixgen.device import HelixClient, HelixError
 
@@ -2315,7 +2320,7 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     blob = infile.read_bytes()
     try:
         with HelixClient(ip, port) as h:
-            if h.find_by_pos(container, pos) is not None:
+            if h.find_by_pos(container, pos, strict=True) is not None:
                 raise click.ClickException(f"{setlist} slot {pos} is not empty")
             new_cid = h._raw.push_to_slot(container, pos, name, blob)
     except HelixError as e:
@@ -2473,7 +2478,9 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     try:
         with HelixClient(ip, port) as h:
             if src.suffix == ".sbe":
-                if h.find_by_pos(container, dest_pos) is not None and not force:
+                # strict (backlog #40): a listing timeout must raise, not read
+                # as "empty" and push into a slot that's actually occupied.
+                if h.find_by_pos(container, dest_pos, strict=True) is not None and not force:
                     raise click.ClickException(
                         f"{dest_setlist} slot {dest_pos} is not empty (use --force)")
                 cid = h._raw.push_to_slot(container, dest_pos, name, src.read_bytes())

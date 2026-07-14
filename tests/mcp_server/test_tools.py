@@ -653,7 +653,7 @@ def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hs
 
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def find_by_pos(self, container, pos): return None
+        def find_by_pos(self, container, pos, *, strict=False): return None
         def device_ir_hashes(self): return set()
 
         def mutating(self):
@@ -678,6 +678,92 @@ def test_device_install_preset_reads_file_and_installs(tmp_path, monkeypatch, hs
     assert isinstance(seen["body"], dict) and "preset" in seen["body"]
 
 
+def test_device_install_preset_aborts_on_listing_failure_no_write(
+        tmp_path, monkeypatch, hsp_library):
+    """#40: find_by_pos is now called strictly — a listing timeout must raise
+    and abort BEFORE any IR upload or push_to_slot write is attempted (never
+    silently read the unconfirmed slot as empty)."""
+    import mcp_server.tools as tools_mod
+    from helixgen.generate import compose_preset
+    from helixgen.hsp import dumps_hsp
+    from helixgen.spec import parse_spec
+    from helixgen.device import HelixError
+
+    preset = compose_preset(parse_spec(
+        {"name": "D", "paths": [{"blocks": [{"block": "Tube Drive"}]}]}),
+        hsp_library, source="t")
+    hsp = tmp_path / "d.hsp"
+    hsp.write_bytes(dumps_hsp(preset))
+
+    seen = {}
+
+    class _Raw:
+        def push_to_slot(self, container, pos, name, blob):
+            seen["push"] = True
+            return 4242
+
+    class _FakeClient:
+        _raw = _Raw()
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def find_by_pos(self, container, pos, *, strict=False):
+            seen["strict"] = strict
+            raise HelixError("no reply listing container -2 (timeout or "
+                             "connection drop); refusing to treat it as empty")
+
+        def device_ir_hashes(self): return set()
+
+        def mutating(self):
+            import contextlib
+            return contextlib.nullcontext(self)
+
+    import helixgen.device as device_mod
+    monkeypatch.setattr(device_mod, "HelixClient", lambda **kw: _FakeClient())
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+
+    with _pytest_top.raises(ValueError, match="no reply"):
+        tools_mod.device_install_preset_handler(
+            "stadium_xl", hsp_path=str(hsp), name="D", pos=3)
+    assert seen.get("strict") is True
+    assert "push" not in seen
+
+
+def test_device_save_preset_aborts_on_listing_failure_no_write(monkeypatch):
+    """#40: device_save_preset_handler's find_by_pos check is strict too —
+    a listing timeout must raise and abort before save_edit_buffer_to runs."""
+    import mcp_server.tools as tools_mod
+    from helixgen.device import HelixError
+
+    seen = {}
+
+    class _Raw:
+        def save_edit_buffer_to(self, container, pos, name):
+            seen["save"] = True
+            return 4242
+
+    class _FakeClient:
+        _raw = _Raw()
+
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def find_by_pos(self, container, pos, *, strict=False):
+            seen["strict"] = strict
+            raise HelixError("no reply listing container -2")
+
+    import helixgen.device as device_mod
+    monkeypatch.setattr(device_mod, "HelixClient", lambda **kw: _FakeClient())
+
+    with _pytest_top.raises(ValueError, match="no reply"):
+        tools_mod.device_save_preset_handler(
+            "stadium_xl", name="D", pos=3)
+    assert seen.get("strict") is True
+    assert "save" not in seen
+
+
 def _fake_client_cls(cid=4242):
     """Build a minimal fake HelixClient class for the auto_irs wiring tests
     below — device_ir_hashes is stubbed by the caller via bridge.check_irs
@@ -692,7 +778,7 @@ def _fake_client_cls(cid=4242):
 
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def find_by_pos(self, container, pos): return None
+        def find_by_pos(self, container, pos, *, strict=False): return None
         def device_ir_hashes(self): return set()
 
         def mutating(self):
