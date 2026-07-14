@@ -175,3 +175,73 @@ def test_slots_restore_unknown_name_errors(monkeypatch):
     _patch_client(monkeypatch)
     r = CliRunner().invoke(cli, ["device", "slots", "restore", "Nonexistent"])
     assert r.exit_code != 0
+
+
+def test_slots_restore_hsp_occupied_slot_refused_without_force(monkeypatch, tmp_path):
+    """#25a: an occupied slot is refused for an .hsp source (as for .sbe)."""
+    hsp = tmp_path / "t.hsp"
+    hsp.write_bytes(HSP_MAGIC + json.dumps({"meta": {"name": "t"},
+                                            "preset": {"flow": []}}).encode())
+    _seed(name="Occupied Tone", slot="4A", path=str(hsp), source="authored")
+
+    import helixgen.device.bridge as bridge
+    monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+
+    class Occupied(FakeClient):
+        def find_by_pos(self, container, pos):
+            return {"cid_": 5, "posi": pos}  # slot taken
+
+    _patch_client(monkeypatch, Occupied)
+    r = CliRunner().invoke(cli, ["device", "slots", "restore", "Occupied Tone"])
+    assert r.exit_code != 0
+    assert "not empty" in r.output.lower()
+
+
+def test_slots_restore_hsp_force_pushes_into_occupied_posi(monkeypatch, tmp_path):
+    """#25a: --force lets an .hsp restore proceed at an occupied posi — it
+    skips the emptiness check and pushes there (the occupant is NOT deleted),
+    matching the .sbe path's --force semantics."""
+    hsp = tmp_path / "t.hsp"
+    hsp.write_bytes(HSP_MAGIC + json.dumps({"meta": {"name": "t"},
+                                            "preset": {"flow": []}}).encode())
+    _seed(name="Force Tone", slot="4A", path=str(hsp), source="authored")
+
+    import helixgen.device.bridge as bridge
+    monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+
+    class Occupied(FakeClient):
+        def find_by_pos(self, container, pos):
+            return {"cid_": 5, "posi": pos}  # slot taken
+
+    created = _patch_client(monkeypatch, Occupied)
+    r = CliRunner().invoke(
+        cli, ["device", "slots", "restore", "Force Tone", "--force"])
+    assert r.exit_code == 0, r.output
+    pushes = [c for inst in created for c in inst.calls if c[0] == "push_to_slot"]
+    assert pushes and pushes[-1][2] == 12  # 4A -> posi 12
+
+
+def test_slots_restore_falls_back_to_observed_posi(monkeypatch, tmp_path):
+    """#25b: a tone whose ``slot`` doesn't resolve but whose ``device.posi``
+    is known restores at that posi (no 'no recorded slot' error)."""
+    sbe = tmp_path / "lead.sbe"
+    sbe.write_bytes(b"_sbepgsm-blob")
+    # slot left as "auto" (unresolved) but the device posi was observed
+    _seed(name="Synced Tone", slot="auto", path=str(sbe), source="push",
+          cid=910, posi=7)
+
+    holder = {}
+
+    class Rec(FakeClient):
+        def push_to_slot(self, container, pos, name, blob):
+            holder["push"] = (container, pos, name)
+            return 911
+
+    _patch_client(monkeypatch, Rec)
+    r = CliRunner().invoke(cli, ["device", "slots", "restore", "Synced Tone"])
+    assert r.exit_code == 0, r.output
+    assert holder["push"][1] == 7  # fell back to observed device.posi

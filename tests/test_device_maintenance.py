@@ -161,6 +161,9 @@ class FakeClient:
     SETLISTS: list = []
     SETLIST_REFS: dict = {}
     EDIT_BUFFER_HASHES: list = []
+    #: cids that the device confirms exist (beyond the pool) when probed via
+    #: ``get_ref`` — a reference to a cid NOT here reads as dangling (#32b).
+    EXISTING_EXTRA_CIDS: list = []
 
     def __enter__(self):
         return self
@@ -190,6 +193,13 @@ class FakeClient:
     def list_container(self, cid, strict=False):
         self.strict_calls.append(("container", strict))
         return list(self.setlist_refs.get(cid, []))
+
+    def get_ref(self, cid):
+        # A pool preset (or an EXISTING_EXTRA cid) resolves; anything else is
+        # gone — a dangling reference (#32b).
+        known = {m["cid_"] for m in self.pool} | set(
+            type(self).EXISTING_EXTRA_CIDS)
+        return {"cid_": cid} if cid in known else None
 
     def get_edit_buffer(self):
         doc = {"pm__": [], "sfg_": {"flow": [{"blks": {"b0": {"mdls": [
@@ -248,6 +258,7 @@ def fake_client(monkeypatch, tmp_path):
     FakeClient.SETLISTS = []
     FakeClient.SETLIST_REFS = {}
     FakeClient.EDIT_BUFFER_HASHES = []
+    FakeClient.EXISTING_EXTRA_CIDS = []
     monkeypatch.setattr(mt, "HelixClient", FakeClient)
 
     # keep the backing-file removal hermetic: no real SFTP in unit tests
@@ -497,14 +508,32 @@ def test_ir_prune_lists_strictly(fake_client, tmp_path):
 
 
 def test_ir_prune_cross_check_catches_incomplete_pool(fake_client, tmp_path):
-    """A setlist reference whose rcid is missing from the pool listing means
-    the pool listing is incomplete — the prune must abort (finding 1b)."""
+    """A setlist reference whose rcid is missing from the pool listing but
+    which the device still HAS (get_ref resolves) means the pool listing is
+    incomplete — abort with the retry error (finding 1b)."""
     FakeClient.SETLISTS = [{"cid_": 900, "name": "user", "cctp": 1001}]
     FakeClient.SETLIST_REFS = {900: [
         {"cid_": 901, "cctp": 1003, "rcid": 999, "posi": 0}]}  # 999 not in pool
+    FakeClient.EXISTING_EXTRA_CIDS = [999]  # but the device still has it
     with pytest.raises(HelixError, match="incomplete"):
         mt.ir_prune(ip="x", execute=True,
                     manifest=_manifest_with_local_h2(tmp_path))
+
+
+def test_ir_prune_detects_dangling_reference(fake_client, tmp_path):
+    """A setlist reference whose rcid the device no longer HAS (get_ref returns
+    None) is a DANGLING reference — abort with an actionable error naming the
+    stale reference, not the misleading 'incomplete/reboot' one (#32b)."""
+    FakeClient.SETLISTS = [{"cid_": 900, "name": "user", "cctp": 1001}]
+    FakeClient.SETLIST_REFS = {900: [
+        {"cid_": 901, "cctp": 1003, "rcid": 999, "posi": 0}]}  # 999 gone
+    FakeClient.EXISTING_EXTRA_CIDS = []  # get_ref(999) -> None => dangling
+    with pytest.raises(HelixError, match="dangling") as ei:
+        mt.ir_prune(ip="x", execute=True,
+                    manifest=_manifest_with_local_h2(tmp_path))
+    msg = str(ei.value)
+    assert "999" in msg and "user" in msg  # names the stale reference
+    assert "reboot" not in msg.lower()     # not the old misleading advice
 
 
 def test_ir_prune_execute_rescans_and_aborts_on_disagreement(
@@ -581,12 +610,50 @@ def test_local_refs_warn_and_fail_closed_on_unreadable_paths(fake_client,
     # dry-run reports the warning
     res = mt.ir_prune(ip="x", manifest=manifest)
     assert res["warnings"] and "Ghost Tone" in res["warnings"][0]
-    # execute without force refuses (fail closed)
+    # execute without ignore_warnings refuses (fail closed)
     with pytest.raises(ValueError, match="Ghost Tone"):
         mt.ir_prune(ip="x", execute=True, manifest=manifest)
-    # force overrides
-    res = mt.ir_prune(ip="x", execute=True, force=True, manifest=manifest)
+    # ignore_warnings overrides the warning gate (deletes the orphan)
+    res = mt.ir_prune(ip="x", execute=True, ignore_warnings=True,
+                      manifest=manifest)
     assert [m["name"] for m in res["deleted"]] != []
+
+
+def test_ir_prune_force_and_ignore_warnings_are_independent(fake_client,
+                                                            tmp_path):
+    """#32a: ``force`` (delete protected) and ``ignore_warnings`` (proceed over
+    unverifiable-local-tone warnings) are SEPARATE consents.
+
+    * ``force`` alone does NOT bypass a warning;
+    * ``ignore_warnings`` alone does NOT delete a protected IR.
+    """
+    import json
+
+    hsp = tmp_path / "t.hsp"
+    body = {"meta": {"name": "Local Tone"}, "preset": {"flow": [
+        {"b0": {"slot": [{"irhash": H2}]}}]}}
+    hsp.write_bytes(b"rpshnosj" + json.dumps(body).encode())
+    manifest = FakeManifest(tones={
+        "Local Tone": {"path": str(hsp)},                       # protects H2
+        "Ghost Tone": {"path": str(tmp_path / "missing.hsp")},  # warning
+    })
+
+    # force but NOT ignore_warnings: still blocked by the warning
+    with pytest.raises(ValueError, match="Ghost Tone"):
+        mt.ir_prune(ip="x", execute=True, force=True, manifest=manifest)
+
+    # ignore_warnings but NOT force: proceeds, deletes only the orphan
+    # (the protected local-only IR is left alone)
+    res = mt.ir_prune(ip="x", execute=True, ignore_warnings=True,
+                      manifest=manifest)
+    names = [m["name"] for m in res["deleted"]]
+    assert "ZZC-orphan" in names and "local-only" not in names
+
+    # both consents: deletes the protected IR too
+    res = mt.ir_prune(ip="x", execute=True, force=True, ignore_warnings=True,
+                      manifest=manifest)
+    assert sorted(m["name"] for m in res["deleted"]) == ["ZZC-orphan",
+                                                         "local-only"]
 
 
 def test_delete_device_ir_wedge_needs_force_wedge(fake_client, monkeypatch):
@@ -615,3 +682,43 @@ def test_delete_device_ir_wedge_needs_force_wedge(fake_client, monkeypatch):
     with pytest.raises(ValueError, match="force"):
         mt.delete_device_ir(c, wedged, ip="x")
     assert removed == [] and c.deleted_irs == []
+
+
+def test_resolve_device_ir_live_lists_strictly(fake_client):
+    """#32c: the wedge-path resolution lists strictly, so a dropped/partial
+    -11 listing raises HelixError instead of resolving as 'no such IR' and
+    silently falling into the file-only wedge cleanup."""
+    seen = []
+    c = FakeClient()
+
+    def strict_irs(strict=False):
+        seen.append(strict)
+        return list(c.irs)
+
+    c.list_irs = strict_irs
+    mt.resolve_device_ir_live(c, "on-device-ref")
+    assert seen and all(s is True for s in seen), seen
+
+
+def test_delete_device_ir_strict_listing_failure_propagates(fake_client,
+                                                            monkeypatch):
+    """#32c: a strict-listing HelixError during resolution propagates (fail
+    closed) — it is NOT swallowed into the wedge file-removal path (which
+    catches only ValueError)."""
+    from helixgen.device import sftp as sftp_mod
+
+    class BoomSftp:
+        def __init__(self, ip, **kw):
+            raise AssertionError("wedge file removal must not run")
+
+    monkeypatch.setattr(sftp_mod, "HelixSFTP", BoomSftp)
+    c = FakeClient()
+    c.ir_path_for_hash = lambda h: "/data/stadium-family-fw/ir/ZZC-w.wav"
+
+    def boom(strict=False):
+        raise HelixError("no listing reply")
+
+    c.list_irs = boom
+    with pytest.raises(HelixError, match="no listing reply"):
+        mt.delete_device_ir(c, "dd" * 16, ip="x", force_wedge=True)
+    assert c.deleted_irs == []

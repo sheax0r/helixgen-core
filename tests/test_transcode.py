@@ -737,6 +737,189 @@ def test_degenerate_snapshot_meta_does_not_crash():
     assert snps[2]["exsw"] == -1 and snps[2]["bpm_"] == 120.0
 
 
+def _input_bypass_hsp_body(*, base_bypassed=True, snapshots=True):
+    """A minimal authored ``.hsp`` whose DSP input is base-bypassed and/or
+    snapshot-muted (backlog #23)."""
+    en = {"value": False if base_bypassed else True}
+    if snapshots:
+        # .hsp @enabled [F,T,T,...] -> device bypass [T,F,F,...]
+        en["snapshots"] = [False, True, True, True, True, True, True, True]
+    flow0 = {
+        "b00": {"@enabled": en,
+                "slot": [{"model": "P35_InputInst1", "params": {}}]},
+        "b01": {"@enabled": {"value": True},
+                "slot": [{"model": "HD2_DistMinotaurMono",
+                          "params": {"Gain": {"value": 0.4}}}]},
+        "b13": {"@enabled": {"value": True},
+                "slot": [{"model": "P35_OutputMatrix", "params": {}}]},
+    }
+    snaps = [{"name": "A"}, {"name": "B"}] + [
+        {"name": f"S{i}"} for i in range(3, 9)]
+    return {"meta": {"device_id": "stadium_xl"},
+            "preset": {"flow": [flow0], "snapshots": snaps}}
+
+
+def _input_endpoint(doc):
+    """The flow-0 input endpoint block dict (device category ``input``)."""
+    cats = defs.load_defs()["model_categories"]
+    for b in doc["sfg_"]["flow"][0]["blks"]:
+        if not isinstance(b, dict):
+            continue
+        mid = (b.get("mdls") or [{}])[0].get("id__")
+        if cats.get(defs.model_name_for(mid)) == "input":
+            return b
+    return None
+
+
+def test_input_base_bypass_survives_transcode():
+    """An input whose .hsp ``@enabled.value`` is False synthesizes with block-
+    level ``enbl == 0`` (#23); an enabled input keeps ``enbl == 1``."""
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(
+        _input_bypass_hsp_body(base_bypassed=True, snapshots=False)))
+    assert _input_endpoint(doc)["enbl"] == 0
+    doc2 = content.decode_any(transcode.hsp_to_sbepgsm(
+        _input_bypass_hsp_body(base_bypassed=False, snapshots=False)))
+    assert _input_endpoint(doc2)["enbl"] == 1
+
+
+def test_input_snapshot_bypass_is_tracked_and_bound():
+    """A per-snapshot input bypass array becomes a bypass trg keyed by the
+    input endpoint's instance id, with device-polarity tamv, and the input
+    block is bound (``snap=True, tid_=<trg>``) (#23)."""
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(
+        _input_bypass_hsp_body(base_bypassed=True, snapshots=True)))
+    entt = doc["cg__"]["entt"]
+    ip = _input_endpoint(doc)
+    trg = _trg_by(entt, type=1, eID_=ip["id__"])
+    assert trg["enty"] == 2 and trg["pid_"] == 0
+    # the input endpoint is bound to its bypass trg
+    assert ip["snap"] is True and ip["tid_"] == trg["id__"]
+    # the tracked target is in stid + carries the dense device-polarity row
+    assert trg["id__"] in entt["ctm_"]["stid"]
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    row = [_tamv_map(s)[trg["id__"]] for s in snps]
+    assert row == [True] + [False] * 7, row
+
+
+def test_dsp_b_input_snapshot_bypass_uses_nonzero_eid():
+    """#23 on the DSP-B path (the case the Stadium app itself produces): the
+    flow-1 input endpoint's bypass trg is keyed by ``eID_ == 28`` (base 28 +
+    gridpos 0) — a NON-zero id, unlike DSP-A's ``eID_ == 0`` (see the
+    trg-id-space null caveat in the backlog #23 entry)."""
+    body = _input_bypass_hsp_body(base_bypassed=False, snapshots=False)
+    # add a DSP-B flow whose input is snapshot-muted
+    flow1 = {
+        "b00": {"@enabled": {"value": True,
+                             "snapshots": [False, True, True, True,
+                                           True, True, True, True]},
+                "slot": [{"model": "P35_InputNone", "params": {}}]},
+        "b01": {"@enabled": {"value": True},
+                "slot": [{"model": "HD2_AmpBritPlexiNrm",
+                          "params": {"Bass": {"value": 0.5}}}]},
+        "b13": {"@enabled": {"value": True},
+                "slot": [{"model": "P35_OutputMatrix", "params": {}}]},
+    }
+    body["preset"]["flow"].append(flow1)
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    entt = doc["cg__"]["entt"]
+    cats = defs.load_defs()["model_categories"]
+    ip1 = None
+    for b in doc["sfg_"]["flow"][1]["blks"]:
+        if isinstance(b, dict):
+            mid = (b.get("mdls") or [{}])[0].get("id__")
+            if cats.get(defs.model_name_for(mid)) == "input":
+                ip1 = b
+                break
+    assert ip1 is not None and ip1["id__"] == 28  # base 28 + gridpos 0
+    trg = _trg_by(entt, type=1, eID_=28)
+    assert ip1["snap"] is True and ip1["tid_"] == trg["id__"]
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    row = [_tamv_map(s)[trg["id__"]] for s in snps]
+    assert row == [True] + [False] * 7, row
+
+
+def test_input_snapshot_bypass_ignored_without_variation():
+    """No input bypass trg when the input's per-snapshot bypass never varies
+    (avoids spurious targets)."""
+    body = _input_bypass_hsp_body(base_bypassed=False, snapshots=True)
+    # flatten the input's snapshot array to all-enabled (no variation)
+    body["preset"]["flow"][0]["b00"]["@enabled"]["snapshots"] = [True] * 8
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    entt = doc["cg__"]["entt"]
+    ip = _input_endpoint(doc)
+    assert not any(t.get("eID_") == ip["id__"] for t in entt["trgs"])
+    assert ip["snap"] is False and ip["tid_"] == 0
+
+
+def test_controller_param_leaf_carries_tid_snap_false():
+    """#24: a controller-driven param leaf (EXP sweep) carries ``tid_=<trg>``
+    with ``snap=False`` on real device blobs — match that convention."""
+    amp_mid = defs.model_id_for("HD2_AmpBritPlexiNrm")
+    bass_pid = defs.load_defs()["model_params"][str(amp_mid)]["Bass"]["id"]
+    recipe = {"name": "exp", "paths": [{"blocks": [
+        {"block": "HD2_AmpBritPlexiNrm", "params": {"Bass": 0.5},
+         "ctl_params": {"Bass": {"source": 0x01020100, "min": 0.1,
+                                 "max": 0.8, "behavior": "continuous"}}},
+    ]}]}
+    doc = content.decode_any(
+        content.encode_content_data(transcode.recipe_to_sbepgsm(recipe)))
+    entt = doc["cg__"]["entt"]
+    par = _trg_by(entt, type=2)
+    amp = _blocks_by_mid(doc)[amp_mid]
+    leaf = next(p for p in amp["mdls"][0]["parm"] if p["pid_"] == bass_pid)
+    assert leaf["tid_"] == par["id__"], "controller param leaf must carry its tid_"
+    assert leaf["snap"] is False, "controller-only leaf must stay snap=False"
+    # it is NOT snapshot-tracked (no stid / tamv)
+    assert par["id__"] not in entt["ctm_"]["stid"]
+
+
+def test_fs_param_toggle_leaf_carries_tid_snap_false():
+    """#24 symmetric case: a footswitch param-toggle leaf also carries
+    ``tid_`` with ``snap=False`` (the #21 controller-depth pass kept the old
+    tid_=0 behaviour — fixed here alongside EXP sweeps)."""
+    mid = defs.model_id_for("HD2_DistMinotaurMono")
+    gain_pid = defs.load_defs()["model_params"][str(mid)]["Gain"]["id"]
+    recipe = {"name": "p", "paths": [{"blocks": [
+        {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+         "ctl_params": {"Gain": {"source": 0x01010104, "min": 0.2,
+                                 "max": 0.8, "behavior": "latching"}}},
+    ]}]}
+    doc = content.decode_any(
+        content.encode_content_data(transcode.recipe_to_sbepgsm(recipe)))
+    entt = doc["cg__"]["entt"]
+    par = _trg_by(entt, type=2)
+    blk = _blocks_by_mid(doc)[mid]
+    leaf = next(p for p in blk["mdls"][0]["parm"] if p["pid_"] == gain_pid)
+    assert leaf["tid_"] == par["id__"] and leaf["snap"] is False
+
+
+def test_snapshot_and_controller_param_leaf_stays_snap_true():
+    """A param that is BOTH snapshot-tracked and controller-driven keeps
+    ``snap=True`` (the snapshot binding wins over the controller one) (#24)."""
+    mid = defs.model_id_for("HD2_DistMinotaurMono")
+    gain_pid = defs.load_defs()["model_params"][str(mid)]["Gain"]["id"]
+    recipe = {"name": "both", "snapshots": [{"name": "A"}, {"name": "B"}],
+              "paths": [{"blocks": [
+                  {"block": "HD2_DistMinotaurMono", "params": {"Gain": 0.5},
+                   "snap_params": {"Gain": [0.5, 0.2]},
+                   "ctl_params": {"Gain": {"source": 0x01020100, "min": 0.1,
+                                           "max": 0.9,
+                                           "behavior": "continuous"}}},
+              ]}]}
+    doc = content.decode_any(
+        content.encode_content_data(transcode.recipe_to_sbepgsm(recipe)))
+    entt = doc["cg__"]["entt"]
+    # exactly ONE type-2 trg: the snapshot target is REUSED by the controller,
+    # never duplicated (a second trg would double-bind the leaf).
+    type2 = [t for t in entt["trgs"] if t.get("type") == 2]
+    assert len(type2) == 1, type2
+    par = type2[0]
+    blk = _blocks_by_mid(doc)[mid]
+    leaf = next(p for p in blk["mdls"][0]["parm"] if p["pid_"] == gain_pid)
+    assert leaf["snap"] is True and leaf["tid_"] == par["id__"]
+    assert par["id__"] in entt["ctm_"]["stid"]
+
+
 def test_param_snapshots_without_base_value_never_emit_none():
     """A param carrying a sparse ``snapshots`` array but no ``value`` key has
     nothing to fill the None slots with — it must be skipped, never leak a

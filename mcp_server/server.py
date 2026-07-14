@@ -773,6 +773,7 @@ def device_ir_prune(
     ip: str = _tools._DEFAULT_DEVICE_IP,
     execute: bool = False,
     force: bool = False,
+    ignore_warnings: bool = False,
     only: str | None = None,
 ) -> dict[str, Any]:
     """Delete device IRs that no preset references any more — DRY-RUN by default.
@@ -785,15 +786,17 @@ def device_ir_prune(
     is never a candidate. An IR referenced only by a local off-device tone is
     "protected" and needs `force=True` as well. Local tones whose recorded
     .hsp is missing/unreadable surface in `warnings` — executing over
-    warnings also requires `force`. `only` narrows deletion to a single IR
-    (name-or-hash). Execute mode re-scans immediately before deleting and
-    aborts if the device listings changed (nothing deleted; just re-run).
-    Always run the dry-run first and show the user the orphans/protected
-    lists (and any warnings) before executing. Returns `{ok, dry_run,
-    device_irs, referenced, protected, orphans, deleted, warnings, errors}`.
+    warnings requires `ignore_warnings=True` (a SEPARATE consent from
+    `force`). `only` narrows deletion to a single IR (name-or-hash). Execute
+    mode re-scans immediately before deleting and aborts if the device
+    listings changed (nothing deleted; just re-run). Always run the dry-run
+    first and show the user the orphans/protected lists (and any warnings)
+    before executing. Returns `{ok, dry_run, device_irs, referenced,
+    protected, orphans, deleted, warnings, errors}`.
     """
     return _tools.device_ir_prune_handler(
-        model, ip=ip, execute=execute, force=force, only=only)
+        model, ip=ip, execute=execute, force=force,
+        ignore_warnings=ignore_warnings, only=only)
 
 
 @app.tool()

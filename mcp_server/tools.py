@@ -1120,6 +1120,7 @@ def device_ir_prune_handler(
     ip: str = _DEFAULT_DEVICE_IP,
     execute: bool = False,
     force: bool = False,
+    ignore_warnings: bool = False,
     only: str | None = None,
 ) -> dict[str, Any]:
     """Delete device IRs no preset references any more (**dry-run by default**).
@@ -1128,17 +1129,20 @@ def device_ir_prune_handler(
     the device (non-activating content reads across the pool) and by local
     tone-library ``.hsp`` files. Nothing is deleted unless ``execute=True``; an
     IR referenced on the device is never a candidate; an IR referenced only by
-    a local off-device tone is "protected" and needs ``force=True`` too.
-    ``only`` narrows deletion to a single IR (name-or-hash). Returns
-    ``{ok, dry_run, device_irs, referenced, protected, orphans, deleted,
-    errors}``.
+    a local off-device tone is "protected" and needs ``force=True`` too. Local
+    tones whose recorded ``.hsp`` can't be read surface in ``warnings`` —
+    executing over warnings needs ``ignore_warnings=True`` (a SEPARATE consent
+    from ``force``). ``only`` narrows deletion to a single IR (name-or-hash).
+    Returns ``{ok, dry_run, device_irs, referenced, protected, orphans,
+    deleted, warnings, errors}``.
     """
     _validate_model(model)
     from helixgen.device import HelixError
     from helixgen.device import maintenance as mt
 
     try:
-        return mt.ir_prune(ip=ip, execute=execute, force=force, only=only)
+        return mt.ir_prune(ip=ip, execute=execute, force=force,
+                           ignore_warnings=ignore_warnings, only=only)
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
 

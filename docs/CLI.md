@@ -181,7 +181,8 @@ project [`CLAUDE.md`](../CLAUDE.md); highlights:
   (local manifest membership for `device sync`).
 - IRs: `device list-irs / push-ir / pull-ir`, `device delete-ir
   <name-or-hash>`, `device rename-ir <name-or-hash> <new>`, and
-  `device ir-prune [--yes] [--force] [--only …]` — delete IRs no preset
-  references (dry-run by default; IRs referenced only by local off-device
-  presets need `--force`).
+  `device ir-prune [--yes] [--force] [--ignore-warnings] [--only …]` — delete
+  IRs no preset references (dry-run by default; IRs referenced only by local
+  off-device presets need `--force`; proceeding over unverifiable-local-tone
+  warnings needs `--ignore-warnings` — a separate consent).
 - Global settings: `device settings list|get|set` (161 `global.*` keys).

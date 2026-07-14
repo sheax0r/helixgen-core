@@ -705,9 +705,16 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         in_params = path.get("input_params") or None
         out_params = path.get("output_params") or None
 
-        # (gridpos, block) placements on this flow's 28-slot grid.
-        placements: List[Tuple[int, dict]] = [
-            (_ROW0_INPUT, _make_input_endpoint(mode, 0, in_params))]
+        # (gridpos, block) placements on this flow's 28-slot grid. The input
+        # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed)
+        # and is registered in ``instance_ids`` under the ``(pi, -1, -1)``
+        # sentinel so the snapshot synthesis can bind it as a bypass target
+        # (the Stadium app snapshot-tracks the DSP input).
+        input_block = _make_input_endpoint(mode, 0, in_params)
+        if path.get("input_enabled") is False:
+            input_block["enbl"] = 0
+        instance_ids[(pi, -1, -1)] = base + _ROW0_INPUT
+        placements: List[Tuple[int, dict]] = [(_ROW0_INPUT, input_block)]
 
         if not structural:
             # SERIAL / dual-DSP path: user blocks fill row 0 (positions 1..12),
@@ -958,7 +965,11 @@ def _synth_cg_from_recipe(
     ptid: List[int] = []
     tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
     trg_index: Dict[Tuple[int, int, int], int] = {}  # (eID_, pid_, type) -> trg id
-    bindings: Dict[str, dict] = {"bypass": {}, "param": {}}
+    # ``bypass``/``param`` hold snapshot-tracked targets (bound with
+    # ``snap=True``); ``param_ctl`` holds controller-ONLY param targets (#24:
+    # bound with ``snap=False`` — a controller-driven param leaf still carries
+    # its ``tid_`` on real device blobs, matching the ``preset_15x`` fixtures).
+    bindings: Dict[str, dict] = {"bypass": {}, "param": {}, "param_ctl": {}}
     # Controller/target/source ids are 1-BASED — the device treats id 0 as
     # null/unassigned, so a 0-based id silently kills the binding (hardware-
     # confirmed against HX Edit's own encoding, 2026-07-13).
@@ -1004,6 +1015,23 @@ def _synth_cg_from_recipe(
                 ptid.extend([(eid << 16) | pid, tid])
                 tracked.append((tid, list(pvals)))
                 bindings["param"][(eid, pid)] = tid
+
+    # 1b) Input-endpoint snapshot bypass (#23). The DSP input is a bypass
+    #     target too — its instance id is stashed under the ``(pi, -1, -1)``
+    #     sentinel by :func:`synthesize_sfg`. Emit a bypass trg (device
+    #     polarity: ``True`` = muted) whenever the per-snapshot array varies.
+    for pi, path in enumerate(recipe.get("paths") or []):
+        ibypass = path.get("input_snap_bypass")
+        if not (isinstance(ibypass, list) and len({bool(x) for x in ibypass}) > 1):
+            continue
+        eid = instance_ids.get((pi, -1, -1))
+        if eid is None:
+            continue
+        tid = _new_trg({"eID_": eid, "enty": 2, "pid_": 0, "slot": 0,
+                        "type": 1}, (eid, 0, 1))
+        stid.append(tid)
+        tracked.append((tid, [bool(x) for x in ibypass]))
+        bindings["bypass"][eid] = tid
 
     # 2) Controller graph (Part B): source->bypass + source->param (EXP sweeps
     #    and footswitch param toggles). One physical source gets ONE ``srcs``
@@ -1099,6 +1127,11 @@ def _synth_cg_from_recipe(
                                     "pid_": pid, "pmid": mid, "ppid": pid,
                                     "slot": 0, "type": 2}, (eid, pid, 2))
                     ptid.extend([(eid << 16) | pid, tid])
+                    # #24: a controller-ONLY param target still binds its leaf
+                    # (``tid_``) — but with ``snap=False`` (it is not snapshot-
+                    # tracked). A param that is ALSO snapshot-tracked already
+                    # sits in ``bindings["param"]`` (snap=True), which wins.
+                    bindings["param_ctl"][(eid, pid)] = tid
                 _new_ctrl({"behv": _behv(behavior, 2), "curv": _curv(meta),
                            "dlay": 0, "goid": 0,
                            "max_": meta.get("max", 1.0),
@@ -1243,26 +1276,28 @@ def _synthesize(recipe: dict) -> dict:
 
 
 def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
-    """Stamp every snapshot-tracked entity with its target binding, in place.
+    """Stamp every target-bound entity with its binding, in place.
 
     On a real device blob a snapshot-tracked block carries ``snap=True,
     tid_=<bypass trg id>`` at BLOCK level, and a snapshot-tracked param carries
     ``snap=True, tid_=<param trg id>`` on its parm leaf — that binding is how
     the device applies ``tamv`` values on a snapshot switch (verified against
-    the Stadium app's own import of the same tone, 2026-07-13). Untracked
-    entities (including controller-only bypass targets) stay ``snap=False,
-    tid_=0``.
+    the Stadium app's own import of the same tone, 2026-07-13). A
+    controller-ONLY param leaf (EXP sweep / FS param toggle) instead carries
+    ``snap=False, tid_=<param trg id>`` (#24 — matching the ``preset_15x``
+    fixtures). Untracked entities (including controller-only *bypass* targets)
+    stay ``snap=False, tid_=0``. Input endpoints CAN be bypass targets (#23),
+    so they are no longer skipped.
     """
     by_bypass = bindings.get("bypass") or {}
     by_param = bindings.get("param") or {}
-    if not by_bypass and not by_param:
+    by_param_ctl = bindings.get("param_ctl") or {}
+    if not by_bypass and not by_param and not by_param_ctl:
         return
     for flow in sfg.get("flow", []):
         for item in flow.get("blks", []):
             if not isinstance(item, dict):
                 continue
-            if item.get("type") in (8, 9):
-                continue  # input/output endpoints are never recipe targets
             eid = item.get("id__")
             tid = by_bypass.get(eid)
             if tid:
@@ -1272,10 +1307,16 @@ def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
             # could share a pid with the tracked param and must not be stamped.
             for mdl in (item.get("mdls") or [])[:1]:
                 for leaf in mdl.get("parm") or []:
-                    ptid = by_param.get((eid, leaf.get("pid_")))
+                    pid = leaf.get("pid_")
+                    ptid = by_param.get((eid, pid))
                     if ptid:
                         leaf["snap"] = True
                         leaf["tid_"] = ptid
+                        continue
+                    cptid = by_param_ctl.get((eid, pid))
+                    if cptid:
+                        leaf["snap"] = False
+                        leaf["tid_"] = cptid
 
 
 # --- authored .hsp -> device _sbepgsm bytes ----------------------------------

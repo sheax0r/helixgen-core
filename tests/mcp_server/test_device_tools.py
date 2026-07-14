@@ -369,7 +369,7 @@ class PolishClient(FakeClient):
 
     SETLISTS = {"helixgen": 988}
 
-    def list_irs(self):
+    def list_irs(self, strict=False):
         self._maybe_raise("list_irs")
         return [dict(m) for m in _IRS]
 

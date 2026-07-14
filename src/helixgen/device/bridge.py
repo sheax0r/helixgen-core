@@ -263,6 +263,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         structural: List[Dict[str, Any]] = []
         input_mode: Optional[str] = None
         input_params: Dict[str, Any] = {}
+        input_enabled: Optional[bool] = None
+        input_snap_bypass: Optional[List[Any]] = None
         output_params: Dict[str, Any] = {}
         for key in sorted(k for k in flow if isinstance(k, str)
                           and k.startswith("b") and k[1:].isdigit()):
@@ -288,6 +290,20 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             if key == "b00":
                 input_mode = _controllers.input_mode_for_model(device_id, model)
                 input_params = _lift_endpoint_params(slot)
+                # #23: the input endpoint carries its own bypass state — a base
+                # ``@enabled.value`` of False (loads bypassed) and a per-snapshot
+                # bypass array (the Stadium app snapshot-tracks the DSP input as
+                # a bypass target). Capture both so the transcoder can reproduce
+                # them; without this an input muted per-snapshot / bypassed at
+                # load silently reverts on ``device install``/``sync``.
+                en0 = b.get("@enabled")
+                base_en0 = en0.get("value") if isinstance(en0, dict) else en0
+                if base_en0 is not None and not base_en0:
+                    input_enabled = False
+                if has_snaps:
+                    ibypass, _ = _snapshot_arrays(slot, b, 0)
+                    if ibypass is not None:
+                        input_snap_bypass = ibypass
                 continue
             if typ == "output":
                 # The lane-0 primary output (b13) carries the path's level/pan;
@@ -362,6 +378,10 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             path_entry["input"] = input_mode
         if input_params:
             path_entry["input_params"] = input_params
+        if input_enabled is False:
+            path_entry["input_enabled"] = False
+        if input_snap_bypass is not None:
+            path_entry["input_snap_bypass"] = input_snap_bypass
         if output_params:
             path_entry["output_params"] = output_params
         if structural:

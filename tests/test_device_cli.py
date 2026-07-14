@@ -465,7 +465,7 @@ CANNED_IRS = [
 class IrClient(FakeClient):
     deleted = []
 
-    def list_irs(self):
+    def list_irs(self, strict=False):
         self.calls.append(("list_irs",))
         return [dict(m) for m in CANNED_IRS]
 

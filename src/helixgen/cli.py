@@ -739,7 +739,7 @@ def _ledger_remove(cid: int) -> None:
 
 def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
                       setlist_label: str, auto_irs: bool = False,
-                      ip: str | None = None) -> int:
+                      force: bool = False, ip: str | None = None) -> int:
     """Install a parsed .hsp ``body`` onto an already-open client at
     ``(container, pos)`` and return the new cid. Shared by ``device install``
     and ``device slots restore``. Raises ClickException on any failure.
@@ -747,10 +747,15 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     Template-free: the ``.hsp`` is transcoded straight into a device
     ``_sbepgsm`` blob (:func:`transcode.hsp_to_sbepgsm`) and written into an
     empty slot — no device template is loaded, so the active tone is untouched.
+
+    ``force`` skips the slot-emptiness check so the push proceeds at an
+    occupied posi (``device slots restore --force`` — #25; the occupant is
+    NOT deleted, matching the ``.sbe`` path); without it an occupied slot is
+    refused.
     """
     from helixgen.device import bridge, transcode
 
-    if h.find_by_pos(container, pos) is not None:
+    if not force and h.find_by_pos(container, pos) is not None:
         raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
     missing = sorted(bridge.check_irs(h, body)["missing"])
     if missing and auto_irs:
@@ -1508,12 +1513,16 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
               help="Actually delete (default is a dry-run report).")
 @click.option("--force", is_flag=True, default=False,
               help="Also delete IRs referenced only by local off-device .hsp files.")
+@click.option("--ignore-warnings", "ignore_warnings", is_flag=True, default=False,
+              help="Proceed even if some local tones' IR references can't be "
+                   "verified (missing/unreadable .hsp).")
 @click.option("--only", default=None, metavar="NAME_OR_HASH",
               help="Restrict deletion to this one IR.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result dict as JSON.")
 @_device_option
-def device_ir_prune(yes: bool, force: bool, only: str | None, as_json: bool,
+def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
+                    only: str | None, as_json: bool,
                     ip: str, port: int) -> None:
     """Delete device IRs that no preset references any more (DRY-RUN by default).
 
@@ -1521,17 +1530,19 @@ def device_ir_prune(yes: bool, force: bool, only: str | None, as_json: bool,
     presets on the device (non-activating content reads across the pool),
     by the live edit buffer, and by your local tone-library .hsp files. IRs
     referenced on the device are never touched; IRs referenced only by a
-    local off-device tone are "protected" (need --force); local tones whose
+    local off-device tone are "protected" (need --force). Local tones whose
     recorded .hsp can't be read are surfaced as warnings, and executing over
-    warnings needs --force too. Nothing is deleted without --yes, and the
-    plan is re-scanned and re-verified immediately before any delete (a
-    disagreement aborts with nothing deleted).
+    warnings needs --ignore-warnings (a separate consent from --force).
+    Nothing is deleted without --yes, and the plan is re-scanned and
+    re-verified immediately before any delete (a disagreement aborts with
+    nothing deleted).
     """
     from helixgen.device import HelixError
     from helixgen.device import maintenance as mt
 
     try:
-        res = mt.ir_prune(ip=ip, port=port, execute=yes, force=force, only=only)
+        res = mt.ir_prune(ip=ip, port=port, execute=yes, force=force,
+                          ignore_warnings=ignore_warnings, only=only)
     except (HelixError, ValueError) as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -2277,7 +2288,16 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     rec = m.tones[name]
     src_path = rec.get("path")
     dest_setlist = setlist or "user"
-    dest_pos = pos if pos is not None else _posi_from_slot(rec.get("slot"))
+    # Slot resolution (#25): an explicit --pos wins; else the recorded slot
+    # label; else the last observed device posi (a synced tone records its
+    # concrete position under ``device.posi`` even when ``slot`` is unresolved).
+    dest_pos = pos
+    if dest_pos is None:
+        dest_pos = _posi_from_slot(rec.get("slot"))
+    if dest_pos is None:
+        dev = rec.get("device")
+        if isinstance(dev, dict) and isinstance(dev.get("posi"), int):
+            dest_pos = dev["posi"]
     if dest_pos is None:
         raise click.ClickException(f"{name!r} has no recorded slot; pass --pos")
     container = _setlist_container(dest_setlist)
@@ -2303,7 +2323,8 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                 from helixgen.hsp import read_hsp
 
                 cid = _install_hsp_open(h, read_hsp(src), container, dest_pos,
-                                        name, setlist_label=dest_setlist, ip=ip)
+                                        name, setlist_label=dest_setlist,
+                                        force=force, ip=ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:

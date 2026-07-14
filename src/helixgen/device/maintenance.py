@@ -151,13 +151,43 @@ def device_referenced_ir_hashes(client, pool: Optional[List[dict]] = None
     return out
 
 
+def _reference_is_dangling(client, rcid) -> bool:
+    """Whether a setlist reference points at a cid the device no longer has.
+
+    Probes the cid directly (``get_content_ref``); a missing content ref means
+    the pool preset was **deleted** but the setlist still references it (a
+    *dangling* reference) rather than the pool listing being merely incomplete.
+    A read error is ambiguous, so it is treated as NOT dangling — the caller
+    then falls back to the (retryable) incomplete-listing path instead of
+    telling the user to remove a reference we could not verify.
+    """
+    if rcid is None:
+        return False
+    probe = getattr(client, "get_ref", None)
+    if not callable(probe):
+        return False
+    try:
+        return probe(rcid) is None
+    except HelixError:
+        return False
+
+
 def _verify_pool_covers_references(client, pool_cids) -> None:
     """Sanity cross-check for a pool listing feeding a prune (finding 1b).
 
     Every setlist reference's ``rcid`` must point at a cid present in the
-    pool listing; one that doesn't means the pool listing is **incomplete**
-    (e.g. a partially-decoded chunked reply) and any orphan computed from it
-    would be bogus. Raises :class:`HelixError` in that case.
+    pool listing. One that doesn't is either:
+
+    * a **dangling reference** — the pool preset was deleted but the setlist
+      still points at it. Probing the cid confirms it is gone; we raise an
+      **actionable** error naming the stale reference so the user can remove
+      it (backlog #32b — the old code always blamed an "incomplete listing"
+      and told the user to reboot, which never helped); or
+    * a genuinely **incomplete** pool listing (e.g. a partially-decoded
+      chunked reply) — any orphan computed from it would be bogus, so abort
+      and retry.
+
+    Raises :class:`HelixError` in either case.
     """
     pool_cids = set(pool_cids)
     for sl in client.list_setlists(strict=True):
@@ -165,12 +195,24 @@ def _verify_pool_covers_references(client, pool_cids) -> None:
         if sl_cid is None:
             continue
         for item in client.list_container(sl_cid, strict=True):
-            if item.get("cctp") == Cctp.REFERENCE and item.get("rcid") not in pool_cids:
+            if item.get("cctp") != Cctp.REFERENCE:
+                continue
+            rcid = item.get("rcid")
+            if rcid in pool_cids:
+                continue
+            if _reference_is_dangling(client, rcid):
                 raise HelixError(
-                    f"pool listing looks incomplete: setlist "
-                    f"{sl.get('name')!r} references cid {item.get('rcid')} "
-                    f"which the pool listing doesn't contain; aborting — "
-                    f"retry (reboot the Helix if it persists)")
+                    f"setlist {sl.get('name')!r} has a stale (dangling) "
+                    f"reference to cid {rcid}, whose pool preset no longer "
+                    f"exists — a leftover from a deleted preset. Remove it "
+                    f"before pruning: re-sync the setlist (helixgen device "
+                    f"sync {sl.get('name')!r}) or delete the setlist entry, "
+                    f"then retry.")
+            raise HelixError(
+                f"pool listing looks incomplete: setlist "
+                f"{sl.get('name')!r} references cid {rcid} "
+                f"which the pool listing doesn't contain; aborting — "
+                f"retry (reboot the Helix if it persists)")
 
 
 def local_referenced_ir_hashes(manifest=None):
@@ -249,6 +291,11 @@ def resolve_device_ir_live(client, name_or_hash: str, *, tries: int = 5,
     invisible to a single ``list_irs``. Retries under ``client.mutating()``
     (the 2001 subscription that activates prompt index propagation) before
     giving up. Ambiguity fails fast — only the no-match case retries.
+
+    The listing is **strict** (#32c): a timeout / truncated ``-11`` reply
+    raises :class:`HelixError` instead of reading as an empty list, so the
+    ``--force-wedge`` fallback in :func:`delete_device_ir` never mistakes a
+    dropped listing for "no such IR" (it catches only ``ValueError``).
     """
     import time
 
@@ -256,7 +303,7 @@ def resolve_device_ir_live(client, name_or_hash: str, *, tries: int = 5,
         last_err: Optional[ValueError] = None
         for i in range(tries):
             try:
-                return resolve_device_ir(client.list_irs(), name_or_hash)
+                return resolve_device_ir(client.list_irs(strict=True), name_or_hash)
             except ValueError as e:
                 if "ambiguous" in str(e):
                     raise
@@ -392,6 +439,7 @@ def ir_prune(
     port: Optional[int] = None,
     execute: bool = False,
     force: bool = False,
+    ignore_warnings: bool = False,
     only: Optional[str] = None,
     manifest=None,
 ) -> Dict[str, Any]:
@@ -403,16 +451,24 @@ def ir_prune(
     deleted only when ``force`` is also set. ``only`` narrows the deletion to
     a single IR (name-or-hash) — naming a referenced IR raises.
 
+    Two INDEPENDENT consents (#32a — previously conflated under ``force``):
+
+    * ``force`` — also delete *protected* IRs (referenced only by a local
+      off-device ``.hsp``); and
+    * ``ignore_warnings`` — proceed even though some local tones' IR
+      references could not be verified (a missing/unreadable recorded
+      ``.hsp``). Without it, execute mode fails closed on any warning.
+
     Safety rails (adversarial-review hardening, PR #37):
 
     * every listing the plan trusts is **strict** (a silent-empty/partial
       ``/GetContainerContents`` raises instead of reading as "no presets");
     * the pool listing is **cross-checked** against every setlist's
-      references (an ``rcid`` missing from the pool ⇒ incomplete listing ⇒
-      abort);
+      references (an ``rcid`` missing from the pool ⇒ incomplete listing OR a
+      dangling reference ⇒ abort with an actionable error);
     * the **edit buffer** counts as a reference source;
     * unverifiable local tones (recorded ``.hsp`` missing/unreadable) surface
-      in ``warnings``; executing over warnings requires ``force``;
+      in ``warnings``; executing over warnings requires ``ignore_warnings``;
     * execute mode **re-scans and re-plans immediately before deleting** and
       aborts if the two plans disagree.
 
@@ -471,11 +527,12 @@ def ir_prune(
         candidates = _candidates(irs, plan)
 
         if execute:
-            if local_warnings and not force:
+            if local_warnings and not ignore_warnings:
                 raise ValueError(
                     "refusing to execute: some local tones' IR references "
                     "could not be verified (their protection is unknown) — "
-                    "fix the manifest paths or re-run with force. "
+                    "fix the manifest paths or re-run with ignore_warnings "
+                    "(--ignore-warnings). "
                     + "; ".join(local_warnings))
             # Re-scan and re-plan immediately before deleting; a disagreement
             # means the device listings are unstable (or something changed

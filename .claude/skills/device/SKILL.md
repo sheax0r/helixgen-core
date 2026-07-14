@@ -207,17 +207,21 @@ helixgen device setlist duplicate <src> <dst>  # copies references; auto-creates
 helixgen device delete-ir <name-or-hash> --yes       # registry entry + backing .wav
 helixgen device rename-ir <name-or-hash> <new-name>  # display name only; hash keeps resolving
 helixgen device ir-prune                             # DRY-RUN report: referenced / protected / orphans
-helixgen device ir-prune --yes [--force] [--only <name-or-hash>]
+helixgen device ir-prune --yes [--force] [--ignore-warnings] [--only <name-or-hash>]
 helixgen device set-info <cid>... --color green --notes "..."   # batch color + notes
 ```
 
 - MCP mirrors: `device_delete_ir`, `device_rename_ir`, `device_ir_prune`
-  (`execute`/`force`/`only` args), `device_set_info`.
+  (`execute`/`force`/`ignore_warnings`/`only` args), `device_set_info`.
 - **`ir-prune` is dry-run by default.** Always run the dry-run first and show
   the user the `orphans` / `protected` lists — and any `warnings` (local
-  tones whose recorded `.hsp` couldn't be read; executing over warnings needs
-  `--force`) — before executing. `protected` IRs are referenced by local
-  off-device tones — they need `--force` and a deliberate user choice.
+  tones whose recorded `.hsp` couldn't be read) — before executing.
+  `protected` IRs are referenced by local off-device tones — they need
+  `--force` and a deliberate user choice. Proceeding despite `warnings` is a
+  **separate** consent, `--ignore-warnings` (don't reach for `--force` for
+  that). A prune that aborts naming a **dangling** setlist reference means a
+  setlist still points at a deleted preset — re-sync that setlist (or drop the
+  entry) and retry.
 - An IR referenced by any preset ON the device (or by the live edit buffer)
   is never a prune candidate. Execute mode re-verifies the plan right before
   deleting and aborts if the device listings changed — just re-run.
