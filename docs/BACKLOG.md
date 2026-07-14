@@ -325,7 +325,11 @@ assumption — see #9); the reference-based redesign below then **shipped
   metadata home/format as #35 tone metadata and #36 IR metadata) describing
   what each guitar *sounds like* — pickups, construction, tonal character —
   so tone generation can read the profile and adjust accordingly when
-  targeting a specific guitar. The `tone` skill must know how to use these
+  targeting a specific guitar. The profile also documents the guitar's
+  **control inventory** — what its knobs and switches *are* and do (e.g.
+  "3-way toggle: neck / both / bridge; volume + tone per pickup; push-pull
+  coil split on the tone pot") — so a tone's guitar-settings metadata (#35)
+  can reference real, named controls instead of guesses. The `tone` skill must know how to use these
   profiles (read → adapt params). The per-guitar-variant storage question
   (variant `.hsp`s vs replicated snapshots, default per-variant presets) is
   now formalized in **#35** part 3 — implement the two together.
@@ -495,7 +499,11 @@ LED control, focus-view/UI cosmetics.
      the plugin data dir (`$PLUGIN_DATA_DIR`) whose attributes include one
      that *is* the markdown describing the tone (today's companion `.md`
      folded in, not a sidecar path). The CLI can print a tone's description
-     (e.g. `helixgen describe <tone>`). Design must reconcile with the
+     (e.g. `helixgen describe <tone>`). The metadata also records the
+     **guitar settings for the tone** — not tuning, but how to set the
+     guitar's knobs and switches for this tone (e.g. "bridge pickup, tone
+     rolled to 7, coil split on"), expressed against the target guitar's
+     control inventory from its profile (#22). Design must reconcile with the
      manifest (`setlists.json` already carries a `doc` path — the JSON
      metadata likely replaces it).
   3. **Guitar variants of one tone.** A tone can carry variants per guitar,
