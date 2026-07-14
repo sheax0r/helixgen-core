@@ -466,6 +466,22 @@ LED control, focus-view/UI cosmetics.
      **Default: (b) "different presets within the same tone"** unless the
      user chooses otherwise.
 
+- **#36 IR metadata at registration — research + record** — requested
+  2026-07-13. When IRs are registered with the library (`register-irs`,
+  `ir-scan`, MCP IR tools), research each IR and record descriptive metadata
+  in the library JSON format (same shape/home as #35's per-tone metadata):
+  what the IR models (cab/speaker/mic/mix provenance) and how it sounds
+  (character tags). Sources: the pack's manual/docs (the `irs/_catalog/`
+  pipeline already mines these — fold it in rather than duplicating: catalog
+  README's controlled tag vocabulary + mic legend are the vocabulary),
+  filename conventions, and optionally FFT analysis (the catalog's 5-band
+  measured-tag pass). Explicitly *not* aimed at "make me sound like so-and-so"
+  — the value is when crafting or tweaking your own tones (the `tone` skill /
+  user can ask "which registered IR is tight/bright/vintage" without
+  re-analysing WAVs). CLI/MCP read access to the metadata. Needs a brainstorm
+  (metadata schema, research depth per-IR vs per-pack, backfill of
+  already-registered IRs, offline behavior when no manual exists).
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.
