@@ -446,7 +446,20 @@ orthogonal to it.
   **recall-`preset` family deferred** (unanchored + byte-indistinguishable from
   snapshot 0 without a decoded discriminator — adversarial-review H1/H2);
   HotKey/Utility (family 4) + EXP continuous commands out of scope (no anchor);
-  footswitch CC/Note/MMC 12-slot placements are a HYPOTHESIS (only PC captured);
+  **footswitch CC/Note/MMC placements — CAPTURED + the transcoder found WRONG
+  (2026-07-15), ⚠️ CODE FIX NEEDED (not in this PR):**
+  `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`. Real
+  saved-blob capture (each subtype isolated on `ZZCAP-CC`) shows the footswitch
+  12-slot layout **reserves pvl1 = subtype and shifts data +1** vs the
+  Instant/PC layout `transcode.py::_command_payload` uses for all sources:
+  ch@**pvl2** (not pvl1), MSB/LSB@pvl3/4, CC#@**pvl6**, CC value@**pvl7**,
+  Note#@**pvl8**, velocity@**pvl9**, MMC message@**pvl11**. AND the device
+  **`func` enum is Note=2 / MMC=3** (app subtype-tab index), the **opposite** of
+  the transcoder's Note=3/MMC=2 → `.hsp`↔device func needs a Note↔MMC swap. The
+  **Instant** layout (ch@pvl1, no subtype slot) is byte-correct as-is, so the
+  fix must branch on source class (footswitch/`ctxt==1` vs Instant). HW-validated
+  for byte survival only, not audible/functional MIDI (like #33). Precise slot
+  tables + the exact `pvl` arrays are in the findings spec.
   audible/functional response uncharacterized (like #33); FS command-src
   `locl` for FS2–FS11 is EXTRAPOLATED from the single FS1 anchor (`25+NN`
   controller progression); a switch shared by `footswitches` + `commands` is
@@ -505,22 +518,33 @@ orthogonal to it.
   Design + protocol findings:
   `docs/superpowers/specs/2026-07-14-ir-library-polish-design.md`.
   Still open from the original row:
-  - **#31 `.hss` setlist-bundle import/export** — **read side shipped
-    (EXPERIMENTAL — filled-slot framing pinned against synthesized fixtures
-    only; needs one real non-empty export to confirm; writer still open).**
-    `.hss` = 24-byte Line 6 header + gzip + POSIX tar of `manifest.json` + 128
-    `.N` slot files (empty = 1-byte sentinel; filled = the preset's stored
-    content blob). `src/helixgen/device/hss.py` (pure stdlib
+  - **#31 `.hss` setlist-bundle import/export** — **read side shipped; FILLED-SLOT
+    FRAMING NOW CAPTURED + the reader's assumption CORRECTED (2026-07-15) —
+    writer UNBLOCKED, but the import/install path needs a fix.** Capture +
+    correction: `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`
+    (real non-empty export captured on-device to the expendable `Throwaway`
+    setlist, then cleaned up). `.hss` = 24-byte Line 6 header + gzip + POSIX tar
+    of `manifest.json` + 128 `.N` slot files (empty = 1-byte `0x00` sentinel,
+    manifest `type: "<null>"`). **Filled slot — corrected vs the old
+    assumption:** manifest `type` = **`"application/stadium-preset"`** and the
+    `.N` payload is the **`.hsp` preset format** (magic `rpshnosj` + **pretty
+    JSON**), **NOT** the `_sbepgsm` content blob the reader assumed. (The app
+    converts each preset's `_sbepgsm` → `.hsp`/JSON for the bundle; `device
+    get_content` still returns `_sbepgsm`, a *different* format.) **⚠️ CODE FIX
+    NEEDED (not in this PR):** `src/helixgen/device/hss.py` module doc +
+    `import-hss` install feed `slot.blob` through `content.decode_any` /
+    `install_into_pool`, which **raises on a real export** ("not a recognised
+    content blob"). The install path must parse a filled `.N` as an
+    `rpshnosj`+JSON `.hsp` (JSON → recipe/ingest → transcode → pool), and the
+    **writer** must emit `rpshnosj`+JSON per filled slot with `type:
+    "application/stadium-preset"`. `src/helixgen/device/hss.py` (pure stdlib
     `gzip`+`tarfile`+`json`) parses the container; `helixgen device setlist
     import-hss <file.hss> [--list] [--setlist <name>] [--dry-run]` +  MCP
     `device_import_hss` install filled slots into the pool and reference them
     into a device setlist. Header/gzip/tar/manifest/128-slot/empty-sentinel
-    parsing is pinned against the real captured empty-setlist sample; the
-    FILLED-slot byte framing (what a filled `.N` member and its manifest
-    `contents[]` entry actually look like) is an **inferred assumption**,
-    proven only against synthesized fixtures (built from real `.sbepgsm`
-    content blobs) — no non-empty `.hss` export has been captured yet. A
-    byte-faithful **writer** remains out of scope until one is. Imported
+    parsing is HW-pinned (empty + non-empty samples). A byte-faithful **writer**
+    is now unblocked (the two unknowns — filled `type` token + payload format —
+    are resolved). Imported
     presets are recorded in the tone library as pathless tones (source
     `import-hss`) + setlist membership so `device sync` keeps their
     references. **Residual: no dedupe-on-retry** — re-running an import after

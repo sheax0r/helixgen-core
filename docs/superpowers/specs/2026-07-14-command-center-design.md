@@ -145,6 +145,15 @@ A command is an **entity**. For each recipe command helixgen emits:
       Bank MSB/LSB in `pvlc`/`pvld` (`-1`=off). Remaining slots (`pvla`, `pvle..`)
       are written from the ZZCAP-observed defaults; their per-param semantics are
       **only partially anchored** (one device example) — see honesty note.
+      > **CORRECTION 2026-07-15** (`../2026-07-15-hss-and-cc-capture-findings.md`):
+      > the **footswitch** class is NOT the same layout as Instant. Real saved
+      > blobs (CC/Note/MMC isolated) show footswitch reserves `pvlb` = **subtype**
+      > (`func` mirror; enum `0`=Bank/Program,`1`=CC,**`2`=Note,`3`=MMC** — Note/MMC
+      > OPPOSITE the `.hsp` `Command` order) and shifts data +1: `pvlc`=channel,
+      > `pvld`/`pvle`=MSB/LSB, `pvlg`=CC#, `pvlh`=CC value, `pvli`=note#,
+      > `pvlj`=velocity, `pvll`=MMC message. Instant keeps `pvlb`=channel (no
+      > subtype slot). `_command_payload` uses the Instant layout for both → wrong
+      > for footswitch; fix filed under #16.
     - PresetSnapshot (Mandarin, `func 0`, all-zero) reproduces byte-for-byte.
 - a **`trgs`** entry `{eID_: cid_, enty: 6, id__: tid_, pid_: 0, slot: 0,
   type: 4}` (a command-target entity; `sm__.scid` lists only controllers, NOT

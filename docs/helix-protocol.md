@@ -693,10 +693,13 @@ footswitch/controller assignment commands are parameterised on the device.
   `/PropertyValueGet` with an **empty blob** — writes work (`device globaleq`),
   reads don't. The app sources EQ state from the connect-time sync; whether a
   bulk read exposes it is unexplored.
-- **`.hss` filled-slot payload.** The container format (24-byte header + gzip +
-  tar of `manifest.json` + 128 `.N` slots) is decoded and **readable**, but the
-  filled-slot `type` token and `.N` payload framing are inferred from an *empty*
-  export — a non-empty `.hss` is needed for a byte-faithful writer.
+- **`.hss` filled-slot payload — RESOLVED 2026-07-15** (real non-empty export
+  captured; `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`).
+  A *filled* slot's manifest entry is `{"path":".N","type":"application/stadium-preset"}`
+  and its `.N` payload is the **`.hsp` format** (magic `rpshnosj` + JSON), **not**
+  the `_sbepgsm` content blob previously assumed. Writer unblocked; the
+  `import-hss` install path needs updating (parse `.N` as `rpshnosj`+JSON, not
+  `_sbepgsm`).
 - **Time signature** is a **Song** property carried over SFTP (port 22,
   encrypted), not OSC — programmatic set needs song-file RE.
 - **`_sbepgsm` ↔ `.hsp` converter.** The field-level mapping is known (blocks →

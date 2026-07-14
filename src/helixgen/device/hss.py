@@ -1,5 +1,20 @@
 """Read-side ``.hss`` setlist-bundle support (backlog #31). **EXPERIMENTAL.**
 
+.. warning::
+   **FILLED-SLOT FRAMING BELOW IS NOW KNOWN-WRONG (corrected 2026-07-15).** A
+   real non-empty export was captured — see
+   ``docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md``. A
+   *filled* slot's manifest entry is ``{"path": ".N", "type":
+   "application/stadium-preset"}`` and its ``.N`` payload is the **`.hsp`
+   preset format** (magic ``rpshnosj`` + JSON), **NOT** the ``_sbepgsm`` /
+   ``\\xff\\xff\\xff\\xffpgsm`` content blob the assumption below (and the
+   ``import-hss`` install path) presume — feeding ``slot.blob`` through
+   :func:`helixgen.device.content.decode_any` **raises** on a real export. The
+   container parse (header/gzip/tar/manifest/128-slots/empty-sentinel) is
+   correct; the filled-slot *decode/install* path and a byte-faithful writer
+   are the remaining work (parse ``.N`` as ``rpshnosj``+JSON → recipe/ingest;
+   writer emits the same + ``type: "application/stadium-preset"``).
+
 A ``.hss`` is the Stadium app's "export setlist" file. Format decoded via a
 hardware capture 2026-07-14 — see
 ``docs/superpowers/specs/2026-07-14-parity-capture-findings.md`` §8:
