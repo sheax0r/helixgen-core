@@ -405,9 +405,68 @@ msgpack map.
 | Op | Address | Typetags / args | Reply | Notes |
 |----|---------|-----------------|-------|-------|
 | **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, block, 0, paramId, floatValue, -1]` | edit-buffer update (echoed on 2001) | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `block` = block index within the path (a reverb-block change was captured as `path=0, block=6`); the `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f`; int/bool params are passed as their float encoding. |
-| **MODEL SET** | `/ModelSet` | `,iiiii` → `[127, 0, 1, 0, modelId]` | edit-buffer update | Places/replaces a model. The leading ints in captures are literally `127, 0, 1, 0` (their exact roles — reqid? path? block? — are **partially decoded**); `modelId` is the **numeric** model id from the model defs (§8). |
+| **MODEL SET** | `/ModelSet` | `,iiiii` → `[cmd, dsp, block_id, subpos, modelId]` | edit-buffer update (echo `/setModelWithMID`) | Places/replaces a model. Args **decoded 2026-07-14** (e.g. `[117, 0, 4, 0, 70]` = cmd, dsp 0, block 4, subpos 0, MID 70); `modelId` is the **numeric** model id from the model defs (§8). A model swap **cascades**: `/setBlockEnable`, `/setBlockFavorite`, `/assignSnapshotBypass`, `/attachBlockBypassControllerWithBlob` (a `lrtcpgsm` blob), `/setControllerSource`+`/setSourceEnable`, and a batch of `/setPropertyValue` param defaults for the new model — replay these for a faithful live swap. |
 | **SNAPSHOT NAME** | `/SetSnapshotName` | `,iis` → `[reqid, snapshotIndex, "Name"]` | `/status` | Renames snapshot `snapshotIndex` (0–7). |
 | **EDIT BUFFER GET** | `/EditBufferStateGet` | `(reqid:i)` | `/getEditBufferState` → `[reqid, len:h, blob:b]` where blob = `_sbepgsm…` | Pulls the entire current edit buffer as the dialect-B blob (§4). `len` is an int64 (`h`) byte count. |
+
+### Live device control (2026-07-14 parity capture)
+
+Live-control commands pinned by the 2026-07-14 capture (full writeup:
+`docs/superpowers/specs/2026-07-14-parity-capture-findings.md`). All on 2002;
+`cmd` = the leading monotonic id; block addressing is `(dsp, block_id)`.
+
+| Op | Address | Typetags / args | Notes |
+|----|---------|-----------------|-------|
+| **Recall snapshot (live)** | `/activateSnapshot` | `,ii` → `[cmd, snapshotIndex]` | Index **absolute, 0-based**. Followed by `/setBatchedParamVals` (the snapshot's param deltas). No atomic *copy*-snapshot opcode exists — the app duplicates via `/AddContentsToContainer` or a batch of property writes. |
+| **Bypass/enable block (live)** | `/BlockEnableSet` | `,iiii` → `[cmd, dsp, block_id, enable]` | `enable` 0/1; echoed `/setBlockEnable` on 2001. |
+| **Reorder container** | `/ReorderContainerContent` | `,iibi` → `[cmd, containerCID, msgpack[movedCIDs], newPos]` | Moves the listed CIDs to `newPos`. Works on both a **setlist's presets** and the **setlists** themselves (a setlist is a container under `-5`). `/updateContainerContent` returns the new order. |
+
+`/LoadPresetWithCID` (above) is **load-by-CID** — the app's "make active" click
+is this same command; there is no separate active-index (backlog #1 resolved).
+`/ParamValueSet` and `/ModelSet` (above) are the other two live edit verbs.
+
+### Global EQ properties (`dsp.globaleq.*`)
+
+The three Global EQs (1/4"=`qtr`, XLR=`xlr`, Phones=`pho`) are **device
+properties** written on the 2002 property channel — but with a **variant**
+value, not a bare scalar:
+
+```
+/PropertyValueSet [cmd, 0, "lavppgsm"+msgpack{
+    key_: "dsp.globaleq.<out>.<band>.<param>", type:"v",
+    val_: { parm:<slot>, valu:<value> } }]
+```
+
+Bands `lowcut`(0) `lowshelf`(1) `low`(2) `mid`(3) `high`(4) `highshelf`(5)
+`highcut`(6); param→slot `enable`=1 `freq`=2 `gain`=3 `q`=4 `slope`=5; output
+level = key `dsp.globaleq.<out>.level` slot 3. A full-EQ snapshot is key
+`globals.eq`. **Write-only over the network** — `/PropertyValueGet` returns an
+empty blob for `dsp.globaleq.*` (the app reads EQ state from the connect-time
+sync). Shipped as `device globaleq list|set` (+ MCP); codec
+`src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
+
+### Telemetry: tuner & meters (2003 `/dspEvent`)
+
+`/dspEvent` blobs are msgpack `{id__:{eid_,mid_}, vals:[…]}`. A **continuous
+background pitch detector** streams on `{eid_:10, mid_:796}` as a **single float
+= fractional MIDI note** (int = note, frac×100 = cents, `-1.0` = silence).
+Grid **meters** stream on `{eid_:1, mid_:796/800}` as 128-float arrays. The
+hardware tuner is engaged via FS12 (`volatile.press.taptempo` /
+`volatile.held.taptempo`; exit `volatile.press.exittuner`) — but the pitch
+stream is always live regardless, so a network tuner needs no engage.
+
+### Command Center, MIDI/XY controllers
+
+Decoded 2026-07-14 (see the findings spec §5–§7 for byte detail): Command Center
+uses `/attachCommandWithType` (2-byte-length-prefixed framing) →
+`/setCommandParamVal`; type families 1=Preset/Snapshot, 4=HotKey/Utility,
+6=MIDI (MIDI subtype via param idx1: 0=PC,1=CC,3=Note,2=MMC). MIDI controller
+assignment = `/attachParamController`/`/attachBlockBypassController` +
+`/ControllerMIDISourceAdd` (CC# is a BE uint16 at blob offset 12; no channel on
+the wire). XY zones activate via `/SetBatchedParamValues` (a 12-tuple
+`[dsp,block,sub,paramId,valueF64]` batch = the block's whole param set; no
+zone-index — the batch *is* the activation). Preset-side storage lives under
+`cg__.entt` (`srcs`/`cmnd`/`trgs`, `ctrl`/`ctm_`).
 
 ### Connect-time / info commands
 
@@ -623,9 +682,23 @@ footswitch/controller assignment commands are parameterised on the device.
 
 - **Remaining `_sbepgsm` leaf fields.** The top-level (`cg__`/`hist`/`pm__`/
   `sfg_`) **and** the block/param layer (`blks` → block dict → `mdls[0]` →
-  `parm` with numeric `id__`/`pid_`/`valu`, §4) are now decoded. Still open: the
-  8-key **`hrns` harness** dict per block, and the controller-wiring maps in
-  `cg__.entt` (`cmnd`/`ctm_`/`ctrl`/`sm_`/`snps`/`srcs`/`trgs`).
+  `parm` with numeric `id__`/`pid_`/`valu`, §4) are decoded. The `cg__.entt`
+  controller-wiring maps are **now decoded 2026-07-14** for MIDI controllers and
+  Command Center commands (`srcs`/`cmnd`/`trgs`, `ctrl`/`ctm_`; see the parity
+  findings spec). Still open: the 8-key **`hrns` harness** dict per block, and
+  **XY-zone storage** — `/SetBatchedParamValues` activates a zone on the wire but
+  the inactive zones do **not** appear in the saved `_sbepgsm` (storage location
+  unresolved).
+- **Global EQ network read-back.** `dsp.globaleq.*` and `globals.eq` answer
+  `/PropertyValueGet` with an **empty blob** — writes work (`device globaleq`),
+  reads don't. The app sources EQ state from the connect-time sync; whether a
+  bulk read exposes it is unexplored.
+- **`.hss` filled-slot payload.** The container format (24-byte header + gzip +
+  tar of `manifest.json` + 128 `.N` slots) is decoded and **readable**, but the
+  filled-slot `type` token and `.N` payload framing are inferred from an *empty*
+  export — a non-empty `.hss` is needed for a byte-faithful writer.
+- **Time signature** is a **Song** property carried over SFTP (port 22,
+  encrypted), not OSC — programmatic set needs song-file RE.
 - **`_sbepgsm` ↔ `.hsp` converter.** The field-level mapping is known (blocks →
   model + named params; `defs.py` bridges numeric `id__`/`pid_` ↔ `.hsp`
   strings/names, applying helixgen's ingest model-id translation first). Writing
@@ -633,9 +706,10 @@ footswitch/controller assignment commands are parameterised on the device.
   controller leaves — remains the main lift for full round-trip.
 - **`/SavePresetWithCID` 4th arg `N`.** Meaning unknown (not the block count;
   editor sent `6`, `0` works byte-faithfully). Harmless but uncharacterised.
-- **`/ModelSet` leading args.** `127, 0, 1, 0` — which are reqid/path/block/flag
-  is unconfirmed; verify before relying on it for placement. (`/ParamValueSet`'s
-  `[reqid, path, block, 0, paramId, value, -1]` layout is now **confirmed live**.)
+- ~~**`/ModelSet` leading args.**~~ **Decoded 2026-07-14**:
+  `[cmd, dsp, block_id, subpos, modelId]` (see §6 "Live device control").
+  (`/ParamValueSet`'s `[reqid, path, block, 0, paramId, value, -1]` layout is
+  also confirmed live.)
 - **`/status` error codes.** Only `code == 0` (OK) is confirmed; the non-zero
   error taxonomy is uncatalogued.
 - **2001 12-byte header field split** (§2) and **2003 framing** (assumed same as

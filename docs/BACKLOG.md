@@ -211,10 +211,12 @@ assumption — see #9); the reference-based redesign below then **shipped
   sync path on an expendable setlist.**
 
 ### Device-control breadth
-- **#1 Set the currently active tone** **[device-write][discovery]** — `load
-  <cid>` fills the edit buffer; confirm whether there's a separate
-  active-preset-index command and expose it (`device select <cid>` + MCP). OSC
-  command names live in `client.py`; the active-preset verb isn't captured yet.
+- **#1 Set the currently active tone** — **✅ RESOLVED 2026-07-14 (no new verb
+  needed).** The 2026-07-14 parity capture proved the app's "make active" click
+  is `/LoadPresetWithCID` (load-by-CID) — the *same* command as `device load`;
+  there is **no** separate active-preset-index command for presets (only Songs
+  have `/setActiveSongRef`). Single-click select is just a `/GetContentRef`
+  metadata read. So `device load <cid>` already IS "set the active tone."
 
 ### `.hsp` → device transcoder (replaces the template bridge)
 - **#12 `.hsp` → `_sbepgsm` transcoder** **[in progress 2026-07-12]** — the real
@@ -359,17 +361,26 @@ orthogonal to it.
   (get/set/def, enum-by-label, range validation, round-trip) — see
   `docs/superpowers/specs/2026-07-13-global-settings-re-findings.md`. The device
   self-describes each key (name/type/range/enum) via `/PropertyDefWithKeyGet`, so
-  the catalog is live. **Remaining follow-up: Global EQ** (`dsp.globaleq.*` +
-  `/GraphEnableSet`) is a separate, non-property screen — its param-write path
-  still needs a capture. Matrix §8.
-- **P2 · #16 Command Center** **[device-write][discovery]** — the footswitch-
-  command subsystem (`commanddefs` families: PresetSnapshot, Song, Looper,
-  Utility, ExtAmp, MIDI CC/PC/Note/MMC, HotKey; 2 cmds/switch, 16 instant
-  commands, EXP MIDI, per-command channel). Extend the authoring/transcode path
-  (`cg__`/command graph) + capture `/ExecuteCommand`/`/CommandTypeSet`. Matrix §6.
-- **P3 · #17 Matrix Mixer** **[device-write][discovery]** — per-output-layer
-  (1/4"/XLR/Phones) mixing of paths + 8 Song tracks + click + USB/BT/aux, with
-  fader/pan/mute/solo and output linking (`/MixerSave`). Matrix §3.
+  the catalog is live. **Global EQ follow-up: ✅ SHIPPED 2026-07-14** — it IS
+  property-based (corrects the old "non-property screen" note): `device globaleq
+  list|set` (+ MCP `device_globaleq_*`) writes `dsp.globaleq.<out>.<band>.<param>`
+  via `/PropertyValueSet` with a variant `{parm,valu}` blob. Byte-exact codec
+  (golden-tested) + HW-validated (all 3 outputs × 7 bands, `/success`). Write-only
+  over the network (no `/PropertyValueGet` read-back → no `get`). Findings:
+  `docs/superpowers/specs/2026-07-14-parity-capture-findings.md` §2. Matrix §8.
+- **P2 · #16 Command Center** **[device-write] — PROTOCOL DECODED 2026-07-14,
+  ready to implement.** The footswitch-command subsystem. Wire path pinned:
+  `/attachCommandWithType` (2-byte-length framing) → device returns a handle →
+  `/setCommandParamVal(seq,handle,paramIdx,val)`; type families 1=Preset/Snapshot,
+  4=HotKey/Utility, 6=MIDI (subtype via param idx1: 0=PC,1=CC,3=Note,2=MMC);
+  slot = `locl` int (FS 25/26/27, Instant1=0, EXP A=43). Preset-side storage is
+  `cg__.entt` (`srcs`→`cmnd`(`type`/`func`/`pvla..pvll`)→`trgs`). Next: extend
+  the transcoder to synthesize `cg__.entt` command records + (optionally) a live
+  authoring verb. Findings spec §5. Matrix §6.
+- **P3 · #17 Matrix Mixer** — **🚫 CLOSED 2026-07-14: NOT an app feature.** The
+  manual + app-bundle surveys confirm the desktop app has no mixer view (only
+  the Output block's Pan+Level); per-output fader/pan/mute/solo is a
+  device-hardware screen. Out of app-parity scope. Matrix §3.
 - **P4 · #18 Signal-flow param depth** — **✅ SHIPPED (this release).**
   First-class authoring of input params (impedance/pad/trim/gate — recipe
   `input` object form), output level/pan (`output` object), split TYPE
@@ -380,11 +391,19 @@ orthogonal to it.
   the device's self-described enum). Design + evidence:
   `docs/superpowers/specs/2026-07-14-signal-flow-param-depth-design.md`.
   Matrix §3 rows all ✅.
-- **P5 · #19 Live device ops** **[device-write][discovery]** — live snapshot
-  recall/copy (`/ActiveSnapshotIndexSet`/`/CopySnapshot`), live block bypass
-  (`/BlockEnableSet`), live model set (`/ModelSet`), tempo (`/SetTempo`,
-  `/SetTimeSignature`), tuner engage + readout (2001/2003 stream schema). The
-  performance surface. Matrix §5/§9/§10.
+- **P5 · #19 Live device ops** **[device-write] — ARGS DECODED 2026-07-14, ready
+  to implement.** All arg shapes pinned (findings spec §1,§3,§4):
+  - snapshot recall `/activateSnapshot [cmd, index]` (absolute); **no `/CopySnapshot`
+    exists** (copy = duplicate or batch property writes)
+  - block bypass `/BlockEnableSet [cmd, dsp, block, enable]`
+  - model set `/ModelSet [cmd, dsp, block, sub, modelId]` (+ cascade)
+  - **tempo** = property `global.tempo.bpm` — already works via `device settings`
+    (no `/SetTempo` needed); **time signature** = Song property over SFTP (not OSC)
+  - **tuner/meters** = 2003 `/dspEvent` (`eid_10/mid_796` = fractional-MIDI pitch;
+    `eid_1/mid_796|800` = 128-float meters) — implementable as a `device tuner`/
+    `device meters` 2003-subscribe (no engage needed; pitch stream is always live)
+  Next: wire `device snapshot`, `device bypass`, `device model`, `device tuner`.
+  Matrix §5/§9/§10.
 - **P6 · #20 IR + library polish** — **🟡 MOSTLY SHIPPED (2026-07-14).**
   Shipped: IR delete/rename/prune (**#11** ✅), setlist
   create/rename/delete/duplicate (**#8** ✅ — creation cracked, no capture
@@ -393,14 +412,20 @@ orthogonal to it.
   Design + protocol findings:
   `docs/superpowers/specs/2026-07-14-ir-library-polish-design.md`.
   Still open from the original row:
-  - **#31 `.hss` setlist-bundle import/export** — **needs a sample `.hss`
-    exported from the Stadium app** (none exists on this machine; the format
-    will not be guessed). Once a sample lands: reverse it (likely a container
-    of preset blobs + manifest), ship `device setlist export-hss/import-hss`,
-    document in `helix-format-reference.md`.
+  - **#31 `.hss` setlist-bundle import/export** — **FORMAT DECODED 2026-07-14,
+    reading unblocked.** `.hss` = 24-byte Line 6 header + gzip + POSIX tar of
+    `manifest.json` + 128 `.N` slot files (empty = 1-byte sentinel; filled = the
+    preset's `_sbepgsm` blob). Readable today with stdlib `gzip`+`tarfile`+`json`
+    + the existing `_sbepgsm` decoder. A sample (empty setlist) is captured; a
+    **non-empty** export is still needed to pin the filled-slot payload framing
+    before a byte-faithful *writer*. Ship `device setlist import-hss` (read) first.
+    Findings spec §8.
   - IR folders / move-to-folder (matrix §7) — content-path surface not RE'd.
-  - Active-preset select (**#1**) — unchanged, still open.
-  - Setlist reorder (`/ReorderContainerContent`) — arg shape still 🔍.
+  - **Active-preset select (#1) — ✅ RESOLVED 2026-07-14:** the app's "make
+    active" is `/LoadPresetWithCID` (load-by-CID) = existing `device load`; there
+    is no separate active-index. (Only Songs have `/setActiveSongRef`.)
+  - **Setlist/preset reorder** (`/ReorderContainerContent [cmd, container,
+    [cids], newPos]`) — **arg decoded 2026-07-14**; wire a `device reorder` verb.
 - **P7 · #21 Quick wins** — **✅ SHIPPED (2026-07-14).** `helixgen device
   info` / MCP `device_info` (`/ProductInfoGet` — model/device-id/serial/
   firmware/storage; HW-validated live) + controller depth: FS→**param
@@ -415,22 +440,25 @@ orthogonal to it.
   `docs/superpowers/specs/2026-07-14-controller-depth-device-info-design.md`.
   ZZB install→pull cycle persisted every field byte-exact. MIDI/XY sources
   split out to **#33**/**#34**. Matrix §6/§12.
-- **#33 MIDI CC/Note controller source** **[device-write][discovery]** — drive
-  a block's bypass/param from an incoming MIDI CC/Note
-  (`/ControllerMIDISourceAdd`; `.hsp` `midisource` int). **Deferred for lack
-  of evidence:** all 1553 controllers across the 211-export corpus carry
-  `midisource: 0`; no on-device preset (66 factory + 28 pool, checked
-  2026-07-14) has one; the app-binary string table names the UI options (MIDI
-  Note On/Off, CC, PC) but not the int encoding; deriving it live requires
-  mutating the edit buffer (active-tone rule) or a Stadium-app frida capture
-  of `/ControllerMIDISourceAdd` — do the capture when this is picked up.
-  Matrix §6.
-- **#34 XY-controller assignment** **[device-write][discovery]** — assign the
-  XY pad's axes as controller sources (app strings `X-Axis (XYPad)` /
-  `Y-Axis (XYPad)`; `preset.xyctrl` block). **Deferred for lack of evidence:**
-  all 84 corpus `xyctrl` dicts are factory defaults and no controller in any
-  export or on-device preset carries an XY source id, so the source-id bank is
-  unknown; same capture path as #33. (Related: stomp **bank B**
+- **#33 MIDI CC/Note controller source** **[device-write] — UNBLOCKED
+  2026-07-14 (capture done), ready to implement.** Wire path pinned (findings
+  spec §6): 2-step bind→source — `/attachParamController [goid,dsp,block,sub,
+  param]` or `/attachBlockBypassController`, then `/ControllerMIDISourceAdd` where
+  the **CC# is a BE uint16 at blob offset 12** (no channel on the wire = global
+  base channel). `.sbe` storage: `cg__/entt/ctrl[]` (`cid_`/`cnt2`=CC#/`midi`=
+  packed CC/`tid_`) + `ctm_/ptid[]` mapping `(block<<16|param)→tid_`. Corpus
+  `midisource:0` was because no factory preset uses it — the live encoding is now
+  known. Next: synthesize the `.sbe` ctrl records in the transcoder (+ optional
+  live verb). Matrix §6.
+- **#34 XY-controller assignment** **[device-write] — ACTIVATION DECODED
+  2026-07-14; storage still open.** Selecting an XY zone emits
+  `/SetBatchedParamValues` = a 12-tuple `[dsp,block,sub,paramId,valueF64]` batch
+  (the block's whole param set; no zone-index — the batch *is* the activation).
+  ⚠️ **The inactive zones are NOT in the saved `_sbepgsm`** (only the active
+  zone's params appear; no zone container/labels) — so XY *storage* location is
+  unresolved and a `.sbe` round-trip does not preserve zones. Blocker for
+  authoring; needs a follow-up dig on where zones persist. Findings spec §7.
+  (Related: stomp **bank B**
   `0x010102NN` — encoding fully mapped (ctxt 2, live-anchored) and
   transcoded, but not exposed as an authoring identifier: the physical
   second-stomp-page layout/English naming is undecided; `view` keeps bank-B

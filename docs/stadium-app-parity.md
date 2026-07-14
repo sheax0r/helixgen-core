@@ -18,6 +18,16 @@ protocol capture (arg shape) · 🚫 out-of-scope.
 
 A ✅ requires a shipped-release / test / hardware ref — never memory.
 
+> **2026-07-14 parity capture:** an owner-driven Frida capture pinned the
+> argument shapes / value encodings for the remaining 🔍 rows. Full writeup:
+> `docs/superpowers/specs/2026-07-14-parity-capture-findings.md`. Resolved: Global
+> EQ (now **shipped** — `device globaleq`), active-select (#1), reorder args,
+> live bypass/model/snapshot ops, Command Center (#16), MIDI controller (#33) &
+> XY (#34) wire encoding, tuner/meter telemetry schema, tempo (property), `.hss`
+> container format (readable). Confirmed device-only (🚫): Matrix Mixer & Tuner
+> UI. Still open: time signature (SFTP song), XY-zone storage, `.hss` filled-slot
+> payload, Global EQ network read-back.
+
 > **Capture note:** The full OSC *command namespace* and the full `global.*`
 > settings namespace are already known from the app binary. Every 🔍 is only a
 > command's **argument shape**, pinned by a targeted frida capture when that
@@ -39,11 +49,11 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | List / search / multi-select presets | Librarian | `/GetContainerContents` | full | full | full | ✅ | `device list`; search is client-side over listable data |
 | Read metadata (no activate) | Librarian | `/GetContentInfo` | full | full | full | ✅ | non-activating read (2.18, #13) |
 | Load into edit buffer | dbl-click | `/LoadPresetWithCID` | full | full | full | ✅ | `device load` |
-| Make ACTIVE preset | click in setlist | `/LoadPresetAtContainerPosition` | none | none | none | 🔍 | backlog #1; distinct active-index vs load-to-buffer |
+| Make ACTIVE preset | click in setlist | `/LoadPresetWithCID` | full | full | full | ✅ | **#1 RESOLVED 2026-07-14**: a preset has ONE load = recall-by-CID (`/LoadPresetAtContainerPosition` never appears; there is no separate active-index). = `device load`. Single-click select is just a metadata read |
 | New / duplicate / copy-to-setlist | Manage Presets | `/CreateContent`+`/SetContentData` | full | full | full | ✅ | `device create`/`install` + reference model _(library-agent)_ |
 | Rename preset | Rename dialog | `/SetContentInfo` | full | full | full | ✅ | `device rename` |
 | Set / batch preset color | Rename / Batch Color | `/SetContentAttrs` `{colr:int}` | full | full | n-a | ✅ | `device set-info <cid>... --color` (batch) / MCP `device_set_info`; int enum, HW-validated 2026-07-14 (#20) |
-| Reorder presets | drag | `/ReorderContainerContent` | partial | none | partial | 🟡 | `slots reorder`+sync _(library-agent)_; not HW-validated; arg 🔍 |
+| Reorder presets | drag | `/ReorderContainerContent` `[cmd,container,[cids],pos]` | partial | none | partial | 🟡 | `slots reorder`+sync _(library-agent)_; **arg decoded 2026-07-14** (moved-cids + dest index); live reorder verb still to wire + HW-validate |
 | Move preset between setlists | drag | reference add/remove | full | full | full | ✅ | `device setlist add/remove` _(library-agent)_ |
 | Delete / clear-from-setlist | Delete / Clear | `/RemoveContent` | full | full | full | ✅ | `device delete`; clear = drop reference |
 | Export preset (.hsp) | drag out / Export | `/GetContentData` | full | n-a | full | ✅ | `device pull` (non-activating, 2.18) |
@@ -59,10 +69,10 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Create setlist | sidebar ▸ + | `/CreateContent(-5, pos, ctype=1003, {name})` | full | full | full | ✅ | **#8 SHIPPED** `device setlist create` / `device_setlist_create` (HW-validated 2026-07-14); `create-local` = manifest only |
 | Rename setlist | dbl-click | `/SetContentAttrs` `{name}` | full | full | n-a | ✅ | `device setlist rename` / `device_setlist_rename` (also renames local manifest record); HW-validated 2026-07-14 (#20) |
 | Duplicate setlist | Duplicate | copy references (rcid) into a fresh setlist | full | full | n-a | ✅ | `device setlist duplicate` / `device_setlist_duplicate` (auto-creates target; pool presets shared, not copied); HW-validated 2026-07-14 (#20) |
-| Reorder setlists | drag | reorder cmd | none | none | none | 🔍 | arg 🔍 |
+| Reorder setlists | drag | `/ReorderContainerContent` (setlists are containers under -5) | none | none | none | 🔍 | **arg decoded 2026-07-14** (same command as preset reorder); verb not yet wired |
 | Delete / clear setlist | Delete / Clear | `/RemoveContent(-5,[cid])` | full | full | partial | ✅ | `device setlist delete` / `device_setlist_delete` — references die, pool presets never (never-orphan, HW-validated 2026-07-14, #20); clear = `unsync`/mirror-to-empty |
 | Sync setlist(s) | (app is live) | pool+reference reconcile | full | full | full | ✅ | `device sync <setlist>`/`--all --gc` _(library-agent)_ |
-| Import / export setlist (.hss) | File menu | bulk content | partial | none | partial | 🟡 | per-tone push/pull exists; single-file `.hss` bundle = **backlog #31 — needs a sample .hss** (format not guessed) |
+| Import / export setlist (.hss) | File menu | 24-byte header + gzip + tar (`manifest.json` + 128 `.N` slots) | partial | none | partial | 🟡 | **#31: format decoded 2026-07-14, reading unblocked** (stdlib gzip+tarfile+json + `_sbepgsm` decoder). Sample `.hss` captured (empty setlist); a non-empty export still needed for a byte-faithful *writer* |
 
 ## 3. Signal-flow editor
 
@@ -79,9 +89,9 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Output block level/pan | Output Inspector | per-path output params | full | full | full | ✅ | `output: {level, pan}` + `set-param output` (#18) |
 | Output block destination (Matrix/XLR/1-4"/Path-2) | Output Inspector | output endpoint model | partial | partial | partial | 🟡 | not authorable; round-trips verbatim via `structural` entries — deliberate scope in the #18 design spec |
 | FX Loop / Send / Return | block Inspector | loop block + Trails | full | full | full | ✅ | Send/Return/Mix/DryThru are ordinary block params; `trails` now covers `HD2_FXLoop*` (#18). Caveat: authoring an FX-Loop block needs an `HD2_FXLoop*` exemplar in the block library — no corpus export carries one, so ingest a preset containing an FX Loop first |
-| Live block bypass on device | click block | `/BlockEnableSet` | none | none | none | 🔍 | offline enable/disable ✅; live device toggle arg 🔍 |
-| Live model set on device | Model List | `/ModelSet`+`/ModelEnableSet` | none | none | none | 🔴 | offline swap ✅; live device model-set not exposed |
-| Matrix Mixer (per-output mix/mute/solo) | device Main Volume | `/MixerSave`, mixer params | none | none | none | 🔴 | 8 song tracks + paths + click + USB/BT/aux, fader/pan/mute/solo — whole subsystem missing |
+| Live block bypass on device | click block | `/BlockEnableSet` `[cmd,dsp,block,enable]` | none | none | none | 🔍 | offline enable/disable ✅; **live toggle arg decoded 2026-07-14**; verb not yet wired |
+| Live model set on device | Model List | `/ModelSet` `[cmd,dsp,block,sub,modelId]` | none | none | none | 🔴 | offline swap ✅; **live arg + cascade decoded 2026-07-14** (re-attach bypass ctrl + push defaults); verb not yet wired |
+| Matrix Mixer (per-output mix/mute/solo) | **device screen only** | device-hardware UI | n-a | n-a | n-a | 🚫 | **NOT an app feature** (confirmed 2026-07-14 by manual + app-bundle survey: the desktop app has no mixer view — only the Output block's Pan+Level). Device-screen-only, out of app-parity scope |
 
 ## 4. Block & parameter editing (authoring)
 
@@ -101,8 +111,8 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 |---|---|---|---|---|---|---|---|
 | Create / name / color 8 snapshots | popup_snapshot | `snps` synth / `/SetSnapshotName` | full | full | full | ✅ | snapshot synth (2.18); color 🟡 (name yes, color field 🔴) |
 | Per-snapshot bypass + param delta | snapshot edit | `cg__.entt` synth | full | full | full | ✅ | recipe `snapshots` |
-| Recall snapshot live on device | switch | `/ActiveSnapshotIndexGet`/Set | none | none | none | 🔍 | live recall arg 🔍 |
-| Copy / paste / swap snapshot | panel | `/CopySnapshot` | none | none | none | 🔴 | live ops; not exposed |
+| Recall snapshot live on device | switch | `/activateSnapshot` `[cmd, index]` | none | none | none | 🔍 | **arg decoded 2026-07-14** (absolute 0-based index); verb not yet wired |
+| Copy / paste / swap snapshot | panel | (no atomic opcode) | none | none | none | 🔴 | **2026-07-14: no `/CopySnapshot` exists** — the app copies via preset duplication or a batch of property writes. Replicate by reading source deltas → writing onto target |
 | Discard-edits / reselect behavior | panel + global | `global.snapshot.*` | none | none | none | 🔴 | via §8 property path |
 
 ## 6. Controller / footswitch / MIDI / Command Center
@@ -117,9 +127,9 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Merge switch (multi-block per FS) | Assign to Switch | multi-target | full | full | full | ✅ | #21: N entries share one `switch`; one `srcs` + `scid → [cids]` (fixture + live-persisted) |
 | FS label / color | Label/Color | `preset.sources` → `pm__` scribble | full | full | full | ✅ | #21: `label`/`color` per switch; color-int palette anchored by live pulls (red=2, dkorange=3, ltorange=4, purple=9, white=11; rest order-inferred EXPERIMENTAL) |
 | Clear controllers / assignments | Action Panel | remove src/trg | partial | partial | partial | 🟡 | via re-authoring |
-| MIDI CC / Note assignment | midiassign | `/ControllerMIDISourceAdd` | none | none | none | 🔴 | **backlog #33** — `midisource` is 0 in all 1553 corpus controllers; encoding underivable without mutating the live edit buffer |
-| XY controller | XY screen | `/SnapshotSourceSet` XY / ctrl | none | none | none | 🔴 | **backlog #34** — all 84 corpus `xyctrl` dicts are defaults; no XY-sourced controller observed |
-| **Command Center** (Preset/Snap, Song, Looper, Utility, ExtAmp, MIDI CC/PC/Note/MMC, HotKey) | view_command_center | `commanddefs` + `/ExecuteCommand`/`/CommandTypeSet` | none | none | none | 🔴 | **whole subsystem missing**; 2 cmds/switch, 16 instant, EXP MIDI, per-cmd channel |
+| MIDI CC / Note assignment | midiassign | `/attachParamController`/`/attachBlockBypassController` + `/ControllerMIDISourceAdd` | none | none | none | 🔴→🔍 | **#33 UNBLOCKED 2026-07-14**: CC# = BE uint16 at blob offset 12 (no channel on wire = global base ch); 2-step bind→source; `.sbe` storage under `cg__.entt/ctrl`+`ctm_` decoded. Ready to implement |
+| XY controller | XY screen | `/SetBatchedParamValues` (zone = block-level param batch) | none | none | none | 🔴→🔍 | **#34 activation decoded 2026-07-14**: selecting a zone pushes the block's whole param set (no zone index). ⚠️ inactive-zone **storage** still unresolved (not in `.sbe`) |
+| **Command Center** (Preset/Snap, MIDI CC/PC/Note/MMC, HotKey, Utility, Instant, EXP→MIDI) | view_command_center | `/attachCommandWithType`+`/setCommandParamVal` (2-byte-len framing) | none | none | none | 🔴→🔍 | **#16 protocol decoded 2026-07-14**: type families 1=Preset/Snap,4=HotKey/Utility,6=MIDI (subtype via param idx1: 0=PC,1=CC,3=Note,2=MMC); slot=`locl`; `.sbe` `cg__.entt` (srcs→cmnd→trgs). Ready to implement |
 
 ## 7. IR (impulse response) management
 
@@ -158,22 +168,22 @@ enum) via `/PropertyDefWithKeyGet`, so the catalog is live, not hardcoded.
 | Date/Time (NTP, timezone, clock fields, format, hide) | Date/Time | `global.clock.*` | full | full | ✅ | page `date-time` |
 | Tuner config (ref pitch, offsets, type, in/out, trails) | (device tuner) | `global.tuner.*` | full | full | ✅ | page `tuner` (19 keys) — also §9 |
 | WiFi / Bluetooth enable | (device) | `global.wifi.*`, `global.bluetooth.*` | full | full | ✅ | page `wireless` |
-| Global EQ (3 EQs: 1/4"/XLR/Phones, bands, bypass, copy/paste/reset) | Global EQ view | `dsp.globaleq.*` + `/GraphEnableSet` | none | none | 🔍 | **not property-based** — separate screen; param write path still to capture (follow-up) |
+| Global EQ (3 EQs: 1/4"/XLR/Phones, bands, bypass) | Global EQ view | `dsp.globaleq.<out>.<band>.<param>` via `/PropertyValueSet` (variant `{parm,valu}`) | full | full | ✅ | **SHIPPED** `device globaleq list/set` (+ MCP `device_globaleq_*`); **IS property-based** (corrects earlier note); byte-exact codec + HW-validated 2026-07-14 (all 3 outputs, 7 bands). **Write-only** over the network (no `/PropertyValueGet` read-back) → no `get`; copy/paste/reset are app-side conveniences |
 
 ## 9. Tuner (device-only in the app — but network-addressable)
 
 | Function | App location | Protocol | Verdict | Notes |
 |---|---|---|---|---|
-| Engage / exit tuner | device FS12 | activation cmd | 🔍 | no app view; engage command to capture |
-| Read live pitch / cents | device screen | 2001/2003 stream | 🔍 | `device watch` sees streams; readout schema to capture |
+| Engage / exit tuner | device FS12 | `volatile.press.taptempo`/`held.taptempo`; exit `volatile.press.exittuner` | 🚫→🔍 | no app view (device-only UI). **Engage decoded 2026-07-14** — but not needed: the pitch stream is always live |
+| Read live pitch / cents | device screen | 2003 `/dspEvent` `{eid_:10,mid_:796}` | 🔍 | **schema decoded 2026-07-14**: single float = fractional MIDI note (int=note, frac×100=cents, −1=silence). Continuous background detector — implementable as `device tuner` via 2003 subscribe (no engage needed) |
 | Reference pitch / offsets / type / in-out / trails | device tuner settings | `global.tuner.*` | 🔴 | ~15 keys via §8 |
 
 ## 10. Tempo
 
 | Function | App location | Protocol | Verdict | Notes |
 |---|---|---|---|---|
-| Set BPM | tempo panel | `/SetTempo` | 🔍 | arg shape to capture |
-| Time signature | tempo panel | `/SetTimeSignature` | 🔍 | arg shape to capture |
+| Set BPM | tempo panel | property `global.tempo.bpm` | ✅ | **2026-07-14: no `/SetTempo` needed** — tempo is a property, already settable via `device settings set global.tempo.bpm <n>` (also `preset.tempo.bpm`) |
+| Time signature | tempo panel | **Song property over SFTP** (not OSC) | 🔴 | **2026-07-14: not on OSC** — carried in the song file over the encrypted SFTP channel; programmatic set needs song-file RE (deferred) |
 | Tap tempo | device FS12 | tap | 🔴 | |
 | Tempo source / follow / MIDI clock | Tempo/Click | `global.tempo.*` | 🔴 | via §8 |
 
