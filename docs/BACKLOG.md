@@ -439,6 +439,33 @@ LED control, focus-view/UI cosmetics.
   (d) theoretical: multi-message paginated listings (never observed; blob
   chunking IS covered) could evade the cross-check — note only.
 
+- **#35 Tone naming schema + embedded metadata + guitar variants** — requested
+  2026-07-13. Three coupled changes to the tone library (needs its own
+  brainstorm → design spec before implementation; #33/#34 are reserved by the
+  in-flight PR #38):
+  1. **Consistent naming schema.** Every tone is named
+     `$artist - $song - $guitar` (display name / device preset name); the
+     filename is the same schema slugged lowercase with dashes instead of
+     spaces (e.g. `foo-fighters-white-limo-les-paul-jr.hsp`). Supersedes the
+     current "<Tone Name> — <Guitar>" convention in CLAUDE.md's preset-naming
+     section; `tone` skill + auto-registration adopt it.
+  2. **Tone metadata as part of the library.** Each tone gets a JSON file in
+     the plugin data dir (`$PLUGIN_DATA_DIR`) whose attributes include one
+     that *is* the markdown describing the tone (today's companion `.md`
+     folded in, not a sidecar path). The CLI can print a tone's description
+     (e.g. `helixgen describe <tone>`). Design must reconcile with the
+     manifest (`setlists.json` already carries a `doc` path — the JSON
+     metadata likely replaces it).
+  3. **Guitar variants of one tone.** A tone can carry variants per guitar,
+     stored one of two user-selectable ways, chosen when adding a variant or
+     creating a multi-variant tone:
+     (a) **snapshot replication** — one `.hsp`, all snapshots replicated per
+     variant; or
+     (b) **per-variant presets** — a different actual `.hsp` file for each
+     variant, grouped under the same logical tone.
+     **Default: (b) "different presets within the same tone"** unless the
+     user chooses otherwise.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.
