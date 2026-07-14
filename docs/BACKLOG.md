@@ -31,15 +31,19 @@ and had to be redirected. Start here so future work begins from the right model.
    `.hsp`**. (The pre-2.16 bridge set the cab *model* but never wrote `irmd` — a
    latent bug the transcoder fixes.)
 4. **Device ops must NOT change the active tone unless the user asks.** Reading OR
-   writing content via the edit buffer (`load_preset` = `/LoadPresetWithCID`)
+   writing content via the **edit buffer** (`load_preset` = `/LoadPresetWithCID`)
    makes a preset active. Install via `CreateContent`+`SetContentData` is
-   non-activating (use it). `backup`/`pull` still activate → needs a
-   non-activating content-read command (RE) or save-and-restore (#13).
+   non-activating (use it). The **non-activating content READ** (`get_content` =
+   `/GetContentData`) shipped 2.18.0 (#13) — so `backup`/`pull`, `ir-prune`, and
+   `set-info` read/round-trip content **without** activating any preset. The one
+   remaining activating path is a deliberate `load_preset` (or the live-ops verbs,
+   which change the ACTIVE tone by design).
 5. **Don't source-dive to answer behavior/format questions.** The running MCP is
    the **bundled** plugin (`${CLAUDE_PLUGIN_ROOT}`), NOT the cwd checkout —
    reading source can mislead about the live version/schema. The **tool
-   descriptions, CLI `--help`, `device setlist list`, and the sync result dict**
-   are the authoritative contract. (See the resolver pattern, #14.)
+   descriptions, CLI `--help`, [`docs/CLI.md`](CLI.md), `device setlist list`, and
+   the sync result dict** are the authoritative contract. (See the resolver
+   pattern, #14.)
 6. **A tone belongs in as many setlists as you want.** `device setlist add` is
    idempotent within a setlist; it errors ONLY on a name/**different-file**
    collision. Never pre-check membership or read the manifest to add safely.
@@ -253,21 +257,41 @@ assumption — see #9); the reference-based redesign below then **shipped
   `cli.py` `pull`/`backup`).
 
 ### Resolver pattern — single source of truth for agents + skill
-- **#14 Implement + maintain a "resolver" pattern** **[infra]** — so future
-  developer-agents AND the runtime skill get authoritative answers without
-  source-diving or re-deriving (mental-model #5). Two faces of one idea:
-  - **Code-level resolvers** (one canonical function/table per mapping, reused
-    everywhere — never re-implemented ad hoc): model name↔device id + param
-    name↔`pid` (`defs`), setlist name→cid (`resolve_setlist_cid`), `irhash`↔wav
-    (`mapping.json`) and `irhash`↔device `irmd`, and `.hsp`↔`_sbepgsm` (the #12
-    transcoder). Audit for duplicated/divergent mapping logic and consolidate.
-  - **Contract-level resolver for agents:** behavioral/format facts live at the
-    point of use — **MCP tool descriptions, CLI `--help`, and the result dicts** —
-    and a short authoritative index (this "mental models" block + the protocol
-    doc) that a skill/agent consults FIRST. The `device` skill should point at
-    the resolver and explicitly forbid source-diving. Goal: an agent can answer
-    "how does X work / where does Y live" from the contract, not the source tree.
-    Keep it maintained as the code evolves (stale resolver = worse than none).
+- **#14 Implement + maintain a "resolver" pattern** **[infra]** — **✅ SHIPPED
+  WITH RESIDUALS (2026-07-15).** Audited the whole `src/` + `mcp_server/` tree
+  for duplicated/divergent mapping logic and consolidated the safe cases;
+  behavior-preserving (existing tests + new seam tests all green). Residuals
+  (semantic-difference reconciliations too risky for a behavior-preserving pass)
+  filed as #51–#53 for the #28 refactor pass.
+
+  **Code-level audit table** (mapping → canonical home → duplications → action):
+
+  | Mapping | Canonical home | Duplications found | Action |
+  |---|---|---|---|
+  | model name↔numeric id | `defs.model_id_for` / `model_name_for` | none (call sites clean) | already clean |
+  | helixgen model str→device id | `modelmap.device_model_id` (+`bridge._default_resolve_model` fallback) | none | already clean |
+  | param name→pid | `defs.param_id_for` | `transcode._param_pid` verbatim reimpl (3 sites) | **consolidated** (deleted `_param_pid`) |
+  | raw `model_params` table | **new** `defs.model_params_for` | 4 ad-hoc `load_defs()["model_params"]` reads (transcode `_pid_name_maps`/`_synth_parm`, bridge `param_name_map`) | **consolidated** |
+  | model→category | **new** `defs.category_for` | `transcode._category_for` + `bridge.device_category` copies | **consolidated** |
+  | input-endpoint model ids | derived via `defs.model_id_for` | hardcoded numeric ids in `transcode._INPUT_MODEL` | **consolidated** |
+  | `irhash`↔device `irmd` | **new** `device/irmd.py` `{irhash_to_irmd, irmd_to_irhash}` | inlined `bytes.fromhex`/`.hex()` at 5 pure sites (transcode×2, maintenance, client, sftp) | **consolidated** (bytes branches) |
+  | `irhash`↔wav | `ir.IrMapping` (`mapping.json`) | none — every `mapping.json` load goes through `IrMapping.load` | already clean |
+  | setlist name→cid | `client.resolve_setlist_cid` (#39) | none except the reorder clash branch (→ #52) | already clean |
+  | setlist keyword→container | **new** `client.container_for_setlist_keyword` | `cli._setlist_container` + `tools._device_container` cloned dicts | **consolidated** (each wraps it) |
+  | container cids (-1/-2/-5/-11) | `Container` IntEnum | none (bare numbers are docstrings only) | already clean |
+  | posi→"1A".."8D" label | `client.slot_label` | divergent 2nd formula in `manifest._posi_to_slot` (→ #51) | filed |
+  | `.hsp`↔`_sbepgsm` | `device/transcode.py` | single implementation | already clean |
+
+  **Contract-level:** verified + fixed the "Corrected mental models" block
+  (#4 was stale — the non-activating read #13 shipped and `backup`/`pull` no
+  longer activate); confirmed `docs/helix-protocol.md` current through
+  2026-07-15; spot-checked 12 MCP tool descriptions against behavior (all
+  accurate — no drift); strengthened the `device` skill with a "Where the
+  answers live (consult these FIRST)" resolver index (tool descriptions →
+  result dicts → `docs/CLI.md`/mental-models → protocol doc) and reinforced the
+  no-source-diving rule. Goal met: an agent answers "how does X work / where
+  does Y live" from the contract, not the source tree. **Keep it maintained as
+  the code evolves (stale resolver = worse than none).**
 
 ### Authoring-bridge depth — ✅ SHIPPED 2.18.0 (template-free transcoder synthesis)
 - ✅ **Snapshots over the network** — the transcoder synthesizes the 8-snapshot
@@ -864,6 +888,48 @@ LED control, focus-view/UI cosmetics.
   `device_install_preset`/`device_save_preset`
   (assert the write primitive — `save_edit_buffer_to`/`push_to_slot` — was
   never called). Full suite green.
+
+### Resolver-pattern residuals (from the #14 audit, 2026-07-15)
+
+These are the audit findings whose consolidation is **not** a pure
+behavior-preserving swap — each carries a real semantic difference that must be
+reconciled deliberately, so they were filed rather than forced into the #14
+pass. Natural pickups for the #28 refactor.
+
+- **#51 Unify the two `posi`→"1A".."8D" slot-label formulas.** `client.slot_label`
+  (`src/helixgen/device/client.py`) is the canonical, **uncapped** formula
+  returning `""` for `None`; `manifest._posi_to_slot`
+  (`src/helixgen/device/manifest.py`) is a **second independent** implementation
+  — a precomputed 512-entry `_SLOT_LABELS` table with a **hard 128-bank cap**
+  returning **`None`** on out-of-range/non-int. The reverse direction
+  (label→posi) is already single-sourced off `manifest._SLOT_LABELS`
+  (`cli._posi_from_slot`, `setlist_sync.assign_slots`, manifest validation all
+  reuse it), so the fix is to derive the forward formula and the table from ONE
+  source without changing either caller's contract — the cap + `None`-vs-`""`
+  semantics are load-bearing for slot validation, so a blind merge is unsafe.
+  (Also: `hss.slot_label` is an unrelated function sharing the name — a
+  readability trap worth a rename.)
+
+- **#52 Extract a multi-match `list_setlists_by_name` helper for the reorder
+  clash branch.** `reorder.py`'s literal-integer-cid branch
+  (`reorder_setlist_item`, ~lines 200–206) re-implements the casefold
+  name-match that `resolve_setlist_cid` owns, because it needs the **full set**
+  of setlists matching a name (to warn/raise on a digit-named clash) plus a
+  `cid_present` membership test — `resolve_setlist_cid` returns only the single
+  cid. Extract `client.list_setlists_by_name(name) -> [matches]` with
+  `resolve_setlist_cid` calling `next(iter(...))`, then route the reorder branch
+  through it. Behavior-preserving only if the helper returns all matches.
+
+- **#53 Reconcile the two device-IR-hash normalizers.** `client._hex_hash`
+  (`src/helixgen/device/client.py`) and `sftp._addcontent_hash`
+  (`src/helixgen/device/sftp.py`) both normalize a device hash to a 32-hex
+  `irhash`, and their **bytes** branches are already consolidated onto
+  `device/irmd.irmd_to_irhash` (#14). Their **string** branches still disagree:
+  `_hex_hash` lowercases and imposes **no** length check; `_addcontent_hash`
+  enforces exact `len==32` and preserves case. Pick one canonical normalization
+  (recommend: validate length + lowercase) and route both string branches
+  through it. Deferred from #14 because it changes observable behavior at both
+  sites (not a mechanical swap).
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

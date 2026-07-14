@@ -38,6 +38,7 @@ from helixgen import flowparams
 
 from . import content
 from . import defs
+from . import irmd as _irmd
 
 # Block categories that are structural endpoints, not user effect blocks.
 # These are carried verbatim in raw and never modeled into ``paths``.
@@ -45,12 +46,7 @@ _ENDPOINT_CATEGORIES = {"input", "output", "looper", "split", "join"}
 
 
 def _category_for(model_id: Optional[int]) -> Optional[str]:
-    if model_id is None:
-        return None
-    name = defs.model_name_for(model_id)
-    if name is None:
-        return None
-    return defs.load_defs().get("model_categories", {}).get(name)
+    return defs.category_for(model_id)
 
 
 def _is_user_block(category: Optional[str]) -> bool:
@@ -66,7 +62,7 @@ def _pid_name_maps(model_id: int) -> Tuple[Dict[int, str], Dict[str, int]]:
     Param names that are not unique for the model are omitted so that lifting a
     value into a name-keyed dict can never collide.
     """
-    pmeta = defs.load_defs().get("model_params", {}).get(str(model_id), {})
+    pmeta = defs.model_params_for(model_id)
     counts: Dict[str, int] = {}
     for pn in pmeta:
         counts[pn] = counts.get(pn, 0) + 1
@@ -136,7 +132,7 @@ def _lift_block(block: dict) -> Tuple[str, Dict[str, Any], Optional[str], dict]:
     irhash: Optional[str] = None
     irmd = m0.get("irmd")
     if isinstance(irmd, (bytes, bytearray)):
-        irhash = bytes(irmd).hex()
+        irhash = _irmd.irmd_to_irhash(irmd)
 
     new_m0 = {k: v for k, v in m0.items() if k not in ("id__", "irmd")}
     new_m0["parm"] = new_parm
@@ -226,7 +222,7 @@ def _inject_block(block: dict, spec: dict) -> None:
     m0["id__"] = mid
     irhash = spec.get("irhash")
     if irhash:
-        m0["irmd"] = bytes.fromhex(irhash)
+        m0["irmd"] = _irmd.irhash_to_irmd(irhash)
     pid2name, _ = _pid_name_maps(mid)
     for leaf in (m0.get("parm") or []):
         if "valu" in leaf:
@@ -493,12 +489,19 @@ _JOIN_SCAFFOLD = {
 }
 
 # Live-input endpoint device model id per recipe ``input`` routing keyword.
+# Derived from the vendored defs asset (resolver pattern, #14) rather than
+# hardcoded, so a defs regeneration can never silently drift these ids.
 _INPUT_MODEL = {
-    "inst1": 770,   # P35_InputInst1
-    "inst2": 774,   # P35_InputInst2
-    "both": 769,    # P35_InputInst1_2 (stereo, both jacks)
-    "none": 771,    # P35_InputNone
+    "inst1": defs.model_id_for("P35_InputInst1"),
+    "inst2": defs.model_id_for("P35_InputInst2"),
+    "both": defs.model_id_for("P35_InputInst1_2"),  # stereo, both jacks
+    "none": defs.model_id_for("P35_InputNone"),
 }
+# Fail LOUDLY at import if a defs regeneration ever drops/renames one of these
+# models — a silent None here would flow a None model id into input synthesis.
+assert all(isinstance(v, int) for v in _INPUT_MODEL.values()), (
+    f"P35_Input* endpoint model missing from the defs asset: {_INPUT_MODEL}"
+)
 _INPUT_MODEL_INV = {v: k for k, v in _INPUT_MODEL.items()}
 
 
@@ -555,7 +558,7 @@ def _synth_parm(model_id: int, params: Dict[str, Any]) -> List[dict]:
     preserving the caller's value type (bool/int/float), so lifted values
     round-trip exactly — else the model default from ``defs``.
     """
-    mp = defs.load_defs().get("model_params", {}).get(str(model_id), {})
+    mp = defs.model_params_for(model_id)
     parm: List[dict] = []
     for name, meta in mp.items():
         pid = meta.get("id")
@@ -586,7 +589,7 @@ def _make_user_block(spec: dict, inst_id: int) -> dict:
     # synthesized cab resolves on the device instead of dropping to no-IR.
     irhash = spec.get("irhash")
     if irhash and category == "ir":
-        m0["irmd"] = bytes.fromhex(irhash)
+        m0["irmd"] = _irmd.irhash_to_irmd(irhash)
     # Block-level ``enbl`` is the BASE bypass (0 = the block loads bypassed);
     # the model instance's ``enbl`` stays 1 regardless (device-verified).
     return {
@@ -847,12 +850,6 @@ def _snap_meta(meta: dict, i: int) -> Tuple[str, int, float]:
     return name, exsw, float(bpm if bpm is not None else 120.0)
 
 
-def _param_pid(model_id: int, param_name: str) -> Optional[int]:
-    mp = defs.load_defs().get("model_params", {}).get(str(model_id), {})
-    meta = mp.get(param_name)
-    return meta.get("id") if isinstance(meta, dict) else None
-
-
 def _controller_locl_ctxt(source: Any) -> Optional[Tuple[int, int]]:
     """Map a ``.hsp`` controller source id -> device ``(locl, ctxt)``.
 
@@ -1066,7 +1063,7 @@ def _synth_cg_from_recipe(
             for pname, pvals in (spec.get("snap_params") or {}).items():
                 if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
                     continue
-                pid = _param_pid(mid, pname)
+                pid = defs.param_id_for(mid, pname)
                 if pid is None:
                     continue
                 tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid, "pid_": pid,
@@ -1188,7 +1185,7 @@ def _synth_cg_from_recipe(
             # either way). ``exp_params`` is the pre-#21 spelling, still read.
             params_ctl = spec.get("ctl_params") or spec.get("exp_params") or {}
             for pname, meta in params_ctl.items():
-                pid = _param_pid(mid, pname)
+                pid = defs.param_id_for(mid, pname)
                 if pid is None:
                     continue
                 behavior = meta.get("behavior", "continuous")
@@ -1235,7 +1232,7 @@ def _synth_cg_from_recipe(
                 cc = meta.get("cc")
                 if not (isinstance(cc, int) and not isinstance(cc, bool)):
                     continue
-                pid = _param_pid(mid, pname)
+                pid = defs.param_id_for(mid, pname)
                 if pid is None:
                     continue
                 tid = trg_index.get((eid, pid, 2))

@@ -81,7 +81,9 @@ def param_id_for(model_id: Any, param_name: str) -> Optional[int]:
     model or the param is unknown.
     """
     meta = param_meta(model_id, param_name)
-    return None if meta is None else meta.get("id")
+    # isinstance guard (not just a None check) preserves the deleted
+    # transcode._param_pid's behavior for a hypothetical non-dict meta entry.
+    return meta.get("id") if isinstance(meta, dict) else None
 
 
 def param_meta(model_id: Any, param_name: str) -> Optional[dict]:
@@ -90,6 +92,37 @@ def param_meta(model_id: Any, param_name: str) -> Optional[dict]:
     if params is None:
         return None
     return params.get(param_name)
+
+
+def model_params_for(model_id: Any) -> dict:
+    """The model's full ordered param table ``{ParamName: {id,type,..}}``.
+
+    ``model_id`` may be a numeric id or a model-id string. Returns an empty
+    dict (never ``None``) for an unknown model, so callers can iterate the
+    result directly. The one canonical accessor for the raw ``model_params``
+    table — never re-open ``load_defs()["model_params"]`` ad hoc (resolver
+    pattern, backlog #14).
+    """
+    return _params_for(model_id) or {}
+
+
+def category_for(model_id: Any) -> Optional[str]:
+    """Editor category (``amp``/``cab``/``drive``/…) for a model.
+
+    ``model_id`` may be a numeric id or a model-id string. ``None`` if the
+    model or its category is unknown (or ``model_id`` is ``None``). Canonical
+    model→category resolver (backlog #14) — replaces the per-module copies in
+    transcode/bridge.
+    """
+    if model_id is None:
+        return None
+    if isinstance(model_id, str) and not model_id.lstrip("-").isdigit():
+        name: Optional[str] = model_id
+    else:
+        name = model_name_for(int(model_id))
+    if name is None:
+        return None
+    return load_defs().get("model_categories", {}).get(name)
 
 
 def list_models() -> list[str]:

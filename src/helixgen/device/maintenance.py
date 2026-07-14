@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from helixgen.hsp import read_hsp
 
 from . import content as _content
+from . import irmd as _irmd
 from .client import Cctp, Container, HelixClient, HelixError
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def content_ir_hashes(doc: Any) -> set:
         if isinstance(o, dict):
             for k, v in o.items():
                 if k == "irmd" and isinstance(v, (bytes, bytearray)) and len(v) == 16:
-                    found.add(bytes(v).hex())
+                    found.add(_irmd.irmd_to_irhash(v))
                 else:
                     walk(v)
         elif isinstance(o, list):

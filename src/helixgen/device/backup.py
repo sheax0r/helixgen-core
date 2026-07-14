@@ -42,13 +42,17 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .client import USER, FACTORY, THROWAWAY, slot_label
+from .client import (  # noqa: F401 - FACTORY/THROWAWAY re-exported for callers
+    USER, FACTORY, THROWAWAY, _SETLIST_KEYWORDS, slot_label,
+)
 
 MANIFEST_NAME = "manifest.json"
 MANIFEST_VERSION = 1
 DEFAULT_FMT = "sbe"
 
-_SETLIST_NAMES = {USER: "user", FACTORY: "factory", THROWAWAY: "throwaway"}
+# Inverse of the canonical keyword->container map (resolver pattern, #14) —
+# derived, not cloned, so the two can never drift.
+_SETLIST_NAMES = {v: k for k, v in _SETLIST_KEYWORDS.items()}
 
 # Characters we allow verbatim in a filename slug; everything else is scrubbed.
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")

@@ -66,3 +66,33 @@ def test_list_models_sorted_and_unique():
     models = defs.list_models()
     assert models == sorted(models)
     assert len(models) == len(set(models))
+
+
+def test_model_params_for_returns_full_table():
+    # accepts a model-id string or numeric id; result is the ordered param table
+    tbl = defs.model_params_for("HD2_AmpBritPlexiBrt")
+    assert isinstance(tbl, dict) and "Drive" in tbl
+    mid = defs.model_id_for("HD2_AmpBritPlexiBrt")
+    assert defs.model_params_for(mid) == tbl
+    # every entry carries a numeric param id
+    for meta in tbl.values():
+        assert isinstance(meta.get("id"), int)
+
+
+def test_model_params_for_unknown_is_empty_dict_not_none():
+    # unknown model -> {} so callers can iterate directly (never None)
+    assert defs.model_params_for("NotARealModel_XYZ") == {}
+    assert defs.model_params_for(99999999) == {}
+
+
+def test_category_for_known_models():
+    # accepts a model-id string or its numeric id
+    assert defs.category_for("HD2_AmpBritPlexiBrt") == "amp"
+    mid = defs.model_id_for("HD2_AmpBritPlexiBrt")
+    assert defs.category_for(mid) == "amp"
+
+
+def test_category_for_unknown_or_none_returns_none():
+    assert defs.category_for(None) is None
+    assert defs.category_for(99999999) is None
+    assert defs.category_for("NotARealModel_XYZ") is None

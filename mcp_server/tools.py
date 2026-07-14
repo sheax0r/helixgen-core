@@ -456,15 +456,11 @@ def _device_container(setlist: str) -> int:
     ValueError for any other name so a typo reports itself rather than
     silently targeting the wrong container.
     """
-    from helixgen.device import USER, FACTORY, THROWAWAY
+    from helixgen.device import container_for_setlist_keyword
 
-    key = (setlist or "user").strip().lower()
-    mapping = {"user": USER, "factory": FACTORY, "throwaway": THROWAWAY}
-    if key not in mapping:
-        raise ValueError(
-            f"unknown setlist {setlist!r}; valid: {sorted(mapping)}"
-        )
-    return mapping[key]
+    # Empty/None defaults to the user pool (MCP callers may omit the arg);
+    # the canonical resolver owns the keyword->container mapping + validation.
+    return container_for_setlist_keyword(setlist or "user")
 
 
 def device_list_presets_handler(

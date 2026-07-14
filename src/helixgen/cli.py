@@ -605,13 +605,12 @@ def _device_option(f):
 
 def _setlist_container(name: str) -> int:
     """Map a --setlist name (user/factory/throwaway) to its container constant."""
-    from helixgen.device import USER, FACTORY, THROWAWAY
+    from helixgen.device import container_for_setlist_keyword
 
-    mapping = {"user": USER, "factory": FACTORY, "throwaway": THROWAWAY}
     try:
-        return mapping[name]
-    except KeyError as e:  # pragma: no cover - click Choice guards this
-        raise click.ClickException(f"unknown setlist {name!r}") from e
+        return container_for_setlist_keyword(name)
+    except ValueError as e:  # pragma: no cover - click Choice guards this
+        raise click.ClickException(str(e)) from e
 
 
 def _auto_upload_irs(ip: str, hashes) -> None:

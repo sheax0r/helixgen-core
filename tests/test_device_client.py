@@ -138,6 +138,23 @@ def test_slot_label():
     assert slot_label(None) == ""
 
 
+def test_container_for_setlist_keyword():
+    from helixgen.device.client import (
+        container_for_setlist_keyword, Container,
+    )
+
+    assert container_for_setlist_keyword("user") == Container.POOL
+    assert container_for_setlist_keyword("factory") == Container.FACTORY
+    assert container_for_setlist_keyword("throwaway") == Container.SETLISTS_ROOT
+    # case/whitespace-insensitive
+    assert container_for_setlist_keyword("  User ") == Container.POOL
+    # unknown -> ValueError naming the valid keywords
+    with pytest.raises(ValueError):
+        container_for_setlist_keyword("bogus")
+    with pytest.raises(ValueError):
+        container_for_setlist_keyword("")
+
+
 def test_create_content_reads_new_cid_from_status_second_field():
     # /CreateContent replies /status [reqid, newCid, code] (cid in 2nd field!)
     h = HelixClient()

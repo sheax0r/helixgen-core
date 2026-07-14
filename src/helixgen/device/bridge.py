@@ -16,10 +16,7 @@ from . import defs
 
 
 def device_category(model_id: int) -> Optional[str]:
-    name = defs.model_name_for(model_id)
-    if name is None:
-        return None
-    return defs.load_defs().get("model_categories", {}).get(name)
+    return defs.category_for(model_id)
 
 
 def _norm(s: str) -> str:
@@ -36,7 +33,7 @@ def param_name_map(model_id: int, src_names: List[str]) -> Dict[str, str]:
     name that maps nowhere is omitted. Shared by base-param and snapshot-array
     mapping so the two never disagree on a block's device names.
     """
-    dev = defs.load_defs().get("model_params", {}).get(str(model_id), {})
+    dev = defs.model_params_for(model_id)
     dev_names = list(dev.keys())
     by_norm = {_norm(n): n for n in dev_names}
     mapping: Dict[str, str] = {}

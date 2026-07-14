@@ -12,6 +12,26 @@ device setlist**, over the LAN (no editor app). The `setup` and `tone` skills
 stop at writing `.hsp`/`.md` to disk; this skill drives the physical Stadium —
 install one tone, **sync a whole setlist**, and back up / restore.
 
+### Where the answers live (consult these FIRST, never the source)
+
+When you need to know *how a verb behaves*, *what a flag does*, or *what a result
+means*, read it off the **contract surfaces**, in this order — never by reading
+helixgen source (the running MCP is the **bundled** plugin from
+`${CLAUDE_PLUGIN_ROOT}`, not any cwd checkout, so source can mislead about the
+live version):
+
+1. **The `device_*` MCP tool descriptions** — the authoritative behavioral
+   contract for each tool (args, side effects, result shape).
+2. **`device setlist list` + the sync/op result dicts** — live device/manifest
+   state and the exact `{ok, pool, references, errors, …}` a run returns.
+3. **`docs/CLI.md` "Device commands"** — the full per-verb reference (every flag,
+   gotcha, and MCP-mirror name) and `docs/BACKLOG.md`'s "Corrected mental models"
+   block for the model/format invariants.
+4. **`docs/helix-protocol.md`** — only for wire-level protocol questions.
+
+This is the *resolver pattern* (backlog #14): one authoritative surface per fact,
+consulted first, so you never re-derive behavior from source.
+
 ## The device model: a preset POOL + reference SETLISTS
 
 The Stadium does not store a preset "inside" a setlist. It keeps a single
@@ -452,7 +472,7 @@ Tightly:
 | Hand-editing `~/.helixgen/setlists.json` | Manage it with `register` / `device add` / `device unsync` / `device setlist add/remove` (or the MCP tools / `tone` skill) |
 | Expecting `device sync` to touch presets helixgen didn't place | It won't — sync is a managed-set mirror keyed by tone name; untracked device presets are never moved, deleted, or overwritten |
 | Pre-checking whether a tone is already in a setlist before adding it | Don't — a tone belongs in as many setlists as you want (shared, referenced once in the pool). `device setlist add` is idempotent within a setlist and only errors on a name/different-file collision. Just add it |
-| Reading helixgen **source** (`SetlistManifest`, `setlists.json` schema, engine internals) to confirm behavior or guard against "version drift" | Don't source-dive. The running MCP is the **bundled** plugin (loaded from `${CLAUDE_PLUGIN_ROOT}`), **not** any checkout in the working directory — so reading cwd source can *mislead* about the actual version/schema. The `device_*` tool descriptions, `device setlist list`, and the sync **result dict** are the authoritative contract; operate through them |
+| Reading helixgen **source** (`SetlistManifest`, `setlists.json` schema, engine internals) to confirm behavior or guard against "version drift" | Don't source-dive. The running MCP is the **bundled** plugin (loaded from `${CLAUDE_PLUGIN_ROOT}`), **not** any checkout in the working directory — so reading cwd source can *mislead* about the actual version/schema. The `device_*` tool descriptions, `device setlist list`, the sync **result dict**, and `docs/CLI.md` are the authoritative contract (see "Where the answers live" above); operate through them |
 | Expecting sync to wipe the setlist like the old mirror | It doesn't — it reconciles pool + references and never orphans; GC only on `--all --gc` |
 | Diagnosing a dropped connection as a coverage failure | It's the flaky network stack — re-run the sync, reboot the Helix if it persists |
 | Ignoring the `errors[]` in the sync result | That list *is* the remaining work — read it, fix each, re-sync |

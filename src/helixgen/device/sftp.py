@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
+from . import irmd as _irmd
 from .client import HelixError
 
 DEFAULT_USER = "hedit"
@@ -217,7 +218,7 @@ def _addcontent_hash(args: list) -> Optional[str]:
         if isinstance(a, dict) and "hash" in a:
             h = a["hash"]
             if isinstance(h, (bytes, bytearray)) and len(h) == 16:
-                return h.hex()
+                return _irmd.irmd_to_irhash(h)
             if isinstance(h, str) and len(h) == 32:
                 return h
     return None

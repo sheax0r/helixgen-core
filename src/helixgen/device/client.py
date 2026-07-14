@@ -21,6 +21,7 @@ from . import content as _content
 from . import settings as _settings
 from . import globaleq as _globaleq
 from . import defs as _defs
+from . import irmd as _irmd
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,32 @@ CTYPE_PRESET = 2
 CTYPE_SETLIST = 1003
 
 _SLOT_LETTERS = "ABCD"
+
+# The named ``--setlist`` keywords the CLI/MCP accept, mapped to their container
+# constant. Canonical keyword->container resolver (resolver pattern, #14) — the
+# CLI and MCP each wrap this for their own exception type instead of cloning the
+# dict.
+_SETLIST_KEYWORDS = {
+    "user": Container.POOL,
+    "factory": Container.FACTORY,
+    "throwaway": Container.SETLISTS_ROOT,
+}
+
+
+def container_for_setlist_keyword(name: str) -> int:
+    """Map a ``--setlist`` keyword (``user``/``factory``/``throwaway``) to its
+    container constant. Case/whitespace-insensitive.
+
+    Raises ``ValueError`` (naming the valid keywords) for anything else, so a
+    typo reports itself rather than silently targeting the wrong container.
+    """
+    key = (name or "").strip().lower()
+    try:
+        return _SETLIST_KEYWORDS[key]
+    except KeyError as e:
+        raise ValueError(
+            f"unknown setlist {name!r}; valid: {sorted(_SETLIST_KEYWORDS)}"
+        ) from e
 
 
 class HelixError(Exception):
@@ -404,7 +431,7 @@ class HelixClient:
         """Normalize a device IR hash (raw 16 bytes) to a 32-char hex string
         (== helixgen's ``irhash``)."""
         if isinstance(h, (bytes, bytearray)):
-            return bytes(h).hex()
+            return _irmd.irmd_to_irhash(h)
         if isinstance(h, str):
             return h.lower()
         return None
@@ -439,7 +466,7 @@ class HelixClient:
         (whose container listing lags after a write). Uses the editor's own
         ``/IrPathForHashGet`` (16-byte blob arg)."""
         try:
-            blob = bytes.fromhex(hash_hex)
+            blob = _irmd.irhash_to_irmd(hash_hex)
         except ValueError:
             return None
         for _addr, args in self._rpc("/IrPathForHashGet", [("b", blob)]):
