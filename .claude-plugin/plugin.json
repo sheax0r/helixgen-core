@@ -1,7 +1,7 @@
 {
   "name": "helixgen",
   "description": "Generate Line 6 Helix Stadium presets from natural-language tone requests, and control a Stadium directly over your LAN — no editor app. Provides the /tone, /setup, and /device skills plus an MCP server for preset authoring and editing, impulse-response management, and full device control (preset CRUD, backup/restore, and installing or bulk-syncing authored tones onto the hardware). The bundled code runs via `uv`, which auto-provisions its Python dependencies — requires `uv` on your PATH.",
-  "version": "2.24.0",
+  "version": "2.25.0",
   "author": {
     "name": "Michael Shea",
     "email": "mike.shea@gmail.com"
