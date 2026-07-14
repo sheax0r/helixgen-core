@@ -4,7 +4,7 @@
 
 **Goal:** Produce an evidence-backed coverage matrix of every Helix Stadium app function mapped to helixgen CLI/MCP/skill status, and a ranked backlog of the gaps — so implementation of "never need the app" can proceed in priority order.
 
-**Architecture:** Three parallel inventory streams (app owner's manual via web research; the app bundle's own resource/command defs; a frida capture sweep of the running app driven via computer-use) feed one checked-in matrix (`docs/stadium-app-parity.md`). Gaps are ranked and merged into the existing `docs/device-backlog.md`. Feature implementation waves follow as separate brainstorm→spec→plan cycles keyed off the ranked backlog.
+**Architecture:** Three parallel inventory streams (app owner's manual via web research; the app bundle's own resource/command defs; a frida capture sweep of the running app driven via computer-use) feed one checked-in matrix (`docs/stadium-app-parity.md`). Gaps are ranked and merged into the existing `docs/BACKLOG.md`. Feature implementation waves follow as separate brainstorm→spec→plan cycles keyed off the ranked backlog.
 
 **Tech Stack:** Python stdlib + `click` (helixgen), `frida>=16` (capture, `tools/re_capture.py` + `tools/hook_sockets.js`), computer-use MCP (drive the app), pcap fallback (cleartext OSC on ports 2001–2003). Markdown deliverables.
 
@@ -27,7 +27,7 @@
 
 - Create `docs/stadium-app-parity.md` — the coverage matrix (the primary deliverable; maintained ongoing).
 - Create `scratchpad/inventory/` working files (not committed): `manual-functions.md`, `bundle-functions.md`, `capture-checklist.md`, capture analysis notes.
-- Modify `docs/device-backlog.md` — append the ranked parity gaps as new numbered items.
+- Modify `docs/BACKLOG.md` — append the ranked parity gaps as new numbered items.
 - Reuse `tools/re_capture.py`, `tools/hook_sockets.js` (extend the `STEPS` checklist only if needed; no rewrite).
 
 ---
@@ -214,7 +214,7 @@ git commit -m "docs: Stadium app-function coverage matrix"
 ## Task 6: Rank gaps and merge into the backlog
 
 **Files:**
-- Modify: `docs/device-backlog.md` (append new numbered items under a "Stadium-app parity" heading)
+- Modify: `docs/BACKLOG.md` (append new numbered items under a "Stadium-app parity" heading)
 
 **Interfaces:**
 - Consumes: `docs/stadium-app-parity.md` (Task 5).
@@ -226,12 +226,12 @@ git commit -m "docs: Stadium app-function coverage matrix"
 
 - [ ] **Step 3: Present the ranking to the user** for confirmation before writing (the spec commits to this checkpoint). Adjust order per their feedback.
 
-- [ ] **Step 4: Write** the ranked entries into `docs/device-backlog.md` under a new `### Stadium-app parity (2026-07-13)` subsection, continuing the existing `#N` numbering, each linking back to its matrix row.
+- [ ] **Step 4: Write** the ranked entries into `docs/BACKLOG.md` under a new `### Stadium-app parity (2026-07-13)` subsection, continuing the existing `#N` numbering, each linking back to its matrix row.
 
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add docs/device-backlog.md
+git add docs/BACKLOG.md
 git commit -m "docs(backlog): ranked Stadium-app parity gaps"
 ```
 

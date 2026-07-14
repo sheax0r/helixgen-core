@@ -3,7 +3,7 @@
 Every user-facing function of the **Helix Stadium desktop app** (v1.3.2.9805,
 internal `p35edit`; `P35` = Stadium, `P37`/`P36` = Stadium XL) mapped to
 helixgen's CLI / MCP / skill surface. Goal: drive the gaps to zero so the app is
-never needed. Maintained ongoing (like `device-backlog.md`).
+never needed. Maintained ongoing (like `BACKLOG.md`).
 
 **Verdict legend:** ✅ done (with evidence) · 🟡 partial · 🔴 missing · 🔍 needs
 protocol capture (arg shape) · 🚫 out-of-scope.
@@ -231,4 +231,4 @@ engage+readout, looper/transport, active-preset select (#1), create-setlist
 backup, Showcase multitrack, clones, favorites, templates, cloud/Remote-Access,
 LEDs, focus-view/UI cosmetics.
 
-Ranking + backlog entries: `docs/device-backlog.md` (§ Stadium-app parity).
+Ranking + backlog entries: `docs/BACKLOG.md` (§ Stadium-app parity).

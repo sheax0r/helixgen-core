@@ -842,7 +842,7 @@ git commit -m "feat(mcp): auto-register on generate; register/device add/unsync 
 ## Task 7: Full suite green, docs, version bump, ship
 
 **Files:**
-- Modify: `CLAUDE.md` (device-slots + new verbs section), `docs/device-backlog.md` (mark #6/#7 resolved, note device-import fast-follow), `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `pyproject.toml`, `src/helixgen/__init__.py`, `.claude/skills/device/SKILL.md` (tone-library model + new verbs).
+- Modify: `CLAUDE.md` (device-slots + new verbs section), `docs/BACKLOG.md` (mark #6/#7 resolved, note device-import fast-follow), `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `pyproject.toml`, `src/helixgen/__init__.py`, `.claude/skills/device/SKILL.md` (tone-library model + new verbs).
 
 - [ ] **Step 1: Run the entire suite**
 
@@ -851,7 +851,7 @@ Expected: PASS (all green). Fix any acceptance/golden fallout from the manifest 
 
 - [ ] **Step 2: Update docs**
 
-Update `CLAUDE.md` `device slots` section to describe the tone-library manifest (tone = content+identity+management state; `slot` = on-device flag; `register` / `device add|unsync` / `setlist sync-on|off` / `library`). Update `.claude/skills/device/SKILL.md` to drive the new verbs. In `docs/device-backlog.md`, mark #6 (single-tone parity) and #7 (reordering) resolved/reframed and note device-import as the fast-follow spec.
+Update `CLAUDE.md` `device slots` section to describe the tone-library manifest (tone = content+identity+management state; `slot` = on-device flag; `register` / `device add|unsync` / `setlist sync-on|off` / `library`). Update `.claude/skills/device/SKILL.md` to drive the new verbs. In `docs/BACKLOG.md`, mark #6 (single-tone parity) and #7 (reordering) resolved/reframed and note device-import as the fast-follow spec.
 
 - [ ] **Step 3: Bump version**
 

@@ -8,6 +8,10 @@ User IRs (impulse responses) registered with `helixgen register-irs` live at
 `~/.helixgen/irs/` by default (override with `$HELIXGEN_IRS`). The mapping
 file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
 
+**The project backlog lives at `docs/BACKLOG.md`** — check it before starting
+new work (its "corrected mental models" preamble first); deferred work and
+punted review findings get a numbered entry there, not a TODO comment.
+
 ## CLI
 
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
@@ -480,13 +484,37 @@ op.
 
 ## Project layout
 
-- `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`
+- `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`
+- `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
+- `mcp_server/` — the MCP server the plugin bundles; tool descriptions here are agent-facing behavioral contracts
+- `.claude/skills/` — the three plugin skills: `setup` (device/prefs onboarding), `tone` (author a `.hsp` from a tone request), `device` (push/sync authored tones onto the hardware)
+- `.claude-plugin/` — `plugin.json` + `marketplace.json`; bumping the version here on `main` is what triggers a release (see Releasing)
+- `docs/` — `BACKLOG.md` (THE backlog), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports
+- `irs/` (gitignored) — paid commercial IR packs; character catalog at `irs/_catalog/`
 
-## Development conventions
+## Development workflow
 
+- **Worktrees, branched from fresh `origin/main`.** All non-trivial work happens
+  in a git worktree whose branch starts from freshly-fetched `origin/main` —
+  never commit directly on local `main`; it may be stale. Fetch again before
+  picking a release version number (a concurrent PR once released 2.10.0
+  mid-flight and collided with an in-progress bump).
+- **Adversarial review before shipping.** Before merging a PR, dispatch at least
+  one independent review subagent prompted to *break* the change (find bugs,
+  regressions, spec violations — not summarize it). Confirmed findings are fixed
+  or explicitly deferred to `docs/BACKLOG.md`. Major changes also get a committed
+  review doc in `docs/superpowers/specs/` (see the PR #31 review for the shape).
+- **Agent-facing surfaces ship in sync.** Any change to CLI-, MCP-, or
+  skill-visible behavior updates, in the same PR, every surface that describes
+  it: `.claude/skills/*`, this CLAUDE.md, the MCP tool descriptions in
+  `mcp_server/`, and `docs/CLI.md`. Drift between code and these surfaces is a
+  bug, not a docs chore.
+- **Backlog discipline.** `docs/BACKLOG.md` is the single project backlog.
+  Deferred work gets a numbered entry there — not a TODO comment, not a
+  side file.
 - TDD throughout: failing test first, then minimal implementation. See existing test files for the established pattern.
 - Pure stdlib + `click` for the CLI; no other runtime deps.
 - Real-export fixtures live in `tests/fixtures/presets/` and are loaded by tests under skip-if-not-present guards so the suite stays green on a clean clone.

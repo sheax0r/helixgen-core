@@ -62,7 +62,7 @@ cleartext.
 ### Coverage matrix
 
 Lives at **`docs/stadium-app-parity.md`** — checked in, maintained as features
-ship (same spirit as `device-backlog.md`). One row per user-facing function:
+ship (same spirit as `BACKLOG.md`). One row per user-facing function:
 
 | Column | Meaning |
 |---|---|
@@ -81,7 +81,7 @@ entry — no silent gaps.
 ### Backlog + execution cadence
 
 After the matrix: rank gaps by impact, present the ranking to the user, then
-merge entries into **`docs/device-backlog.md`** (one backlog, existing legend
+merge entries into **`docs/BACKLOG.md`** (one backlog, existing legend
 `[local]` / `[device-write]` / `[discovery]`). Implementation proceeds in
 ranked order: substantial features get their own brainstorm → spec → plan
 cycle; small items batch. Discovery items funnel into additional capture
@@ -96,7 +96,7 @@ unrestricted.
 1. **Matrix + gap ranking** — write `docs/stadium-app-parity.md`; verify
    claimed-done areas (IR management, library verbs) with evidence; present
    ranking to user.
-2. **Backlog merge** — write ranked entries into `device-backlog.md`.
+2. **Backlog merge** — write ranked entries into `BACKLOG.md`.
 3. **Implementation waves** — per ranked order, each wave through the normal
    skill flow (brainstorm/spec for big items, TDD, HW-validation gating,
    release process unchanged).

@@ -1,8 +1,10 @@
-# helixgen device — feature backlog
+# helixgen — project backlog
 
-Future work for the network device-control feature. Base capability (preset CRUD
-+ content read/save + live param edits) shipped in **2.0.0**; IR transfer +
-auto-load shipped through **2.5.0**. Ordered loosely.
+The single backlog for all deferred helixgen work (renamed from
+`device-backlog.md` 2026-07-13 — item numbering unchanged). Most entries are
+device/network work: base capability (preset CRUD + content read/save + live
+param edits) shipped in **2.0.0**; IR transfer + auto-load shipped through
+**2.5.0**. Ordered loosely.
 
 ## Corrected mental models — READ THIS FIRST (2026-07-12)
 
@@ -268,6 +270,24 @@ assumption — see #9); the reference-based redesign below then **shipped
   pushes an edit to the live buffer) or the still-open **active-preset-cid query**
   (backlog #1) so we can `SetContentData` into it + reload. Ship as a
   `helixgen device load-hsp <file>` verb first, then the double-click wrapper.
+
+### Guitar profiles + per-guitar tone generation **[local][skill]**
+- **#22 Guitar-aware tone authoring** — requested 2026-07-13. Make the user's
+  guitars first-class in the library, each with a **profile** of what that
+  guitar is "for" (pickups, tonal character, typical roles — e.g. "Les Paul Jr:
+  P-90 grind, raw rock rhythm" vs "Strandberg: modern fusion lead"). Builds on
+  the existing `instruments` / `default_guitar` keys in `preferences.json`.
+  When generating a tone, the `tone` skill can then *optionally* offer to:
+  - **create a tone per guitar** — one `.hsp` variant per (selected) guitar,
+    following the existing `"<Tone Name> — <Guitar>"` naming convention; or
+  - **create per-guitar snapshots** within one preset — distinct snapshots
+    named per guitar/role, e.g. "Ibanez — Lead", "Strandberg — Lead" (mind the
+    8-snapshot ceiling when combined with per-part snapshots).
+  The skill should guide the choice with **easy structured questions**
+  (AskUserQuestion-style multiple choice: per-guitar tones / per-guitar
+  snapshots / single generic tone), defaulting sensibly (single guitar →
+  don't ask). Profiles inform *how* params differ per guitar (e.g. brighter
+  amp for humbuckers, tamer top for P-90s), not just naming.
 
 ## Stadium-app parity (2026-07-13)
 

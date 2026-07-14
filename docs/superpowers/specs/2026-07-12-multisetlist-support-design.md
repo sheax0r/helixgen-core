@@ -36,7 +36,7 @@ the device client so an agent cannot misuse the raw protocol.
 5. Quick-win: `preferences._validate_device_model` accepts the `stadium_xl`
    MCP token so the user's real `preferences.json` stops throwing (§7).
 
-**Out of scope / deferred** (tracked in `docs/device-backlog.md`)
+**Out of scope / deferred** (tracked in `docs/BACKLOG.md`)
 
 - **Device-side setlist *creation* (#8).** The 2002 command is uncaptured. The
   user creates a setlist by hand in the Stadium app; helixgen resolves it by
@@ -282,7 +282,7 @@ version in `pyproject.toml` + `src/helixgen/__init__.py`), commit
 `release X.Y.Z — multi-setlist support`, PR, merge to `main`; the automated
 workflow tags + fast-forwards `stable`. Do not move `stable`/tags by hand.
 
-## 10. Deferred / follow-ups (in `docs/device-backlog.md`)
+## 10. Deferred / follow-ups (in `docs/BACKLOG.md`)
 
 - **#8** device-side setlist creation (uncaptured 2002 command; tcpdump RE).
 - If the §5 spike fails, a captured reference-removal command becomes a
