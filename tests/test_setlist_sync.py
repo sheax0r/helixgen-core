@@ -155,17 +155,17 @@ class FakeClient:
         return self
 
     # -- reads --
-    def resolve_setlist_cid(self, name):
+    def resolve_setlist_cid(self, name, *, strict=True):
         return self._setlist_cids.get(name)
 
-    def list_setlists(self):
+    def list_setlists(self, *, strict=False):
         return [{"cid_": c, "name": n, "cctp": Cctp.SETLIST}
                 for n, c in self._setlist_cids.items()]
 
-    def list_presets(self, container):
+    def list_presets(self, container, *, strict=False):
         return [dict(m) for m in self._pool]
 
-    def list_container(self, cid):
+    def list_container(self, cid, *, strict=False):
         return [dict(m) for m in self._refs.get(cid, [])]
 
     # -- writes --
@@ -433,6 +433,133 @@ def test_unresolved_setlist_errors_without_aborting(tmp_path, monkeypatch):
     assert res["pool"]["installed"] == ["Tone A", "Tone B"]
     assert "good" in res["references"]
     assert "missing" not in res["references"]
+
+
+# -- #39: strict setlist resolution — abort/skip, never mint a duplicate ----
+
+def test_resolve_listing_failure_is_distinct_from_not_found_no_create_hint(
+        tmp_path, monkeypatch):
+    """A resolve_setlist_cid failure (simulated network timeout) must be
+    reported distinctly from a genuine "not found" — critically, it must NOT
+    tell the user to `device setlist create` it, since that's exactly the
+    guidance that mints a duplicate when the setlist actually already exists
+    but the listing just glitched (backlog #39)."""
+    from helixgen.device.client import HelixError
+
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch,
+                  {"flaky": ["Tone A"], "good": ["Tone B"]},
+                  hashes={"Tone A": "sha256:a", "Tone B": "sha256:b"})
+
+    class FlakyResolve(FakeClient):
+        def resolve_setlist_cid(self, name, *, strict=True):
+            if name == "flaky":
+                raise HelixError("no reply listing container -5 (timeout)")
+            return super().resolve_setlist_cid(name, strict=strict)
+
+    client = FlakyResolve(setlists={"good": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["flaky", "good"])
+
+    assert res["ok"] is False
+    assert any("flaky" in e and "could not verify" in e for e in res["errors"])
+    assert not any("flaky" in e and "device setlist create" in e
+                  for e in res["errors"])
+    # the resolvable setlist still synced fully
+    assert "good" in res["references"]
+    assert "flaky" not in res["references"]
+
+
+def test_gc_skips_deletes_when_referenced_names_listing_fails(tmp_path, monkeypatch):
+    """The never-orphan gate for --gc must fail closed: if we can't verify
+    what's referenced, delete NOTHING this run rather than risk treating a
+    still-referenced preset as an orphan (the ir-prune precedent #39 cites)."""
+    from helixgen.device.client import HelixError
+
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    client = FakeClient(
+        setlists={"helixgen": 42},
+        pool=[("Keep", 5000, 0), ("Orphan", 5001, 1)],
+    )
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    def raise_referenced(_client, _pool_by_name):
+        raise HelixError("no reply listing container -5 (timeout)")
+
+    monkeypatch.setattr(ss, "_device_referenced_names", raise_referenced)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=None, gc=True)
+
+    assert res["gc"]["deleted"] == []
+    assert client.deleted == []
+    assert any("could not verify" in e.lower() for e in res["errors"])
+
+
+def test_unsynced_delete_skipped_when_referenced_names_listing_fails(
+        tmp_path, monkeypatch):
+    """Same never-orphan fail-closed rule for the (non-gc) per-tone unsynced
+    delete step: a listing failure must skip the delete, not proceed on a
+    silently-empty "nothing is referenced" read."""
+    from helixgen.device.client import HelixError
+
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    _add_slot_only_tone(m, "Gone", slot=None, content_hash="sha256:g")
+    m.record_observed_pool("Gone", cid=5001, posi=1, synced_hash="sha256:g")
+    m.tones["Gone"]["slot"] = None
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Keep", 5000, 0), ("Gone", 5001, 1)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    def raise_referenced(_client, _pool_by_name):
+        raise HelixError("no reply listing container -5 (timeout)")
+
+    monkeypatch.setattr(ss, "_device_referenced_names", raise_referenced)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["deleted"] == []
+    assert client.deleted == []
+    assert "Gone" in m.tones  # untouched — still on the device per the manifest
+    assert any("could not verify" in e.lower() for e in res["errors"])
+
+
+def test_mirror_setlist_failure_is_per_setlist_not_fatal(tmp_path, monkeypatch):
+    """mirror_setlist's own current-refs listing is now strict (#39 audit) —
+    a failure there for ONE setlist must not abort every other setlist's
+    reference rebuild in the same sync run."""
+    from helixgen.device.client import HelixError
+
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch,
+                  {"flaky": ["Tone A"], "good": ["Tone B"]},
+                  hashes={"Tone A": "sha256:a", "Tone B": "sha256:b"})
+
+    class FlakyMirror(FakeClient):
+        def mirror_setlist(self, setlist_cid, ordered_pool_cids):
+            if setlist_cid == self._setlist_cids.get("flaky"):
+                raise HelixError("no reply listing container "
+                                 f"{setlist_cid} (timeout)")
+            return super().mirror_setlist(setlist_cid, ordered_pool_cids)
+
+    client = FlakyMirror(setlists={"flaky": 42, "good": 43})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["flaky", "good"])
+
+    assert res["ok"] is False
+    assert any("flaky" in e and "could not verify" in e for e in res["errors"])
+    assert "flaky" not in res["references"]
+    assert "good" in res["references"]
+    # both tones still installed into the pool regardless of the reference
+    # rebuild failure
+    assert sorted(res["pool"]["installed"]) == ["Tone A", "Tone B"]
 
 
 def test_gc_only_on_all_run_and_orphan_safe(tmp_path, monkeypatch):

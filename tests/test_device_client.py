@@ -359,6 +359,44 @@ def test_resolve_setlist_cid_absent_returns_none():
     assert h.resolve_setlist_cid("nope") is None
 
 
+def test_resolve_setlist_cid_is_strict_by_default(monkeypatch):
+    """#39: a timeout/undecodable listing must raise, not read as absent — the
+    default must be strict so every existing caller (which doesn't pass
+    strict= explicitly) gets the safe behavior for free."""
+    h = HelixClient()
+    _wire(h, [])  # poller never fires -> _rpc returns [] -> timeout
+    with pytest.raises(HelixError, match="no reply"):
+        h.resolve_setlist_cid("helixgen")
+
+
+def test_resolve_setlist_cid_strict_true_forwarded_to_list_setlists(monkeypatch):
+    h = HelixClient()
+    seen = []
+
+    def fake_list_setlists(*, strict=False):
+        seen.append(strict)
+        return []
+
+    monkeypatch.setattr(h, "list_setlists", fake_list_setlists)
+    h.resolve_setlist_cid("anything")
+    assert seen == [True]
+
+
+def test_resolve_setlist_cid_explicit_non_strict_still_works(monkeypatch):
+    """The one deliberate lenient use (create_setlist's post-create re-list
+    retry) must still be reachable via strict=False."""
+    h = HelixClient()
+    seen = []
+
+    def fake_list_setlists(*, strict=False):
+        seen.append(strict)
+        return []
+
+    monkeypatch.setattr(h, "list_setlists", fake_list_setlists)
+    assert h.resolve_setlist_cid("anything", strict=False) is None
+    assert seen == [False]
+
+
 # -- _raw guardrail ----------------------------------------------------------
 
 def test_raw_create_content_rejects_non_pool_container():
@@ -441,6 +479,20 @@ def test_mirror_setlist_adds_and_removes(monkeypatch):
 
     res = h.mirror_setlist(42, [200])
     assert res == {"added": [502], "removed": [501]}
+
+
+def test_mirror_setlist_current_refs_listing_is_strict(monkeypatch):
+    """#39 audit: mirror_setlist's own current-references read must be
+    strict — a truncated/timed-out listing must raise rather than silently
+    read as "this reference is gone", which would make the add-pass mint a
+    SECOND reference to the same pool preset (a duplicate, the same failure
+    class #39 fixed for setlist names)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    _wire(h, [])  # the current-refs listing times out (zero reply frames)
+    with pytest.raises(HelixError, match="no reply"):
+        h.mirror_setlist(42, [200])
 
 
 # -- mutating() context ------------------------------------------------------
@@ -871,6 +923,31 @@ def test_create_setlist_retries_relist_for_real_cid(monkeypatch):
             [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 0}],
             use_bin_type=True))])
     _wire_seq(h, [[list1], [create], [empty], [after]])
+    assert h.create_setlist("ZZC-x") == 1186
+
+
+def test_create_setlist_relist_tolerates_transient_listing_timeout(monkeypatch):
+    """#39: resolve_setlist_cid defaulted to strict, but create_setlist's
+    post-create relist is a deliberate strict=False use — it already knows
+    the device just accepted the create (status 0), so a transient timeout on
+    one relist attempt must read the same as "not yet visible" (retry), not
+    blow up the whole call with a HelixError."""
+    _patch_sub(monkeypatch)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    h = HelixClient()
+    h.mutate_settle = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    after = osc_encode(
+        "/GetContainerContents",
+        [("i", 1003), ("b", msgpack.packb(
+            [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 0}],
+            use_bin_type=True))])
+    # first relist attempt (reqid 1002) times out entirely (zero reply
+    # frames); second relist attempt (reqid 1003) succeeds.
+    _wire_seq(h, [[list1], [create], [], [after]])
     assert h.create_setlist("ZZC-x") == 1186
 
 

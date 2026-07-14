@@ -748,18 +748,70 @@ LED control, focus-view/UI cosmetics.
   deleted and the local manifest was cleaned up in the same session.
 
 - **#39 `resolve_setlist_cid` is non-strict — a timeout can mint a
-  duplicate-named setlist** (review residual, 2026-07-14). The setlist-by-name
-  lookup (`src/helixgen/device/client.py`) lists the setlists root
-  non-strict, so a network timeout silently reads as "setlist absent". Every
-  verb that auto-creates on absent — `device setlist create` (pre-check),
-  `duplicate` (auto-created dst), `sync` (resolve step), and the new
-  `import-hss` — can then create a second setlist with the same name.
-  Non-destructive (nothing is deleted or overwritten; the duplicate is just
-  confusing and needs a manual `setlist delete`), which is why it's deferred
-  rather than fixed inline. It's a codebase-wide pattern, not an import-hss
-  bug — worth a strictness pass that threads `strict=True` through
-  `resolve_setlist_cid` (and audits other resolve-by-name paths) the same way
-  ir-prune/`import_bundle`'s occupancy read already fail closed.
+  duplicate-named setlist** — **✅ SHIPPED (2026-07-15).** `resolve_setlist_cid`
+  (`src/helixgen/device/client.py`) now defaults to `strict=True` (threaded
+  straight into `list_setlists`), so a timeout/undecodable listing raises
+  `HelixError` instead of silently reading as "setlist absent" — `None` now
+  means definitively absent, never "couldn't tell". Every caller that gates a
+  create decision on it inherits the fix for free: `device setlist create`
+  (pre-check), `rename` (both the source and new-name checks), `duplicate`
+  (both src and the auto-created dst), and `device setlist import-hss`. The
+  one deliberate exception is `create_setlist`'s own post-create relist retry
+  loop, which now explicitly passes `strict=False` (it already knows the
+  device just accepted the create — a transient listing hiccup there means
+  "not yet visible, keep polling," not "duplicate risk"; it still falls back
+  to the unreliable create-reply cid with a warning after 4 tries, unchanged).
+  The wider audit (task 2) found the risk pattern also applies **beyond**
+  setlist names: `HelixClient.mirror_setlist`'s own current-references listing
+  (the add/remove reconciliation `sync`'s reference-rebuild step drives) was
+  hardened to `strict=True` — a truncated read there would make a real
+  reference look absent and the add-pass would then mint a **second**
+  reference to the same pool preset, the identical duplicate-mint failure
+  class #39 fixed for setlist names, just one layer down. `setlist_sync.py`'s
+  pool listings (`list_presets(POOL)`, feeding both the install/skip plan AND
+  the reference-rebuild step) and its never-orphan gate
+  `_device_referenced_names` (feeding both the per-tone unsynced-delete step
+  and `--gc`) were hardened to `strict=True` too — an under-reported pool
+  listing could mint a duplicate-named pool preset or make `mirror_setlist`
+  drop a still-wanted reference, and an under-reported referenced-set could
+  make `--gc`/unsynced-delete treat a still-referenced preset as an orphan and
+  delete it. `reorder.py`'s three listings (the numeric-setlist collision
+  check, the target container listing, and the pool-name join) were hardened
+  the same way — they gate the actual `/ReorderContainerContent` write. A
+  strict-listing failure inside a per-setlist/per-tone step (the setlist
+  resolve, `mirror_setlist`, the never-orphan gate) is caught locally and
+  reported in `errors[]` — it skips just that item, matching the function's
+  existing per-tone resilience contract, rather than aborting the whole sync
+  run and losing already-recorded progress. Two read sites were audited and
+  deliberately left lenient: `setlist_sync.py`'s post-write reference listing
+  (pure bookkeeping into the manifest after the real write already happened —
+  self-heals next run) and the plain browse verbs `device setlists` /
+  `device_list_setlists` (interactive listing, not a write gate — the
+  documented split in `list_container`'s own docstring). See the PR body for
+  the full site-by-site audit table. Tests: strict-default + explicit
+  `strict=False` unit tests on `resolve_setlist_cid`, a tolerant-retry test on
+  `create_setlist`, a strict-propagation test on `mirror_setlist`, CLI + MCP
+  abort-before-create tests for `setlist create`/`rename`/`duplicate`, and
+  `sync_setlists`/`reorder_setlist_item` tests proving a listing failure is
+  reported distinctly from "not found" (no "go create it" guidance), never
+  proceeds to a write, and — for the per-item gates — doesn't abort sibling
+  setlists/tones in the same run.
+- **#40 `_lowest_empty_posi` picks a write position off a non-strict listing**
+  (found auditing #39, 2026-07-15, not fixed here — different failure class,
+  deferred to keep #39's blast radius contained). `install_into_pool` and
+  `create_setlist` (`src/helixgen/device/client.py`) both choose their target
+  slot via `_lowest_empty_posi`, which calls `list_container(container)`
+  **non-strict**. If that listing is silently truncated/timed-out, the
+  computed "lowest empty" position could actually be occupied by an existing
+  preset/setlist, and the subsequent `/CreateContent` would target an
+  already-used slot — a positional collision rather than a name-based
+  duplicate, so it's a distinct risk from what #39 fixed (and touches two
+  widely-shared low-level write primitives, not setlist-name resolution
+  specifically). Needs its own scoped pass: likely `strict=True` on the
+  `list_container` call inside `_lowest_empty_posi`, plus a check for whether
+  callers that already retry-by-name-after-write (`_pool_cid_by_name`,
+  `create_setlist`'s relist) would tolerate the stricter failure the same way
+  #39 handled its own analogous retry loop.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

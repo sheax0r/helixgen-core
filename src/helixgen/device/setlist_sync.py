@@ -16,9 +16,13 @@ data with no client. :func:`sync_setlists` drives a real
 3. optionally **garbage-collect** pool presets no setlist references anymore —
    only on the whole-library (``setlists is None``) run.
 
-Per-tone failures append to ``errors[]`` without aborting (matching the old
-directory-sync's resilience contract). This retires ``sync.py``'s destructive
-whole-``-2``-mirror; its IR-upload helper is copied here.
+Per-tone/per-setlist failures append to ``errors[]`` without aborting (matching
+the old directory-sync's resilience contract) — this now also covers a strict
+listing failure in the setlist-resolve step, ``mirror_setlist``'s reference
+rebuild, or the never-orphan delete gate (backlog #39): each is caught for
+just that setlist/tone and reported distinctly from a genuine "not found" /
+"nothing to delete", never silently treated as such. This retires ``sync.py``'s
+destructive whole-``-2``-mirror; its IR-upload helper is copied here.
 """
 from __future__ import annotations
 
@@ -277,10 +281,26 @@ def sync_setlists(
     with HelixClient(**client_kwargs) as client:
         with client.mutating():
             # 1. Resolve each target setlist by name (skip + error on absent).
+            # ``resolve_setlist_cid`` is strict by default (#39): a listing
+            # failure raises HelixError instead of silently reading as
+            # "absent" — which matters here because the DEFAULT error message
+            # below tells the user to `device setlist create` it. If we
+            # couldn't actually tell whether it exists, telling the user to
+            # create it risks minting a duplicate; caught separately below so
+            # that case gets its own message and this target is simply
+            # skipped (not the whole run aborted — matching the existing
+            # per-target resilience contract).
             setlist_cids: Dict[str, int] = {}
             resolved: List[str] = []
             for name in targets:
-                cid = client.resolve_setlist_cid(name)
+                try:
+                    cid = client.resolve_setlist_cid(name)
+                except HelixError as e:
+                    errors.append(
+                        f"setlist '{name}': could not verify it exists on the "
+                        f"device ({e}); skipping rather than risk creating a "
+                        f"duplicate — retry the sync")
+                    continue
                 if cid is None:
                     errors.append(
                         f"setlist '{name}' not found on device; create it with "
@@ -305,8 +325,13 @@ def sync_setlists(
             # belongs to no setlist (`device add --slot` / `device add`).
             # Pathless tones (device save/create) with no pool presence have
             # nothing local to install from and are left alone.
+            # STRICT listing (#39 audit): plan_pool's install/skip decision is
+            # gated entirely on this listing — a silently-truncated read would
+            # make an already-installed tone look absent and mint a
+            # duplicate-named pool preset, the same failure mode #39 fixed for
+            # setlists.
             pool_by_name = {m.get("name"): m
-                            for m in client.list_presets(Container.POOL)}
+                            for m in client.list_presets(Container.POOL, strict=True)}
             union = manifest.union_tones(resolved)
             in_union = set(union)
             for name in manifest.device_marked_tones():
@@ -366,8 +391,13 @@ def sync_setlists(
 
             # Refresh the pool listing (installs added new cids/posis) and record
             # observed placement + last-synced hash for everything we touched.
+            # STRICT (#39 audit): this refreshed listing also drives the
+            # reference rebuild below (`plan_references` / `mirror_setlist`) —
+            # a truncated read could make a tone that's actually in the pool
+            # look absent, and `mirror_setlist` would then REMOVE its
+            # still-wanted reference from the setlist as "no longer desired".
             pool_by_name = {m.get("name"): m
-                            for m in client.list_presets(Container.POOL)}
+                            for m in client.list_presets(Container.POOL, strict=True)}
             cid_to_name = {_cid(m): n for n, m in pool_by_name.items()}
             for name in result["pool"]["installed"] + result["pool"]["updated"]:
                 m = pool_by_name.get(name)
@@ -389,12 +419,30 @@ def sync_setlists(
                         errors.append(
                             f"tone '{tone}' not in pool; cannot reference into "
                             f"setlist '{name}'")
-                diff = client.mirror_setlist(setlist_cid, ordered_cids)
+                # mirror_setlist's own current-references listing is strict
+                # (#39 audit — a truncated read there could double-add a
+                # reference); a failure here is per-setlist, matching the
+                # rest of this function's resilience contract, not a reason
+                # to abort every other setlist's rebuild.
+                try:
+                    diff = client.mirror_setlist(setlist_cid, ordered_cids)
+                except HelixError as e:
+                    errors.append(
+                        f"setlist '{name}': could not verify its current "
+                        f"references before rebuilding them ({e}); skipping "
+                        f"this setlist's reference rebuild this run — retry")
+                    continue
                 result["references"][name] = {
                     "added": list(diff.get("added", [])),
                     "removed": list(diff.get("removed", [])),
                 }
                 refs: Dict[str, Any] = {}
+                # Deliberately non-strict (#39 audit): the actual reference
+                # write already happened via mirror_setlist above; this
+                # listing is bookkeeping-only (records observed ref cids/posi
+                # into the manifest for next run's diffing) — a truncated
+                # read here would just under-record, self-healing on the next
+                # sync, not corrupt the device.
                 for item in client.list_container(setlist_cid):
                     if item.get("cctp") == Cctp.REFERENCE:
                         tone_name = cid_to_name.get(item.get("rcid"))
@@ -414,7 +462,7 @@ def sync_setlists(
             for t in targets:
                 if t not in setlist_cids:
                     unresolved_members.update(manifest.tones_in(t))
-            referenced = _device_referenced_names(client, pool_by_name)
+            delete_candidates: List[str] = []
             for name, rec in manifest.tones.items():
                 if (rec.get("slot") is not None or name in in_union
                         or name in unresolved_members):
@@ -422,36 +470,67 @@ def sync_setlists(
                 if (rec.get("device") is None
                         and manifest.observed.get("pool", {}).get(name) is None):
                     continue  # no prior-placement evidence: not ours to delete
-                dev = pool_by_name.get(name)
-                if dev is None:
+                if pool_by_name.get(name) is None:
                     continue
-                if name in referenced:
-                    result["pool"]["delete_skipped"].append(name)
-                    continue
+                delete_candidates.append(name)
+            # Only pay for (and risk aborting on) the strict never-orphan
+            # listing when there's actually something that could be deleted
+            # (#39 audit) — a listing hiccup on an otherwise delete-free sync
+            # must not cost the rest of this run's already-recorded progress.
+            if delete_candidates:
                 try:
-                    if client._raw.delete(Container.POOL, [_cid(dev)]):
-                        result["pool"]["deleted"].append(name)
-                        manifest.clear_observed_pool(name)
-                        pool_by_name.pop(name, None)
+                    referenced = _device_referenced_names(client, pool_by_name)
                 except HelixError as e:
-                    errors.append(f"tone '{name}': {e}")
+                    errors.append(
+                        f"could not verify no-orphan safety before deleting "
+                        f"{len(delete_candidates)} unsynced tone(s) ({e}); "
+                        f"skipping this run's deletes — retry")
+                    referenced = None
+                if referenced is not None:
+                    for name in delete_candidates:
+                        if name in referenced:
+                            result["pool"]["delete_skipped"].append(name)
+                            continue
+                        dev = pool_by_name.get(name)
+                        try:
+                            if client._raw.delete(Container.POOL, [_cid(dev)]):
+                                result["pool"]["deleted"].append(name)
+                                manifest.clear_observed_pool(name)
+                                pool_by_name.pop(name, None)
+                        except HelixError as e:
+                            errors.append(f"tone '{name}': {e}")
 
             # 5. Garbage-collect orphan pool presets (only on the --all run).
             if do_gc:
-                referenced = _device_referenced_names(client, pool_by_name)
-                # "wanted" = every setlist member AND every slot-marked tone —
-                # a slot-only tone is not an orphan.
-                union_all = set(manifest.union_tones(manifest.setlists()))
-                union_all.update(manifest.device_marked_tones())
-                for name in plan_gc(union_all, list(pool_by_name.keys()), referenced):
-                    m = pool_by_name.get(name)
-                    if m is None:
-                        continue
-                    # never-orphan re-verify: skip if a live reference reappeared
-                    if name in _device_referenced_names(client, pool_by_name):
-                        continue
-                    if client._raw.delete(Container.POOL, [_cid(m)]):
-                        result["gc"]["deleted"].append(name)
+                try:
+                    referenced = _device_referenced_names(client, pool_by_name)
+                except HelixError as e:
+                    errors.append(
+                        f"gc: could not verify no-orphan safety ({e}); "
+                        f"skipping garbage-collection this run — retry")
+                else:
+                    # "wanted" = every setlist member AND every slot-marked
+                    # tone — a slot-only tone is not an orphan.
+                    union_all = set(manifest.union_tones(manifest.setlists()))
+                    union_all.update(manifest.device_marked_tones())
+                    for name in plan_gc(union_all, list(pool_by_name.keys()), referenced):
+                        m = pool_by_name.get(name)
+                        if m is None:
+                            continue
+                        # never-orphan re-verify: skip if a live reference
+                        # reappeared; a listing failure here must likewise
+                        # skip (not delete) this one candidate.
+                        try:
+                            if name in _device_referenced_names(client, pool_by_name):
+                                continue
+                        except HelixError as e:
+                            errors.append(
+                                f"gc: could not re-verify {name!r} is unreferenced "
+                                f"before deleting it ({e}); skipping it this "
+                                f"run — retry")
+                            continue
+                        if client._raw.delete(Container.POOL, [_cid(m)]):
+                            result["gc"]["deleted"].append(name)
 
     manifest.save()
     result["ok"] = not errors
@@ -469,14 +548,23 @@ def sync_setlists(
 def _device_referenced_names(client, pool_by_name: Dict[str, dict]) -> set:
     """Names of pool presets referenced by ANY setlist currently on the device
     (scans every ``cctp==1003`` reference under ``-5`` and resolves its ``rcid``
-    to the pool preset name)."""
+    to the pool preset name).
+
+    STRICT listings throughout (#39 audit): this is the never-orphan gate for
+    both the per-tone unsynced-delete step and the whole-library ``--gc``
+    prune in ``sync_setlists`` — the exact "destructive planning off a
+    listing" pattern ir-prune already hardened. A silently-truncated setlist
+    or reference listing here would under-report what's referenced, making a
+    still-wanted pool preset look orphaned and get **deleted**. A timeout or
+    undecodable listing must abort (:class:`HelixError`) rather than risk
+    that."""
     cid_to_name = {_cid(m): n for n, m in pool_by_name.items()}
     referenced: set = set()
-    for sl in client.list_setlists():
+    for sl in client.list_setlists(strict=True):
         sl_cid = _cid(sl)
         if sl_cid is None:
             continue
-        for item in client.list_container(sl_cid):
+        for item in client.list_container(sl_cid, strict=True):
             if item.get("cctp") == Cctp.REFERENCE:
                 nm = cid_to_name.get(item.get("rcid"))
                 if nm:

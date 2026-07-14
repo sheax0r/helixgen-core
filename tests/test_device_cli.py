@@ -48,11 +48,11 @@ class FakeClient:
         return contextlib.nullcontext(self)
 
     # reads
-    def list_presets(self, container=-2):
+    def list_presets(self, container=-2, *, strict=False):
         self.calls.append(("list_presets", container))
         return CANNED_PRESETS
 
-    def list_setlists(self):
+    def list_setlists(self, *, strict=False):
         self.calls.append(("list_setlists",))
         return [{"cid_": -2, "name": "User"}, {"cid_": -1, "name": "Factory"}]
 
@@ -94,7 +94,7 @@ class FakeClient:
 class RaisingClient(FakeClient):
     """A fake whose reads raise HelixError to exercise error paths."""
 
-    def list_presets(self, container=-2):
+    def list_presets(self, container=-2, *, strict=False):
         raise HelixError("boom: device unreachable")
 
 
@@ -155,7 +155,7 @@ def test_device_setlist_maps_to_constant(monkeypatch):
     holder = {}
 
     class Recorder(FakeClient):
-        def list_presets(self, container=-2):
+        def list_presets(self, container=-2, *, strict=False):
             holder["container"] = container
             return CANNED_PRESETS
 
@@ -739,6 +739,77 @@ def test_device_setlist_duplicate_creates_missing_target(monkeypatch, tmp_path):
     assert "3" in result.output  # copied count
 
 
+# -- #39: strict setlist resolution — abort, never mint a duplicate ----------
+
+class RaisingSetlistClient(SetlistClient):
+    """A fake whose ``resolve_setlist_cid`` raises HelixError, simulating a
+    network timeout/undecodable listing (backlog #39) instead of silently
+    reading as "setlist absent"."""
+
+    def resolve_setlist_cid(self, name, *, strict=True):
+        self.calls.append(("resolve", name))
+        raise HelixError("no reply listing container -5 (timeout or "
+                         "connection drop); refusing to treat it as empty")
+
+
+def test_device_setlist_create_aborts_on_listing_failure_no_duplicate(monkeypatch, tmp_path):
+    """A timeout resolving the setlists root must abort `device setlist
+    create` — never silently proceed to create a (possibly duplicate) setlist
+    because the listing looked empty."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+    _patch_client(monkeypatch, RaisingSetlistClient)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "create", "helixgen"])
+    assert result.exit_code != 0
+    assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
+    assert "already exists" not in result.output.lower()
+    assert RaisingSetlistClient.created == []  # no duplicate minted
+
+
+def test_device_setlist_duplicate_aborts_on_dst_listing_failure_no_duplicate(
+        monkeypatch, tmp_path):
+    """The `duplicate` dst-resolve is the exact #39 scenario: a failed listing
+    of the destination must never be read as "dst absent" and auto-create a
+    second setlist with that name."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+
+    class SrcOkDstRaises(SetlistClient):
+        def resolve_setlist_cid(self, name, *, strict=True):
+            self.calls.append(("resolve", name))
+            if name == "helixgen":
+                return type(self).SETLISTS.get(name)
+            raise HelixError("no reply listing container -5")
+
+    _patch_client(monkeypatch, SrcOkDstRaises)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "duplicate", "helixgen", "ZZC-copy"])
+    assert result.exit_code != 0
+    assert SrcOkDstRaises.created == []  # never auto-created a duplicate dst
+    assert SrcOkDstRaises.duplicated == []
+
+
+def test_device_setlist_rename_aborts_on_new_name_listing_failure(monkeypatch, tmp_path):
+    """The rename target-name check is also a #39 site: if we can't verify
+    NEW_NAME is free, abort rather than risk renaming onto a collision."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+
+    class SrcOkNewNameRaises(SetlistClient):
+        def resolve_setlist_cid(self, name, *, strict=True):
+            self.calls.append(("resolve", name))
+            if name == "helixgen":
+                return type(self).SETLISTS.get(name)
+            raise HelixError("no reply listing container -5")
+
+    _patch_client(monkeypatch, SrcOkNewNameRaises)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "rename", "helixgen", "gigs"])
+    assert result.exit_code != 0
+    assert "no reply" in result.output.lower()
+
+
 # -- review #37 fixes ----------------------------------------------------------
 
 def _patch_sftp_noop(monkeypatch, removed=None):
@@ -889,15 +960,19 @@ class ReorderClient(FakeClient):
     POOL = [{"cid_": 100, "name": "Clean Machine"},
             {"cid_": 101, "name": "Lead Tone"}]
 
-    def resolve_setlist_cid(self, name):
+    def resolve_setlist_cid(self, name, *, strict=True):
         self.calls.append(("resolve_setlist_cid", name))
         return type(self).SETLISTS.get(name)
 
-    def list_container(self, cid):
+    def list_setlists(self, *, strict=False):
+        self.calls.append(("list_setlists",))
+        return [{"cid_": c, "name": n} for n, c in type(self).SETLISTS.items()]
+
+    def list_container(self, cid, *, strict=False):
         self.calls.append(("list_container", cid))
         return type(self).CONTAINERS.get(cid, [])
 
-    def list_presets(self, container=-2):
+    def list_presets(self, container=-2, *, strict=False):
         self.calls.append(("list_presets", container))
         return type(self).POOL
 

@@ -193,7 +193,11 @@ def reorder_setlist_item(client, setlist: str, target: str,
             # Same (i)/(ii) collision policy as numeric targets, against the
             # real setlist listing: a setlist display-named this digit string
             # must never be silently shadowed by a cid that doesn't resolve.
-            setlists = client.list_setlists()
+            # STRICT (#39 audit): this listing gates which container the
+            # subsequent write targets — a truncated read could hide a real
+            # name clash and let the reorder silently land on the wrong
+            # container.
+            setlists = client.list_setlists(strict=True)
             clashes = [m for m in setlists
                        if str(m.get("name", "")).casefold() == s.casefold()
                        and m.get("cid_") != lit]
@@ -223,7 +227,10 @@ def reorder_setlist_item(client, setlist: str, target: str,
                 f"no setlist named {setlist!r} on the device (create it "
                 f"first with `helixgen device setlist create {setlist}`, or "
                 "check `helixgen device setlists`)")
-    items = client.list_container(container_cid)
+    # STRICT (#39 audit): this listing directly gates the reorder RPC below
+    # (bounds check + which cid gets moved) — a truncated/partial read could
+    # misresolve the target or accept an out-of-range position silently.
+    items = client.list_container(container_cid, strict=True)
     # Bounds-check the destination against the fresh listing — how the device
     # handles an out-of-range newPos is uncharacterized, so refuse it here.
     n = len(items)
@@ -234,7 +241,7 @@ def reorder_setlist_item(client, setlist: str, target: str,
     pool_names = None
     if not is_root:
         pool_names = {m.get("cid_"): m.get("name")
-                      for m in client.list_presets(Container.POOL)}
+                      for m in client.list_presets(Container.POOL, strict=True)}
     moved_cid = resolve_target_cid(items, target, is_setlists_root=is_root,
                                    pool_names=pool_names, warnings=warnings)
     # A literal-cid target bypasses name lookup, but must still live in this

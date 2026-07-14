@@ -375,12 +375,26 @@ class HelixClient:
         """Alias of :meth:`list_setlists` — enumerate the real user setlists."""
         return self.list_setlists()
 
-    def resolve_setlist_cid(self, name: str) -> Optional[int]:
+    def resolve_setlist_cid(self, name: str, *, strict: bool = True) -> Optional[int]:
         """Case-insensitively match a user setlist by ``name`` and return its
         ``cid_`` (the positive setlist container id), or ``None`` if no setlist
-        with that name exists on the device."""
+        with that name exists on the device.
+
+        ``strict`` (default ``True``) is threaded straight through to
+        ``list_setlists`` — a timeout or an undecodable listing raises
+        :class:`HelixError` instead of silently reading as "no setlist named
+        that" (backlog #39). Every auto-creating caller (``device setlist
+        create``'s pre-check, ``duplicate``'s destination check, ``sync``'s
+        resolve step, ``import-hss``) depends on this: with a lenient read, a
+        network hiccup could make an *existing* setlist look absent, and the
+        caller would then mint a second, duplicate-named one. ``None`` from
+        this method now means "definitively absent" (a clean listing that
+        genuinely doesn't contain ``name``) — never "couldn't tell". Pass
+        ``strict=False`` only for a deliberately best-effort/retry lookup
+        (e.g. re-resolving a cid moments after a create, where the caller
+        already has its own retry loop and a documented fallback)."""
         want = name.strip().casefold()
-        for m in self.list_setlists():
+        for m in self.list_setlists(strict=strict):
             if str(m.get("name", "")).strip().casefold() == want:
                 return m.get("cid_")
         return None
@@ -1034,9 +1048,13 @@ class HelixClient:
             # The create-reply cid is unreliable (same as preset creation), so
             # the root is re-listed by name — with retries, since listings lag
             # briefly after a write. The reply cid is only a last-resort
-            # fallback.
+            # fallback. This lookup is deliberately non-strict: we already KNOW
+            # the device just accepted the create (status 0 above), so a
+            # transient listing failure here means "not yet visible, keep
+            # polling" — the same as a clean listing that doesn't have it yet
+            # — not "duplicate risk" (there's nothing left to auto-create).
             for i in range(4):
-                real = self.resolve_setlist_cid(name)
+                real = self.resolve_setlist_cid(name, strict=False)
                 if real is not None:
                     return real
                 if i < 3:
@@ -1097,9 +1115,15 @@ class HelixClient:
         sequence, then adds the desired references at their target positions.
         Pool presets are NEVER deleted (no orphaning). Returns
         ``{"added": [ref_cid, ...], "removed": [ref_cid, ...]}``.
+
+        STRICT listing (#39 audit): this is the add/remove reconciliation gate
+        — a truncated/timed-out read would make a reference that's actually
+        present look absent, and the "add" pass below would then create a
+        **second** reference to the same pool preset at that position (a
+        duplicate, the same failure class #39 fixed for setlist names).
         """
         with self.mutating():
-            current = [m for m in self.list_container(setlist_cid)
+            current = [m for m in self.list_container(setlist_cid, strict=True)
                        if m.get("cctp") == Cctp.REFERENCE]
             desired = list(enumerate(ordered_pool_cids))  # (pos, pool_cid)
             desired_set = {(pos, pool_cid) for pos, pool_cid in desired}

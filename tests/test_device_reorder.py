@@ -348,17 +348,17 @@ class StubClient:
         self.pool = pool or []
         self.reorder_calls = []
 
-    def resolve_setlist_cid(self, name):
+    def resolve_setlist_cid(self, name, *, strict=True):
         return self.setlists.get(name)
 
-    def list_setlists(self):
+    def list_setlists(self, *, strict=False):
         return [{"cid_": cid, "name": name, "cctp": Cctp.SETLIST}
                 for name, cid in self.setlists.items()]
 
-    def list_container(self, cid):
+    def list_container(self, cid, *, strict=False):
         return self.container_items.get(cid, [])
 
-    def list_presets(self, container=Container.POOL):
+    def list_presets(self, container=Container.POOL, *, strict=False):
         return self.pool
 
     def reorder_container(self, container, moved_cids, new_pos):
@@ -526,3 +526,65 @@ def test_reorder_setlist_item_numeric_root_cid_behaves_as_root():
     res = R.reorder_setlist_item(client, "-5", "Mike", 0)
     assert res["container"] == int(Container.SETLISTS_ROOT)
     assert res["moved_cid"] == 1014
+
+
+# -- #39 audit: reorder's listings must gate the write strictly --------------
+
+class StrictCheckingStubClient(StubClient):
+    """Records the ``strict`` kwarg every listing call was made with, so the
+    tests can assert reorder.py actually asks for strict listings (rather
+    than just happening to pass because the fake ignores the kwarg)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.strict_seen = []
+
+    def list_setlists(self, *, strict=False):
+        self.strict_seen.append(("list_setlists", strict))
+        return super().list_setlists()
+
+    def list_container(self, cid, *, strict=False):
+        self.strict_seen.append(("list_container", strict))
+        return super().list_container(cid)
+
+    def list_presets(self, container=Container.POOL, *, strict=False):
+        self.strict_seen.append(("list_presets", strict))
+        return super().list_presets(container)
+
+
+def test_reorder_setlist_item_container_listing_is_strict():
+    client = StrictCheckingStubClient(
+        setlists={"throwaway": 1234},
+        container_items={1234: SETLIST_ITEMS},
+        pool=[{"cid_": cid, "name": name} for cid, name in POOL_NAMES.items()],
+    )
+    R.reorder_setlist_item(client, "throwaway", "Lead Tone", 0)
+    assert ("list_container", True) in client.strict_seen
+    assert ("list_presets", True) in client.strict_seen
+
+
+def test_reorder_setlist_item_numeric_setlist_collision_listing_is_strict():
+    client = StrictCheckingStubClient(
+        setlists={"7": 999, "other": 7},
+        container_items={7: SETLIST_ITEMS},
+        pool=[{"cid_": cid, "name": name} for cid, name in POOL_NAMES.items()],
+    )
+    R.reorder_setlist_item(client, "7", "Lead Tone", 0)
+    assert ("list_setlists", True) in client.strict_seen
+
+
+def test_reorder_setlist_item_propagates_listing_failure_not_wrong_error():
+    """A HelixError from a truncated/undecodable container listing must
+    propagate as-is (#39 audit) — never get swallowed and misreported as
+    "no item found" or a silent wrong-container reorder."""
+    from helixgen.device.client import HelixError
+
+    class RaisingClient(StubClient):
+        def list_container(self, cid, *, strict=False):
+            raise HelixError("undecodable listing blob for container "
+                             f"{cid} (truncated chunked reply?)")
+
+    client = RaisingClient(setlists={"throwaway": 1234})
+    with pytest.raises(HelixError, match="undecodable"):
+        R.reorder_setlist_item(client, "throwaway", "Lead Tone", 0)
+    assert client.reorder_calls == []

@@ -1319,7 +1319,10 @@ def device_setlist_create_handler(
 
     Device-side creation (backlog #8): sends the device's own create command
     and records the setlist in the local manifest too. Errors if a setlist
-    with that name already exists on the device. Returns ``{ok, cid, name}``.
+    with that name already exists on the device. The existence check is
+    strict (backlog #39): a listing timeout/failure raises rather than being
+    read as "absent", so it never proceeds to mint a duplicate-named setlist.
+    Returns ``{ok, cid, name}``.
     """
     _validate_model(model)
     from helixgen.device import HelixClient, HelixError
@@ -1350,8 +1353,10 @@ def device_setlist_rename_handler(
     """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked).
 
     Resolves the setlist by (case-insensitive) name. Errors if ``name`` isn't
-    on the device or ``new_name`` already is. Returns ``{ok, cid, name}``
-    (``name`` = the new name).
+    on the device or ``new_name`` already is — both resolutions are strict
+    (backlog #39): a listing failure raises rather than reading as "absent",
+    so a network hiccup can never rename onto an existing name. Returns
+    ``{ok, cid, name}`` (``name`` = the new name).
     """
     _validate_model(model)
     from helixgen.device import HelixClient, HelixError
@@ -1417,8 +1422,11 @@ def device_setlist_duplicate_handler(
 
     ``dst`` is created on the device when absent; if it exists it must be
     EMPTY. References are pointers — the pool presets are shared, not copied
-    (editing a pool preset changes it in both setlists). Returns
-    ``{ok, src_cid, dst_cid, created, copied}``.
+    (editing a pool preset changes it in both setlists). Resolving both
+    ``src`` and ``dst`` is strict (backlog #39): a listing failure raises
+    rather than reading ``dst`` as "absent", which is exactly what would
+    otherwise auto-create a duplicate-named destination on a network hiccup.
+    Returns ``{ok, src_cid, dst_cid, created, copied}``.
     """
     _validate_model(model)
     from helixgen.device import HelixClient, HelixError

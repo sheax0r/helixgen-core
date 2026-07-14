@@ -62,12 +62,12 @@ class FakeClient:
         if self._raise_on == method:
             raise device.HelixError(f"boom in {method}")
 
-    def list_presets(self, container=device.USER):
+    def list_presets(self, container=device.USER, *, strict=False):
         self._maybe_raise("list_presets")
         FakeClient.record["container"] = container
         return _PRESETS
 
-    def list_setlists(self):
+    def list_setlists(self, *, strict=False):
         self._maybe_raise("list_setlists")
         return _SETLISTS
 
@@ -576,6 +576,45 @@ def test_device_setlist_duplicate_creates_target(polish_client, monkeypatch, tmp
     assert FakeClient.record["duplicated"] == (988, 1186)
 
 
+# -- #39: strict setlist resolution — abort, never mint a duplicate ----------
+
+def test_device_setlist_create_aborts_on_listing_failure(
+        polish_client, monkeypatch, tmp_path):
+    """A listing failure resolving the setlists root must abort the MCP
+    create handler too — never silently proceed as "absent" and create a
+    (possibly duplicate) setlist."""
+    _fresh_manifest(monkeypatch, tmp_path)
+
+    def raise_resolve(self, name, *, strict=True):
+        raise device.HelixError(
+            "no reply listing container -5 (timeout or connection drop)")
+
+    monkeypatch.setattr(polish_client, "resolve_setlist_cid", raise_resolve)
+    with pytest.raises(ValueError, match="no reply"):
+        tools.device_setlist_create_handler(MODEL, name="ZZC-new")
+    assert "created_setlist" not in FakeClient.record
+
+
+def test_device_setlist_duplicate_aborts_on_dst_listing_failure(
+        polish_client, monkeypatch, tmp_path):
+    """The duplicate handler's dst-resolve is the exact #39 scenario: a
+    failed listing of the destination must never read as "dst absent" and
+    auto-create a second setlist with that name."""
+    _fresh_manifest(monkeypatch, tmp_path)
+
+    def raise_for_dst(self, name, *, strict=True):
+        if name == "helixgen":
+            return type(self).SETLISTS.get(name)
+        raise device.HelixError("no reply listing container -5")
+
+    monkeypatch.setattr(polish_client, "resolve_setlist_cid", raise_for_dst)
+    with pytest.raises(ValueError, match="no reply"):
+        tools.device_setlist_duplicate_handler(
+            MODEL, src="helixgen", dst="ZZC-copy")
+    assert "created_setlist" not in FakeClient.record
+    assert "duplicated" not in FakeClient.record
+
+
 # -- review #37 fixes ----------------------------------------------------------
 
 def test_device_delete_ir_forwards_force_wedge(polish_client, monkeypatch):
@@ -654,17 +693,17 @@ _REORDER_POOL = [
 class ReorderClient(FakeClient):
     """FakeClient extension with the surface device_reorder_handler drives."""
 
-    def resolve_setlist_cid(self, name):
+    def resolve_setlist_cid(self, name, *, strict=True):
         self._maybe_raise("resolve_setlist_cid")
         FakeClient.record["setlist"] = name
         return 1234 if name == "throwaway" else None
 
-    def list_container(self, cid):
+    def list_container(self, cid, *, strict=False):
         self._maybe_raise("list_container")
         FakeClient.record["container"] = cid
         return list(_REORDER_REFS) if cid == 1234 else []
 
-    def list_presets(self, container=device.USER):
+    def list_presets(self, container=device.USER, *, strict=False):
         return list(_REORDER_POOL)
 
     def reorder_container(self, container, moved_cids, new_pos):
