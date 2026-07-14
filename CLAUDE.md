@@ -195,19 +195,101 @@ similar preset), use `helixgen view <preset.hsp>` — a read-only projection.
 }
 ```
 
-- `paths` is 1–2 entries (each maps to one DSP); parallel splits inside a path are not supported in v1.
+- `paths` is 1–2 entries (each maps to one DSP). Parallel splits inside a path use `split`/`join` entries (see "parallel splits" below).
 - `block` matches the display_name from `list-blocks` (e.g. "Brit Plexi Brt") — case-sensitive. If ambiguous, use the model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
 - `params` values are floats 0.0–1.0 for most knobs; some are ints/bools/Hz. Verify ranges with `show-block`.
 
-### Optional: per-path input routing
+### Optional: per-path input routing + input block params
 
-Each path entry may carry an optional `"input"` field with one of:
+Each path entry may carry an optional `"input"` field. The simple form is a
+mode string:
 - `"inst1"` — Instrument 1 jack only
 - `"inst2"` — Instrument 2 jack only
 - `"both"` — both jacks (stereo) — **default on paths[0]**
 - `"none"` — input disabled — **default on paths[1]**
 
+The object form adds the Input-block params (impedance / pad / trim / gate):
+
+```json
+"input": {
+  "source": "inst1",
+  "impedance": "1M",
+  "pad": true,
+  "trim": -6.0,
+  "gate": {"enabled": true, "threshold": -55.0, "decay": 0.2},
+  "link": false
+}
+```
+
+- `source` — same vocabulary as the string form; optional (same defaults).
+- `impedance` — `"FirstBlock"` / `"FirstEnabled"` (the auto modes), `"10K"`,
+  `"22K"`, `"32K"`, `"70K"`, `"90K"`, `"136K"`, `"230K"`, `"1M"` (the device's
+  full self-described ladder — no 3.5M on Stadium). Preset-level, per jack:
+  applies to the jack(s) the source uses (with `"both"`, a per-jack object
+  `{"inst1": ..., "inst2": ...}` is accepted). Omitted → the device default
+  `"FirstEnabled"`; an omission never conflicts with another path's explicit
+  value (explicit wins). Two paths giving the same jack **different explicit**
+  values is an error.
+- `pad` — bool (instrument sources only).
+- `trim` — float dB, −24..6.
+- `gate` — `true`/`false` shorthand, or `{"enabled", "threshold" (−96..0 dB),
+  "decay" (0.01..1)}`. Giving the gate **object** implies `enabled: true`
+  unless you set `"enabled": false` explicitly.
+- `link` — StereoLink; `"both"` source only.
+- With `"both"`, `pad`/`trim`/`gate.*` also accept per-channel values
+  `{"1": x, "2": y}` (a scalar writes both channels).
+
+`generate` always writes the **full** input-endpoint param set (defaults +
+your overrides) and the used jacks' impedance — the chassis's gate/trim/pad
+state and used-jack impedance never leak into an authored preset. (Scope:
+an **unused** jack's impedance and an unused chassis flow's input *model*
+keep their chassis values — only their endpoint params are normalized.)
+`view` lifts non-default input params back into this object form
+(all-default inputs stay the readable string).
+
 Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
+
+### Optional: per-path output level/pan
+
+```json
+"output": {"level": -3.0, "pan": 0.4}
+```
+
+- `level` — float dB, −120..20 (the output block's `gain`).
+- `pan` — float 0..1 (0.5 = center).
+- Applies to the path's primary (lane-0 `b13`) output block. The output
+  **destination** (Matrix/XLR/1/4"/Path-2 feed…) is not authored here — it
+  round-trips verbatim via `structural` entries; an explicit `output` wins
+  over a stale structural copy.
+
+### Optional: parallel splits — split TYPE + merge mixer
+
+A path's `blocks` may carry one or two `split`…`join` regions (lane-1 entries
+between them form the B branch). The split takes a friendly `type` and
+per-type params; the join is the merge mixer:
+
+```json
+{"split": {"type": "crossover", "params": {"Frequency": 800.0, "Reverse": false}}},
+{"block": "Tape Echo Stereo", "lane": 1},
+{"join": {"params": {"A Level": 0.0, "B Level": -2.0, "B Pan": 0.5,
+                     "B Polarity": false, "Level": 0.0}}}
+```
+
+- Split types → params (validated; unknown names error and list the valid set):
+  - `"y"` — `BalanceA`, `BalanceB` (0..1), `enable`
+  - `"ab"` — `RouteTo` (0..1), `enable`
+  - `"crossover"` — `Frequency` (25..15000 Hz), `Reverse`, `enable`
+  - `"dynamic"` — `Threshold` (−60..0 dB), `Attack`/`Decay` (0.05..5 s),
+    `Reverse`, `enable`
+- A raw `model` string is still accepted (must agree with `type` if both are
+  given); unknown models pass params through unvalidated.
+- Join (merge-mixer) params — literal wire names **with spaces**: `"A Level"`,
+  `"A Pan"`, `"B Level"`, `"B Pan"` (0..1), `"B Polarity"` (bool), `"Level"`
+  (−60..12 dB). The device default for the master `"Level"` is **+3 dB** —
+  omit it and the merged signal comes out 3 dB hot; write `"Level": 0.0`
+  for unity.
+- FX Loop / Send / Return block params (`Send`, `Return`, `Mix`, `DryThru`)
+  are ordinary block params — author them like any other block.
 
 ### Optional: snapshots (Stadium scenes)
 
@@ -354,9 +436,9 @@ add an optional `ir` field to load a registered user IR:
 
 Stadium-only; ignored without warning for `.hlx` (legacy Helix) chassis output.
 
-### Optional: delay/reverb trails (`trails`)
+### Optional: delay/reverb/FX-loop trails (`trails`)
 
-Delay and reverb blocks may carry an optional `"trails"` boolean that controls
+Delay, reverb, and FX-Loop blocks may carry an optional `"trails"` boolean that controls
 harness spillover — whether the block's echoes / reverb tail keep ringing when
 the block is **bypassed** (manually or via a footswitch):
 
@@ -374,15 +456,15 @@ the block is **bypassed** (manually or via a footswitch):
   change. To hear the bypass case, bypass the block — ideally while palm-muting
   so the guitar's natural sustain doesn't mask the wet tail. (Footswitch/
   manual-bypass behavior is hardware-validated on Stadium XL.)
-- On the device, FX-Loop blocks also carry a `Trails` param, but helixgen's
-  `trails` authoring field is scoped to **delay and reverb only** (below).
 - Omitting `trails` leaves the device default (or whatever a decompiled
   `raw.harness` carried) untouched.
-- **Delay and reverb only.** Setting `trails` on any other block category is a
-  generate error.
+- **Delay, reverb, and FX-Loop blocks only** (FX-Loop = `HD2_FXLoop*`; the
+  device manual documents Trails there too). Setting `trails` on any other
+  block — including Send-/Return-only blocks — is a generate error.
 - `view` lifts an existing `Trails` out of `raw.harness` into this clean
-  `trails` field (delay/reverb blocks only), so it round-trips as a first-class
-  setting. If both `trails` and a `raw.harness` are present, `trails` wins.
+  `trails` field (same delay/reverb/FX-loop scope), so it round-trips as a
+  first-class setting. If both `trails` and a `raw.harness` are present,
+  `trails` wins.
 - Stadium-only; ignored for `.hlx` (legacy Helix) chassis (no harness emitted).
 - Editing an existing `.hsp` never needs `trails`: `set-param`/edit verbs
   preserve the block's `harness` (and its `Trails`) verbatim in place.
@@ -447,7 +529,7 @@ untouched by construction.
 **Run `helixgen show-block "<block>"` first** to confirm the exact,
 case-sensitive param name — the same guardrail `generate` already enforces.
 
-- `helixgen set-param <preset> <block> <param> <value> [--path/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string).
+- `helixgen set-param <preset> <block> <param> <value> [--path/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string). A **negative** value needs the `--` sentinel after any flags (`helixgen set-param t.hsp output level -- -3`). The block names `input` / `output` / `split` / `join` (`merge` = alias) are **signal-flow pseudo-blocks** addressing the path's endpoints / split / merge mixer (`--path` picks the DSP; `--pos` disambiguates two splits; `--lane` does not apply): input params use the recipe vocabulary (`impedance`, `pad`, `trim`, `gate`, `threshold`, `decay`, `link`), output params are `level`/`pan`, split/join params are the wire names (`BalanceA`, `Frequency`, `"A Level"`, …).
 - `helixgen enable <preset> <block> [--snapshot NAME] [--path/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) enable it in that snapshot.
 - `helixgen disable <preset> <block> [--snapshot NAME] [--path/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) bypass it in that snapshot.
 - `helixgen add-block <preset> <block> [--path N] [--after NAME]` — insert a block (append to `--path`, default 0, or after a named block).

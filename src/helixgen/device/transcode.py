@@ -34,6 +34,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
+from helixgen import flowparams
+
 from . import content
 from . import defs
 
@@ -507,23 +509,43 @@ def _make_endpoint_model(model_id: int) -> dict:
             "parm": _synth_parm(model_id, {}), "snap": False, "tid_": 0, "vers": 0}
 
 
-def _make_input_endpoint(mode: Optional[str], inst_id: int) -> dict:
+def _make_input_endpoint(mode: Optional[str], inst_id: int,
+                         params: Optional[Dict[str, Any]] = None) -> dict:
     """Build the live-input endpoint block for a flow given its ``input`` mode.
 
     ``inst1``/``none`` reuse the verbatim captured templates; ``inst2``/``both``
-    are synthesized from ``defs`` (valid model + default params)."""
-    if mode in (None, "inst1"):
-        return _endpoint(_INPUT_INST1, inst_id)
-    if mode == "none":
-        return _endpoint(_INPUT_NONE, inst_id)
-    model_id = _INPUT_MODEL.get(mode, _INPUT_MODEL["inst1"])
+    are synthesized from ``defs`` (valid model + default params). ``params``
+    (device-name-keyed, e.g. ``Trim``/``noiseGate`` or the stereo model's
+    ``Pad.1``/``Pad.2`` — from :func:`bridge._lift_endpoint_params`) overlays
+    the model's defaults so the ``.hsp``'s pad/trim/gate state survives
+    transcode (parity #18)."""
+    if not params:
+        if mode in (None, "inst1"):
+            return _endpoint(_INPUT_INST1, inst_id)
+        if mode == "none":
+            return _endpoint(_INPUT_NONE, inst_id)
+    model_id = _INPUT_MODEL.get(mode or "inst1", _INPUT_MODEL["inst1"])
+    m0 = _make_endpoint_model(model_id)
+    if params:
+        m0["parm"] = _synth_parm(model_id, params)
     return {
         "cid_": 0, "enbl": 1, "favo": 0, "hasb": False,
         "hrns": _hrns_for("input"),
         "id__": inst_id,
-        "mdls": [_make_endpoint_model(model_id)],
+        "mdls": [m0],
         "snap": False, "tid_": 0, "type": 8,
     }
+
+
+def _make_output_matrix(inst_id: int,
+                        params: Optional[Dict[str, Any]] = None) -> dict:
+    """The row-0 ``OutputMatrix`` endpoint, with the ``.hsp``'s ``gain``/``pan``
+    overlaid onto the captured template when provided (parity #18)."""
+    ep = _endpoint(_OUTPUT_MATRIX, inst_id)
+    if params:
+        model_id = ep["mdls"][0]["id__"]  # 783 = P35_OutputMatrix
+        ep["mdls"][0]["parm"] = _synth_parm(model_id, params)
+    return ep
 
 
 def _synth_parm(model_id: int, params: Dict[str, Any]) -> List[dict]:
@@ -680,10 +702,12 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         modeled = path.get("blocks") or []
         structural = path.get("structural") or []
         mode = path.get("input") or _default_input_mode(pi)
+        in_params = path.get("input_params") or None
+        out_params = path.get("output_params") or None
 
         # (gridpos, block) placements on this flow's 28-slot grid.
         placements: List[Tuple[int, dict]] = [
-            (_ROW0_INPUT, _make_input_endpoint(mode, 0))]
+            (_ROW0_INPUT, _make_input_endpoint(mode, 0, in_params))]
 
         if not structural:
             # SERIAL / dual-DSP path: user blocks fill row 0 (positions 1..12),
@@ -697,7 +721,7 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
                 placements.append((gp, _make_user_block(spec, 0)))
                 instance_ids[(pi, lane, pos)] = base + gp
                 gp += 1
-            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_MATRIX, 0)))
+            placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
             placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
             placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
         elif all("_pos" in s for s in structural) and \
@@ -725,7 +749,7 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
                 elif blk.get("type") == 4:    # join <- row-1 slot beneath it
                     blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
                 placements.append((spos, blk))
-            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_MATRIX, 0)))
+            placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
             placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
             placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
         else:
@@ -758,7 +782,7 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
                 elif typ == 4:
                     blk["bblk"], blk["bflw"] = base + join_gp, pi
                 placements.append((slot, blk))
-            placements.append((_ROW0_OUTPUT, _endpoint(_OUTPUT_MATRIX, 0)))
+            placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
             placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
             placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
 
@@ -1139,11 +1163,15 @@ def _scribble_for(sources: Optional[Dict[int, dict]]) -> Dict[Tuple[str, int], d
     return out
 
 
-def _synth_pm(sources: Optional[Dict[int, dict]] = None) -> List[dict]:
+def _synth_pm(sources: Optional[Dict[int, dict]] = None,
+              inst_z: Optional[Dict[str, str]] = None) -> List[dict]:
     """A minimal valid ``pm__`` preset-param list, mirroring the standard key set
     an HX Edit import emits (clip, 2x12 floorboard stomps, tempo, exp-switch,
     instrument impedance, xy-controller). Footswitch scribble-strip colour/label/
-    topidx come from ``sources`` (spec 2 Part B) when supplied, else neutral."""
+    topidx come from ``sources`` (spec 2 Part B) when supplied, else neutral.
+    ``inst_z`` maps ``inst1``/``inst2`` to `.hsp` impedance strings; the device
+    ``preset.instN.z`` int is the self-described enum index
+    (``flowparams.impedance_device_int``), defaulting to First Enabled (1)."""
     scrib = _scribble_for(sources)
     pm: List[dict] = [
         {"key_": "preset.clip.end", "type": "f", "val_": 0.0},
@@ -1175,9 +1203,13 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None) -> List[dict]:
             pm.append({"key_": f"{base}.label", "type": "s", "val_": label})
             pm.append({"key_": f"{base}.topidx", "type": "i",
                        "val_": int(cfg.get("fs_topidx", 0))})
+    def _z(jack: str) -> int:
+        z = (inst_z or {}).get(jack)
+        return flowparams.impedance_device_int(z) if isinstance(z, str) else 1
+
     pm += [
-        {"key_": "preset.inst1.z", "type": "i", "val_": 1},
-        {"key_": "preset.inst2.z", "type": "i", "val_": 1},
+        {"key_": "preset.inst1.z", "type": "i", "val_": _z("inst1")},
+        {"key_": "preset.inst2.z", "type": "i", "val_": _z("inst2")},
         {"key_": "preset.meta.info", "type": "s", "val_": ""},
         {"key_": "preset.tempo.bpm", "type": "f", "val_": 120.0},
         {"key_": "preset.xyctrl.rbtime", "type": "f", "val_": 0.5},
@@ -1206,7 +1238,7 @@ def _synthesize(recipe: dict) -> dict:
     sfg, next_id, instance_ids = synthesize_sfg(paths)
     cg, bindings = _synth_cg_from_recipe(recipe, instance_ids, next_id - 1)
     _bind_snapshot_targets(sfg, bindings)
-    pm = _synth_pm(recipe.get("sources"))
+    pm = _synth_pm(recipe.get("sources"), recipe.get("inst_z"))
     return {"cg__": cg, "pm__": pm, "sfg_": sfg}
 
 
@@ -1307,5 +1339,11 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
     sources = bridge.hsp_sources(hsp_body)
     if sources:
         recipe["sources"] = sources
+    preset_params = (hsp_body.get("preset") or {}).get("params") or {}
+    inst_z = {jack: preset_params[f"{jack}Z"]
+              for jack in ("inst1", "inst2")
+              if isinstance(preset_params.get(f"{jack}Z"), str)}
+    if inst_z:
+        recipe["inst_z"] = inst_z
     doc = recipe_to_sbepgsm(recipe)
     return content.encode_content_data(doc)

@@ -1,0 +1,23 @@
+{
+  "name": "Flow Params Corpus",
+  "author": "corpus",
+  "paths": [
+    {
+      "input": {
+        "source": "inst1",
+        "impedance": "1M",
+        "pad": true,
+        "trim": -3.0,
+        "gate": { "enabled": true, "threshold": -55.0, "decay": 0.2 }
+      },
+      "output": { "level": -4.5, "pan": 0.25 },
+      "blocks": [
+        { "block": "Scream 808", "lane": 0, "pos": 1 },
+        { "split": { "type": "crossover", "params": { "Frequency": 800.0, "Reverse": true } }, "lane": 0, "pos": 2 },
+        { "block": "Digital", "lane": 1, "pos": 1 },
+        { "join": { "params": { "A Level": -2.0, "B Pan": 0.1, "B Polarity": true, "Level": 0.0 } }, "lane": 0, "pos": 3 },
+        { "block": "Brit 2204 Custom", "lane": 0, "pos": 4 }
+      ]
+    }
+  ]
+}

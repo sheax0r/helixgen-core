@@ -70,6 +70,18 @@ def generate_preset(model: str, recipe: dict[str, Any], out_path: str) -> dict[s
     the library's Stadium chassis — no sidecar spec file is written; the
     written `.hsp` file is the sole source of truth.
 
+    **Signal-flow depth:** each path's `input` may be a mode string
+    (`"inst1"`/`"inst2"`/`"both"`/`"none"`) OR an object adding `impedance`
+    (`"FirstBlock"`/`"FirstEnabled"`/`"10K"`…`"1M"`), `pad` (bool), `trim`
+    (dB), `gate` (bool or `{enabled, threshold, decay}`), and (stereo only)
+    `link`; a path may carry `output: {level, pan}` (lane-0 endpoint).
+    A `split` entry takes a friendly `type` (`y`/`ab`/`crossover`/`dynamic`)
+    with per-type params (e.g. crossover `Frequency`/`Reverse`, dynamic
+    `Threshold`/`Attack`/`Decay`); a `join` entry takes the merge-mixer params
+    (`"A Level"`, `"A Pan"`, `"B Level"`, `"B Pan"`, `"B Polarity"`,
+    `"Level"` — literal names with spaces). Delay/reverb/FX-Loop blocks accept
+    `trails` (spillover on bypass).
+
     **IR usage:** `With Pan` blocks accept an `ir` field with either a
     basename (resolved via the local IR mapping) or a 32-char hex hash
     (used literally). For factory IRs, use a `Mic Ir_*` cab block.
@@ -264,6 +276,15 @@ def patch_preset(model: str, hsp_path: str, operations: list) -> dict[str, Any]:
     `--lane`/`--pos` flags. An address that cannot be resolved uniquely
     raises a clear "matches N placements" error listing the candidates.
     Call `show_block` first to confirm exact, case-sensitive param names.
+
+    **Signal-flow pseudo-blocks:** `set_param` also accepts the block names
+    `input` / `output` / `split` / `join` (`merge` = alias), which address
+    the path's endpoints / split / merge mixer instead of a library block
+    (`path` selects the DSP, default 0; `pos` disambiguates two splits).
+    Input params use the recipe vocabulary (`impedance`, `pad`, `trim`,
+    `gate`, `threshold`, `decay`, `link`); output params are `level`/`pan`;
+    split/join params are the literal wire names (`BalanceA`, `Frequency`,
+    `"A Level"`, …).
 
     Returns `{"path": <the same hsp_path, now edited in place>, "warnings":
     [<str>, ...]}`. `warnings` collects any `swap_model` messages about

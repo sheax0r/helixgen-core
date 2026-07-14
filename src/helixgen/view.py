@@ -33,7 +33,7 @@ import os
 import sys
 from typing import Any
 
-from helixgen import controllers
+from helixgen import controllers, flowparams
 from helixgen.generate import _coerce_param_value
 from helixgen.hsp import ENDPOINT_KEYS as _ENDPOINT_KEYS, _translate_model_id, _unwrap_value
 from helixgen.ir import IR_MODEL_PREFIX, IrMapping
@@ -99,6 +99,133 @@ def _input_mode(path_dict: dict, device_id: Any) -> str | None:
         return None
     model = b00["slot"][0].get("model", "")
     return controllers.input_mode_for_model(device_id, model)
+
+
+def _flow_differs(value: Any, default: Any) -> bool:
+    """Value-vs-default compare tolerant of float32 storage (real exports
+    store e.g. decay 0.1 as 0.10000000149011612) and of per-channel dicts."""
+    import math
+    if isinstance(value, dict):
+        return any(_flow_differs(v, default) for v in value.values())
+    if isinstance(value, bool) or isinstance(default, bool):
+        return value != default
+    if isinstance(value, (int, float)) and isinstance(default, (int, float)):
+        return not math.isclose(float(value), float(default),
+                                rel_tol=1e-6, abs_tol=1e-9)
+    return value != default
+
+
+def _lift_input(path_dict: dict, device_id: Any, body: dict) -> "str | dict | None":
+    """The path's `input` field: the bare mode string when everything modeled
+    is at its device default, else the object form with the non-default
+    input-endpoint params (pad/trim/gate/link) and any non-default impedance
+    for the jacks the source uses. See the 2026-07-14 design spec §3.2."""
+    mode = _input_mode(path_dict, device_id)
+    if mode is None:
+        return None
+    slot = path_dict["b00"]["slot"][0]
+    params = slot.get("params") or {}
+
+    def val(name):
+        w = params.get(name)
+        if not isinstance(w, dict):
+            return None
+        if "1" in w and isinstance(w.get("1"), dict):  # stereo per-channel
+            v1 = w["1"].get("value")
+            v2 = (w.get("2") or {}).get("value")
+            if v1 is None or v2 is None:
+                # Malformed channel: not liftable — note a regenerate of this
+                # projection normalizes the param to schema defaults (b00 is
+                # never carried verbatim).
+                return None
+            if v1 == v2:
+                return v1
+            return {"1": v1, "2": v2}
+        return w.get("value")
+
+    lifts: dict[str, Any] = {}
+
+    # Lifts mirror parse_spec's scoping (review F2): pad is only legal on an
+    # instrument source and link only on the stereo "both" source, so a
+    # leftover Pad/StereoLink param outside that scope stays un-lifted —
+    # otherwise parse_spec(view(x)) would reject view's own output.
+    has_jack = bool(flowparams.jacks_for_mode(mode))
+
+    pad = val("Pad")
+    if has_jack and pad is not None and _flow_differs(pad, 1):
+        if isinstance(pad, dict):
+            lifts["pad"] = {ch: v == 2 for ch, v in pad.items()}
+        else:
+            lifts["pad"] = pad == 2
+    trim = val("Trim")
+    if trim is not None and _flow_differs(trim, 0.0):
+        lifts["trim"] = trim
+
+    gate: dict[str, Any] = {}
+    ng = val("noiseGate")
+    th = val("threshold")
+    dc = val("decay")
+    if ng is not None and _flow_differs(ng, False):
+        gate["enabled"] = ng
+    if th is not None and _flow_differs(th, -48.0):
+        gate["threshold"] = th
+    if dc is not None and _flow_differs(dc, 0.1):
+        gate["decay"] = dc
+    if gate:
+        # "enabled" must be explicit: the parse default for a gate OBJECT is
+        # enabled=true, so a threshold-only lift on a gate-off block would
+        # otherwise flip the gate on when regenerated.
+        gate.setdefault("enabled", ng if ng is not None else False)
+        lifts["gate"] = gate
+
+    link = val("StereoLink")
+    if mode == "both" and link is not None and _flow_differs(link, False):
+        lifts["link"] = bool(link)
+
+    preset_params = (body.get("preset") or {}).get("params") or {}
+    jacks = flowparams.jacks_for_mode(mode)
+    zs: dict[str, str] = {}
+    for jack in jacks:
+        z = preset_params.get(f"{jack}Z")
+        if not isinstance(z, str):
+            continue
+        if z not in flowparams.IMPEDANCE_VALUES:
+            print(f"warning: unrecognized {jack}Z value {z!r}; not lifted "
+                  f"(regenerating this projection will reset it to "
+                  f"{flowparams.IMPEDANCE_DEFAULT!r}).", file=sys.stderr)
+            continue
+        zs[jack] = z
+    if any(z != flowparams.IMPEDANCE_DEFAULT for z in zs.values()):
+        if len(set(zs.values())) == 1 and len(zs) == len(jacks):
+            lifts["impedance"] = next(iter(zs.values()))
+        else:
+            lifts["impedance"] = zs
+
+    if not lifts:
+        return mode
+    return {"source": mode, **lifts}
+
+
+def _lift_output(path_dict: dict) -> dict | None:
+    """The path's `output` field: `{"level", "pan"}` for whichever of the
+    lane-0 output endpoint's gain/pan differ from the device defaults
+    (0.0 dB / 0.5). None when both are default (the endpoint still
+    round-trips verbatim as a structural entry)."""
+    b13 = path_dict.get("b13")
+    if not (isinstance(b13, dict) and b13.get("type") == "output"
+            and b13.get("slot")):
+        return None
+    params = b13["slot"][0].get("params") or {}
+    out: dict[str, Any] = {}
+    if "gain" in params:
+        g = _unwrap_value(params["gain"])
+        if isinstance(g, (int, float)) and _flow_differs(g, 0.0):
+            out["level"] = g
+    if "pan" in params:
+        p = _unwrap_value(params["pan"])
+        if isinstance(p, (int, float)) and _flow_differs(p, 0.5):
+            out["pan"] = p
+    return out or None
 
 
 def _iter_blocks(flow: list) -> Any:
@@ -434,6 +561,9 @@ def _entry_for(key, bnn, library, irs):
     if typ == "split":
         entry = {"split": {"model": slot.get("model"),
                            "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
+        split_type = flowparams.SPLIT_MODEL_TO_TYPE.get(slot.get("model"))
+        if split_type is not None:
+            entry["split"]["type"] = split_type
     elif typ == "join":
         entry = {"join": {"model": slot.get("model"),
                           "params": {k: _unwrap_value(v) for k, v in (slot.get("params") or {}).items()}}}
@@ -571,13 +701,13 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
     harness = bnn.get("harness")
     if isinstance(harness, dict):
         harness_copy = copy.deepcopy(harness)
-        # Lift the author-facing Trails (delay/reverb spillover) out of the
-        # verbatim harness into a clean top-level `trails` field, so it is a
-        # single source of truth that generate re-injects. Gate on category to
-        # stay symmetric with generate's delay/reverb-only guard: a block that
-        # could not be regenerated with a `trails` field never gets one, and its
-        # Trails (if any) stays verbatim inside raw.harness.
-        if block.category in ("delay", "reverb"):
+        # Lift the author-facing Trails (delay/reverb/FX-loop spillover) out of
+        # the verbatim harness into a clean top-level `trails` field, so it is
+        # a single source of truth that generate re-injects. Gate symmetric
+        # with generate's trails guard (`flowparams.trails_capable`): a block
+        # that could not be regenerated with a `trails` field never gets one,
+        # and its Trails (if any) stays verbatim inside raw.harness.
+        if flowparams.trails_capable(block.category, block.model_id):
             hparams = harness_copy.get("params")
             trails_wrapped = hparams.get("Trails") if isinstance(hparams, dict) else None
             if isinstance(trails_wrapped, dict) and "value" in trails_wrapped:
@@ -615,9 +745,12 @@ def view(body: dict, library: Library, *, irs: IrMapping | None = None) -> dict[
             for b in _reconstruct_path_blocks(path_dict, library, irs)
         ]
         path_entry: dict[str, Any] = {"blocks": blocks}
-        mode = _input_mode(path_dict, device_id)
-        if mode is not None:
-            path_entry["input"] = mode
+        inp = _lift_input(path_dict, device_id, body)
+        if inp is not None:
+            path_entry["input"] = inp
+        out_lift = _lift_output(path_dict)
+        if out_lift is not None:
+            path_entry["output"] = out_lift
         paths.append(path_entry)
 
     meta = body.get("meta") or {}

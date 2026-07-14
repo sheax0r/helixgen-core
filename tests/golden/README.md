@@ -51,6 +51,7 @@ what the pipeline produced before the rewrite started.
 | `dual_cab_raw` | a cab block carrying `raw.harness` (dual-cab flag) + `raw.slots` (second physical slot), preserved verbatim. |
 | `split_join` | a parallel split/join region with a lane-1 branch block. |
 | `combined` | input routing (`both`/`none`) + snapshots + footswitches + expression + an IR block together in one 2-path preset — the integration case. |
+| `flow_params` | signal-flow param depth (parity #18): input object (impedance/pad/trim/gate), output level/pan, typed crossover split params, merge-mixer join params. |
 
 ## Comparison semantics
 

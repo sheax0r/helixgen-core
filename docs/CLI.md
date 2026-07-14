@@ -83,9 +83,11 @@ A tone spec is a JSON document. Minimal example:
   (wire values: 0–1 floats for amp gain, integer Hz for cut frequencies,
   strings for enums like mic types).
 
-For the full spec surface — input routing, snapshots, footswitch assignment
-(incl. merge switches, param toggles, scribble label/color, response curves),
-expression pedal targets, per-block IR references — see the project
+For the full spec surface — input routing + input block params (impedance/
+pad/trim/gate), output level/pan, parallel splits (split type + merge-mixer
+params), snapshots, footswitch assignment (incl. merge switches, param
+toggles, scribble label/color, response curves), expression pedal targets,
+per-block IR references, trails — see the project
 [`CLAUDE.md`](../CLAUDE.md) which documents every field. Device-network verbs
 (`helixgen device …`, incl. `device info`) are likewise documented there.
 
@@ -153,6 +155,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
 - `helixgen show-block "<name>"` — print a block's exact param names, types, defaults, and observed ranges. **Run this before writing a spec** — param names are case-sensitive and the generator rejects unknown ones.
 - `helixgen generate <spec.json> -o <out.hsp>` — generate a preset. The `-o` flag is required. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix.
+- `helixgen set-param <preset> <block> <param> <value> [--path/--lane/--pos]` — surgical edit of one param, in place. Besides library blocks, accepts the signal-flow pseudo-blocks `input` / `output` / `split` / `join` (`merge` alias) — e.g. `helixgen set-param t.hsp input impedance 1M`, `helixgen set-param t.hsp output level -- -3`, `helixgen set-param t.hsp join "A Level" -- -2`. **Negative values need the `--` sentinel** (else the shell-style parser reads `-3` as an option); put any `--path`/`--lane`/`--pos` flags *before* the `--`. See CLAUDE.md "Surgical edits" for the full verb set (`enable`/`disable`/`add-block`/`remove-block`/`swap-model`/`view`).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
 - `helixgen bootstrap` — clone sensorium/phelix and ingest its `blocks/` folder.
 - `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash and register. Use `--force` to overwrite existing mappings.

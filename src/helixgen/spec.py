@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from helixgen import flowparams
+
 
 class SpecError(ValueError):
     """Raised when a spec is structurally invalid."""
@@ -49,10 +51,40 @@ class StructuralEntry:
 
 
 @dataclass
+class InputSpec:
+    """Object form of a path's ``input`` field (signal-flow param depth).
+
+    Scalar fields may instead carry a per-channel ``{"1": x, "2": y}`` dict
+    when the effective source is ``"both"`` (the stereo input model).
+    ``gate_*`` fields come from the nested recipe ``gate`` object (or its
+    bool shorthand). ``impedance`` is a string, or an ``{"inst1", "inst2"}``
+    dict when the two jacks differ.
+    """
+    source: str | None = None
+    impedance: Any = None
+    pad: Any = None
+    trim: Any = None
+    gate_enabled: Any = None
+    gate_threshold: Any = None
+    gate_decay: Any = None
+    link: bool | None = None
+
+
+@dataclass
+class OutputSpec:
+    """Object form of a path's ``output`` field: primary (lane-0) output
+    endpoint level (dB) and pan (0..1). Destination routing (the endpoint
+    model) is deliberately not modeled — it round-trips verbatim via
+    structural entries."""
+    level: float | None = None
+    pan: float | None = None
+
+
+@dataclass
 class PathEntry:
     blocks: list
-    input: str | None = None
-    output: str | None = None
+    input: "str | InputSpec | None" = None
+    output: OutputSpec | None = None
 
 
 @dataclass
@@ -180,7 +212,8 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
 
     paths: list[PathEntry] = []
     for i, path_raw in enumerate(paths_raw):
-        paths.append(_parse_path(path_raw, source=f"{source} paths[{i}]"))
+        paths.append(_parse_path(path_raw, source=f"{source} paths[{i}]",
+                                 path_index=i))
 
     snapshots = _parse_snapshots(data.get("snapshots"), source=source)
     footswitches = _parse_footswitches(data.get("footswitches"), source=source)
@@ -523,23 +556,12 @@ def _parse_lane_pos(data: dict, *, source: str) -> tuple[int, int | None]:
     return lane, pos
 
 
-def _parse_path(data: Any, *, source: str) -> PathEntry:
+def _parse_path(data: Any, *, source: str, path_index: int = 0) -> PathEntry:
     if not isinstance(data, dict):
         raise _err(source, "must be an object.")
 
-    inp = data.get("input")
-    if inp is not None:
-        if not isinstance(inp, str):
-            raise _err(source, '"input" must be a string if provided.')
-        if inp not in VALID_INPUT_MODES:
-            raise _err(
-                source,
-                f'"input" must be one of {list(VALID_INPUT_MODES)} '
-                f'(got "{inp}").',
-            )
-    out = data.get("output")
-    if out is not None and not isinstance(out, str):
-        raise _err(source, '"output" must be a string if provided.')
+    inp = _parse_input(data.get("input"), source=source, path_index=path_index)
+    out = _parse_output(data.get("output"), source=source)
 
     blocks_raw = data.get("blocks")
     if not isinstance(blocks_raw, list):
@@ -549,6 +571,185 @@ def _parse_path(data: Any, *, source: str) -> PathEntry:
               for i, b in enumerate(blocks_raw)]
     _validate_splits(blocks, source=source)
     return PathEntry(blocks=blocks, input=inp, output=out)
+
+
+def _check_source_mode(mode: Any, *, source: str) -> None:
+    if mode not in VALID_INPUT_MODES:
+        raise _err(
+            source,
+            f'input "source" must be one of {list(VALID_INPUT_MODES)} '
+            f'(got {mode!r}).',
+        )
+
+
+def _parse_channel_value(field: str, value: Any, *, stereo: bool,
+                         source: str) -> Any:
+    """Validate a scalar-or-per-channel input field value.
+
+    A ``{"1": x, "2": y}`` dict is legal only when the effective source is
+    ``"both"`` (the stereo input model); each channel value is validated
+    individually. Scalars are validated directly.
+    """
+    if isinstance(value, dict):
+        if not stereo:
+            raise _err(source, f'per-channel "{field}" values require '
+                               f'source "both" (the stereo input).')
+        if set(value.keys()) != {"1", "2"}:
+            raise _err(source, f'per-channel "{field}" must have exactly '
+                               f'the keys "1" and "2".')
+        for ch, v in value.items():
+            try:
+                flowparams.validate_input_field(field, v)
+            except ValueError as e:
+                raise _err(source, f'input channel {ch}: {e}') from e
+        return {"1": value["1"], "2": value["2"]}
+    try:
+        flowparams.validate_input_field(field, value)
+    except ValueError as e:
+        raise _err(source, f"input: {e}") from e
+    return value
+
+
+_INPUT_OBJECT_KEYS = ("source", "impedance", "pad", "trim", "gate", "link")
+
+
+def _parse_input(raw: Any, *, source: str, path_index: int) -> "str | InputSpec | None":
+    """Parse a path's ``input`` field: the classic mode string, or the
+    signal-flow object form (source + impedance/pad/trim/gate/link)."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        _check_source_mode(raw, source=source)
+        return raw
+    if not isinstance(raw, dict):
+        raise _err(source, '"input" must be a mode string or an object '
+                           '(e.g. {"source": "inst1", "gate": true}).')
+
+    unknown = sorted(set(raw) - set(_INPUT_OBJECT_KEYS))
+    if unknown:
+        raise _err(source, f'unknown input key(s) {unknown}; valid keys: '
+                           f'{list(_INPUT_OBJECT_KEYS)}.')
+
+    mode = raw.get("source")
+    if mode is not None:
+        _check_source_mode(mode, source=source)
+    effective = mode or flowparams.default_input_mode(path_index)
+    stereo = effective == "both"
+    jacks = flowparams.jacks_for_mode(effective)
+
+    spec = InputSpec(source=mode)
+
+    imp = raw.get("impedance")
+    if imp is not None:
+        if not jacks:
+            raise _err(source, f'input "impedance" is meaningless with '
+                               f'source "{effective}" (no instrument jack in use).')
+        if isinstance(imp, dict):
+            bad = sorted(set(imp) - set(jacks))
+            if bad:
+                raise _err(source, f'impedance jack(s) {bad} not used by '
+                                   f'source "{effective}"; valid jacks: {list(jacks)}.')
+            for jack, v in imp.items():
+                try:
+                    flowparams.validate_impedance(v)
+                except ValueError as e:
+                    raise _err(source, f"impedance.{jack}: {e}") from e
+            spec.impedance = dict(imp)
+        else:
+            try:
+                flowparams.validate_impedance(imp)
+            except ValueError as e:
+                raise _err(source, f"impedance: {e}") from e
+            spec.impedance = imp
+
+    if raw.get("pad") is not None:
+        if effective == "none":
+            raise _err(source, 'input "pad" requires an instrument source '
+                               '(inst1/inst2/both), not "none".')
+        spec.pad = _parse_channel_value("pad", raw["pad"], stereo=stereo,
+                                        source=source)
+    if raw.get("trim") is not None:
+        spec.trim = _parse_channel_value("trim", raw["trim"], stereo=stereo,
+                                         source=source)
+
+    gate = raw.get("gate")
+    if gate is not None:
+        if isinstance(gate, bool):
+            spec.gate_enabled = gate
+        elif isinstance(gate, dict):
+            unknown = sorted(set(gate) - {"enabled", "threshold", "decay"})
+            if unknown:
+                raise _err(source, f'unknown gate key(s) {unknown}; valid '
+                                   f'keys: [\'enabled\', \'threshold\', \'decay\'].')
+            spec.gate_enabled = _parse_channel_value(
+                "gate", gate.get("enabled", True), stereo=stereo, source=source)
+            if gate.get("threshold") is not None:
+                spec.gate_threshold = _parse_channel_value(
+                    "threshold", gate["threshold"], stereo=stereo, source=source)
+            if gate.get("decay") is not None:
+                spec.gate_decay = _parse_channel_value(
+                    "decay", gate["decay"], stereo=stereo, source=source)
+        else:
+            raise _err(source, '"gate" must be a boolean or an object '
+                               '{"enabled", "threshold", "decay"}.')
+
+    link = raw.get("link")
+    if link is not None:
+        if not stereo:
+            raise _err(source, 'input "link" (StereoLink) requires source '
+                               '"both" (the stereo input).')
+        if not isinstance(link, bool):
+            raise _err(source, '"link" must be a boolean.')
+        spec.link = link
+
+    return spec
+
+
+def _parse_output(raw: Any, *, source: str) -> OutputSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise _err(source, '"output" must be an object like '
+                           '{"level": -3.0, "pan": 0.5} (destination routing '
+                           'is carried verbatim via structural entries, not '
+                           'authored here).')
+    unknown = sorted(set(raw) - {"level", "pan"})
+    if unknown:
+        raise _err(source, f'unknown output key(s) {unknown}; valid keys: '
+                           f"['level', 'pan'].")
+    out = OutputSpec()
+    for fieldname in ("level", "pan"):
+        v = raw.get(fieldname)
+        if v is None:
+            continue
+        try:
+            flowparams.validate_output_field(fieldname, v)
+        except ValueError as e:
+            raise _err(source, f"output: {e}") from e
+        setattr(out, fieldname, float(v))
+    return out
+
+
+def _resolve_split_model(sd: dict, *, source: str) -> str:
+    """Resolve a split entry's model from its friendly ``type`` and/or raw
+    ``model``. One of the two is required; when both are given they must
+    agree."""
+    typ = sd.get("type")
+    model = sd.get("model")
+    if typ is not None:
+        if typ not in flowparams.SPLIT_TYPES:
+            raise _err(source, f'unknown split type {typ!r}; valid types: '
+                               f'{sorted(flowparams.SPLIT_TYPES)}.')
+        resolved = flowparams.SPLIT_TYPES[typ]
+        if model is not None and model != resolved:
+            raise _err(source, f'split "type" {typ!r} and "model" {model!r} '
+                               f'do not agree ({typ!r} is {resolved}).')
+        return resolved
+    if not isinstance(model, str):
+        raise _err(source, '"split" requires a "type" '
+                           f'({sorted(flowparams.SPLIT_TYPES)}) or a '
+                           '"model" string.')
+    return model
 
 
 def _parse_path_entry(data: Any, *, source: str):
@@ -564,17 +765,37 @@ def _parse_path_entry(data: Any, *, source: str):
         return StructuralEntry(raw=raw, lane=lane, pos=pos)
     if "split" in data:
         sd = data["split"]
-        if not isinstance(sd, dict) or not isinstance(sd.get("model"), str):
-            raise _err(source, '"split" must be an object with a "model" string.')
+        if not isinstance(sd, dict):
+            raise _err(source, '"split" must be an object with a "type" '
+                               '(y/ab/crossover/dynamic) or "model" string.')
+        model = _resolve_split_model(sd, source=source)
+        params_raw = sd.get("params", {})
+        if not isinstance(params_raw, dict):
+            raise _err(source, '"split.params" must be an object.')
+        params = dict(params_raw)
+        try:
+            flowparams.validate_wire_params(model, params)
+        except ValueError as e:
+            raise _err(source, f"split: {e}") from e
+        params = flowparams.coerce_wire_params(model, params)
         lane, pos = _parse_lane_pos(data, source=source)
-        return SplitEntry(model=sd["model"], params=dict(sd.get("params", {})), lane=lane, pos=pos)
+        return SplitEntry(model=model, params=params, lane=lane, pos=pos)
     if "join" in data:
         jd = data["join"] or {}
         if not isinstance(jd, dict):
             raise _err(source, '"join" must be an object if provided.')
+        model = jd.get("model", "P35_AppDSPJoin")
+        params_raw = jd.get("params", {})
+        if not isinstance(params_raw, dict):
+            raise _err(source, '"join.params" must be an object.')
+        params = dict(params_raw)
+        try:
+            flowparams.validate_wire_params(model, params)
+        except ValueError as e:
+            raise _err(source, f"join: {e}") from e
+        params = flowparams.coerce_wire_params(model, params)
         lane, pos = _parse_lane_pos(data, source=source)
-        return JoinEntry(model=jd.get("model", "P35_AppDSPJoin"),
-                         params=dict(jd.get("params", {})), lane=lane, pos=pos)
+        return JoinEntry(model=model, params=params, lane=lane, pos=pos)
     # plain block (existing logic) + lane/pos
     if "parallel" in data:
         raise _err(source, '"parallel" entries not supported; use split/join.')

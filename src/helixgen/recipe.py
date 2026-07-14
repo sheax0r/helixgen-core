@@ -24,10 +24,9 @@ import copy
 from typing import Any
 
 from helixgen import __version__  # noqa: F401  (re-exported provenance version lives in generate)
-from helixgen import mutate
+from helixgen import flowparams, mutate
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.generate import (
-    DEFAULT_INPUT_MODES,
     GenerateError,
     _assign_positions,
     _build_snapshot_metadata,
@@ -43,9 +42,144 @@ from helixgen.generate import (
 )
 from helixgen.hsp import dumps_hsp
 from helixgen.ir import IR_MODEL_PREFIX
-from helixgen.spec import BlockEntry, Spec, parse_spec
+from helixgen.spec import BlockEntry, InputSpec, Spec, parse_spec
 
 _MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
+
+
+def _effective_input(path_entry, path_index: int) -> tuple[str, InputSpec | None]:
+    """(effective mode, InputSpec-or-None) for a path's `input` field."""
+    inp = path_entry.input
+    if isinstance(inp, InputSpec):
+        return (inp.source or flowparams.default_input_mode(path_index)), inp
+    return (inp or flowparams.default_input_mode(path_index)), None
+
+
+_INPUT_FIELD_ATTRS = (
+    ("pad", "pad"),
+    ("trim", "trim"),
+    ("gate", "gate_enabled"),
+    ("threshold", "gate_threshold"),
+    ("decay", "gate_decay"),
+)
+
+
+def _normalize_input_endpoint(path_dict: dict[str, Any], mode: str,
+                              input_spec: InputSpec | None) -> None:
+    """Write the full modeled param set onto a path's `b00` input endpoint:
+    schema defaults overlaid with the recipe's input-object fields.
+
+    Deterministic by design (spec §3.1): every real export carries a complete
+    `b00` param set, and normalizing stops the chassis's gate/trim/pad state
+    from leaking into authored presets. Mono models get `{"value": x}`
+    wrappers; the stereo ("both") model gets per-channel `{"1","2"}` wrappers
+    plus a scalar `StereoLink`.
+    """
+    b00 = path_dict.get("b00")
+    if not (isinstance(b00, dict) and b00.get("slot")):
+        return
+    stereo = mode == "both"
+
+    values: dict[str, Any] = dict(flowparams.INPUT_HSP_DEFAULTS)
+    if mode == "none":
+        values.pop("Pad", None)
+    for field, attr in _INPUT_FIELD_ATTRS:
+        v = getattr(input_spec, attr) if input_spec else None
+        if v is None:
+            continue
+        hsp_name = flowparams.INPUT_FIELD_SPECS[field][0]
+        if hsp_name not in values:
+            continue  # e.g. Pad on a "none" input (parse already rejects it)
+        if isinstance(v, dict):
+            values[hsp_name] = {
+                ch: flowparams.input_field_to_hsp(field, cv)[1]
+                for ch, cv in v.items()
+            }
+        else:
+            values[hsp_name] = flowparams.input_field_to_hsp(field, v)[1]
+
+    params: dict[str, Any] = {}
+    for name, v in values.items():
+        if stereo:
+            if isinstance(v, dict):
+                params[name] = {ch: {"value": cv} for ch, cv in v.items()}
+            else:
+                params[name] = {"1": {"value": v}, "2": {"value": copy.deepcopy(v)}}
+        else:
+            if isinstance(v, dict):  # per-channel on mono can't happen post-parse
+                v = v.get("1")
+            params[name] = {"value": v}
+    if stereo:
+        link = input_spec.link if (input_spec and input_spec.link is not None) \
+            else flowparams.STEREO_LINK_DEFAULT
+        params["StereoLink"] = {"value": link}
+    b00["slot"][0]["params"] = params
+
+
+def _resolve_jack_impedances(spec: Spec) -> dict[str, str]:
+    """Per-jack impedance strings across all paths: the EXPLICIT recipe value
+    when any path gives one, else the device-declared default for every jack
+    a live source uses.
+
+    Explicitness matters (review F1): a path that merely *uses* a jack
+    without naming an impedance is not a "FirstEnabled" request — an explicit
+    value from any path wins over other paths' omissions. Only two paths
+    giving the same jack **different explicit** values conflict.
+    """
+    jack_z: dict[str, str] = {}
+    explicit: set[str] = set()
+    for path_index, path_entry in enumerate(spec.paths):
+        mode, input_spec = _effective_input(path_entry, path_index)
+        imp = input_spec.impedance if input_spec else None
+        for jack in flowparams.jacks_for_mode(mode):
+            if isinstance(imp, dict) and jack in imp:
+                want = imp[jack]
+            elif isinstance(imp, str):
+                want = imp
+            else:
+                # jack used but impedance omitted: default, non-binding
+                jack_z.setdefault(jack, flowparams.IMPEDANCE_DEFAULT)
+                continue
+            if jack in explicit and jack_z[jack] != want:
+                raise GenerateError(
+                    f"conflicting impedance for {jack}: paths request both "
+                    f"{jack_z[jack]!r} and {want!r}."
+                )
+            jack_z[jack] = want
+            explicit.add(jack)
+    return jack_z
+
+
+def _apply_output(path_dict: dict[str, Any], output_spec) -> None:
+    """Normalize the path's primary (lane-0 `b13`) output endpoint level/pan:
+    schema defaults overlaid with the recipe `output` object. Runs AFTER
+    `_emit_structural`, so an explicit `output` wins over a stale structural
+    copy; wrapper shape is preserved (only `value` is updated)."""
+    b13 = path_dict.get("b13")
+    is_output = (isinstance(b13, dict) and b13.get("type") == "output"
+                 and b13.get("slot"))
+    if not is_output:
+        if output_spec is not None:
+            raise GenerateError(
+                "path has no lane-0 output endpoint (b13); cannot apply "
+                "output level/pan."
+            )
+        return
+    values = dict(flowparams.OUTPUT_HSP_DEFAULTS)
+    if output_spec is not None:
+        if output_spec.level is not None:
+            values["gain"] = float(output_spec.level)
+        if output_spec.pan is not None:
+            values["pan"] = float(output_spec.pan)
+    params = b13["slot"][0].setdefault("params", {})
+    for name, v in values.items():
+        wrapped = params.get(name)
+        if isinstance(wrapped, dict) and not (
+            "1" in wrapped and isinstance(wrapped.get("1"), dict)
+        ):
+            wrapped["value"] = v
+        else:
+            params[name] = {"value": v}
 
 
 def apply_recipe(
@@ -93,11 +227,13 @@ def apply_recipe(
                     f"block {block.display_name!r} is not an IR block; "
                     f"remove the 'no_ir' field or change the block"
                 )
-            if block_entry.trails is not None and block.category not in ("delay", "reverb"):
+            if block_entry.trails is not None and not flowparams.trails_capable(
+                block.category, block.model_id
+            ):
                 raise GenerateError(
                     f"Block {block_entry.block!r} sets \"trails\" but its "
                     f"category is {block.category!r}; trails (harness spillover) "
-                    f"applies only to delay and reverb blocks."
+                    f"applies only to delay, reverb, and FX-Loop blocks."
                 )
 
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
@@ -109,12 +245,34 @@ def apply_recipe(
 
     flow = body.setdefault("preset", {}).setdefault("flow", [])
 
-    # --- input routing (mutate verb) ---------------------------------------
+    # --- input routing + endpoint params (spec §3.1: deterministic) --------
     for path_index, path_entry in enumerate(spec.paths):
         if path_index >= len(flow) or not isinstance(flow[path_index], dict):
             continue
-        mode = path_entry.input or DEFAULT_INPUT_MODES[path_index]
+        mode, input_spec = _effective_input(path_entry, path_index)
         mutate.set_input(body, path_index, mode)
+        _normalize_input_endpoint(flow[path_index], mode, input_spec)
+
+    # Chassis flows beyond the spec's paths keep their input model but get the
+    # same deterministic endpoint-param normalization (a spec with 1 path on a
+    # 2-flow chassis must produce the same flow[1] endpoints as regenerating
+    # its own `view` projection, which lists every flow).
+    device_id = (body.get("meta") or {}).get("device_id") or "stadium_xl"
+    from helixgen import controllers as _controllers
+    for path_index in range(len(spec.paths), len(flow)):
+        path_dict = flow[path_index]
+        if not isinstance(path_dict, dict):
+            continue
+        b00 = path_dict.get("b00")
+        model = (b00.get("slot") or [{}])[0].get("model", "") if isinstance(b00, dict) else ""
+        mode = _controllers.input_mode_for_model(device_id, model)
+        if mode is not None:
+            _normalize_input_endpoint(path_dict, mode, None)
+        _apply_output(path_dict, None)
+
+    # --- preset-level input impedance (used jacks only) ---------------------
+    for jack, z in _resolve_jack_impedances(spec).items():
+        body["preset"].setdefault("params", {})[f"{jack}Z"] = z
 
     # --- block placement (shared core helpers) -----------------------------
     for path_index, chain in enumerate(resolved):
@@ -167,6 +325,9 @@ def apply_recipe(
             )
         _emit_splits(path_dict, path_entry, eff)
         _emit_structural(path_dict, path_entry)
+        # Output level/pan LAST, so an explicit recipe `output` wins over a
+        # verbatim structural endpoint carried from `view`.
+        _apply_output(path_dict, path_entry.output)
 
     # --- controller wiring (mutate verbs) ----------------------------------
     # Reset chassis-carryover scribble strips: the cloned chassis carries the

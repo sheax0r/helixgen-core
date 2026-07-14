@@ -262,6 +262,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         blocks: List[Dict[str, Any]] = []
         structural: List[Dict[str, Any]] = []
         input_mode: Optional[str] = None
+        input_params: Dict[str, Any] = {}
+        output_params: Dict[str, Any] = {}
         for key in sorted(k for k in flow if isinstance(k, str)
                           and k.startswith("b") and k[1:].isdigit()):
             b = flow[key]
@@ -285,6 +287,13 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 continue
             if key == "b00":
                 input_mode = _controllers.input_mode_for_model(device_id, model)
+                input_params = _lift_endpoint_params(slot)
+                continue
+            if typ == "output":
+                # The lane-0 primary output (b13) carries the path's level/pan;
+                # the device param names (gain/pan) match the .hsp names.
+                if key == "b13":
+                    output_params = _lift_endpoint_params(slot)
                 continue
             dev_id = resolve_model(model)
             if dev_id is None:
@@ -351,9 +360,33 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         path_entry: Dict[str, Any] = {"blocks": blocks}
         if input_mode is not None:
             path_entry["input"] = input_mode
+        if input_params:
+            path_entry["input_params"] = input_params
+        if output_params:
+            path_entry["output_params"] = output_params
         if structural:
             path_entry["structural"] = structural
         out.append(path_entry)
+    return out
+
+
+def _lift_endpoint_params(slot: dict) -> Dict[str, Any]:
+    """Lift an input/output endpoint slot's params as device-name-keyed scalar
+    values. Stereo per-channel wrappers (``{"1": {...}, "2": {...}}``) become
+    the device's ``<name>.1`` / ``<name>.2`` param names (matching ``defs``
+    for e.g. ``P35_InputInst1_2``)."""
+    out: Dict[str, Any] = {}
+    for name, wrapped in (slot.get("params") or {}).items():
+        if not isinstance(wrapped, dict):
+            continue
+        if "1" in wrapped and isinstance(wrapped.get("1"), dict):
+            for ch in ("1", "2"):
+                w = wrapped.get(ch)
+                if isinstance(w, dict) and isinstance(
+                        w.get("value"), (int, float, bool)):
+                    out[f"{name}.{ch}"] = w["value"]
+        elif isinstance(wrapped.get("value"), (int, float, bool)):
+            out[name] = wrapped["value"]
     return out
 
 

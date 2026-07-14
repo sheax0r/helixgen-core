@@ -367,10 +367,16 @@ orthogonal to it.
 - **P3 · #17 Matrix Mixer** **[device-write][discovery]** — per-output-layer
   (1/4"/XLR/Phones) mixing of paths + 8 Song tracks + click + USB/BT/aux, with
   fader/pan/mute/solo and output linking (`/MixerSave`). Matrix §3.
-- **P4 · #18 Signal-flow param depth** **[local]** — first-class authoring of
-  input params (impedance/pad/trim/gate), output level/pan, split TYPE
-  (Y/A-B/Crossover/Dynamic) params, merge mixer params, FX-loop send/return/mix.
-  Pure `.hsp` authoring; no device needed. Matrix §3.
+- **P4 · #18 Signal-flow param depth** — **✅ SHIPPED (this release).**
+  First-class authoring of input params (impedance/pad/trim/gate — recipe
+  `input` object form), output level/pan (`output` object), split TYPE
+  (y/ab/crossover/dynamic) + validated per-type params, merge-mixer params,
+  and FX-loop trails; `set-param` pseudo-blocks (`input`/`output`/`split`/
+  `join`/`merge`); `view` lifts everything back; params survive the
+  `.hsp → _sbepgsm` transcode (incl. `preset.instN.z` impedance ints from
+  the device's self-described enum). Design + evidence:
+  `docs/superpowers/specs/2026-07-14-signal-flow-param-depth-design.md`.
+  Matrix §3 rows all ✅.
 - **P5 · #19 Live device ops** **[device-write][discovery]** — live snapshot
   recall/copy (`/ActiveSnapshotIndexSet`/`/CopySnapshot`), live block bypass
   (`/BlockEnableSet`), live model set (`/ModelSet`), tempo (`/SetTempo`,

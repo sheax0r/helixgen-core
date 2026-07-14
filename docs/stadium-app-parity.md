@@ -72,12 +72,13 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Replace / swap model | Model List | swap in `.hsp` | full | full | full | ✅ | `swap-model` (same-category) |
 | Copy / paste block | Action Panel | `.hsp` edit | partial | partial | partial | 🟡 | achievable via authoring; no one-shot copy verb |
 | Parallel split (create) | drag down | `sfg_.flow` grid synth | full | full | full | ✅ | intra-flow split/join, HW-validated (2.18) |
-| Split TYPE (Y / A-B / Crossover / Dynamic) | Split Inspector | split block params | partial | partial | partial | 🟡 | split synthesized; per-type params (freq/threshold/attack) not modeled as first-class |
-| Merge mixer (levels/pan/polarity) | Merge Inspector | merge block params | partial | partial | partial | 🟡 | merge synthesized; mixer params not first-class authoring fields |
+| Split TYPE (Y / A-B / Crossover / Dynamic) | Split Inspector | split block params | full | full | full | ✅ | recipe `split.type` + validated per-type params; transcode-pinned (parity #18, 2026-07-14 spec) |
+| Merge mixer (levels/pan/polarity) | Merge Inspector | merge block params | full | full | full | ✅ | recipe `join.params` (A/B Level/Pan, B Polarity, Level) validated; `set-param join`; transcode-pinned (#18) |
 | Dual DSP / dual amp | two paths | dual-flow synth | full | full | full | ✅ | dual-amp synth, HW-validated (2.18) |
-| Input block (source/Z/pad/trim/gate) | Input Inspector | per-path input + params | partial | partial | partial | 🟡 | per-path input source ✅; impedance/pad/trim/gate params 🔴 |
-| Output block (dest/level/pan) | Output Inspector | per-path output + params | partial | partial | partial | 🟡 | routing partial; level/pan not first-class |
-| FX Loop / Send / Return | block Inspector | loop block + Trails | partial | partial | partial | 🟡 | loop blocks placeable; send/return/mix/trails params partial |
+| Input block (source/Z/pad/trim/gate) | Input Inspector | per-path input + params | full | full | full | ✅ | input object form: impedance (device-self-described enum) + pad/trim/gate(+stereo per-channel); `set-param input`; transcodes (#18) |
+| Output block level/pan | Output Inspector | per-path output params | full | full | full | ✅ | `output: {level, pan}` + `set-param output` (#18) |
+| Output block destination (Matrix/XLR/1-4"/Path-2) | Output Inspector | output endpoint model | partial | partial | partial | 🟡 | not authorable; round-trips verbatim via `structural` entries — deliberate scope in the #18 design spec |
+| FX Loop / Send / Return | block Inspector | loop block + Trails | full | full | full | ✅ | Send/Return/Mix/DryThru are ordinary block params; `trails` now covers `HD2_FXLoop*` (#18). Caveat: authoring an FX-Loop block needs an `HD2_FXLoop*` exemplar in the block library — no corpus export carries one, so ingest a preset containing an FX Loop first |
 | Live block bypass on device | click block | `/BlockEnableSet` | none | none | none | 🔍 | offline enable/disable ✅; live device toggle arg 🔍 |
 | Live model set on device | Model List | `/ModelSet`+`/ModelEnableSet` | none | none | none | 🔴 | offline swap ✅; live device model-set not exposed |
 | Matrix Mixer (per-output mix/mute/solo) | device Main Volume | `/MixerSave`, mixer params | none | none | none | 🔴 | 8 song tracks + paths + click + USB/BT/aux, fader/pan/mute/solo — whole subsystem missing |
@@ -217,7 +218,6 @@ non-activating read/backup, live param set.
 - **Global settings** (§8) — 8 pages, ~150 relevant keys; the biggest gap.
 - **Command Center** (§6) — whole footswitch-command subsystem.
 - **Matrix Mixer** (§3) — per-output mixing/mute/solo.
-- Signal-flow param depth (§3) — input/output/split/merge/loop params.
 - Live device ops — snapshot recall/copy, model set, block bypass.
 - IR folders (§7), controller MIDI/XY sources (§6 — #33/#34).
   (IR prune/rename, setlist create/rename/delete/duplicate, preset

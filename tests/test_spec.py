@@ -30,13 +30,21 @@ def test_parse_with_author_and_io():
         "name": "X",
         "author": "mike",
         "paths": [
-            {"input": "inst1", "output": "Multi", "blocks": [{"block": "Y"}]}
+            {"input": "inst1", "output": {"level": -3.0}, "blocks": [{"block": "Y"}]}
         ],
     }
     spec = parse_spec(data, source="t.json")
     assert spec.author == "mike"
     assert spec.paths[0].input == "inst1"
-    assert spec.paths[0].output == "Multi"
+    assert spec.paths[0].output.level == -3.0
+
+
+def test_parse_output_string_rejected_actionably():
+    # The old string "output" was parsed-but-ignored; it is now an error that
+    # points at the object form (destination routing stays structural).
+    data = {"name": "X", "paths": [{"output": "Multi", "blocks": []}]}
+    with pytest.raises(SpecError, match="level"):
+        parse_spec(data, source="t.json")
 
 
 def test_missing_name_raises():

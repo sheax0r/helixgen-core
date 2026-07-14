@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from helixgen import controllers
+from helixgen import controllers, flowparams
 from helixgen.controllers import ControllerError
 from helixgen.generate import (
     HSP_SNAPSHOT_SLOTS,
@@ -52,6 +52,7 @@ __all__ = [
     "MutateError",
     "resolve_slot",
     "set_param",
+    "set_flow_param",
     "set_enabled",
     "add_block",
     "remove_block",
@@ -65,6 +66,13 @@ __all__ = [
 ]
 
 _MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
+
+# Signal-flow pseudo-block names accepted by `set_param` (routed to
+# `set_flow_param`). These address a path's endpoints / split / merge mixer
+# rather than a library block; the names win over any same-named library
+# block by design (display names are humanized model titles, so a collision
+# does not occur in practice).
+_FLOW_PSEUDO_BLOCKS = ("input", "output", "split", "join", "merge")
 
 
 class MutateError(ValueError):
@@ -205,7 +213,20 @@ def set_param(
       - stereo `{"1": {"value": x}, "2": {"value": y}}` — updates both
         channels' `value`.
       - missing entirely — creates a plain `{"value": x}` wrapper.
+
+    The exact names ``input`` / ``output`` / ``split`` / ``join`` / ``merge``
+    are signal-flow PSEUDO-BLOCKS and route to :func:`set_flow_param` (they
+    address the path's endpoints / split / merge mixer, not a library block);
+    those names win over any same-named library block by design.
     """
+    if block in _FLOW_PSEUDO_BLOCKS:
+        if lane is not None:
+            raise MutateError(
+                f"{block!r} is a signal-flow pseudo-block; 'lane' does not "
+                f"apply (address it with path=/pos=)."
+            )
+        set_flow_param(body, block, param, value, path=path or 0, pos=pos)
+        return
     fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     slot = _slot_dict(body, fi, key, si)
 
@@ -226,6 +247,160 @@ def set_param(
         wrapped["value"] = coerced
     else:
         params[param] = {"value": coerced}
+
+
+# --- set_flow_param (input/output/split/join pseudo-blocks) ------------------
+
+def _flow_path_dict(body: dict[str, Any], path: int) -> dict[str, Any]:
+    flow = (body.get("preset") or {}).get("flow") or []
+    if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
+        raise MutateError(
+            f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
+    return flow[path]
+
+
+def _write_slot_param(slot: dict[str, Any], name: str, value: Any) -> None:
+    """Write one slot param preserving the wrapper shape (plain / controlled /
+    stereo per-channel), mirroring `set_param`'s write semantics."""
+    params = slot.setdefault("params", {})
+    wrapped = params.get(name)
+    if isinstance(wrapped, dict) and _is_stereo_param(wrapped):
+        for channel in ("1", "2"):
+            chan = wrapped.get(channel)
+            if isinstance(chan, dict):
+                chan["value"] = value
+            else:
+                wrapped[channel] = {"value": value}
+    elif isinstance(wrapped, dict):
+        wrapped["value"] = value
+    else:
+        params[name] = {"value": value}
+
+
+def _set_input_flow_param(body: dict[str, Any], path_dict: dict[str, Any],
+                          param: str, value: Any) -> None:
+    b00 = path_dict.get("b00")
+    if not (isinstance(b00, dict) and b00.get("slot")):
+        raise MutateError("Path has no b00 input endpoint.")
+    slot = b00["slot"][0]
+    device_id = _chassis_device_id(body)
+    mode = controllers.input_mode_for_model(device_id, slot.get("model", ""))
+
+    if param == "impedance":
+        if not isinstance(value, str):
+            raise MutateError('"impedance" takes a string (e.g. "1M", '
+                              '"FirstEnabled").')
+        try:
+            flowparams.validate_impedance(value)
+        except ValueError as exc:
+            raise MutateError(str(exc)) from exc
+        jacks = flowparams.jacks_for_mode(mode or "")
+        if not jacks:
+            raise MutateError(
+                f"input source {mode!r} uses no instrument jack; impedance "
+                f"does not apply.")
+        params = body.setdefault("preset", {}).setdefault("params", {})
+        for jack in jacks:
+            params[f"{jack}Z"] = value
+        return
+
+    if param not in flowparams.INPUT_FIELD_SPECS:
+        raise MutateError(
+            f"unknown input param {param!r}; valid params: "
+            f"{['impedance', *flowparams.INPUT_FIELD_SPECS]}.")
+    if param == "link" and mode != "both":
+        raise MutateError('"link" (StereoLink) applies only to the stereo '
+                          '"both" input.')
+    if param == "pad" and mode in (None, "none"):
+        raise MutateError('"pad" requires an instrument input source '
+                          '(inst1/inst2/both).')
+    try:
+        flowparams.validate_input_field(param, value)
+    except ValueError as exc:
+        raise MutateError(str(exc)) from exc
+    hsp_name, hsp_value = flowparams.input_field_to_hsp(param, value)
+    _write_slot_param(slot, hsp_name, hsp_value)
+
+
+def _set_output_flow_param(path_dict: dict[str, Any], param: str, value: Any) -> None:
+    b13 = path_dict.get("b13")
+    if not (isinstance(b13, dict) and b13.get("type") == "output"
+            and b13.get("slot")):
+        raise MutateError("Path has no lane-0 output endpoint (b13).")
+    if param not in flowparams.OUTPUT_FIELD_TO_HSP:
+        raise MutateError(f"unknown output param {param!r}; valid params: "
+                          f"{sorted(flowparams.OUTPUT_FIELD_TO_HSP)}.")
+    try:
+        flowparams.validate_output_field(param, value)
+    except ValueError as exc:
+        raise MutateError(str(exc)) from exc
+    _write_slot_param(b13["slot"][0],
+                      flowparams.OUTPUT_FIELD_TO_HSP[param], float(value))
+
+
+def _set_split_join_param(path_dict: dict[str, Any], kind: str, param: str,
+                          value: Any, pos: int | None) -> None:
+    candidates = []
+    for key in _bnn_keys(path_dict):
+        bnn = path_dict.get(key)
+        if isinstance(bnn, dict) and bnn.get("type") == kind and bnn.get("slot"):
+            candidates.append((key, bnn))
+    if pos is not None:
+        candidates = [(k, b) for (k, b) in candidates if _lane_pos(k)[1] == pos]
+    if not candidates:
+        raise MutateError(
+            f"Path has no {kind} block"
+            + (f" at pos {pos}" if pos is not None else "") + ".")
+    if len(candidates) > 1:
+        raise MutateError(
+            f"Path has {len(candidates)} {kind} blocks; disambiguate with pos= "
+            f"(positions: {[_lane_pos(k)[1] for k, _ in candidates]}).")
+    slot = candidates[0][1]["slot"][0]
+    model = slot.get("model", "")
+    try:
+        flowparams.validate_wire_params(model, {param: value})
+    except ValueError as exc:
+        raise MutateError(str(exc)) from exc
+    value = flowparams.coerce_wire_params(model, {param: value})[param]
+    _write_slot_param(slot, param, value)
+
+
+def set_flow_param(
+    body: dict[str, Any],
+    kind: str,
+    param: str,
+    value: Any,
+    *,
+    path: int = 0,
+    pos: int | None = None,
+) -> None:
+    """Set one signal-flow param on a path's pseudo-block, in place.
+
+    ``kind`` is one of the pseudo-block names ``input`` / ``output`` /
+    ``split`` / ``join`` (``merge`` is an alias of ``join``):
+
+    - ``input`` params use the recipe vocabulary — ``impedance`` (preset-level
+      instNZ for the jacks the path's source uses), ``pad`` (bool → enum 2/1),
+      ``trim``, ``gate`` (bool → noiseGate), ``threshold``, ``decay``,
+      ``link`` (stereo only). Stereo inputs write both channels.
+    - ``output`` params: ``level`` (dB → gain) and ``pan``, on the lane-0
+      ``b13`` endpoint.
+    - ``split``/``join`` params are the literal wire names (``BalanceA``,
+      ``Frequency``, ``A Level``, …), validated against the placed model's
+      schema; ``pos`` disambiguates when a path carries two split regions.
+    """
+    if kind == "merge":
+        kind = "join"
+    path_dict = _flow_path_dict(body, path)
+    if kind == "input":
+        _set_input_flow_param(body, path_dict, param, value)
+    elif kind == "output":
+        _set_output_flow_param(path_dict, param, value)
+    elif kind in ("split", "join"):
+        _set_split_join_param(path_dict, kind, param, value, pos)
+    else:
+        raise MutateError(
+            f"unknown flow pseudo-block {kind!r}; valid: {list(_FLOW_PSEUDO_BLOCKS)}.")
 
 
 # --- set_enabled -----------------------------------------------------------
@@ -594,10 +769,11 @@ def set_trails(
     slot = bnn["slot"][si]
 
     lib_block = library.load_block(_translate_model_id(slot.get("model", "")))
-    if lib_block.category not in ("delay", "reverb"):
+    if not flowparams.trails_capable(lib_block.category, lib_block.model_id):
         raise MutateError(
             f"Block {block!r} has category {lib_block.category!r}; trails "
-            f"(harness spillover) applies only to delay and reverb blocks."
+            f"(harness spillover) applies only to delay, reverb, and FX-Loop "
+            f"blocks."
         )
 
     trails = bool(trails)

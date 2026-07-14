@@ -139,6 +139,38 @@ Minimal shape:
 }
 ```
 
+#### Signal-flow params (input / output / split / merge) — use when the tone calls for them
+
+The spec also models the signal-flow layer (full field reference: CLAUDE.md
+"recipe shape"). Reach for these when the tone needs them — don't add them
+ritually:
+
+- **Input noise gate** — for high-gain tones, prefer the input-block gate over
+  spending a block slot: `"input": {"gate": {"threshold": -55.0}}` on the
+  path. A `dynamics` Noise Gate block is still right when the gate must sit
+  mid-chain (e.g. post-drive) or be footswitchable.
+- **Input impedance / pad / trim** — only when the reference or the user's
+  pickup setup calls for it (e.g. `"impedance": "230K"` to tame a fuzz the
+  vintage way; `"pad": true` for hot active pickups):
+  `"input": {"source": "inst1", "impedance": "230K"}`.
+- **Output level/pan** — `"output": {"level": -3.0}` is a clean final trim
+  (an alternative to an end-of-chain volume block in the volume-normalization
+  pass when the amp has no channel volume); `pan` for hard-panned dual-path
+  tones.
+- **Split type + merge mixer** — a `split` entry requires a `type` (or raw
+  `model`): `"y"` (plain even split), `"ab"` (footswitch/morph between
+  branches), `"crossover"` (frequency split, e.g. bass bi-amping:
+  `{"split": {"type": "crossover", "params": {"Frequency": 250.0}}}`), or
+  `"dynamic"` (level-dependent routing). Balance the branches at the join:
+  `{"join": {"params": {"B Level": -2.0}}}` — note the merge's master
+  `"Level"` defaults to the device's +3 dB; set `"Level": 0.0` for unity.
+- **Trails** — `"trails": true` is valid on delay, reverb, AND FX-Loop blocks.
+
+After generating, tweak these without re-authoring via `patch_preset`
+`set_param` on the pseudo-blocks `input` / `output` / `split` / `join`
+(e.g. `{"op": "set_param", "block": "input", "param": "threshold",
+"value": -60.0}`).
+
 #### Name the preset for its target guitar
 
 Presets are named for the guitar they're voiced for. Append the **target

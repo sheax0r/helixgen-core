@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from helixgen import __version__
-from helixgen import controllers
+from helixgen import controllers, flowparams
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.hsp import HSP_MAGIC, translate_to_hsp
 from helixgen.ingest import (
@@ -197,10 +197,12 @@ def _compose_preset_hlx(
     - When an amp is followed by a cab, the amp's `@cab` is set to the cab's
       slot key so Stadium/Helix renders the pairing correctly.
     """
-    if any(p.input is not None for p in spec.paths) or spec.footswitches or spec.expression:
+    if (any(p.input is not None for p in spec.paths)
+            or any(p.output is not None for p in spec.paths)
+            or spec.footswitches or spec.expression):
         print(
-            "warning: input routing / footswitches / expression are Stadium-only; "
-            "ignored for .hlx chassis output.",
+            "warning: input routing / output level-pan / footswitches / "
+            "expression are Stadium-only; ignored for .hlx chassis output.",
             file=sys.stderr,
         )
     resolved = resolve_blocks(spec, library)
@@ -269,7 +271,7 @@ def _compose_preset_hlx(
 # ---------------------------------------------------------------------------
 
 HSP_SNAPSHOT_SLOTS = 8           # Stadium has 8 fixed snapshot slots per preset
-DEFAULT_INPUT_MODES = ("both", "none")  # by path index
+DEFAULT_INPUT_MODES = flowparams.DEFAULT_INPUT_MODES  # by path index
 
 
 def _is_chassis_meta_key(key: str) -> bool:
