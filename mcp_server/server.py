@@ -530,6 +530,53 @@ def device_tuner(
 
 
 @app.tool()
+def device_snapshot(
+    index: int,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Recall a snapshot (0-based, 0..7) on the live device — changes the ACTIVE
+    tone's snapshot now (`/activateSnapshot`). Returns `{ok, index}`."""
+    return _tools.device_snapshot_handler(index, ip=ip)
+
+
+@app.tool()
+def device_blocks(
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """List the live edit buffer's blocks with `(path, block)` coordinates, model,
+    and on/off state — the coordinates `device_bypass` / `device_model` /
+    `device_set_param` address. Read-only. Returns `{blocks: [...]}`."""
+    return _tools.device_blocks_handler(ip=ip)
+
+
+@app.tool()
+def device_bypass(
+    path: int,
+    block: int,
+    enable: bool,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Enable (`enable=True`) or bypass (`False`) a block in the live edit buffer
+    (`/BlockEnableSet`). Coordinates from `device_blocks`. Changes the ACTIVE
+    tone. Returns `{ok, path, block, enabled}`."""
+    return _tools.device_bypass_handler(path, block, enable, ip=ip)
+
+
+@app.tool()
+def device_model(
+    path: int,
+    block: int,
+    model: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Set a block's model in the live edit buffer (`/ModelSet`). `model` is a
+    numeric model id or a model-id string (e.g. `HD2_AmpBritPlexiNrm`). The
+    device rejects a cross-category swap. Changes the ACTIVE tone. Returns
+    `{ok, path, block, model, model_id}`."""
+    return _tools.device_model_handler(path, block, model, ip=ip)
+
+
+@app.tool()
 def device_save_preset(
     model: str,
     name: str,

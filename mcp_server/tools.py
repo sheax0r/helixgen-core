@@ -655,6 +655,78 @@ def device_tuner_handler(
             "samples": samples}
 
 
+def device_snapshot_handler(
+    index: int, *, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Recall a snapshot (0-based, 0..7) on the live device. Changes the ACTIVE
+    tone's snapshot immediately (`/activateSnapshot`). Returns ``{ok, index}``."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            ok = client.activate_snapshot(index)
+    except (HelixError, ValueError) as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": bool(ok), "index": int(index)}
+
+
+def device_blocks_handler(*, ip: str = _DEFAULT_DEVICE_IP) -> dict[str, Any]:
+    """List the live edit buffer's blocks with (path, block) coordinates + model
+    + on/off state — the coordinates device_bypass/device_model/device_set_param
+    address. Reads only (does not change the tone). Returns ``{blocks: [...]}``."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return {"blocks": client.edit_buffer_blocks()}
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_bypass_handler(
+    path: int, block: int, enable: bool, *, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Enable (``enable=True``) or bypass (``False``) a block in the live edit
+    buffer (`/BlockEnableSet`). Coordinates from device_blocks. Changes the
+    ACTIVE tone. Returns ``{ok, path, block, enabled}``."""
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            ok = client.set_block_enable(path, block, bool(enable))
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": bool(ok), "path": int(path), "block": int(block),
+            "enabled": bool(enable)}
+
+
+def device_model_handler(
+    path: int, block: int, model: str, *, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Set a block's model in the live edit buffer (`/ModelSet`). ``model`` is a
+    numeric model id or a model-id string (e.g. ``HD2_AmpBritPlexiNrm``). The
+    device rejects a cross-category swap. Changes the ACTIVE tone. Returns
+    ``{ok, path, block, model, model_id}``."""
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import defs as _defs
+
+    if str(model).lstrip("-").isdigit():
+        model_id = int(model)
+    else:
+        model_id = _defs.model_id_for(model)
+        if model_id is None:
+            raise ValueError(
+                f"unknown model {model!r}; pass a numeric id or exact model-id "
+                "string (see list_blocks)")
+    try:
+        with HelixClient(ip=ip) as client:
+            ok = client.set_block_model(path, block, model_id)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": bool(ok), "path": int(path), "block": int(block),
+            "model": model, "model_id": model_id}
+
+
 def device_list_setlists_handler(
     model: str, *, ip: str = _DEFAULT_DEVICE_IP
 ) -> list[dict[str, Any]]:

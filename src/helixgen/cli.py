@@ -1244,6 +1244,120 @@ def device_set_param(path: int, block: int, param_id: int, value: float,
     click.echo(f"set path {path} block {block} param {param_id} = {value}")
 
 
+@device.command(name="snapshot")
+@click.argument("index", type=int)
+@_device_option
+def device_snapshot(index: int, ip: str, port: int) -> None:
+    """Recall a snapshot (0-based, 0..7) on the live device.
+
+    Changes the ACTIVE tone's current snapshot immediately (like stepping the
+    snapshot footswitch). `/activateSnapshot`.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            h.activate_snapshot(index)
+    except (HelixError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"recalled snapshot {index}")
+
+
+@device.command(name="blocks")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit as JSON.")
+@_device_option
+def device_blocks(as_json: bool, ip: str, port: int) -> None:
+    """List the live edit buffer's blocks with their (path, block) coordinates.
+
+    These are the coordinates `device bypass` / `device model` / `device
+    set-param` address. Reads the active edit buffer (does not change the tone).
+    The on/off shown is the preset's *saved* base bypass; a volatile live
+    `device bypass` toggle is not reflected here until the preset is saved.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.ingest import humanize_model_id
+
+    try:
+        with HelixClient(ip, port) as h:
+            blocks = h.edit_buffer_blocks()
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(blocks, indent=2))
+        return
+    if not blocks:
+        click.echo("no blocks (empty edit buffer?)")
+        return
+    for b in blocks:
+        name = humanize_model_id(b["model"]) if b.get("model") else f"?model {b['model_id']}"
+        state = "on " if b["enabled"] else "OFF"
+        click.echo(f"  path {b['path']} block {b['block']:>2}  [{state}]  {name}")
+
+
+@device.command(name="bypass")
+@click.argument("path", type=int)
+@click.argument("block", type=int)
+@click.argument("state", type=click.Choice(["on", "off"]))
+@_device_option
+def device_bypass(path: int, block: int, state: str, ip: str, port: int) -> None:
+    """Enable/bypass a block in the live edit buffer (PATH BLOCK on|off).
+
+    `on` = active, `off` = bypassed. Find coordinates with `device blocks`.
+    Changes the ACTIVE tone immediately (`/BlockEnableSet`). Note: the toggle is
+    a *volatile* live state — audible at once, but not written to the preset
+    (so `device blocks`, which reads the saved base state, won't reflect it)
+    until you save the preset.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    enable = state == "on"
+    try:
+        with HelixClient(ip, port) as h:
+            h.set_block_enable(path, block, enable)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"path {path} block {block} -> {'on' if enable else 'bypassed'}")
+
+
+@device.command(name="model")
+@click.argument("path", type=int)
+@click.argument("block", type=int)
+@click.argument("model")
+@_device_option
+def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
+    """Set a block's model in the live edit buffer (PATH BLOCK MODEL).
+
+    MODEL is a numeric model id or a model-id string like `HD2_AmpBritPlexiNrm`
+    (see `list-blocks`). The device rejects a cross-category swap. Changes the
+    ACTIVE tone. `/ModelSet`.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import defs as _defs
+
+    if model.lstrip("-").isdigit():
+        model_id = int(model)
+    else:
+        model_id = _defs.model_id_for(model)
+        if model_id is None:
+            raise click.ClickException(
+                f"unknown model {model!r}; pass a numeric model id or an exact "
+                "model-id string (see `helixgen list-blocks`)")
+    try:
+        with HelixClient(ip, port) as h:
+            h.set_block_model(path, block, model_id)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(f"path {path} block {block} -> model {model} ({model_id})")
+
+
 @device.command(name="pull")
 @click.argument("cid", type=int)
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))

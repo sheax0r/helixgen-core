@@ -20,6 +20,7 @@ from .osc import osc_encode, parse_osc_message
 from . import content as _content
 from . import settings as _settings
 from . import globaleq as _globaleq
+from . import defs as _defs
 
 logger = logging.getLogger(__name__)
 
@@ -605,6 +606,74 @@ class HelixClient:
                     f"device rejected Global EQ write "
                     f"{output}.{band}.{param}: {args[-1] if args else '?'}")
         return False
+
+    # -- live edit-buffer control (args decoded from the 2026-07-14 capture) --
+    # These mutate the CURRENTLY ACTIVE tone. `_rpc` prepends the request id, so
+    # the wire is exactly the decoded `[cmd, …]` shape; these commands reply on
+    # the 2001 PUB stream (not a reqid-correlated /status), so `_rpc` returns []
+    # and we report best-effort success once the frame is sent.
+
+    def activate_snapshot(self, index: int) -> bool:
+        """Recall a snapshot (0-based, 0..7) on the live device.
+
+        ``/activateSnapshot [reqid, index]`` — the index is absolute.
+        """
+        i = int(index)
+        if not 0 <= i <= 7:
+            raise ValueError(f"snapshot index {index} out of range 0..7")
+        self._rpc("/activateSnapshot", [("i", i)])
+        return True
+
+    def set_block_enable(self, path: int, block: int, enable: bool) -> bool:
+        """Bypass/enable a block in the live edit buffer.
+
+        ``/BlockEnableSet [reqid, dsp, block, enable]``. ``path`` = DSP index
+        (0/1), ``block`` = block position (see :meth:`edit_buffer_blocks`).
+        """
+        self._rpc("/BlockEnableSet",
+                  [("i", int(path)), ("i", int(block)),
+                   ("i", 1 if enable else 0)])
+        return True
+
+    def set_block_model(self, path: int, block: int, model_id: int) -> bool:
+        """Set a block's model in the live edit buffer.
+
+        ``/ModelSet [reqid, dsp, block, sub=0, modelId]``. ``model_id`` is the
+        numeric model id (see :mod:`helixgen.device.defs`). The device rejects a
+        cross-category swap; the app also re-attaches controllers + pushes the
+        new model's param defaults (not replayed here).
+        """
+        self._rpc("/ModelSet",
+                  [("i", int(path)), ("i", int(block)), ("i", 0),
+                   ("i", int(model_id))])
+        return True
+
+    def edit_buffer_blocks(self) -> List[Dict[str, Any]]:
+        """List the live edit buffer's modeled blocks as
+        ``[{path, block, model_id, model, enabled}]`` — the coordinates
+        :meth:`set_block_enable` / :meth:`set_block_model` address."""
+        eb = self.read_edit_buffer()
+        flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+        out: List[Dict[str, Any]] = []
+        if not isinstance(flow, list):
+            return out
+        for path, dsp in enumerate(flow):
+            blks = dsp.get("blks") if isinstance(dsp, dict) else None
+            items = (blks.items() if isinstance(blks, dict)
+                     else enumerate(blks or []))
+            for pos, b in items:
+                if not isinstance(b, dict):
+                    continue
+                mdls = b.get("mdls")
+                m0 = mdls[0] if isinstance(mdls, list) and mdls else {}
+                mid = m0.get("id__") if isinstance(m0, dict) else None
+                if not isinstance(mid, int):
+                    continue
+                out.append({
+                    "path": path, "block": int(pos), "model_id": mid,
+                    "model": _defs.model_name_for(mid),
+                    "enabled": bool(b.get("enbl", 1))})
+        return out
 
     def load_preset(self, cid: int) -> bool:
         return self._ok(self._rpc("/LoadPresetWithCID", [("i", cid)]))
