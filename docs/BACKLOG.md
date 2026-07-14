@@ -276,6 +276,15 @@ assumption — see #9); the reference-based redesign below then **shipped
   `tid_=0`, so this is presumed inert — but it's the symmetric case to the
   block-level binding the 2.21.1 fix added. Match the device convention.
 
+- **#25 `device slots restore --force` doesn't force for `.hsp` sources** —
+  `_install_hsp_open` unconditionally refuses an occupied slot, so `--force`
+  only works for `.sbe` restores; also a manifest-v2 tone with `slot: "3A"`
+  reports "no recorded slot" unless `--pos` is passed. Both hit while
+  force-refreshing a synced tone after the 2.21.1 transcoder fix (workaround:
+  `device pull` a validated blob + `device restore <sbe> <cid>`). Related:
+  `device sync` change detection hashes the `.hsp`, so a transcoder fix never
+  re-pushes already-synced tones — consider a `--repush`/transcode-hash mode.
+
 ### Double-click a `.hsp` to load onto the Helix's ACTIVE slot **[device-write]**
 - Requested 2026-07-13. A macOS file-association / tiny app wrapper so
   double-clicking a `.hsp` transcodes it and pushes it onto the Helix's
