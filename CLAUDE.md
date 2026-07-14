@@ -603,7 +603,9 @@ file — `~/.helixgen/preferences.json` (override the whole-file location with
 `HELIXGEN_FAVOR_IRS=1`). Loaded by `src/helixgen/preferences.py`; per-key
 precedence is env var > file value > built-in default. Keys include
 `device.model`, `favor_irs`, `reveal_in_finder`, `guard_paid_irs_in_git`,
-`preset_output_dir`, `author`, `default_guitar`, and `instruments`.
+`preset_output_dir`, `author`, `default_guitar`, `instruments`, and
+`git_commit_tones` (default `"auto"` — the skills git-commit changed tone/IR
+artifacts when the target directory is git-managed; see the skill files).
 
 - **`default_guitar`** (string, default `null`) — which of the user's
   `instruments` to default to when a tone request doesn't name a guitar. Env

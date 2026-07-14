@@ -574,14 +574,19 @@ LED control, focus-view/UI cosmetics.
 
 ## Workflow / project health (added 2026-07-13)
 
-- **#26 Git-commit tones/IRs from the skills** — if the user's tone `.hsp`/`.md`
-  output dir and/or IR library are inside a git repo, the `tone`/`setup`/`device`
-  skills should commit whenever they change those files (authoring a tone,
-  editing a preset, registering IRs), with a sensible message. Detect "managed
-  by git" per-directory (`git rev-parse --is-inside-work-tree`); respect
-  `guard_paid_irs_in_git` (never force-add gitignored paid IR WAVs — commit
-  `mapping.json`/catalog only). Probably a preference key (`git_commit_tones`,
-  default on-when-repo-detected) + a skill-level contract note.
+- **#26 Git-commit tones/IRs from the skills** — **✅ SHIPPED (2026-07-14).** If
+  the user's tone `.hsp`/`.md` output dir and/or IR library are inside a git
+  repo, the `tone`/`setup`/`device` skills commit whenever they change those
+  files (authoring a tone, editing a preset, registering IRs), with a sensible
+  message. Detection is "managed by git" per-directory (`git rev-parse
+  --is-inside-work-tree`); `guard_paid_irs_in_git` is respected (never
+  force-add gitignored paid IR WAVs — commit `mapping.json`/catalog only); the
+  new preference key `git_commit_tones` (`src/helixgen/preferences.py`,
+  default `"auto"` = commit when a repo is detected, also accepts
+  `true`/`false`, env override `HELIXGEN_GIT_COMMIT_TONES`) gates it, with a
+  skill-level contract note in each of the three `.claude/skills/*` files. No
+  Python git automation — the skills operate through the agent running `git`
+  itself; only the preference key is code.
 - **#27 CLAUDE.md freshness + best practices** — audit CLAUDE.md against the
   shipped surface (it has drifted before: duplicate `device save` bullet, verbs
   described aspirationally vs actually). Ensure it stays current, add missing

@@ -126,6 +126,7 @@ class Preferences:
     instruments: list[Instrument] = field(default_factory=list)
     volume_normalize_snapshots: bool = True
     volume_normalize_baseline: bool = True
+    git_commit_tones: str = "auto"
 
 
 def _normalize_device_model_key(value: str) -> str:
@@ -154,6 +155,36 @@ def _validate_default_guitar(value: Any) -> str | None:
             f"default_guitar must be a string or null, got {type(value).__name__}"
         )
     return value
+
+
+def _validate_git_commit_tones(value: Any, *, name: str = "git_commit_tones") -> str:
+    """Normalize to one of "auto" / "true" / "false".
+
+    Accepts a real JSON boolean, the bare JSON ints ``1``/``0``, the string
+    "auto" (case-insensitive), any of the standard truthy/falsy strings
+    (matching ``_TRUE_STRINGS`` / ``_FALSE_STRINGS`` used elsewhere in this
+    module), or ``None`` (JSON ``null`` / key absent) which means "unset" and
+    defaults to ``"auto"`` — matching the ``device.model: null``-is-unset
+    convention elsewhere in this module.
+    """
+    if value is None:
+        return "auto"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and value in (0, 1):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "auto":
+            return "auto"
+        if lowered in _TRUE_STRINGS:
+            return "true"
+        if lowered in _FALSE_STRINGS:
+            return "false"
+    raise PreferencesError(
+        f"{name}={value!r} is not recognized (use \"auto\", true/false, "
+        f"1/0, or yes/no)"
+    )
 
 
 def _parse_instruments(raw: Any) -> list[Instrument]:
@@ -211,6 +242,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         instruments=_parse_instruments(data.get("instruments")),
         volume_normalize_snapshots=bool(data.get("volume_normalize_snapshots", True)),
         volume_normalize_baseline=bool(data.get("volume_normalize_baseline", True)),
+        git_commit_tones=_validate_git_commit_tones(data.get("git_commit_tones", "auto")),
     )
 
     # --- per-key env overrides (first hit wins, applied last) ---
@@ -242,6 +274,10 @@ def load_preferences(path: Path | None = None) -> Preferences:
             "HELIXGEN_VOLUME_NORMALIZE_BASELINE",
             os.environ["HELIXGEN_VOLUME_NORMALIZE_BASELINE"],
         )
+    if "HELIXGEN_GIT_COMMIT_TONES" in os.environ:
+        prefs.git_commit_tones = _validate_git_commit_tones(
+            os.environ["HELIXGEN_GIT_COMMIT_TONES"], name="HELIXGEN_GIT_COMMIT_TONES"
+        )
     # instruments are structured data; not env-overridable (per design doc).
 
     return prefs
@@ -264,6 +300,7 @@ def _default_scaffold_dict() -> dict:
         "instruments": [],
         "volume_normalize_snapshots": True,
         "volume_normalize_baseline": True,
+        "git_commit_tones": "auto",
     }
 
 

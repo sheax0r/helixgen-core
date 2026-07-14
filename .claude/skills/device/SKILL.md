@@ -277,6 +277,37 @@ Reserve the other `device_*` MCP tools for reads / interactive single ops
 (`device_list_presets`, `device_read_preset`, `device_load_preset`,
 `device_set_param`).
 
+### Git-commit local artifact changes
+
+Most of this skill only talks to the device, but two paths write **local**
+files: registering an IR to fix an `errors[]`/`irs[]` unregistered-IR entry
+(changes `mapping.json` in the IR library) and `device slots restore`
+re-authoring a tone's `.hsp` in the preset output dir. When either happens,
+commit the changed file(s) if the containing directory is git-managed:
+
+1. **Detect per-directory** — `git -C <dir> rev-parse --is-inside-work-tree`
+   on the specific directory that changed (IR library or preset output dir),
+   not whatever repo you happen to be running in. Skip silently if it errors
+   or prints `false`.
+2. **Honor `git_commit_tones`** from `preferences.json` (`"auto"`/`"true"`/
+   `"false"` — same vocabulary as the `tone`/`setup` skills; default `"auto"`
+   commits whenever step 1 says yes).
+3. **Respect `guard_paid_irs_in_git`** — never force-add a gitignored paid IR
+   `.wav`; commit `mapping.json` only.
+4. **Stage exactly the changed path(s)** — `git -C <dir> add -- <changed
+   files>`, never `-A`/`.`. Check `git -C <dir> status` first: if the repo
+   already has unrelated staged changes, warn the user and skip.
+5. **Commit locally, never push** — `git -C <dir> commit -m "<message>"` with
+   a short message, e.g. `ir: register missing IR for White Limo Lead sync`
+   or `device: refresh restored tone <name>.hsp`.
+
+Keep every git command scoped with `-C <dir>` (as in step 1) — your shell's
+cwd is usually **not** the directory that changed, so an unscoped
+`git add`/`commit` targets the wrong repo.
+
+This is separate from `device sync` itself, which only ever touches the
+device — it applies just to these two local-write side paths.
+
 ## Workflow
 
 ### 1. Get the tones into a setlist, confirm it exists on the device
@@ -312,7 +343,7 @@ The result dict's `errors[]` is your analysis. Fix that subset and re-run
 
 - **`could not resolve helixgen model 'X'`** — a block model doesn't bridge to
   the device; that tone isn't installable as-is. Report it.
-- **unregistered IR** (cab silent / "No Model") — `register-irs` the WAV, re-sync.
+- **unregistered IR** (cab silent / "No Model") — `register-irs` the WAV, re-sync (see **Git-commit local artifact changes** above).
 - **dropped connection / device unresponsive** — not a tone failure; **re-run**
   the sync, and if it keeps dropping, **reboot the Helix** and re-run.
 - **If you delegate the run to a subagent, keep it tight:** sync *this* setlist;
@@ -337,7 +368,9 @@ under the tone's exact hash), so **you normally do nothing**. Two caveats:
 - **Put a recorded tone back:** `helixgen device slots restore <name-or-slot>` —
   re-authors an `.hsp`-sourced entry or re-pushes an `.sbe`-sourced one. Tones
   recorded from `save` (edit buffer) or `create` (on-device copy) have no local
-  source and can't be restored this way — back them up first.
+  source and can't be restored this way — back them up first. A re-authored
+  `.hsp` is a local file change — see **Git-commit local artifact changes**
+  above.
 
 ### 6. Report back
 

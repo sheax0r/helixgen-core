@@ -443,3 +443,91 @@ def test_volume_normalize_in_scaffold(tmp_path):
     data = json.loads(path.read_text())
     assert data["volume_normalize_snapshots"] is True
     assert data["volume_normalize_baseline"] is True
+
+
+# ---------------------------------------------------------------------------
+# git_commit_tones (#26 skill git-commit key)
+# ---------------------------------------------------------------------------
+
+
+def test_git_commit_tones_defaults_auto(tmp_path):
+    prefs = load_preferences(tmp_path / "nope.json")  # missing file -> defaults
+    assert prefs.git_commit_tones == "auto"
+
+
+def test_git_commit_tones_in_scaffold(tmp_path):
+    path = scaffold_default(tmp_path / "preferences.json")
+    data = json.loads(path.read_text())
+    assert data["git_commit_tones"] == "auto"
+
+
+def test_git_commit_tones_null_is_unset(tmp_path):
+    """JSON null (explicit "no override") defaults to "auto", matching the
+    device.model: null-is-unset convention elsewhere in this module."""
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"git_commit_tones": None}))
+    prefs = load_preferences(path)
+    assert prefs.git_commit_tones == "auto"
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("auto", "auto"),
+        ("AUTO", "auto"),
+        (True, "true"),
+        (False, "false"),
+        (1, "true"),
+        (0, "false"),
+        ("true", "true"),
+        ("false", "false"),
+        ("1", "true"),
+        ("0", "false"),
+        ("yes", "true"),
+        ("no", "false"),
+    ],
+)
+def test_git_commit_tones_from_file(tmp_path, raw, expected):
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"git_commit_tones": raw}))
+    prefs = load_preferences(path)
+    assert prefs.git_commit_tones == expected
+
+
+def test_git_commit_tones_invalid_value_raises(tmp_path):
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"git_commit_tones": "sometimes"}))
+    with pytest.raises(PreferencesError):
+        load_preferences(path)
+
+
+def test_git_commit_tones_out_of_range_int_raises(tmp_path):
+    """Bare ints are accepted only as the boolean shorthand 1/0."""
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"git_commit_tones": 123}))
+    with pytest.raises(PreferencesError):
+        load_preferences(path)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("auto", "auto"),
+        ("true", "true"),
+        ("false", "false"),
+        ("1", "true"),
+        ("0", "false"),
+    ],
+)
+def test_env_git_commit_tones_override(tmp_path, monkeypatch, raw, expected):
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"git_commit_tones": "false"}))
+    monkeypatch.setenv("HELIXGEN_GIT_COMMIT_TONES", raw)
+    prefs = load_preferences(path)
+    assert prefs.git_commit_tones == expected
+
+
+def test_env_git_commit_tones_invalid_raises(tmp_path, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_GIT_COMMIT_TONES", "sometimes")
+    with pytest.raises(PreferencesError):
+        load_preferences(tmp_path / "missing.json")

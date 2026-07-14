@@ -179,7 +179,8 @@ If the user mentions IRs or `With Pan`/IR cab blocks:
 ### Registering a single IR mid-conversation
 
 If the user names one specific WAV, call the `register_ir` MCP tool — one
-round-trip, no Bash permission prompt.
+round-trip, no Bash permission prompt. This changes `mapping.json` — see
+**Git-commit IR library changes** below.
 
 ### 3. Recall IR preferences
 
@@ -244,6 +245,36 @@ FFT-measure each mix's band energy for bright/dark/beefy/tight tags, and write
 `_catalog/<slug>.md` from the template + controlled vocabulary in
 `_catalog/README.md` (its "Adding a new pack" section is the full procedure).
 This keeps "which IR is beefiest/brightest/best-for-X" answerable by grep.
+
+## Git-commit IR library changes
+
+Registering an IR (`mapping.json`) or cataloging a new pack (`_catalog/<slug>.md`
++ the `_catalog/README.md` index) changes files under the IR library directory.
+If that directory is git-managed, commit just those files:
+
+1. **Detect per-directory**: `git -C <ir-library-dir> rev-parse
+   --is-inside-work-tree`. If it errors or prints `false`, skip silently.
+2. **Honor `git_commit_tones`** from `preferences.json` (default `"auto"`
+   commits whenever step 1 says yes; `"true"` always tries; `"false"` never
+   commits).
+3. **Respect `guard_paid_irs_in_git`** (default `true`): never `git add` a
+   gitignored paid IR `.wav` (see CLAUDE.md's "no paid IRs in repo" note) —
+   commit only `mapping.json` and `_catalog/*.md`. If the user has explicitly
+   turned `guard_paid_irs_in_git` off and wants a WAV tracked too, that's a
+   deliberate `git add -f` they run themselves, not something this skill does
+   for them.
+4. **Stage exactly the changed tracked files** (`git -C <ir-library-dir> add
+   -- mapping.json`, or `git -C <ir-library-dir> add -- _catalog/<slug>.md
+   _catalog/README.md`), never `-A`/`.`. Check `git -C <ir-library-dir>
+   status` first: if the repo already has unrelated staged changes, warn the
+   user and skip rather than folding them into the commit.
+5. **Commit locally, never push** — `git -C <ir-library-dir> commit -m
+   "<message>"` with a short message, e.g. `ir: register YA VX30 212 BLU Mix
+   01.wav` or `ir: catalog Ownhammer OH V30 pack`.
+
+Keep every git command scoped with `-C <ir-library-dir>` (as in step 1) —
+your shell's cwd is usually **not** the IR library, so an unscoped
+`git add`/`commit` targets the wrong repo.
 
 ## After generating a preset that uses user IRs
 

@@ -437,6 +437,18 @@ Keep it tight and scannable — it's reference material, not a transcript. If yo
 
 > **Save location:** default to writing both files wherever the user's convention puts presets. If a project/user preference (memory or a stated rule) names a presets directory, write the `.hsp` **and** `.md` there; otherwise `/tmp/<slug>.{hsp,md}`. The `<slug>` includes the target guitar (sanitized `"<Tone Name> — <Guitar>"`, e.g. `white-limo-lead-les-paul-jr.{hsp,md}`) — omit the guitar from the slug only when the tone is explicitly not guitar-specific. Reveal the `.hsp` in Finder per step 8.
 
+#### 7b. Git-commit the saved files (if the output dir is git-managed)
+
+After writing the `.hsp` and its companion `.md` (7a) — or after a `patch_preset` edit in step 9 — commit them:
+
+1. **Detect per-directory**: `git -C <output-dir> rev-parse --is-inside-work-tree`. If it errors or prints `false`, this directory isn't a git work tree — skip silently, no commit.
+2. **Honor `git_commit_tones`** from `preferences.json` (default `"auto"`): `"auto"` commits whenever step 1 says yes; `"true"` always tries (still needs step 1 to succeed); `"false"` never commits — skip silently.
+3. **Stage only the files you just wrote** — `git -C <output-dir> add -- <slug>.hsp <slug>.md` (or just the one file that changed on an edit), never `add -A`/`add .`. **Check `git -C <output-dir> status` first**: if the repo already has unrelated changes staged (anywhere in the index, not just these paths), warn the user and skip rather than folding them into your commit — a plain `git commit` commits the whole index, not just what you just staged.
+4. **Commit locally, never push** — `git -C <output-dir> commit -m "<message>"` with a short, descriptive message naming the tone and what changed, e.g. `tone: add White Limo Lead — Les Paul Jr` for a new preset, or `tone: brighten cab, drop reverb mix on White Limo Lead` for a `patch_preset` edit.
+
+Keep every git command scoped with `-C <output-dir>` (as in step 1) — your shell's cwd is usually **not** the output dir, so an unscoped `git add`/`commit` targets the wrong repo.
+
+Mention in the report (step 8 / step 9) whether a commit was made.
 
 ### 8. Report back
 
@@ -453,7 +465,7 @@ Don't hedge with a list of 5 things to maybe try; pick one.
 
 ### 9. Iterate on feedback (when the user loads it and says it's not quite right)
 
-After the user loads the preset and reports back ("the lead is too compressed", "verses are too dark", "swap that delay for something slappier", "clean snapshot needs a touch of reverb"), don't start over. The `.hsp` you saved is the source of truth — make the smallest edit that addresses the feedback with a single in-place `patch_preset` call (see **Adjusting an existing tone** above; do NOT regenerate from the spec dict), and tell the user what changed in one line so they can A/B.
+After the user loads the preset and reports back ("the lead is too compressed", "verses are too dark", "swap that delay for something slappier", "clean snapshot needs a touch of reverb"), don't start over. The `.hsp` you saved is the source of truth — make the smallest edit that addresses the feedback with a single in-place `patch_preset` call (see **Adjusting an existing tone** above; do NOT regenerate from the spec dict), and tell the user what changed in one line so they can A/B. Re-run the git-commit step (7b) on the edited `.hsp` afterward.
 
 Rules of thumb for translating ear-language to param moves:
 - **"Too compressed"** on a lead → back amp `Drive` off ~0.10, raise `Master`; or back drive pedal `Gain` off ~0.10
