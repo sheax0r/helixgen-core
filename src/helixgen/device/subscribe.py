@@ -19,6 +19,7 @@ reimplementing OSC/msgpack.  ``pyzmq`` and ``msgpack`` are imported lazily (as i
 """
 from __future__ import annotations
 
+import struct
 import time
 from typing import Iterable, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
@@ -29,6 +30,20 @@ from .client import HelixError
 # OSC addresses that are pure background chatter — a 1 Hz clock tick and a
 # periodic keep-alive. Dropped by ``stream`` unless ``include_noise=True``.
 NOISE_ADDRS = frozenset({"/trigger", "/heartbeat"})
+
+# Per-frame parse errors that mean "this telemetry frame is malformed — skip it"
+# (NOT a connection failure). Crucially includes ``struct.error`` — what
+# ``parse_osc_message``'s ``struct.unpack_from`` raises on a truncated OSC frame,
+# and which does NOT subclass ``ValueError``. msgpack's ``UnpackException`` (from
+# a corrupt blob arg) is folded in when msgpack is importable.
+try:  # msgpack is a lazy device dep; don't hard-require it just for the type
+    from msgpack.exceptions import UnpackException as _MsgpackUnpackError
+    _FRAME_PARSE_ERRORS: Tuple[type, ...] = (
+        ValueError, IndexError, KeyError, RuntimeError, TypeError,
+        struct.error, _MsgpackUnpackError)
+except Exception:  # noqa: BLE001 - optional dep absent
+    _FRAME_PARSE_ERRORS = (
+        ValueError, IndexError, KeyError, RuntimeError, TypeError, struct.error)
 
 
 class Event(NamedTuple):
@@ -172,7 +187,7 @@ class HelixSubscriber:
                     raise HelixError(f"device recv failed: {exc}") from exc
                 try:
                     ev = self._parse_frame(port, raw)
-                except (ValueError, IndexError, KeyError, RuntimeError):
+                except _FRAME_PARSE_ERRORS:
                     # a single malformed telemetry frame must not kill a live
                     # stream (tuner/meters/watch) — skip it and keep draining.
                     self.skipped += 1

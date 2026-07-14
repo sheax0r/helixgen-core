@@ -1061,7 +1061,8 @@ def device_globaleq_list(as_json):
     click.echo("\nExample: helixgen device globaleq set qtr low gain 3.5")
 
 
-@device_globaleq.command(name="set")
+@device_globaleq.command(
+    name="set", context_settings={"ignore_unknown_options": True})
 @click.argument("output")
 @click.argument("band")
 @click.argument("param")

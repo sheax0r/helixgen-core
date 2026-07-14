@@ -190,6 +190,28 @@ def test_frame_without_osc_address_is_skipped():
     assert sub.poll(timeout=0.05) == []
 
 
+def test_truncated_osc_frame_is_skipped_not_raised():
+    # A frame with a valid '/' address but a truncated arg makes
+    # parse_osc_message's struct.unpack_from raise struct.error (NOT a
+    # ValueError). poll() must skip it (counting it) rather than crash the
+    # whole stream — this is exactly the tuner/watch resilience case.
+    sub = HelixSubscriber()
+    bad = b"/dspEvent\x00\x00\x00,b\x00\x00"  # ',b' arg, but no blob length/data
+    _wire(sub, {2003: [bad]})
+    assert sub.poll(timeout=0.05) == []
+    assert sub.skipped == 1
+
+
+def test_good_frame_after_a_malformed_one_still_delivered():
+    sub = HelixSubscriber()
+    bad = b"/dspEvent\x00\x00\x00,b\x00\x00"
+    good = _frame_2003("/dspEvent", [("b", msgpack.packb({"blk": 1, "v": 0.1}))])
+    _wire(sub, {2003: [bad, good]})
+    evs = sub.poll(timeout=0.05)
+    assert sub.skipped == 1
+    assert len(evs) == 1 and evs[0].addr == "/dspEvent"
+
+
 def test_poll_raises_when_not_connected():
     sub = HelixSubscriber()  # never wired: poller is None
     with pytest.raises(HelixError):

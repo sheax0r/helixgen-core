@@ -132,6 +132,10 @@ def normalize(output: str, band: str, param: str) -> Tuple[str, str, str]:
     if o not in OUTPUTS:
         raise ValueError(f"unknown output {output!r}; want one of {outputs()}")
     if p == "level":
+        if b not in ("", "-"):
+            raise ValueError(
+                f"'level' is the per-output level and takes no band; got "
+                f"band {band!r} (use '-' or '' for the band)")
         return o, "", "level"
     if b not in BANDS:
         raise ValueError(f"unknown band {band!r}; want one of {band_names()}")
