@@ -2307,6 +2307,63 @@ def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
         raise click.ClickException(str(e)) from e
 
 
+@device.command(name="tuner")
+@click.option("--seconds", type=float, default=15.0, show_default=True,
+              help="How long to run the tuner (streams live pitch).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit one JSON reading per line instead of a live display.")
+@_device_option
+def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
+    """Live network tuner — reads the device's always-on pitch detector.
+
+    Subscribes to the 2003 telemetry stream and decodes the pitch readout (no
+    Stadium app, and no need to engage the hardware tuner — the detector is
+    always live). Play a note and watch the note/cents update. Ctrl-C to stop.
+    """
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+    from helixgen.device import tuner as T
+
+    def _bar(cents: int) -> str:
+        # 21-cell meter, centre = in tune; ◀/▶ show flat/sharp direction
+        pos = max(-10, min(10, round(cents / 5)))
+        cells = ["·"] * 21
+        cells[10] = "|"
+        cells[10 + pos] = "◀" if pos < 0 else ("▶" if pos > 0 else "●")
+        return "".join(cells)
+
+    last = None
+    try:
+        with HelixSubscriber(ip) as sub:
+            for ev in sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
+                                 include_noise=True):
+                r = T.reading_from_event_args(ev.args)
+                if r is None:
+                    continue
+                if as_json:
+                    click.echo(json.dumps({
+                        "signal": r.signal, "note": r.name, "cents": r.cents,
+                        "hz": round(r.hz, 2), "midi": round(r.midi, 3)}))
+                    continue
+                if not r.signal:
+                    line = "  —   (no signal)".ljust(48)
+                else:
+                    line = (f"  {r.name:<4} {r.cents:+3d}c  "
+                            f"{r.hz:7.2f} Hz  {_bar(r.cents)}").ljust(48)
+                if line != last:
+                    click.echo("\r" + line, nl=False)
+                    last = line
+        if not as_json:
+            click.echo("")  # finish the live line
+    except KeyboardInterrupt:
+        if not as_json:
+            click.echo("")
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+
+
 @cli.command(name="ir-cache")
 @click.option("--stats", is_flag=True, default=False,
               help="Show entry count, cache path, and file size.")

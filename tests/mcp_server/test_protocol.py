@@ -58,6 +58,7 @@ def test_server_registers_documented_tools():
         "device_settings_set",
         "device_globaleq_list",
         "device_globaleq_set",
+        "device_tuner",
         "device_save_preset",
         "device_install_preset",
         "device_setlist_list",

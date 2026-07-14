@@ -515,6 +515,21 @@ def device_globaleq_set(
 
 
 @app.tool()
+def device_tuner(
+    seconds: float = 3.0,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Read the Stadium's live pitch (network tuner) — no Stadium app needed.
+
+    Samples the device's always-on background pitch detector on port 2003 for
+    `seconds` and returns the latest reading `{signal, note, cents, hz, midi,
+    samples}`. `signal=False` means silence (no note detected). Have a note
+    ringing when you call. The hardware tuner does NOT need to be engaged.
+    """
+    return _tools.device_tuner_handler(seconds=seconds, ip=ip)
+
+
+@app.tool()
 def device_save_preset(
     model: str,
     name: str,

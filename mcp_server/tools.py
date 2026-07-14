@@ -618,6 +618,43 @@ def device_globaleq_set_handler(
     return {"ok": bool(ok), "key": key, "value": value}
 
 
+def device_tuner_handler(
+    *, seconds: float = 3.0, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Sample the device's live pitch detector for ``seconds`` and return the
+    latest reading.
+
+    Reads the always-on background pitch telemetry on port 2003 (no Stadium app,
+    no tuner-engage needed). Returns ``{signal, note, cents, hz, midi, samples}``
+    — ``signal`` False means no note was detected (silence) in the window. Play a
+    note before/while calling.
+    """
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+    from helixgen.device import tuner as T
+
+    last = None
+    samples = 0
+    try:
+        with HelixSubscriber(ip=ip) as sub:
+            for ev in sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
+                                 include_noise=True):
+                r = T.reading_from_event_args(ev.args)
+                if r is None:
+                    continue
+                samples += 1
+                if r.signal:
+                    last = r  # keep the most recent pitched reading
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    if last is None:
+        return {"signal": False, "note": "—", "cents": None, "hz": None,
+                "midi": None, "samples": samples}
+    return {"signal": True, "note": last.name, "cents": last.cents,
+            "hz": round(last.hz, 2), "midi": round(last.midi, 3),
+            "samples": samples}
+
+
 def device_list_setlists_handler(
     model: str, *, ip: str = _DEFAULT_DEVICE_IP
 ) -> list[dict[str, Any]]:

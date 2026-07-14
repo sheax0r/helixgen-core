@@ -57,6 +57,9 @@ class HelixSubscriber:
         # {socket: port}
         self._socks: dict = {}
         self.poller = None
+        # count of telemetry frames skipped because they failed to parse (a
+        # single malformed PUB frame must not abort a live stream)
+        self.skipped = 0
 
     # -- lazy deps ---------------------------------------------------------
     def _load_zmq(self):
@@ -169,8 +172,11 @@ class HelixSubscriber:
                     raise HelixError(f"device recv failed: {exc}") from exc
                 try:
                     ev = self._parse_frame(port, raw)
-                except (ValueError, IndexError, KeyError, RuntimeError) as exc:
-                    raise HelixError(f"malformed PUB frame: {exc}") from exc
+                except (ValueError, IndexError, KeyError, RuntimeError):
+                    # a single malformed telemetry frame must not kill a live
+                    # stream (tuner/meters/watch) — skip it and keep draining.
+                    self.skipped += 1
+                    continue
                 if ev is not None:
                     events.append(ev)
             first = False
