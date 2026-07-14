@@ -370,6 +370,47 @@ reset, SD format, full-device microSD backup, Showcase multitrack player,
 Clones/Proxy captures, block favorites, preset templates, cloud/Remote-Access,
 LED control, focus-view/UI cosmetics.
 
+## Workflow / project health (added 2026-07-13)
+
+- **#26 Git-commit tones/IRs from the skills** — if the user's tone `.hsp`/`.md`
+  output dir and/or IR library are inside a git repo, the `tone`/`setup`/`device`
+  skills should commit whenever they change those files (authoring a tone,
+  editing a preset, registering IRs), with a sensible message. Detect "managed
+  by git" per-directory (`git rev-parse --is-inside-work-tree`); respect
+  `guard_paid_irs_in_git` (never force-add gitignored paid IR WAVs — commit
+  `mapping.json`/catalog only). Probably a preference key (`git_commit_tones`,
+  default on-when-repo-detected) + a skill-level contract note.
+- **#27 CLAUDE.md freshness + best practices** — audit CLAUDE.md against the
+  shipped surface (it has drifted before: duplicate `device save` bullet, verbs
+  described aspirationally vs actually). Ensure it stays current, add missing
+  best practices, and trim/reshape per Claude Code CLAUDE.md guidance (it is
+  very long; consider moving deep reference into docs/ and linking).
+- **#28 Full code review + refactor pass** — a structured review of the whole
+  codebase for structure, readability, and maintainability (module boundaries,
+  duplicated mapping logic per the resolver pattern #14, `cli.py` size, dead
+  code), followed by refactorings driven by the findings. Output: a findings
+  doc + a sequenced refactor plan, then the refactors (behavior-preserving,
+  test-pinned).
+- **#29 helixgen-tui** — design + implement a TUI that covers everything the
+  Stadium desktop app does (the parity matrix above), driving the same library/
+  device engines. **Key requirement: "slots" are invisible** — an implementation
+  detail the user never sees or types; the UI speaks in tones and setlists only
+  (the tone-library model's "slots are just addresses" taken to its conclusion).
+  Needs its own brainstorm + design spec before any code.
+
+- **#30 Slot semantics for slot-only tones — verify + decide** — `device add`
+  + sync installs a slot-marked tone into the **pool** but references it into no
+  setlist, so its slot label is an address in name only: nothing is placed at
+  `5A` in the user setlist, and `assign_slots` never fetches real device
+  occupancy. The user's own workflow treats pool-only presets as reachable
+  (sync-through-transient-setlist then remove references), but this is not
+  hardware-verified. Verify on hardware whether a reference-less pool preset is
+  browsable/loadable from the device panel; then either (a) make sync reference
+  slot-marked tones into the `user` setlist at their slot position (spec §3.2's
+  "the user setlist *is* the on-device population"), or (b) retire slot labels
+  in favor of a bare on/off-device flag. Surfaced by the PR #34 adversarial
+  review (finding 9).
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

@@ -154,6 +154,99 @@ def test_remove_tone_drops_membership_and_gcs_registry(tmp_path):
     assert m.tone_path("Alpha") is None  # registry entry garbage-collected
 
 
+def test_remove_tone_keeps_registration_when_slot_marked(tmp_path):
+    # a tone leaving its LAST setlist keeps its library registration when it is
+    # device-marked — "on the device ⟺ slot != null" (tone-library design §3.2)
+    a = _make_hsp(tmp_path / "a.hsp", "Alpha")
+    m = SetlistManifest.load(tmp_path / "m.json")
+    m.add_tone("sl", a)
+    m.mark_on_device("Alpha", "5A")
+    assert m.remove_tone("sl", "Alpha") is True
+    assert m.tones_in("sl") == []
+    assert m.tone_path("Alpha") == str(a.resolve())  # registration survives
+    assert m.tones["Alpha"]["slot"] == "5A"
+
+
+def test_remove_tone_clears_implicit_auto_mark(tmp_path):
+    # add-then-remove stays a no-op: the implicit slot="auto" that
+    # add_to_setlist stamps on synced-setlist members dies with the last
+    # membership, so the registry entry GCs like pre-2.21 (a concrete,
+    # user-pinned slot still protects — see the slot_marked test above).
+    a = _make_hsp(tmp_path / "a.hsp", "Auto")
+    m = SetlistManifest.load(tmp_path / "m.json")
+    m.create_setlist("sl")
+    m.set_setlist_synced("sl", True)
+    m.add_tone("sl", a)
+    assert m.tones["Auto"]["slot"] == "auto"
+    assert m.remove_tone("sl", "Auto") is True
+    assert "Auto" not in m.tones
+
+
+def test_remove_tone_keeps_explicit_auto_device_add_mark(tmp_path):
+    # `device add <tone>` (default --slot auto) is an EXPLICIT device mark:
+    # it must survive leaving the last setlist, unlike the implicit stamp
+    # add_to_setlist puts on synced-setlist members.
+    a = _make_hsp(tmp_path / "a.hsp", "T")
+    m = SetlistManifest.load(tmp_path / "m.json")
+    m.add_tone("gigs", a)          # draft setlist — no implicit stamp
+    m.mark_on_device("T")          # explicit `device add T`
+    assert m.remove_tone("gigs", "T") is True
+    assert m.tones["T"]["slot"] == "auto"  # registration + mark survive
+
+
+def test_load_flips_synced_for_observed_setlists(tmp_path):
+    # A v2 manifest written before the synced flag was honored: setlists that
+    # were demonstrably synced (observed on device) must load as synced=True
+    # so `sync --all` keeps maintaining them.
+    import json as _json
+    path = tmp_path / "m.json"
+    path.write_text(_json.dumps({
+        "version": 2,
+        "tones": {"T": {"path": "/x/T.hsp", "content_hash": "sha256:t",
+                        "doc": None, "source": "authored", "slot": "1A",
+                        "device": {"cid": 5000, "posi": 0}}},
+        "setlists": {"gigs": {"tones": ["T"], "synced": False},
+                     "draft": {"tones": [], "synced": False}},
+        "observed": {"pool": {"T": {"cid": 5000, "posi": 0}},
+                     "setlists": {"gigs": {"cid": 42, "refs": {}}}},
+    }))
+    m = SetlistManifest.load(path)
+    assert m.is_synced("gigs") is True
+    assert m.is_synced("draft") is False
+
+
+def test_sync_off_survives_reload(tmp_path):
+    # `setlist sync-off` must stick: the observed-evidence migration only
+    # applies to setlists that haven't been explicitly opted out, so a
+    # sync-off → save → load round-trip stays off.
+    import json as _json
+    path = tmp_path / "m.json"
+    path.write_text(_json.dumps({
+        "version": 2,
+        "tones": {},
+        "setlists": {"gigs": {"tones": [], "synced": False}},
+        "observed": {"pool": {},
+                     "setlists": {"gigs": {"cid": 42, "refs": {}}}},
+    }))
+    m = SetlistManifest.load(path)
+    assert m.is_synced("gigs") is True     # migration flips it on
+    m.set_setlist_synced("gigs", False)    # explicit sync-off
+    m.save()
+    m2 = SetlistManifest.load(path)
+    assert m2.is_synced("gigs") is False   # opt-out sticks
+
+
+def test_unsync_pops_stale_auto_marked(tmp_path):
+    a = _make_hsp(tmp_path / "a.hsp", "T")
+    m = SetlistManifest.load(tmp_path / "m.json")
+    m.create_setlist("sl")
+    m.set_setlist_synced("sl", True)
+    m.add_tone("sl", a)                    # implicit auto + tag
+    m.unsync("T")
+    assert m.tones["T"]["slot"] is None
+    assert "auto_marked" not in m.tones["T"]
+
+
 def test_remove_tone_miss_returns_false(tmp_path):
     m = SetlistManifest.load(tmp_path / "m.json")
     assert m.remove_tone("sl", "nope") is False

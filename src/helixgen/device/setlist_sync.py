@@ -117,39 +117,10 @@ def assign_slots(manifest: SetlistManifest, occupied) -> Dict[str, str]:
             except StopIteration:
                 raise ValueError("no free user slot available (device full)")
             rec["slot"] = lbl
+            rec.pop("auto_marked", None)  # concrete placement: provenance moot
             assigned[name] = lbl
             used.add(lbl)
     return assigned
-
-
-def plan_mirror(manifest: SetlistManifest, device_presets, managed_names) -> Dict[str, List[dict]]:
-    """Plan a managed-set mirror of the user population against the device.
-
-    For each manifest tone: ``slot is None`` but on device → **delete**; not on
-    device → **install**; on device with a changed ``content_hash`` → **repush**;
-    unchanged → **skip**. Untracked device presets (name ∉ manifest) are excluded
-    from every bucket — sync never touches them.
-    """
-    managed = set(managed_names)
-    by_name = {p.get("name"): p for p in device_presets}
-    install, repush, delete, skip = [], [], [], []
-    for name, rec in manifest.tones.items():
-        slot = rec.get("slot")
-        dev = by_name.get(name)
-        if slot is None:
-            if dev is not None:
-                delete.append({"name": name, "cid": dev.get("cid", dev.get("cid_"))})
-            continue
-        if dev is None:
-            install.append({"name": name, "slot": slot})
-        elif dev.get("content_hash") != rec.get("content_hash"):
-            repush.append({"name": name, "slot": slot,
-                           "cid": dev.get("cid", dev.get("cid_"))})
-        else:
-            skip.append({"name": name})
-    # untracked presets (name not in `managed`) intentionally excluded.
-    _ = managed
-    return {"install": install, "repush": repush, "delete": delete, "skip": skip}
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +205,22 @@ def sync_setlists(
     setlists (the ``--all`` case). ``gc`` is honored **only** on the all-setlists
     run — a single/subset sync never garbage-collects the pool.
 
-    Returns ``{ok, setlists, pool:{installed,updated,skipped},
+    ``setlists=None`` (the ``--all`` run) maintains only setlists opted into
+    mirroring (``synced=True``); local-only drafts are never touched on the
+    device. A **targeted** sync is the opt-in gesture — it flips the named
+    setlist to ``synced``.
+
+    The pool reconcile covers the union of the target setlists' members plus
+    every **slot-marked** tone (the managed user population — a `device add`ed
+    tone installs with no setlist membership; pathless tones absent from the
+    pool are left alone), and deletes manifest tones whose ``slot`` is null
+    but that helixgen previously placed (observed-placement evidence required
+    — a same-named preset helixgen didn't place is never touched), never
+    orphaning one a live setlist still references (reported in
+    ``delete_skipped``).
+
+    Returns ``{ok, setlists,
+    pool:{installed,updated,skipped,deleted,delete_skipped},
     references:{<setlist>:{added,removed}}, gc:{deleted}, irs:[...], errors:[...]}``.
     ``ok`` is ``not errors``. Per-tone install/update/IR failures append to
     ``errors`` without aborting the run; an unresolvable setlist name is a clear
@@ -246,7 +232,8 @@ def sync_setlists(
     result: Dict[str, Any] = {
         "ok": True,
         "setlists": [],
-        "pool": {"installed": [], "updated": [], "skipped": []},
+        "pool": {"installed": [], "updated": [], "skipped": [], "deleted": [],
+                 "delete_skipped": []},
         "references": {},
         "gc": {"deleted": []},
         "irs": [],
@@ -254,12 +241,17 @@ def sync_setlists(
     }
     errors: List[str] = result["errors"]
 
-    targets = list(setlists) if setlists is not None else manifest.setlists()
-
-    # Resolve any 'auto' slots to concrete user-slot labels so the manifest never
-    # persists 'auto' after a sync (managed-set mirror, design §4). Untracked
-    # device presets are avoided via the concrete labels already recorded.
-    assign_slots(manifest, occupied=set())
+    # --all maintains only setlists opted into mirroring (synced=True) —
+    # local-only drafts are never touched on the device (design §4). A
+    # targeted sync is the opt-in gesture: it flips the setlist to synced.
+    # Non-empty drafts an --all run skips are named in the result so the user
+    # learns why a setlist isn't syncing.
+    targets = (list(setlists) if setlists is not None
+               else [s for s in manifest.setlists() if manifest.is_synced(s)])
+    if all_run:
+        result["skipped_draft_setlists"] = [
+            s for s in manifest.setlists()
+            if not manifest.is_synced(s) and manifest.tones_in(s)]
 
     client_kwargs: Dict[str, Any] = {"ip": ip}
     if port is not None:
@@ -279,12 +271,34 @@ def sync_setlists(
                     continue
                 setlist_cids[name] = cid
                 resolved.append(name)
+                manifest.set_setlist_synced(name, True)
             result["setlists"] = resolved
 
-            # 2. Reconcile the pool for the union of tones the targets need.
-            union = manifest.union_tones(resolved)
+            # Resolve any 'auto' slots to concrete user-slot labels so the
+            # manifest never persists 'auto' after a sync (managed-set mirror,
+            # design §4). Runs after the synced flip above so freshly-marked
+            # members resolve in the same run. NOTE: occupancy of untracked
+            # device presets is not fetched yet — labels are only guaranteed
+            # unique among managed tones (backlog #30).
+            assign_slots(manifest, occupied=set())
+
+            # 2. Reconcile the pool for the union of tones the targets need,
+            # PLUS every slot-marked tone — the managed user population
+            # (design §4): a tone with a slot wants the device even when it
+            # belongs to no setlist (`device add --slot` / `device add`).
+            # Pathless tones (device save/create) with no pool presence have
+            # nothing local to install from and are left alone.
             pool_by_name = {m.get("name"): m
                             for m in client.list_presets(Container.POOL)}
+            union = manifest.union_tones(resolved)
+            in_union = set(union)
+            for name in manifest.device_marked_tones():
+                if name in in_union:
+                    continue
+                if manifest.tone_path(name) is None and name not in pool_by_name:
+                    continue
+                union.append(name)
+                in_union.add(name)
             plan = plan_pool(
                 manifest, union, list(pool_by_name.keys()),
                 observed_hash_of=manifest.observed_pool_hash,
@@ -367,10 +381,46 @@ def sync_setlists(
                                                "posi": item.get("posi")}
                 manifest.record_observed_setlist(name, setlist_cid, refs)
 
-            # 4. Garbage-collect orphan pool presets (only on the --all run).
+            # 4. Managed-set mirror deletes (design §4): a manifest tone with
+            # slot=None that helixgen PLACED on the device in a prior sync
+            # (observed evidence — never a same-named preset it didn't place)
+            # was unsynced — delete it from the pool (it stays in the library)
+            # unless a live setlist still references it (never-orphan, reported
+            # in delete_skipped), this run is installing it anyway, or it
+            # belongs to a target setlist that failed to resolve.
+            unresolved_members: set = set()
+            for t in targets:
+                if t not in setlist_cids:
+                    unresolved_members.update(manifest.tones_in(t))
+            referenced = _device_referenced_names(client, pool_by_name)
+            for name, rec in manifest.tones.items():
+                if (rec.get("slot") is not None or name in in_union
+                        or name in unresolved_members):
+                    continue
+                if (rec.get("device") is None
+                        and manifest.observed.get("pool", {}).get(name) is None):
+                    continue  # no prior-placement evidence: not ours to delete
+                dev = pool_by_name.get(name)
+                if dev is None:
+                    continue
+                if name in referenced:
+                    result["pool"]["delete_skipped"].append(name)
+                    continue
+                try:
+                    if client._raw.delete(Container.POOL, [_cid(dev)]):
+                        result["pool"]["deleted"].append(name)
+                        manifest.clear_observed_pool(name)
+                        pool_by_name.pop(name, None)
+                except HelixError as e:
+                    errors.append(f"tone '{name}': {e}")
+
+            # 5. Garbage-collect orphan pool presets (only on the --all run).
             if do_gc:
                 referenced = _device_referenced_names(client, pool_by_name)
-                union_all = manifest.union_tones(manifest.setlists())
+                # "wanted" = every setlist member AND every slot-marked tone —
+                # a slot-only tone is not an orphan.
+                union_all = set(manifest.union_tones(manifest.setlists()))
+                union_all.update(manifest.device_marked_tones())
                 for name in plan_gc(union_all, list(pool_by_name.keys()), referenced):
                     m = pool_by_name.get(name)
                     if m is None:

@@ -182,12 +182,15 @@ def _stub_bridge(monkeypatch):
                         lambda client, body: {"present": set(), "missing": set()})
 
 
-def _manifest(tmp_path, monkeypatch, setlists, hashes=None):
-    """Build a manifest directly (no .hsp on disk) with given membership + hashes."""
+def _manifest(tmp_path, monkeypatch, setlists, hashes=None, synced=True):
+    """Build a manifest directly (no .hsp on disk) with given membership + hashes.
+    Setlists default to ``synced`` (mirrored) — the state a targeted sync leaves
+    them in; pass ``synced=False`` to model local-only drafts."""
     hashes = hashes or {}
     m = SetlistManifest(tmp_path / "setlists.json")
     for sl, tones in setlists.items():
         m.create_setlist(sl)
+        m.setlists_map[sl]["synced"] = synced
         for t in tones:
             m.tones[t] = {"path": f"/tones/{t}.hsp", "content_hash": hashes.get(t),
                           "doc": None, "source": "authored", "slot": "auto",
@@ -272,8 +275,10 @@ def test_unresolved_setlist_errors_without_aborting(tmp_path, monkeypatch):
     assert res["ok"] is False
     assert any("missing" in e for e in res["errors"])
     assert any("Stadium app" in e for e in res["errors"])
-    # the resolvable setlist still synced
-    assert res["pool"]["installed"] == ["Tone A"]
+    # the resolvable setlist still synced; Tone B is slot-marked ("auto"), so
+    # the user-population mirror still pools it — its references arrive once
+    # the setlist exists on the device.
+    assert res["pool"]["installed"] == ["Tone A", "Tone B"]
     assert "good" in res["references"]
     assert "missing" not in res["references"]
 
@@ -341,6 +346,333 @@ def test_ir_upload_happens_unless_excluded(tmp_path, monkeypatch):
     res2 = ss.sync_setlists(m, ip="9.9.9.9", setlists=["helixgen"], exclude_irs=True)
     assert calls == []
     assert res2["irs"] == []
+
+
+# ---------------------------------------------------------------------------
+# managed user-population mirror (design §4): slot-marked tones install even
+# with no setlist membership; slot=None tones still in the pool are deleted.
+# ---------------------------------------------------------------------------
+
+def _add_slot_only_tone(m, name, *, slot, content_hash=None):
+    m.tones[name] = {"path": f"/tones/{name}.hsp", "content_hash": content_hash,
+                     "doc": None, "source": "authored", "slot": slot,
+                     "device": None}
+
+
+def test_slot_only_tone_installs_on_targeted_sync(tmp_path, monkeypatch):
+    # `device add --slot 5A` + `device sync <setlist>` must install the tone
+    # even though it belongs to no setlist.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Tone A"]},
+                  hashes={"Tone A": "sha256:a"})
+    _add_slot_only_tone(m, "Solo", slot="5A", content_hash="sha256:solo")
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["ok"] is True
+    assert sorted(res["pool"]["installed"]) == ["Solo", "Tone A"]
+    # Solo is in the pool but NOT referenced into the setlist
+    assert client.mirror_calls == [(42, [5000])]
+    assert m.tones["Solo"]["device"] is not None
+
+
+def test_slot_only_auto_tone_installs_on_all_run(tmp_path, monkeypatch):
+    # `device add` (slot auto) + `device sync --all` with no setlists at all.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {}, hashes={})
+    _add_slot_only_tone(m, "Solo", slot="auto", content_hash="sha256:solo")
+    client = FakeClient()
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=None)
+
+    assert res["pool"]["installed"] == ["Solo"]
+    # the "auto" slot was resolved to a concrete label (assign_slots runs
+    # before the reconcile; the manifest never persists "auto" past a sync)
+    assert m.tones["Solo"]["slot"] == "1A"
+
+
+def test_unsynced_tone_deleted_from_pool_on_sync(tmp_path, monkeypatch):
+    # `device unsync <tone>` (slot=None) + sync deletes it from the device
+    # while keeping the library registration.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    _add_slot_only_tone(m, "Gone", slot=None, content_hash="sha256:g")
+    m.record_observed_pool("Gone", cid=5001, posi=1, synced_hash="sha256:g")
+    m.tones["Gone"]["slot"] = None  # record_observed_pool must not resurrect it
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Keep", 5000, 0), ("Gone", 5001, 1)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["deleted"] == ["Gone"]
+    assert client.deleted == [5001]
+    assert "Gone" in m.tones            # library registration survives
+    assert m.tones["Gone"]["device"] is None
+
+
+def test_unsynced_tone_still_referenced_is_never_orphaned(tmp_path, monkeypatch):
+    # never-orphan: a slot=None tone still referenced by a live device setlist
+    # is NOT deleted from the pool.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    _add_slot_only_tone(m, "Shared", slot=None, content_hash="sha256:s")
+    client = FakeClient(setlists={"helixgen": 42, "other": 43},
+                        pool=[("Keep", 5000, 0), ("Shared", 5002, 2)])
+    client._refs[43] = [dict(cctp=Cctp.REFERENCE, rcid=5002, cid_=9500, posi=0)]
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["deleted"] == []
+    assert client.deleted == []
+
+
+def test_slot_null_member_of_target_setlist_is_installed_not_deleted(tmp_path, monkeypatch):
+    # a slot-less member of a setlist being synced is installed for the
+    # references, never bucketed into the mirror delete.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Draft"]},
+                  hashes={"Draft": "sha256:d"})
+    m.tones["Draft"]["slot"] = None
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["installed"] == ["Draft"]
+    assert res["pool"]["deleted"] == []
+    assert client.deleted == []
+
+
+def test_gc_spares_slot_only_tones(tmp_path, monkeypatch):
+    # --all --gc must not collect a pool preset that a slot-only tone wants.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    _add_slot_only_tone(m, "Solo", slot="5A", content_hash="sha256:solo")
+    m.record_observed_pool("Solo", cid=5003, posi=3, synced_hash="sha256:solo")
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Keep", 5000, 0), ("Orphan", 5001, 1),
+                              ("Solo", 5003, 3)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=None, gc=True)
+
+    assert res["gc"]["deleted"] == ["Orphan"]
+    assert client.deleted == [5001]
+    assert "Solo" not in res["gc"]["deleted"]
+
+
+def test_untracked_same_name_pool_preset_is_never_deleted(tmp_path, monkeypatch):
+    # A manifest tone with slot=None and NO prior-placement evidence (device
+    # null, no observed entry — e.g. every freshly-generated tone) must not
+    # cause deletion of a same-named pool preset helixgen never placed.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    _add_slot_only_tone(m, "Ghost", slot=None, content_hash="sha256:g")
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Keep", 5000, 0), ("Ghost", 7000, 1)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["deleted"] == []
+    assert client.deleted == []
+
+
+def test_pathless_slot_tone_absent_from_pool_is_not_an_error(tmp_path, monkeypatch):
+    # A pathless tone (device save/create) marked with a slot but absent from
+    # the pool has nothing local to install from — skip silently, don't poison
+    # every sync with a permanent error.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.tones["MySave"] = {"path": None, "content_hash": None, "doc": None,
+                         "source": "save", "slot": "3C", "device": None}
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["ok"] is True
+    assert res["errors"] == []
+    assert res["pool"]["installed"] == ["Keep"]
+
+
+def test_pathless_slot_tone_present_in_pool_is_skipped(tmp_path, monkeypatch):
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    m.tones["MySave"] = {"path": None, "content_hash": None, "doc": None,
+                         "source": "save", "slot": "3C", "device": None}
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Keep", 5000, 0), ("MySave", 5009, 9)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["ok"] is True
+    assert "MySave" in res["pool"]["skipped"]
+
+
+def test_all_run_skips_unsynced_draft_setlists(tmp_path, monkeypatch):
+    # A local-only draft (synced=False) is never touched on the device — even
+    # when a device setlist with the same name exists (design §4). Its stale
+    # same-name device references must survive an --all run.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"live": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    m.create_setlist("draft")           # empty local draft, synced=False
+    client = FakeClient(setlists={"live": 42, "draft": 43},
+                        pool=[("Keep", 5000, 0), ("UserPreset", 6000, 1)])
+    client._refs[43] = [dict(cctp=Cctp.REFERENCE, rcid=6000, cid_=9500, posi=0)]
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=None, gc=True)
+
+    assert res["setlists"] == ["live"]
+    assert all(call[0] != 43 for call in client.mirror_calls)  # draft untouched
+    assert res["gc"]["deleted"] == []                          # UserPreset survives
+    assert res["errors"] == []
+
+
+def test_all_run_reports_skipped_nonempty_drafts(tmp_path, monkeypatch):
+    # --all names the non-empty drafts it skipped so a user who never opted
+    # a setlist into mirroring learns why it isn't syncing.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"live": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    m.create_setlist("wip")
+    m.setlists_map["wip"]["tones"].append("Keep")   # non-empty draft
+    m.create_setlist("empty-draft")
+    client = FakeClient(setlists={"live": 42}, pool=[("Keep", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=None)
+
+    assert res["skipped_draft_setlists"] == ["wip"]
+
+
+def test_targeted_sync_marks_setlist_synced(tmp_path, monkeypatch):
+    # Explicitly syncing a draft opts it into mirroring (synced=True), so
+    # subsequent --all runs maintain it.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Tone A"]},
+                  hashes={"Tone A": "sha256:a"}, synced=False)
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert m.is_synced("helixgen") is True
+
+
+def test_unresolved_target_members_are_not_mirror_deleted(tmp_path, monkeypatch):
+    # Members of a setlist that failed to resolve on the device must not fall
+    # into the mirror-delete bucket in the same run.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch,
+                  {"good": ["Keep"], "missing": ["Draft"]},
+                  hashes={"Keep": "sha256:k", "Draft": "sha256:d"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    m.record_observed_pool("Draft", cid=5001, posi=1, synced_hash="sha256:d")
+    m.tones["Draft"]["slot"] = None
+    client = FakeClient(setlists={"good": 42},
+                        pool=[("Keep", 5000, 0), ("Draft", 5001, 1)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["good", "missing"])
+
+    assert "Draft" not in res["pool"]["deleted"]
+    assert client.deleted == []
+
+
+def test_never_orphan_delete_skip_is_reported(tmp_path, monkeypatch):
+    # When never-orphan blocks an unsync delete, the result says so instead of
+    # silently doing nothing.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    _add_slot_only_tone(m, "Shared", slot=None, content_hash="sha256:s")
+    m.record_observed_pool("Shared", cid=5002, posi=2, synced_hash="sha256:s")
+    m.tones["Shared"]["slot"] = None
+    client = FakeClient(setlists={"helixgen": 42, "other": 43},
+                        pool=[("Keep", 5000, 0), ("Shared", 5002, 2)])
+    client._refs[43] = [dict(cctp=Cctp.REFERENCE, rcid=5002, cid_=9500, posi=0)]
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["deleted"] == []
+    assert res["pool"]["delete_skipped"] == ["Shared"]
+
+
+def test_stale_target_reference_is_removed_then_tone_deleted(tmp_path, monkeypatch):
+    # Ordering pin: the unsync delete runs AFTER the reference rebuild, so a
+    # stale reference on the target setlist itself doesn't never-orphan-block
+    # the delete.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    _add_slot_only_tone(m, "Gone", slot=None, content_hash="sha256:g")
+    m.record_observed_pool("Gone", cid=5001, posi=1, synced_hash="sha256:g")
+    m.tones["Gone"]["slot"] = None
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Keep", 5000, 0), ("Gone", 5001, 1)])
+    # stale ref to Gone on the TARGET setlist
+    client._refs[42] = [dict(cctp=Cctp.REFERENCE, rcid=5001, cid_=9400, posi=0)]
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["deleted"] == ["Gone"]
+    assert 5001 in client.deleted
+
+
+def test_helix_error_mid_delete_continues_with_other_tones(tmp_path, monkeypatch):
+    from helixgen.device.client import HelixError
+
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch, {"helixgen": ["Keep"]},
+                  hashes={"Keep": "sha256:k"})
+    m.record_observed_pool("Keep", cid=5000, posi=0, synced_hash="sha256:k")
+    for name, cid, posi in [("Gone1", 5001, 1), ("Gone2", 5002, 2)]:
+        _add_slot_only_tone(m, name, slot=None, content_hash=f"sha256:{name}")
+        m.record_observed_pool(name, cid=cid, posi=posi,
+                               synced_hash=f"sha256:{name}")
+        m.tones[name]["slot"] = None
+
+    class FailFirstDelete(FakeClient):
+        def delete(self, container, cids):
+            if 5001 in cids:
+                raise HelixError("boom")
+            return super().delete(container, cids)
+
+    client = FailFirstDelete(setlists={"helixgen": 42},
+                             pool=[("Keep", 5000, 0), ("Gone1", 5001, 1),
+                                   ("Gone2", 5002, 2)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["deleted"] == ["Gone2"]
+    assert any("Gone1" in e for e in res["errors"])
 
 
 def test_connection_drop_on_one_tone_is_per_tone_error_with_hint(tmp_path, monkeypatch):

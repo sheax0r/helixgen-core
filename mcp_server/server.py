@@ -535,8 +535,10 @@ def device_setlist_remove(
     """Drop a tone from a setlist's membership in the local manifest.
 
     Required `model`: `"stadium"` or `"stadium_xl"`. Removes `tone_name` from
-    `setlist` (keeping the tone in the registry if another setlist still uses
-    it). Local-only. Returns `{ok, setlist, tone, tones}` — `ok` is False if the
+    `setlist`. The tone stays in the registry if another setlist still uses
+    it, or if it carries an explicit device mark (`device add` / a concrete
+    slot). An implicit mark (auto-stamped when it joined a synced setlist)
+    dies with its last membership, so add-then-remove is a no-op. Local-only. Returns `{ok, setlist, tone, tones}` — `ok` is False if the
     tone wasn't in that setlist.
     """
     return _tools.device_setlist_remove_handler(model, setlist, tone_name)
@@ -552,11 +554,18 @@ def device_sync_setlist(
     """Sync ONE manifest setlist onto the device (pool-first, reference rebuild).
 
     Required `model`: `"stadium"` or `"stadium_xl"`. Reconciles the preset pool
-    for the tones `setlist` needs (install missing / update changed / skip
-    unchanged), then rebuilds that setlist's references to match manifest order —
-    never orphaning a still-referenced pool preset. Uploads each tone's IRs
-    unless `exclude_irs=True`. A single-setlist sync never garbage-collects.
-    EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
+    for the tones `setlist` needs PLUS every slot-marked tone (a `device add`ed
+    tone installs even with no setlist membership; pathless save/create tones
+    absent from the pool are left alone), then rebuilds that setlist's
+    references to match manifest order — never orphaning a still-referenced
+    pool preset. Unsynced manifest tones (slot=null) that helixgen previously
+    placed (and only those — a same-named preset helixgen didn't place is never
+    touched) are deleted from the device, kept in the library; never-orphan
+    skips are reported in `pool.delete_skipped`. Targeting a setlist marks it
+    `synced` (mirrored by future `device_sync_all` runs). Uploads each tone's
+    IRs unless `exclude_irs=True`. A single-setlist sync never
+    garbage-collects. EXPERIMENTAL. Returns the engine result dict
+    (`{ok, setlists, pool:{installed,updated,skipped,deleted,delete_skipped},
     references, gc, irs, errors}`).
     """
     return _tools.device_sync_setlist_handler(
@@ -574,9 +583,12 @@ def device_sync_all(
     """Sync ALL manifest setlists onto the device (the whole-library reconcile).
 
     Required `model`: `"stadium"` or `"stadium_xl"`. Reconciles the preset pool
-    for the union of every setlist's tones, rebuilds each setlist's references,
-    and — only when `gc=True` — garbage-collects pool presets no setlist
-    references any more (never orphaning). Uploads IRs unless `exclude_irs=True`.
+    for the union of every **synced** setlist's tones (local-only drafts are
+    never touched on the device) plus every slot-marked tone, rebuilds each
+    synced setlist's references, deletes unsynced (slot=null) manifest tones
+    that helixgen previously placed from the pool, and — only when `gc=True` —
+    garbage-collects pool presets no setlist references and no slot-marked
+    tone wants (never orphaning). Uploads IRs unless `exclude_irs=True`.
     EXPERIMENTAL. Returns the engine result dict (`{ok, setlists, pool,
     references, gc, irs, errors}`).
     """

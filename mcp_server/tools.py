@@ -783,9 +783,11 @@ def device_setlist_remove_handler(
 ) -> dict[str, Any]:
     """Drop ``tone_name`` from ``setlist``'s membership in the local manifest.
 
-    Keeps the tone in the registry if another setlist still references it.
-    Local-only. Returns ``{ok, setlist, tone, tones}`` — ``ok`` is False if the
-    tone wasn't in that setlist.
+    Keeps the tone in the registry if another setlist still references it or
+    it carries an explicit device mark (`device add` / concrete slot); an
+    implicit synced-setlist auto-stamp dies with its last membership
+    (add-then-remove is a no-op). Local-only. Returns ``{ok, setlist, tone,
+    tones}`` — ``ok`` is False if the tone wasn't in that setlist.
     """
     _validate_model(model)
     from helixgen.device.manifest import SetlistManifest

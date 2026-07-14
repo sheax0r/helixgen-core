@@ -1530,6 +1530,13 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     click.echo(f"pool: {len(pool.get('installed', []))} installed, "
                f"{len(pool.get('updated', []))} updated, "
                f"{len(pool.get('skipped', []))} skipped")
+    pool_deleted = pool.get("deleted", [])
+    if pool_deleted:
+        click.echo(f"pool: deleted {len(pool_deleted)} unsynced preset(s): "
+                   f"{', '.join(pool_deleted)}")
+    for name in pool.get("delete_skipped", []):
+        click.echo(f"pool: kept {name!r} (unsynced, but another device setlist "
+                   f"still references it — sync that setlist or use --all)")
     for sl, diff in res.get("references", {}).items():
         click.echo(f"setlist {sl!r}: +{len(diff.get('added', []))} references, "
                    f"-{len(diff.get('removed', []))} references")
@@ -1541,6 +1548,11 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
         click.echo(f"error: {er}", err=True)
     synced = res.get("setlists", [])
     click.echo(f"synced {len(synced)} setlist(s): {', '.join(synced) or '(none)'}")
+    drafts = res.get("skipped_draft_setlists", [])
+    if drafts:
+        click.echo(f"note: skipped {len(drafts)} local-only draft setlist(s): "
+                   f"{', '.join(drafts)} — run `device sync <setlist>` or "
+                   f"`device setlist sync-on <setlist>` to mirror one")
 
 
 @device.command(name="push")

@@ -101,7 +101,7 @@ def _posi_to_slot(posi: Any) -> Optional[str]:
 
 def _tone_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce any partial/legacy tone dict to the full v2 record shape."""
-    return {
+    out = {
         "path": rec.get("path"),
         "content_hash": rec.get("content_hash"),
         "doc": rec.get("doc"),
@@ -109,6 +109,12 @@ def _tone_record(rec: Dict[str, Any]) -> Dict[str, Any]:
         "slot": rec.get("slot"),
         "device": rec.get("device"),
     }
+    if rec.get("auto_marked"):
+        # provenance: this "auto" slot was stamped implicitly (synced-setlist
+        # membership), not by an explicit `device add` — it dies with the
+        # tone's last membership. Present only when true.
+        out["auto_marked"] = True
+    return out
 
 
 def _setlist_record(v: Any) -> Dict[str, Any]:
@@ -146,11 +152,21 @@ class SetlistManifest:
             data = None
 
         if isinstance(data, dict) and data.get("version") == MANIFEST_VERSION:
+            observed = cls._coerce_observed(data.get("observed"))
+            setlists = {k: _setlist_record(v)
+                        for k, v in (data.get("setlists") or {}).items()}
+            # Migration: manifests written before the synced flag was honored
+            # (<= 2.21 engines never set it) — a setlist demonstrably synced
+            # (observed on device in a prior run) loads as synced=True so
+            # `sync --all` keeps maintaining it.
+            for name in observed.get("setlists", {}):
+                if name in setlists:
+                    setlists[name]["synced"] = True
             return cls(
                 path,
                 tones={k: _tone_record(v) for k, v in (data.get("tones") or {}).items()},
-                setlists={k: _setlist_record(v) for k, v in (data.get("setlists") or {}).items()},
-                observed=cls._coerce_observed(data.get("observed")),
+                setlists=setlists,
+                observed=observed,
             )
         if isinstance(data, dict) and data.get("version") == 1:
             return cls._migrate_v1(path, data)
@@ -316,12 +332,23 @@ class SetlistManifest:
     # -- desired placement (slots + setlists) --------------------------------
 
     def mark_on_device(self, name: str, slot: str = "auto") -> None:
-        """Mark a library tone for the device (``slot='auto'`` = address TBD)."""
+        """Mark a library tone for the device (``slot='auto'`` = address TBD).
+        This is the EXPLICIT gesture (`device add`) — the mark survives setlist
+        membership changes, unlike the implicit synced-setlist stamp."""
         if name not in self.tones:
             raise ManifestError(f"unknown tone {name!r}")
         if slot != "auto" and slot not in _SLOT_LABELS:
             raise ManifestError(f"invalid slot {slot!r} (expected '1A'..'128D' or 'auto')")
         self.tones[name]["slot"] = slot
+        self.tones[name].pop("auto_marked", None)
+
+    def _stamp_auto(self, name: str) -> None:
+        """Implicitly mark a synced-setlist member for the device. The stamp is
+        provenance-tagged so it dies with the tone's last membership."""
+        tone = self.tones.get(name)
+        if tone is not None and tone.get("slot") is None:
+            tone["slot"] = "auto"
+            tone["auto_marked"] = True
 
     def unsync(self, name: str) -> List[str]:
         """Take ``name`` off the device (``slot=None``) and cascade it out of every
@@ -330,6 +357,7 @@ class SetlistManifest:
         if name not in self.tones:
             raise ManifestError(f"unknown tone {name!r}")
         self.tones[name]["slot"] = None
+        self.tones[name].pop("auto_marked", None)
         pulled: List[str] = []
         for sl, rec in self.setlists_map.items():
             if rec.get("synced") and name in rec["tones"]:
@@ -344,8 +372,12 @@ class SetlistManifest:
         rec["synced"] = bool(synced)
         if synced:
             for name in rec["tones"]:
-                if self.tones.get(name, {}).get("slot") is None:
-                    self.mark_on_device(name, "auto")
+                self._stamp_auto(name)
+        else:
+            # Forget the device observation: it's the evidence the load-time
+            # migration uses to re-flip synced=True, so an explicit sync-off
+            # must drop it or the opt-out would be undone on the next load.
+            self.observed.get("setlists", {}).pop(setlist, None)
 
     def add_to_setlist(self, setlist: str, name: str, *, pos: Optional[int] = None) -> None:
         """Add ``name`` to ``setlist`` at ``pos`` (append if None; no duplicates).
@@ -358,8 +390,8 @@ class SetlistManifest:
                 rec["tones"].append(name)
             else:
                 rec["tones"].insert(pos, name)
-        if rec["synced"] and self.tones[name].get("slot") is None:
-            self.mark_on_device(name, "auto")
+        if rec["synced"]:
+            self._stamp_auto(name)
 
     def remove_from_setlist(self, setlist: str, name: str) -> bool:
         """Drop ``name`` from ``setlist``'s membership. Returns whether it was there."""
@@ -371,11 +403,25 @@ class SetlistManifest:
 
     def remove_tone(self, setlist: str, name: str) -> bool:
         """Drop ``name`` from ``setlist``; GC the registry entry if now unreferenced
-        (legacy API — membership removal, not a device delete)."""
+        AND not device-marked — a non-null ``slot`` means the tone is (or wants to
+        be) on the device, so its registration must survive losing its last
+        setlist (legacy API — membership removal, not a device delete).
+
+        An IMPLICIT ``"auto"`` mark (``auto_marked`` — stamped by
+        ``add_to_setlist``/``set_setlist_synced`` on synced-setlist members)
+        dies with the last membership, so add-then-remove stays a no-op. An
+        explicit `device add` mark (``"auto"`` without the provenance tag) and
+        concrete labels protect the registration."""
         if not self.remove_from_setlist(setlist, name):
             return False
         if not self._is_referenced(name):
-            self.tones.pop(name, None)
+            tone = self.tones.get(name)
+            if (tone is not None and tone.get("slot") == "auto"
+                    and tone.get("auto_marked")):
+                tone["slot"] = None
+                tone.pop("auto_marked", None)
+            if tone is not None and tone.get("slot") is None:
+                self.tones.pop(name, None)
         return True
 
     def delete_tone(self, name: str) -> None:
@@ -415,6 +461,11 @@ class SetlistManifest:
     def content_hash(self, name: str) -> Optional[str]:
         entry = self.tones.get(name)
         return entry.get("content_hash") if entry else None
+
+    def device_marked_tones(self) -> List[str]:
+        """Names of tones with a non-null ``slot`` (on, or wanting, the device),
+        in insertion order — the managed user population."""
+        return [n for n, rec in self.tones.items() if rec.get("slot") is not None]
 
     def union_tones(self, setlists: List[str]) -> List[str]:
         """Ordered, de-duplicated union of tone names across ``setlists``."""
@@ -459,6 +510,15 @@ class SetlistManifest:
                 lbl = _posi_to_slot(posi)
                 if lbl:
                     tone["slot"] = lbl
+                    tone.pop("auto_marked", None)  # placed: provenance moot
+
+    def clear_observed_pool(self, name: str) -> None:
+        """Forget a tone's observed pool placement (it was deleted from the
+        device); keeps the library registration."""
+        self.observed.get("pool", {}).pop(name, None)
+        tone = self.tones.get(name)
+        if tone is not None:
+            tone["device"] = None
 
     def observed_pool_hash(self, name: str) -> Optional[str]:
         entry = self.observed.get("pool", {}).get(name)
