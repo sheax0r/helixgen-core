@@ -1024,6 +1024,81 @@ def device_settings_set(key, value, ip, port):
     click.echo(f"{key} = {S.render_value(d, readback.value)}  ({d.name})")
 
 
+@device.group(name="globaleq")
+def device_globaleq() -> None:
+    """Write the device's **Global EQ** over the network (no Stadium app).
+
+    The Stadium has three independent Global EQs — one per output layer: 1/4"
+    (`qtr`), XLR (`xlr`), Phones (`pho`) — each a 7-band EQ (lowcut, lowshelf,
+    low, mid, high, highshelf, highcut) plus an output level. `list` prints the
+    catalog; `set` writes one band parameter. Global EQ is **write-only** over
+    the network (the device serves no per-key read-back), so there is no `get`.
+    """
+
+
+@device_globaleq.command(name="list")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit as JSON.")
+def device_globaleq_list(as_json):
+    """List the Global EQ outputs, bands, and their valid params (offline)."""
+    from helixgen.device import globaleq as G
+
+    cat = G.catalog()
+    if as_json:
+        click.echo(json.dumps(cat, indent=2))
+        return
+    cur = None
+    for r in cat:
+        if r["output"] != cur:
+            cur = r["output"]
+            click.echo(f"\n[{r['output']}]  {r['output_name']}")
+        if r["band"]:
+            freq = f"  (default {r['default_freq']:g} Hz)" if r["default_freq"] else ""
+            click.echo(f"  {r['band']:<10} #{r['band_index']}  "
+                       f"params: {', '.join(r['params'])}{freq}")
+        else:
+            click.echo(f"  {'(output)':<10}      params: {', '.join(r['params'])}")
+    click.echo("\nExample: helixgen device globaleq set qtr low gain 3.5")
+
+
+@device_globaleq.command(name="set")
+@click.argument("output")
+@click.argument("band")
+@click.argument("param")
+@click.argument("value")
+@_device_option
+def device_globaleq_set(output, band, param, value, ip, port):
+    """Write one Global EQ parameter.
+
+    OUTPUT ∈ qtr/xlr/pho. BAND ∈ lowcut/lowshelf/low/mid/high/highshelf/highcut
+    (or use `-` with PARAM `level` for the output level). PARAM ∈
+    enable/freq/gain/q/slope/level. Examples:
+
+      helixgen device globaleq set qtr low gain 3.5
+
+      helixgen device globaleq set xlr lowcut enable off
+
+      helixgen device globaleq set pho - level -2.0
+    """
+    from helixgen.device import globaleq as G
+    from helixgen.device import HelixClient, HelixError
+
+    band_arg = "" if band.strip() in ("-", "") else band
+    try:
+        key = G.key_for(output, band_arg, param)  # validates before connecting
+        with HelixClient(ip, port) as h:
+            ok = h.set_globaleq(output, band_arg, param, value)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"device did not confirm the Global EQ write ({key})")
+    click.echo(f"{key} = {value}")
+
+
 @device.command(name="read")
 @click.argument("cid", type=int)
 @click.option("--json", "as_json", is_flag=True, default=False,

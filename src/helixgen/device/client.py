@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from .osc import osc_encode, parse_osc_message
 from . import content as _content
 from . import settings as _settings
+from . import globaleq as _globaleq
 
 logger = logging.getLogger(__name__)
 
@@ -578,6 +579,31 @@ class HelixClient:
                 raise HelixError(
                     f"device rejected /PropertyValueSet for {key!r}: "
                     f"{args[-1] if args else '?'}")
+        return False
+
+    def set_globaleq(self, output: str, band: str, param: str,
+                     value: Any) -> bool:
+        """Write one **Global EQ** band parameter over the network.
+
+        ``output`` ∈ ``qtr``/``xlr``/``pho``; ``band`` ∈ the seven band names
+        (or ``""`` with ``param="level"`` for the output level); ``param`` ∈
+        ``enable``/``freq``/``gain``/``q``/``slope``/``level``. Sends the
+        variant ``/PropertyValueSet`` blob (see :mod:`helixgen.device.globaleq`).
+        Returns ``True`` on ``/success`` code 0.
+
+        Global EQ is **write-only** over the network — the device does not answer
+        ``/PropertyValueGet`` for ``dsp.globaleq.*`` keys, so there is no
+        read-back.
+        """
+        blob = _globaleq.encode_value_blob(output, band, param, value)
+        for addr, args in self._rpc(
+                "/PropertyValueSet", [("i", 0), ("b", blob)]):
+            if addr == "/success":
+                return len(args) >= 2 and args[1] == 0
+            if addr == "/error":
+                raise HelixError(
+                    f"device rejected Global EQ write "
+                    f"{output}.{band}.{param}: {args[-1] if args else '?'}")
         return False
 
     def load_preset(self, cid: int) -> bool:

@@ -583,6 +583,41 @@ def device_settings_set_handler(
             "display": S.render_value(d, readback.value), "name": d.name}
 
 
+def device_globaleq_list_handler() -> dict[str, Any]:
+    """List the Global EQ outputs (qtr/xlr/pho), bands, and valid params.
+
+    Offline catalog. Global EQ is **write-only** over the network (no read-back),
+    so there is no globaleq "get" tool.
+    """
+    from helixgen.device import globaleq as G
+
+    return {"outputs": G.OUTPUTS, "catalog": G.catalog()}
+
+
+def device_globaleq_set_handler(
+    output: str, band: str, param: str, value: str,
+    *, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Write one **Global EQ** band parameter over the network.
+
+    ``output`` ∈ qtr/xlr/pho; ``band`` ∈ lowcut/lowshelf/low/mid/high/highshelf/
+    highcut (or "" with ``param="level"`` for the output level); ``param`` ∈
+    enable/freq/gain/q/slope/level. Validated against the band's param set before
+    sending. Returns ``{ok, key, value}``.
+    """
+    from helixgen.device import globaleq as G
+    from helixgen.device import HelixClient, HelixError
+
+    band_arg = "" if str(band).strip() in ("-", "") else band
+    try:
+        key = G.key_for(output, band_arg, param)  # validate before connecting
+        with HelixClient(ip=ip) as client:
+            ok = client.set_globaleq(output, band_arg, param, value)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": bool(ok), "key": key, "value": value}
+
+
 def device_list_setlists_handler(
     model: str, *, ip: str = _DEFAULT_DEVICE_IP
 ) -> list[dict[str, Any]]:

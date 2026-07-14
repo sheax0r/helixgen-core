@@ -485,6 +485,36 @@ def device_settings_set(
 
 
 @app.tool()
+def device_globaleq_list() -> dict[str, Any]:
+    """List the device's **Global EQ** outputs, bands, and valid params (offline).
+
+    The Stadium has three Global EQs — `qtr` (1/4"), `xlr`, `pho` (Phones) — each
+    a 7-band EQ (lowcut, lowshelf, low, mid, high, highshelf, highcut) plus an
+    output level. Returns `{"outputs": {...}, "catalog": [...]}`. Global EQ is
+    write-only over the network (no read-back), so there is no globaleq get tool.
+    """
+    return _tools.device_globaleq_list_handler()
+
+
+@app.tool()
+def device_globaleq_set(
+    output: str,
+    band: str,
+    param: str,
+    value: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Write one **Global EQ** parameter over the network (no Stadium app needed).
+
+    `output` ∈ qtr/xlr/pho. `band` ∈ lowcut/lowshelf/low/mid/high/highshelf/
+    highcut (or "" with `param="level"` for the output level). `param` ∈
+    enable/freq/gain/q/slope/level. Value is validated against the band's param
+    set before sending. Returns `{"ok", "key", "value"}`.
+    """
+    return _tools.device_globaleq_set_handler(output, band, param, value, ip=ip)
+
+
+@app.tool()
 def device_save_preset(
     model: str,
     name: str,
