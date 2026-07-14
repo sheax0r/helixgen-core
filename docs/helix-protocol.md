@@ -711,7 +711,19 @@ footswitch/controller assignment commands are parameterised on the device.
   (`/ParamValueSet`'s `[reqid, path, block, 0, paramId, value, -1]` layout is
   also confirmed live.)
 - **`/status` error codes.** Only `code == 0` (OK) is confirmed; the non-zero
-  error taxonomy is uncatalogued.
+  error taxonomy is uncatalogued. **`/CreateContent` code-1 anomaly (2026-07-14,
+  cleared 2026-07-15):** on one session `/CreateContent` returned `code == 1`
+  while *still allocating* the pool entry (a side-effect allocation); it was not
+  reproducible the next day (fw 1.3.2/1340) after a device power-cycle, so it
+  reads as transient device/session state, not a stable second success code — do
+  **not** treat `code != 0` as success. The client now cleans up the
+  side-effect stub (verify-before-delete) and surfaces the allocated cid on a
+  non-zero code. Full investigation:
+  `docs/superpowers/specs/2026-07-15-createcontent-status1-findings.md`.
+  (Note: in a **pool** container listing, `blck`/`flow` are `-1` for **every**
+  preset — including freshly + successfully installed ones — so they are **not**
+  an empty/populated signal; use `/GetContentData` size to tell an empty stub
+  from a real preset.)
 - **2001 12-byte header field split** (§2) and **2003 framing** (assumed same as
   2002) are inferred, not verified.
 - **`/CreateContent` `ctype`.** `ctype = 2` (preset) and `ctype = 1003`

@@ -818,13 +818,20 @@ class HelixClient:
         return m.get("cid_") if m else None
 
     # -- write current edit buffer to a new preset slot --------------------
-    def _create_content(self, container: int, pos: int, name: str,
-                        ctype: int = 2) -> Optional[int]:
-        """Create an empty preset entry (`/CreateContent`); return its new CID.
+    def _create_content_status(self, container: int, pos: int, name: str,
+                               ctype: int = 2) -> tuple:
+        """Send ``/CreateContent`` and return ``(allocated_cid, code)``.
 
-        Unlike other writes, ``/CreateContent`` replies ``/status [reqid,
-        newCid, code]`` — the new CID is in the second field, the ok-code in the
-        third.
+        ``/CreateContent`` replies ``/status [reqid, newCid, code]`` — the new
+        CID is in the **second** field, the ok-code in the **third** (unlike
+        other writes). ``code == 0`` is OK.
+
+        This returns **both** fields (``(None, None)`` if no ``/status`` frame
+        came back) so callers can recover from the #38 anomaly: the device has
+        been observed to **still allocate** the pool entry as a side effect even
+        when it returns a non-zero ``code`` (Stadium XL, 2026-07-14). Discarding
+        the cid in that case leaves an un-cleanable orphan stub, so we surface
+        it. See ``docs/superpowers/specs/2026-07-15-createcontent-status1-findings.md``.
 
         Only the preset **pool** (``-2``) accepts /CreateContent; setlists reject
         it (device error ``-47``). Guard against the misuse up front.
@@ -837,9 +844,50 @@ class HelixClient:
                 "/CreateContent",
                 [("i", container), ("i", pos), ("i", ctype),
                  ("b", msgpack.packb({"name": name}))]):
-            if addr == "/status" and len(args) >= 3 and args[2] == 0:
-                return args[1]
-        return None
+            if addr == "/status" and len(args) >= 3:
+                return args[1], args[2]
+        return None, None
+
+    def _create_content(self, container: int, pos: int, name: str,
+                        ctype: int = 2) -> Optional[int]:
+        """Create an empty preset entry (`/CreateContent`); return its new CID,
+        or ``None`` on a non-zero (or absent) status code.
+
+        Thin wrapper over :meth:`_create_content_status` that keeps the historic
+        happy-path contract. Callers that must clean up a side-effect allocation
+        on a non-zero code (``_push_to_slot`` / ``_save_edit_buffer_to``) call
+        ``_create_content_status`` directly.
+        """
+        cid, code = self._create_content_status(container, pos, name, ctype)
+        return cid if code == 0 else None
+
+    def _delete_created_stub(self, container: int, name: str,
+                             pos: int) -> Optional[int]:
+        """Verify-before-delete cleanup for a just-attempted /CreateContent.
+
+        The create-reply cid is unreliable (see ``_pool_cid_by_name``), so to
+        remove a stub we just created we **re-list** ``container`` and match the
+        entry by ``name`` **and** ``posi == pos`` (the slot was empty before our
+        create, so a same-name entry now sitting at ``pos`` is unambiguously
+        ours). We never blind-delete the create-reply cid, which could be stale
+        or point at an unrelated preset. Returns the cid actually deleted, or
+        ``None`` if nothing matched / the delete failed.
+        """
+        try:
+            match = next(
+                (m for m in self.list_container(container)
+                 if m.get("name") == name and m.get("posi") == pos), None)
+        except HelixError:
+            return None
+        if match is None:
+            return None
+        cid = match.get("cid_")
+        if cid is None:
+            return None
+        try:
+            return cid if self._delete(container, [cid]) else None
+        except HelixError:
+            return None
 
     def _save_preset_with_cid(self, cid: int, block_count: int = 0) -> bool:
         """Persist the current edit buffer into an existing CID (`/SavePresetWithCID`)."""
@@ -852,15 +900,15 @@ class HelixClient:
         Mirrors the editor's "Save Preset As -> Save As New": CreateContent then
         SavePresetWithCID.
         """
-        cid = self._create_content(container, pos, name)
+        cid, code = self._create_content_status(container, pos, name)
+        if code is not None and code != 0:
+            raise self._create_status_error(container, name, pos, cid, code)
         if cid is None:
             return None
         if not self._save_preset_with_cid(cid):
-            # don't leave an orphaned empty entry occupying the slot
-            try:
-                self._delete(container, [cid])
-            except HelixError:
-                pass
+            # don't leave an orphaned empty entry occupying the slot; delete the
+            # entry we just created by (name, pos), not the unreliable reply cid
+            self._delete_created_stub(container, name, pos)
             return None
         return cid
 
@@ -878,16 +926,42 @@ class HelixClient:
                      blob: bytes) -> Optional[int]:
         """Create a new preset at ``pos`` and write ``blob`` into it (restore a
         backup / clone / install authored content).  Returns the new CID."""
-        cid = self._create_content(container, pos, name)
+        cid, code = self._create_content_status(container, pos, name)
+        if code is not None and code != 0:
+            raise self._create_status_error(container, name, pos, cid, code)
         if cid is None:
             return None
         if not self._set_content_data(cid, blob):
-            try:
-                self._delete(container, [cid])
-            except HelixError:
-                pass
+            # cleanup: delete the entry we just created by (name, pos) — the
+            # create-reply cid is unreliable, so never blind-delete it
+            self._delete_created_stub(container, name, pos)
             return None
         return cid
+
+    def _create_status_error(self, container: int, name: str, pos: int,
+                             reply_cid: Optional[int], code: int) -> "HelixError":
+        """Handle the #38 anomaly: /CreateContent returned a non-zero ``code``
+        yet the device may have allocated the pool entry anyway. Clean up the
+        orphan stub (verify-before-delete) and return a ``HelixError`` that
+        surfaces the code and the allocated cid so callers/users can recover.
+
+        Not reproducible after 2026-07-15 (the anomaly cleared once the device
+        state settled), so we deliberately do **not** treat ``code != 0`` as
+        success — we fail loudly without leaving debris.
+        See ``docs/superpowers/specs/2026-07-15-createcontent-status1-findings.md``.
+        """
+        cleaned = self._delete_created_stub(container, name, pos)
+        if cleaned is not None:
+            detail = f"cleaned up the orphaned pool stub (cid {cleaned})"
+        elif reply_cid is not None:
+            detail = (f"the device reported new cid {reply_cid} — verify with "
+                      f"`helixgen device list` and delete it manually if it lingers")
+        else:
+            detail = "no cid was reported"
+        return HelixError(
+            f"/CreateContent for {name!r} at slot {pos} returned status code "
+            f"{code} (expected 0); {detail}. If this persists, power-cycle the "
+            f"Helix and retry (backlog #38).")
 
     # -- mutating() context: activate prompt propagation for writes --------
     @contextlib.contextmanager

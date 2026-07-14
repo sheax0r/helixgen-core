@@ -723,29 +723,39 @@ LED control, focus-view/UI cosmetics.
   (metadata schema, research depth per-IR vs per-pack, backfill of
   already-registered IRs, offline behavior when no manual exists).
 
-- **#38 `/CreateContent` returning a non-zero status code on a live device
-  (2026-07-14 session)** — found while hardware-validating #31's write path.
-  `_create_content` (`src/helixgen/device/client.py`) treats `/status [reqid,
-  newCid, code]` as success only when `code == 0` (documented + "live-verified
-  2026-07-14" in `docs/helix-protocol.md`). On the user's Stadium XL later the
-  same day, every `/CreateContent` call — via the **pre-existing, already
-  hardware-validated** `device install` verb as well as the new `device
-  setlist import-hss` — returned `code == 1`, so the client reported "failed
-  to install preset" / "install returned no cid" even though the device *did*
-  allocate the pool entry each time (confirmed via `device list`; the stub
-  entries were empty — `blck=-1, flow=-1` — since `_push_to_slot` deletes on a
-  perceived `_set_content_data` failure downstream, though even that delete
-  didn't always take, leaving orphan stubs that had to be cleaned up by hand).
-  Reproduced 3+ times across a fresh process/device reconnect, so it reads as
-  a live device/session state issue rather than a one-off fluke, but the root
-  cause (firmware behavior change since the 07-14 capture? a device-side
-  effect of rapid create/delete cycling during debugging? a genuine protocol
-  misread) is **unconfirmed** — not investigated further here (out of #31's
-  scope; touching `_create_content`'s status handling has blast radius across
-  every already-shipped install/save/sync verb and needs its own dedicated
-  investigation + regression pass, ideally starting with a fresh device
-  reboot and a minimal repro). All debris created while diagnosing this was
-  deleted and the local manifest was cleaned up in the same session.
+- **#38 `/CreateContent` returning a non-zero status code on a live device** —
+  **🟡 HARDENED 2026-07-15 (anomaly not reproducible; root cause unconfirmed).**
+  Found 2026-07-14 while hardware-validating #31's write path: every
+  `/CreateContent` returned `code == 1` (not the documented `0`) while still
+  allocating the pool entry, so `device install` / `import-hss` reported "failed
+  to install" and left stubs. **Investigated 2026-07-15** (findings:
+  `docs/superpowers/specs/2026-07-15-createcontent-status1-findings.md`):
+  - **The anomaly CLEARED.** On fw **1.3.2 build 1340** every `/CreateContent`
+    now returns `code == 0` — single raw create, 5 rapid create/delete cycles,
+    and a full create→SetContentData→readback install (live-verified). The
+    07-14 `code == 1` was **transient device/session state** (device
+    power-cycled/settled between sessions). *Why* it returned 1 that day is
+    still unknown and not reproducible — the one remaining open question; if it
+    recurs, capture the raw `/status` + 2001/2003 streams at that moment.
+  - **The "empty stub — `blck=-1, flow=-1`" claim was a MISDIAGNOSIS.** In a
+    **pool** listing **every** preset shows `blck=-1, flow=-1`, including
+    freshly + successfully installed ones; all 29 suspected "orphans" held
+    11–20 KB of real `/GetContentData` content (the user's real library). Use
+    `/GetContentData` size, not `blck`/`flow`, to tell an empty stub from a real
+    preset. There were **zero** actual orphan stubs on the device.
+  - **Client hardened** (`src/helixgen/device/client.py`, evidence-backed, safe
+    regardless of root cause): new `_create_content_status` returns
+    `(cid, code)` so a non-zero code no longer discards the side-effect
+    allocation; new `_delete_created_stub` does **verify-before-delete** (match
+    entry by name+`posi`, delete its *listed* cid — never the unreliable
+    create-reply cid, fixing a latent wrong-delete bug); `_push_to_slot` /
+    `_save_edit_buffer_to` now **raise a `HelixError` surfacing the code + the
+    allocated cid** (with a "power-cycle + retry" hint) instead of silently
+    orphaning. `_create_content`'s `code == 0` success contract is unchanged
+    (no evidence supports accepting `code 1` as success). Regression tests
+    added; suite 1501 passed. **No user action needed** unless the code-1
+    anomaly recurs (then: power-cycle the Helix and retry — the client now
+    self-cleans and names the cid to recover).
 
 - **#39 `resolve_setlist_cid` is non-strict — a timeout can mint a
   duplicate-named setlist** — **✅ SHIPPED (2026-07-15).** `resolve_setlist_cid`

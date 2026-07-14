@@ -438,6 +438,97 @@ def test_install_into_pool_relists_by_name_for_cid(monkeypatch):
     assert got == 777  # re-listed by name, not the unreliable create reply cid
 
 
+# -- #38: /CreateContent non-zero status + orphan-stub hardening ------------
+
+def test_push_to_slot_happy_path_returns_cid(monkeypatch):
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    setdata = osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [setdata]])
+    assert h._raw.push_to_slot(-2, 3, "X", blob) == 930
+
+
+def test_push_to_slot_raises_and_cleans_stub_on_create_status_error(monkeypatch):
+    """#38: /CreateContent returns a non-zero code but the device still
+    allocated the pool entry. push_to_slot must (a) raise a HelixError that
+    surfaces the code + the allocated cid, and (b) verify-before-delete the
+    orphan stub by re-listing (name+pos), never leaving it behind."""
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # rpc 1000: create -> /status [reqid, newCid=1237, code=1]  (the anomaly)
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # rpc 1001: _delete_created_stub re-lists the pool -> the real stub is 1237@pos5
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1001), ("b", msgpack.packb(
+            [{"cid_": 1237, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # rpc 1002: _delete -> /status ok
+    delete = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [listrep], [delete]])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    msg = str(ei.value)
+    assert "status code 1" in msg  # code surfaced
+    assert "1237" in msg           # allocated cid surfaced for recovery
+    assert "#38" in msg
+    # the orphan stub was deleted (a /RemoveContent was sent)
+    assert any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypatch):
+    """On a SetContentData failure, cleanup must delete the entry we created by
+    (name, pos) from a fresh listing — NOT the unreliable create-reply cid."""
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # rpc 1000: create ok, reply cid=930 (unreliable)
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    # rpc 1001: set_content_data FAILS (code 1)
+    setfail = osc_encode("/status", [("i", 1001), ("i", 1), ("i", 0)])
+    # rpc 1002: _delete_created_stub re-lists -> real cid is 777 (not 930)
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # rpc 1003: delete ok
+    delete = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [setfail], [listrep], [delete]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) is None
+    del_sent = [s for s in h.sock.sent if b"/RemoveContent" in s]
+    assert del_sent, "expected a /RemoveContent cleanup"
+    # the msgpack cid list in the delete frame must carry 777 (relist), not 930
+    assert b"\x77" not in del_sent[0] or True  # (777 asserted structurally below)
+    import msgpack as _mp
+    # pull the trailing blob arg (the msgpack cid array) out of the frame
+    assert _mp.packb([777], use_bin_type=True) in del_sent[0]
+    assert _mp.packb([930], use_bin_type=True) not in del_sent[0]
+
+
+def test_create_content_status_returns_cid_and_code():
+    """_create_content_status exposes (allocated_cid, code) so callers can
+    recover the side-effect allocation even when code != 0."""
+    h = HelixClient()
+    reply = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    _wire(h, [reply])
+    cid, code = h._create_content_status(-2, 5, "X")
+    assert (cid, code) == (1237, 1)
+
+
 def test_reference_into_setlist_returns_ref_cid(monkeypatch):
     _patch_sub(monkeypatch)
     h = HelixClient()
