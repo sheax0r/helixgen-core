@@ -128,11 +128,27 @@ def generate_cmd(
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(data)
+            _auto_register_tone(output_path)
         else:
             generate_preset(spec_path, output_path, library, irs=irs)
     except (KeyError, LookupError, SpecError, ParamValidationError, GenerateError, FileNotFoundError) as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"Wrote {output_path}")
+
+
+def _auto_register_tone(hsp_path: Path) -> None:
+    """Record a freshly-authored .hsp in the tone library (off-device by default).
+
+    Advisory: a registration failure warns but never fails ``generate`` (the
+    .hsp is already written)."""
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        m.register_tone(hsp_path, source="authored")
+        m.save()
+    except Exception as e:  # noqa: BLE001 — registration is advisory
+        click.echo(f"warning: could not register tone in library: {e}", err=True)
 
 
 @cli.command(name="view")
@@ -643,46 +659,82 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _tone_by_cid(m, cid: int):
+    """Return the manifest tone name whose observed device cid matches, or None."""
+    for name, rec in m.tones.items():
+        dev = rec.get("device")
+        if isinstance(dev, dict) and dev.get("cid") == cid:
+            return name
+    return None
+
+
 def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
                       source_kind: str, source_path: str | None = None,
                       model: str | None = None) -> None:
-    """Record a device placement in the slot ledger. Best-effort: a ledger
+    """Record a device placement in the tone-library manifest. Best-effort: a
     failure warns but never fails the device command (the write already
     succeeded)."""
     try:
-        from helixgen.device.ledger import SlotLedger
+        from helixgen.device.manifest import SetlistManifest
 
-        led = SlotLedger.load()
-        led.record(setlist=setlist, posi=posi, name=name, cid=cid,
-                   source_kind=source_kind, source_path=source_path, model=model,
-                   now=_utc_now())
-        led.save()
-    except Exception as e:  # noqa: BLE001 — ledger is advisory, never fatal
-        click.echo(f"warning: could not update slot ledger: {e}", err=True)
+        m = SetlistManifest.load()
+        if name not in m.tones:
+            if source_path and str(source_path).endswith(".hsp"):
+                name = m.register_tone(source_path, source="import-local")
+            elif source_path:
+                # a pushed .sbe (or other local source): store the path verbatim
+                m.tones[name] = {"path": str(source_path), "content_hash": None,
+                                 "doc": None, "source": "push", "slot": None,
+                                 "device": None}
+            else:
+                m.register_pathless(name, source="save" if source_kind == "save" else "create")
+        slot = _slot_from_posi(posi)
+        if slot:
+            m.mark_on_device(name, slot)
+        if cid is not None:
+            m.tones[name]["device"] = {"cid": cid, "posi": posi}
+        if setlist and setlist != "user":
+            m.add_to_setlist(setlist, name)
+        m.save()
+    except Exception as e:  # noqa: BLE001 — advisory, never fatal
+        click.echo(f"warning: could not update tone library: {e}", err=True)
+
+
+def _slot_from_posi(posi):
+    from helixgen.device.manifest import _posi_to_slot
+    return _posi_to_slot(posi)
 
 
 def _ledger_rename(cid: int, new_name: str) -> None:
-    """Best-effort: reflect a device rename in the slot ledger."""
+    """Best-effort: reflect a device rename in the tone library."""
     try:
-        from helixgen.device.ledger import SlotLedger
+        from helixgen.device.manifest import SetlistManifest
 
-        led = SlotLedger.load()
-        if led.rename(cid=cid, new_name=new_name, now=_utc_now()):
-            led.save()
+        m = SetlistManifest.load()
+        old = _tone_by_cid(m, cid)
+        if old and old != new_name:
+            m.tones[new_name] = m.tones.pop(old)
+            for rec in m.setlists_map.values():
+                rec["tones"] = [new_name if t == old else t for t in rec["tones"]]
+            m.save()
     except Exception as e:  # noqa: BLE001
-        click.echo(f"warning: could not update slot ledger: {e}", err=True)
+        click.echo(f"warning: could not update tone library: {e}", err=True)
 
 
 def _ledger_remove(cid: int) -> None:
-    """Best-effort: drop a deleted preset from the slot ledger."""
+    """Best-effort: drop a deleted preset from the tone library (membership +
+    on-device state; the tone stays in the library)."""
     try:
-        from helixgen.device.ledger import SlotLedger
+        from helixgen.device.manifest import SetlistManifest
 
-        led = SlotLedger.load()
-        if led.remove(cid=cid):
-            led.save()
+        m = SetlistManifest.load()
+        name = _tone_by_cid(m, cid)
+        if name:
+            m.tones[name]["slot"] = None
+            m.tones[name]["device"] = None
+            m.save()
     except Exception as e:  # noqa: BLE001
-        click.echo(f"warning: could not update slot ledger: {e}", err=True)
+        click.echo(f"warning: could not update tone library: {e}", err=True)
 
 
 def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
@@ -1188,6 +1240,98 @@ def device_setlist_create_local(setlist: str) -> None:
                f"Stadium app before syncing (device-side creation is deferred)")
 
 
+@device_setlist.command(name="sync-on")
+@click.argument("setlist")
+def device_setlist_sync_on(setlist: str) -> None:
+    """Mark a setlist as device-synced (marks all its tones for the device)."""
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    m.set_setlist_synced(setlist, True)
+    m.save()
+    click.echo(f"setlist {setlist!r} is now synced; run `helixgen device sync {setlist}`")
+
+
+@device_setlist.command(name="sync-off")
+@click.argument("setlist")
+def device_setlist_sync_off(setlist: str) -> None:
+    """Mark a setlist as a local-only draft (not mirrored to the device)."""
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    m.set_setlist_synced(setlist, False)
+    m.save()
+    click.echo(f"setlist {setlist!r} is now a local-only draft")
+
+
+@cli.command(name="register")
+@click.argument("hsp_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--doc", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Optional companion markdown description to record.")
+def register_cmd(hsp_path: Path, doc: Path | None) -> None:
+    """Register an existing local .hsp into the tone library (off-device)."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        name = m.register_tone(hsp_path, source="import-local", doc=doc)
+    except ManifestError as e:
+        raise click.ClickException(str(e)) from e
+    m.save()
+    click.echo(f"registered {name!r} in the tone library (off-device)")
+
+
+@device.command(name="add")
+@click.argument("tone")
+@click.option("--slot", default="auto",
+              help="Desired user slot ('1A'..'8D') or 'auto' (default; sync picks).")
+def device_add_cmd(tone: str, slot: str) -> None:
+    """Mark a library tone for the device (placed on the next `device sync`)."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        m.mark_on_device(tone, slot)
+    except ManifestError as e:
+        raise click.ClickException(str(e)) from e
+    m.save()
+    click.echo(f"{tone!r} marked for device (slot {slot})")
+
+
+@device.command(name="unsync")
+@click.argument("tone")
+def device_unsync_cmd(tone: str) -> None:
+    """Take a tone off the device on next sync (keeps it in the library)."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        pulled = m.unsync(tone)
+    except ManifestError as e:
+        raise click.ClickException(str(e)) from e
+    m.save()
+    msg = f"{tone!r} unsynced (deleted from device on next sync)"
+    if pulled:
+        msg += f"; removed from synced setlists: {', '.join(pulled)}"
+    click.echo(msg)
+
+
+@device.command(name="library")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit raw JSON.")
+def device_library_cmd(as_json: bool) -> None:
+    """List every library tone: slot, on/off device, setlist memberships."""
+    from helixgen.device.manifest import SetlistManifest
+
+    rows = SetlistManifest.load().library()
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        sls = ", ".join(row["setlists"])
+        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
+                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+
+
 @device.command(name="sync")
 @click.argument("setlist_name", metavar="SETLIST", required=False)
 @click.option("--all", "all_setlists", is_flag=True, default=False,
@@ -1324,42 +1468,51 @@ def device_slots(ctx: click.Context) -> None:
 @click.option("--verify", is_flag=True, default=False,
               help="Cross-check the live device and flag drift (needs the Helix).")
 @click.option("--json", "as_json", is_flag=True, default=False,
-              help="Emit raw JSON (entries, or verify records with --verify).")
+              help="Emit raw JSON (the library view, or verify records with --verify).")
 @_device_option
 def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
-    """List recorded placements in order. Offline unless --verify."""
-    from helixgen.device.ledger import SlotLedger
+    """List every library tone: slot, on/off device, setlists. Offline unless --verify."""
+    from helixgen.device.manifest import SetlistManifest
 
-    led = SlotLedger.load()
-    entries = led.entries_in_order()
+    m = SetlistManifest.load()
+    rows = m.library()
 
     if verify:
         from helixgen.device import HelixClient, HelixError
 
-        device_presets = []
+        on_device = {}
         try:
             with HelixClient(ip, port) as h:
-                for sl in sorted({e.get("setlist") for e in entries if e.get("setlist")}):
-                    container = _setlist_container(sl)
-                    for p in h.list_presets(container):
-                        device_presets.append({**p, "setlist": sl})
+                for p in h.list_presets(_setlist_container("user")):
+                    on_device[p.get("name")] = p
         except (HelixError, OSError) as e:
             raise click.ClickException(str(e)) from e
-        records = led.verify(device_presets)
+        records = []
+        for row in rows:
+            if not row["on_device"]:
+                status = "offline"
+            elif row["name"] in on_device:
+                status = "ok"
+            else:
+                status = "missing"
+            records.append({**row, "status": status})
+        for name in on_device:
+            if name not in m.tones:
+                records.append({"name": name, "slot": None, "status": "untracked"})
         if as_json:
             click.echo(json.dumps(records, indent=2))
         else:
             for r in records:
-                click.echo(f"{r.get('slot_label', ''):<4} {r.get('status', ''):<9} "
-                           f"{r.get('name', '')}  cid={r.get('cid')}")
+                click.echo(f"{(r.get('slot') or '-'):<4} {r.get('status', ''):<9} {r.get('name', '')}")
         return
 
     if as_json:
-        click.echo(json.dumps(entries, indent=2))
+        click.echo(json.dumps(rows, indent=2))
         return
-    for e in entries:
-        click.echo(f"{e.get('slot_label', ''):<4} {e.get('name', ''):<28} "
-                   f"cid={e.get('cid')}  {e.get('source_kind', '')}")
+    for row in rows:
+        sls = ", ".join(row["setlists"])
+        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
+                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
 
 
 @device_slots.command(name="restore")
@@ -1379,27 +1532,28 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     .sbe (from `push`) is re-pushed. Tones saved from the live edit buffer or
     copied on-device have no local source and can't be restored this way.
     """
-    from helixgen.device.ledger import SlotLedger
+    from helixgen.device.manifest import SetlistManifest
 
-    led = SlotLedger.load()
-    entry = led.find(name=target)
-    if entry is None:
-        entry = next((e for e in led.entries_in_order()
-                      if e.get("slot_label") == target), None)
-    if entry is None:
-        raise click.ClickException(f"no ledger entry matching {target!r} "
+    m = SetlistManifest.load()
+    name = target if target in m.tones else None
+    if name is None:  # try to match a slot label
+        name = next((n for n, r in m.tones.items() if r.get("slot") == target), None)
+    if name is None:
+        raise click.ClickException(f"no library tone matching {target!r} "
                                    f"(try `helixgen device slots`)")
 
-    src_kind = entry.get("source_kind")
-    src_path = entry.get("source_path")
-    dest_setlist = setlist or entry.get("setlist")
-    dest_pos = pos if pos is not None else entry.get("posi")
+    rec = m.tones[name]
+    src_path = rec.get("path")
+    dest_setlist = setlist or "user"
+    dest_pos = pos if pos is not None else _posi_from_slot(rec.get("slot"))
+    if dest_pos is None:
+        raise click.ClickException(f"{name!r} has no recorded slot; pass --pos")
     container = _setlist_container(dest_setlist)
 
-    if src_kind not in ("hsp", "sbe") or not src_path:
+    if not src_path:
         raise click.ClickException(
-            f"no local source recorded for {entry.get('name')!r} "
-            f"(source_kind={src_kind!r}); back it up first (helixgen device pull / backup)")
+            f"no local source recorded for {name!r} "
+            f"(pathless save/create); back it up first (helixgen device pull / backup)")
     src = Path(src_path)
     if not src.is_file():
         raise click.ClickException(f"recorded source no longer exists: {src}")
@@ -1408,142 +1562,63 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
 
     try:
         with HelixClient(ip, port) as h:
-            if src_kind == "sbe":
+            if src.suffix == ".sbe":
                 if h.find_by_pos(container, dest_pos) is not None and not force:
                     raise click.ClickException(
                         f"{dest_setlist} slot {dest_pos} is not empty (use --force)")
-                cid = h._raw.push_to_slot(container, dest_pos, entry.get("name"),
-                                     src.read_bytes())
+                cid = h._raw.push_to_slot(container, dest_pos, name, src.read_bytes())
             else:  # hsp
                 from helixgen.hsp import read_hsp
 
                 cid = _install_hsp_open(h, read_hsp(src), container, dest_pos,
-                                        entry.get("name"), setlist_label=dest_setlist, ip=ip)
+                                        name, setlist_label=dest_setlist, ip=ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
     if cid is None:
-        raise click.ClickException(f"failed to restore {entry.get('name')!r}")
-    click.echo(f"restored {entry.get('name')!r} to {dest_setlist} slot {dest_pos} "
+        raise click.ClickException(f"failed to restore {name!r}")
+    click.echo(f"restored {name!r} to {dest_setlist} slot {dest_pos} "
                f"(cid {cid}) from {src.name}")
-    _record_placement(setlist=dest_setlist, posi=dest_pos, name=entry.get("name"),
-                      cid=cid, source_kind=src_kind, source_path=str(src),
-                      model=entry.get("model"))
+    _record_placement(setlist=dest_setlist, posi=dest_pos, name=name,
+                      cid=cid, source_kind=src.suffix.lstrip("."), source_path=str(src))
 
 
 @device_slots.command(name="reorder")
 @click.argument("target")
 @click.option("--to", "to_index", type=int, required=True,
-              help="New 0-based position within the tone's setlist order.")
-def device_slots_reorder(target: str, to_index: int) -> None:
-    """Move a recorded tone to a new position in its setlist's order.
+              help="New 0-based position within the setlist order.")
+@click.option("--setlist", "setlist_name", default="user",
+              help="Which setlist's order to change (default: user).")
+def device_slots_reorder(target: str, to_index: int, setlist_name: str) -> None:
+    """Move a tone to a new position within a setlist's order.
 
-    Local only — reorders the ledger; run `device slots sync` to apply it to the
-    device. TARGET is the tone name.
+    Local only — reorders the manifest; run `device sync <setlist>` to apply it to
+    the device. TARGET is the tone name.
     """
-    from helixgen.device.ledger import SlotLedger
+    from helixgen.device.manifest import SetlistManifest
 
-    led = SlotLedger.load()
-    if not led.reorder(name=target, to_index=to_index):
-        raise click.ClickException(f"no ledger entry matching {target!r} "
-                                   f"(try `helixgen device slots`)")
-    led.save()
-    seq = ", ".join(e.get("name", "") for e in led.entries_in_order())
-    click.echo(f"reordered; order is now: {seq}")
+    m = SetlistManifest.load()
+    members = m.tones_in(setlist_name)
+    if target not in members:
+        raise click.ClickException(
+            f"{target!r} is not in setlist {setlist_name!r} "
+            f"(try `helixgen device slots`)")
+    members.remove(target)
+    members.insert(max(0, to_index), target)
+    m.setlists_map[setlist_name]["tones"] = members
+    m.save()
+    click.echo(f"reordered {setlist_name}; order is now: {', '.join(members)}")
 
 
-@device_slots.command(name="sync")
-@click.option("--dry-run", is_flag=True, default=False,
-              help="Print the plan without touching the device.")
-@click.option("--yes", is_flag=True, default=False,
-              help="Skip the confirmation prompt.")
-@click.option("--no-backup", is_flag=True, default=False,
-              help="Skip the safety backup of affected setlists (not recommended).")
-@_device_option
-def device_slots_sync(dry_run: bool, yes: bool, no_backup: bool,
-                      ip: str, port: int) -> None:
-    """Reconcile the device so tracked tones sit in the ledger's order.
-
-    Rearranges each affected setlist's tracked presets **among the slots they
-    already occupy** — untracked presets are never disturbed. Destructive: it
-    pulls each preset's content, deletes it, and re-pushes it in order. Affected
-    setlists are backed up first (unless --no-backup), and every pull is verified
-    before any delete, so an interruption is recoverable. EXPERIMENTAL.
-    """
-    from helixgen.device.ledger import SlotLedger
-    from helixgen.device import HelixClient, HelixError
-    from helixgen.device.client import slot_label
-
-    led = SlotLedger.load()
-    entries = led.entries_in_order()
-    setlists = sorted({e.get("setlist") for e in entries if e.get("setlist")})
-
+def _posi_from_slot(slot):
+    from helixgen.device.manifest import _SLOT_LABELS
+    if slot in (None, "auto"):
+        return None
     try:
-        with HelixClient(ip, port) as h:
-            device_presets = []
-            for sl in setlists:
-                for p in h.list_presets(_setlist_container(sl)):
-                    device_presets.append({**p, "setlist": sl})
-
-            plan = led.sync_plan(device_presets)
-            if not plan:
-                click.echo("device slots already in ledger order")
-                return
-
-            click.echo("planned moves:")
-            for m in plan:
-                click.echo(f"  {m['name']}: {slot_label(m['from'])} -> {slot_label(m['to'])}")
-            if dry_run:
-                click.echo("(dry run — no changes made)")
-                return
-            if not yes:
-                click.confirm(f"Rearrange {len(plan)} preset(s) on the device?",
-                              abort=True)
-
-            affected = sorted({m["setlist"] for m in plan})
-            dev_posi = {(p.get("setlist"), p.get("cid", p.get("cid_"))): p.get("posi")
-                        for p in device_presets}
-
-            if not no_backup:
-                from helixgen.device import backup as _backup
-                for sl in affected:
-                    _backup.backup_setlist(h, _setlist_container(sl), now=_utc_now())
-                click.echo(f"backed up {len(affected)} setlist(s) before reordering")
-
-            # Phase A — pull + verify EVERY affected blob before deleting anything.
-            work = {}
-            for sl in affected:
-                present = [e for e in entries if e.get("setlist") == sl
-                           and (sl, e.get("cid")) in dev_posi]
-                targets = sorted(dev_posi[(sl, e.get("cid"))] for e in present)
-                pulled = []
-                for e in present:
-                    blob = h.get_content(e.get("cid"))
-                    if not blob:
-                        raise click.ClickException(
-                            f"aborting: empty content pulled for {e.get('name')!r} "
-                            f"(cid {e.get('cid')}); device left unchanged")
-                    pulled.append((e, blob))
-                work[sl] = (present, targets, pulled)
-
-            # Phase B — delete then re-push in ledger order to the occupied slots.
-            for sl in affected:
-                container = _setlist_container(sl)
-                present, targets, pulled = work[sl]
-                for e in present:
-                    h._raw.delete(container, [e.get("cid")])
-                for (e, blob), target in zip(pulled, targets):
-                    new_cid = h._raw.push_to_slot(container, target, e.get("name"), blob)
-                    e["posi"] = target
-                    e["slot_label"] = slot_label(target)
-                    e["cid"] = new_cid
-            led.save()
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
-    click.echo(f"synced {len(plan)} move(s) to the device")
+        return _SLOT_LABELS.index(slot)
+    except ValueError:
+        return None
 
 
 @device.command(name="backup")

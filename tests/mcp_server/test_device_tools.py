@@ -265,7 +265,7 @@ def test_setlist_add_then_list(monkeypatch, tmp_path):
     assert out["tones"] == ["My Tone"]
 
     doc = tools.device_setlist_list_handler(MODEL)
-    assert doc["setlists"] == {"helixgen": ["My Tone"]}
+    assert doc["setlists"] == {"helixgen": {"tones": ["My Tone"], "synced": False}}
     assert "My Tone" in doc["tones"]
 
 

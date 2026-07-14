@@ -340,7 +340,7 @@ def test_device_setlist_list_json(monkeypatch, tmp_path):
     lst = CliRunner().invoke(cli, ["device", "setlist", "list", "--json"])
     assert lst.exit_code == 0
     doc = json.loads(lst.output)
-    assert doc["setlists"] == {"helixgen": ["Tone X"]}
+    assert doc["setlists"] == {"helixgen": {"tones": ["Tone X"], "synced": False}}
 
 
 def test_device_setlist_remove(monkeypatch, tmp_path):

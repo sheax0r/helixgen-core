@@ -91,7 +91,7 @@ def test_add_tone_reads_meta_name_and_hashes(tmp_path):
     # registry source tag persisted
     m.save()
     reg = json.loads((tmp_path / "m.json").read_text())["tones"]["White Limo Lead"]
-    assert reg["source"] == "hsp"
+    assert reg["source"] == "import-local"
 
 
 def test_add_tone_falls_back_to_filename_stem(tmp_path):

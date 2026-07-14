@@ -2,26 +2,25 @@
 import json
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from helixgen.cli import cli
-from helixgen.device.ledger import SlotLedger
+from helixgen.device.manifest import SetlistManifest
 
 HSP_MAGIC = b"rpshnosj"
 
-NOW = "2026-07-12T00:00:00+00:00"
 
-
-def _seed_ledger(**overrides):
-    """Write a ledger with one hsp-sourced entry to the isolated path."""
-    led = SlotLedger.load()
-    kw = dict(setlist="user", posi=12, name="White Limo Lead", cid=147,
-              source_kind="hsp", source_path="/x/white-limo.hsp", now=NOW)
-    kw.update(overrides)
-    led.record(**kw)
-    led.save()
-    return led
+def _seed(*, name="White Limo Lead", slot="4A", path="/x/white-limo.hsp",
+          source="import-local", cid=147, posi=12, setlist=None):
+    """Write a manifest with one on-device tone to the isolated path."""
+    m = SetlistManifest.load()
+    m.tones[name] = {"path": path, "content_hash": None, "doc": None,
+                     "source": source, "slot": slot,
+                     "device": {"cid": cid, "posi": posi} if cid else None}
+    if setlist:
+        m.setlists_map.setdefault(setlist, {"tones": [], "synced": True})["tones"].append(name)
+    m.save()
+    return m
 
 
 class FakeClient:
@@ -30,7 +29,7 @@ class FakeClient:
         self.presets = getattr(type(self), "PRESETS", [])
 
     @property
-    def _raw(self):  # production calls client._raw.<primitive>
+    def _raw(self):
         return self
 
     def __enter__(self):
@@ -62,8 +61,6 @@ class FakeClient:
 
 
 def _patch_client(monkeypatch, cls=FakeClient):
-    """Patch HelixClient to ``cls`` and return a list that captures each created
-    instance (so a test can inspect the calls the CLI made)."""
     import helixgen.device as device_mod
     created = []
 
@@ -79,7 +76,7 @@ def _patch_client(monkeypatch, cls=FakeClient):
 # -- list (offline) -----------------------------------------------------------
 
 def test_slots_list_bare_prints_entries(monkeypatch):
-    _seed_ledger()
+    _seed()
     r = CliRunner().invoke(cli, ["device", "slots"])
     assert r.exit_code == 0, r.output
     assert "4A" in r.output
@@ -87,12 +84,12 @@ def test_slots_list_bare_prints_entries(monkeypatch):
 
 
 def test_slots_list_explicit_and_json(monkeypatch):
-    _seed_ledger()
+    _seed()
     r = CliRunner().invoke(cli, ["device", "slots", "list", "--json"])
     assert r.exit_code == 0, r.output
     data = json.loads(r.output)
     assert data[0]["name"] == "White Limo Lead"
-    assert data[0]["slot_label"] == "4A"
+    assert data[0]["slot"] == "4A"
 
 
 def test_slots_list_empty_is_graceful(monkeypatch):
@@ -103,10 +100,10 @@ def test_slots_list_empty_is_graceful(monkeypatch):
 # -- verify (needs device) ----------------------------------------------------
 
 def test_slots_verify_flags_missing(monkeypatch):
-    _seed_ledger()  # entry at user/12, cid 147
+    _seed()
 
     class Empty(FakeClient):
-        PRESETS = []  # device has nothing -> missing
+        PRESETS = []
 
     _patch_client(monkeypatch, Empty)
     r = CliRunner().invoke(cli, ["device", "slots", "list", "--verify"])
@@ -115,7 +112,7 @@ def test_slots_verify_flags_missing(monkeypatch):
 
 
 def test_slots_verify_ok(monkeypatch):
-    _seed_ledger()
+    _seed()
 
     class Match(FakeClient):
         PRESETS = [{"posi": 12, "name": "White Limo Lead", "cid_": 147}]
@@ -132,7 +129,7 @@ def test_slots_verify_ok(monkeypatch):
 def test_slots_restore_sbe_source_repushes(monkeypatch, tmp_path):
     sbe = tmp_path / "lead.sbe"
     sbe.write_bytes(b"_sbepgsm-blob")
-    _seed_ledger(name="Lead", posi=5, source_kind="sbe", source_path=str(sbe))
+    _seed(name="Lead", slot="2B", path=str(sbe), source="push", cid=None)
 
     holder = {}
 
@@ -144,20 +141,17 @@ def test_slots_restore_sbe_source_repushes(monkeypatch, tmp_path):
     _patch_client(monkeypatch, Rec)
     r = CliRunner().invoke(cli, ["device", "slots", "restore", "Lead"])
     assert r.exit_code == 0, r.output
-    assert holder["push"][1] == 5  # re-pushed to the recorded slot
+    assert holder["push"][1] == 5  # "2B" -> posi 5
 
 
 def test_slots_restore_hsp_source_reinstalls(monkeypatch, tmp_path):
     hsp = tmp_path / "white-limo.hsp"
     hsp.write_bytes(HSP_MAGIC + json.dumps({"meta": {"name": "t"},
                                             "preset": {"flow": []}}).encode())
-    _seed_ledger(name="White Limo Lead", posi=12, source_kind="hsp",
-                 source_path=str(hsp))
+    _seed(name="White Limo Lead", slot="4A", path=str(hsp), source="authored")
 
     import helixgen.device.bridge as bridge
     monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
-    # Transcoder is stubbed (the seeded body has an empty flow); restore should
-    # transcode then push into the recorded slot via _raw.push_to_slot.
     monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
                         lambda body, strict=True: b"XCODED")
 
@@ -169,8 +163,7 @@ def test_slots_restore_hsp_source_reinstalls(monkeypatch, tmp_path):
 
 
 def test_slots_restore_no_local_source_errors(monkeypatch):
-    _seed_ledger(name="Live Tweak", posi=3, source_kind="edit-buffer",
-                 source_path=None)
+    _seed(name="Live Tweak", slot="1D", path=None, source="save", cid=None)
     _patch_client(monkeypatch)
     r = CliRunner().invoke(cli, ["device", "slots", "restore", "Live Tweak"])
     assert r.exit_code != 0
@@ -178,7 +171,7 @@ def test_slots_restore_no_local_source_errors(monkeypatch):
 
 
 def test_slots_restore_unknown_name_errors(monkeypatch):
-    _seed_ledger(name="Known", posi=1)
+    _seed(name="Known", slot="1A")
     _patch_client(monkeypatch)
     r = CliRunner().invoke(cli, ["device", "slots", "restore", "Nonexistent"])
     assert r.exit_code != 0

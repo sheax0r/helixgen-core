@@ -125,7 +125,16 @@ def generate_preset_handler(
     out = Path(out_path).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(raw)
-    return {"path": out_path, "warnings": []}
+    warnings: list[str] = []
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        m.register_tone(out, source="authored")
+        m.save()
+    except Exception as e:  # noqa: BLE001 — registration is advisory
+        warnings.append(f"could not register tone in library: {e}")
+    return {"path": out_path, "warnings": warnings}
 
 
 def list_irs_handler(model: str, irs_dir: Path | None = None) -> str:
@@ -624,6 +633,22 @@ def device_install_preset_handler(
                 cid = client._raw.push_to_slot(container, pos, name, blob)
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
+    if cid is not None:
+        try:
+            from helixgen.device.manifest import SetlistManifest, _posi_to_slot
+
+            m = SetlistManifest.load()
+            if name not in m.tones:
+                m.register_tone(hsp_path, source="import-local")
+            slot = _posi_to_slot(pos)
+            if slot:
+                m.mark_on_device(name, slot)
+            m.tones[name]["device"] = {"cid": cid, "posi": pos}
+            if setlist and setlist != "user":
+                m.add_to_setlist(setlist, name)
+            m.save()
+        except Exception:  # noqa: BLE001 — ledger/manifest record is advisory
+            pass
     return {"ok": cid is not None, "cid": cid}
 
 

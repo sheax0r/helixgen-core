@@ -113,30 +113,17 @@ rule). **[discovery]** = also needs an OSC command we haven't captured yet.
   `mapping.json`, `compute_irhash`, and the bridge IR check. **No blocker.**
 
 ### Single-tone install/remove parity with bulk sync
-- **#6 Single-tone IR-upload + ledger parity** **[device-write]** — bring the
-  *single-tone* paths up to the same behaviour as bulk `device_sync_library`,
-  which already uploads referenced IRs (via `push_ir`) and records the slot
-  ledger. Gaps today:
-  - **MCP `device_install_preset`** installs the recipe but uploads **no IRs**
-    and records **no ledger** entry (see `mcp_server/tools.py`
-    `device_install_preset_handler`). It should: diff the preset's referenced
-    `irhash`es, `push_ir` any missing (unless an `exclude_irs`/`auto_irs`
-    opt-out), and `ledger.record(...)` the placement — mirroring the per-tone
-    loop in `helixgen.device.sync.sync_library`. The CLI `device install
-    --auto-irs` already does both; MCP should reach the same behaviour (ideally
-    by extracting the sync per-tone core into a shared helper both call).
-  - **MCP `device_delete_preset`** should drop the deleted preset from the
-    ledger (the CLI `device delete` already calls `_ledger_remove`; MCP does
-    not — see the `device_delete_preset_handler`).
-  - **"Update" an already-installed tone** — decide + implement the semantics
-    (re-author over the existing slot vs. push local `.hsp` edits to the device
-    preset), uploading any newly-referenced IRs and updating (not duplicating)
-    the ledger entry. Needs its own brainstorm — no device-side "update" verb
-    exists yet; `device restore` (overwrite content from a file) is the closest
-    primitive. **Blocked on a design decision.**
-  - Rationale: the single-tone verbs are the ones an agent reaches for when
-    installing/replacing *one* tone; today they silently skip IRs (cabs won't
-    resolve) and drift the ledger. Requested 2026-07-12.
+- **#6 Single-tone install/manifest parity** — **✅ MOSTLY RESOLVED (2.19.0,
+  tone-library redesign).** MCP `device_install_preset` now records the
+  placement in the tone-library manifest (registers the tone, sets its slot +
+  observed device); the `SlotLedger` it used to drift is gone — one manifest is
+  the single writer, kept in sync by both CLI and MCP. Remaining open:
+  - **MCP `device_install_preset` IR upload** — still uploads no IRs (the CLI
+    `device install --auto-irs` and `device sync` do). Fold the shared per-tone
+    IR-upload core in.
+  - **"Update" an already-installed tone** — still needs its own brainstorm (no
+    device-side "update" verb; `device restore` is the closest primitive).
+    **Blocked on a design decision.**
 
 ### Named-setlist targeting / multi-setlist (device model RE'd 2026-07-12)
 **Full findings + design:**
@@ -206,15 +193,15 @@ assumption — see #9); the reference-based redesign below then **shipped
   freed slots. Guard against deleting an IR referenced by an off-device preset
   the user still has locally.
 
-### Slot ordering as its own skill
-- **#7 Explicit reordering skill + tools** **[device-write]** — the `device` skill
-  deliberately does **not** order slots: `device sync` installs tones in arbitrary
-  fill-empty order and records where each landed in the ledger. Ordering is a
-  separate concern — give it a dedicated skill (and firm up the
-  `device slots reorder` / `device slots sync` tools, which exist but whose
-  destructive reorg is not yet hardware-validated) so a user can impose and
-  reconcile a desired slot order as an explicit, opt-in step. Keep it out of the
-  install path. Requested 2026-07-12.
+### Slot ordering
+- **#7 Slot ordering** — **✅ REFRAMED (2.19.0, tone-library redesign).**
+  Ordering is now a first-class property of the manifest: within a named setlist,
+  membership order == device reference order, edited with `device slots reorder
+  <tone> --to N [--setlist S]` and applied by the managed-mirror `device sync`.
+  The old destructive `device slots sync` reorg is retired (superseded).
+  User-setlist slot order is deliberately unordered (slots are just addresses,
+  auto-assigned). No separate skill needed. **Hardware-validate the reorder →
+  sync path on an expendable setlist.**
 
 ### Device-control breadth
 - **#1 Set the currently active tone** **[device-write][discovery]** — `load
@@ -236,12 +223,12 @@ assumption — see #9); the reference-based redesign below then **shipped
   snapshots/controllers (`snps`/`srcs`/`trgs` + per-param `tid_`), dual-amp
   (split/join), wire `install`/`sync` onto it + delete the template/bridge, strip
   templates from the skill, device audio-validate.
-- **#13 Non-activating content read** **[device-read][discovery]** — `backup`/
-  `pull` (and any content read) currently `load_preset` first, which changes the
-  active tone (mental-model #4). Capture HX Edit's content-read/export command
-  (a `/GetContentData`-style GET counterpart to `/SetContentData`) so reads don't
-  activate; else save-and-restore the active preset around the read. Product
-  paths must preserve the active tone.
+- **#13 Non-activating content read** — **✅ SHIPPED 2.18.0.** Captured HX Edit's
+  content-read command: `client.get_content(cid)` sends `/GetContentData [reqid,
+  cid]` (the non-activating GET counterpart to `/SetContentData`) and returns the
+  content blob **without** `load_preset`, so the device's live tone is untouched
+  (mental-model #4). `backup`/`pull` now route through it (`device/backup.py`,
+  `cli.py` `pull`/`backup`).
 
 ### Resolver pattern — single source of truth for agents + skill
 - **#14 Implement + maintain a "resolver" pattern** **[infra]** — so future

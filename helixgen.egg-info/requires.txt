@@ -1,0 +1,7 @@
+click>=8.1
+
+[dev]
+pytest>=7.4
+
+[mcp]
+mcp<2.0,>=1.0
