@@ -6,6 +6,9 @@ __pycache__/
 # Captured device _sbepgsm reference presets (round-trip fixtures; not committed)
 tests/fixtures/device_content/
 
+# Captured .hss setlist-bundle exports (real-device fixtures; not committed)
+tests/fixtures/hss/
+
 # local dev venv + macOS cruft (never commit)
 .venv/
 .DS_Store

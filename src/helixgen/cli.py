@@ -2008,6 +2008,116 @@ def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None
                f"({'created, ' if created else ''}{copied} reference(s) copied)")
 
 
+@device_setlist.command(name="import-hss")
+@click.argument("hss_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--list", "list_only", is_flag=True, default=False,
+              help="List the bundle's contents only — offline, no device write.")
+@click.option("--setlist", "setlist_name", default=None,
+              help="Destination setlist name (default: the bundle's own name).")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would be installed/created without writing to the device.")
+@_device_option
+def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str | None,
+                              dry_run: bool, ip: str, port: int) -> None:
+    """EXPERIMENTAL: import a `.hss` setlist-bundle export (backlog #31, READ side).
+
+    A `.hss` is the Stadium app's "export setlist" file: a 24-byte header +
+    gzip + tar of `manifest.json` + 128 fixed slot files. `--list` decodes it
+    fully offline (no device needed) and prints each slot's filled/empty state
+    and preset name. Without `--list`, each filled slot is installed into the
+    device POOL (non-activating) and referenced into a device setlist (created
+    if absent) in the bundle's slot order — reusing the same install +
+    setlist-create + reference primitives as `device install` / `device sync`.
+
+    Container framing (header/gzip/tar/manifest/128-slot/empty-sentinel) is
+    pinned against a real captured export. The FILLED-SLOT byte framing is an
+    inferred assumption — pinned only against synthesized fixtures, not a real
+    non-empty `.hss` export — see `src/helixgen/device/hss.py`.
+
+    Imported presets are recorded in the local tone library as PATHLESS tones
+    (source `import-hss`) with membership in the destination setlist, so a
+    later `device sync <setlist>` preserves their references instead of
+    stripping them. They have no local `.hsp`, so `device slots restore`
+    can't re-author them.
+
+    NOT idempotent on retry: re-running after a partial failure installs and
+    references the already-succeeded slots AGAIN (duplicate pool presets +
+    references). After a partial failure, delete the setlist + the orphaned
+    pool presets (or import into a fresh setlist) before retrying.
+    """
+    from helixgen.device import hss as hss_mod
+
+    try:
+        bundle = hss_mod.read_hss(hss_file)
+    except hss_mod.HssFormatError as e:
+        raise click.ClickException(str(e)) from e
+
+    filled = bundle.filled_slots
+
+    if list_only:
+        click.echo(f"{hss_file.name}: setlist {bundle.name!r} "
+                   f"({len(filled)}/{len(bundle.slots)} slots filled)")
+        for s in bundle.slots:
+            state = "filled" if s.filled else "empty"
+            click.echo(f"  {s.pos:>3}  {state:6}  {hss_mod.slot_label(s) if s.filled else ''}")
+        return
+
+    target_setlist = setlist_name or bundle.name
+    if not target_setlist:
+        raise click.ClickException(
+            "the bundle has no setlist name in its manifest; pass --setlist explicitly")
+
+    if not filled:
+        click.echo(f"no filled slots in {hss_file.name}; nothing to import")
+        return
+
+    if dry_run:
+        click.echo(f"DRY RUN: would import {len(filled)} preset(s) into "
+                   f"setlist {target_setlist!r}:")
+        for s in filled:
+            note = ("" if hss_mod.looks_like_content_blob(s.blob)
+                    else "  (would SKIP: payload isn't a recognized content blob)")
+            click.echo(f"  slot {s.pos}: {hss_mod.slot_label(s)}{note}")
+        return
+
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            result = hss_mod.import_bundle(h, bundle, setlist=setlist_name)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+
+    installed = result["installed"]
+    errors = result["errors"]
+    click.echo(f"imported {len(installed)}/{len(filled)} preset(s) from {hss_file.name} "
+               f"into setlist {result['setlist']!r} "
+               f"({'created, ' if result['created'] else ''}cid {result['cid']})")
+    # Record the imported presets in the tone library (pathless, source
+    # "import-hss") + the setlist's membership — load-bearing: without it a
+    # later targeted `device sync <setlist>` computes desired=[] and strips
+    # every reference the import just wrote. Best-effort like
+    # _record_placement (the device write already succeeded).
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        for w in hss_mod.record_import_in_manifest(m, result):
+            click.echo(f"warning: {w}", err=True)
+        m.save()
+    except Exception as e:  # noqa: BLE001 — advisory; device write succeeded
+        click.echo(f"warning: could not update local manifest: {e}", err=True)
+    if errors:
+        for e in errors:
+            click.echo(f"  warning: {e}", err=True)
+        raise click.ClickException(
+            f"{len(errors)}/{len(filled)} preset(s) failed to import; see warnings above")
+
+
 @device_setlist.command(name="sync-on")
 @click.argument("setlist")
 def device_setlist_sync_on(setlist: str) -> None:

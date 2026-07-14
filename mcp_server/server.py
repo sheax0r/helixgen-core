@@ -643,6 +643,53 @@ def device_install_preset(
 
 
 @app.tool()
+def device_import_hss(
+    model: str,
+    hss_path: str,
+    setlist: str | None = None,
+    list_only: bool = False,
+    dry_run: bool = False,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Import a `.hss` setlist-bundle export (backlog #31, READ side). EXPERIMENTAL.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `hss_path` is a
+    filesystem path to a `.hss` file (path-based, no base64). A `.hss` is the
+    Stadium app's "export setlist" file.
+
+    `list_only=True` decodes the bundle fully offline (no device needed) and
+    returns `{ok, name, device_id, device_version, slots: [{pos, filled,
+    name}]}` — use this first to see what's inside before importing.
+
+    Otherwise each filled slot is installed into the device pool
+    (non-activating) and referenced into a device setlist (`setlist`, or the
+    bundle's own name if omitted; created if absent) in the bundle's slot
+    order. `dry_run=True` returns the plan (`would_install`, each entry with
+    a `would_skip` flag for unrecognizable payloads) without writing.
+    Per-slot failures are reported in `errors` without aborting the rest.
+    Returns `{ok, setlist, cid, created, installed, errors}` (plus
+    `manifest_warnings` on local name conflicts).
+
+    Imported presets ARE recorded in the local tone library as pathless
+    tones (source `import-hss`) with membership in the destination setlist,
+    so a later `device_sync_setlist` keeps their references. NOT idempotent
+    on retry: re-running after a partial failure DUPLICATES the
+    already-succeeded slots (pool presets + references) — delete the setlist
+    and orphaned pool presets, or import into a fresh setlist, before
+    retrying.
+
+    The filled-slot byte framing this consumes is an INFERRED assumption
+    (only an empty `.hss` sample has been captured so far — see
+    `src/helixgen/device/hss.py`); treat results with appropriate caution
+    until a real non-empty export confirms it.
+    """
+    return _tools.device_import_hss_handler(
+        model, ip=ip, hss_path=hss_path, setlist=setlist,
+        list_only=list_only, dry_run=dry_run,
+    )
+
+
+@app.tool()
 def device_setlist_list(model: str) -> dict[str, Any]:
     """Return the local setlist manifest (desired membership + observed state).
 

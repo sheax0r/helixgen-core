@@ -47,8 +47,12 @@ MANIFEST_VERSION = 2
 
 # provenance tags accepted on a tone record
 _VALID_SOURCES = ("authored", "import-local", "import-device", "save", "create",
+                  "import-hss",
                   "hsp", "push")  # last two are legacy synonyms kept for migration
-_PATHLESS_SOURCES = ("save", "create")
+# Sources with no local .hsp behind them: device edit-buffer save/create, and
+# presets imported from a .hss setlist bundle (their content lives only in the
+# bundle + on the device — `device slots restore` can't re-author them).
+_PATHLESS_SOURCES = ("save", "create", "import-hss")
 
 # Every user-setlist slot label, in device posi order: "1A".."128D".
 # The device labels a posi as ``f"{posi//4 + 1}{'ABCD'[posi%4]}"`` (uncapped —
@@ -298,7 +302,8 @@ class SetlistManifest:
         return name
 
     def register_pathless(self, name: str, *, source: str) -> str:
-        """Register a source-less tone (device edit-buffer ``save`` / ``create``)."""
+        """Register a source-less tone (device edit-buffer ``save`` / ``create``,
+        or a preset imported from a ``.hss`` bundle — ``import-hss``)."""
         if source not in _PATHLESS_SOURCES:
             raise ManifestError(
                 f"pathless source must be one of {_PATHLESS_SOURCES}, got {source!r}")

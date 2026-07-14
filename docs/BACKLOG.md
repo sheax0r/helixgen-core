@@ -464,14 +464,37 @@ orthogonal to it.
   Design + protocol findings:
   `docs/superpowers/specs/2026-07-14-ir-library-polish-design.md`.
   Still open from the original row:
-  - **#31 `.hss` setlist-bundle import/export** — **FORMAT DECODED 2026-07-14,
-    reading unblocked.** `.hss` = 24-byte Line 6 header + gzip + POSIX tar of
-    `manifest.json` + 128 `.N` slot files (empty = 1-byte sentinel; filled = the
-    preset's `_sbepgsm` blob). Readable today with stdlib `gzip`+`tarfile`+`json`
-    + the existing `_sbepgsm` decoder. A sample (empty setlist) is captured; a
-    **non-empty** export is still needed to pin the filled-slot payload framing
-    before a byte-faithful *writer*. Ship `device setlist import-hss` (read) first.
-    Findings spec §8.
+  - **#31 `.hss` setlist-bundle import/export** — **read side shipped
+    (EXPERIMENTAL — filled-slot framing pinned against synthesized fixtures
+    only; needs one real non-empty export to confirm; writer still open).**
+    `.hss` = 24-byte Line 6 header + gzip + POSIX tar of `manifest.json` + 128
+    `.N` slot files (empty = 1-byte sentinel; filled = the preset's stored
+    content blob). `src/helixgen/device/hss.py` (pure stdlib
+    `gzip`+`tarfile`+`json`) parses the container; `helixgen device setlist
+    import-hss <file.hss> [--list] [--setlist <name>] [--dry-run]` +  MCP
+    `device_import_hss` install filled slots into the pool and reference them
+    into a device setlist. Header/gzip/tar/manifest/128-slot/empty-sentinel
+    parsing is pinned against the real captured empty-setlist sample; the
+    FILLED-slot byte framing (what a filled `.N` member and its manifest
+    `contents[]` entry actually look like) is an **inferred assumption**,
+    proven only against synthesized fixtures (built from real `.sbepgsm`
+    content blobs) — no non-empty `.hss` export has been captured yet. A
+    byte-faithful **writer** remains out of scope until one is. Imported
+    presets are recorded in the tone library as pathless tones (source
+    `import-hss`) + setlist membership so `device sync` keeps their
+    references. **Residual: no dedupe-on-retry** — re-running an import after
+    a partial failure installs + references the already-succeeded slots again
+    (duplicate pool presets/references); the verb's help/docs say to clean up
+    or use a fresh setlist before retrying. Making retry idempotent
+    (skip-by-name against the pool, like `device sync`'s hash-skip) is future
+    work. **Residual: pathless-on-pathless provenance loss** — recording an
+    imported preset whose name is already registered as a pathless
+    `save`/`create` tone silently rebrands that record's `source` to
+    `import-hss` and drops its `doc`/`auto_marked` fields
+    (`register_pathless` rebuilds the record; only `slot`/`device` are
+    preserved). Narrow — no data-loss path (path-backed names are guarded and
+    warned) — but a future guard should preserve or at least warn on
+    overwriting an existing pathless record's provenance. Findings spec §8.
   - IR folders / move-to-folder (matrix §7) — content-path surface not RE'd.
   - **Active-preset select (#1) — ✅ RESOLVED 2026-07-14:** the app's "make
     active" is `/LoadPresetWithCID` (load-by-CID) = existing `device load`; there
@@ -685,6 +708,44 @@ LED control, focus-view/UI cosmetics.
   re-analysing WAVs). CLI/MCP read access to the metadata. Needs a brainstorm
   (metadata schema, research depth per-IR vs per-pack, backfill of
   already-registered IRs, offline behavior when no manual exists).
+
+- **#38 `/CreateContent` returning a non-zero status code on a live device
+  (2026-07-14 session)** — found while hardware-validating #31's write path.
+  `_create_content` (`src/helixgen/device/client.py`) treats `/status [reqid,
+  newCid, code]` as success only when `code == 0` (documented + "live-verified
+  2026-07-14" in `docs/helix-protocol.md`). On the user's Stadium XL later the
+  same day, every `/CreateContent` call — via the **pre-existing, already
+  hardware-validated** `device install` verb as well as the new `device
+  setlist import-hss` — returned `code == 1`, so the client reported "failed
+  to install preset" / "install returned no cid" even though the device *did*
+  allocate the pool entry each time (confirmed via `device list`; the stub
+  entries were empty — `blck=-1, flow=-1` — since `_push_to_slot` deletes on a
+  perceived `_set_content_data` failure downstream, though even that delete
+  didn't always take, leaving orphan stubs that had to be cleaned up by hand).
+  Reproduced 3+ times across a fresh process/device reconnect, so it reads as
+  a live device/session state issue rather than a one-off fluke, but the root
+  cause (firmware behavior change since the 07-14 capture? a device-side
+  effect of rapid create/delete cycling during debugging? a genuine protocol
+  misread) is **unconfirmed** — not investigated further here (out of #31's
+  scope; touching `_create_content`'s status handling has blast radius across
+  every already-shipped install/save/sync verb and needs its own dedicated
+  investigation + regression pass, ideally starting with a fresh device
+  reboot and a minimal repro). All debris created while diagnosing this was
+  deleted and the local manifest was cleaned up in the same session.
+
+- **#39 `resolve_setlist_cid` is non-strict — a timeout can mint a
+  duplicate-named setlist** (review residual, 2026-07-14). The setlist-by-name
+  lookup (`src/helixgen/device/client.py`) lists the setlists root
+  non-strict, so a network timeout silently reads as "setlist absent". Every
+  verb that auto-creates on absent — `device setlist create` (pre-check),
+  `duplicate` (auto-created dst), `sync` (resolve step), and the new
+  `import-hss` — can then create a second setlist with the same name.
+  Non-destructive (nothing is deleted or overwritten; the duplicate is just
+  confusing and needs a manual `setlist delete`), which is why it's deferred
+  rather than fixed inline. It's a codebase-wide pattern, not an import-hss
+  bug — worth a strictness pass that threads `strict=True` through
+  `resolve_setlist_cid` (and audits other resolve-by-name paths) the same way
+  ir-prune/`import_bundle`'s occupancy read already fail closed.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

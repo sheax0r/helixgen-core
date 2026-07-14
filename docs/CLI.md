@@ -194,6 +194,21 @@ project [`CLAUDE.md`](../CLAUDE.md); highlights:
   against the container's length. Same cid-first rule for `<setlist>`: a
   literal integer is a container cid (`-2` = the pool, whose presets also
   resolve by name), and the word `setlists` always means the setlists root.
+- `device setlist import-hss <file.hss> [--list] [--setlist <name>]
+  [--dry-run]` — EXPERIMENTAL: import a Stadium-app `.hss` setlist-bundle
+  export (backlog #31, READ side). `--list` decodes fully offline (slot,
+  filled/empty, preset name); otherwise each filled slot is installed into
+  the pool and referenced into a device setlist (created if absent), in
+  bundle order. Imported presets are recorded in the tone library as
+  pathless tones (source `import-hss`) + setlist membership, so a later
+  `device sync <setlist>` keeps their references. If the destination setlist
+  held references helixgen does NOT track, a later targeted sync of that
+  (now manifest-tracked) setlist will strip those untracked references —
+  inherent managed-mirror semantics. NOT idempotent on retry —
+  re-running after a partial failure duplicates the already-succeeded slots;
+  clean up (or use a fresh setlist) before retrying. The filled-slot byte
+  framing is an inferred assumption, not yet confirmed against a real
+  non-empty export — see `src/helixgen/device/hss.py`.
 - IRs: `device list-irs / push-ir / pull-ir`, `device delete-ir
   <name-or-hash>`, `device rename-ir <name-or-hash> <new>`, and
   `device ir-prune [--yes] [--force] [--ignore-warnings] [--only …]` — delete

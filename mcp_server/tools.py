@@ -908,6 +908,118 @@ def device_install_preset_handler(
     return {"ok": cid is not None, "cid": cid}
 
 
+def device_import_hss_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    hss_path: str,
+    setlist: str | None = None,
+    list_only: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Import a `.hss` setlist-bundle export (backlog #31, READ side). EXPERIMENTAL.
+
+    ``hss_path`` is a filesystem path to a `.hss` file (path-based — the bytes
+    never round-trip through agent context). A `.hss` is the Stadium app's
+    "export setlist" file: a 24-byte header + gzip + tar of `manifest.json` +
+    128 fixed slot files.
+
+    ``list_only=True`` decodes the bundle fully offline (no device needed) and
+    returns ``{ok, name, device_id, device_version, slots: [{pos, filled,
+    name}]}`` — no blobs, no device write.
+
+    Otherwise each filled slot is installed into the device POOL
+    (non-activating) and referenced into a device setlist (named ``setlist``,
+    or the bundle's own name if omitted; created if absent) in the bundle's
+    slot order — reusing the same install + setlist-create + reference
+    primitives as `device_install_preset` / `device_sync_setlist`.
+    ``dry_run=True`` returns the plan (``would_install``, each entry carrying
+    a ``would_skip`` flag for payloads that don't look like recognized
+    content) without writing. Returns ``{ok, setlist, cid, created,
+    installed, errors}`` (plus ``manifest_warnings`` when the local record
+    step hit a name conflict); per-slot failures append to ``errors`` without
+    aborting the rest of the import (``ok`` is ``not errors``).
+
+    Imported presets ARE recorded in the local tone library as PATHLESS tones
+    (source ``import-hss``) with membership in the destination setlist, so a
+    later ``device_sync_setlist`` preserves their references instead of
+    stripping them. They have no local ``.hsp`` — ``device slots restore``
+    can't re-author them.
+
+    NOT idempotent on retry: re-running after a partial failure installs and
+    references the already-succeeded slots AGAIN (duplicate pool presets +
+    references). After a partial failure, delete the setlist + orphaned pool
+    presets (or import into a fresh setlist) before retrying.
+
+    Container framing (header/gzip/tar/manifest/128-slot/empty-sentinel) is
+    pinned against a real captured export. The FILLED-SLOT byte framing is an
+    inferred assumption — pinned only against synthesized fixtures, not a real
+    non-empty `.hss` export — see `src/helixgen/device/hss.py`.
+    """
+    _validate_model(model)
+    from helixgen.device import hss as hss_mod
+
+    bundle = hss_mod.read_hss(hss_path)  # HssFormatError is a ValueError subclass
+    filled = bundle.filled_slots
+
+    if list_only:
+        return {
+            "ok": True,
+            "name": bundle.name,
+            "device_id": bundle.device_id,
+            "device_version": bundle.device_version,
+            "slots": [
+                {"pos": s.pos, "filled": s.filled,
+                 "name": s.name if s.filled else None}
+                for s in bundle.slots
+            ],
+        }
+
+    target_setlist = setlist or bundle.name
+    if not target_setlist:
+        raise ValueError(
+            "the bundle has no setlist name in its manifest; pass setlist= explicitly")
+
+    if not filled:
+        return {"ok": True, "setlist": target_setlist, "cid": None, "created": False,
+                "installed": [], "errors": []}
+
+    if dry_run:
+        return {
+            "ok": True, "setlist": target_setlist, "dry_run": True,
+            "would_install": [
+                {"pos": s.pos, "name": hss_mod.slot_label(s),
+                 "would_skip": not hss_mod.looks_like_content_blob(s.blob)}
+                for s in filled],
+        }
+
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            result = hss_mod.import_bundle(client, bundle, setlist=setlist)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+    # Record the imported presets in the tone library (pathless, source
+    # "import-hss") + the setlist's membership — load-bearing: without it a
+    # later `device_sync_setlist` computes desired=[] and strips every
+    # reference the import just wrote. Best-effort (the device write already
+    # succeeded); name conflicts surface in `manifest_warnings`.
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        warnings = hss_mod.record_import_in_manifest(m, result)
+        m.save()
+        if warnings:
+            result["manifest_warnings"] = warnings
+    except Exception:  # noqa: BLE001 — advisory; device write succeeded
+        pass
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # setlist-manifest handlers (local, no device) + reference-based sync
 # ---------------------------------------------------------------------------

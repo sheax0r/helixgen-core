@@ -9,6 +9,8 @@ path (HelixError -> ValueError) is genuinely covered.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import helixgen.device as device
@@ -378,8 +380,17 @@ class PolishClient(FakeClient):
         FakeClient.record["deleted_irs"] = list(cids)
         return True
 
+    # setlist_cid -> pre-seeded [{"posi": N, "rcid": pool_cid}, ...] simulating
+    # references that existed BEFORE this import ran.
+    EXISTING_REFS: dict = {}
+
     def resolve_setlist_cid(self, name):
         return type(self).SETLISTS.get(name)
+
+    def list_container(self, cid, **kw):
+        from helixgen.device.client import Cctp
+        return [dict(m, cctp=Cctp.REFERENCE)
+                for m in type(self).EXISTING_REFS.get(cid, [])]
 
     def create_setlist(self, name, pos=None):
         self._maybe_raise("create_setlist")
@@ -394,11 +405,27 @@ class PolishClient(FakeClient):
         FakeClient.record["duplicated"] = (src, dst)
         return 2
 
+    def install_into_pool(self, blob, name, **kw):
+        self._maybe_raise("install_into_pool")
+        installs = FakeClient.record.setdefault("installed", [])
+        if name in FakeClient.record.get("fail_install_names", set()):
+            return None
+        cid = 5000 + len(installs)
+        installs.append((name, blob))
+        return cid
+
+    def reference_into_setlist(self, setlist_cid, pool_cid, pos):
+        self._maybe_raise("reference_into_setlist")
+        refs = FakeClient.record.setdefault("referenced", [])
+        refs.append((setlist_cid, pool_cid, pos))
+        return 7000 + len(refs)
+
 
 @pytest.fixture
 def polish_client(monkeypatch):
     FakeClient.record = {}
     PolishClient.SETLISTS = {"helixgen": 988}
+    PolishClient.EXISTING_REFS = {}
     monkeypatch.setattr(device, "HelixClient", PolishClient)
     return PolishClient
 
@@ -707,3 +734,232 @@ def test_device_meters_handler_maps_helixerror(monkeypatch):
     monkeypatch.setattr(sub_mod, "HelixSubscriber", Boom)
     with pytest.raises(ValueError, match="device error"):
         tools.device_meters_handler(seconds=0.1)
+
+
+# --- device_import_hss (backlog #31, EXPERIMENTAL) ------------------------------
+
+def _hss_bytes(tmp_path, **kw):
+    from tests.test_hss import _build_hss  # local test-only helper, not shipped code
+    data = _build_hss(**kw)
+    p = tmp_path / "bundle.hss"
+    p.write_bytes(data)
+    return p
+
+
+def _sbepgsm_blob(name="preset_151"):
+    path = (Path(__file__).resolve().parents[1] / "fixtures" / "device_content"
+            / f"{name}.sbepgsm")
+    if not path.exists():
+        pytest.skip(f"device-content fixture absent: {path}")
+    return path.read_bytes()
+
+
+def test_device_import_hss_list_only_offline(tmp_path):
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="Gigs", filled={1: ("Lead", blob)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p), list_only=True)
+    assert res["ok"] is True
+    assert res["name"] == "Gigs"
+    assert res["device_id"] == 0x260000
+    assert len(res["slots"]) == 128
+    filled = [s for s in res["slots"] if s["filled"]]
+    assert filled == [{"pos": 1, "filled": True, "name": "Lead"}]
+    # no blob bytes leak into the returned dict (path-based tools never
+    # round-trip content through agent context)
+    assert "blob" not in filled[0]
+
+
+def test_device_import_hss_dry_run(polish_client, tmp_path):
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="Gigs", filled={2: ("Only Tone", blob)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p), dry_run=True)
+    assert res == {"ok": True, "setlist": "Gigs", "dry_run": True,
+                   "would_install": [{"pos": 2, "name": "Only Tone",
+                                      "would_skip": False}]}
+    assert "installed" not in FakeClient.record
+
+
+def test_device_import_hss_dry_run_flags_would_skip(polish_client, tmp_path):
+    """Dry-run honesty: a payload the real import would refuse to send is
+    flagged would_skip=True instead of being promised as a clean install."""
+    good = _sbepgsm_blob()
+    bad = b"unrecognizable payload"
+    p = _hss_bytes(tmp_path, setlist_name="Gigs",
+                   filled={1: ("Bad Payload", bad), 2: ("Good", good)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p), dry_run=True)
+    assert res["would_install"] == [
+        {"pos": 1, "name": "Bad Payload", "would_skip": True},
+        {"pos": 2, "name": "Good", "would_skip": False},
+    ]
+    assert "installed" not in FakeClient.record
+
+
+def test_device_import_hss_installs_and_creates_setlist(
+        polish_client, monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    blob1 = _sbepgsm_blob("preset_151")
+    blob2 = _sbepgsm_blob("preset_152")
+    p = _hss_bytes(tmp_path, setlist_name="ZZC-new",
+                   filled={1: ("First", blob1), 5: ("Second", blob2)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert res["ok"] is True
+    assert res["setlist"] == "ZZC-new"
+    assert res["cid"] == 1186  # PolishClient.create_setlist's canned cid
+    assert res["created"] is True
+    assert res["installed"] == ["First", "Second"]
+    assert res["errors"] == []
+    assert FakeClient.record["created_setlist"] == "ZZC-new"
+    assert [n for n, _ in FakeClient.record["installed"]] == ["First", "Second"]
+    assert [r[2] for r in FakeClient.record["referenced"]] == [0, 1]
+    # CRITICAL invariant: the manifest's membership matches the references the
+    # import wrote (in order) — otherwise the next targeted `device sync
+    # ZZC-new` computes desired=[] and strips them all from the device.
+    from helixgen.device.manifest import SetlistManifest
+    m = SetlistManifest.load()
+    assert "ZZC-new" in m.setlists()
+    assert m.tones_in("ZZC-new") == ["First", "Second"]
+    for name in ("First", "Second"):
+        assert m.tones[name]["path"] is None
+        assert m.tones[name]["source"] == "import-hss"
+    # and the sync planner sees a non-empty desired list over that membership
+    from helixgen.device.setlist_sync import plan_references
+    assert plan_references(m.tones_in("ZZC-new")) == ["First", "Second"]
+
+
+def test_device_import_hss_reuses_existing_setlist(polish_client, monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="helixgen", filled={1: ("Only", blob)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert res["created"] is False
+    assert res["cid"] == 988  # PolishClient.SETLISTS["helixgen"]
+    assert "created_setlist" not in FakeClient.record
+
+
+def test_device_import_hss_explicit_setlist_overrides_bundle_name(
+        polish_client, monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="BundleName", filled={1: ("Only", blob)})
+    res = tools.device_import_hss_handler(
+        MODEL, hss_path=str(p), setlist="helixgen")
+    assert res["setlist"] == "helixgen"
+    assert res["cid"] == 988
+
+
+def test_device_import_hss_empty_bundle_is_a_noop(polish_client, tmp_path):
+    p = _hss_bytes(tmp_path, setlist_name="Empty")
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert res == {"ok": True, "setlist": "Empty", "cid": None,
+                   "created": False, "installed": [], "errors": []}
+
+
+def test_device_import_hss_no_name_requires_explicit_setlist(polish_client, tmp_path):
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="", filled={1: ("Only", blob)})
+    with pytest.raises(ValueError, match="setlist"):
+        tools.device_import_hss_handler(MODEL, hss_path=str(p))
+
+
+def test_device_import_hss_per_slot_failure_reported_not_aborted(
+        polish_client, monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    FakeClient.record["fail_install_names"] = {"Bad"}
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="helixgen",
+                   filled={1: ("Bad", blob), 2: ("Good", blob)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert res["ok"] is False
+    assert res["installed"] == ["Good"]
+    assert len(res["errors"]) == 1
+    assert "Bad" in res["errors"][0]
+
+
+def test_device_import_hss_bad_model_raises(tmp_path):
+    p = _hss_bytes(tmp_path, setlist_name="Gigs")
+    with pytest.raises(ValueError):
+        tools.device_import_hss_handler(BAD_MODEL, hss_path=str(p))
+
+
+def test_device_import_hss_rejects_malformed_file(tmp_path):
+    p = tmp_path / "bad.hss"
+    p.write_bytes(b"not a hss file")
+    with pytest.raises(ValueError):
+        tools.device_import_hss_handler(MODEL, hss_path=str(p), list_only=True)
+
+
+# -- adversarial-review fixes: collision-safe append + malformed-blob guard --
+
+def test_device_import_hss_appends_after_existing_references(polish_client, monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    PolishClient.EXISTING_REFS = {988: [{"posi": 0, "rcid": 111}]}
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="helixgen", filled={1: ("New", blob)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert res["ok"] is True
+    assert [r[2] for r in FakeClient.record["referenced"]] == [1]  # not 0 (occupied)
+
+
+def test_device_import_hss_skips_non_content_blob(polish_client, monkeypatch, tmp_path):
+    _fresh_manifest(monkeypatch, tmp_path)
+    good = _sbepgsm_blob()
+    bad = b"definitely not a content blob"
+    p = _hss_bytes(tmp_path, setlist_name="helixgen",
+                   filled={1: ("Bad Payload", bad), 2: ("Good", good)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert res["ok"] is False
+    assert res["installed"] == ["Good"]
+    assert len(res["errors"]) == 1
+    assert "Bad Payload" in res["errors"][0]
+    # never even reached install_into_pool for the bad slot
+    assert [n for n, _ in FakeClient.record.get("installed", [])] == ["Good"]
+
+
+def test_device_import_hss_strict_listing_failure_aborts_before_write(
+        polish_client, monkeypatch, tmp_path):
+    """A flaky-network listing of the destination setlist must abort the import
+    (HelixError -> ValueError) BEFORE anything is installed — never silently
+    read as 'empty setlist' and write colliding references."""
+    _fresh_manifest(monkeypatch, tmp_path)
+
+    class StrictFailClient(PolishClient):
+        def list_container(self, cid, **kw):
+            if kw.get("strict"):
+                raise device.HelixError("no reply listing container (timeout)")
+            return []
+
+    monkeypatch.setattr(device, "HelixClient", StrictFailClient)
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="helixgen", filled={1: ("Only", blob)})
+    with pytest.raises(ValueError, match="device error"):
+        tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert "installed" not in FakeClient.record
+    assert "referenced" not in FakeClient.record
+
+
+def test_device_import_hss_name_conflict_surfaces_manifest_warning(
+        polish_client, monkeypatch, tmp_path):
+    """An imported preset whose name is already registered to a path-backed
+    local tone is NOT silently recorded (that would make the next sync
+    overwrite the imported content with the local .hsp) — the conflict comes
+    back in manifest_warnings and the name stays out of the membership."""
+    _fresh_manifest(monkeypatch, tmp_path)
+    from helixgen.device.manifest import SetlistManifest
+    from helixgen.hsp import write_hsp
+
+    hsp = tmp_path / "local.hsp"
+    write_hsp(hsp, {"meta": {"name": "Clash"}})
+    m = SetlistManifest.load()
+    m.register_tone(hsp, source="import-local")
+    m.save()
+
+    blob = _sbepgsm_blob()
+    p = _hss_bytes(tmp_path, setlist_name="helixgen",
+                   filled={1: ("Clash", blob), 2: ("Clean Name", blob)})
+    res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
+    assert res["ok"] is True  # device writes succeeded
+    assert res["installed"] == ["Clash", "Clean Name"]
+    assert any("Clash" in w for w in res.get("manifest_warnings", []))
+    m2 = SetlistManifest.load()
+    assert m2.tones_in("helixgen") == ["Clean Name"]  # Clash left out, said so
+    assert m2.tones["Clash"]["path"] == str(hsp)      # local tone untouched
