@@ -451,16 +451,62 @@ orthogonal to it.
   `docs/superpowers/specs/2026-07-14-controller-depth-device-info-design.md`.
   ZZB install→pull cycle persisted every field byte-exact. MIDI/XY sources
   split out to **#33**/**#34**. Matrix §6/§12.
-- **#33 MIDI CC/Note controller source** **[device-write] — UNBLOCKED
-  2026-07-14 (capture done), ready to implement.** Wire path pinned (findings
-  spec §6): 2-step bind→source — `/attachParamController [goid,dsp,block,sub,
-  param]` or `/attachBlockBypassController`, then `/ControllerMIDISourceAdd` where
-  the **CC# is a BE uint16 at blob offset 12** (no channel on the wire = global
-  base channel). `.sbe` storage: `cg__/entt/ctrl[]` (`cid_`/`cnt2`=CC#/`midi`=
-  packed CC/`tid_`) + `ctm_/ptid[]` mapping `(block<<16|param)→tid_`. Corpus
-  `midisource:0` was because no factory preset uses it — the live encoding is now
-  known. Next: synthesize the `.sbe` ctrl records in the transcoder (+ optional
-  live verb). Matrix §6.
+- **#33 MIDI CC controller source** **[device-write] — MOSTLY SHIPPED
+  2026-07-14 (EXPERIMENTAL, transcode path).** Recipe authoring: a top-level
+  `midi` list (`{"cc": 0-127, "targets": [{block, param, min, max} | {block,
+  bypass:true}]}`) parses/validates in `spec.py` (one-controller-per-param
+  exclusivity across FS/EXP/MIDI; block bypass may be multi-source), authors via
+  `mutate.wire_midi` into a helixgen-namespaced `preset._helixgen_midi` list,
+  round-trips through `view`, and the **transcoder** (`bridge` + `transcode`)
+  synthesizes the device `cg__.entt` `ctrl[]` (`cnt2`=CC#, `midi`=`0xB0<<8|cc`,
+  `type` 1 bypass / 3 param, `tid_`) + `ctm_.ptid` mapping per findings spec §6.
+  MCP `generate_preset` + CLAUDE.md + CLI.md + tone skill updated.
+  **Residuals / honesty:**
+  1. **Route decision (scope):** the binding is NOT written as a device-native
+     `.hsp` controller. The `.hsp` `midisource` field is 0 across the whole
+     211-export corpus (no factory preset uses MIDI) and the capture pinned only
+     the *device* `.sbe`/wire encoding — the `.hsp` JSON MIDI-source shape is
+     **unknown and was not invented**. So MIDI lives in `preset._helixgen_midi`
+     and is consumed only by the transcoder. If the `.hsp`-native encoding is
+     ever decoded, migrate to it.
+  2. **`ctrl` record completeness — STORAGE HW-validated 2026-07-14.** §6 pinned
+     `cid_`/`cnt2`/`midi`/`tid_`/`type` + the `ptid` map, not the *full* MIDI
+     `ctrl` field set. helixgen emits the uniform ctrl schema (`behv`/`curv`/
+     `dlay`/`goid`/`min_`/`max_`/`thrs`/`togl` + `trig=0`, no `srcs`/`scid` — the
+     source is inline). Install→`SetContentData`→`GetContentData` round-trip on
+     the Stadium XL persisted BOTH ctrl records **byte-for-byte** (`cnt2`
+     61/79, `midi` 0xB03D/0xB04F, `type` 3/1, `min_`/`max_`, `tid_`, `ptid`
+     `[65538,1]`, empty `srcs`/`scid`) — the device accepts + preserves the
+     synthesized records. **Still uncharacterized:** the *audible* response (no
+     external CC source was sent) — whether the device actually reacts to
+     incoming CC61/79 with this stored shape is unverified.
+  3. **MIDI Note is out of scope** (CC-only): §6 pinned only the CC controller
+     source; a `note` field errors. (MIDI Note as a *Command Center* command is
+     a separate subsystem — §5/#16.)
+  4. **No live verb** — the "(+ optional live verb)" (`/attachParamController` +
+     `/ControllerMIDISourceAdd` at runtime) stays open. Matrix §6.
+  5. **Adversarial-review notes (2026-07-14, two rounds).** Round 1 (pre-PR
+     diff) found no HIGH/MEDIUM; round 2 (PR #49 delta) found **1 Important —
+     FIXED**: the surgical edit verbs (`add_block`/`remove_block`) renumber
+     `bNN` positions without the `_helixgen_midi` records (which live outside
+     the block dicts, unlike FS/EXP controllers), silently orphaning or
+     mis-targeting MIDI bindings on install/sync. Fixed by reconciling the
+     records on every renumbering path (identity-based old→new position map,
+     so raw-export key gaps compact correctly; a record on the *deleted*
+     block is dropped with a stderr warning naming the CC), by `swap_model`
+     dropping bindings whose param the new model lacks (warning, same style
+     as its dropped-param warnings) and refreshing survivors' stored block
+     name, and by `view` treating the coordinate as authoritative (an
+     unresolvable coordinate drops with a warning — no silent name fallback;
+     a name mismatch warns and projects the placed block). Still open (LOW):
+     (a) two different CCs on the SAME block's bypass are rejected within the
+     `midi` list (conservative; FS+MIDI multi-source bypass IS allowed —
+     relax if a real use appears); (b) findings §6 shows the device-serialized
+     MIDI-param *leaf* also carrying `cid_` — helixgen's transcode stamps only
+     `snap`/`tid_` (same as the HW-validated EXP/FS path); flag for the
+     audible-response validation pass; (c) a MIDI param whose library name has
+     no device mapping is silently dropped in `bridge` (pre-existing
+     `ctl_params` pattern).
 - **#34 XY-controller assignment** **[device-write] — ACTIVATION DECODED
   2026-07-14; storage still open.** Selecting an XY zone emits
   `/SetBatchedParamValues` = a 12-tuple `[dsp,block,sub,paramId,valueF64]` batch

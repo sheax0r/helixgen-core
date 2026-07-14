@@ -297,6 +297,8 @@ By default, wire the chain for live use: give every toggle-able effect a footswi
 
 If the user says "no footswitches" or "leave the controls alone," skip this step.
 
+**MIDI CC control (only on request):** if the user wants a param or bypass driven by an external MIDI controller / DAW, add a top-level `midi` list (see the CLAUDE.md "MIDI CC control" section) — each `{"cc": 0-127, "targets": [...]}` sweeps a param (`{"block", "param", "min", "max"}`) or toggles a bypass (`{"block", "bypass": true}`). CC-only, EXPERIMENTAL, and realized on `device install`/`sync`. Do **not** auto-wire MIDI by default — only when asked; it does not consume the FS/EXP budget, and a `(block, param)` still gets only one controller across FS/EXP/MIDI.
+
 ### 5.7. Volume-normalization pass
 
 A final level pass so the preset's loudness is sane and — especially when

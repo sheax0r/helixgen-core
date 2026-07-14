@@ -551,6 +551,58 @@ def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str,
     return new_keys
 
 
+def _midi_records(body: dict[str, Any]) -> list:
+    """The ``preset._helixgen_midi`` list, or ``[]`` when absent/malformed."""
+    recs = (body.get("preset") or {}).get("_helixgen_midi")
+    return recs if isinstance(recs, list) else []
+
+
+def _remap_midi_positions(
+    body: dict[str, Any], fi: int, lane: int,
+    pos_map: dict[int, int], *, removed_pos: int | None = None,
+) -> None:
+    """Reconcile ``preset._helixgen_midi`` coordinates after a lane renumber.
+
+    The MIDI records live OUTSIDE the block dicts (unlike FS/EXP controllers,
+    which ride inside the block's own wrappers and survive `_renumber_lane`
+    for free), so every renumbering path must remap them or the bindings go
+    stale — `bridge._hsp_midi_by_coord` keys strictly on ``(path, lane, pos)``
+    and a stale record is silently dropped on install/sync (or worse,
+    mis-targets whatever lands on the old coordinate).
+
+    ``pos_map`` maps each surviving block's OLD key-derived position to its
+    NEW position (identity-based, so pre-existing key gaps in a raw device
+    export compact correctly). ``removed_pos`` (if given) is the deleted
+    block's old position: records targeting it are DROPPED with a stderr
+    warning naming the CC. Records at a position in neither set were already
+    dangling and are left untouched.
+    """
+    recs = _midi_records(body)
+    if not recs:
+        return
+    import sys
+    kept: list = []
+    for rec in recs:
+        if (isinstance(rec, dict) and rec.get("path") == fi
+                and rec.get("lane") == lane
+                and isinstance(rec.get("pos"), int)
+                and not isinstance(rec.get("pos"), bool)):
+            old = rec["pos"]
+            if removed_pos is not None and old == removed_pos:
+                what = ("bypass" if rec.get("param") is None
+                        else f"param {rec.get('param')!r}")
+                print(
+                    f"warning: removed block {rec.get('block')!r} carried a "
+                    f"MIDI CC {rec.get('cc')} {what} binding; binding dropped.",
+                    file=sys.stderr,
+                )
+                continue
+            if old in pos_map:
+                rec["pos"] = pos_map[old]
+        kept.append(rec)
+    recs[:] = kept
+
+
 def add_block(
     body: dict[str, Any],
     model: str,
@@ -603,7 +655,14 @@ def add_block(
     new_bnn = _to_hsp_bnn(block, params or {}, position=0, path_index=lane)
     ordered.insert(insert_at, new_bnn)
 
+    # Old key-derived position -> new 1-based position for every pre-existing
+    # block (index j in existing_keys lands at j+1, +1 more past the insert).
+    pos_map = {
+        _lane_pos(k)[1]: (j + 1 if j < insert_at else j + 2)
+        for j, k in enumerate(existing_keys)
+    }
     new_keys = _renumber_lane(path_dict, lane, ordered)
+    _remap_midi_positions(body, path, lane, pos_map)
     return new_keys[insert_at]
 
 
@@ -627,14 +686,18 @@ def remove_block(
             "remove_block not supported on a parallel-routed path yet (path "
             f"{fi} contains a split/join)."
         )
-    del_lane, _del_pos = _lane_pos(key)
+    del_lane, del_pos = _lane_pos(key)
 
     remaining_keys = sorted(
         (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == del_lane and k != key),
         key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
     )
+    # Old key-derived position -> new sequential position (identity-based, so
+    # pre-existing key gaps compact correctly), for the MIDI-record remap.
+    pos_map = {_lane_pos(k)[1]: i for i, k in enumerate(remaining_keys, start=1)}
     ordered = [path_dict[k] for k in remaining_keys]
     _renumber_lane(path_dict, del_lane, ordered)
+    _remap_midi_positions(body, fi, del_lane, pos_map, removed_pos=del_pos)
 
 
 # --- swap_model --------------------------------------------------------------
@@ -700,6 +763,30 @@ def swap_model(
     if "irhash" in slot and not new_block.model_id.startswith(IR_MODEL_PREFIX):
         del slot["irhash"]
         warnings.append(f"swap {old!r}→{new!r}: dropped IR (target is not an IR block).")
+
+    # Reconcile MIDI records targeting this coordinate (they live outside the
+    # block dicts, unlike FS/EXP controllers which ride inside the param
+    # wrappers and were carried above): a binding whose param the new model
+    # lacks is dropped with a warning (same style as the dropped-param warning);
+    # survivors get their stored block name refreshed so the record stays
+    # self-consistent with what now sits at the coordinate.
+    swap_lane, swap_pos = _lane_pos(key)
+    recs = _midi_records(body)
+    if recs:
+        kept: list = []
+        for rec in recs:
+            if (isinstance(rec, dict) and rec.get("path") == fi
+                    and rec.get("lane") == swap_lane and rec.get("pos") == swap_pos):
+                pname = rec.get("param")
+                if pname is not None and pname not in new_block.params:
+                    warnings.append(
+                        f"swap {old!r}→{new!r}: dropped MIDI CC {rec.get('cc')} "
+                        f"binding on param {pname!r} not on target."
+                    )
+                    continue
+                rec["block"] = new_block.display_name or new_block.model_id
+            kept.append(rec)
+        recs[:] = kept
 
     return warnings
 
@@ -1057,6 +1144,78 @@ def wire_expression(
 
     sources = body.setdefault("preset", {}).setdefault("sources", {})
     sources.setdefault(str(source_id), {"bypass": False})
+
+
+def wire_midi(
+    body: dict[str, Any],
+    cc: int,
+    targets: list[dict[str, Any]],
+    library: Library,
+) -> None:
+    """Bind an incoming MIDI Control Change (``cc`` 0..127) to one or more
+    placed targets, in place (backlog #33).
+
+    Each target dict is ``{"block", "param"|None, "bypass": bool, "min", "max",
+    "path"/"lane"/"pos"}``: a param sweep (``param`` set) or a block-bypass
+    toggle (``bypass=True``). CC-only — MIDI Note sources are out of scope.
+
+    Unlike footswitch/expression assignments, the MIDI binding is NOT written
+    as a device-native ``.hsp`` controller dict: the ``.hsp``'s ``midisource``
+    controller-source encoding is 0 across the whole 211-export corpus (no
+    factory preset uses MIDI) and the parity capture pinned only the DEVICE
+    ``.sbe`` / wire encoding, not the ``.hsp`` JSON shape — so inventing a
+    device-native ``.hsp`` encoding is out of scope. Instead the assignment is
+    recorded in a helixgen-namespaced ``preset._helixgen_midi`` list that the
+    transcoder reads to synthesize the device ``ctrl``/``ctm_`` records, and
+    ``view`` lifts back into the recipe. See BACKLOG #33.
+    """
+    if not isinstance(cc, int) or isinstance(cc, bool) or not (0 <= cc <= 127):
+        raise MutateError(f"MIDI cc must be an integer 0..127 (got {cc!r}).")
+    if not targets:
+        raise MutateError("wire_midi requires a non-empty targets list.")
+
+    records: list[dict[str, Any]] = []
+    for target in targets:
+        block = target["block"]
+        bypass = bool(target.get("bypass", False))
+        param = None if bypass else target.get("param")
+        fi, key, si = resolve_slot(
+            body, block, library,
+            path=target.get("path"), lane=target.get("lane"), pos=target.get("pos"),
+        )
+        num = int(key[1:])
+        lane = 1 if num >= 14 else 0
+        pos = num - 14 * lane
+        rec: dict[str, Any] = {"cc": cc, "path": fi, "lane": lane, "pos": pos,
+                               "block": block}
+        if bypass:
+            rec["param"] = None
+        else:
+            slot = _slot_dict(body, fi, key, si)
+            lib_block = library.load_block(_translate_model_id(slot.get("model", "")))
+            if param not in lib_block.params:
+                raise MutateError(
+                    f"MIDI CC {cc} → {block!r}.{param!r}: unknown param. "
+                    f"Known params: {sorted(lib_block.params.keys())}."
+                )
+            wrapped = (slot.get("params") or {}).get(param)
+            if not isinstance(wrapped, dict):
+                raise MutateError(
+                    f"Block {block!r} has no existing value for param {param!r}."
+                )
+            if _is_stereo_param(wrapped):
+                raise MutateError(
+                    f"MIDI target {block!r}.{param!r}: stereo-shaped params are "
+                    f"not supported for MIDI assignment."
+                )
+            rec["param"] = param
+            rec["min"] = target.get("min", 0.0)
+            rec["max"] = target.get("max", 1.0)
+        records.append(rec)
+
+    # Commit only after every target validates.
+    midi = body.setdefault("preset", {}).setdefault("_helixgen_midi", [])
+    midi.extend(records)
 
 
 def wire_wah_toe(

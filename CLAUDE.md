@@ -429,6 +429,49 @@ exposes `EXP1` and `EXP2`.
   at most one controller (pedal OR footswitch param-toggle) across the spec.
 - v1 only sweeps 0..1-style float params (knob values). Hz/int/bool params are out of scope.
 
+### Optional: MIDI CC control (EXPERIMENTAL — #33)
+
+Bind incoming **MIDI Control Change** messages to param sweeps and block-bypass
+toggles. Add a top-level `midi` list — shape analogous to `expression`, keyed by
+CC# instead of pedal:
+
+```json
+"midi": [
+  {"cc": 61, "targets": [{"block": "Brit Plexi Brt", "param": "Drive",
+                          "min": 0.0, "max": 1.0}]},
+  {"cc": 79, "targets": [{"block": "Tape Echo Stereo", "bypass": true}]}
+]
+```
+
+- `cc` — the CC number, integer `0`–`127`. Each CC appears once (list several
+  `targets` under it). The MIDI channel is the device's **global base channel**
+  (`global.midi.channel`) — not authored per-preset (the parity capture found no
+  channel on the wire).
+- `targets` — non-empty list. Each target is either a **param sweep**
+  (`{"block", "param", "min", "max"}`, normalized 0..1 like `expression`;
+  `min`/`max` default `0.0`/`1.0`) or a **bypass toggle**
+  (`{"block", "bypass": true}`). A target is one or the other, not both.
+  `path`/`lane`/`pos` disambiguate a duplicate block name.
+- **One controller per param:** a `(block, param)` is driven by at most one of
+  footswitch-param / expression / MIDI across the whole spec. (A block's
+  **bypass** may be driven by several sources — e.g. an FS *and* a MIDI CC — the
+  device supports multi-source bypass.)
+- **CC-only.** MIDI Note controller sources are out of scope (the parity capture
+  pinned only the CC source encoding; a `note` field errors).
+- **How it's realized:** the binding is NOT written as a device-native `.hsp`
+  controller (the `.hsp` `midisource` encoding is 0 across the whole corpus and
+  the parity capture pinned only the *device* `.sbe`/wire encoding, so inventing
+  an `.hsp` shape is out of scope). It is recorded in a helixgen-namespaced
+  `preset._helixgen_midi` list that the **transcoder** turns into the device
+  `cg__.entt` `ctrl`/`ctm_` records on `device install`/`sync`. `view` lifts it
+  back into this `midi` recipe shape. The surgical edit verbs keep the records
+  reconciled: `add-block`/`remove-block` remap their coordinates on renumbering
+  (removing a MIDI-bound block drops its binding with a warning), and
+  `swap-model` drops a binding whose param the new model lacks (warning).
+- **EXPERIMENTAL** until hardware-validated. There is no live `device` verb for
+  MIDI assignment yet (author it into the preset). Stadium-only; ignored for
+  `.hlx` (legacy Helix) chassis output.
+
 ### Optional: per-block IR reference
 
 For IR blocks (`"block": "With Pan"` and other `HX2_ImpulseResponse*` variants),

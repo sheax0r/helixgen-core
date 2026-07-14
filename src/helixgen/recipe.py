@@ -360,6 +360,16 @@ def apply_recipe(
             for t in assignment.targets
         ]
         mutate.wire_expression(body, assignment.pedal, targets, library)
+    for assignment in spec.midi:
+        midi_targets = [
+            {
+                "block": t.block, "param": t.param, "bypass": t.bypass,
+                "min": t.min, "max": t.max,
+                "path": t.path, "lane": t.lane, "pos": t.pos,
+            }
+            for t in assignment.targets
+        ]
+        mutate.wire_midi(body, assignment.cc, midi_targets, library)
 
     # --- snapshot metadata + active-snapshot pointer -----------------------
     body["preset"]["snapshots"] = _build_snapshot_metadata(spec)

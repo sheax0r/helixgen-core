@@ -252,11 +252,12 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
     flows = preset.get("flow") or []
     device_id = (hsp_body.get("meta") or {}).get("device_id") or "stadium_xl"
     has_snaps = bool(preset.get("snapshots"))
+    midi_by_coord = _hsp_midi_by_coord(hsp_body)
 
     from .. import controllers as _controllers
 
     out: List[Dict[str, Any]] = []
-    for flow in flows:
+    for pi, flow in enumerate(flows):
         if not isinstance(flow, dict):
             continue
         blocks: List[Dict[str, Any]] = []
@@ -372,6 +373,23 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 ctl[dev_name] = meta
             if ctl:
                 spec["ctl_params"] = ctl
+            # MIDI CC controller bindings (#33): lifted from the helixgen-
+            # namespaced ``preset._helixgen_midi`` list (NOT a device-native
+            # ``.hsp`` controller — see mutate.wire_midi). Map each library
+            # param name to its device name just like ``ctl_params``.
+            mrec = midi_by_coord.get((pi, lane, pos))
+            if mrec:
+                if mrec.get("bypass_cc") is not None:
+                    spec["midi_bypass"] = {"cc": mrec["bypass_cc"]}
+                mparams: Dict[str, Any] = {}
+                for lib_name, cfg in (mrec.get("params") or {}).items():
+                    dev_name = name_map.get(lib_name)
+                    if dev_name is None:
+                        continue
+                    mparams[dev_name] = {"cc": cfg["cc"], "min": cfg["min"],
+                                         "max": cfg["max"]}
+                if mparams:
+                    spec["midi_params"] = mparams
             blocks.append(spec)
         path_entry: Dict[str, Any] = {"blocks": blocks}
         if input_mode is not None:
@@ -437,6 +455,38 @@ def hsp_sources(hsp_body: dict) -> Dict[int, Dict[str, Any]]:
             out[int(k)] = v
         except (TypeError, ValueError):
             continue
+    return out
+
+
+def _hsp_midi_by_coord(hsp_body: dict) -> Dict[Tuple[int, int, int], Dict[str, Any]]:
+    """Group ``preset._helixgen_midi`` records by ``(path, lane, pos)`` block
+    coordinate (backlog #33). Each value is ``{"bypass_cc": int|None,
+    "params": {lib_param: {cc, min, max}}}`` — the transcoder maps the library
+    param names to device names and synthesizes the ``cg__`` MIDI ctrl records.
+    CC-only; malformed records are skipped."""
+    recs = (hsp_body.get("preset") or {}).get("_helixgen_midi")
+    out: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
+    if not isinstance(recs, list):
+        return out
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        cc = rec.get("cc")
+        if not isinstance(cc, int) or isinstance(cc, bool) or not (0 <= cc <= 127):
+            continue
+        pi = rec.get("path", 0)
+        lane = rec.get("lane", 0)
+        pos = rec.get("pos")
+        if not all(isinstance(v, int) and not isinstance(v, bool)
+                   for v in (pi, lane, pos)):
+            continue
+        entry = out.setdefault((pi, lane, pos), {"bypass_cc": None, "params": {}})
+        param = rec.get("param")
+        if param is None:
+            entry["bypass_cc"] = cc
+        else:
+            entry["params"][param] = {"cc": cc, "min": rec.get("min", 0.0),
+                                      "max": rec.get("max", 1.0)}
     return out
 
 

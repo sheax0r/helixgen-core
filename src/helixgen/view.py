@@ -551,6 +551,84 @@ def _recover_expression(
     return [{"pedal": p, "targets": t} for p, t in by_pedal.items()]
 
 
+def _recover_midi(body: dict, library: Library, idx: dict) -> list[dict[str, Any]]:
+    """Recover MIDI CC controller bindings from the helixgen-namespaced
+    ``preset._helixgen_midi`` list back into the recipe ``midi`` shape,
+    grouped by CC (backlog #33). Block references are re-derived from the block
+    actually placed at each record's ``(path, lane, pos)`` so the projection
+    round-trips (and disambiguates duplicate names) exactly like FS/EXP.
+
+    The coordinate is authoritative — it is what the transcoder targets on
+    ``device install``/``sync``. A record whose coordinate resolves to no
+    placed block is DROPPED with a stderr warning (never silently projected
+    via its stored block name, which install would not honor either); a
+    record whose coordinate resolves to a block whose name no longer matches
+    the stored one projects the coordinate-derived name with a staleness
+    warning. The mutate verbs keep records reconciled (add/remove renumber,
+    swap refreshes the name), so either state indicates a hand-edited or
+    externally-produced ``_helixgen_midi`` list."""
+    preset = body.get("preset") or {}
+    recs = preset.get("_helixgen_midi")
+    if not isinstance(recs, list):
+        return []
+    flow = preset.get("flow") or []
+    by_cc: dict[int, list[dict[str, Any]]] = {}
+    order: list[int] = []
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        cc = rec.get("cc")
+        # Mirror bridge._hsp_midi_by_coord's guards: a hand-corrupted record
+        # (cc out of 0..127, missing block) would otherwise project a `midi`
+        # entry parse_spec rejects, while device install silently drops it.
+        if not isinstance(cc, int) or isinstance(cc, bool) or not (0 <= cc <= 127):
+            continue
+        if not rec.get("block"):
+            continue
+        pi = rec.get("path", 0)
+        lane = rec.get("lane", 0)
+        pos = rec.get("pos")
+        blk = None
+        if (isinstance(pos, int) and isinstance(pi, int)
+                and 0 <= pi < len(flow) and isinstance(flow[pi], dict)):
+            bnn = flow[pi].get(f"b{14 * lane + pos:02d}")
+            if isinstance(bnn, dict) and bnn.get("slot"):
+                blk = _try_load_block(
+                    library, _translate_model_id(bnn["slot"][0].get("model", "")))
+        if blk is None:
+            # Coordinate resolves to nothing -> install would drop this
+            # binding too; drop it loudly rather than projecting a name-only
+            # reference that misrepresents what the device would get.
+            print(
+                f"warning: MIDI CC {cc} record targets (path {pi}, lane {lane}, "
+                f"pos {pos}) where no block is placed; binding dropped from "
+                f"the projection (stale/hand-edited _helixgen_midi).",
+                file=sys.stderr,
+            )
+            continue
+        stored = rec.get("block")
+        if stored not in (blk.display_name, blk.model_id):
+            print(
+                f"warning: MIDI CC {cc} record names block {stored!r} but "
+                f"(path {pi}, lane {lane}, pos {pos}) holds "
+                f"{_ref_name(blk)!r}; projecting the placed block "
+                f"(coordinate is authoritative).",
+                file=sys.stderr,
+            )
+        target: dict[str, Any] = dict(_ref(_ref_name(blk), pi, lane, pos, idx))
+        if rec.get("param") is None:
+            target["bypass"] = True
+        else:
+            target["param"] = rec["param"]
+            target["min"] = rec.get("min", 0.0)
+            target["max"] = rec.get("max", 1.0)
+        if cc not in by_cc:
+            by_cc[cc] = []
+            order.append(cc)
+        by_cc[cc].append(target)
+    return [{"cc": cc, "targets": by_cc[cc]} for cc in order]
+
+
 def _entry_for(key, bnn, library, irs):
     """Build a spec entry dict (block/split/join) with explicit lane/pos."""
     num = int(key[1:])
@@ -782,6 +860,10 @@ def view(body: dict, library: Library, *, irs: IrMapping | None = None) -> dict[
         spec["footswitches"] = fs
     if exp:
         spec["expression"] = exp
+
+    midi = _recover_midi(body, library, idx)
+    if midi:
+        spec["midi"] = midi
 
     if unknowns:
         spec["unknown_controllers"] = unknowns

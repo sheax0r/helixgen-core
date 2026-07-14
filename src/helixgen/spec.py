@@ -168,6 +168,29 @@ class ExpressionAssignment:
 
 
 @dataclass
+class MidiTarget:
+    """One destination of a MIDI CC source: a param sweep (``param`` set, swept
+    between ``min``/``max``) or a block-bypass toggle (``bypass=True``)."""
+    block: str
+    param: str | None = None
+    bypass: bool = False
+    min: float = 0.0
+    max: float = 1.0
+    path: int | None = None
+    lane: int | None = None
+    pos: int | None = None
+
+
+@dataclass
+class MidiAssignment:
+    """An incoming MIDI Control Change (``cc`` 0..127) driving one or more
+    targets. CC-only — MIDI Note controller sources are out of scope (the
+    parity capture pinned only the CC encoding; see BACKLOG #33)."""
+    cc: int
+    targets: list[MidiTarget] = field(default_factory=list)
+
+
+@dataclass
 class Spec:
     name: str
     paths: list[PathEntry]
@@ -175,6 +198,7 @@ class Spec:
     snapshots: list[Snapshot] = field(default_factory=list)
     footswitches: list[FootswitchAssignment] = field(default_factory=list)
     expression: list[ExpressionAssignment] = field(default_factory=list)
+    midi: list[MidiAssignment] = field(default_factory=list)
 
 
 SNAPSHOT_MAX = 8  # Stadium hardware cap
@@ -234,9 +258,30 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
                     f"param {t.param!r} on block {t.block!r} is assigned to both "
                     f"a footswitch and pedal {a.pedal}; one controller per param.",
                 )
+    midi = _parse_midi(data.get("midi"), source=source)
+    # A (block, param) may be driven by ONE controller across FS-param / EXP /
+    # MIDI CC. (Block BYPASS may be driven by several sources — the device
+    # supports multi-source bypass — so only PARAM drivers are checked here.)
+    param_drivers = list(fs_params)
+    for a in expression:
+        for t in a.targets:
+            param_drivers.append((t.block, t.param, t.path, t.lane, t.pos))
+    for m in midi:
+        for t in m.targets:
+            if t.param is None:
+                continue
+            key = (t.block, t.param, t.path, t.lane, t.pos)
+            if any(_refs_may_alias(key, d) for d in param_drivers):
+                raise _err(
+                    source,
+                    f"param {t.param!r} on block {t.block!r} is assigned to both "
+                    f"another controller and MIDI CC {m.cc}; one controller per param.",
+                )
+            param_drivers.append(key)
     return Spec(
         name=name, paths=paths, author=author,
         snapshots=snapshots, footswitches=footswitches, expression=expression,
+        midi=midi,
     )
 
 
@@ -544,6 +589,97 @@ def _parse_expression_target(data: Any, *, source: str) -> ExpressionTarget:
     return ExpressionTarget(block=block, param=param, min=float(mn), max=float(mx),
                             path=path, lane=lane, pos=pos, curve=curve,
                             threshold=threshold)
+
+
+def _parse_midi(raw: Any, *, source: str) -> list[MidiAssignment]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise _err(source, '"midi" must be a list.')
+    out: list[MidiAssignment] = []
+    seen_cc: set[int] = set()
+    seen_targets: list[tuple] = []
+    for i, entry in enumerate(raw):
+        assignment = _parse_midi_assignment(entry, source=f"{source} midi[{i}]")
+        if assignment.cc in seen_cc:
+            raise _err(
+                f"{source} midi[{i}]",
+                f"duplicate CC {assignment.cc}; each CC may appear once "
+                f"(list multiple targets under one entry).",
+            )
+        seen_cc.add(assignment.cc)
+        for j, t in enumerate(assignment.targets):
+            key = (t.block, t.param, t.path, t.lane, t.pos)
+            if any(_refs_may_alias(key, seen) for seen in seen_targets):
+                what = (f"param {t.param!r}" if t.param is not None else "bypass")
+                raise _err(
+                    f"{source} midi[{i}] targets[{j}]",
+                    f"duplicate MIDI target ({what} on block {t.block!r}); "
+                    f"each block target may be driven once.",
+                )
+            seen_targets.append(key)
+        out.append(assignment)
+    return out
+
+
+def _parse_midi_assignment(data: Any, *, source: str) -> MidiAssignment:
+    if not isinstance(data, dict):
+        raise _err(source, "must be an object.")
+    if "note" in data:
+        raise _err(
+            source,
+            'MIDI Note controller sources are not supported (CC-only). Use '
+            '"cc" (the parity capture pinned only the CC source encoding).',
+        )
+    cc = data.get("cc")
+    if not isinstance(cc, int) or isinstance(cc, bool):
+        raise _err(source, '"cc" is required and must be an integer 0..127.')
+    if not (0 <= cc <= 127):
+        raise _err(source, f'"cc" must be in 0..127 (got {cc}).')
+    targets_raw = data.get("targets")
+    if not isinstance(targets_raw, list) or len(targets_raw) == 0:
+        raise _err(source, '"targets" must be a non-empty list.')
+    targets = [
+        _parse_midi_target(t, source=f"{source} targets[{j}]")
+        for j, t in enumerate(targets_raw)
+    ]
+    return MidiAssignment(cc=cc, targets=targets)
+
+
+def _parse_midi_target(data: Any, *, source: str) -> MidiTarget:
+    if not isinstance(data, dict):
+        raise _err(source, "must be an object.")
+    block = data.get("block")
+    if not isinstance(block, str) or not block:
+        raise _err(source, '"block" is required and must be a non-empty string.')
+    bypass = data.get("bypass", False)
+    if not isinstance(bypass, bool):
+        raise _err(source, '"bypass" must be a boolean if provided.')
+    param = data.get("param")
+    if bypass and param is not None:
+        raise _err(source, 'a target is either a "param" sweep or a "bypass" '
+                           'toggle, not both.')
+    if not bypass:
+        if not isinstance(param, str) or not param:
+            raise _err(source, 'a target needs "param" (a sweep) or '
+                               '"bypass": true (a toggle).')
+    mn = data.get("min", 0.0)
+    mx = data.get("max", 1.0)
+    for label, val in (("min", mn), ("max", mx)):
+        if not isinstance(val, (int, float)) or isinstance(val, bool):
+            raise _err(source, f'"{label}" must be a number.')
+    path = data.get("path")
+    if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
+        raise _err(source, '"path" must be a non-negative integer if provided.')
+    lane = data.get("lane")
+    if lane is not None and lane not in (0, 1):
+        raise _err(source, '"lane" must be 0 or 1 if provided.')
+    pos = data.get("pos")
+    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
+        raise _err(source, '"pos" must be a non-negative integer if provided.')
+    return MidiTarget(block=block, param=(param if not bypass else None),
+                      bypass=bypass, min=float(mn), max=float(mx),
+                      path=path, lane=lane, pos=pos)
 
 
 def _parse_lane_pos(data: dict, *, source: str) -> tuple[int, int | None]:

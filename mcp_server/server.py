@@ -82,6 +82,15 @@ def generate_preset(model: str, recipe: dict[str, Any], out_path: str) -> dict[s
     `"Level"` — literal names with spaces). Delay/reverb/FX-Loop blocks accept
     `trails` (spillover on bypass).
 
+    **MIDI CC control (EXPERIMENTAL, #33):** an optional top-level `midi` list
+    binds incoming MIDI Control Change messages — each entry is `{"cc": 0-127,
+    "targets": [...]}` where a target sweeps a param
+    (`{"block", "param", "min", "max"}`) or toggles a block's bypass
+    (`{"block", "bypass": true}`). CC-only (MIDI Note is out of scope). The
+    binding is realized on `device install`/`sync` (transcoded into the device
+    content); it is not written as a device-native `.hsp` controller. One param
+    is driven by at most one controller across footswitch/expression/MIDI.
+
     **IR usage:** `With Pan` blocks accept an `ir` field with either a
     basename (resolved via the local IR mapping) or a 32-char hex hash
     (used literally). For factory IRs, use a `Mic Ir_*` cab block.

@@ -87,6 +87,7 @@ For the full spec surface — input routing + input block params (impedance/
 pad/trim/gate), output level/pan, parallel splits (split type + merge-mixer
 params), snapshots, footswitch assignment (incl. merge switches, param
 toggles, scribble label/color, response curves), expression pedal targets,
+MIDI CC control (param sweeps + bypass toggles; EXPERIMENTAL, #33),
 per-block IR references, trails — see the project
 [`CLAUDE.md`](../CLAUDE.md) which documents every field. Device-network verbs
 (`helixgen device …`, incl. `device info`) are likewise documented there.

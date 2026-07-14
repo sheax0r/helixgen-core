@@ -1085,6 +1085,19 @@ def _synth_cg_from_recipe(
         ctrl.append(entry)
         src_cids.setdefault(sid, []).append(entry["cid_"])
 
+    def _new_midi_ctrl(entry: dict) -> None:
+        """A MIDI CC controller (#33). Unlike FS/EXP it has NO physical ``srcs``
+        entry — the source is the incoming CC, carried inline as ``cnt2`` (CC#)
+        + ``midi`` (packed CC on the device's global base channel, ``0xB0``
+        status). ``trig`` is 0 (no source slot); not added to ``sm__.scid``.
+        Fields follow the parity-capture findings §6; the remaining ctrl fields
+        mirror the uniform ctrl schema so the device parser reads it."""
+        nonlocal next_ctrl
+        entry["cid_"] = next_ctrl
+        next_ctrl += 1
+        entry["trig"] = 0
+        ctrl.append(entry)
+
     for pi, path in enumerate(recipe.get("paths") or []):
         for bi, spec in enumerate(path.get("blocks") or []):
             lane = int(spec.get("lane", 0))
@@ -1138,6 +1151,44 @@ def _synth_cg_from_recipe(
                            "min_": meta.get("min", 0.0),
                            "thrs": _thrs(meta), "tid_": tid,
                            "togl": False, "type": 3}, sid)
+
+            # MIDI CC controllers (#33). ``midi_bypass`` = a CC toggling this
+            # block's bypass; ``midi_params`` = {device_param: {cc,min,max}}
+            # sweeps. Both reuse the SAME target ids as snapshot/FS/EXP bindings
+            # (a bypass or param can be driven by a MIDI CC AND a footswitch).
+            midi_byp = spec.get("midi_bypass")
+            if isinstance(midi_byp, dict):
+                cc = midi_byp.get("cc")
+                if isinstance(cc, int) and not isinstance(cc, bool):
+                    tid = trg_index.get((eid, 0, 1))
+                    if tid is None:
+                        tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
+                                        "pid_": 0, "slot": 0, "type": 1},
+                                       (eid, 0, 1))
+                    _new_midi_ctrl({"behv": 0, "cnt2": cc, "curv": 5,
+                                    "dlay": 0, "goid": 0, "max_": True,
+                                    "midi": 0xB000 | cc, "min_": False,
+                                    "thrs": 0.0, "tid_": tid, "togl": False,
+                                    "type": 1})
+            for pname, meta in (spec.get("midi_params") or {}).items():
+                cc = meta.get("cc")
+                if not (isinstance(cc, int) and not isinstance(cc, bool)):
+                    continue
+                pid = _param_pid(mid, pname)
+                if pid is None:
+                    continue
+                tid = trg_index.get((eid, pid, 2))
+                if tid is None:
+                    tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
+                                    "pid_": pid, "pmid": mid, "ppid": pid,
+                                    "slot": 0, "type": 2}, (eid, pid, 2))
+                    ptid.extend([(eid << 16) | pid, tid])
+                    bindings["param_ctl"][(eid, pid)] = tid
+                _new_midi_ctrl({"behv": 2, "cnt2": cc, "curv": 5, "dlay": 0,
+                                "goid": 0, "max_": meta.get("max", 1.0),
+                                "midi": 0xB000 | cc, "min_": meta.get("min", 0.0),
+                                "thrs": 0.0, "tid_": tid, "togl": False,
+                                "type": 3})
 
     scid: List[Any] = []
     for sid in sorted(src_cids):
