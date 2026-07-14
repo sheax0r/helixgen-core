@@ -128,11 +128,27 @@ def generate_cmd(
             )
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(data)
+            _auto_register_tone(output_path)
         else:
             generate_preset(spec_path, output_path, library, irs=irs)
     except (KeyError, LookupError, SpecError, ParamValidationError, GenerateError, FileNotFoundError) as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"Wrote {output_path}")
+
+
+def _auto_register_tone(hsp_path: Path) -> None:
+    """Record a freshly-authored .hsp in the tone library (off-device by default).
+
+    Advisory: a registration failure warns but never fails ``generate`` (the
+    .hsp is already written)."""
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        m.register_tone(hsp_path, source="authored")
+        m.save()
+    except Exception as e:  # noqa: BLE001 — registration is advisory
+        click.echo(f"warning: could not register tone in library: {e}", err=True)
 
 
 @cli.command(name="view")
@@ -1222,6 +1238,98 @@ def device_setlist_create_local(setlist: str) -> None:
     m.save()
     click.echo(f"created local setlist {setlist!r} — also create it in the "
                f"Stadium app before syncing (device-side creation is deferred)")
+
+
+@device_setlist.command(name="sync-on")
+@click.argument("setlist")
+def device_setlist_sync_on(setlist: str) -> None:
+    """Mark a setlist as device-synced (marks all its tones for the device)."""
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    m.set_setlist_synced(setlist, True)
+    m.save()
+    click.echo(f"setlist {setlist!r} is now synced; run `helixgen device sync {setlist}`")
+
+
+@device_setlist.command(name="sync-off")
+@click.argument("setlist")
+def device_setlist_sync_off(setlist: str) -> None:
+    """Mark a setlist as a local-only draft (not mirrored to the device)."""
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    m.set_setlist_synced(setlist, False)
+    m.save()
+    click.echo(f"setlist {setlist!r} is now a local-only draft")
+
+
+@cli.command(name="register")
+@click.argument("hsp_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--doc", type=click.Path(exists=True, path_type=Path), default=None,
+              help="Optional companion markdown description to record.")
+def register_cmd(hsp_path: Path, doc: Path | None) -> None:
+    """Register an existing local .hsp into the tone library (off-device)."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        name = m.register_tone(hsp_path, source="import-local", doc=doc)
+    except ManifestError as e:
+        raise click.ClickException(str(e)) from e
+    m.save()
+    click.echo(f"registered {name!r} in the tone library (off-device)")
+
+
+@device.command(name="add")
+@click.argument("tone")
+@click.option("--slot", default="auto",
+              help="Desired user slot ('1A'..'8D') or 'auto' (default; sync picks).")
+def device_add_cmd(tone: str, slot: str) -> None:
+    """Mark a library tone for the device (placed on the next `device sync`)."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        m.mark_on_device(tone, slot)
+    except ManifestError as e:
+        raise click.ClickException(str(e)) from e
+    m.save()
+    click.echo(f"{tone!r} marked for device (slot {slot})")
+
+
+@device.command(name="unsync")
+@click.argument("tone")
+def device_unsync_cmd(tone: str) -> None:
+    """Take a tone off the device on next sync (keeps it in the library)."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    m = SetlistManifest.load()
+    try:
+        pulled = m.unsync(tone)
+    except ManifestError as e:
+        raise click.ClickException(str(e)) from e
+    m.save()
+    msg = f"{tone!r} unsynced (deleted from device on next sync)"
+    if pulled:
+        msg += f"; removed from synced setlists: {', '.join(pulled)}"
+    click.echo(msg)
+
+
+@device.command(name="library")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit raw JSON.")
+def device_library_cmd(as_json: bool) -> None:
+    """List every library tone: slot, on/off device, setlist memberships."""
+    from helixgen.device.manifest import SetlistManifest
+
+    rows = SetlistManifest.load().library()
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        sls = ", ".join(row["setlists"])
+        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
+                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
 
 
 @device.command(name="sync")
