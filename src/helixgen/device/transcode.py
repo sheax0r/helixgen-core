@@ -810,8 +810,10 @@ def _snap_meta(meta: dict, i: int) -> Tuple[str, int, float]:
     ``expsw``/``bpm``/``tempo``)."""
     name = meta.get("name") or f"SNAPSHOT {i + 1}"
     exsw = meta.get("exsw", meta.get("expsw", -1))
+    if exsw is None:
+        exsw = -1
     bpm = meta.get("bpm", meta.get("bpm_", meta.get("tempo", 120.0)))
-    return name, exsw, float(bpm)
+    return name, exsw, float(bpm if bpm is not None else 120.0)
 
 
 def _param_pid(model_id: int, param_name: str) -> Optional[int]:
@@ -1117,12 +1119,16 @@ def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
         for item in flow.get("blks", []):
             if not isinstance(item, dict):
                 continue
+            if item.get("type") in (8, 9):
+                continue  # input/output endpoints are never recipe targets
             eid = item.get("id__")
             tid = by_bypass.get(eid)
             if tid:
                 item["snap"] = True
                 item["tid_"] = tid
-            for mdl in item.get("mdls") or []:
+            # Only the primary model slot: a future second slot (dual-cab)
+            # could share a pid with the tracked param and must not be stamped.
+            for mdl in (item.get("mdls") or [])[:1]:
                 for leaf in mdl.get("parm") or []:
                     ptid = by_param.get((eid, leaf.get("pid_")))
                     if ptid:

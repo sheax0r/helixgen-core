@@ -195,7 +195,8 @@ def _snapshot_arrays(slot: dict, bnn: dict,
     if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
         arr = en["snapshots"]
         if any(v is not None for v in arr):
-            base = bool(en.get("value", True))
+            bv = en.get("value")
+            base = True if bv is None else bool(bv)  # missing/None = enabled
             bypass = [not bool(base if v is None else v) for v in arr]
 
     src_params = slot.get("params") or {}
@@ -211,6 +212,10 @@ def _snapshot_arrays(slot: dict, bnn: dict,
         if dev_name is None:
             continue
         base = wrapped.get("value")
+        if base is None and any(v is None for v in arr):
+            # No base to fill the sparse slots with — a None must never reach
+            # the device's tamv (msgpack nil where it expects a value).
+            continue
         params[dev_name] = [base if v is None else v for v in arr]
     return bypass, params
 
@@ -298,10 +303,12 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     spec["snap_params"] = snap_params
             # Controller assignments (spec 2 Part B): FS->bypass + EXP->param.
             en = b.get("@enabled")
-            # Base bypass: a block whose ``@enabled.value`` is False loads
-            # bypassed — carried so the transcoder can emit ``enbl=0``.
+            # Base bypass: a block whose ``@enabled.value`` is falsy (False or
+            # a degenerate 0) loads bypassed — carried so the transcoder can
+            # emit ``enbl=0``. Missing/None means enabled, matching
+            # ``_snapshot_arrays``'s base-polarity default.
             base_en = en.get("value") if isinstance(en, dict) else en
-            if base_en is False:
+            if base_en is not None and not base_en:
                 spec["enabled"] = False
             if isinstance(en, dict) and isinstance(en.get("controller"), dict):
                 c = en["controller"]

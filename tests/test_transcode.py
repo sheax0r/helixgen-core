@@ -714,3 +714,28 @@ def test_sparse_snapshot_arrays_fall_back_to_base():
     row = [_tamv_map(s)[trg["id__"]] for s in snps]
     # base value=False (bypassed): None -> bypassed; True -> not bypassed
     assert row == [True, False] + [True] * 6, row
+
+
+def test_degenerate_snapshot_meta_does_not_crash():
+    """A hand-edited .hsp with ``tempo: null`` / ``expsw: null`` in a snapshot
+    slot must transcode (None -> defaults), now that all 8 slots are read."""
+    body = _snapshot_hsp_body()
+    body["preset"]["snapshots"][2] = {"name": None, "tempo": None,
+                                      "expsw": None}
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    snps = sorted(doc["cg__"]["entt"]["snps"], key=lambda s: s["si__"])
+    assert snps[2]["name"] == "SNAPSHOT 3"
+    assert snps[2]["exsw"] == -1 and snps[2]["bpm_"] == 120.0
+
+
+def test_param_snapshots_without_base_value_never_emit_none():
+    """A param carrying a sparse ``snapshots`` array but no ``value`` key has
+    nothing to fill the None slots with — it must be skipped, never leak a
+    msgpack nil into ``tamv``."""
+    body = _snapshot_hsp_body()
+    mix = body["preset"]["flow"][0]["b03"]["slot"][0]["params"]["Mix"]
+    del mix["value"]
+    mix["snapshots"] = [0.24, 0.1, None, None, None, None, None, None]
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    for s in doc["cg__"]["entt"]["snps"]:
+        assert None not in s["tamv"], s["tamv"]
