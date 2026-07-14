@@ -320,6 +320,15 @@ assumption — see #9); the reference-based redesign below then **shipped
   snapshots / single generic tone), defaulting sensibly (single guitar →
   don't ask). Profiles inform *how* params differ per guitar (e.g. brighter
   amp for humbuckers, tamer top for P-90s), not just naming.
+  **Update 2026-07-13 (user re-request, folded in rather than duplicated):**
+  the profiles live in **the library** as per-guitar JSON metadata (same
+  metadata home/format as #35 tone metadata and #36 IR metadata) describing
+  what each guitar *sounds like* — pickups, construction, tonal character —
+  so tone generation can read the profile and adjust accordingly when
+  targeting a specific guitar. The `tone` skill must know how to use these
+  profiles (read → adapt params). The per-guitar-variant storage question
+  (variant `.hsp`s vs replicated snapshots, default per-variant presets) is
+  now formalized in **#35** part 3 — implement the two together.
 
 ## Stadium-app parity (2026-07-13)
 
