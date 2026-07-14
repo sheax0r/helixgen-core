@@ -565,13 +565,16 @@ def _make_user_block(spec: dict, inst_id: int) -> dict:
     irhash = spec.get("irhash")
     if irhash and category == "ir":
         m0["irmd"] = bytes.fromhex(irhash)
+    # Block-level ``enbl`` is the BASE bypass (0 = the block loads bypassed);
+    # the model instance's ``enbl`` stays 1 regardless (device-verified).
     return {
-        "cid_": 0, "enbl": 1, "favo": 0, "hasb": False,
+        "cid_": 0, "enbl": 0 if spec.get("enabled") is False else 1,
+        "favo": 0, "hasb": False,
         "hrns": _hrns_for(category),
         "id__": inst_id,
         "mdls": [m0],
         "snap": False,
-        "tid_": inst_id,
+        "tid_": 0,
         "type": _block_type(category),
     }
 
@@ -600,16 +603,20 @@ def _canonical_flow(placements: List[Tuple[int, dict]], base: int) -> dict:
     """Assemble a flow from ``(gridpos, block)`` placements onto the real 28-slot
     device grid.
 
-    Each block's ``id__``/``tid_`` is set to ``base + gridpos`` so the identity
+    Each block's ``id__`` is set to ``base + gridpos`` so the identity
     ``bmap = [base .. base+27]`` is self-consistent (``bmap[gridpos] == id at
     gridpos`` — the encoding real device presets use, verified against fixtures
-    151/152). ``bcnt`` is the fixed grid size, NOT the block count. ``blks``
+    151/152). ``tid_`` is zeroed: on a real device blob a block's ``tid_`` is
+    the id of its snapshot-tracked bypass TARGET (``cg__…trgs``), 0 otherwise —
+    ``_synthesize`` binds tracked blocks after the ``cg__`` is built. (The old
+    ``tid_ = id__`` scheme collided with real target ids once snapshot targets
+    existed.) ``bcnt`` is the fixed grid size, NOT the block count. ``blks``
     alternates ``[gridpos, block, …]`` for occupied positions only.
     """
     blks: List[Any] = []
     for gp, blk in sorted(placements, key=lambda t: t[0]):
         blk["id__"] = base + gp
-        blk["tid_"] = base + gp
+        blk["tid_"] = 0
         blks.append(gp)
         blks.append(blk)
     return {"bcnt": _GRID_SLOTS, "blks": blks,
@@ -639,7 +646,7 @@ def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
     fresh instance id. ``bblk``/``bflw`` are re-pointed by the caller."""
     blk = copy.deepcopy(scaffold)
     blk["id__"] = inst_id
-    blk["tid_"] = inst_id
+    blk["tid_"] = 0
     return blk
 
 
@@ -803,8 +810,10 @@ def _snap_meta(meta: dict, i: int) -> Tuple[str, int, float]:
     ``expsw``/``bpm``/``tempo``)."""
     name = meta.get("name") or f"SNAPSHOT {i + 1}"
     exsw = meta.get("exsw", meta.get("expsw", -1))
+    if exsw is None:
+        exsw = -1
     bpm = meta.get("bpm", meta.get("bpm_", meta.get("tempo", 120.0)))
-    return name, exsw, float(bpm)
+    return name, exsw, float(bpm if bpm is not None else 120.0)
 
 
 def _param_pid(model_id: int, param_name: str) -> Optional[int]:
@@ -846,20 +855,27 @@ def _synth_cg_from_recipe(
     recipe: dict,
     instance_ids: Dict[Tuple[int, int, int], int],
     max_id: int,
-) -> dict:
+) -> Tuple[dict, Dict[str, dict]]:
     """Build the device ``cg__`` snapshot machinery from a recipe's inline
     snapshot arrays (snapshots spec Part A).
 
-    Each user block may carry ``snap_bypass`` (per-snapshot bool list) and
-    ``snap_params`` (``{device_param_name: per-snapshot value list}``). For every
-    block/param that ACTUALLY VARIES across snapshots we emit one ``trgs`` target
+    Each user block may carry ``snap_bypass`` (per-snapshot bool list, DEVICE
+    polarity: ``True`` = bypassed in that snapshot) and ``snap_params``
+    (``{device_param_name: per-snapshot value list}``). For every block/param
+    that ACTUALLY VARIES across snapshots we emit one ``trgs`` target
     (type1/enty2/pid0 bypass, or type2/enty3/pidN param), keyed by that block's
     device instance id (``eID_``, from ``instance_ids``). Each snapshot's
     ``tamv`` is the flat ``[trg_id, value, …]`` over every tracked target,
     ``ctm_.stid`` lists them, and ``ctm_.ptid`` packs the param targets
     (``(eID_<<16 | pid_) -> trg_id``).
 
-    A tone with no snapshot variation falls back to the blank-8 ``cg__``.
+    Returns ``(cg__, bindings)`` where ``bindings`` maps the snapshot-tracked
+    entities back to their target ids — ``{"bypass": {eID_: trg_id},
+    "param": {(eID_, pid_): trg_id}}`` — so the caller can stamp
+    ``snap=True, tid_=<trg id>`` onto the tracked block dicts / parm leaves
+    (the device applies snapshot values through that binding; controller-only
+    targets are NOT bound). A tone with no snapshot variation falls back to
+    the blank-8 ``cg__``.
     """
     snap_meta = recipe.get("snapshots") or []
     trgs: List[dict] = []
@@ -867,6 +883,7 @@ def _synth_cg_from_recipe(
     ptid: List[int] = []
     tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
     trg_index: Dict[Tuple[int, int, int], int] = {}  # (eID_, pid_, type) -> trg id
+    bindings: Dict[str, dict] = {"bypass": {}, "param": {}}
     # Controller/target/source ids are 1-BASED — the device treats id 0 as
     # null/unassigned, so a 0-based id silently kills the binding (hardware-
     # confirmed against HX Edit's own encoding, 2026-07-13).
@@ -898,6 +915,7 @@ def _synth_cg_from_recipe(
                                 "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 1))
                 stid.append(tid)
                 tracked.append((tid, [bool(x) for x in bypass]))
+                bindings["bypass"][eid] = tid
             for pname, pvals in (spec.get("snap_params") or {}).items():
                 if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
                     continue
@@ -910,6 +928,7 @@ def _synth_cg_from_recipe(
                 stid.append(tid)
                 ptid.extend([(eid << 16) | pid, tid])
                 tracked.append((tid, list(pvals)))
+                bindings["param"][(eid, pid)] = tid
 
     # 2) FS/EXP controller graph (Part B). Reuse a snapshot trg when the same
     #    target is both scene-tracked and controller-driven.
@@ -969,7 +988,7 @@ def _synth_cg_from_recipe(
                 scid.extend([sid, [cid]])
 
     if not tracked and not ctrl:
-        return _synth_cg(max_id)
+        return _synth_cg(max_id), bindings
 
     snps: List[dict] = []
     for i in range(8):
@@ -999,7 +1018,7 @@ def _synth_cg_from_recipe(
         "nxtm": 1,
         "nxts": next_src,    # next-free source id
         "nxtt": next_trg,    # next-free target id
-    }
+    }, bindings
 
 
 def _scribble_for(sources: Optional[Dict[int, dict]]) -> Dict[Tuple[str, int], dict]:
@@ -1075,9 +1094,46 @@ def _synthesize(recipe: dict) -> dict:
             spec.setdefault("lane", 0)
             spec.setdefault("pos", bi)
     sfg, next_id, instance_ids = synthesize_sfg(paths)
-    cg = _synth_cg_from_recipe(recipe, instance_ids, next_id - 1)
+    cg, bindings = _synth_cg_from_recipe(recipe, instance_ids, next_id - 1)
+    _bind_snapshot_targets(sfg, bindings)
     pm = _synth_pm(recipe.get("sources"))
     return {"cg__": cg, "pm__": pm, "sfg_": sfg}
+
+
+def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
+    """Stamp every snapshot-tracked entity with its target binding, in place.
+
+    On a real device blob a snapshot-tracked block carries ``snap=True,
+    tid_=<bypass trg id>`` at BLOCK level, and a snapshot-tracked param carries
+    ``snap=True, tid_=<param trg id>`` on its parm leaf — that binding is how
+    the device applies ``tamv`` values on a snapshot switch (verified against
+    the Stadium app's own import of the same tone, 2026-07-13). Untracked
+    entities (including controller-only bypass targets) stay ``snap=False,
+    tid_=0``.
+    """
+    by_bypass = bindings.get("bypass") or {}
+    by_param = bindings.get("param") or {}
+    if not by_bypass and not by_param:
+        return
+    for flow in sfg.get("flow", []):
+        for item in flow.get("blks", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in (8, 9):
+                continue  # input/output endpoints are never recipe targets
+            eid = item.get("id__")
+            tid = by_bypass.get(eid)
+            if tid:
+                item["snap"] = True
+                item["tid_"] = tid
+            # Only the primary model slot: a future second slot (dual-cab)
+            # could share a pid with the tracked param and must not be stamped.
+            for mdl in (item.get("mdls") or [])[:1]:
+                for leaf in mdl.get("parm") or []:
+                    ptid = by_param.get((eid, leaf.get("pid_")))
+                    if ptid:
+                        leaf["snap"] = True
+                        leaf["tid_"] = ptid
 
 
 # --- authored .hsp -> device _sbepgsm bytes ----------------------------------

@@ -176,20 +176,28 @@ def _lane_pos(key: str) -> Tuple[int, int]:
     return lane, num - 14 * lane
 
 
-def _snapshot_arrays(slot: dict, bnn: dict, dev_id: int,
-                     n_snaps: int) -> Tuple[Optional[List[Any]], Dict[str, List[Any]]]:
+def _snapshot_arrays(slot: dict, bnn: dict,
+                     dev_id: int) -> Tuple[Optional[List[Any]], Dict[str, List[Any]]]:
     """Extract a block's per-snapshot bypass + param arrays, mapped to device
     param names. Returns ``(bypass_list_or_None, {device_param: [values]})``.
 
-    Only the first ``n_snaps`` slots (the named snapshots) are considered. A
-    param whose per-snapshot array is entirely ``None`` (no override) is skipped.
+    The FULL dense arrays are read (all 8 snapshots — the trailing "Snap N"
+    slots carry real state, not placeholders). ``None`` entries (legacy sparse
+    exports) fall back to the base value. The bypass list is DEVICE polarity
+    (``True`` = bypassed), i.e. the inverse of the ``.hsp`` ``@enabled``
+    arrays — a device bypass target's snapshot value is "is it bypassed"
+    (hardware-verified against the Stadium app's own import, 2026-07-13).
+    A param whose per-snapshot array is entirely ``None`` (no override) is
+    skipped.
     """
     bypass: Optional[List[Any]] = None
     en = bnn.get("@enabled")
     if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
-        arr = en["snapshots"][:n_snaps]
+        arr = en["snapshots"]
         if any(v is not None for v in arr):
-            bypass = [bool(v) for v in arr]
+            bv = en.get("value")
+            base = True if bv is None else bool(bv)  # missing/None = enabled
+            bypass = [not bool(base if v is None else v) for v in arr]
 
     src_params = slot.get("params") or {}
     name_map = param_name_map(dev_id, list(src_params.keys()))
@@ -197,13 +205,17 @@ def _snapshot_arrays(slot: dict, bnn: dict, dev_id: int,
     for pname, wrapped in src_params.items():
         if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
             continue
-        arr = wrapped["snapshots"][:n_snaps]
+        arr = wrapped["snapshots"]
         if not any(v is not None for v in arr):
             continue
         dev_name = name_map.get(pname)
         if dev_name is None:
             continue
         base = wrapped.get("value")
+        if base is None and any(v is None for v in arr):
+            # No base to fill the sparse slots with — a None must never reach
+            # the device's tamv (msgpack nil where it expects a value).
+            continue
         params[dev_name] = [base if v is None else v for v in arr]
     return bypass, params
 
@@ -225,13 +237,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
     preset = hsp_body.get("preset") or {}
     flows = preset.get("flow") or []
     device_id = (hsp_body.get("meta") or {}).get("device_id") or "stadium_xl"
-    # Number of NAMED snapshots (trailing "Snap N" placeholders don't count).
-    raw_snaps = preset.get("snapshots") or []
-    n_named = 0
-    for i, s in enumerate(raw_snaps):
-        if s.get("name") != f"Snap {i + 1}":
-            n_named = i + 1
-    n_snaps = n_named or len(raw_snaps)
+    has_snaps = bool(preset.get("snapshots"))
 
     from .. import controllers as _controllers
 
@@ -289,14 +295,21 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             irhash = slot.get("irhash") or None
             if irhash:
                 spec["irhash"] = irhash
-            if n_snaps:
-                bypass, snap_params = _snapshot_arrays(slot, b, dev_id, n_snaps)
+            if has_snaps:
+                bypass, snap_params = _snapshot_arrays(slot, b, dev_id)
                 if bypass is not None:
                     spec["snap_bypass"] = bypass
                 if snap_params:
                     spec["snap_params"] = snap_params
             # Controller assignments (spec 2 Part B): FS->bypass + EXP->param.
             en = b.get("@enabled")
+            # Base bypass: a block whose ``@enabled.value`` is falsy (False or
+            # a degenerate 0) loads bypassed — carried so the transcoder can
+            # emit ``enbl=0``. Missing/None means enabled, matching
+            # ``_snapshot_arrays``'s base-polarity default.
+            base_en = en.get("value") if isinstance(en, dict) else en
+            if base_en is not None and not base_en:
+                spec["enabled"] = False
             if isinstance(en, dict) and isinstance(en.get("controller"), dict):
                 c = en["controller"]
                 if c.get("type") == "targetbypass" and c.get("source") is not None:
@@ -328,16 +341,14 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
 
 
 def hsp_snapshot_meta(hsp_body: dict) -> List[Dict[str, Any]]:
-    """Named-snapshot metadata (``name``/``exsw``/``bpm``) from a ``.hsp`` body,
-    in snapshot order, for the transcoder's ``cg__`` synthesis."""
+    """Snapshot metadata (``name``/``exsw``/``bpm``) from a ``.hsp`` body, in
+    snapshot order, for the transcoder's ``cg__`` synthesis. ALL slots are
+    returned — the trailing "Snap N" defaults are real snapshot names the
+    device shows, not placeholders to strip."""
     preset = hsp_body.get("preset") or {}
     raw = preset.get("snapshots") or []
-    n_named = 0
-    for i, s in enumerate(raw):
-        if s.get("name") != f"Snap {i + 1}":
-            n_named = i + 1
     meta: List[Dict[str, Any]] = []
-    for s in raw[:n_named]:
+    for s in raw:
         meta.append({"name": s.get("name"), "exsw": s.get("expsw", -1),
                      "bpm": s.get("tempo", 120.0)})
     return meta
