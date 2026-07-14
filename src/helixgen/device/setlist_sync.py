@@ -95,6 +95,63 @@ def plan_gc(
             if name not in want and name not in referenced]
 
 
+def assign_slots(manifest: SetlistManifest, occupied) -> Dict[str, str]:
+    """Resolve every ``slot == "auto"`` tone to the first free user-slot label,
+    avoiding both ``occupied`` (untracked / already-taken labels) and any
+    concretely-slotted managed tone. Mutates the manifest records and returns
+    ``{name: assigned_label}``.
+    """
+    from .manifest import _SLOT_LABELS
+
+    used = set(occupied)
+    for rec in manifest.tones.values():
+        s = rec.get("slot")
+        if s and s != "auto":
+            used.add(s)
+    free = (lbl for lbl in _SLOT_LABELS if lbl not in used)
+    assigned: Dict[str, str] = {}
+    for name, rec in manifest.tones.items():
+        if rec.get("slot") == "auto":
+            try:
+                lbl = next(free)
+            except StopIteration:
+                raise ValueError("no free user slot available (device full)")
+            rec["slot"] = lbl
+            assigned[name] = lbl
+            used.add(lbl)
+    return assigned
+
+
+def plan_mirror(manifest: SetlistManifest, device_presets, managed_names) -> Dict[str, List[dict]]:
+    """Plan a managed-set mirror of the user population against the device.
+
+    For each manifest tone: ``slot is None`` but on device → **delete**; not on
+    device → **install**; on device with a changed ``content_hash`` → **repush**;
+    unchanged → **skip**. Untracked device presets (name ∉ manifest) are excluded
+    from every bucket — sync never touches them.
+    """
+    managed = set(managed_names)
+    by_name = {p.get("name"): p for p in device_presets}
+    install, repush, delete, skip = [], [], [], []
+    for name, rec in manifest.tones.items():
+        slot = rec.get("slot")
+        dev = by_name.get(name)
+        if slot is None:
+            if dev is not None:
+                delete.append({"name": name, "cid": dev.get("cid", dev.get("cid_"))})
+            continue
+        if dev is None:
+            install.append({"name": name, "slot": slot})
+        elif dev.get("content_hash") != rec.get("content_hash"):
+            repush.append({"name": name, "slot": slot,
+                           "cid": dev.get("cid", dev.get("cid_"))})
+        else:
+            skip.append({"name": name})
+    # untracked presets (name not in `managed`) intentionally excluded.
+    _ = managed
+    return {"install": install, "repush": repush, "delete": delete, "skip": skip}
+
+
 # ---------------------------------------------------------------------------
 # IR upload helper (copied from sync.py — resolves each irhash to a local WAV)
 # ---------------------------------------------------------------------------
@@ -198,6 +255,11 @@ def sync_setlists(
     errors: List[str] = result["errors"]
 
     targets = list(setlists) if setlists is not None else manifest.setlists()
+
+    # Resolve any 'auto' slots to concrete user-slot labels so the manifest never
+    # persists 'auto' after a sync (managed-set mirror, design §4). Untracked
+    # device presets are avoided via the concrete labels already recorded.
+    assign_slots(manifest, occupied=set())
 
     client_kwargs: Dict[str, Any] = {"ip": ip}
     if port is not None:
