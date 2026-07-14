@@ -1202,6 +1202,189 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
         click.echo(f"{m.get('hash','')}  {'stereo' if not m.get('mono') else 'mono'}  {m.get('name','?')}")
 
 
+@device.command(name="delete-ir")
+@click.argument("name_or_hash")
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@click.option("--force-wedge", is_flag=True, default=False,
+              help="If a 32-hex hash isn't in the IR registry but its file "
+                   "still resolves on the device (the delete->quick-reimport "
+                   "wedge), remove the orphaned file. Do NOT use on an IR you "
+                   "just imported — its listing may merely be lagging.")
+@_device_option
+def device_delete_ir(name_or_hash: str, yes: bool, force_wedge: bool,
+                     ip: str, port: int) -> None:
+    """Delete one user IR from the device, by name or 32-hex hash.
+
+    Removes the IR's registry entry (container -11) AND its backing .wav on
+    the device (best-effort). Presets that referenced it will show a silent
+    cab until it is re-imported. See ``ir-prune`` to clean up ALL unreferenced
+    IRs at once.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import maintenance as mt
+
+    if not yes:
+        click.confirm(
+            f"Delete IR {name_or_hash!r} from the device?", abort=True)
+    try:
+        with HelixClient(ip, port) as h:
+            res = mt.delete_device_ir(h, name_or_hash, ip=ip,
+                                      force_wedge=force_wedge)
+    except (HelixError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not res["ok"]:
+        raise click.ClickException(f"failed to delete IR {name_or_hash!r}")
+    if res.get("cid") is None:
+        click.echo(f"removed orphaned IR file for {res['name']!r} "
+                   f"({res['hash']}) — it had no registry entry (wedged)")
+    else:
+        click.echo(f"deleted IR {res['name']!r} ({res['hash']})"
+                   + ("" if res["file_removed"] else
+                      "  (warning: its .wav lingers on the device filesystem)"))
+
+
+@device.command(name="rename-ir")
+@click.argument("name_or_hash")
+@click.argument("new_name")
+@_device_option
+def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> None:
+    """Rename a user IR on the device (match by name or 32-hex hash).
+
+    Renaming changes only the display name — the IR's hash (which presets
+    reference) is untouched, so nothing breaks.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import maintenance as mt
+
+    try:
+        with HelixClient(ip, port) as h:
+            target = mt.resolve_device_ir_live(h, name_or_hash)
+            ok = h.rename(target["cid_"], new_name)
+    except (HelixError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to rename IR {name_or_hash!r}")
+    click.echo(f"renamed IR {target.get('name')!r} -> {new_name!r}")
+
+
+@device.command(name="ir-prune")
+@click.option("--yes", is_flag=True, default=False,
+              help="Actually delete (default is a dry-run report).")
+@click.option("--force", is_flag=True, default=False,
+              help="Also delete IRs referenced only by local off-device .hsp files.")
+@click.option("--only", default=None, metavar="NAME_OR_HASH",
+              help="Restrict deletion to this one IR.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the result dict as JSON.")
+@_device_option
+def device_ir_prune(yes: bool, force: bool, only: str | None, as_json: bool,
+                    ip: str, port: int) -> None:
+    """Delete device IRs that no preset references any more (DRY-RUN by default).
+
+    Diffs the device's user IRs against every IR hash referenced by the
+    presets on the device (non-activating content reads across the pool),
+    by the live edit buffer, and by your local tone-library .hsp files. IRs
+    referenced on the device are never touched; IRs referenced only by a
+    local off-device tone are "protected" (need --force); local tones whose
+    recorded .hsp can't be read are surfaced as warnings, and executing over
+    warnings needs --force too. Nothing is deleted without --yes, and the
+    plan is re-scanned and re-verified immediately before any delete (a
+    disagreement aborts with nothing deleted).
+    """
+    from helixgen.device import HelixError
+    from helixgen.device import maintenance as mt
+
+    try:
+        res = mt.ir_prune(ip=ip, port=port, execute=yes, force=force, only=only)
+    except (HelixError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+        return
+    for w in res.get("warnings", []):
+        click.echo(f"warning: {w}", err=True)
+    click.echo(f"device IRs: {res['device_irs']}  "
+               f"referenced: {len(res['referenced'])}  "
+               f"protected: {len(res['protected'])}  "
+               f"orphans: {len(res['orphans'])}")
+    for m in res["protected"]:
+        click.echo(f"  protected  {m.get('hash')}  {m.get('name')}  "
+                   f"(local: {', '.join(m.get('local_tones', []))})")
+    for m in res["orphans"]:
+        click.echo(f"  orphan     {m.get('hash')}  {m.get('name')}")
+    if res["dry_run"]:
+        if res["orphans"] or (force and res["protected"]):
+            click.echo("dry-run: nothing deleted — re-run with --yes to delete"
+                       + (" (add --force for protected IRs)"
+                          if res["protected"] and not force else ""))
+        else:
+            click.echo("dry-run: nothing to prune")
+    else:
+        for m in res["deleted"]:
+            click.echo(f"  deleted    {m.get('hash')}  {m.get('name')}")
+        click.echo(f"deleted {len(res['deleted'])} IR(s)")
+    for e in res["errors"]:
+        click.echo(f"error: {e}", err=True)
+    if not res["ok"]:
+        raise click.ClickException("ir-prune finished with errors (see above)")
+
+
+@device.command(name="set-info")
+@click.argument("cids", nargs=-1, type=int, required=True)
+@click.option("--color", default=None,
+              help="Preset color: a name (auto, white, red, dark orange, light "
+                   "orange, yellow, green, turquoise, blue, violet, pink, off) "
+                   "or a raw index 0-11.")
+@click.option("--notes", default=None, help="Preset notes text (Preset Info panel).")
+@_device_option
+def device_set_info(cids: tuple[int, ...], color: str | None, notes: str | None,
+                    ip: str, port: int) -> None:
+    """Set preset color and/or notes on one or more CIDs (batch-capable).
+
+    Color is a content attr; notes are written via a non-activating content
+    round-trip — the device's live tone is never disturbed.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import maintenance as mt
+
+    if color is None and notes is None:
+        raise click.ClickException("give --color and/or --notes")
+    if color is not None:
+        try:
+            mt.color_index(color)  # validate once, before touching any preset
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+    failures = []
+    try:
+        with HelixClient(ip, port) as h:
+            for cid in cids:
+                try:
+                    out = mt.set_preset_info(h, cid, color=color, notes=notes)
+                except HelixError as e:
+                    failures.append(cid)
+                    click.echo(f"cid {cid}: FAILED ({e})", err=True)
+                    continue
+                bits = ", ".join(f"{k}={'ok' if v else 'FAILED'}"
+                                 for k, v in out.items())
+                click.echo(f"cid {cid}: {bits}")
+                if not all(out.values()):
+                    failures.append(cid)
+    except (HelixError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if failures:
+        raise click.ClickException(
+            f"{len(failures)} of {len(cids)} preset(s) failed: "
+            + ", ".join(str(c) for c in failures))
+
+
 @device.command(name="push-ir")
 @click.argument("wav", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84", show_default=True)
@@ -1373,19 +1556,176 @@ def device_setlist_remove_cmd(setlist: str, tone_name: str) -> None:
 @device_setlist.command(name="create-local")
 @click.argument("setlist")
 def device_setlist_create_local(setlist: str) -> None:
-    """Create an empty setlist in the LOCAL manifest.
+    """Create an empty setlist in the LOCAL manifest only (no device).
 
-    Device-side setlist creation is deferred (backlog #8) — the 2002 create
-    command is uncaptured. Create the setlist by hand in the Stadium app too;
-    `device sync` then resolves it by name.
+    To also create it on the device, run `helixgen device setlist create`
+    (which records it locally too).
     """
     from helixgen.device.manifest import SetlistManifest
 
     m = SetlistManifest.load()
     m.create_setlist(setlist)
     m.save()
-    click.echo(f"created local setlist {setlist!r} — also create it in the "
-               f"Stadium app before syncing (device-side creation is deferred)")
+    click.echo(f"created local setlist {setlist!r} (manifest only — "
+               f"`device setlist create` also creates it on the device)")
+
+
+@device_setlist.command(name="create")
+@click.argument("setlist")
+@_device_option
+def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
+    """Create a new empty setlist ON THE DEVICE (and in the local manifest).
+
+    Uses the device's own create command (/CreateContent under the setlists
+    root) — no Stadium app needed. Errors if a setlist with that name already
+    exists on the device.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device.manifest import SetlistManifest
+
+    try:
+        with HelixClient(ip, port) as h:
+            existing = h.resolve_setlist_cid(setlist)
+            if existing is not None:
+                raise click.ClickException(
+                    f"setlist {setlist!r} already exists on the device "
+                    f"(cid {existing})")
+            cid = h.create_setlist(setlist)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if cid is None:
+        raise click.ClickException(f"device refused to create setlist {setlist!r}")
+    try:
+        m = SetlistManifest.load()
+        m.create_setlist(setlist)
+        m.save()
+    except Exception as e:  # noqa: BLE001 — advisory; the device write succeeded
+        click.echo(f"warning: could not update tone library: {e}", err=True)
+    click.echo(f"created setlist {setlist!r} on the device (cid {cid})")
+
+
+@device_setlist.command(name="rename")
+@click.argument("setlist")
+@click.argument("new_name")
+@_device_option
+def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -> None:
+    """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked)."""
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    try:
+        with HelixClient(ip, port) as h:
+            cid = h.resolve_setlist_cid(setlist)
+            if cid is None:
+                raise click.ClickException(
+                    f"setlist {setlist!r} not found on the device")
+            if h.resolve_setlist_cid(new_name) is not None:
+                raise click.ClickException(
+                    f"a setlist named {new_name!r} already exists on the device")
+            ok = h.rename(cid, new_name)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to rename setlist {setlist!r}")
+    try:
+        m = SetlistManifest.load()
+        if m.rename_setlist(setlist, new_name):
+            m.save()
+    except ManifestError as e:
+        click.echo(f"warning: device renamed, but the local manifest kept "
+                   f"{setlist!r}: {e}", err=True)
+    except Exception as e:  # noqa: BLE001 — advisory
+        click.echo(f"warning: could not update tone library: {e}", err=True)
+    click.echo(f"renamed setlist {setlist!r} -> {new_name!r} (cid {cid})")
+
+
+@device_setlist.command(name="delete")
+@click.argument("setlist")
+@click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@_device_option
+def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> None:
+    """Delete a setlist ON THE DEVICE. Its references die with it — the pool
+    presets they pointed at are NEVER deleted (never-orphan).
+
+    A local manifest setlist of the same name is kept as a local-only draft
+    (marked unsynced).
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device.manifest import SetlistManifest
+
+    try:
+        with HelixClient(ip, port) as h:
+            cid = h.resolve_setlist_cid(setlist)
+            if cid is None:
+                raise click.ClickException(
+                    f"setlist {setlist!r} not found on the device")
+            if not yes:
+                click.confirm(
+                    f"Delete setlist {setlist!r} (cid {cid}) from the device? "
+                    f"(its presets stay in the pool)", abort=True)
+            ok = h.delete_setlist(cid)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if not ok:
+        raise click.ClickException(f"failed to delete setlist {setlist!r}")
+    try:
+        m = SetlistManifest.load()
+        if setlist in m.setlists_map:
+            m.set_setlist_synced(setlist, False)
+            m.save()
+    except Exception as e:  # noqa: BLE001 — advisory
+        click.echo(f"warning: could not update tone library: {e}", err=True)
+    click.echo(f"deleted setlist {setlist!r} from the device — its pool "
+               f"presets were not touched")
+
+
+@device_setlist.command(name="duplicate")
+@click.argument("src")
+@click.argument("dst")
+@_device_option
+def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None:
+    """Duplicate a setlist ON THE DEVICE: copy SRC's references into DST.
+
+    DST is created on the device if absent; if it exists it must be empty.
+    References are pointers — the pool presets are shared, not copied.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            src_cid = h.resolve_setlist_cid(src)
+            if src_cid is None:
+                raise click.ClickException(f"setlist {src!r} not found on the device")
+            dst_cid = h.resolve_setlist_cid(dst)
+            created = False
+            if dst_cid is None:
+                dst_cid = h.create_setlist(dst)
+                created = True
+                if dst_cid is None:
+                    raise click.ClickException(
+                        f"device refused to create setlist {dst!r}")
+            copied = h.duplicate_setlist_refs(src_cid, dst_cid)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if created:
+        try:
+            from helixgen.device.manifest import SetlistManifest
+
+            m = SetlistManifest.load()
+            m.create_setlist(dst)
+            m.save()
+        except Exception as e:  # noqa: BLE001 — advisory; device write succeeded
+            click.echo(f"warning: could not update tone library: {e}", err=True)
+    click.echo(f"duplicated setlist {src!r} -> {dst!r} "
+               f"({'created, ' if created else ''}{copied} reference(s) copied)")
 
 
 @device_setlist.command(name="sync-on")
@@ -1501,7 +1841,7 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     setlist's references to manifest order — never orphaning a still-referenced
     pool preset. --gc (only with --all) prunes pool presets no setlist wants any
     more. A setlist the device doesn't have is reported as a clear error (create
-    it in the Stadium app first). EXPERIMENTAL.
+    it first with `helixgen device setlist create <name>`). EXPERIMENTAL.
     """
     from helixgen.device.manifest import SetlistManifest
     from helixgen.device.setlist_sync import sync_setlists

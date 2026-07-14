@@ -882,3 +882,270 @@ def device_save_preset_handler(
     except HelixError as e:
         raise ValueError(f"device error: {e}") from e
     return {"ok": new_cid is not None, "cid": new_cid}
+
+
+# --- IR maintenance + preset info + device-side setlist ops (parity #20) ----
+
+
+def device_delete_ir_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, name_or_hash: str,
+    force_wedge: bool = False
+) -> dict[str, Any]:
+    """Delete ONE user IR from the device, matched by name or 32-hex hash.
+
+    Removes the registry entry AND the backing .wav on the device
+    (best-effort — ``file_removed`` in the result says whether the file is
+    gone). Presets that referenced it show a silent cab until it is
+    re-imported. ``force_wedge=True`` additionally allows cleaning the
+    "wedged" state (a 32-hex hash with no registry entry but a still-resolving
+    device file, left by a delete → quick re-import); the result then has
+    ``cid: None``. Never pass ``force_wedge`` for an IR that was just
+    imported — its listing may merely be lagging. Returns
+    ``{ok, cid, name, hash, file_removed}``. Raises ValueError when nothing
+    (or more than one name) matches.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import maintenance as mt
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return mt.delete_device_ir(client, name_or_hash, ip=ip,
+                                       force_wedge=force_wedge)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_rename_ir_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, name_or_hash: str, new_name: str
+) -> dict[str, Any]:
+    """Rename a user IR on the device (matched by name or 32-hex hash).
+
+    Display-name only — the IR's hash (which presets reference) is untouched,
+    so no preset breaks. Returns ``{ok, cid, name, hash}`` (``name`` = the new
+    name).
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import maintenance as mt
+
+    try:
+        with HelixClient(ip=ip) as client:
+            target = mt.resolve_device_ir_live(client, name_or_hash)
+            ok = client.rename(target["cid_"], new_name)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"ok": bool(ok), "cid": target.get("cid_"), "name": new_name,
+            "hash": target.get("hash")}
+
+
+def device_ir_prune_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    execute: bool = False,
+    force: bool = False,
+    only: str | None = None,
+) -> dict[str, Any]:
+    """Delete device IRs no preset references any more (**dry-run by default**).
+
+    Diffs the device's user IRs against every IR hash referenced by presets ON
+    the device (non-activating content reads across the pool) and by local
+    tone-library ``.hsp`` files. Nothing is deleted unless ``execute=True``; an
+    IR referenced on the device is never a candidate; an IR referenced only by
+    a local off-device tone is "protected" and needs ``force=True`` too.
+    ``only`` narrows deletion to a single IR (name-or-hash). Returns
+    ``{ok, dry_run, device_irs, referenced, protected, orphans, deleted,
+    errors}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixError
+    from helixgen.device import maintenance as mt
+
+    try:
+        return mt.ir_prune(ip=ip, execute=execute, force=force, only=only)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_set_info_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    cids: list[int],
+    color: str | int | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Set preset color and/or notes on one or more CIDs (batch-capable).
+
+    ``color`` is a palette name (auto, white, red, dark orange, light orange,
+    yellow, green, turquoise, blue, violet, pink, off) or raw index 0-11 —
+    written as the ``colr`` content attr. ``notes`` is the Preset Info text,
+    written via a NON-activating content round-trip (the device's live tone is
+    never disturbed). At least one of ``color``/``notes`` is required. Returns
+    ``{ok, results: [{cid, color?, notes?}]}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import maintenance as mt
+
+    if color is None and notes is None:
+        raise ValueError("nothing to set: give color and/or notes")
+    if color is not None:
+        mt.color_index(color)  # validate once, before touching any preset
+    results: list[dict[str, Any]] = []
+    try:
+        with HelixClient(ip=ip) as client:
+            for cid in cids:
+                try:
+                    out = mt.set_preset_info(client, int(cid), color=color,
+                                             notes=notes)
+                except HelixError as e:
+                    results.append({"cid": int(cid), "error": str(e)})
+                    continue
+                results.append({"cid": int(cid), **out})
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    ok = all("error" not in r
+             and all(r.get(k, True) for k in ("color", "notes"))
+             for r in results)
+    return {"ok": ok, "results": results}
+
+
+def device_setlist_create_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, name: str
+) -> dict[str, Any]:
+    """Create a new EMPTY setlist ON THE DEVICE (no Stadium app needed).
+
+    Device-side creation (backlog #8): sends the device's own create command
+    and records the setlist in the local manifest too. Errors if a setlist
+    with that name already exists on the device. Returns ``{ok, cid, name}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            if client.resolve_setlist_cid(name) is not None:
+                raise ValueError(f"setlist {name!r} already exists on the device")
+            cid = client.create_setlist(name)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    if cid is None:
+        raise ValueError(f"device refused to create setlist {name!r}")
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        m.create_setlist(name)
+        m.save()
+    except Exception:  # noqa: BLE001 — advisory; the device write succeeded
+        pass
+    return {"ok": True, "cid": cid, "name": name}
+
+
+def device_setlist_rename_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, name: str, new_name: str
+) -> dict[str, Any]:
+    """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked).
+
+    Resolves the setlist by (case-insensitive) name. Errors if ``name`` isn't
+    on the device or ``new_name`` already is. Returns ``{ok, cid, name}``
+    (``name`` = the new name).
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            cid = client.resolve_setlist_cid(name)
+            if cid is None:
+                raise ValueError(f"setlist {name!r} not found on the device")
+            if client.resolve_setlist_cid(new_name) is not None:
+                raise ValueError(
+                    f"a setlist named {new_name!r} already exists on the device")
+            ok = client.rename(cid, new_name)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        if m.rename_setlist(name, new_name):
+            m.save()
+    except Exception:  # noqa: BLE001 — advisory
+        pass
+    return {"ok": bool(ok), "cid": cid, "name": new_name}
+
+
+def device_setlist_delete_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, name: str
+) -> dict[str, Any]:
+    """Delete a setlist ON THE DEVICE. Its references die with it — the pool
+    presets they point at are NEVER deleted (never-orphan guarantee).
+
+    A local manifest setlist of the same name is kept as a local-only draft
+    (marked unsynced). Returns ``{ok, cid, name}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            cid = client.resolve_setlist_cid(name)
+            if cid is None:
+                raise ValueError(f"setlist {name!r} not found on the device")
+            ok = client.delete_setlist(cid)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    try:
+        from helixgen.device.manifest import SetlistManifest
+
+        m = SetlistManifest.load()
+        if name in m.setlists_map:
+            m.set_setlist_synced(name, False)
+            m.save()
+    except Exception:  # noqa: BLE001 — advisory
+        pass
+    return {"ok": bool(ok), "cid": cid, "name": name}
+
+
+def device_setlist_duplicate_handler(
+    model: str, *, ip: str = _DEFAULT_DEVICE_IP, src: str, dst: str
+) -> dict[str, Any]:
+    """Duplicate a setlist ON THE DEVICE: copy ``src``'s references into ``dst``.
+
+    ``dst`` is created on the device when absent; if it exists it must be
+    EMPTY. References are pointers — the pool presets are shared, not copied
+    (editing a pool preset changes it in both setlists). Returns
+    ``{ok, src_cid, dst_cid, created, copied}``.
+    """
+    _validate_model(model)
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            src_cid = client.resolve_setlist_cid(src)
+            if src_cid is None:
+                raise ValueError(f"setlist {src!r} not found on the device")
+            dst_cid = client.resolve_setlist_cid(dst)
+            created = False
+            if dst_cid is None:
+                dst_cid = client.create_setlist(dst)
+                created = True
+                if dst_cid is None:
+                    raise ValueError(f"device refused to create setlist {dst!r}")
+            copied = client.duplicate_setlist_refs(src_cid, dst_cid)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    if created:
+        try:
+            from helixgen.device.manifest import SetlistManifest
+
+            m = SetlistManifest.load()
+            m.create_setlist(dst)
+            m.save()
+        except Exception:  # noqa: BLE001 — advisory; the device write succeeded
+            pass
+    return {"ok": True, "src_cid": src_cid, "dst_cid": dst_cid,
+            "created": created, "copied": copied}

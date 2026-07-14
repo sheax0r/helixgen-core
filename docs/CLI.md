@@ -157,3 +157,26 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 - `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg.
 - `helixgen ir-scan <dir>... [--rescan] [--remove <basename>]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache.
 - `helixgen list-irs` — print `<hash>  <wav-path>` for every registered IR.
+
+## Device commands (`helixgen device …`)
+
+With the `device` extra (`pip install 'helixgen[device]'`) helixgen drives a
+Helix Stadium over the LAN — no editor app. Point at the device with
+`--ip`/`--port` or `$HELIXGEN_HELIX_IP`. The full verb reference lives in the
+project [`CLAUDE.md`](../CLAUDE.md); highlights:
+
+- Presets: `device list / read / load / create / save / rename / delete /
+  set-param / pull / push / restore / backup / install / sync`.
+- Preset info: `device set-info <cid>... [--color <name|0-11>] [--notes
+  <text>]` — batch-capable color + notes (notes are written without
+  activating the preset).
+- Setlists: `device setlists`, `device setlist
+  create|rename|delete|duplicate` (device-side; delete/duplicate never touch
+  the preset pool) and `device setlist list|add|remove|create-local`
+  (local manifest membership for `device sync`).
+- IRs: `device list-irs / push-ir / pull-ir`, `device delete-ir
+  <name-or-hash>`, `device rename-ir <name-or-hash> <new>`, and
+  `device ir-prune [--yes] [--force] [--only …]` — delete IRs no preset
+  references (dry-run by default; IRs referenced only by local off-device
+  presets need `--force`).
+- Global settings: `device settings list|get|set` (161 `global.*` keys).

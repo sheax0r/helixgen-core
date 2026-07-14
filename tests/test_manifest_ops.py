@@ -57,3 +57,33 @@ def test_add_to_synced_setlist_marks_on_device(tmp_path):
     m.set_setlist_synced("live", True)
     m.add_to_setlist("live", "Beta")
     assert m.tones["Beta"]["slot"] == "auto"
+
+
+def test_rename_setlist_preserves_order_and_record(tmp_path):
+    m = SetlistManifest(tmp_path / "s.json")
+    m.register_tone(_hsp(tmp_path, "Alpha"))
+    m.create_setlist("first")
+    m.add_to_setlist("mid", "Alpha")
+    m.create_setlist("last")
+    assert m.rename_setlist("mid", "gigs") is True
+    assert m.setlists() == ["first", "gigs", "last"]
+    assert m.tones_in("gigs") == ["Alpha"]
+    # observed record follows too
+    m.record_observed_setlist("first", 1, {})
+    m.record_observed_setlist("gigs", 2, {"Alpha": {"ref_cid": 9, "posi": 0}})
+    m.rename_setlist("gigs", "shows")
+    assert "shows" in m.observed["setlists"]
+    assert "gigs" not in m.observed["setlists"]
+
+
+def test_rename_setlist_unknown_returns_false(tmp_path):
+    m = SetlistManifest(tmp_path / "s.json")
+    assert m.rename_setlist("nope", "x") is False
+
+
+def test_rename_setlist_collision_rejected(tmp_path):
+    m = SetlistManifest(tmp_path / "s.json")
+    m.create_setlist("a")
+    m.create_setlist("b")
+    with pytest.raises(ManifestError):
+        m.rename_setlist("a", "b")

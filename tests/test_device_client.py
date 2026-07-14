@@ -666,3 +666,230 @@ def test_set_property_refuses_self_severing_key():
     # same type coerce_value raises, so the CLI/MCP set paths surface it cleanly)
     with pytest.raises(ValueError):
         h.set_property("global.wifi.enable", "i", 0)
+
+
+# -- library polish: IR delete + setlist create/delete/duplicate -------------
+
+def test_delete_irs_removes_from_user_irs_container(monkeypatch):
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    ok = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 1)])
+    _wire(h, [ok])
+    assert h.delete_irs([1159]) is True
+    # the /RemoveContent went to the USER_IRS container (-11)
+    from helixgen.device.osc import parse_osc_message
+    raw = h.sock.sent[0]
+    addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    assert addr == "/RemoveContent"
+    assert args[1] == ("i", -11)
+
+
+def test_create_setlist_sends_ctype_1003_under_root(monkeypatch):
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    # rpc 1000: list -5 for the next free posi (one setlist at posi 0)
+    existing = [{"cid_": 816, "name": "Throwaway", "cctp": 1001, "posi": 0}]
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb(existing, use_bin_type=True))])
+    # rpc 1001: /CreateContent -> /status [reqid, newCid, 0]
+    create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", 0)])
+    # rpc 1002: resolve_setlist_cid re-lists -5 -> real cid
+    after = existing + [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 1}]
+    list2 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(after, use_bin_type=True))])
+    _wire_seq(h, [[list1], [create], [list2]])
+
+    assert h.create_setlist("ZZC-x") == 1186
+    from helixgen.device.osc import parse_osc_message
+    raw = h.sock.sent[1]  # the /CreateContent frame
+    addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    assert addr == "/CreateContent"
+    assert args[1] == ("i", -5)      # setlists root
+    assert args[2] == ("i", 1)       # next free posi
+    assert args[3] == ("i", 1003)    # setlist ctype
+
+
+def test_create_setlist_none_on_nonzero_code(monkeypatch):
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    create = osc_encode("/status", [("i", 1001), ("i", 0), ("i", -47)])
+    _wire_seq(h, [[list1], [create]])
+    assert h.create_setlist("ZZC-x") is None
+
+
+def test_delete_setlist_removes_from_root(monkeypatch):
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    ok = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 1)])
+    _wire(h, [ok])
+    assert h.delete_setlist(1186) is True
+    from helixgen.device.osc import parse_osc_message
+    raw = h.sock.sent[0]
+    addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    assert addr == "/RemoveContent"
+    assert args[1] == ("i", -5)
+
+
+def test_duplicate_setlist_refs_copies_in_posi_order(monkeypatch):
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    calls = []
+
+    def fake_list(cid, strict=False):
+        calls.append(("list", cid))
+        if cid == 42:   # source: two refs, out of posi order
+            return [
+                {"cid_": 502, "cctp": 1003, "rcid": 200, "posi": 1},
+                {"cid_": 501, "cctp": 1003, "rcid": 100, "posi": 0},
+            ]
+        return []       # destination: empty
+
+    def fake_ref(dst, pool_cid, pos):
+        calls.append(("ref", dst, pool_cid, pos))
+        return 900 + pos
+
+    monkeypatch.setattr(h, "list_container", fake_list)
+    monkeypatch.setattr(h, "reference_into_setlist", fake_ref)
+    assert h.duplicate_setlist_refs(42, 77) == 2
+    assert ("ref", 77, 100, 0) in calls and ("ref", 77, 200, 1) in calls
+
+
+def test_duplicate_setlist_refs_requires_empty_destination(monkeypatch):
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    monkeypatch.setattr(
+        h, "list_container",
+        lambda cid, strict=False: [{"cid_": 1, "cctp": 1003, "rcid": 5, "posi": 0}])
+    with pytest.raises(HelixError, match="empty"):
+        h.duplicate_setlist_refs(42, 77)
+
+
+# -- strict container listings (ir-prune / duplicate safety; review #37-1) ----
+
+def test_list_container_strict_raises_on_no_reply():
+    """A /GetContainerContents timeout (zero reply frames) must NOT read as an
+    empty container in strict mode — an empty 'pool' would make every user IR
+    look like an orphan to ir-prune."""
+    h = HelixClient()
+    _wire(h, [])  # poller never fires -> _rpc returns []
+    with pytest.raises(HelixError, match="no reply"):
+        h.list_container(-2, strict=True)
+    # non-strict keeps the legacy silent-empty behavior
+    _wire(h, [])
+    assert h.list_container(-2) == []
+
+
+def test_list_container_strict_raises_on_undecodable_blob():
+    """A truncated/undecodable listing blob (chunked-reply decode failure) must
+    raise in strict mode instead of silently dropping items."""
+    h = HelixClient()
+    # 0xc1 is an invalid msgpack byte -> decode_blob returns raw bytes
+    reply = osc_encode(
+        "/GetContainerContents", [("i", 1000), ("b", b"\xc1garbage")])
+    _wire(h, [reply])
+    with pytest.raises(HelixError, match="undecodable"):
+        h.list_container(-2, strict=True)
+    _wire(h, [reply])
+    assert h.list_container(-2) == []  # legacy behavior unchanged
+
+
+def test_list_container_strict_accepts_genuine_empty_array():
+    h = HelixClient()
+    reply = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    _wire(h, [reply])
+    assert h.list_container(-2, strict=True) == []
+
+
+def test_list_presets_and_irs_pass_strict_through(monkeypatch):
+    h = HelixClient()
+    seen = []
+
+    def fake_list(cid, strict=False):
+        seen.append((cid, strict))
+        return []
+
+    monkeypatch.setattr(h, "list_container", fake_list)
+    h.list_presets(-2, strict=True)
+    h.list_irs(strict=True)
+    h.list_setlists(strict=True)
+    assert all(s is True for _c, s in seen) and len(seen) == 3
+
+
+def test_duplicate_setlist_refs_lists_strictly(monkeypatch):
+    """duplicate's 'destination must be empty' precondition must not trust a
+    silent-empty listing (review #37-1)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient()
+    h.mutate_settle = 0
+    seen = []
+
+    def fake_list(cid, strict=False):
+        seen.append((cid, strict))
+        return []
+
+    monkeypatch.setattr(h, "list_container", fake_list)
+    h.duplicate_setlist_refs(42, 77)
+    assert seen and all(s is True for _c, s in seen)
+
+
+def test_hex_hash_lowercases_str():
+    assert HelixClient._hex_hash("AA" * 16) == "aa" * 16
+    assert HelixClient._hex_hash(bytes.fromhex("ab" * 16)) == "ab" * 16
+
+
+def test_create_setlist_retries_relist_for_real_cid(monkeypatch):
+    """The create-reply cid is unreliable — the relist is retried before
+    falling back to it (review #37-10)."""
+    _patch_sub(monkeypatch)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    h = HelixClient()
+    h.mutate_settle = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    # first relist: setlist not visible yet; second relist: there, cid 1186
+    empty = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb([], use_bin_type=True))])
+    after = osc_encode(
+        "/GetContainerContents",
+        [("i", 1003), ("b", msgpack.packb(
+            [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 0}],
+            use_bin_type=True))])
+    _wire_seq(h, [[list1], [create], [empty], [after]])
+    assert h.create_setlist("ZZC-x") == 1186
+
+
+def test_create_setlist_falls_back_to_reply_cid_with_warning(monkeypatch, caplog):
+    import logging
+
+    _patch_sub(monkeypatch)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    h = HelixClient()
+    h.mutate_settle = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    empties = [osc_encode(
+        "/GetContainerContents",
+        [("i", 1002 + i), ("b", msgpack.packb([], use_bin_type=True))])
+        for i in range(4)]
+    _wire_seq(h, [[list1], [create]] + [[e] for e in empties])
+    with caplog.at_level(logging.WARNING):
+        assert h.create_setlist("ZZC-x") == 930
+    assert any("unreliable" in r.message for r in caplog.records)

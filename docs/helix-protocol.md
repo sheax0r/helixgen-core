@@ -392,12 +392,12 @@ msgpack map.
 | **LIST** | `/GetContainerContents` | `(reqid:i, containerCID:i)` | `,ibi` → `[reqid, msgpack-array-of-item-maps, trailing:i]` | Lists a container's items (dialect A maps). **Large replies chunk the blob** across multiple frames — reassemble before msgpack-decoding. |
 | **READ meta** | `/GetContentRef` | `(reqid:i, cid:i)` | item metadata map (dialect A) | Single item's metadata. On a root CID returns the container's friendly name. |
 | **LOAD** | `/LoadPresetWithCID` | `(reqid:i, cid:i)` | `/status`; then device streams `/setEditBuffer` + `/setPropertyValue` on **2001** | Loads a preset into the edit buffer. Full content arrives on the PUB stream, not in the 2002 reply. |
-| **CREATE (empty)** | `/CreateContent` | `(reqid:i, container:i, pos:i, ctype:i, msgpack{name:"…"})` | `/status [reqid, newCid, code]` | Creates a **new empty content entry** (e.g. an empty preset) in `container` at slot `pos`. `ctype = 2` observed for a **preset**. **Its `/status` is special:** field 2 is the **new CID**, field 3 is the ok-code (`0`=ok) — unlike every other write. This is the first step of "Save As New" (§7.1). |
+| **CREATE (empty)** | `/CreateContent` | `(reqid:i, container:i, pos:i, ctype:i, msgpack{name:"…"})` | `/status [reqid, newCid, code]` | Creates a **new empty content entry** in `container` at slot `pos`. `ctype = 2` = a **preset**; **`ctype = 1003` under the setlists root `-5` creates a SETLIST** (live-verified 2026-07-14 — an item's `type` metadata field carries the ctype it was created with). **Its `/status` is special:** field 2 is the **new CID**, field 3 is the ok-code (`0`=ok) — unlike every other write. This is the first step of "Save As New" (§7.1), and the `helixgen device setlist create` path. |
 | **CREATE (copy)** | `/AddContentsToContainer` | `(reqid:i, container:i, msgpack[srcCIDs], pos:i, 0:i, 0:i)` | `/status [reqid, code, n]` | Copies the listed source CIDs into `container` at slot `pos`. **The new CID is NOT in this `/status`** — re-list the container and match by `posi`/`name` to discover it. Trailing two ints observed as `0,0` (**partially decoded**). |
 | **SAVE (persist buffer)** | `/SavePresetWithCID` | `(reqid:i, cid:i, 0:i, N:i)` | `/status [reqid, code, n]` | Persists the **current edit buffer** into an existing `cid`. The `0` third arg is fixed in captures. **`N` is an unknown 4th arg** — the editor sent `N=6` for a preset whose edit buffer had `bcnt=28` / 20 blocks, so **`N` is NOT the block count**; its meaning is unknown and **`N=0` works** (verified byte-faithful: after a `/SavePresetWithCID … 0` + reload, the `sfg_` and `pm__` sections are identical; only the volatile `hist`/`cg__` sections differ). |
 | **WRITE content** | `/SetContentData` | `(reqid:i, cid:i, contentBlob:b)` | `/status [reqid, code, n]` | Writes preset **content** directly into an existing `cid`, replacing it. `contentBlob` is the **stored-preset** encoding (`\xff\xff\xff\xff pgsm` magic — see §4 "content encodings"), **not** the edit-buffer `_sbepgsm` form. This is how the editor installs an **imported** preset (it also sends `/SetContentAttrs` for name/colour and `/LoadPresetWithCID` after). Live-verified: used to restore a preset **byte-faithfully**. Combined with `/CreateContent` (§7.1) this is the full "author arbitrary content into a new slot" path. |
-| **RENAME / set attrs** | `/SetContentAttrs` | `(reqid:i, cid:i, msgpack{name:"…"})` | `/status [reqid, code, n]` | Sets item attributes; `{name:"…"}` renames. Also used to set the preset **colour** via a `colr` key (`{colr:…}`) as the 3rd step of "Save As New" (§7.1). Other attr keys **partially decoded**. |
-| **DELETE** | `/RemoveContent` | `(reqid:i, container:i, msgpack[cids])` | `/status [reqid, code, n]` | Removes the listed CIDs from `container`. |
+| **RENAME / set attrs** | `/SetContentAttrs` | `(reqid:i, cid:i, msgpack{name:"…"})` | `/status [reqid, code, n]` | Sets item attributes; `{name:"…"}` renames (works on presets, **setlists**, and **IRs** alike). The preset **colour** is `{colr: <int>}` — an **int enum index** (a string is accepted with status 0 but silently coerced to 0; live-verified 2026-07-14). Once non-default, `colr` appears in the item's container-listing/`GetContentRef` map (that is the read path). Preset **notes** are NOT an attr — see the `pm__` note below. |
+| **DELETE** | `/RemoveContent` | `(reqid:i, container:i, msgpack[cids])` | `/status [reqid, code, n]` | Removes the listed CIDs from `container`. Deleting a **setlist** cid from `-5` kills its references but never the pool presets they point at. Deleting an **IR** cid from `-11` unregisters it immediately, but its backing `ir/*.wav` lingers until a **lazy device GC** (minutes) — during that window `/IrPathForHashGet` still resolves, so an immediate re-import is skipped as "already present" (and a delete → quick re-import of the same IR can wedge: file + path index present, no `-11` entry). helixgen removes the file over SFTP as part of its IR delete to close the window. |
 | **IR path lookup** | `/IrPathForHashGet` | `(reqid:i, blob16:b)` | `/xxxIrxPathForHash1 [reqid, path:s]` | IRs are referenced by a **16-byte hash**; this resolves a hash to its on-device path. Reply address is literally `/xxxIrxPathForHash1`; the path is device-side, e.g. `"/data/stadium-family-fw/ir/<name>.wav"` (IR files live under `/data/stadium-family-fw/ir/`). |
 
 ### Live edit-buffer manipulation
@@ -640,8 +640,19 @@ footswitch/controller assignment commands are parameterised on the device.
   error taxonomy is uncatalogued.
 - **2001 12-byte header field split** (§2) and **2003 framing** (assumed same as
   2002) are inferred, not verified.
-- **`/CreateContent` `ctype`.** Only `ctype = 2` (preset) is observed; values
-  for setlist/IR creation are unknown.
+- **`/CreateContent` `ctype`.** `ctype = 2` (preset) and `ctype = 1003`
+  (setlist, under root `-5`) are live-verified; the IR-creation value is
+  unknown (IRs are created by the watched-dir import, not `/CreateContent`).
+- **Preset notes** live as the `preset.meta.info` entry (`{key_, type:"s",
+  val_}`) in the content blob's **`pm__` property list** — not as a content
+  attr. Read/write = `/GetContentData` → edit the entry → `/SetContentData`
+  (non-activating; live-verified 2026-07-14). The rest of `pm__` is
+  per-preset properties (`preset.tempo.bpm`, `preset.inst1.z`,
+  `preset.floorboard.stomp.*`, …), kept sorted by key.
+- **`/GetContentInfo` (and the other `*ContentInfo` addresses in the app
+  binary) are NOT device commands** — the device replies `Msg dispatch
+  failed: /GetContentInfo is NOT known!!!`; they are app-internal. On-device
+  metadata reads are `/GetContentRef` / `/GetContainerContents`.
 - **PIN / remote-access auth.** The device has a menu concept of remote-access /
   pairing (and a real `sshd` on 22 with publickey/password). Whether/how a PIN
   gates the ZMQ ports on some firmware, and how SSH keys are provisioned

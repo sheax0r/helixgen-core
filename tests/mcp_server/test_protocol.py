@@ -62,6 +62,15 @@ def test_server_registers_documented_tools():
         "device_setlist_remove",
         "device_sync_setlist",
         "device_sync_all",
+        # IR maintenance + preset info + device-side setlist ops (parity #20).
+        "device_delete_ir",
+        "device_rename_ir",
+        "device_ir_prune",
+        "device_set_info",
+        "device_setlist_create",
+        "device_setlist_rename",
+        "device_setlist_delete",
+        "device_setlist_duplicate",
     }
     assert names == expected, f"unexpected tool set: {names}"
 

@@ -266,8 +266,8 @@ def sync_setlists(
                 cid = client.resolve_setlist_cid(name)
                 if cid is None:
                     errors.append(
-                        f"setlist '{name}' not found on device; create '{name}' "
-                        f"in the Stadium app first, then re-sync")
+                        f"setlist '{name}' not found on device; create it with "
+                        f"`helixgen device setlist create '{name}'`, then re-sync")
                     continue
                 setlist_cids[name] = cid
                 resolved.append(name)

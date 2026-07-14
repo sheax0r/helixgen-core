@@ -136,15 +136,16 @@ The first 2026-07-12 setlist-sync attempt was **backed out** (built on a wrong
 assumption — see #9); the reference-based redesign below then **shipped
 2026-07-12**.
 
-- **#8 Create a setlist** **[device-write][discovery]** — **still deferred.**
-  helixgen can *resolve* a user setlist by name (`client.resolve_setlist_cid`,
-  enumerating `cctp==1001` under -5) but cannot *create* one. The 2002 create
-  command is uncaptured (only the 2001 `/addContent` result was seen). Next:
-  `tcpdump` port 2002 while the Stadium app creates a setlist. Until then, the
-  user creates a new setlist by hand in the Stadium app; `device sync` resolves
-  it by name and errors clearly ("create '<name>' in the Stadium app first") when
-  it's absent. `device setlist create-local` / `add`'s auto-create only touch the
-  local manifest, not the device.
+- **#8 Create a setlist** — **✅ SHIPPED (2026-07-14, IR + library polish).**
+  No capture was needed: a container item's `type` metadata field carries the
+  `/CreateContent` `ctype` it was made with (preset=2, setlist=**1003**), and
+  `/CreateContent(-5, pos, 1003, {name})` creates a working setlist —
+  live-verified on the XL (accepts references, renames, deletes like an
+  app-created one). Shipped as `helixgen device setlist create` (+ MCP
+  `device_setlist_create`); `device setlist duplicate` auto-creates its
+  target; `device sync`'s missing-setlist error now points at the verb
+  instead of the Stadium app. Design spec:
+  `docs/superpowers/specs/2026-07-14-ir-library-polish-design.md`.
 - **#9 Install a preset INTO a setlist** — **✅ IMPLEMENTED (2026-07-12).**
   Confirmed model: `/AddContentsToContainer(setlist,[poolCid],…)` creates a
   **REFERENCE** (`cctp 1003`, `rcid`→pool preset), **not a copy**; deleting the
@@ -187,13 +188,17 @@ assumption — see #9); the reference-based redesign below then **shipped
   resolution shipped with #10.)
 
 ### IR maintenance
-- **#11 IR cleanup command** **[device-write]** — `helixgen device ir-prune`
-  (or similar): delete IRs on the device that no preset references. Diff the
-  device's user IRs (`client.list_irs()`, container -11) against the `irhash`es
-  referenced by all presets currently on the device (across setlists), and
-  remove the orphans (`/RemoveContent` on -11). Dry-run first; confirm; report
-  freed slots. Guard against deleting an IR referenced by an off-device preset
-  the user still has locally.
+- **#11 IR cleanup command** — **✅ SHIPPED (2026-07-14, IR + library polish).**
+  `helixgen device ir-prune` (+ MCP `device_ir_prune`): diffs the device's
+  user IRs against the `irmd` hashes referenced by every pool preset
+  (non-activating `get_content` scan — fails closed if any read fails) AND by
+  local tone-library `.hsp` files. **Dry-run by default**; `--yes` executes;
+  locally-referenced "protected" IRs need `--force`; `--only` narrows to one
+  IR. Plus `device delete-ir` / `device rename-ir` (name-or-hash). Delete is
+  *complete*: `/RemoveContent(-11)` + best-effort SFTP removal of the backing
+  `.wav` (the device only GCs the file lazily, which false-positives a quick
+  re-import — see `helix-protocol.md`). HW-validated on the XL with a
+  synthesized junk IR. (`src/helixgen/device/maintenance.py`)
 
 ### Slot ordering
 - **#7 Slot ordering** — **✅ REFRAMED (2.19.0, tone-library redesign).**
@@ -356,11 +361,22 @@ orthogonal to it.
   (`/BlockEnableSet`), live model set (`/ModelSet`), tempo (`/SetTempo`,
   `/SetTimeSignature`), tuner engage + readout (2001/2003 stream schema). The
   performance surface. Matrix §5/§9/§10.
-- **P6 · #20 IR + library polish** **[device-write]** — IR delete/prune
-  (see **#11**), IR rename/folders; setlist rename/delete/duplicate; import/
-  export `.hss`/single-file bundles; preset color/notes. **Sequence after
-  PR #31.** Also folds in active-preset select (**#1**) and create-setlist
-  (**#8**). Matrix §1/§2/§7.
+- **P6 · #20 IR + library polish** — **🟡 MOSTLY SHIPPED (2026-07-14).**
+  Shipped: IR delete/rename/prune (**#11** ✅), setlist
+  create/rename/delete/duplicate (**#8** ✅ — creation cracked, no capture
+  needed), preset color + notes (`device set-info`, batch-capable;
+  color=`colr` int attr, notes=`pm__ preset.meta.info` content property).
+  Design + protocol findings:
+  `docs/superpowers/specs/2026-07-14-ir-library-polish-design.md`.
+  Still open from the original row:
+  - **#31 `.hss` setlist-bundle import/export** — **needs a sample `.hss`
+    exported from the Stadium app** (none exists on this machine; the format
+    will not be guessed). Once a sample lands: reverse it (likely a container
+    of preset blobs + manifest), ship `device setlist export-hss/import-hss`,
+    document in `helix-format-reference.md`.
+  - IR folders / move-to-folder (matrix §7) — content-path surface not RE'd.
+  - Active-preset select (**#1**) — unchanged, still open.
+  - Setlist reorder (`/ReorderContainerContent`) — arg shape still 🔍.
 - **P7 · #21 Quick wins** **[device-write]** — `helixgen device info`
   (`/ProductInfoGet`: firmware/model/capabilities); controller depth
   (curve/threshold/MIDI-CC/label/merge/XY assignment). Matrix §6/§12.
@@ -410,6 +426,18 @@ LED control, focus-view/UI cosmetics.
   "the user setlist *is* the on-device population"), or (b) retire slot labels
   in favor of a bare on/off-device flag. Surfaced by the PR #34 adversarial
   review (finding 9).
+
+- **#32 ir-prune / delete-ir minor residuals (PR #37 review)** — non-gating
+  leftovers from the adversarial review, all fail-closed or flag-gated today:
+  (a) `ir-prune --force` conflates two consents (delete *protected* IRs AND
+  override manifest-path *warnings*) — split out an `--ignore-warnings`;
+  (b) a dangling setlist `rcid` (reference to a deleted pool preset) makes the
+  pool-coverage cross-check fail forever with a misleading "listing looks
+  incomplete / reboot" error — detect and suggest removing the stale reference;
+  (c) the `--force-wedge` path still resolves via non-strict listings — make the
+  wedge-path resolution strict too;
+  (d) theoretical: multi-message paginated listings (never observed; blob
+  chunking IS covered) could evade the cross-check — note only.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

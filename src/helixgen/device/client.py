@@ -63,6 +63,13 @@ CT_PRESET = Cctp.PRESET
 CT_SETLIST = Cctp.SETLIST
 CT_TEMPLATE = Cctp.TEMPLATE
 
+# ``/CreateContent`` ctype values. A container item's ``type`` field carries
+# the ctype it was created with: presets are ``2`` (long-observed) and setlist
+# items are ``1003`` (live-verified 2026-07-14 — /CreateContent(-5, pos, 1003,
+# {name}) creates a working setlist; see the IR + library polish design spec).
+CTYPE_PRESET = 2
+CTYPE_SETLIST = 1003
+
 _SLOT_LETTERS = "ABCD"
 
 
@@ -304,23 +311,48 @@ class HelixClient:
         return False
 
     # -- reads -------------------------------------------------------------
-    def list_container(self, cid: int) -> List[Dict[str, Any]]:
+    def list_container(self, cid: int, *, strict: bool = False) -> List[Dict[str, Any]]:
+        """List a container's items.
+
+        With ``strict=False`` (the legacy default) a timeout or an undecodable
+        reply silently reads as an empty/partial list — fine for interactive
+        browsing, **catastrophic for destructive planning** (an "empty pool"
+        makes every user IR look like an orphan to ``ir-prune``).
+        ``strict=True`` distinguishes the failure modes:
+
+        * zero reply frames (timeout / connection drop) → :class:`HelixError`;
+        * a blob argument that failed msgpack decoding (truncated chunked
+          reply) → :class:`HelixError`;
+        * a genuine empty-array reply → ``[]``.
+        """
+        replies = self._rpc("/GetContainerContents", [("i", cid)])
+        if strict and not replies:
+            raise HelixError(
+                f"no reply listing container {cid} (timeout or connection "
+                "drop); refusing to treat it as empty — retry, and reboot the "
+                "Helix if it persists")
         items: List[Dict[str, Any]] = []
-        for _addr, args in self._rpc("/GetContainerContents", [("i", cid)]):
+        for _addr, args in replies:
             for a in args:
                 if isinstance(a, list):
                     items.extend(x for x in a if isinstance(x, dict))
                 elif isinstance(a, dict):
                     items.append(a)
+                elif strict and isinstance(a, (bytes, bytearray)):
+                    raise HelixError(
+                        f"undecodable listing blob for container {cid} "
+                        "(truncated chunked reply?); refusing a partial "
+                        "listing — retry")
         return items
 
-    def list_presets(self, container: int = USER) -> List[Dict[str, Any]]:
-        presets = [m for m in self.list_container(container)
+    def list_presets(self, container: int = USER, *,
+                     strict: bool = False) -> List[Dict[str, Any]]:
+        presets = [m for m in self.list_container(container, strict=strict)
                    if m.get("cctp") == CT_PRESET]
         presets.sort(key=lambda m: m.get("posi", 1 << 30))
         return presets
 
-    def list_setlists(self) -> List[Dict[str, Any]]:
+    def list_setlists(self, *, strict: bool = False) -> List[Dict[str, Any]]:
         """Return the device's real user setlists.
 
         A setlist is an item of type ``cctp==1001`` living inside the setlists
@@ -330,7 +362,7 @@ class HelixClient:
         least ``cid_``, ``name``, ``posi``.
         """
         out = []
-        for m in self.list_container(Container.SETLISTS_ROOT):
+        for m in self.list_container(Container.SETLISTS_ROOT, strict=strict):
             if m.get("cctp") == Cctp.SETLIST:
                 out.append(dict(m))
         out.sort(key=lambda m: m.get("posi", 1 << 30))
@@ -358,17 +390,17 @@ class HelixClient:
         if isinstance(h, (bytes, bytearray)):
             return bytes(h).hex()
         if isinstance(h, str):
-            return h
+            return h.lower()
         return None
 
-    def list_irs(self) -> List[Dict[str, Any]]:
+    def list_irs(self, *, strict: bool = False) -> List[Dict[str, Any]]:
         """Return the device's user IRs: ``{cid_, name, hash, mono, posi}``.
 
         ``hash`` is normalized to the 32-hex Stadium IR hash (== helixgen
         ``irhash``).
         """
         irs = []
-        for m in self.list_container(USER_IRS):
+        for m in self.list_container(USER_IRS, strict=strict):
             hh = self._hex_hash(m.get("hash"))
             if hh is None:
                 continue
@@ -772,6 +804,90 @@ class HelixClient:
         preset cid; removing the reference leaves the pool preset untouched."""
         with self.mutating():
             return self._delete(setlist_cid, [ref_cid])
+
+    def delete_irs(self, cids: Sequence[int]) -> bool:
+        """Delete user IRs by cid from the device (``/RemoveContent`` on the
+        USER_IRS container ``-11`` — the same command preset delete uses).
+        Callers resolve name/hash → cid first (``maintenance.resolve_device_ir``)."""
+        with self.mutating():
+            return self._delete(Container.USER_IRS, list(cids))
+
+    def create_setlist(self, name: str, pos: Optional[int] = None) -> Optional[int]:
+        """Create a new (empty) setlist on the device; return its cid.
+
+        Sends ``/CreateContent`` under the setlists root ``-5`` with
+        ``ctype=1003`` (live-verified 2026-07-14 — closes backlog #8). Like
+        preset creation, the cid in the create reply can be unreliable, so the
+        root is re-listed by name to recover the real cid. ``None`` on failure.
+        """
+        with self.mutating():
+            if pos is None:
+                pos = self._lowest_empty_posi(Container.SETLISTS_ROOT)
+            msgpack = self._load_msgpack()
+            created: Optional[int] = None
+            for addr, args in self._rpc(
+                    "/CreateContent",
+                    [("i", int(Container.SETLISTS_ROOT)), ("i", int(pos)),
+                     ("i", CTYPE_SETLIST), ("b", msgpack.packb({"name": name}))]):
+                if addr == "/status" and len(args) >= 3 and args[2] == 0:
+                    created = args[1]
+            if created is None:
+                return None
+            # The create-reply cid is unreliable (same as preset creation), so
+            # the root is re-listed by name — with retries, since listings lag
+            # briefly after a write. The reply cid is only a last-resort
+            # fallback.
+            for i in range(4):
+                real = self.resolve_setlist_cid(name)
+                if real is not None:
+                    return real
+                if i < 3:
+                    time.sleep(0.25)
+            logger.warning(
+                "setlist %r created but not yet listed under -5; falling back "
+                "to the create-reply cid %s (unreliable — re-list to confirm)",
+                name, created)
+            return created
+
+    def delete_setlist(self, cid: int) -> bool:
+        """Delete a setlist container (``/RemoveContent`` from the root ``-5``).
+
+        The setlist's references die with it; the pool presets they pointed at
+        are untouched (live-verified — never-orphan holds). ``cid`` MUST be a
+        setlist cid, never a pool preset cid.
+        """
+        with self.mutating():
+            return self._delete(Container.SETLISTS_ROOT, [int(cid)])
+
+    def duplicate_setlist_refs(self, src_cid: int, dst_cid: int) -> int:
+        """Copy setlist ``src_cid``'s references into ``dst_cid`` (which must
+        currently hold none), preserving order. Returns the number copied.
+
+        References are copies of *pointers* (``rcid``) — the pool presets are
+        shared, not duplicated. Raises :class:`HelixError` if the destination
+        already has references (a partial merge is a different operation) or a
+        copy fails partway.
+        """
+        with self.mutating():
+            dst_refs = [m for m in self.list_container(dst_cid, strict=True)
+                        if m.get("cctp") == Cctp.REFERENCE]
+            if dst_refs:
+                raise HelixError(
+                    f"destination setlist cid {dst_cid} is not empty "
+                    f"({len(dst_refs)} references); duplicate needs an empty "
+                    "target")
+            src_refs = [m for m in self.list_container(src_cid, strict=True)
+                        if m.get("cctp") == Cctp.REFERENCE]
+            src_refs.sort(key=lambda m: m.get("posi", 0))
+            copied = 0
+            for i, r in enumerate(src_refs):
+                if self.reference_into_setlist(dst_cid, r.get("rcid"), i) is None:
+                    raise HelixError(
+                        f"failed to copy reference {r.get('name')!r} "
+                        f"(rcid {r.get('rcid')}) at position {i}; destination "
+                        "setlist is partially filled — delete it and retry")
+                copied += 1
+            return copied
 
     def mirror_setlist(self, setlist_cid: int,
                        ordered_pool_cids: Sequence[int]) -> Dict[str, list]:

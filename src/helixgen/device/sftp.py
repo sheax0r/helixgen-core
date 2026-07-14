@@ -158,6 +158,31 @@ class HelixSFTP:
         except IOError:
             return False
 
+    def remove_ir_file(self, remote_name: str) -> None:
+        """Delete one `.wav` (by basename) from the device's IR directory.
+
+        Completes an IR delete immediately: after ``/RemoveContent`` on
+        ``-11`` the backing file lingers in ``ir/`` for several minutes until
+        the device lazily garbage-collects it (live-observed 2026-07-14);
+        during that window ``/IrPathForHashGet`` still resolves and
+        ``push_ir`` false-positives "already on device". Removing the file
+        here closes that window. Already-gone files are fine (the device beat
+        us to it). ``remote_name`` must be a bare basename (no path
+        separators). **This deletes from the device filesystem.**
+        """
+        if "/" in remote_name or "\\" in remote_name or remote_name in (".", ".."):
+            raise HelixError(
+                f"IR removal takes a bare basename, got {remote_name!r}")
+        remote = f"{self.ir_dir}/{remote_name}"
+        try:
+            self._sftp.remove(remote)
+        except FileNotFoundError:
+            # the device garbage-collects the file itself a few minutes after
+            # /RemoveContent — already-gone is success, not an error.
+            return
+        except Exception as exc:
+            raise HelixError(f"remove {remote} failed: {exc}") from exc
+
     # -- write (device filesystem — the device auto-registers the file) ----
     def upload_ir(self, local_path: str, *, remote_name: Optional[str] = None) -> str:
         """Upload a local `.wav` straight into the device's IR directory.

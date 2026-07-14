@@ -274,7 +274,7 @@ def test_unresolved_setlist_errors_without_aborting(tmp_path, monkeypatch):
 
     assert res["ok"] is False
     assert any("missing" in e for e in res["errors"])
-    assert any("Stadium app" in e for e in res["errors"])
+    assert any("device setlist create" in e for e in res["errors"])
     # the resolvable setlist still synced; Tone B is slot-marked ("auto"), so
     # the user-population mirror still pools it — its references arrive once
     # the setlist exists on the device.

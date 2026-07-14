@@ -1,6 +1,6 @@
 ---
 name: device
-description: Use when the user wants to put helixgen presets ONTO their Helix Stadium over the network — install a tone, sync a whole setlist of tones to the device, or back up / restore. Drives the `helixgen device` CLI and the `device_*` MCP tools (including the reference-based `device sync <setlist>` / `device_sync_setlist` / `device_sync_all`). Runs after `tone` has authored the `.hsp` file(s) on disk. Triggers on "put this on my Helix", "sync my library to the device", "install these presets".
+description: Use when the user wants to put helixgen presets ONTO their Helix Stadium over the network — install a tone, sync a whole setlist of tones to the device, or back up / restore. Drives the `helixgen device` CLI and the `device_*` MCP tools (including the reference-based `device sync <setlist>` / `device_sync_setlist` / `device_sync_all`). Also covers on-device library housekeeping — create/rename/delete/duplicate setlists, delete/rename/prune IRs, preset color + notes. Runs after `tone` has authored the `.hsp` file(s) on disk. Triggers on "put this on my Helix", "sync my library to the device", "install these presets", "clean up my IRs", "delete/duplicate a setlist".
 ---
 
 # device
@@ -58,10 +58,10 @@ For "get my tones onto the Helix":
 
 1. **Make sure each tone is in a setlist** (in the manifest) — `device setlist
    add <setlist> <tone.hsp>` (the `tone` skill may have done this already).
-2. **Make sure the setlist exists on the device.** helixgen can *resolve* an
-   existing setlist by name but **cannot create one** (deferred, backlog #8).
-   If the setlist isn't already on the Stadium, tell the user to **create it by
-   hand in the Stadium app first**, then continue.
+2. **Make sure the setlist exists on the device.** If it doesn't, create it
+   right there: `helixgen device setlist create <name>` (MCP
+   `device_setlist_create`) — device-side creation shipped (#8); no Stadium
+   app needed. The sync's missing-setlist error names this verb too.
 3. **Sync:** `helixgen device sync <setlist>` (CLI) / `device_sync_setlist`
    (MCP) for one setlist, or `device sync --all` / `device_sync_all` for the
    whole manifest. The engine reconciles the **pool first** (install missing /
@@ -179,10 +179,56 @@ helixgen device setlist create-local <setlist>     # empty setlist in the manife
   registered to a *different* `.hsp` file (names must be unique). You never need
   to pre-check membership or read the manifest to add safely.
 - `create-local` (and `add` auto-creating a setlist) only add it to the
-  *manifest*. **Device-side creation is deferred (#8)** — the user must also
-  create that setlist by hand in the Stadium app before `sync` can push to it.
+  *manifest*. To also create it **on the device**, run `device setlist create
+  <name>` / `device_setlist_create` (#8 shipped) — then `sync` can push to it.
 - MCP mirrors: `device_setlist_list`, `device_setlist_add(model, setlist,
   hsp_path, pos?)`, `device_setlist_remove(model, setlist, tone_name)`.
+
+### Device-side setlist management (create / rename / delete / duplicate)
+
+```bash
+helixgen device setlist create <name>          # new empty setlist ON the device
+helixgen device setlist rename <old> <new>     # device + local manifest record
+helixgen device setlist delete <name> --yes    # references die; pool presets NEVER deleted
+helixgen device setlist duplicate <src> <dst>  # copies references; auto-creates <dst>
+```
+
+- MCP mirrors: `device_setlist_create` / `device_setlist_rename` /
+  `device_setlist_delete` / `device_setlist_duplicate`.
+- **Delete never orphans:** removing a setlist kills only its references —
+  every pool preset stays, still available to other setlists. Confirm with the
+  user before a delete (no undo).
+- **Duplicate shares, it doesn't copy:** both setlists reference the same pool
+  presets, so editing a tone changes it in both.
+
+### IR maintenance (delete / rename / prune) + preset info
+
+```bash
+helixgen device delete-ir <name-or-hash> --yes       # registry entry + backing .wav
+helixgen device rename-ir <name-or-hash> <new-name>  # display name only; hash keeps resolving
+helixgen device ir-prune                             # DRY-RUN report: referenced / protected / orphans
+helixgen device ir-prune --yes [--force] [--only <name-or-hash>]
+helixgen device set-info <cid>... --color green --notes "..."   # batch color + notes
+```
+
+- MCP mirrors: `device_delete_ir`, `device_rename_ir`, `device_ir_prune`
+  (`execute`/`force`/`only` args), `device_set_info`.
+- **`ir-prune` is dry-run by default.** Always run the dry-run first and show
+  the user the `orphans` / `protected` lists — and any `warnings` (local
+  tones whose recorded `.hsp` couldn't be read; executing over warnings needs
+  `--force`) — before executing. `protected` IRs are referenced by local
+  off-device tones — they need `--force` and a deliberate user choice.
+- An IR referenced by any preset ON the device (or by the live edit buffer)
+  is never a prune candidate. Execute mode re-verifies the plan right before
+  deleting and aborts if the device listings changed — just re-run.
+- **`delete-ir --force-wedge`** exists only for the wedged file-only state (a
+  hash whose file still resolves but has no registry entry, after a delete →
+  quick re-import). Never use it on an IR you just imported — the listing may
+  merely be lagging. If a plain delete-ir errors suggesting the flag, wait a
+  minute and retry without it first.
+- `set-info` colors: `auto, white, red, dark orange, light orange, yellow,
+  green, turquoise, blue, violet, pink, off` (or a raw index 0-11). Notes are
+  written without activating the preset.
 
 ### Sync a setlist onto the device (pool + references)
 
@@ -192,8 +238,8 @@ helixgen device sync --all [--gc] [--exclude-irs]
 ```
 
 - **Resolves the setlist by name** under `-5`. If the device doesn't have it,
-  the run errors clearly ("create '<name>' in the Stadium app first, then
-  re-sync") — that's the deferred-creation guardrail, not a bug.
+  the run errors clearly, naming the fix: `helixgen device setlist create
+  '<name>'`, then re-sync.
 - **Pool-first, idempotent:** installs tones missing from the pool (transcoded,
   template-free), re-pushes ones whose `.hsp` content hash changed, skips
   unchanged ones.
@@ -302,7 +348,7 @@ Tightly:
 
 | Error / symptom | What it means | Do |
 |---|---|---|
-| `create '<name>' in the Stadium app first` (or "setlist not found") | the named setlist isn't on the device; helixgen can't create it (#8) | have the user create it by hand in the Stadium app, then re-sync |
+| setlist not found on device (`create it with \`helixgen device setlist create ...\``) | the named setlist isn't on the device yet | run `device setlist create <name>` (or MCP `device_setlist_create`), then re-sync |
 | `could not resolve helixgen model 'X'` | a block model doesn't bridge to the device | that tone isn't installable as-is; report it |
 | cab silent / "No Model" after sync | referenced IR not in local `mapping.json` | `helixgen register-irs` the WAV, then re-sync (or import in HX Edit) |
 | sync fails partway / device stops responding | the Stadium's flaky network stack dropped the connection | **re-run** the same sync (idempotent); if it persists, **reboot the Helix**, then re-run |
@@ -316,7 +362,7 @@ Tightly:
 | `view_preset`-ing every tone / listing factory presets **before** the sync | The sync reports failures — run it, analyze `errors[]` after |
 | Looking for a "template" or checking factory-preset "coverage" | There are no templates — install is a faithful, template-free transcode; just sync |
 | Hand-rolling a per-preset install loop | Use `device sync <setlist>` — it reconciles the pool, rebuilds references, and uploads IRs in one call |
-| Trying to sync a setlist that isn't on the device | helixgen can't create setlists (#8) — the user creates it in the Stadium app first |
+| Telling the user to create a setlist in the Stadium app | Not needed any more — `device setlist create <name>` creates it on the device (#8 shipped) |
 | Hand-editing `~/.helixgen/setlists.json` | Manage it with `register` / `device add` / `device unsync` / `device setlist add/remove` (or the MCP tools / `tone` skill) |
 | Expecting `device sync` to touch presets helixgen didn't place | It won't — sync is a managed-set mirror keyed by tone name; untracked device presets are never moved, deleted, or overwritten |
 | Pre-checking whether a tone is already in a setlist before adding it | Don't — a tone belongs in as many setlists as you want (shared, referenced once in the pool). `device setlist add` is idempotent within a setlist and only errors on a name/different-file collision. Just add it |

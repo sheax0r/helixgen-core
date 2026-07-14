@@ -595,3 +595,157 @@ def device_sync_all(
     return _tools.device_sync_all_handler(
         model, ip=ip, gc=gc, exclude_irs=exclude_irs,
     )
+
+
+@app.tool()
+def device_delete_ir(
+    model: str, name_or_hash: str, ip: str = _tools._DEFAULT_DEVICE_IP,
+    force_wedge: bool = False
+) -> dict[str, Any]:
+    """Delete ONE user IR from the device, matched by name or 32-hex hash.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Removes the IR's registry
+    entry AND its backing .wav (best-effort — `file_removed` in the result
+    says whether the file is gone; presets that referenced it show a silent
+    cab until re-import). Errors when nothing (or more than one name)
+    matches — use the hash from `helixgen device list-irs` to disambiguate.
+    `force_wedge=True` additionally cleans the "wedged" state (a 32-hex hash
+    with no registry entry but a still-resolving device file, left by a
+    delete then quick re-import); the result then has `cid: None`. NEVER pass
+    `force_wedge` for an IR that was just imported — its listing may merely
+    be lagging behind the write. To clean up ALL unreferenced IRs at once,
+    use `device_ir_prune` instead. Returns
+    `{ok, cid, name, hash, file_removed}`.
+    """
+    return _tools.device_delete_ir_handler(
+        model, ip=ip, name_or_hash=name_or_hash, force_wedge=force_wedge)
+
+
+@app.tool()
+def device_rename_ir(
+    model: str, name_or_hash: str, new_name: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Rename a user IR on the device (matched by name or 32-hex hash).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Display-name only — the
+    IR's hash (which presets reference) is untouched, so no preset breaks.
+    Returns `{ok, cid, name, hash}` (`name` = the new name).
+    """
+    return _tools.device_rename_ir_handler(
+        model, ip=ip, name_or_hash=name_or_hash, new_name=new_name)
+
+
+@app.tool()
+def device_ir_prune(
+    model: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+    execute: bool = False,
+    force: bool = False,
+    only: str | None = None,
+) -> dict[str, Any]:
+    """Delete device IRs that no preset references any more — DRY-RUN by default.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Diffs the device's user
+    IRs against every IR hash referenced by the presets ON the device
+    (non-activating content reads — the live tone is never disturbed), by the
+    live edit buffer, and by the local tone library's .hsp files. Nothing is
+    deleted unless `execute=True`. An IR referenced by any on-device preset
+    is never a candidate. An IR referenced only by a local off-device tone is
+    "protected" and needs `force=True` as well. Local tones whose recorded
+    .hsp is missing/unreadable surface in `warnings` — executing over
+    warnings also requires `force`. `only` narrows deletion to a single IR
+    (name-or-hash). Execute mode re-scans immediately before deleting and
+    aborts if the device listings changed (nothing deleted; just re-run).
+    Always run the dry-run first and show the user the orphans/protected
+    lists (and any warnings) before executing. Returns `{ok, dry_run,
+    device_irs, referenced, protected, orphans, deleted, warnings, errors}`.
+    """
+    return _tools.device_ir_prune_handler(
+        model, ip=ip, execute=execute, force=force, only=only)
+
+
+@app.tool()
+def device_set_info(
+    model: str,
+    cids: list[int],
+    color: str | None = None,
+    notes: str | None = None,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Set preset color and/or notes on one or more preset `cids` (batch-capable).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `color` is a palette name
+    (`auto`, `white`, `red`, `dark orange`, `light orange`, `yellow`, `green`,
+    `turquoise`, `blue`, `violet`, `pink`, `off`) or a raw index 0-11. `notes`
+    is the Preset Info panel text. At least one of the two is required.
+    Notes are written via a NON-activating content round-trip — the device's
+    live tone is never disturbed. Passing several cids batch-applies the same
+    color/notes to each (the librarian's "batch color"); a failing cid does
+    NOT stop the batch — it is reported as `{cid, error}` in `results` and
+    `ok` goes false. Returns `{ok, results: [{cid, color?, notes?, error?}]}`.
+    """
+    return _tools.device_set_info_handler(
+        model, ip=ip, cids=cids, color=color, notes=notes)
+
+
+@app.tool()
+def device_setlist_create(
+    model: str, name: str, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Create a new EMPTY setlist ON THE DEVICE (no Stadium app needed).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Uses the device's own
+    create command and records the setlist in the local manifest too, so a
+    following `device_sync_setlist` can target it immediately. Errors if a
+    setlist with that name already exists on the device. (This is the
+    device-side counterpart of the local-manifest `device_setlist_add`
+    family.) Returns `{ok, cid, name}`.
+    """
+    return _tools.device_setlist_create_handler(model, ip=ip, name=name)
+
+
+@app.tool()
+def device_setlist_rename(
+    model: str, name: str, new_name: str, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked).
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Resolves the setlist by
+    case-insensitive name; errors if `name` isn't on the device or `new_name`
+    already is. Returns `{ok, cid, name}` (`name` = the new name).
+    """
+    return _tools.device_setlist_rename_handler(
+        model, ip=ip, name=name, new_name=new_name)
+
+
+@app.tool()
+def device_setlist_delete(
+    model: str, name: str, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Delete a setlist ON THE DEVICE. Never deletes presets.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. The setlist's references
+    die with it, but the pool presets they point at are NEVER deleted
+    (never-orphan guarantee) — every tone stays available to other setlists.
+    A local manifest setlist of the same name is kept as a local-only draft.
+    Confirm with the user before calling — there is no undo. Returns
+    `{ok, cid, name}`.
+    """
+    return _tools.device_setlist_delete_handler(model, ip=ip, name=name)
+
+
+@app.tool()
+def device_setlist_duplicate(
+    model: str, src: str, dst: str, ip: str = _tools._DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Duplicate a setlist ON THE DEVICE: copy `src`'s references into `dst`.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. `dst` is created on the
+    device when absent (and then recorded in the local manifest, like
+    `device_setlist_create`); if it already exists it must be EMPTY.
+    References are pointers — the pool presets are shared, not copied, so
+    editing a preset changes it in both setlists. Returns `{ok, src_cid,
+    dst_cid, created, copied}`.
+    """
+    return _tools.device_setlist_duplicate_handler(model, ip=ip, src=src, dst=dst)

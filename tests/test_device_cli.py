@@ -43,6 +43,10 @@ class FakeClient:
     def close(self):
         pass
 
+    def mutating(self):
+        import contextlib
+        return contextlib.nullcontext(self)
+
     # reads
     def list_presets(self, container=-2):
         self.calls.append(("list_presets", container))
@@ -446,3 +450,362 @@ def test_device_sync_errors_surface(monkeypatch, tmp_path):
     res = CliRunner().invoke(cli, ["device", "sync", "helixgen"])
     assert res.exit_code == 0, res.output
     assert "not found on device" in res.output
+
+
+# -- IR maintenance: delete-ir / rename-ir / ir-prune -------------------------
+
+CANNED_IRS = [
+    {"cid_": 1159, "name": "YA KW 412 M25 Mix 05", "hash": "aa" * 16,
+     "mono": False, "posi": 0},
+    {"cid_": 1160, "name": "ZZC-test", "hash": "bb" * 16,
+     "mono": False, "posi": 1},
+]
+
+
+class IrClient(FakeClient):
+    deleted = []
+
+    def list_irs(self):
+        self.calls.append(("list_irs",))
+        return [dict(m) for m in CANNED_IRS]
+
+    def delete_irs(self, cids):
+        IrClient.deleted.append(list(cids))
+        return True
+
+
+def test_device_delete_ir_by_name_with_yes(monkeypatch):
+    IrClient.deleted = []
+    _patch_client(monkeypatch, IrClient)
+    result = CliRunner().invoke(
+        cli, ["device", "delete-ir", "zzc-test", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert IrClient.deleted == [[1160]]
+    assert "ZZC-test" in result.output
+
+
+def test_device_delete_ir_requires_confirmation(monkeypatch):
+    IrClient.deleted = []
+    _patch_client(monkeypatch, IrClient)
+    result = CliRunner().invoke(
+        cli, ["device", "delete-ir", "ZZC-test"], input="n\n")
+    assert result.exit_code != 0
+    assert IrClient.deleted == []
+
+
+def test_device_delete_ir_unknown_errors(monkeypatch):
+    _patch_client(monkeypatch, IrClient)
+    result = CliRunner().invoke(cli, ["device", "delete-ir", "nope", "--yes"])
+    assert result.exit_code != 0
+    assert "no device IR" in result.output
+
+
+def test_device_rename_ir(monkeypatch):
+    seen = {}
+
+    class Recorder(IrClient):
+        def rename(self, cid, name):
+            seen["args"] = (cid, name)
+            return True
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "rename-ir", "ZZC-test", "ZZC-renamed"])
+    assert result.exit_code == 0, result.output
+    assert seen["args"] == (1160, "ZZC-renamed")
+
+
+def test_device_ir_prune_dry_run_default(monkeypatch):
+    from helixgen.device import maintenance as mt
+    seen = {}
+    canned = {
+        "ok": True, "dry_run": True, "device_irs": 2,
+        "referenced": [{"cid_": 1159, "name": "used", "hash": "aa" * 16,
+                        "presets": ["P"]}],
+        "protected": [], "deleted": [],
+        "orphans": [{"cid_": 1160, "name": "ZZC-test", "hash": "bb" * 16}],
+        "errors": [],
+    }
+    monkeypatch.setattr(mt, "ir_prune", lambda **kw: seen.update(kw) or canned)
+    result = CliRunner().invoke(cli, ["device", "ir-prune"])
+    assert result.exit_code == 0, result.output
+    assert seen["execute"] is False and seen["force"] is False
+    assert "dry-run" in result.output.lower()
+    assert "ZZC-test" in result.output
+
+
+def test_device_ir_prune_yes_and_json(monkeypatch):
+    from helixgen.device import maintenance as mt
+    seen = {}
+    canned = {"ok": True, "dry_run": False, "device_irs": 2, "referenced": [],
+              "protected": [], "orphans": [{"cid_": 1160, "name": "Z",
+                                            "hash": "bb" * 16}],
+              "deleted": [{"cid_": 1160, "name": "Z", "hash": "bb" * 16}],
+              "errors": []}
+    monkeypatch.setattr(mt, "ir_prune", lambda **kw: seen.update(kw) or canned)
+    result = CliRunner().invoke(
+        cli, ["device", "ir-prune", "--yes", "--only", "Z", "--json"])
+    assert result.exit_code == 0, result.output
+    assert seen["execute"] is True and seen["only"] == "Z"
+    assert json.loads(result.output)["deleted"][0]["name"] == "Z"
+
+
+# -- preset color / notes: set-info -------------------------------------------
+
+def test_device_set_info_batch_color(monkeypatch):
+    from helixgen.device import maintenance as mt
+    calls = []
+    _patch_client(monkeypatch, FakeClient)
+    monkeypatch.setattr(
+        mt, "set_preset_info",
+        lambda client, cid, **kw: calls.append((cid, kw)) or {"color": True})
+    result = CliRunner().invoke(
+        cli, ["device", "set-info", "101", "102", "--color", "red"])
+    assert result.exit_code == 0, result.output
+    assert calls == [(101, {"color": "red", "notes": None}),
+                     (102, {"color": "red", "notes": None})]
+
+
+def test_device_set_info_requires_color_or_notes(monkeypatch):
+    _patch_client(monkeypatch, FakeClient)
+    result = CliRunner().invoke(cli, ["device", "set-info", "101"])
+    assert result.exit_code != 0
+    assert "--color" in result.output or "--notes" in result.output
+
+
+def test_device_set_info_notes(monkeypatch):
+    from helixgen.device import maintenance as mt
+    calls = []
+    _patch_client(monkeypatch, FakeClient)
+    monkeypatch.setattr(
+        mt, "set_preset_info",
+        lambda client, cid, **kw: calls.append((cid, kw)) or {"notes": True})
+    result = CliRunner().invoke(
+        cli, ["device", "set-info", "101", "--notes", "hello there"])
+    assert result.exit_code == 0, result.output
+    assert calls == [(101, {"color": None, "notes": "hello there"})]
+
+
+# -- device-side setlist create / rename / delete / duplicate -----------------
+
+class SetlistClient(FakeClient):
+    """Fake with the device-side setlist surface."""
+
+    SETLISTS = {"helixgen": 988, "Mike": 1014}
+    created = []
+    deleted = []
+    duplicated = []
+
+    def resolve_setlist_cid(self, name):
+        self.calls.append(("resolve", name))
+        return type(self).SETLISTS.get(name)
+
+    def create_setlist(self, name, pos=None):
+        type(self).created.append(name)
+        return 1186
+
+    def delete_setlist(self, cid):
+        type(self).deleted.append(cid)
+        return True
+
+    def duplicate_setlist_refs(self, src, dst):
+        type(self).duplicated.append((src, dst))
+        return 3
+
+
+def _reset_setlist_client():
+    SetlistClient.created = []
+    SetlistClient.deleted = []
+    SetlistClient.duplicated = []
+
+
+def test_device_setlist_create_on_device(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+    _patch_client(monkeypatch, SetlistClient)
+    result = CliRunner().invoke(cli, ["device", "setlist", "create", "ZZC-new"])
+    assert result.exit_code == 0, result.output
+    assert SetlistClient.created == ["ZZC-new"]
+    assert "1186" in result.output
+
+
+def test_device_setlist_create_existing_errors(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+    _patch_client(monkeypatch, SetlistClient)
+    result = CliRunner().invoke(cli, ["device", "setlist", "create", "helixgen"])
+    assert result.exit_code != 0
+    assert "already exists" in result.output
+    assert SetlistClient.created == []
+
+
+def test_device_setlist_rename_device_and_manifest(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+    seen = {}
+
+    class Recorder(SetlistClient):
+        def rename(self, cid, name):
+            seen["args"] = (cid, name)
+            return True
+
+    # seed a manifest record under the old name
+    from helixgen.device.manifest import SetlistManifest
+    m = SetlistManifest.load()
+    m.create_setlist("helixgen")
+    m.save()
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "rename", "helixgen", "gigs"])
+    assert result.exit_code == 0, result.output
+    assert seen["args"] == (988, "gigs")
+    m2 = SetlistManifest.load()
+    assert "gigs" in m2.setlists() and "helixgen" not in m2.setlists()
+
+
+def test_device_setlist_rename_unknown_errors(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+    _patch_client(monkeypatch, SetlistClient)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "rename", "nope", "x"])
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+
+
+def test_device_setlist_delete_confirms_and_deletes(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+    _patch_client(monkeypatch, SetlistClient)
+    refused = CliRunner().invoke(
+        cli, ["device", "setlist", "delete", "Mike"], input="n\n")
+    assert refused.exit_code != 0 and SetlistClient.deleted == []
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "delete", "Mike", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert SetlistClient.deleted == [1014]
+    assert "pool" in result.output.lower()  # never-orphan reassurance
+
+
+def test_device_setlist_duplicate_creates_missing_target(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+
+    class Creator(SetlistClient):
+        def create_setlist(self, name, pos=None):
+            type(self).created.append(name)
+            type(self).SETLISTS = dict(type(self).SETLISTS, **{name: 1189})
+            return 1189
+
+    Creator.SETLISTS = {"helixgen": 988, "Mike": 1014}
+    _patch_client(monkeypatch, Creator)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "duplicate", "helixgen", "ZZC-copy"])
+    assert result.exit_code == 0, result.output
+    assert Creator.created == ["ZZC-copy"]
+    assert Creator.duplicated == [(988, 1189)]
+    assert "3" in result.output  # copied count
+
+
+# -- review #37 fixes ----------------------------------------------------------
+
+def _patch_sftp_noop(monkeypatch, removed=None):
+    from helixgen.device import sftp as sftp_mod
+
+    class _NoopSftp:
+        def __init__(self, ip, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def remove_ir_file(self, name):
+            if removed is not None:
+                removed.append(name)
+
+    monkeypatch.setattr(sftp_mod, "HelixSFTP", _NoopSftp)
+
+
+def test_device_delete_ir_wedged_hash_reachable_from_cli(monkeypatch):
+    """The advertised wedge cleanup must work via the CLI (finding 2): a hash
+    absent from the -11 listing but resolving in the path index is cleaned
+    when --force-wedge is given."""
+    removed = []
+    _patch_sftp_noop(monkeypatch, removed)
+    wedged = "dd" * 16
+
+    class WedgeClient(IrClient):
+        def ir_path_for_hash(self, h):
+            return ("/data/stadium-family-fw/ir/ZZC-w.wav"
+                    if h == wedged else None)
+
+    _patch_client(monkeypatch, WedgeClient)
+    result = CliRunner().invoke(
+        cli, ["device", "delete-ir", wedged, "--force-wedge", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert removed == ["ZZC-w.wav"]
+    assert IrClient.deleted == [] or WedgeClient.deleted == []
+
+
+def test_device_delete_ir_wedged_hash_without_flag_errors(monkeypatch):
+    """Without --force-wedge the same state errors, protecting a healthy
+    just-imported IR whose listing is merely lagging (finding 3)."""
+    removed = []
+    _patch_sftp_noop(monkeypatch, removed)
+    wedged = "dd" * 16
+
+    class WedgeClient(IrClient):
+        def ir_path_for_hash(self, h):
+            return "/data/stadium-family-fw/ir/ZZC-w.wav"
+
+    _patch_client(monkeypatch, WedgeClient)
+    result = CliRunner().invoke(cli, ["device", "delete-ir", wedged, "--yes"])
+    assert result.exit_code != 0
+    assert "force-wedge" in result.output
+    assert removed == []
+
+
+def test_device_set_info_continues_past_failures(monkeypatch):
+    """Batch set-info applies to every cid and reports failures at the end
+    instead of aborting on the first (finding 5)."""
+    from helixgen.device import maintenance as mt
+    calls = []
+
+    def flaky(client, cid, **kw):
+        calls.append(cid)
+        if cid == 101:
+            raise HelixError("device refused")
+        return {"color": True}
+
+    _patch_client(monkeypatch, FakeClient)
+    monkeypatch.setattr(mt, "set_preset_info", flaky)
+    result = CliRunner().invoke(
+        cli, ["device", "set-info", "101", "102", "--color", "red"])
+    assert result.exit_code != 0
+    assert calls == [101, 102]  # kept going after 101 failed
+    assert "102" in result.output and "failed" in result.output.lower()
+
+
+def test_device_setlist_duplicate_records_created_target(monkeypatch, tmp_path):
+    """An auto-created duplicate target is recorded in the local manifest,
+    like `setlist create` (finding 7)."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset_setlist_client()
+
+    class Creator(SetlistClient):
+        def create_setlist(self, name, pos=None):
+            type(self).created.append(name)
+            type(self).SETLISTS = dict(type(self).SETLISTS, **{name: 1189})
+            return 1189
+
+    Creator.SETLISTS = {"helixgen": 988}
+    _patch_client(monkeypatch, Creator)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "duplicate", "helixgen", "ZZC-copy"])
+    assert result.exit_code == 0, result.output
+    from helixgen.device.manifest import SetlistManifest
+    assert "ZZC-copy" in SetlistManifest.load().setlists()

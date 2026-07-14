@@ -42,13 +42,13 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Make ACTIVE preset | click in setlist | `/LoadPresetAtContainerPosition` | none | none | none | 🔍 | backlog #1; distinct active-index vs load-to-buffer |
 | New / duplicate / copy-to-setlist | Manage Presets | `/CreateContent`+`/SetContentData` | full | full | full | ✅ | `device create`/`install` + reference model _(library-agent)_ |
 | Rename preset | Rename dialog | `/SetContentInfo` | full | full | full | ✅ | `device rename` |
-| Set / batch preset color | Rename / Batch Color | `/SetContentInfo` (color) | none | none | none | 🔴 | color exists in `.hsp` meta; no device verb |
+| Set / batch preset color | Rename / Batch Color | `/SetContentAttrs` `{colr:int}` | full | full | n-a | ✅ | `device set-info <cid>... --color` (batch) / MCP `device_set_info`; int enum, HW-validated 2026-07-14 (#20) |
 | Reorder presets | drag | `/ReorderContainerContent` | partial | none | partial | 🟡 | `slots reorder`+sync _(library-agent)_; not HW-validated; arg 🔍 |
 | Move preset between setlists | drag | reference add/remove | full | full | full | ✅ | `device setlist add/remove` _(library-agent)_ |
 | Delete / clear-from-setlist | Delete / Clear | `/RemoveContent` | full | full | full | ✅ | `device delete`; clear = drop reference |
 | Export preset (.hsp) | drag out / Export | `/GetContentData` | full | n-a | full | ✅ | `device pull` (non-activating, 2.18) |
 | Import preset | drag in / Import | `/CreateContent`+`/SetContentData` | full | full | full | ✅ | `device push`/`install` |
-| Preset Info / Notes / Clips | Preset Info panel | `/SetContentInfo`; clip = audio content | none | none | none | 🔴 | notes text 🔴 (searchable meta); audio clips 🚫 |
+| Preset Info / Notes / Clips | Preset Info panel | notes = `pm__` `preset.meta.info` via `/GetContentData`+`/SetContentData`; clip = audio content | full | full | n-a | ✅ | notes ✅ `device set-info --notes` (non-activating RW, HW-validated 2026-07-14, #20); audio clips 🚫 |
 | MIDI Recall display | sidebar | client-side calc | none | none | none | 🟡 | derivable from setlist/preset/snapshot index; could compute offline |
 
 ## 2. Setlist management _(library-agent)_
@@ -56,13 +56,13 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Function | App location | Protocol | CLI | MCP | Skill | Verdict | Notes |
 |---|---|---|---|---|---|---|---|
 | List setlists | sidebar | `/GetContainerContents(-5)` | full | full | full | ✅ | `device setlists` |
-| Create setlist | sidebar ▸ + | `/CreateContent`(setlist) | none | none | partial | 🔍 | **backlog #8**; `create-local` = manifest only; device create arg 🔍 |
-| Rename setlist | dbl-click | `/SetContentInfo` | none | none | none | 🔴 | device-side rename not exposed |
-| Duplicate setlist | Duplicate | copy refs | none | none | none | 🔴 | not exposed |
+| Create setlist | sidebar ▸ + | `/CreateContent(-5, pos, ctype=1003, {name})` | full | full | full | ✅ | **#8 SHIPPED** `device setlist create` / `device_setlist_create` (HW-validated 2026-07-14); `create-local` = manifest only |
+| Rename setlist | dbl-click | `/SetContentAttrs` `{name}` | full | full | n-a | ✅ | `device setlist rename` / `device_setlist_rename` (also renames local manifest record); HW-validated 2026-07-14 (#20) |
+| Duplicate setlist | Duplicate | copy references (rcid) into a fresh setlist | full | full | n-a | ✅ | `device setlist duplicate` / `device_setlist_duplicate` (auto-creates target; pool presets shared, not copied); HW-validated 2026-07-14 (#20) |
 | Reorder setlists | drag | reorder cmd | none | none | none | 🔍 | arg 🔍 |
-| Delete / clear setlist | Delete / Clear | `/RemoveContent` | partial | partial | partial | 🟡 | `unsync`/managed-mirror handles member removal _(library-agent)_; whole-setlist delete 🔴 |
+| Delete / clear setlist | Delete / Clear | `/RemoveContent(-5,[cid])` | full | full | partial | ✅ | `device setlist delete` / `device_setlist_delete` — references die, pool presets never (never-orphan, HW-validated 2026-07-14, #20); clear = `unsync`/mirror-to-empty |
 | Sync setlist(s) | (app is live) | pool+reference reconcile | full | full | full | ✅ | `device sync <setlist>`/`--all --gc` _(library-agent)_ |
-| Import / export setlist (.hss) | File menu | bulk content | partial | none | partial | 🟡 | per-tone push/pull exists; single-file `.hss` bundle 🔴 |
+| Import / export setlist (.hss) | File menu | bulk content | partial | none | partial | 🟡 | per-tone push/pull exists; single-file `.hss` bundle = **backlog #31 — needs a sample .hss** (format not guessed) |
 
 ## 3. Signal-flow editor
 
@@ -128,8 +128,8 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Auto-upload preset IRs | on install | diff + push-ir | full | partial | full | 🟡 | `install --auto-irs` ✅; MCP `device_install_preset` skips IRs (#6) |
 | List device IRs | Cab IRs | `/GetContainerContents(-11)` | full | full | n-a | ✅ | `device list-irs` |
 | Export / download IR | Export | SFTP get | full | n-a | n-a | ✅ | `device pull-ir` (EXPERIMENTAL) |
-| Delete device IR (prune) | Delete | `/RemoveContent(-11)` | none | none | none | 🔴 | **backlog #11**; arg 🔍 |
-| Rename device IR | Rename | `/SetContentInfo` | none | none | none | 🔴 | not exposed |
+| Delete device IR (prune) | Delete | `/RemoveContent(-11)` + SFTP file removal | full | full | full | ✅ | **#11 SHIPPED** `device delete-ir` / `device ir-prune` (dry-run default, `--force` for locally-referenced, `--only`); MCP `device_delete_ir`/`device_ir_prune`; HW-validated 2026-07-14 |
+| Rename device IR | Rename | `/SetContentAttrs` `{name}` | full | full | n-a | ✅ | `device rename-ir` / MCP `device_rename_ir` (name-or-hash; hash untouched so presets keep resolving); HW-validated 2026-07-14 |
 | IR folders / move to folder | New Folder | content path | none | none | none | 🔴 | folder org not modeled |
 | Register / hash IRs locally | — | local | full | full | full | ✅ | `register-irs`/`ir-scan`/`ir-cache` |
 | IR block params (hi/lo cut, mix) | IR block | `.hsp` params | full | full | full | ✅ | authored on the IR block |
@@ -219,13 +219,15 @@ non-activating read/backup, live param set.
 - **Matrix Mixer** (§3) — per-output mixing/mute/solo.
 - Signal-flow param depth (§3) — input/output/split/merge/loop params.
 - Live device ops — snapshot recall/copy, model set, block bypass.
-- IR prune/rename/folders (§7), setlist rename/delete/duplicate (§2),
-  preset color/notes (§1), device info (§12), controller curve/MIDI/label (§6).
+- IR folders (§7), device info (§12), controller curve/MIDI/label (§6).
+  (IR prune/rename, setlist create/rename/delete/duplicate, preset
+  color/notes all ✅ shipped 2026-07-14 — #20/#11/#8.)
 
-**🔍 needs-capture (command known, arg shape only):** `/PropertyValueSet`
-(unlocks §8), `/SetTempo`, `/SetTimeSignature`, global-EQ write, tuner
-engage+readout, looper/transport, active-preset select (#1), create-setlist
-(#8), reorder args, live snapshot recall.
+**🔍 needs-capture (command known, arg shape only):** `/SetTempo`,
+`/SetTimeSignature`, global-EQ write, tuner engage+readout,
+looper/transport, active-preset select (#1), reorder args, live snapshot
+recall. (`/PropertyValueSet` captured — §8 shipped 2.20.0; create-setlist
+cracked without capture — #8 shipped 2026-07-14.)
 
 **🚫 out-of-scope:** firmware, factory reset, SD format, full-device microSD
 backup, Showcase multitrack, clones, favorites, templates, cloud/Remote-Access,

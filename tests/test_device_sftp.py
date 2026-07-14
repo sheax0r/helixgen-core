@@ -99,3 +99,40 @@ def test_addcontent_hash_none_when_absent():
     from helixgen.device.sftp import _addcontent_hash
     assert _addcontent_hash([{"cid_": 1}]) is None
     assert _addcontent_hash([1, 2, "x"]) is None
+
+
+def test_remove_ir_file_unlinks_under_ir_dir():
+    class _RmSFTP(_FakeSFTP):
+        def remove(self, remote):
+            self.calls.append(("remove", remote))
+
+    fake = _RmSFTP()
+    _sftp_with(fake).remove_ir_file("ZZC-test.wav")
+    assert fake.calls == [("remove", "/data/stadium-family-fw/ir/ZZC-test.wav")]
+
+
+def test_remove_ir_file_rejects_path_traversal():
+    fake = _FakeSFTP()
+    s = _sftp_with(fake)
+    with pytest.raises(HelixError, match="basename"):
+        s.remove_ir_file("../presets/evil.wav")
+    assert fake.calls == []
+
+
+def test_remove_ir_file_wraps_error():
+    class _BoomSFTP(_FakeSFTP):
+        def remove(self, remote):
+            raise IOError("nope")
+
+    with pytest.raises(sftp.HelixError, match="remove"):
+        _sftp_with(_BoomSFTP()).remove_ir_file("x.wav")
+
+
+def test_remove_ir_file_tolerates_already_gone():
+    """The device lazily GCs the file itself after /RemoveContent — an ENOENT
+    means it beat us to it, which is success."""
+    class _GoneSFTP(_FakeSFTP):
+        def remove(self, remote):
+            raise FileNotFoundError(2, "No such file")
+
+    _sftp_with(_GoneSFTP()).remove_ir_file("x.wav")  # no raise

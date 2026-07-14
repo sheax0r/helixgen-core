@@ -438,6 +438,24 @@ class SetlistManifest:
         """Create an empty setlist (idempotent — never wipes existing membership)."""
         self.setlists_map.setdefault(name, {"tones": [], "synced": False})
 
+    def rename_setlist(self, old: str, new: str) -> bool:
+        """Rename a setlist record, preserving insertion order and membership.
+
+        Returns ``False`` when ``old`` isn't in the manifest (nothing to do —
+        a device-only setlist has no local record). Raises
+        :class:`ManifestError` if ``new`` already exists.
+        """
+        if old not in self.setlists_map:
+            return False
+        if new in self.setlists_map:
+            raise ManifestError(f"setlist {new!r} already exists in the manifest")
+        self.setlists_map = {
+            (new if k == old else k): v for k, v in self.setlists_map.items()}
+        observed = self.observed.get("setlists", {})
+        if old in observed:
+            observed[new] = observed.pop(old)
+        return True
+
     # -- desired: read accessors ---------------------------------------------
 
     def setlists(self) -> List[str]:
