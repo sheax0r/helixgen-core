@@ -222,19 +222,18 @@ assumption — see #9); the reference-based redesign below then **shipped
   metadata read. So `device load <cid>` already IS "set the active tone."
 
 ### `.hsp` → device transcoder (replaces the template bridge)
-- **#12 `.hsp` → `_sbepgsm` transcoder** **[in progress 2026-07-12]** — the real
-  fix behind mental-model #1: faithfully transcode a `.hsp` into the device's
-  stored `_sbepgsm` and `/SetContentData` it into the pool. No template, no
-  coverage limits, full fidelity. Design +
-  progress: `docs/superpowers/specs/2026-07-12-hsp-to-device-transcoder-design.md`.
-  Module `src/helixgen/device/transcode.py` (`sbepgsm_to_recipe` /
-  `recipe_to_sbepgsm` / `hsp_to_sbepgsm`), gated by an offline
-  `_sbepgsm → recipe → _sbepgsm` byte-fidelity net. Hardware-confirmed so far:
-  device tolerates synthesized `tid_`/identity `bmap`; harness (`hrns`) varies by
-  block kind (not constant); IR = `mdls[0].irmd` 16-byte hash. Remaining:
-  snapshots/controllers (`snps`/`srcs`/`trgs` + per-param `tid_`), dual-amp
-  (split/join), wire `install`/`sync` onto it + delete the template/bridge, strip
-  templates from the skill, device audio-validate.
+- **#12 `.hsp` → `_sbepgsm` transcoder** — **✅ SHIPPED (2.17.0–2.21.1; entry
+  was stale, flipped 2026-07-15).** The template-free transcoder
+  (`src/helixgen/device/transcode.py`) is live and wired into `device
+  install`/`sync`; the template bridge is deleted and the skill de-templated.
+  Everything this entry listed as "Remaining" has since shipped and been
+  hardware-validated: snapshots/controllers synthesis (2.18.0; snapshot-bypass
+  semantics corrected 2.21.1, PR #36), dual-DSP + intra-flow split/join onto
+  the real 28-slot grid (byte-for-byte vs HX Edit's own import), and the
+  offline `_sbepgsm → recipe → _sbepgsm` byte-fidelity net plus live
+  install→pull round-trips. Later extensions: MIDI CC ctrl records (#33) and
+  Command Center `cg__.entt` records (#16), both 2.26.0. Design:
+  `docs/superpowers/specs/2026-07-12-hsp-to-device-transcoder-design.md`.
 - **#13 Non-activating content read** — **✅ SHIPPED 2.18.0.** Captured HX Edit's
   content-read command: `client.get_content(cid)` sends `/GetContentData [reqid,
   cid]` (the non-activating GET counterpart to `/SetContentData`) and returns the
