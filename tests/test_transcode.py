@@ -521,3 +521,196 @@ def test_synthesized_ir_doc_lifts_irhash_back_to_recipe():
     # and it round-trips exactly through the rebuild path (irmd re-emitted)
     doc2 = transcode.recipe_to_sbepgsm(recipe)
     assert doc2 == doc, "irhash-bearing doc did not round-trip exactly"
+
+
+# --- snapshot bypass semantics: device-native polarity + bindings ------------
+#
+# Hardware reference: the same tone imported by the Stadium app vs transcoded
+# by helixgen (Dream On, 2026-07-13). The device-native encoding is:
+#   * block-level ``enbl`` carries the BASE bypass (0 = block loads bypassed);
+#   * a bypass target's ``tamv`` value is BYPASS polarity (True = bypassed),
+#     the inverse of the ``.hsp`` ``@enabled`` arrays;
+#   * every snapshot-tracked entity is BOUND to its target: the block dict
+#     (bypass) or parm leaf (param) carries ``snap=True, tid_=<trg id>``;
+#     untracked blocks/leaves carry ``snap=False, tid_=0`` (an FS-only bypass
+#     target does NOT set the block's ``tid_``);
+#   * ``tamv``/names cover all 8 snapshots from the .hsp's dense arrays (the
+#     trailing "Snap N" defaults are real state, not padding).
+
+
+def _snapshot_hsp_body():
+    """A minimal authored ``.hsp`` body shaped like the dream-on tone:
+
+    comp (base-BYPASSED, snapshot-tracked) -> drive (FS1 + snapshot-tracked)
+    -> delay (FS2-only bypass, snapshot-tracked Mix param).
+    Snapshots: "Lead" (comp off) / "Clean" (drive off), 3..8 default.
+    """
+    def wrap(v, snaps=None):
+        w = {"value": v}
+        if snaps is not None:
+            w["snapshots"] = snaps
+        return w
+
+    def fs(source):
+        return {"behavior": "latching", "bypassed": False, "curve": "linear",
+                "delay": None, "goid": None, "max": None, "midisource": 0,
+                "min": None, "source": source, "threshold": None,
+                "type": "targetbypass"}
+
+    flow0 = {
+        "b00": {"@enabled": {"value": True},
+                "slot": [{"model": "P35_InputInst1_2", "params": {}}]},
+        "b01": {"@enabled": {"value": False,
+                             "snapshots": [False, True, True, True,
+                                           True, True, True, True]},
+                "slot": [{"model": "HX2_CompressorLAStudioCompMono",
+                          "params": {"Gain": wrap(0.48)}}]},
+        "b02": {"@enabled": {"value": True,
+                             "snapshots": [True, False, True, True,
+                                           True, True, True, True],
+                             "controller": fs(0x01010100)},
+                "slot": [{"model": "HD2_DistMinotaurMono",
+                          "params": {"Gain": wrap(0.4)}}]},
+        "b03": {"@enabled": {"value": True, "controller": fs(0x01010101)},
+                "slot": [{"model": "HD2_DL4TapeEchoStereo",
+                          "params": {"Mix": wrap(
+                              0.24, [0.24, 0.1, 0.24, 0.24,
+                                     0.24, 0.24, 0.24, 0.24])}}]},
+        "b13": {"@enabled": {"value": True},
+                "slot": [{"model": "P35_OutputMatrix", "params": {}}]},
+    }
+    snapshots = [{"name": "Lead", "expsw": 1}, {"name": "Clean"}] + [
+        {"name": f"Snap {i}"} for i in range(3, 9)]
+    return {"meta": {"device_id": "stadium_xl"},
+            "preset": {"flow": [flow0], "snapshots": snapshots}}
+
+
+def _blocks_by_mid(doc):
+    out = {}
+    for flow in doc["sfg_"]["flow"]:
+        for b in flow["blks"]:
+            if isinstance(b, dict):
+                mid = (b.get("mdls") or [{}])[0].get("id__")
+                out.setdefault(mid, b)
+    return out
+
+
+def _snap_doc():
+    return content.decode_any(transcode.hsp_to_sbepgsm(_snapshot_hsp_body()))
+
+
+def test_base_bypass_survives_transcode():
+    """A block whose .hsp ``@enabled.value`` is False must synthesize with
+    block-level ``enbl == 0`` (it loads bypassed), everything else ``1``."""
+    doc = _snap_doc()
+    blocks = _blocks_by_mid(doc)
+    comp = blocks[defs.model_id_for("HX2_CompressorLAStudioCompMono")]
+    drive = blocks[defs.model_id_for("HD2_DistMinotaurMono")]
+    delay = blocks[defs.model_id_for("HD2_DL4TapeEchoStereo")]
+    assert comp["enbl"] == 0, "base-bypassed block must synthesize enbl=0"
+    assert drive["enbl"] == 1 and delay["enbl"] == 1
+    # the model instance stays enabled even when the block is bypassed
+    assert comp["mdls"][0]["enbl"] == 1
+
+
+def test_tamv_bypass_values_are_bypass_polarity():
+    """``tamv`` values for a bypass target are True=BYPASSED (device polarity),
+    across ALL 8 snapshots from the .hsp's dense arrays (no last-named
+    padding)."""
+    doc = _snap_doc()
+    entt = doc["cg__"]["entt"]
+    comp_eid = _blocks_by_mid(doc)[
+        defs.model_id_for("HX2_CompressorLAStudioCompMono")]["id__"]
+    drive_eid = _blocks_by_mid(doc)[
+        defs.model_id_for("HD2_DistMinotaurMono")]["id__"]
+    comp_trg = _trg_by(entt, type=1, eID_=comp_eid)
+    drive_trg = _trg_by(entt, type=1, eID_=drive_eid)
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    comp_row = [_tamv_map(s)[comp_trg["id__"]] for s in snps]
+    drive_row = [_tamv_map(s)[drive_trg["id__"]] for s in snps]
+    # .hsp @enabled [F,T,T,...] -> device bypass [T,F,F,...]
+    assert comp_row == [True] + [False] * 7, comp_row
+    # .hsp @enabled [T,F,T,...] -> device bypass [F,T,F,...] — snaps 3..8 must
+    # come from the dense arrays (base state), NOT pad with Clean's value.
+    assert drive_row == [False, True] + [False] * 6, drive_row
+
+
+def test_tamv_param_values_cover_all_snapshots():
+    """A snapshot-tracked param's ``tamv`` row uses the .hsp's dense 8-value
+    array (0.24 base in snaps 3..8), not last-named-snapshot padding."""
+    doc = _snap_doc()
+    entt = doc["cg__"]["entt"]
+    par = _trg_by(entt, type=2)
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    row = [_tamv_map(s)[par["id__"]] for s in snps]
+    assert row == [0.24, 0.1] + [0.24] * 6, row
+
+
+def test_snapshot_tracked_entities_are_bound():
+    """Snapshot-tracked blocks carry ``snap=True, tid_=<bypass trg id>``; a
+    tracked param's parm leaf carries ``snap=True, tid_=<param trg id>``."""
+    doc = _snap_doc()
+    entt = doc["cg__"]["entt"]
+    blocks = _blocks_by_mid(doc)
+
+    for model in ("HX2_CompressorLAStudioCompMono", "HD2_DistMinotaurMono"):
+        blk = blocks[defs.model_id_for(model)]
+        trg = _trg_by(entt, type=1, eID_=blk["id__"])
+        assert blk["snap"] is True, f"{model} bypass is snapshot-tracked"
+        assert blk["tid_"] == trg["id__"], f"{model} tid_ must bind its trg"
+
+    delay = blocks[defs.model_id_for("HD2_DL4TapeEchoStereo")]
+    par = _trg_by(entt, type=2)
+    mix_pid = par["pid_"]
+    leaf = next(p for p in delay["mdls"][0]["parm"] if p["pid_"] == mix_pid)
+    assert leaf["snap"] is True and leaf["tid_"] == par["id__"]
+
+
+def test_fs_only_bypass_is_not_snapshot_bound():
+    """A block with an FS bypass but NO snapshot variation keeps
+    ``snap=False, tid_=0`` at block level (its trg exists only for the ctrl),
+    and untracked blocks/endpoints carry ``tid_=0`` (no sequential ids that
+    collide with real target ids)."""
+    doc = _snap_doc()
+    entt = doc["cg__"]["entt"]
+    blocks = _blocks_by_mid(doc)
+    delay = blocks[defs.model_id_for("HD2_DL4TapeEchoStereo")]
+    delay_byp = _trg_by(entt, type=1, eID_=delay["id__"])
+    assert delay["snap"] is False and delay["tid_"] == 0
+    # the FS trg still exists and is NOT in the snapshot-tracked stid set
+    assert delay_byp["id__"] not in entt["ctm_"]["stid"]
+    # untracked leaves (endpoints included) never carry a stale tid_
+    for b in _blocks_by_mid(doc).values():
+        if b["snap"] is False:
+            assert b["tid_"] == 0, b
+    for p in delay["mdls"][0]["parm"]:
+        if p["snap"] is False:
+            assert p["tid_"] == 0
+
+
+def test_snapshot_names_cover_all_eight():
+    """Snapshot names come from the .hsp for all 8 slots ("Snap 3", not the
+    "SNAPSHOT 3" fallback), with exsw/bpm carried on the named ones."""
+    doc = _snap_doc()
+    snps = sorted(doc["cg__"]["entt"]["snps"], key=lambda s: s["si__"])
+    assert [s["name"] for s in snps] == (
+        ["Lead", "Clean"] + [f"Snap {i}" for i in range(3, 9)])
+    assert snps[0]["exsw"] == 1 and snps[1]["exsw"] == -1
+
+
+def test_sparse_snapshot_arrays_fall_back_to_base():
+    """A legacy sparse ``@enabled.snapshots`` (None entries) treats None as the
+    base value, not as False/enabled."""
+    body = _snapshot_hsp_body()
+    b01 = body["preset"]["flow"][0]["b01"]
+    b01["@enabled"]["snapshots"] = [None, True, None, None,
+                                    None, None, None, None]
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    entt = doc["cg__"]["entt"]
+    comp_eid = _blocks_by_mid(doc)[
+        defs.model_id_for("HX2_CompressorLAStudioCompMono")]["id__"]
+    trg = _trg_by(entt, type=1, eID_=comp_eid)
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    row = [_tamv_map(s)[trg["id__"]] for s in snps]
+    # base value=False (bypassed): None -> bypassed; True -> not bypassed
+    assert row == [True, False] + [True] * 6, row
