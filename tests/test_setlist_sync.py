@@ -190,8 +190,9 @@ def _manifest(tmp_path, monkeypatch, setlists, hashes=None):
         m.create_setlist(sl)
         for t in tones:
             m.tones[t] = {"path": f"/tones/{t}.hsp", "content_hash": hashes.get(t),
-                          "source": "hsp"}
-            m.setlists_map[sl].append(t)
+                          "doc": None, "source": "authored", "slot": "auto",
+                          "device": None}
+            m.setlists_map[sl]["tones"].append(t)
     return m
 
 

@@ -1,33 +1,37 @@
-"""Local setlist manifest — desired setlist membership + observed device state.
+"""Tone-library manifest — the tone as a first-class managed entity.
 
-One file, ``~/.helixgen/setlists.json`` (override ``$HELIXGEN_SETLISTS``), folds
-the older ``device-slots.json`` slot ledger into a richer, multi-setlist model so
-a single authored tone can live in many setlists. It is PURE local-file logic:
-no device, no network, no msgpack/zmq — importable without the ``device`` extra.
+One file, ``~/.helixgen/setlists.json`` (override ``$HELIXGEN_SETLISTS``). It is
+PURE local-file logic: no device, no network, no msgpack/zmq — importable
+without the ``device`` extra.
 
-Two clearly separated halves (per design §3):
+A **tone** is content + identity + management state (design
+``2026-07-13-tone-library-model-redesign.md``):
 
-* **desired** — a ``tones`` registry (``name → {path, content_hash, source}``,
-  a tone appears once) plus ``setlists`` (``name → [tone-name, …]``, ordered
-  membership == slot order).
-* **observed** — ``pool`` + ``setlists`` placement rebuilt from a fresh device
-  listing on every sync; never trusted as delete input, always cross-checked.
+* **content** — its ``.hsp`` (``path`` + ``content_hash``) and optional ``doc``;
+  ``path``/``content_hash`` are ``null`` for a pathless (device-origin) tone.
+* **identity** — the ``tones`` key (name), unique in the manifest, also the
+  device preset key.
+* **management state** — ``source`` (provenance), ``slot`` (desired on-device
+  address; ``null`` = off device, ``"auto"`` = wants device, address TBD, or a
+  concrete ``"1A".."8D"``), and ``device`` (observed cid/posi, rebuilt on sync).
 
-On-disk shape::
+Setlists are ordered membership plus a ``synced`` flag (mirrored to the device
+or a local-only draft). ``"On the device"`` ⟺ ``slot != null``.
 
-    {"version": 1,
+On-disk shape (version 2)::
+
+    {"version": 2,
      "tones": {"<name>": {"path": <abs .hsp | null>,
                           "content_hash": "sha256:…" | null,
-                          "source": "hsp"|"save"|"create"|"push"}},
-     "setlists": {"<setlist>": ["<tone name>", …]},
-     "observed": {"pool": {"<name>": {"cid": int, "posi": int}},
-                  "setlists": {"<setlist>": {"cid": int,
-                      "refs": {"<name>": {"ref_cid": int, "posi": int}}}}}}
+                          "doc": <abs .md | null>,
+                          "source": "authored"|"import-local"|"import-device"|"save"|"create",
+                          "slot": "1A".."8D" | "auto" | null,
+                          "device": {"cid": int, "posi": int} | null}},
+     "setlists": {"<setlist>": {"tones": ["<tone name>", …], "synced": bool}}}
 
 The manifest is **never hand-edited** — it is written by the authoring/sync
-surfaces (CLI ``device setlist …`` / MCP). On first load, if the manifest file
-is absent but the old slot ledger exists, the ledger's entries are migrated in
-and the old file is left in place (read-once, never mutated).
+surfaces (CLI / MCP). A version-1 document (list-valued setlists + a folded
+``entries`` slot-ledger section) is migrated to version 2 on load.
 """
 from __future__ import annotations
 
@@ -38,11 +42,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from helixgen.hsp import read_hsp
-from .ledger import default_ledger_path
 
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2
 
-_VALID_SOURCES = ("hsp", "save", "create", "push")
+# provenance tags accepted on a tone record
+_VALID_SOURCES = ("authored", "import-local", "import-device", "save", "create",
+                  "hsp", "push")  # last two are legacy synonyms kept for migration
+_PATHLESS_SOURCES = ("save", "create")
+
+# every physical user-setlist slot label, in device posi order: "1A".."8D"
+_SLOT_LABELS = tuple(f"{b}{c}" for b in range(1, 9) for c in "ABCD")
 
 
 class ManifestError(Exception):
@@ -50,15 +59,22 @@ class ManifestError(Exception):
 
 
 def default_setlists_path() -> Path:
-    """Where the setlist manifest lives: ``~/.helixgen/setlists.json``.
+    """Where the tone-library manifest lives: ``~/.helixgen/setlists.json``.
 
-    Overridable wholesale with ``$HELIXGEN_SETLISTS`` — mirrors the ledger's
-    ``$HELIXGEN_DEVICE_SLOTS`` and preferences' ``$HELIXGEN_PREFS`` conventions.
+    Overridable wholesale with ``$HELIXGEN_SETLISTS``.
     """
     override = os.environ.get("HELIXGEN_SETLISTS")
     if override:
         return Path(override).expanduser()
     return Path.home() / ".helixgen" / "setlists.json"
+
+
+def _legacy_ledger_path() -> Path:
+    """The retired standalone slot-ledger file (read once for migration only)."""
+    override = os.environ.get("HELIXGEN_DEVICE_SLOTS")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".helixgen" / "device-slots.json"
 
 
 def _hash_file(path: Path) -> str:
@@ -70,50 +86,76 @@ def _empty_observed() -> Dict[str, Any]:
     return {"pool": {}, "setlists": {}}
 
 
+def _posi_to_slot(posi: Any) -> Optional[str]:
+    """Map a device 0-based posi to its user-setlist slot label ("1A".."8D")."""
+    if not isinstance(posi, int) or not (0 <= posi < len(_SLOT_LABELS)):
+        return None
+    return _SLOT_LABELS[posi]
+
+
+def _tone_record(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce any partial/legacy tone dict to the full v2 record shape."""
+    return {
+        "path": rec.get("path"),
+        "content_hash": rec.get("content_hash"),
+        "doc": rec.get("doc"),
+        "source": rec.get("source") or "authored",
+        "slot": rec.get("slot"),
+        "device": rec.get("device"),
+    }
+
+
+def _setlist_record(v: Any) -> Dict[str, Any]:
+    """Coerce a setlist value (v1 list OR v2 {tones,synced}) to v2 shape."""
+    if isinstance(v, dict):
+        return {"tones": list(v.get("tones") or []), "synced": bool(v.get("synced"))}
+    return {"tones": list(v or []), "synced": False}
+
+
 class SetlistManifest:
-    """Desired setlist membership + observed device placement (one JSON file)."""
+    """The tone library: tone registry (with placement) + ordered setlists."""
 
     def __init__(
         self,
         path: Path,
         *,
         tones: Optional[Dict[str, Any]] = None,
-        setlists: Optional[Dict[str, List[str]]] = None,
+        setlists: Optional[Dict[str, Any]] = None,
         observed: Optional[Dict[str, Any]] = None,
     ):
         self.path = Path(path)
         self.tones: Dict[str, Any] = tones if tones is not None else {}
-        self.setlists_map: Dict[str, List[str]] = setlists if setlists is not None else {}
+        self.setlists_map: Dict[str, Dict[str, Any]] = setlists if setlists is not None else {}
         self.observed: Dict[str, Any] = observed if observed is not None else _empty_observed()
 
     # -- construction ---------------------------------------------------------
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "SetlistManifest":
-        """Load the manifest, or start empty.
-
-        If the manifest file is missing/corrupt/unknown-version and the old slot
-        ledger (``~/.helixgen/device-slots.json`` or ``$HELIXGEN_DEVICE_SLOTS``)
-        exists, the ledger's entries are migrated in. The old ledger file is read
-        once and never mutated.
-        """
+        """Load the manifest, migrating a v1 document (or a legacy ledger) to v2."""
         path = Path(path) if path is not None else default_setlists_path()
-        data = cls._read_json(path)
-        if data is not None:
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            data = None
+
+        if isinstance(data, dict) and data.get("version") == MANIFEST_VERSION:
             return cls(
                 path,
-                tones=data.get("tones") or {},
-                setlists={k: list(v) for k, v in (data.get("setlists") or {}).items()},
+                tones={k: _tone_record(v) for k, v in (data.get("tones") or {}).items()},
+                setlists={k: _setlist_record(v) for k, v in (data.get("setlists") or {}).items()},
                 observed=cls._coerce_observed(data.get("observed")),
             )
-        # No usable manifest — try a one-time migration from the slot ledger.
+        if isinstance(data, dict) and data.get("version") == 1:
+            return cls._migrate_v1(path, data)
+
+        # No usable manifest — try a one-time migration from the standalone ledger.
         manifest = cls(path)
         manifest._migrate_from_ledger()
         return manifest
 
     @staticmethod
     def _read_json(path: Path) -> Optional[Dict[str, Any]]:
-        """Return the manifest dict if valid, else ``None`` (missing/corrupt/old)."""
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
@@ -131,144 +173,218 @@ class SetlistManifest:
             "setlists": raw.get("setlists") if isinstance(raw.get("setlists"), dict) else {},
         }
 
-    def _migrate_from_ledger(self) -> None:
-        """Fold a legacy ``device-slots.json`` into this (empty) manifest.
+    @classmethod
+    def _migrate_v1(cls, path: Path, data: Dict[str, Any]) -> "SetlistManifest":
+        """Upgrade a version-1 document (list setlists + folded ledger) to v2.
 
-        Each ledger entry ``{setlist, posi, name, cid, source_kind, source_path}``
-        becomes a ``tones`` registry entry, a membership entry (appended in posi
-        order), and an ``observed`` pool + setlist-reference placement. The old
-        file is only read; a later real sync overwrites ``observed``.
+        Each ledger ``entries`` row contributes a tone's ``slot`` (its
+        ``slot_label``); ``observed.pool`` contributes ``device``; list-valued
+        setlists become ``{tones, synced}`` (``user`` and any observed-on-device
+        setlist are ``synced``).
         """
-        ledger_path = default_ledger_path()
+        observed = cls._coerce_observed(data.get("observed"))
+        entries = data.get("entries") if isinstance(data.get("entries"), list) else []
+        slot_by_name: Dict[str, str] = {}
+        for e in entries:
+            if isinstance(e, dict) and e.get("name"):
+                lbl = e.get("slot_label") or _posi_to_slot(e.get("posi"))
+                if lbl:
+                    slot_by_name[e["name"]] = lbl
+
+        tones: Dict[str, Any] = {}
+        for name, rec in (data.get("tones") or {}).items():
+            r = _tone_record(rec)
+            r["slot"] = slot_by_name.get(name) or r["slot"]
+            dev = observed.get("pool", {}).get(name)
+            r["device"] = dev if isinstance(dev, dict) else None
+            if r["slot"] is None and isinstance(dev, dict):
+                r["slot"] = _posi_to_slot(dev.get("posi"))
+            tones[name] = r
+
+        setlists: Dict[str, Any] = {}
+        for name, v in (data.get("setlists") or {}).items():
+            rec = _setlist_record(v)
+            rec["synced"] = name == "user" or name in (observed.get("setlists") or {})
+            setlists[name] = rec
+
+        return cls(path, tones=tones, setlists=setlists, observed=observed)
+
+    def _migrate_from_ledger(self) -> None:
+        """Fold a legacy ``device-slots.json`` into this (empty) v2 manifest."""
         try:
-            data = json.loads(ledger_path.read_text())
+            data = json.loads(_legacy_ledger_path().read_text())
         except (OSError, ValueError):
             return
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
             return
-
         entries = [e for e in data["entries"] if isinstance(e, dict)]
-        # Membership follows posi order within each setlist.
         entries.sort(key=lambda e: (e.get("setlist") or "", e.get("posi") or 0))
-
         for e in entries:
             name = e.get("name")
             setlist = e.get("setlist")
             if not name or not setlist:
                 continue
-            source_kind = e.get("source_kind") or "hsp"
+            source = e.get("source_kind") or "authored"
             source_path = e.get("source_path")
             posi = e.get("posi")
             cid = e.get("cid")
-
             content_hash: Optional[str] = None
-            if source_kind == "hsp" and source_path:
-                p = Path(source_path)
-                if p.exists():
-                    content_hash = _hash_file(p)
-
-            self.tones[name] = {
+            if source_path and Path(source_path).exists():
+                content_hash = _hash_file(Path(source_path))
+            self.tones[name] = _tone_record({
                 "path": source_path,
                 "content_hash": content_hash,
-                "source": source_kind,
-            }
-            self.setlists_map.setdefault(setlist, [])
-            if name not in self.setlists_map[setlist]:
-                self.setlists_map[setlist].append(name)
-
+                "source": source,
+                "slot": e.get("slot_label") or _posi_to_slot(posi),
+                "device": {"cid": cid, "posi": posi},
+            })
+            rec = self.setlists_map.setdefault(setlist, {"tones": [], "synced": True})
+            if name not in rec["tones"]:
+                rec["tones"].append(name)
             self.observed["pool"][name] = {"cid": cid, "posi": posi}
             sl = self.observed["setlists"].setdefault(setlist, {"cid": None, "refs": {}})
             sl["refs"][name] = {"ref_cid": None, "posi": posi}
 
-    # -- desired: tones + membership -----------------------------------------
+    # -- library: register tones ---------------------------------------------
 
-    def add_tone(self, setlist: str, hsp_path: Path | str, *, pos: Optional[int] = None) -> str:
-        """Register a ``.hsp`` tone and add it to ``setlist``'s membership.
+    def register_tone(self, hsp_path: Path | str, *, source: str = "authored",
+                      doc: Optional[Path | str] = None) -> str:
+        """Register a local ``.hsp`` into the library (no setlist, off-device).
 
-        Reads the file's ``meta.name`` (falling back to the filename stem) as the
-        tone name, records ``{path, content_hash, source:"hsp"}`` in the registry,
-        and inserts the name into ``setlists[setlist]`` at ``pos`` (append if
-        ``None``; never duplicated). Raises :class:`ManifestError` if the name is
-        already registered to a *different* path (unique-name enforcement).
-        Returns the resolved tone name.
+        Reads ``meta.name`` (falling back to the filename stem) as the tone name.
+        Preserves an existing tone's ``slot``/``device`` if it was already known.
+        Raises :class:`ManifestError` on a name collision with a different path.
         """
         p = Path(hsp_path).resolve()
         body = read_hsp(p)
         name = (body.get("meta") or {}).get("name") or p.stem
         abs_path = str(p)
-
         existing = self.tones.get(name)
         if existing is not None and existing.get("path") not in (None, abs_path):
             raise ManifestError(
                 f"tone name {name!r} is already registered to a different path "
                 f"({existing.get('path')!r}); names must be unique in the manifest"
             )
-
-        self.tones[name] = {
+        self.tones[name] = _tone_record({
             "path": abs_path,
             "content_hash": _hash_file(p),
-            "source": "hsp",
-        }
-        self._add_membership(setlist, name, pos)
+            "doc": str(Path(doc).resolve()) if doc else (existing or {}).get("doc"),
+            "source": source,
+            "slot": (existing or {}).get("slot"),
+            "device": (existing or {}).get("device"),
+        })
         return name
 
-    def pathless_add(
-        self,
-        name: str,
-        source: str,
-        *,
-        setlist: Optional[str] = None,
-        pos: Optional[int] = None,
-    ) -> str:
-        """Register a source-less tone (live edit buffer ``save`` / on-device
-        ``create``) — ``path`` and ``content_hash`` are ``None`` (nothing to
-        hash or re-push), but it still appears in ``device slots`` and may be
-        referenced into a setlist. If ``setlist`` is given, appends membership at
-        ``pos``. Returns the name.
-        """
-        if source not in _VALID_SOURCES:
-            raise ManifestError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
+    def register_pathless(self, name: str, *, source: str) -> str:
+        """Register a source-less tone (device edit-buffer ``save`` / ``create``)."""
+        if source not in _PATHLESS_SOURCES:
+            raise ManifestError(
+                f"pathless source must be one of {_PATHLESS_SOURCES}, got {source!r}")
         existing = self.tones.get(name)
         if existing is not None and existing.get("path") is not None:
             raise ManifestError(
                 f"tone name {name!r} is already registered with a path; "
-                f"names must be unique in the manifest"
-            )
-        self.tones[name] = {"path": None, "content_hash": None, "source": source}
-        if setlist is not None:
-            self._add_membership(setlist, name, pos)
+                f"names must be unique in the manifest")
+        self.tones[name] = _tone_record({
+            "path": None, "content_hash": None, "source": source,
+            "slot": (existing or {}).get("slot"),
+            "device": (existing or {}).get("device"),
+        })
         return name
 
-    def _add_membership(self, setlist: str, name: str, pos: Optional[int]) -> None:
-        members = self.setlists_map.setdefault(setlist, [])
-        if name in members:
-            return  # no duplicates within a setlist
-        if pos is None:
-            members.append(name)
-        else:
-            members.insert(pos, name)
+    def add_tone(self, setlist: str, hsp_path: Path | str, *,
+                 pos: Optional[int] = None) -> str:
+        """Register a ``.hsp`` and add it to ``setlist``'s membership (legacy API)."""
+        name = self.register_tone(hsp_path, source="import-local")
+        self.add_to_setlist(setlist, name, pos=pos)
+        return name
+
+    def pathless_add(self, name: str, source: str, *,
+                     setlist: Optional[str] = None, pos: Optional[int] = None) -> str:
+        """Register a pathless tone and optionally add it to a setlist (legacy API)."""
+        self.register_pathless(name, source=source)
+        if setlist is not None:
+            self.add_to_setlist(setlist, name, pos=pos)
+        return name
+
+    # -- desired placement (slots + setlists) --------------------------------
+
+    def mark_on_device(self, name: str, slot: str = "auto") -> None:
+        """Mark a library tone for the device (``slot='auto'`` = address TBD)."""
+        if name not in self.tones:
+            raise ManifestError(f"unknown tone {name!r}")
+        if slot != "auto" and slot not in _SLOT_LABELS:
+            raise ManifestError(f"invalid slot {slot!r} (expected '1A'..'8D' or 'auto')")
+        self.tones[name]["slot"] = slot
+
+    def unsync(self, name: str) -> List[str]:
+        """Take ``name`` off the device (``slot=None``) and cascade it out of every
+        **synced** setlist. Keeps the tone in the library. Returns the synced
+        setlists it was pulled from."""
+        if name not in self.tones:
+            raise ManifestError(f"unknown tone {name!r}")
+        self.tones[name]["slot"] = None
+        pulled: List[str] = []
+        for sl, rec in self.setlists_map.items():
+            if rec.get("synced") and name in rec["tones"]:
+                rec["tones"].remove(name)
+                pulled.append(sl)
+        return pulled
+
+    def set_setlist_synced(self, setlist: str, synced: bool) -> None:
+        """Flip a setlist's ``synced`` flag. Turning it on marks every member for
+        the device (``slot='auto'`` where a member has no slot yet)."""
+        rec = self.setlists_map.setdefault(setlist, {"tones": [], "synced": False})
+        rec["synced"] = bool(synced)
+        if synced:
+            for name in rec["tones"]:
+                if self.tones.get(name, {}).get("slot") is None:
+                    self.mark_on_device(name, "auto")
+
+    def add_to_setlist(self, setlist: str, name: str, *, pos: Optional[int] = None) -> None:
+        """Add ``name`` to ``setlist`` at ``pos`` (append if None; no duplicates).
+        If the setlist is synced, the tone is marked on-device."""
+        if name not in self.tones:
+            raise ManifestError(f"unknown tone {name!r}")
+        rec = self.setlists_map.setdefault(setlist, {"tones": [], "synced": False})
+        if name not in rec["tones"]:
+            if pos is None:
+                rec["tones"].append(name)
+            else:
+                rec["tones"].insert(pos, name)
+        if rec["synced"] and self.tones[name].get("slot") is None:
+            self.mark_on_device(name, "auto")
+
+    def remove_from_setlist(self, setlist: str, name: str) -> bool:
+        """Drop ``name`` from ``setlist``'s membership. Returns whether it was there."""
+        rec = self.setlists_map.get(setlist)
+        if not rec or name not in rec["tones"]:
+            return False
+        rec["tones"].remove(name)
+        return True
 
     def remove_tone(self, setlist: str, name: str) -> bool:
-        """Drop ``name`` from ``setlist``'s membership.
-
-        If no setlist references the tone any more, its registry entry is also
-        garbage-collected. Returns whether the tone was in that setlist.
-        """
-        members = self.setlists_map.get(setlist)
-        if not members or name not in members:
+        """Drop ``name`` from ``setlist``; GC the registry entry if now unreferenced
+        (legacy API — membership removal, not a device delete)."""
+        if not self.remove_from_setlist(setlist, name):
             return False
-        members.remove(name)
         if not self._is_referenced(name):
             self.tones.pop(name, None)
         return True
 
+    def delete_tone(self, name: str) -> None:
+        """Remove a tone from the library entirely (registry + all memberships)."""
+        self.tones.pop(name, None)
+        for rec in self.setlists_map.values():
+            if name in rec["tones"]:
+                rec["tones"].remove(name)
+
     def _is_referenced(self, name: str) -> bool:
-        return any(name in members for members in self.setlists_map.values())
+        return any(name in rec["tones"] for rec in self.setlists_map.values())
 
     def create_setlist(self, name: str) -> None:
-        """Create an empty setlist in the manifest (idempotent — never wipes an
-        existing setlist's membership)."""
-        self.setlists_map.setdefault(name, [])
+        """Create an empty setlist (idempotent — never wipes existing membership)."""
+        self.setlists_map.setdefault(name, {"tones": [], "synced": False})
 
     # -- desired: read accessors ---------------------------------------------
 
@@ -278,28 +394,44 @@ class SetlistManifest:
 
     def tones_in(self, setlist: str) -> List[str]:
         """Ordered tone names in ``setlist`` (empty list if unknown)."""
-        return list(self.setlists_map.get(setlist, []))
+        rec = self.setlists_map.get(setlist)
+        return list(rec["tones"]) if rec else []
+
+    def is_synced(self, setlist: str) -> bool:
+        """Whether ``setlist`` is mirrored to the device."""
+        rec = self.setlists_map.get(setlist)
+        return bool(rec and rec.get("synced"))
 
     def tone_path(self, name: str) -> Optional[str]:
-        """The registered ``.hsp`` path for ``name`` (``None`` if pathless/absent)."""
         entry = self.tones.get(name)
         return entry.get("path") if entry else None
 
     def content_hash(self, name: str) -> Optional[str]:
-        """The registered content hash for ``name`` (``None`` if pathless/absent)."""
         entry = self.tones.get(name)
         return entry.get("content_hash") if entry else None
 
     def union_tones(self, setlists: List[str]) -> List[str]:
-        """Ordered, de-duplicated union of tone names across ``setlists`` — the
-        set of pool presets those setlists collectively need (for pool reconcile).
-        First-seen order is preserved."""
+        """Ordered, de-duplicated union of tone names across ``setlists``."""
         seen: Dict[str, None] = {}
         for setlist in setlists:
-            for name in self.setlists_map.get(setlist, []):
+            for name in self.tones_in(setlist):
                 if name not in seen:
                     seen[name] = None
         return list(seen.keys())
+
+    def library(self) -> List[Dict[str, Any]]:
+        """A display view: every tone with slot, on/off-device, source, setlists."""
+        out: List[Dict[str, Any]] = []
+        for name, rec in self.tones.items():
+            out.append({
+                "name": name,
+                "slot": rec.get("slot"),
+                "on_device": rec.get("slot") is not None,
+                "source": rec.get("source"),
+                "setlists": [sl for sl, r in self.setlists_map.items()
+                             if name in r["tones"]],
+            })
+        return out
 
     # -- observed (rebuilt each sync) ----------------------------------------
 
@@ -307,30 +439,29 @@ class SetlistManifest:
                              *, synced_hash: Optional[str] = None) -> None:
         """Record a pool preset's observed device placement (name → cid + posi).
 
-        ``synced_hash`` (when given) is the content hash of the ``.hsp`` body most
-        recently pushed to this pool preset, so a later sync can skip a tone whose
-        registered content hash still matches (idempotent re-sync). Read it back
-        with :meth:`observed_pool_hash`.
-        """
+        Also mirrors the placement into the tone's ``device`` field (and, when the
+        tone still wants the device, resolves an ``"auto"`` slot to the concrete
+        label)."""
         entry: Dict[str, Any] = {"cid": cid, "posi": posi}
         if synced_hash is not None:
             entry["synced_hash"] = synced_hash
         self.observed["pool"][name] = entry
+        tone = self.tones.get(name)
+        if tone is not None:
+            tone["device"] = {"cid": cid, "posi": posi}
+            if tone.get("slot") == "auto":
+                lbl = _posi_to_slot(posi)
+                if lbl:
+                    tone["slot"] = lbl
 
     def observed_pool_hash(self, name: str) -> Optional[str]:
-        """The last-synced content hash recorded for pool preset ``name`` (the
-        ``synced_hash`` stored by :meth:`record_observed_pool`), or ``None`` if
-        the preset is unknown or was recorded without one."""
         entry = self.observed.get("pool", {}).get(name)
         return entry.get("synced_hash") if isinstance(entry, dict) else None
 
     def record_observed_setlist(self, setlist: str, cid: int, refs: Dict[str, Any]) -> None:
-        """Record a setlist's observed device cid + its reference placements
-        (``{tone-name: {ref_cid, posi}}``)."""
         self.observed["setlists"][setlist] = {"cid": cid, "refs": dict(refs)}
 
     def clear_observed(self) -> None:
-        """Reset the observed half — the sync engine rebuilds it each run."""
         self.observed = _empty_observed()
 
     # -- persistence ----------------------------------------------------------
@@ -345,25 +476,8 @@ class SetlistManifest:
         }
 
     def save(self) -> None:
-        """Atomically write the manifest as pretty JSON (temp file + ``os.replace``).
-
-        The slot ledger is folded into this same file as an ``entries`` section
-        (see :mod:`helixgen.device.ledger`). It is not part of the manifest's own
-        model, so any ``entries`` already on disk are read back and preserved
-        verbatim, so saving the manifest never clobbers the ledger's placements.
-        """
+        """Atomically write the manifest as pretty JSON (temp file + ``os.replace``)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        doc = self.to_dict()
-        existing = self._read_json(self.path)
-        if existing is not None and isinstance(existing.get("entries"), list):
-            doc["entries"] = existing["entries"]
         tmp = self.path.with_name(self.path.name + ".tmp")
-        try:
-            tmp.write_text(json.dumps(doc, indent=2, sort_keys=False))
-            os.replace(tmp, self.path)
-        except OSError:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+        tmp.write_text(json.dumps(self.to_dict(), indent=2))
+        os.replace(tmp, self.path)

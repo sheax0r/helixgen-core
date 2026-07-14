@@ -1,0 +1,2 @@
+[console_scripts]
+helixgen = helixgen.cli:cli
