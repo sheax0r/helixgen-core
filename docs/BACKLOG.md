@@ -444,11 +444,18 @@ orthogonal to it.
   - **`device tuner`** — 2003 `/dspEvent` `eid_10/mid_796` fractional-MIDI pitch
     (network tuner, no engage needed). MCP mirrors for all.
   - **tempo** already works via `device settings set global.tempo.bpm`.
+  - **`device meters`** — ✅ **SHIPPED 2026-07-14.** 2003 `/dspEvent` `eid_1/
+    mid_796|800` 128-float grid-level arrays (same burst as the tuner); `--json`
+    one-reading-per-line. MCP mirror `device_meters` (sampling one-shot). The
+    semantic split between the two `mid_`s (input/output, path 1/2, …) isn't
+    characterized — both are surfaced by their raw id.
+  - **`device reorder <setlist> <target> --to <N>`** — ✅ **SHIPPED 2026-07-14**
+    (see #20 below for the arg-decode history); a direct, immediate DEVICE-side
+    write, distinct from the manifest-based `device slots reorder` + `sync`.
   Still open: **no `/CopySnapshot`** exists (copy = duplicate/batch writes);
-  **time signature** = Song property over SFTP (not OSC); **meters** (`eid_1/
-  mid_796|800` 128-float arrays) — decoder exists in spirit, no `device meters`
-  verb yet; the `/ModelSet` cascade (controller re-attach + default push) is not
-  replayed. Reorder left to the library agent. Matrix §5/§9/§10.
+  **time signature** = Song property over SFTP (not OSC); the `/ModelSet`
+  cascade (controller re-attach + default push) is not replayed. Matrix
+  §5/§9/§10.
 - **P6 · #20 IR + library polish** — **🟡 MOSTLY SHIPPED (2026-07-14).**
   Shipped: IR delete/rename/prune (**#11** ✅), setlist
   create/rename/delete/duplicate (**#8** ✅ — creation cracked, no capture
@@ -470,7 +477,12 @@ orthogonal to it.
     active" is `/LoadPresetWithCID` (load-by-CID) = existing `device load`; there
     is no separate active-index. (Only Songs have `/setActiveSongRef`.)
   - **Setlist/preset reorder** (`/ReorderContainerContent [cmd, container,
-    [cids], newPos]`) — **arg decoded 2026-07-14**; wire a `device reorder` verb.
+    [cids], newPos]`) — **arg decoded 2026-07-14; ✅ SHIPPED 2026-07-14** as
+    `helixgen device reorder <setlist> <target> --to <N>` (+ MCP
+    `device_reorder`), HW-validated on a Stadium XL against the `throwaway`
+    setlist. `<setlist>="setlists"` reorders the setlist list itself (the same
+    command works on both shapes). Direct DEVICE-side write — distinct from the
+    local-manifest `device slots reorder` + `sync` path.
 - **P7 · #21 Quick wins** — **✅ SHIPPED (2026-07-14).** `helixgen device
   info` / MCP `device_info` (`/ProductInfoGet` — model/device-id/serial/
   firmware/storage; HW-validated live) + controller depth: FS→**param

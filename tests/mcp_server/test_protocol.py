@@ -79,6 +79,9 @@ def test_server_registers_documented_tools():
         "device_setlist_rename",
         "device_setlist_delete",
         "device_setlist_duplicate",
+        # reorder + meters (P5/P6 parity, decoded 2026-07-14).
+        "device_reorder",
+        "device_meters",
     }
     assert names == expected, f"unexpected tool set: {names}"
 

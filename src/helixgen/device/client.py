@@ -707,6 +707,59 @@ class HelixClient:
         return self._ok(self._rpc(
             "/RemoveContent", [("i", container), ("b", msgpack.packb(list(cids)))]))
 
+    def reorder_container(self, container: int, moved_cids: Sequence[int],
+                          new_pos: int) -> List[Dict[str, Any]]:
+        """Move item(s) already inside ``container`` to ``new_pos``.
+
+        ``/ReorderContainerContent [reqid, containerCID, msgpack[movedCIDs],
+        newPos]`` (decoded 2026-07-14, e.g. ``[306, -2, [1206], 5]``). Works on
+        a setlist's preset **references** (``container`` = the setlist's cid;
+        ``moved_cids`` are the references' own cids, NOT the pool preset
+        cids), the pool (``-2``) directly, and the setlists root (``-5``)
+        itself (reordering the setlists) — the device dispatches on
+        ``container`` alone, so the same op serves all three. See
+        ``docs/superpowers/specs/2026-07-14-parity-capture-findings.md`` §1/§9.
+
+        The device confirms with ``/updateContainerContent`` carrying the
+        container's full re-ordered listing. A ``/error`` reply — or a
+        ``/status`` whose code field is non-zero (the :meth:`_ok` convention)
+        — raises :class:`HelixError` instead of being mistaken for the
+        "confirmation landed on the 2001 PUB stream" case. Only when *no*
+        listing reply is observed at all is the container re-listed to recover
+        the confirmed order, mirroring the "reply unreliable, re-list to
+        confirm" pattern used elsewhere in this client (``_create_from``,
+        ``create_setlist``, …).
+        """
+        msgpack = self._load_msgpack()
+        replies = self._rpc(
+            "/ReorderContainerContent",
+            [("i", int(container)),
+             ("b", msgpack.packb([int(c) for c in moved_cids])),
+             ("i", int(new_pos))])
+        items: List[Dict[str, Any]] = []
+        seen_update = False
+        for addr, args in replies:
+            if addr == "/error":
+                raise HelixError(
+                    f"device rejected /ReorderContainerContent for container "
+                    f"{container}: {args[-1] if args else '?'}")
+            if addr == "/status" and len(args) >= 2 and args[1] != 0:
+                raise HelixError(
+                    f"device refused to reorder container {container} "
+                    f"(status {args[1:]})")
+            if addr != "/updateContainerContent":
+                continue
+            seen_update = True
+            for a in args:
+                if isinstance(a, list):
+                    items.extend(x for x in a if isinstance(x, dict))
+                elif isinstance(a, dict):
+                    items.append(a)
+        if not seen_update:
+            items = self.list_container(container)
+        items.sort(key=lambda m: m.get("posi", 1 << 30))
+        return items
+
     def set_param(self, path: int, block: int, param_id: int, value: float) -> bool:
         """Set a param in the edit buffer: /ParamValueSet [_, path, block, 0, paramId, value, -1]."""
         return self._ok(self._rpc(

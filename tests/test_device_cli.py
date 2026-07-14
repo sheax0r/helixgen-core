@@ -843,3 +843,81 @@ def test_device_info_json(monkeypatch):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data == CANNED_INFO
+
+
+# -- device reorder ------------------------------------------------------------
+
+class ReorderClient(FakeClient):
+    """Fake with the surface `reorder.reorder_setlist_item` needs."""
+
+    SETLISTS = {"throwaway": 1234}
+    CONTAINERS = {1234: [
+        {"cid_": 501, "posi": 0, "cctp": 1003, "rcid": 100},
+        {"cid_": 502, "posi": 1, "cctp": 1003, "rcid": 101},
+    ]}
+    POOL = [{"cid_": 100, "name": "Clean Machine"},
+            {"cid_": 101, "name": "Lead Tone"}]
+
+    def resolve_setlist_cid(self, name):
+        self.calls.append(("resolve_setlist_cid", name))
+        return type(self).SETLISTS.get(name)
+
+    def list_container(self, cid):
+        self.calls.append(("list_container", cid))
+        return type(self).CONTAINERS.get(cid, [])
+
+    def list_presets(self, container=-2):
+        self.calls.append(("list_presets", container))
+        return type(self).POOL
+
+    def reorder_container(self, container, moved_cids, new_pos):
+        self.calls.append(("reorder_container", container, list(moved_cids), new_pos))
+        return [{"cid_": c, "posi": i} for i, c in enumerate(moved_cids)]
+
+
+def test_device_reorder_by_preset_name(monkeypatch):
+    _patch_client(monkeypatch, ReorderClient)
+    result = CliRunner().invoke(
+        cli, ["device", "reorder", "throwaway", "Lead Tone", "--to", "0"])
+    assert result.exit_code == 0, result.output
+    assert "moved cid 502" in result.output
+    assert "position 0" in result.output
+
+
+def test_device_reorder_by_literal_cid(monkeypatch):
+    _patch_client(monkeypatch, ReorderClient)
+    result = CliRunner().invoke(
+        cli, ["device", "reorder", "throwaway", "501", "--to", "1"])
+    assert result.exit_code == 0, result.output
+    assert "moved cid 501" in result.output
+
+
+def test_device_reorder_unknown_setlist_errors(monkeypatch):
+    _patch_client(monkeypatch, ReorderClient)
+    result = CliRunner().invoke(
+        cli, ["device", "reorder", "ghost", "x", "--to", "0"])
+    assert result.exit_code != 0
+    assert "no setlist named" in result.output
+
+
+def test_device_reorder_unknown_preset_name_errors(monkeypatch):
+    _patch_client(monkeypatch, ReorderClient)
+    result = CliRunner().invoke(
+        cli, ["device", "reorder", "throwaway", "Nope", "--to", "0"])
+    assert result.exit_code != 0
+    assert "no preset named" in result.output
+
+
+def test_device_reorder_setlists_keyword(monkeypatch):
+    class RootReorderClient(ReorderClient):
+        CONTAINERS = {
+            **ReorderClient.CONTAINERS,
+            -5: [{"cid_": 988, "posi": 0, "cctp": 1001, "name": "helixgen"},
+                 {"cid_": 1014, "posi": 1, "cctp": 1001, "name": "Mike"}],
+        }
+
+    _patch_client(monkeypatch, RootReorderClient)
+    result = CliRunner().invoke(
+        cli, ["device", "reorder", "setlists", "Mike", "--to", "0"])
+    assert result.exit_code == 0, result.output
+    assert "moved cid 1014" in result.output

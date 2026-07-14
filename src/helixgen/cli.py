@@ -1363,6 +1363,43 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
     click.echo(f"path {path} block {block} -> model {model} ({model_id})")
 
 
+@device.command(name="reorder")
+@click.argument("setlist")
+@click.argument("target")
+@click.option("--to", "to_index", type=int, required=True,
+              help="New 0-based position within the container.")
+@_device_option
+def device_reorder(setlist: str, target: str, to_index: int,
+                   ip: str, port: int) -> None:
+    """Move a preset to a new position within a setlist (`/ReorderContainerContent`).
+
+    SETLIST is a setlist display name (e.g. `throwaway`) or a literal
+    container cid; TARGET is a preset display name or a literal cid within
+    that setlist. Pass `setlists` as SETLIST to instead reorder the top-level
+    setlist list itself (TARGET is then a setlist name/cid) — a real setlist
+    literally named "setlists" must be addressed by its container cid.
+
+    This is a direct, immediate DEVICE-side write — distinct from the local
+    manifest's `device slots reorder`, which only edits the tone library's
+    recorded order and takes effect on the device on the next `device sync`
+    (which may then reorder things right back to the manifest's order).
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import reorder as R
+
+    try:
+        with HelixClient(ip, port) as h:
+            res = R.reorder_setlist_item(h, setlist, target, to_index)
+    except (HelixError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    for w in res.get("warnings", []):
+        click.echo(f"warning: {w}", err=True)
+    click.echo(f"moved cid {res['moved_cid']} to position {res['new_pos']} "
+               f"in {setlist!r} ({len(res['items'])} item(s) now listed)")
+
+
 @device.command(name="pull")
 @click.argument("cid", type=int)
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
@@ -2489,6 +2526,55 @@ def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
                 if line != last:
                     click.echo("\r" + line, nl=False)
                     last = line
+        if not as_json:
+            click.echo("")  # finish the live line
+    except KeyboardInterrupt:
+        if not as_json:
+            click.echo("")
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+
+
+@device.command(name="meters")
+@click.option("--seconds", type=float, default=15.0, show_default=True,
+              help="How long to run the meters (streams live level telemetry).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit one JSON reading per line instead of a live display.")
+@_device_option
+def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
+    """Live network level meters — reads the device's grid-level telemetry.
+
+    Subscribes to the 2003 telemetry stream and decodes the two meter arrays
+    (`/dspEvent` eid_=1, mid_=796/800 — 128-float grid level data) that ride
+    the same burst as the network tuner (no Stadium app needed). Read-only.
+    Ctrl-C to stop.
+    """
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+    from helixgen.device import meters as M
+
+    def _bar(peak: float, scale: float = 0.08, cells: int = 24) -> str:
+        n = max(0, min(cells, round((peak / scale) * cells)))
+        return "#" * n + "-" * (cells - n)
+
+    last: dict = {}
+    try:
+        with HelixSubscriber(ip) as sub:
+            for ev in sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
+                                 include_noise=True):
+                for r in M.readings_from_event_args(ev.args):
+                    if as_json:
+                        click.echo(json.dumps({
+                            "mid": r.mid, "peak": round(r.peak, 4),
+                            "values": [round(v, 4) for v in r.values]}))
+                        continue
+                    last[r.mid] = r
+                    line = "  ".join(
+                        f"{mid}: {_bar(last[mid].peak)} {last[mid].peak:.3f}"
+                        for mid in sorted(last))
+                    click.echo("\r" + line.ljust(70), nl=False)
         if not as_json:
             click.echo("")  # finish the live line
     except KeyboardInterrupt:

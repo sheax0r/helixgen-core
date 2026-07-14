@@ -1328,3 +1328,69 @@ def device_setlist_duplicate_handler(
             pass
     return {"ok": True, "src_cid": src_cid, "dst_cid": dst_cid,
             "created": created, "copied": copied}
+
+
+def device_reorder_handler(
+    setlist: str, target: str, to_index: int, *, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Move a preset to a new position within a setlist via
+    `/ReorderContainerContent`.
+
+    ``setlist`` is a setlist display name (resolved the way `device_setlist_*`
+    resolve setlists), a literal container cid (``-2`` = the pool, whose
+    presets also resolve by name), or the literal ``"setlists"`` to instead
+    reorder the top-level setlist list itself (``target`` is then a setlist
+    name/cid; a real setlist literally named "setlists" must be addressed by
+    its container cid). ``target`` is a preset display name or a literal cid
+    within that setlist; ``to_index`` is bounds-validated against the
+    container's current length. Numeric ``target``/``setlist`` values are
+    cid-first: a display-name collision yields a ``warnings`` entry when the
+    cid resolves in the container, and an error (naming the item's real cid)
+    when it doesn't.
+    Direct, immediate DEVICE-side write — distinct from the local-manifest
+    reorder path (`device_slots reorder` CLI verb + `device_sync_setlist`),
+    which only takes effect on the device on the next sync. Returns
+    ``{ok, container, moved_cid, new_pos, items, warnings}``.
+    """
+    from helixgen.device import HelixClient, HelixError
+    from helixgen.device import reorder as R
+
+    try:
+        with HelixClient(ip=ip) as client:
+            return R.reorder_setlist_item(client, setlist, target, to_index)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
+def device_meters_handler(
+    *, seconds: float = 3.0, ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Sample the device's live level-meter telemetry for ``seconds`` and
+    return the latest reading per meter stream.
+
+    Reads the grid-level meter arrays (`/dspEvent` eid_=1, mid_=796/800 — 128
+    floats each) that ride the same port-2003 burst as the network tuner (no
+    Stadium app needed). Returns ``{"meters": [{"mid", "peak", "values"}, …],
+    "samples": N}`` — ``meters`` holds the most recent reading seen per mid
+    (0, 1, or 2 entries depending on what arrived in the window).
+    """
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+    from helixgen.device import meters as M
+
+    last: dict[int, Any] = {}
+    samples = 0
+    try:
+        with HelixSubscriber(ip=ip) as sub:
+            for ev in sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
+                                 include_noise=True):
+                for r in M.readings_from_event_args(ev.args):
+                    samples += 1
+                    last[r.mid] = r
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {"meters": [
+                {"mid": mid, "peak": round(r.peak, 4),
+                 "values": [round(v, 4) for v in r.values]}
+                for mid, r in sorted(last.items())],
+            "samples": samples}

@@ -181,6 +181,19 @@ project [`CLAUDE.md`](../CLAUDE.md); highlights:
   create|rename|delete|duplicate` (device-side; delete/duplicate never touch
   the preset pool) and `device setlist list|add|remove|create-local`
   (local manifest membership for `device sync`).
+- Live device ops: `device snapshot|bypass|model|blocks` (mutate the ACTIVE
+  tone), `device tuner`/`device meters` (read-only 2003 telemetry), and
+  `device reorder <setlist> <target> --to <N>` — a direct DEVICE-side preset
+  reorder, distinct from the local-manifest `device slots reorder` + `sync`.
+  Reorder gotcha: a purely-numeric `<target>` is **always parsed as a cid**
+  (cid-first), never as a display name — a preset literally named e.g. `"7"`
+  can only be addressed by its cid. If the container holds an item *named*
+  the digit string you passed, the cid reading wins with a stderr warning
+  when that cid exists in the container, and the command errors (telling you
+  the named item's real cid) when it doesn't. `--to` is bounds-checked
+  against the container's length. Same cid-first rule for `<setlist>`: a
+  literal integer is a container cid (`-2` = the pool, whose presets also
+  resolve by name), and the word `setlists` always means the setlists root.
 - IRs: `device list-irs / push-ir / pull-ir`, `device delete-ir
   <name-or-hash>`, `device rename-ir <name-or-hash> <new>`, and
   `device ir-prune [--yes] [--force] [--ignore-warnings] [--only …]` — delete

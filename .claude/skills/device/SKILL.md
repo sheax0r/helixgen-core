@@ -298,8 +298,12 @@ helixgen device sync <setlist>
 
 The engine reconciles the pool (install/update/skip), rebuilds the setlist's
 references in manifest order, and uploads each tone's IRs. **Order comes from the
-manifest** — `device setlist add --pos` / the manifest order sets it; explicit
-on-device reordering of *untracked* presets is a separate concern (backlog #7).
+manifest** — `device setlist add --pos` / the manifest order sets it; a later
+sync will reorder the device right back to that recorded order. For a direct,
+immediate device-side move that bypasses the manifest entirely — e.g. reordering
+an *untracked* preset, or a quick one-off nudge you don't want `sync` to
+remember — use `helixgen device reorder <setlist> <target> --to <N>` (+ MCP
+`device_reorder`) instead.
 
 ### 3. Read the result, fix `errors[]`, re-run
 

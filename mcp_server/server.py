@@ -907,3 +907,46 @@ def device_setlist_duplicate(
     dst_cid, created, copied}`.
     """
     return _tools.device_setlist_duplicate_handler(model, ip=ip, src=src, dst=dst)
+
+
+@app.tool()
+def device_reorder(
+    setlist: str,
+    target: str,
+    to_index: int,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Move a preset to a new position within a setlist (`/ReorderContainerContent`).
+
+    `setlist` is a setlist display name (e.g. `"throwaway"`), a literal
+    container cid (`-2` = the pool, whose presets also resolve by name), or the
+    literal `"setlists"` to instead reorder the top-level setlist list itself
+    (`target` is then a setlist name/cid; a real setlist literally named
+    "setlists" must be addressed by its container cid). `target` is a preset
+    display name or a literal cid; `to_index` is the new 0-based position,
+    bounds-validated against the container's current length. Numeric
+    `target`/`setlist` values are **cid-first**: if an item is display-named
+    that digit string, the cid reading wins with an entry in the result's
+    `warnings` when the cid resolves in the container, and errors (naming the
+    item's real cid) when it doesn't. Direct, immediate DEVICE-side
+    write — distinct from the local-manifest reorder path (`device slots
+    reorder` CLI + `device_sync_setlist`), which only takes effect on the
+    device on the next sync (and could reorder things right back). Returns
+    `{ok, container, moved_cid, new_pos, items, warnings}`.
+    """
+    return _tools.device_reorder_handler(setlist, target, to_index, ip=ip)
+
+
+@app.tool()
+def device_meters(
+    seconds: float = 3.0,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Read the Stadium's live level meters — no Stadium app needed.
+
+    Samples the grid-level meter telemetry on port 2003 (`/dspEvent` eid_=1,
+    mid_=796/800 — 128 floats each) for `seconds`, riding the same burst as
+    the network tuner. Read-only. Returns `{meters: [{mid, peak, values}, …],
+    samples}` — the latest reading seen per mid.
+    """
+    return _tools.device_meters_handler(seconds=seconds, ip=ip)

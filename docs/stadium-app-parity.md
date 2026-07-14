@@ -53,7 +53,7 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | New / duplicate / copy-to-setlist | Manage Presets | `/CreateContent`+`/SetContentData` | full | full | full | ✅ | `device create`/`install` + reference model _(library-agent)_ |
 | Rename preset | Rename dialog | `/SetContentInfo` | full | full | full | ✅ | `device rename` |
 | Set / batch preset color | Rename / Batch Color | `/SetContentAttrs` `{colr:int}` | full | full | n-a | ✅ | `device set-info <cid>... --color` (batch) / MCP `device_set_info`; int enum, HW-validated 2026-07-14 (#20) |
-| Reorder presets | drag | `/ReorderContainerContent` `[cmd,container,[cids],pos]` | partial | none | partial | 🟡 | `slots reorder`+sync _(library-agent)_; **arg decoded 2026-07-14** (moved-cids + dest index); live reorder verb still to wire + HW-validate |
+| Reorder presets | drag | `/ReorderContainerContent` `[cmd,container,[cids],pos]` | full | full | n-a | ✅ | **SHIPPED 2026-07-14** `device reorder <setlist> <target> --to <N>` (+ MCP `device_reorder`); HW-validated on a Stadium XL against the `throwaway` setlist. Direct device write, distinct from `slots reorder`+sync _(library-agent, manifest-based)_ |
 | Move preset between setlists | drag | reference add/remove | full | full | full | ✅ | `device setlist add/remove` _(library-agent)_ |
 | Delete / clear-from-setlist | Delete / Clear | `/RemoveContent` | full | full | full | ✅ | `device delete`; clear = drop reference |
 | Export preset (.hsp) | drag out / Export | `/GetContentData` | full | n-a | full | ✅ | `device pull` (non-activating, 2.18) |
@@ -69,7 +69,7 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Create setlist | sidebar ▸ + | `/CreateContent(-5, pos, ctype=1003, {name})` | full | full | full | ✅ | **#8 SHIPPED** `device setlist create` / `device_setlist_create` (HW-validated 2026-07-14); `create-local` = manifest only |
 | Rename setlist | dbl-click | `/SetContentAttrs` `{name}` | full | full | n-a | ✅ | `device setlist rename` / `device_setlist_rename` (also renames local manifest record); HW-validated 2026-07-14 (#20) |
 | Duplicate setlist | Duplicate | copy references (rcid) into a fresh setlist | full | full | n-a | ✅ | `device setlist duplicate` / `device_setlist_duplicate` (auto-creates target; pool presets shared, not copied); HW-validated 2026-07-14 (#20) |
-| Reorder setlists | drag | `/ReorderContainerContent` (setlists are containers under -5) | none | none | none | 🔍 | **arg decoded 2026-07-14** (same command as preset reorder); verb not yet wired |
+| Reorder setlists | drag | `/ReorderContainerContent` (setlists are containers under -5) | full | full | n-a | ✅ | **SHIPPED 2026-07-14**, same verb: `device reorder setlists <target> --to <N>`; HW-validated (moved+restored a real setlist's position under `-5`) |
 | Delete / clear setlist | Delete / Clear | `/RemoveContent(-5,[cid])` | full | full | partial | ✅ | `device setlist delete` / `device_setlist_delete` — references die, pool presets never (never-orphan, HW-validated 2026-07-14, #20); clear = `unsync`/mirror-to-empty |
 | Sync setlist(s) | (app is live) | pool+reference reconcile | full | full | full | ✅ | `device sync <setlist>`/`--all --gc` _(library-agent)_ |
 | Import / export setlist (.hss) | File menu | 24-byte header + gzip + tar (`manifest.json` + 128 `.N` slots) | partial | none | partial | 🟡 | **#31: format decoded 2026-07-14, reading unblocked** (stdlib gzip+tarfile+json + `_sbepgsm` decoder). Sample `.hss` captured (empty setlist); a non-empty export still needed for a byte-faithful *writer* |
@@ -175,7 +175,8 @@ enum) via `/PropertyDefWithKeyGet`, so the catalog is live, not hardcoded.
 | Function | App location | Protocol | Verdict | Notes |
 |---|---|---|---|---|
 | Engage / exit tuner | device FS12 | `volatile.press.taptempo`/`held.taptempo`; exit `volatile.press.exittuner` | 🚫→🔍 | no app view (device-only UI). **Engage decoded 2026-07-14** — but not needed: the pitch stream is always live |
-| Read live pitch / cents | device screen | 2003 `/dspEvent` `{eid_:10,mid_:796}` | 🔍 | **schema decoded 2026-07-14**: single float = fractional MIDI note (int=note, frac×100=cents, −1=silence). Continuous background detector — implementable as `device tuner` via 2003 subscribe (no engage needed) |
+| Read live pitch / cents | device screen | 2003 `/dspEvent` `{eid_:10,mid_:796}` | ✅ | **SHIPPED**: single float = fractional MIDI note (int=note, frac×100=cents, −1=silence). Continuous background detector — `device tuner` (+ MCP `device_tuner`) subscribes to 2003, no engage needed; HW-validated |
+| Read live level meters | device screen | 2003 `/dspEvent` `{eid_:1,mid_:796\|800}` | ✅ | **SHIPPED 2026-07-14**: two 128-float grid-level arrays, same burst as the pitch stream. `device meters` (+ MCP `device_meters`); HW-validated (decoded framing against a live Stadium XL) |
 | Reference pitch / offsets / type / in-out / trails | device tuner settings | `global.tuner.*` | 🔴 | ~15 keys via §8 |
 
 ## 10. Tempo

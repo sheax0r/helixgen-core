@@ -575,3 +575,135 @@ def test_device_info_maps_helixerror(monkeypatch):
     monkeypatch.setattr(device, "HelixClient", _raising_client("product_info"))
     with pytest.raises(ValueError, match="device error"):
         tools.device_info_handler(MODEL)
+
+
+# --- device_reorder / device_meters ------------------------------------------
+
+_REORDER_REFS = [
+    {"cid_": 501, "posi": 0, "cctp": 1003, "rcid": 100},
+    {"cid_": 502, "posi": 1, "cctp": 1003, "rcid": 101},
+]
+_REORDER_POOL = [
+    {"cid_": 100, "name": "Clean Machine", "cctp": 1000, "posi": 0},
+    {"cid_": 101, "name": "Lead Tone", "cctp": 1000, "posi": 1},
+]
+
+
+class ReorderClient(FakeClient):
+    """FakeClient extension with the surface device_reorder_handler drives."""
+
+    def resolve_setlist_cid(self, name):
+        self._maybe_raise("resolve_setlist_cid")
+        FakeClient.record["setlist"] = name
+        return 1234 if name == "throwaway" else None
+
+    def list_container(self, cid):
+        self._maybe_raise("list_container")
+        FakeClient.record["container"] = cid
+        return list(_REORDER_REFS) if cid == 1234 else []
+
+    def list_presets(self, container=device.USER):
+        return list(_REORDER_POOL)
+
+    def reorder_container(self, container, moved_cids, new_pos):
+        self._maybe_raise("reorder_container")
+        FakeClient.record["reorder"] = (container, list(moved_cids), new_pos)
+        return [{"cid_": c, "posi": i} for i, c in enumerate(moved_cids)]
+
+
+def test_device_reorder_handler_by_name(monkeypatch):
+    FakeClient.record = {}
+    monkeypatch.setattr(device, "HelixClient", ReorderClient)
+    res = tools.device_reorder_handler("throwaway", "Lead Tone", 0)
+    assert res["ok"] is True
+    assert res["container"] == 1234
+    assert res["moved_cid"] == 502  # ref whose rcid names "Lead Tone"
+    assert res["new_pos"] == 0
+    assert FakeClient.record["reorder"] == (1234, [502], 0)
+
+
+def test_device_reorder_handler_unknown_setlist_raises(monkeypatch):
+    FakeClient.record = {}
+    monkeypatch.setattr(device, "HelixClient", ReorderClient)
+    with pytest.raises(ValueError, match="no setlist named 'ghost'"):
+        tools.device_reorder_handler("ghost", "x", 0)
+
+
+def test_device_reorder_handler_maps_helixerror(monkeypatch):
+    FakeClient.record = {}
+
+    class Raising(ReorderClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["_raise_on"] = "reorder_container"
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(device, "HelixClient", Raising)
+    with pytest.raises(ValueError, match="device error"):
+        tools.device_reorder_handler("throwaway", "Lead Tone", 0)
+
+
+class FakeSubscriber:
+    """Stand-in for HelixSubscriber: context manager whose stream() yields
+    pre-canned events (objects with an .args attribute)."""
+
+    events = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def stream(self, duration=None, filter_addrs=None, include_noise=False):
+        yield from type(self).events
+
+
+class _Ev:
+    def __init__(self, args):
+        self.args = args
+
+
+def _meter_map(mid, vals):
+    return {"id__": {"eid_": 1, "mid_": mid}, "vals": vals}
+
+
+def test_device_meters_handler_latest_per_mid(monkeypatch):
+    from helixgen.device import subscribe as sub_mod
+
+    FakeSubscriber.events = [
+        _Ev([_meter_map(796, [0.01] * 128)]),
+        _Ev([_meter_map(800, [0.02] * 128)]),
+        _Ev([_meter_map(796, [0.03] * 128)]),          # newer 796 wins
+        _Ev([{"id__": {"eid_": 10, "mid_": 796}, "vals": [45.0]}]),  # pitch: skipped
+    ]
+    monkeypatch.setattr(sub_mod, "HelixSubscriber", FakeSubscriber)
+    res = tools.device_meters_handler(seconds=0.1)
+    assert res["samples"] == 3
+    by_mid = {m["mid"]: m for m in res["meters"]}
+    assert set(by_mid) == {796, 800}
+    assert by_mid[796]["peak"] == pytest.approx(0.03)
+    assert len(by_mid[796]["values"]) == 128
+
+
+def test_device_meters_handler_silent_window(monkeypatch):
+    from helixgen.device import subscribe as sub_mod
+
+    FakeSubscriber.events = []
+    monkeypatch.setattr(sub_mod, "HelixSubscriber", FakeSubscriber)
+    res = tools.device_meters_handler(seconds=0.1)
+    assert res == {"meters": [], "samples": 0}
+
+
+def test_device_meters_handler_maps_helixerror(monkeypatch):
+    from helixgen.device import subscribe as sub_mod
+
+    class Boom(FakeSubscriber):
+        def __enter__(self):
+            raise device.HelixError("no zmq")
+
+    monkeypatch.setattr(sub_mod, "HelixSubscriber", Boom)
+    with pytest.raises(ValueError, match="device error"):
+        tools.device_meters_handler(seconds=0.1)
