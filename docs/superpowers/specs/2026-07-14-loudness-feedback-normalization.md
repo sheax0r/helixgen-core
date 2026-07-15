@@ -78,17 +78,19 @@ decoded — only `/dspEvent` was. Phase 0 should dump a few `/meter` frames; if
 it's a labeled per-output meter feed, it may hand us the mid-800 mapping for
 free.
 
-### 2.4 Alternative path: USB audio capture (true LUFS)
+### 2.4 Tier 2: USB audio capture — the full-fidelity signal
 
-The Stadium is a USB audio interface. Recording its USB return on the Mac and
-computing K-weighted LUFS (ITU-R BS.1770) would be the *perceptually correct*
-loudness measure — the grid meters are amplitude envelopes with no frequency
-weighting, so a dark tone and a fizzy tone at equal meter level can differ a
-couple dB in perceived loudness. Costs: cabling/config the network path doesn't
-need, an audio-capture dependency (the repo is stdlib+click; K-weighting biquads
-are implementable in pure Python but capture isn't), and it measures only the
-send routed to USB. **Decision: network meters are the MVP; USB-LUFS is a
-possible fidelity upgrade later, not phase 1.**
+The Stadium is a USB audio interface, so the Mac can record the actual
+processed audio. This is a categorically richer signal than the meters: the
+grid cells are **scalar amplitude envelopes at ~2–3 Hz** — they can say *how
+loud*, never *what it sounds like*. Everything spectral (§4) requires this
+tier. Costs: cabling/routing config the network path doesn't need, an
+audio-capture dependency (core is stdlib+click; capture needs `ffmpeg`
+-avfoundation / `sox` / PortAudio, and analysis wants `numpy` — precedented in
+this project by the IR catalog's 5-band FFT pass), and it measures only the
+send routed to USB. **Decision: network meters are the phase-1 MVP for level
+normalization; USB capture is the phase-3 upgrade that unlocks quality
+analysis, not just loudness.**
 
 ## 3. Design
 
@@ -156,15 +158,92 @@ Interaction contract: the skill/CLI tells the user *when to play and when to
 stop* per target, shows each measured level and applied trim in dB, and skips
 (with a warning) any target whose measurement window had too little playing.
 
+### Phase 3 — signal *quality* analysis (USB audio tier)
+
+`helixgen analyze-audio <capture.wav>` (or capture built in): record N seconds
+of playing through the active tone via the Stadium's USB return, compute the
+metric set in §4, and return a structured report the agent can reason over.
+This turns the loop from "match levels" into "does the tone measure the way
+the intent says it should" — see §4.3 for how the intelligence layer closes
+that loop.
+
 ### Skill integration
 
-The tone skill's §5.7 static pass **stays** — it's the a-priori default at
-authoring time. The measured loop becomes an optional finishing step offered by
-the **device skill** after a sync ("want me to level-match the snapshots /
-setlist while you play?"), since it needs the tones on the hardware and the
-player in the room.
+The tone skill's §5.7 static pass **stays** — it's the a-priori default and the
+only option offline. On top of it, two measured entry points:
 
-## 4. Risks / limitations
+- **At creation time (tone skill), when the Helix is online.** After authoring
+  the `.hsp`, the tone skill offers a refinement loop: sync the candidate to an
+  expendable scratch slot, prompt the user to play, `device measure` (phase 1)
+  for level trims — and with USB capture available, `analyze-audio` (phase 3)
+  for tonal-balance moves. Each iteration applies deltas to the local `.hsp`
+  via `patch_preset` and re-syncs, so the `.hsp` remains the source of truth
+  throughout. Device online-ness is cheap to detect (`device info` with a
+  short timeout); offline authoring is unchanged.
+- **Iterating later (device skill).** The same loop offered on demand against
+  tones already on the hardware — "level-match this setlist / these snapshots
+  while you play", or "this patch sounds harsh, measure it and fix it" —
+  without re-authoring anything.
+
+Both are user-invoked (device-write gating) and both converge on the same
+primitives: `measure` / `analyze-audio` → agent decides deltas → `patch_preset`
+→ `device sync`.
+
+## 4. Signal-quality mathematics — what's out there
+
+The user's instinct ("FFT stuff plus some intelligence") is right, in two
+layers: **deterministic DSP metrics** (well-established, cheap to compute) and
+an **interpretation layer** mapping metrics ↔ tone vocabulary ↔ param moves.
+
+### 4.1 What each signal tier can support
+
+| Metric family | Network meters (2–3 Hz scalars) | USB audio (full-rate) |
+|---|---|---|
+| Level / loudness envelope | ✅ (phase 1) | ✅ |
+| Per-node gain staging, clip/headroom checks | ✅ (cells >1.0 = hot node) | only at the output |
+| K-weighted LUFS, true peak | ❌ | ✅ |
+| Anything spectral (brightness, mud, fizz) | ❌ | ✅ |
+| Dynamics (crest factor, transients) | ❌ (envelope too slow) | ✅ |
+| Noise / hum diagnosis | partial (idle floor level) | ✅ (identifies *what* the noise is) |
+
+### 4.2 The standard metric set (all classical DSP, no ML required)
+
+- **Loudness:** ITU-R BS.1770 **LUFS** (K-weighting = one shelf + one high-pass
+  biquad, then gated mean-square — implementable in pure Python/numpy;
+  `pyloudnorm` is the reference library), RMS, **true peak**.
+- **Dynamics:** **crest factor** (peak/RMS, in dB) — directly measures how
+  compressed/saturated the tone is (a metal rhythm sits ~6–10 dB, a clean
+  strum ~15–20 dB); attack-transient energy ratio for "tight vs mushy".
+- **Spectral (FFT / Welch PSD):** **band energies** over guitar-relevant bands
+  — the IR catalog already does exactly this (stdlib `wave` + numpy, 5 bands)
+  to derive its bright/dark/beefy/tight tags, so the vocabulary and code
+  precedent exist in-repo. Plus **spectral centroid** (single-number
+  brightness), **spectral tilt** (dB/octave slope), and targeted trouble
+  bands: mud ≈ 200–400 Hz, boxiness ≈ 400–800 Hz, harshness ≈ 2.5–4 kHz,
+  fizz ≳ 6 kHz.
+- **Noise:** FFT peaks at 50/60 Hz + harmonics = hum (ground/single-coil);
+  broadband floor in silent gaps = hiss/gain-staging noise; both measured
+  against the playing level for a usable SNR figure.
+- Heavier tooling exists (`librosa`, `essentia`, `aubio` for onset/MFCC-level
+  features) but is overkill: the set above is a few hundred lines of
+  numpy and covers everything a tone-refinement loop can act on.
+
+### 4.3 The intelligence layer
+
+The metrics only become useful mapped to *intent* — and that mapping is the
+agent's job, not a formula's. The skill already expresses intent in the IR
+catalog's controlled vocabulary (bright/dark/beefy/tight/…); the analysis
+report should speak the same language: compute the descriptors, let the agent
+compare them against what the tone *should* be ("tight modern-metal rhythm"
+measuring crest 16 dB and centroid 900 Hz is neither tight nor bright), and
+translate the gap into concrete moves (raise gate threshold, cut 300 Hz,
+presence up, swap IR for a brighter mix) applied via `patch_preset` and
+re-measured. Deterministic guardrails stay deterministic (clipping, hum, SNR);
+*taste* stays with the agent + player. A useful design target: the analyzer
+emits `{measured_tags, trouble_bands, dynamics, noise}` in catalog vocabulary,
+so the same grep-first tags used to *choose* an IR also *verify* the result.
+
+## 5. Risks / limitations
 
 - **Meter ≠ perceived loudness.** Amplitude envelope, no K-weighting; expect
   ±1–2 dB perceptual error across very different voicings. Acceptable for

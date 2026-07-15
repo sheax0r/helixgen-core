@@ -1083,7 +1083,11 @@ Remaining follow-ups:
   decode the never-captured `/meter` address), phase 1 `device measure`
   (playing-gated robust dB stats incl. output÷input chain gain), phase 2
   `device normalize` (per-snapshot / per-setlist trim via the dB-native
-  output-block level, written back into the local `.hsp` then synced).
+  output-block level, written back into the local `.hsp` then synced),
+  phase 3 USB-audio capture → quality metrics (LUFS, crest factor, FFT band
+  energies in the IR-catalog vocabulary) feeding a tone-skill refinement loop
+  at creation time when the device is online, and later iteration via the
+  device skill.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
