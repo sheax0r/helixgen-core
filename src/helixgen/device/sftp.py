@@ -135,14 +135,6 @@ class HelixSFTP:
         self.close()
 
     # -- read (safe) -------------------------------------------------------
-    def list_ir_files(self) -> List[str]:
-        """Basenames of the `.wav` files in the device's IR directory."""
-        try:
-            return sorted(f for f in self._sftp.listdir(self.ir_dir)
-                          if f.lower().endswith(".wav"))
-        except Exception as exc:
-            raise HelixError(f"listing {self.ir_dir} failed: {exc}") from exc
-
     def download_ir(self, remote_name: str, local_path: str) -> str:
         """Download one IR `.wav` (by basename) to ``local_path``."""
         remote = f"{self.ir_dir}/{remote_name}"
@@ -219,8 +211,14 @@ def _addcontent_hash(args: list) -> Optional[str]:
             h = a["hash"]
             if isinstance(h, (bytes, bytearray)) and len(h) == 16:
                 return _irmd.irmd_to_irhash(h)
-            if isinstance(h, str) and len(h) == 32:
-                return h
+            if isinstance(h, str):
+                # #53: shared string normalizer (validate len 32 + lowercase);
+                # was `if len(h)==32: return h` (case-preserving). Only return
+                # on a valid match so a malformed hash keeps scanning later
+                # args, exactly as before.
+                norm = _irmd.normalize_hash_string(h)
+                if norm is not None:
+                    return norm
     return None
 
 

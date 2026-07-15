@@ -414,6 +414,42 @@ def test_resolve_setlist_cid_explicit_non_strict_still_works(monkeypatch):
     assert seen == [False]
 
 
+def test_list_setlists_by_name_returns_all_matches(monkeypatch):
+    """#52: the multi-match helper returns every setlist whose name matches
+    (case-insensitive, stripped both sides), preserving list order."""
+    h = HelixClient()
+    setlists = [
+        {"cid_": 10, "name": "gigs", "cctp": 1001, "posi": 0},
+        {"cid_": 20, "name": "GIGS", "cctp": 1001, "posi": 1},
+        {"cid_": 30, "name": " gigs ", "cctp": 1001, "posi": 2},
+        {"cid_": 40, "name": "other", "cctp": 1001, "posi": 3},
+    ]
+    monkeypatch.setattr(h, "list_setlists", lambda *, strict=False: list(setlists))
+    matches = h.list_setlists_by_name("GiGs")
+    assert [m["cid_"] for m in matches] == [10, 20, 30]
+
+
+def test_list_setlists_by_name_accepts_prefetched(monkeypatch):
+    """When given a pre-fetched listing it filters that without an extra RPC."""
+    h = HelixClient()
+
+    def _boom(*, strict=False):
+        raise AssertionError("must not re-list when setlists= is supplied")
+
+    monkeypatch.setattr(h, "list_setlists", _boom)
+    pre = [{"cid_": 1, "name": "a"}, {"cid_": 2, "name": "A"}]
+    assert [m["cid_"] for m in h.list_setlists_by_name("a", setlists=pre)] == [1, 2]
+
+
+def test_resolve_setlist_cid_routes_through_by_name(monkeypatch):
+    """resolve returns the first match's cid via the shared helper."""
+    h = HelixClient()
+    monkeypatch.setattr(
+        h, "list_setlists_by_name",
+        lambda name, *, strict=True, setlists=None: [{"cid_": 7, "name": name}])
+    assert h.resolve_setlist_cid("x") == 7
+
+
 # -- _raw guardrail ----------------------------------------------------------
 
 def test_raw_create_content_rejects_non_pool_container():

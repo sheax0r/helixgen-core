@@ -649,13 +649,6 @@ def _canonical_flow(placements: List[Tuple[int, dict]], base: int) -> dict:
             "cid_": 0, "enbl": 1, "snap": False, "tid_": 0}
 
 
-def _assemble_flow(blocks: List[dict]) -> dict:
-    """Legacy contiguous assembler (kept for callers/tests that pass a flat block
-    list); placements land at grid positions 0,1,2,… Prefer :func:`_canonical_flow`
-    for device-faithful routing."""
-    return _canonical_flow([(i, b) for i, b in enumerate(blocks)], 0)
-
-
 def _default_input_mode(path_index: int) -> str:
     """Default live-input routing per DSP path when the recipe omits ``input``.
 

@@ -355,6 +355,12 @@ class StubClient:
         return [{"cid_": cid, "name": name, "cctp": Cctp.SETLIST}
                 for name, cid in self.setlists.items()]
 
+    def list_setlists_by_name(self, name, *, strict=True, setlists=None):
+        want = name.strip().casefold()
+        source = self.list_setlists(strict=strict) if setlists is None else setlists
+        return [m for m in source
+                if str(m.get("name", "")).strip().casefold() == want]
+
     def list_container(self, cid, *, strict=False):
         return self.container_items.get(cid, [])
 

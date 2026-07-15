@@ -37,3 +37,16 @@ def test_irmd_to_irhash_no_length_validation():
     # minimal helper: callers own their own length filters (maintenance.py's
     # len==16 test stays at the call site), so a short blob still converts.
     assert irmd.irmd_to_irhash(b"\x01\x02") == "0102"
+
+
+# -- #53: string-branch normalizer (shared by client._hex_hash + sftp._addcontent_hash)
+
+def test_normalize_hash_string_lowercases_valid():
+    assert irmd.normalize_hash_string("AB" * 16) == "ab" * 16
+    assert irmd.normalize_hash_string("0123456789ABCDEF" * 2) == "0123456789abcdef" * 2
+
+
+def test_normalize_hash_string_rejects_wrong_length():
+    assert irmd.normalize_hash_string("abc") is None
+    assert irmd.normalize_hash_string("ab" * 20) is None
+    assert irmd.normalize_hash_string("") is None

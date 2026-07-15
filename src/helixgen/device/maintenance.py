@@ -75,13 +75,6 @@ def color_index(color: Any) -> int:
     raise ValueError(f"unknown color {color!r}; valid: {names} (or an index 0-11)")
 
 
-def color_name(idx: Any) -> str:
-    """The palette token for a ``colr`` int (the raw int as str if unknown)."""
-    if isinstance(idx, int) and 0 <= idx < len(PRESET_COLORS):
-        return PRESET_COLORS[idx]
-    return str(idx)
-
-
 # ---------------------------------------------------------------------------
 # IR reference collection (pure)
 # ---------------------------------------------------------------------------

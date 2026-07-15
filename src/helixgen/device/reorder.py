@@ -198,9 +198,11 @@ def reorder_setlist_item(client, setlist: str, target: str,
             # name clash and let the reorder silently land on the wrong
             # container.
             setlists = client.list_setlists(strict=True)
-            clashes = [m for m in setlists
-                       if str(m.get("name", "")).casefold() == s.casefold()
-                       and m.get("cid_") != lit]
+            # Same name-match as ``resolve_setlist_cid`` (shared #52 helper),
+            # filtered over the single strict listing we already hold — the
+            # cid_present membership scan below reuses that same listing.
+            clashes = [m for m in client.list_setlists_by_name(s, setlists=setlists)
+                       if m.get("cid_") != lit]
             cid_present = (
                 lit == int(Container.POOL)
                 or any(m.get("cid_") == lit for m in setlists))

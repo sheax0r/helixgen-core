@@ -17,7 +17,21 @@ working unchanged.
 """
 from __future__ import annotations
 
-from typing import Union
+from typing import Optional, Union
+
+
+def normalize_hash_string(s: str) -> Optional[str]:
+    """Normalize an **already-string** device IR hash to a canonical ``irhash``.
+
+    The single home (#53) for the two device-hash *string* branches that used to
+    disagree: ``client._hex_hash`` lowercased with no length check, while
+    ``sftp._addcontent_hash`` required exact ``len == 32`` but preserved case.
+    The reconciled contract is the safer union — **validate length (32) and
+    lowercase** — returning ``None`` for anything not exactly 32 chars. (Device
+    IR hashes arrive over the wire as 16 raw msgpack bytes, handled by
+    :func:`irmd_to_irhash`; this string path is the defensive fallback.)
+    """
+    return s.lower() if len(s) == 32 else None
 
 
 def irhash_to_irmd(irhash: str) -> bytes:

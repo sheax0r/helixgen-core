@@ -322,7 +322,7 @@ op.
 
 ## Project layout
 
-- `src/helixgen/` — `cli`, `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`
+- `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (the `helixgen device` verb group, imported back into `cli`), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`
 - `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
 - `mcp_server/` — the MCP server the plugin bundles; tool descriptions here are agent-facing behavioral contracts
 - `.claude/skills/` — the three plugin skills: `setup` (device/prefs onboarding), `tone` (author a `.hsp` from a tone request), `device` (push/sync authored tones onto the hardware)

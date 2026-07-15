@@ -710,12 +710,19 @@ LED control, focus-view/UI cosmetics.
   agent-critical guardrails (show-block-first, naming convention,
   `.hsp`-is-source-of-truth, device-write gating, flaky-network) stay in
   CLAUDE.md; skill pointers updated to the moved sections.
-- **#28 Full code review + refactor pass** — a structured review of the whole
-  codebase for structure, readability, and maintainability (module boundaries,
-  duplicated mapping logic per the resolver pattern #14, `cli.py` size, dead
-  code), followed by refactorings driven by the findings. Output: a findings
-  doc + a sequenced refactor plan, then the refactors (behavior-preserving,
-  test-pinned).
+- **#28 Full code review + refactor pass** — **✅ SHIPPED WITH RESIDUALS
+  (2026-07-15).** Findings doc + sequenced plan:
+  `docs/superpowers/specs/2026-07-15-structural-review-findings.md`. **Executed
+  the safe subset** (all behavior-preserving, full suite + 211-export
+  acceptance net green after every commit): **S1** removed 6 verified-dead
+  symbols + 1 unused import; **S3/S4/S5** resolved the #14 resolver residuals
+  #51/#52/#53 (see below); **S6** extracted `cli.py`'s 2170-line `# --- device`
+  section into `src/helixgen/cli_device.py` as a pure move (`cli.py` 2792 → 649
+  lines; `device` group re-imported via `cli.add_command(device)`,
+  `_auto_upload_irs` re-exported, `helixgen.cli:cli` entry point + full command
+  tree byte-identical). **Deferred (no user input needed) → #54:** S7 (fold the
+  65 lazy device imports), S8 (rename `hss.slot_label`), S9 (decompose the
+  oversized functions in F5), S10 (`mcp_server` result-shape consolidation).
 - **#29 helixgen-tui** — design + implement a TUI that covers everything the
   Stadium desktop app does (the parity matrix above), driving the same library/
   device engines. **Key requirement: "slots" are invisible** — an implementation
@@ -940,42 +947,60 @@ LED control, focus-view/UI cosmetics.
 These are the audit findings whose consolidation is **not** a pure
 behavior-preserving swap — each carries a real semantic difference that must be
 reconciled deliberately, so they were filed rather than forced into the #14
-pass. Natural pickups for the #28 refactor.
+pass. **All three ✅ SHIPPED as part of #28 (2026-07-15)** — see
+`docs/superpowers/specs/2026-07-15-structural-review-findings.md` "which
+behavior wins" for each reconciliation.
 
-- **#51 Unify the two `posi`→"1A".."8D" slot-label formulas.** `client.slot_label`
-  (`src/helixgen/device/client.py`) is the canonical, **uncapped** formula
-  returning `""` for `None`; `manifest._posi_to_slot`
-  (`src/helixgen/device/manifest.py`) is a **second independent** implementation
-  — a precomputed 512-entry `_SLOT_LABELS` table with a **hard 128-bank cap**
-  returning **`None`** on out-of-range/non-int. The reverse direction
-  (label→posi) is already single-sourced off `manifest._SLOT_LABELS`
-  (`cli._posi_from_slot`, `setlist_sync.assign_slots`, manifest validation all
-  reuse it), so the fix is to derive the forward formula and the table from ONE
-  source without changing either caller's contract — the cap + `None`-vs-`""`
-  semantics are load-bearing for slot validation, so a blind merge is unsafe.
-  (Also: `hss.slot_label` is an unrelated function sharing the name — a
-  readability trap worth a rename.)
+- **#51 Unify the two `posi`→"1A".."8D" slot-label formulas.** **✅ SHIPPED
+  (2026-07-15, S5).** `client.slot_label` is now the single source of the
+  forward formula; `manifest._SLOT_LABELS` is derived from it
+  (`tuple(slot_label(i) for i in range(_SLOT_BANKS*4))`, byte-identical), and
+  `_posi_to_slot` keeps its capped / `None`-for-out-of-range contract unchanged.
+  *Winner:* the formula lives once; both callers' contracts preserved exactly
+  (no import cycle — client's deps never import manifest). The `hss.slot_label`
+  name-collision rename was deferred to plan step S8 (→ #54).
 
 - **#52 Extract a multi-match `list_setlists_by_name` helper for the reorder
-  clash branch.** `reorder.py`'s literal-integer-cid branch
-  (`reorder_setlist_item`, ~lines 200–206) re-implements the casefold
-  name-match that `resolve_setlist_cid` owns, because it needs the **full set**
-  of setlists matching a name (to warn/raise on a digit-named clash) plus a
-  `cid_present` membership test — `resolve_setlist_cid` returns only the single
-  cid. Extract `client.list_setlists_by_name(name) -> [matches]` with
-  `resolve_setlist_cid` calling `next(iter(...))`, then route the reorder branch
-  through it. Behavior-preserving only if the helper returns all matches.
+  clash branch.** **✅ SHIPPED (2026-07-15, S3).** Added
+  `HelixClient.list_setlists_by_name(name, *, strict, setlists=None)` as the one
+  home for the case-insensitive (strip+casefold both sides) setlist name-match.
+  `resolve_setlist_cid` returns the first match's cid through it; `reorder.py`'s
+  numeric-argument clash branch routes through it too, passing its single strict
+  listing as `setlists=` (no extra RPC; the `cid_present` scan reuses that same
+  listing). *Winner:* `resolve_setlist_cid`'s strip-both-sides semantics — the
+  reorder clash check gains stored-name stripping (a whitespace edge case,
+  strictly more consistent). Returns all matches, so no caller loses info.
 
-- **#53 Reconcile the two device-IR-hash normalizers.** `client._hex_hash`
-  (`src/helixgen/device/client.py`) and `sftp._addcontent_hash`
-  (`src/helixgen/device/sftp.py`) both normalize a device hash to a 32-hex
-  `irhash`, and their **bytes** branches are already consolidated onto
-  `device/irmd.irmd_to_irhash` (#14). Their **string** branches still disagree:
-  `_hex_hash` lowercases and imposes **no** length check; `_addcontent_hash`
-  enforces exact `len==32` and preserves case. Pick one canonical normalization
-  (recommend: validate length + lowercase) and route both string branches
-  through it. Deferred from #14 because it changes observable behavior at both
-  sites (not a mechanical swap).
+- **#53 Reconcile the two device-IR-hash normalizers.** **✅ SHIPPED
+  (2026-07-15, S4).** Added `irmd.normalize_hash_string(s)` (= lowercase iff
+  `len==32`, else `None`); both `client._hex_hash` and `sftp._addcontent_hash`
+  string branches route through it. *Winner:* the safer **union** — length
+  validation (from `_addcontent_hash`) **and** lowercasing (from `_hex_hash`).
+  Observable only on the defensive string path (device IR hashes arrive as 16
+  raw msgpack bytes, never strings); `sftp`'s loop still scans later args on a
+  malformed hash. Original divergence: `_hex_hash` lowercased with no length
+  check; `_addcontent_hash` enforced `len==32` but preserved case.
+
+- **#54 Structural-plan residuals — steps S7–S10 of the #28 refactor.** The
+  lower-value / higher-risk tail of the structural plan
+  (`docs/superpowers/specs/2026-07-15-structural-review-findings.md`, Phase 2),
+  each behavior-preserving and needing **no user input** — a next session can
+  execute directly:
+  - **S7** — fold the ~65 repeated lazy `from helixgen.device import HelixClient,
+    HelixError, …` statements in `cli_device.py` into one place. Deferred from
+    #28 because a module-level import would move the optional-`device`-extra
+    ImportError from command-time to import-time (observable); needs a lazy
+    accessor, not a naive hoist.
+  - **S8** — rename `hss.slot_label` → `hss_slot_label` (readability trap: it
+    shares a name with the unrelated `client.slot_label`). Touches `hss.py` +
+    `test_hss.py` only.
+  - **S9** — decompose the oversized functions in findings F5
+    (`transcode._new_midi_ctrl` 190 lines, `mutate.wire_footswitch` 146,
+    `transcode._hrns_for`/`synthesize_sfg`, `generate._to_hsp_bnn`,
+    `cli_device.device_setlist_import_hss`). Judgment rewrites — each needs its
+    own golden/behavior pin.
+  - **S10** — `mcp_server` (`tools.py` 1591 + `server.py` 1054) result-shape
+    consolidation; belongs in its own review pass.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

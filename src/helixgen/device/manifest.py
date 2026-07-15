@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from helixgen.hsp import read_hsp
+from helixgen.device.client import slot_label as _slot_label
 
 MANIFEST_VERSION = 2
 
@@ -55,13 +56,16 @@ _VALID_SOURCES = ("authored", "import-local", "import-device", "save", "create",
 _PATHLESS_SOURCES = ("save", "create", "import-hss")
 
 # Every user-setlist slot label, in device posi order: "1A".."128D".
-# The device labels a posi as ``f"{posi//4 + 1}{'ABCD'[posi%4]}"`` (uncapped —
-# see ``client.slot_label``). A Helix setlist holds up to 128 banks of 4 (the
-# Stadium XL's full user bank goes to 128D = 512 slots); base models simply fill
-# fewer. Sizing to the max keeps slot validation + auto-assign from imposing an
-# artificial "device full" ceiling — the hardware is the real capacity check.
+# The posi->label formula lives in ONE place — ``client.slot_label`` (#51) — and
+# this table is derived from it (not a second copy of the formula). A Helix
+# setlist holds up to 128 banks of 4 (the Stadium XL's full user bank goes to
+# 128D = 512 slots); base models simply fill fewer. Sizing to the max keeps slot
+# validation + auto-assign from imposing an artificial "device full" ceiling —
+# the hardware is the real capacity check. ``_posi_to_slot`` below keeps this
+# table's capped / ``None``-for-out-of-range contract, distinct from
+# ``client.slot_label``'s uncapped / ``""``-for-None contract.
 _SLOT_BANKS = 128
-_SLOT_LABELS = tuple(f"{b}{c}" for b in range(1, _SLOT_BANKS + 1) for c in "ABCD")
+_SLOT_LABELS = tuple(_slot_label(i) for i in range(_SLOT_BANKS * 4))
 
 
 class ManifestError(Exception):
@@ -179,16 +183,6 @@ class SetlistManifest:
         manifest = cls(path)
         manifest._migrate_from_ledger()
         return manifest
-
-    @staticmethod
-    def _read_json(path: Path) -> Optional[Dict[str, Any]]:
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            return None
-        if not isinstance(data, dict) or data.get("version") != MANIFEST_VERSION:
-            return None
-        return data
 
     @staticmethod
     def _coerce_observed(raw: Any) -> Dict[str, Any]:
@@ -428,13 +422,6 @@ class SetlistManifest:
             if tone is not None and tone.get("slot") is None:
                 self.tones.pop(name, None)
         return True
-
-    def delete_tone(self, name: str) -> None:
-        """Remove a tone from the library entirely (registry + all memberships)."""
-        self.tones.pop(name, None)
-        for rec in self.setlists_map.values():
-            if name in rec["tones"]:
-                rec["tones"].remove(name)
 
     def _is_referenced(self, name: str) -> bool:
         return any(name in rec["tones"] for rec in self.setlists_map.values())

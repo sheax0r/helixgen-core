@@ -69,6 +69,19 @@ def test_slot_universe_covers_xl_128_banks(tmp_path):
     assert _posi_to_slot(511) == "128D"
 
 
+def test_slot_labels_derived_from_client_slot_label(tmp_path):
+    # #51: the forward posi->label formula has one home (client.slot_label);
+    # the manifest table is derived from it, not a second copy.
+    from helixgen.device.manifest import _SLOT_LABELS, _posi_to_slot
+    from helixgen.device.client import slot_label
+    assert all(_SLOT_LABELS[i] == slot_label(i) for i in range(len(_SLOT_LABELS)))
+    # _posi_to_slot keeps its capped / None-for-out-of-range contract unchanged.
+    assert _posi_to_slot(512) is None
+    assert _posi_to_slot(-1) is None
+    assert _posi_to_slot(None) is None
+    assert _posi_to_slot("5") is None
+
+
 def test_mark_on_device_accepts_high_slot(tmp_path):
     m = SetlistManifest(tmp_path / "s.json")
     m.tones["A"] = {"path": None, "content_hash": None, "doc": None,

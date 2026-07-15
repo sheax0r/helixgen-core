@@ -402,6 +402,27 @@ class HelixClient:
         """Alias of :meth:`list_setlists` — enumerate the real user setlists."""
         return self.list_setlists()
 
+    def list_setlists_by_name(
+        self, name: str, *, strict: bool = True,
+        setlists: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Every user setlist whose display name matches ``name``
+        case-insensitively (``strip().casefold()`` on both sides), in device
+        (posi) order.
+
+        This is the single home for the setlist name-match (#52):
+        ``resolve_setlist_cid`` takes the first result's cid, and the
+        ``device reorder`` numeric-argument clash check needs the *full* match
+        set (to warn/raise on a digit-named collision). Pass a pre-fetched
+        listing as ``setlists=`` to filter it without a second RPC (the reorder
+        path already holds one strict listing it also scans for cid membership);
+        otherwise the listing is fetched via ``list_setlists(strict=strict)``.
+        """
+        want = name.strip().casefold()
+        source = setlists if setlists is not None else self.list_setlists(strict=strict)
+        return [m for m in source
+                if str(m.get("name", "")).strip().casefold() == want]
+
     def resolve_setlist_cid(self, name: str, *, strict: bool = True) -> Optional[int]:
         """Case-insensitively match a user setlist by ``name`` and return its
         ``cid_`` (the positive setlist container id), or ``None`` if no setlist
@@ -420,20 +441,19 @@ class HelixClient:
         ``strict=False`` only for a deliberately best-effort/retry lookup
         (e.g. re-resolving a cid moments after a create, where the caller
         already has its own retry loop and a documented fallback)."""
-        want = name.strip().casefold()
-        for m in self.list_setlists(strict=strict):
-            if str(m.get("name", "")).strip().casefold() == want:
-                return m.get("cid_")
-        return None
+        matches = self.list_setlists_by_name(name, strict=strict)
+        return matches[0].get("cid_") if matches else None
 
     @staticmethod
     def _hex_hash(h: Any) -> Optional[str]:
         """Normalize a device IR hash (raw 16 bytes) to a 32-char hex string
-        (== helixgen's ``irhash``)."""
+        (== helixgen's ``irhash``). The string branch shares the reconciled
+        normalizer with ``sftp._addcontent_hash`` (#53: validate len 32 +
+        lowercase)."""
         if isinstance(h, (bytes, bytearray)):
             return _irmd.irmd_to_irhash(h)
         if isinstance(h, str):
-            return h.lower()
+            return _irmd.normalize_hash_string(h)
         return None
 
     def list_irs(self, *, strict: bool = False) -> List[Dict[str, Any]]:

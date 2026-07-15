@@ -26,7 +26,6 @@ from helixgen.controllers import ControllerError
 from helixgen.generate import (
     HSP_SNAPSHOT_SLOTS,
     GenerateError,
-    ParamValidationError,
     _build_exp_controller,
     _build_fs_controller,
     _build_fs_param_controller,
