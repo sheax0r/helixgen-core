@@ -1073,6 +1073,18 @@ Remaining follow-ups:
   backlog; plugin- and TUI-specific work moves to each repo's own
   `docs/BACKLOG.md` as it arises. Parity matrix + protocol docs stay in core.
 
+- **#58 Loudness feedback loop — measured volume normalization** — the 2003
+  `/dspEvent` meter grids (`{eid_:1, mid_:796/800}`) turn out to be per-node
+  signal-chain metering with the instrument-input and output levels in the
+  same burst (live-probed 2026-07-14: paired L/R cells, linear amplitude,
+  values >1.0, ~2–3 Hz), so real measured normalization is feasible. Spec:
+  `docs/superpowers/specs/2026-07-14-loudness-feedback-normalization.md` —
+  phase 0 characterize cell↔node mapping by actuating known dB changes (+
+  decode the never-captured `/meter` address), phase 1 `device measure`
+  (playing-gated robust dB stats incl. output÷input chain gain), phase 2
+  `device normalize` (per-snapshot / per-setlist trim via the dB-native
+  output-block level, written back into the local `.hsp` then synced).
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.
