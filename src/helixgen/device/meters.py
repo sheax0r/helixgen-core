@@ -20,6 +20,7 @@ CLI / ``device_meters`` MCP tool subscribe and call in here.
 """
 from __future__ import annotations
 
+import math
 import struct
 from typing import Any, Dict, List, NamedTuple, Optional
 
@@ -98,3 +99,48 @@ def readings_from_event_args(args: Any) -> List[MeterReading]:
         if r is not None:
             out.append(r)
     return out
+
+
+# -- chain-level extraction ---------------------------------------------------
+# Cell semantics HW-characterized 2026-07-14 (see the loudness-feedback spec's
+# phase-0 findings): on the serial-path layout, mid 796 carries the path chain
+# nodes with cells 0-1 = the instrument-input stereo pair, and mid 800's
+# populated cells are the output-send stereo pairs, each carrying the
+# chain-out level (all taps sit UPSTREAM of the output block's gain param).
+
+INPUT_MID = 796
+OUTPUT_MID = 800
+_POPULATED = 1e-6
+
+# dB floor returned for silence (log of zero is undefined).
+DB_FLOOR = -140.0
+
+
+def input_level(reading: MeterReading) -> float:
+    """Instrument-input envelope from a mid-796 reading (0.0 if absent)."""
+    if reading.mid != INPUT_MID or len(reading.values) < 2:
+        return 0.0
+    return max(reading.values[0], reading.values[1], 0.0)
+
+
+def output_level(reading: MeterReading) -> float:
+    """Chain-out envelope from a mid-800 reading: the median of its populated
+    cells (the output-send pairs all carry the chain-out level), 0.0 if none.
+    """
+    if reading.mid != OUTPUT_MID:
+        return 0.0
+    populated = sorted(v for v in reading.values if v > _POPULATED)
+    if not populated:
+        return 0.0
+    n = len(populated)
+    mid = n // 2
+    if n % 2:
+        return populated[mid]
+    return (populated[mid - 1] + populated[mid]) / 2.0
+
+
+def to_db(v: float, floor_db: float = DB_FLOOR) -> float:
+    """Linear amplitude -> dB (20*log10), clamped to ``floor_db`` at/below 0."""
+    if v <= 0.0:
+        return floor_db
+    return max(floor_db, 20.0 * math.log10(v))
