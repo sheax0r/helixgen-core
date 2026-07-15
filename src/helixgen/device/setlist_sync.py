@@ -335,9 +335,19 @@ def sync_setlists(
                     # loop and the update loop (--repush can bump a pathless
                     # pool-present tone into update).
                     raise ValueError(
-                        f"tone {name!r} has no .hsp source (pathless); "
-                        f"nothing local to transcode its content from")
-                body = read_hsp(path)
+                        "no .hsp source (pathless); "
+                        "nothing local to transcode its content from")
+                try:
+                    body = read_hsp(path)
+                except FileNotFoundError as e:
+                    # Distinct from pathless: the manifest HAS a path but the
+                    # file is gone (renamed/moved since registration). The raw
+                    # FileNotFoundError names only the path, not the likely
+                    # cause. No tone-name prefix — the per-tone catch sites
+                    # add one.
+                    raise ValueError(
+                        f"manifest .hsp path missing on disk: {path} "
+                        f"(file renamed or moved since registration?)") from e
                 if not exclude_irs:
                     missing = sorted(bridge.check_irs(client, body).get("missing", []))
                     if missing:
@@ -352,7 +362,7 @@ def sync_setlists(
                         errors.append(f"tone '{name}': install returned no cid")
                         continue
                     result["pool"]["installed"].append(name)
-                except (UnresolvedModel, ValueError, HelixError) as e:
+                except (UnresolvedModel, ValueError, HelixError, OSError) as e:
                     errors.append(f"tone '{name}': {e}")
 
             for name in plan["update"]:
@@ -365,7 +375,7 @@ def sync_setlists(
                     blob = _author(name)
                     client._raw.set_content_data(cid, blob)
                     result["pool"]["updated"].append(name)
-                except (UnresolvedModel, ValueError, HelixError) as e:
+                except (UnresolvedModel, ValueError, HelixError, OSError) as e:
                     errors.append(f"tone '{name}': {e}")
 
             # Refresh the pool listing (installs added new cids/posis) and record
