@@ -1034,3 +1034,44 @@ def test_unresolvable_model_is_per_tone_error(tmp_path, monkeypatch):
     assert res["ok"] is False
     assert res["pool"]["installed"] == []
     assert any("Bad Tone" in e for e in res["errors"])
+
+
+def test_missing_tone_file_is_per_tone_error_not_crash(tmp_path, monkeypatch):
+    # A manifest tone whose recorded .hsp path no longer exists on disk (the
+    # file was renamed or moved after registration) must surface as a per-tone
+    # error in BOTH buckets — install and update — not escape as a raw
+    # FileNotFoundError that aborts the whole sync (real-world crash:
+    # `device sync --all --repush` after a tone file was slug-renamed,
+    # 2026-07-14). Healthy tones in the same run must still sync.
+    _stub_bridge(monkeypatch)
+    m = _manifest(tmp_path, monkeypatch,
+                  {"helixgen": ["Tone A", "Ghost Update", "Ghost Install"]},
+                  hashes={"Tone A": "sha256:a", "Ghost Update": "sha256:g",
+                          "Ghost Install": "sha256:gi"})
+    m.record_observed_pool("Tone A", cid=5000, posi=0, synced_hash="sha256:a")
+    m.record_observed_pool("Ghost Update", cid=5001, posi=1,
+                           synced_hash="sha256:g")
+
+    def _read(path):
+        if "Ghost" in str(path):
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return {"_hsp": str(path)}
+
+    monkeypatch.setattr(ss, "read_hsp", _read)
+    client = FakeClient(setlists={"helixgen": 42},
+                        pool=[("Tone A", 5000, 0), ("Ghost Update", 5001, 1)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"], repush=True)
+
+    # never a crash: both ghosts are per-tone errors naming the missing path
+    assert res["ok"] is False
+    assert any("Ghost Update" in e for e in res["errors"])
+    assert any("Ghost Install" in e for e in res["errors"])
+    assert all("Ghost" in e for e in res["errors"])
+    # the healthy tone still repushed its content
+    assert res["pool"]["updated"] == ["Tone A"]
+    assert (5000, b"BLOB") in client.set_content_data_calls
+    # nothing was installed or deleted for the ghosts
+    assert res["pool"]["installed"] == []
+    assert client.deleted == []
