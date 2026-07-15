@@ -68,15 +68,18 @@ def test_activate_snapshot_range(bad):
 
 
 def test_set_block_enable_wire():
+    # Public coords are the `device blocks` / sfg_.flow blks position keys
+    # (odd ints); the wire wants (key-1)/2. HW-verified 2026-07-14: bypassing
+    # the amp at blks key 7 only works when the wire carries block 3.
     h = HelixClient()
     _wire(h)
-    h.set_block_enable(0, 3, False)
+    h.set_block_enable(0, 7, False)
     addr, args = _last_sent(h)
     assert addr == "/BlockEnableSet"
-    # [reqid, dsp, block, enable]
+    # [reqid, dsp, wire_block, enable]
     assert args[1:] == [0, 3, 0]
     _wire(h)
-    h.set_block_enable(1, 5, True)
+    h.set_block_enable(1, 11, True)
     _, args2 = _last_sent(h)
     assert args2[1:] == [1, 5, 1]
 
@@ -84,11 +87,34 @@ def test_set_block_enable_wire():
 def test_set_block_model_wire():
     h = HelixClient()
     _wire(h)
-    h.set_block_model(0, 4, 70)
+    h.set_block_model(0, 9, 70)
     addr, args = _last_sent(h)
     assert addr == "/ModelSet"
-    # [reqid, dsp, block, sub=0, modelId]
+    # [reqid, dsp, wire_block, sub=0, modelId]
     assert args[1:] == [0, 4, 0, 70]
+
+
+def test_set_param_wire():
+    # /ParamValueSet [reqid, path, wire_block, 0, paramId, value, -1] with the
+    # value in RAW units (a dB float is accepted verbatim; HW 2026-07-14).
+    h = HelixClient()
+    _wire(h)
+    h.set_param(0, 11, 2, -6.0)
+    addr, args = _last_sent(h)
+    assert addr == "/ParamValueSet"
+    assert args[1:] == [0, 5, 0, 2, -6.0, -1]
+
+
+@pytest.mark.parametrize("bad_key", [0, 2, 8, -3])
+def test_liveops_reject_non_blks_keys(bad_key):
+    from helixgen.device.client import HelixError
+    h = HelixClient()
+    _wire(h)
+    for call in (lambda: h.set_block_enable(0, bad_key, True),
+                 lambda: h.set_block_model(0, bad_key, 70),
+                 lambda: h.set_param(0, bad_key, 1, 0.5)):
+        with pytest.raises(HelixError, match="device blocks"):
+            call()
 
 
 def test_edit_buffer_blocks_parses(monkeypatch):
