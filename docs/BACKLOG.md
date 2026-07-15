@@ -528,48 +528,60 @@ orthogonal to it.
   Design + protocol findings:
   `docs/superpowers/specs/2026-07-14-ir-library-polish-design.md`.
   Still open from the original row:
-  - **#31 `.hss` setlist-bundle import/export** — **read side shipped; FILLED-SLOT
-    FRAMING NOW CAPTURED + the reader's assumption CORRECTED (2026-07-15) —
-    writer UNBLOCKED, but the import/install path needs a fix.** Capture +
-    correction: `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`
-    (real non-empty export captured on-device to the expendable `Throwaway`
-    setlist, then cleaned up). `.hss` = 24-byte Line 6 header + gzip + POSIX tar
-    of `manifest.json` + 128 `.N` slot files (empty = 1-byte `0x00` sentinel,
-    manifest `type: "<null>"`). **Filled slot — corrected vs the old
-    assumption:** manifest `type` = **`"application/stadium-preset"`** and the
-    `.N` payload is the **`.hsp` preset format** (magic `rpshnosj` + **pretty
-    JSON**), **NOT** the `_sbepgsm` content blob the reader assumed. (The app
-    converts each preset's `_sbepgsm` → `.hsp`/JSON for the bundle; `device
-    get_content` still returns `_sbepgsm`, a *different* format.) **⚠️ CODE FIX
-    NEEDED (not in this PR):** `src/helixgen/device/hss.py` module doc +
-    `import-hss` install feed `slot.blob` through `content.decode_any` /
-    `install_into_pool`, which **raises on a real export** ("not a recognised
-    content blob"). The install path must parse a filled `.N` as an
-    `rpshnosj`+JSON `.hsp` (JSON → recipe/ingest → transcode → pool), and the
-    **writer** must emit `rpshnosj`+JSON per filled slot with `type:
-    "application/stadium-preset"`. `src/helixgen/device/hss.py` (pure stdlib
-    `gzip`+`tarfile`+`json`) parses the container; `helixgen device setlist
-    import-hss <file.hss> [--list] [--setlist <name>] [--dry-run]` +  MCP
-    `device_import_hss` install filled slots into the pool and reference them
-    into a device setlist. Header/gzip/tar/manifest/128-slot/empty-sentinel
-    parsing is HW-pinned (empty + non-empty samples). A byte-faithful **writer**
-    is now unblocked (the two unknowns — filled `type` token + payload format —
-    are resolved). Imported
-    presets are recorded in the tone library as pathless tones (source
-    `import-hss`) + setlist membership so `device sync` keeps their
-    references. **Residual: no dedupe-on-retry** — re-running an import after
-    a partial failure installs + references the already-succeeded slots again
-    (duplicate pool presets/references); the verb's help/docs say to clean up
-    or use a fresh setlist before retrying. Making retry idempotent
-    (skip-by-name against the pool, like `device sync`'s hash-skip) is future
-    work. **Residual: pathless-on-pathless provenance loss** — recording an
-    imported preset whose name is already registered as a pathless
-    `save`/`create` tone silently rebrands that record's `source` to
-    `import-hss` and drops its `doc`/`auto_marked` fields
-    (`register_pathless` rebuilds the record; only `slot`/`device` are
-    preserved). Narrow — no data-loss path (path-backed names are guarded and
-    warned) — but a future guard should preserve or at least warn on
-    overwriting an existing pathless record's provenance. Findings spec §8.
+  - **#31 `.hss` setlist-bundle import/export** — ✅ **SHIPPED (2026-07-15):
+    reader corrected + byte-faithful writer + device export, EXPERIMENTAL.**
+    Capture + correction that unblocked it:
+    `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md` (real
+    non-empty export captured to the expendable `Throwaway` setlist, then
+    cleaned up). `.hss` = 24-byte Line 6 header + gzip + POSIX tar of
+    `manifest.json` + 128 `.N` slot files (empty = 1-byte `0x00` sentinel,
+    manifest `type: "<null>"`; filled = the preset's **`.hsp`** — magic
+    `rpshnosj` + JSON, manifest `type: "application/stadium-preset"`).
+    **Reader fix:** the import/install path no longer routes `slot.blob`
+    through `content.decode_any` (which *raised* on a real export's `.hsp`
+    payload) — it detects the payload format by **magic bytes** (cross-checked
+    against the manifest `type`, disagreement warns) and **transcodes** a
+    `.hsp` via `transcode.hsp_to_sbepgsm` (or normalizes a device content blob
+    via `content.to_content_data`) before install; the preset name is read
+    from the embedded `.hsp`'s `meta.name`. `--list` reports each slot's
+    payload format. **Writer:** `hss.write_hss` emits a **byte-faithful**
+    `.hss` — *given the same slot payload bytes*, the 24-byte header, the gzip
+    10-byte header (`MTIME`/`XFL`/`OS`), and the *entire decompressed tar*
+    (member names/order/bytes + exact octal ustar header field formatting via
+    a hand-rolled writer + two-zero-block EOF) are byte-identical to a real
+    export (pinned by re-serializing both captures); only the compressed
+    DEFLATE stream differs (the app uses a non-zlib encoder no `zlib`
+    window/mem/level reproduces — benign, any gunzip yields the identical
+    tar). **Export verb:** `device setlist export-hss <setlist> <out.hss>`
+    (+ MCP `device_export_hss`) builds a `.hss` from a device setlist's
+    references, embedding each preset's **local `.hsp`** (resolved by name via
+    the tone library) verbatim — mirroring the app; note helixgen `.hsp`s are
+    compact JSON where the app pretty-prints, so an export built from
+    helixgen-authored tones is functionally equivalent (same `rpshnosj`+JSON
+    family, re-importable), not bit-for-bit the app's member bytes. HW
+    round-trip validated in a **live device session 2026-07-15** (import the
+    real app export → pool install + setlist reference verified on-device;
+    export that setlist → header + `.1` payload + member names byte-identical
+    vs the app's export of the same content → re-imported clean; all scratch
+    setlists/pool presets deleted after). Not a committed test — the real
+    fixtures are gitignored; offline tests pin the same paths with fake
+    clients. MCP mirrors: `device_import_hss` / `device_export_hss`.
+    **Residual: device-born presets can't be exported** — a referenced preset
+    with no local `.hsp` is skipped (helixgen has no `_sbepgsm` → `.hsp`
+    converter; a full device-content decompiler is the follow-up).
+    **Residual: no dedupe-on-retry** — re-running an import after a partial
+    failure installs + references the already-succeeded slots again (duplicate
+    pool presets/references); the verb's help/docs say to clean up or use a
+    fresh setlist before retrying. Making retry idempotent (skip-by-name
+    against the pool, like `device sync`'s hash-skip) is future work.
+    **Residual: pathless-on-pathless provenance loss** — recording an imported
+    preset whose name is already registered as a pathless `save`/`create` tone
+    silently rebrands that record's `source` to `import-hss` and drops its
+    `doc`/`auto_marked` fields (`register_pathless` rebuilds the record; only
+    `slot`/`device` are preserved). Narrow — no data-loss path (path-backed
+    names are guarded and warned) — but a future guard should preserve or at
+    least warn on overwriting an existing pathless record's provenance.
+    Findings spec §8 + `2026-07-15-hss-and-cc-capture-findings.md`.
   - IR folders / move-to-folder (matrix §7) — content-path surface not RE'd.
   - **Active-preset select (#1) — ✅ RESOLVED 2026-07-14:** the app's "make
     active" is `/LoadPresetWithCID` (load-by-CID) = existing `device load`; there

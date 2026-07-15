@@ -2026,16 +2026,18 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
 
     A `.hss` is the Stadium app's "export setlist" file: a 24-byte header +
     gzip + tar of `manifest.json` + 128 fixed slot files. `--list` decodes it
-    fully offline (no device needed) and prints each slot's filled/empty state
-    and preset name. Without `--list`, each filled slot is installed into the
-    device POOL (non-activating) and referenced into a device setlist (created
-    if absent) in the bundle's slot order — reusing the same install +
-    setlist-create + reference primitives as `device install` / `device sync`.
+    fully offline (no device needed) and prints each slot's filled/empty state,
+    payload format, and preset name. Without `--list`, each filled slot is
+    installed into the device POOL (non-activating) and referenced into a
+    device setlist (created if absent) in the bundle's slot order — reusing the
+    same install + setlist-create + reference primitives as `device install` /
+    `device sync`.
 
-    Container framing (header/gzip/tar/manifest/128-slot/empty-sentinel) is
-    pinned against a real captured export. The FILLED-SLOT byte framing is an
-    inferred assumption — pinned only against synthesized fixtures, not a real
-    non-empty `.hss` export — see `src/helixgen/device/hss.py`.
+    Both the container framing (header/gzip/tar/manifest/128-slot/empty-sentinel)
+    and the FILLED-slot framing are pinned against real captured exports. A
+    filled slot embeds the preset's `.hsp` (magic `rpshnosj` + JSON); it is
+    transcoded to device content on the way in. Device content blobs
+    (`_sbepgsm` / `/SetContentData`) are also accepted (detected by magic).
 
     Imported presets are recorded in the local tone library as PATHLESS tones
     (source `import-hss`) with membership in the destination setlist, so a
@@ -2062,7 +2064,9 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
                    f"({len(filled)}/{len(bundle.slots)} slots filled)")
         for s in bundle.slots:
             state = "filled" if s.filled else "empty"
-            click.echo(f"  {s.pos:>3}  {state:6}  {hss_mod.slot_label(s) if s.filled else ''}")
+            fmt = f"[{s.payload_format}]" if s.filled else ""
+            label = hss_mod.slot_label(s) if s.filled else ""
+            click.echo(f"  {s.pos:>3}  {state:6}  {fmt:9} {label}")
         return
 
     target_setlist = setlist_name or bundle.name
@@ -2078,8 +2082,8 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
         click.echo(f"DRY RUN: would import {len(filled)} preset(s) into "
                    f"setlist {target_setlist!r}:")
         for s in filled:
-            note = ("" if hss_mod.looks_like_content_blob(s.blob)
-                    else "  (would SKIP: payload isn't a recognized content blob)")
+            note = (f"  [{s.payload_format}]" if hss_mod.looks_like_content_blob(s.blob)
+                    else "  (would SKIP: payload isn't a .hsp or content blob)")
             click.echo(f"  slot {s.pos}: {hss_mod.slot_label(s)}{note}")
         return
 
@@ -2114,11 +2118,53 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
         m.save()
     except Exception as e:  # noqa: BLE001 — advisory; device write succeeded
         click.echo(f"warning: could not update local manifest: {e}", err=True)
+    for w in result.get("warnings", []):
+        click.echo(f"  warning: {w}", err=True)
     if errors:
         for e in errors:
             click.echo(f"  warning: {e}", err=True)
         raise click.ClickException(
             f"{len(errors)}/{len(filled)} preset(s) failed to import; see warnings above")
+
+
+@device_setlist.command(name="export-hss")
+@click.argument("setlist")
+@click.argument("out_file", type=click.Path(dir_okay=False, path_type=Path))
+@_device_option
+def device_setlist_export_hss(setlist: str, out_file: Path, ip: str, port: int) -> None:
+    """EXPERIMENTAL: export a DEVICE setlist to a `.hss` bundle (backlog #31).
+
+    Reads the named device setlist's references (order + slot) and assembles a
+    byte-faithful `.hss` — 24-byte header + gzip + tar of `manifest.json` + 128
+    slot files — embedding each referenced preset's local `.hsp` (resolved by
+    preset name via the tone library) verbatim, exactly as the Stadium app
+    embeds a `.hsp` per preset. The output's header + decompressed tar are
+    byte-identical to a real app export (only the compressed gzip stream
+    differs — the app uses a non-zlib DEFLATE encoder).
+
+    A referenced preset with NO local `.hsp` (device-born, or untracked by the
+    tone library) is SKIPPED with a warning — helixgen has no device-content →
+    `.hsp` converter, so a device-only preset can't be re-embedded (backlog #31
+    residual). The `.hss` is still written with the presets that did resolve.
+    """
+    from helixgen.device import hss as hss_mod
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip, port) as h:
+            result = hss_mod.export_setlist_to_hss(h, setlist)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+
+    out_file.write_bytes(result["bytes"])
+    click.echo(f"wrote {out_file} ({len(result['bytes'])} bytes) — "
+               f"{len(result['embedded'])} preset(s) from setlist {setlist!r}")
+    for name in result["embedded"]:
+        click.echo(f"  embedded: {name}")
+    for s in result["skipped"]:
+        click.echo(f"  warning: skipped {s}", err=True)
 
 
 @device_setlist.command(name="sync-on")

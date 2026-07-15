@@ -221,40 +221,49 @@ helixgen device setlist duplicate <src> <dst>  # copies references; auto-creates
 - **Duplicate shares, it doesn't copy:** both setlists reference the same pool
   presets, so editing a tone changes it in both.
 
-### Importing a `.hss` setlist-bundle export (EXPERIMENTAL)
+### Importing / exporting a `.hss` setlist-bundle (EXPERIMENTAL)
 
 ```bash
-helixgen device setlist import-hss export.hss --list          # offline: what's inside?
+helixgen device setlist import-hss export.hss --list          # offline: what's inside? (shows payload format)
 helixgen device setlist import-hss export.hss --dry-run       # preview the device write
 helixgen device setlist import-hss export.hss                 # install + reference into a setlist
 helixgen device setlist import-hss export.hss --setlist Gigs  # override the destination setlist name
+helixgen device setlist export-hss Gigs out.hss               # export a DEVICE setlist to a .hss bundle
 ```
 
 - A `.hss` is the Stadium **app's** "export setlist" file — a different input
-  than anything else this skill covers (not an authored `.hsp`). `--list` is
-  always safe to run first (fully offline). The write path installs each
-  filled slot into the pool and references it into a device setlist (created
-  if absent) in bundle order. Imported presets **are recorded in the tone
-  library** as *pathless* tones (source `import-hss`) with membership in the
-  destination setlist — that record is what keeps a later `device sync
-  <setlist>` from stripping the imported references. Having no local `.hsp`,
-  they can't be restored by `device slots restore`. Flip side: if the
-  destination setlist held references helixgen does NOT track, a later
-  targeted `device sync <setlist>` (now plausible, since the setlist is
-  manifest-tracked) will strip those untracked references — inherent
-  managed-mirror semantics; prefer importing into a fresh setlist when the
-  destination has untracked members you want to keep.
+  than anything else this skill covers (not an authored `.hsp`, though a filled
+  slot **embeds** one). `--list` is always safe to run first (fully offline);
+  it now shows each filled slot's payload format (`hsp`/`sbepgsm`) and the
+  preset name (read from the embedded `.hsp`'s `meta.name`). The write path
+  **transcodes** each filled slot's `.hsp` to device content, installs it into
+  the pool, and references it into a device setlist (created if absent) in
+  bundle order. Imported presets **are recorded in the tone library** as
+  *pathless* tones (source `import-hss`) with membership in the destination
+  setlist — that record is what keeps a later `device sync <setlist>` from
+  stripping the imported references. Having no local `.hsp`, they can't be
+  restored by `device slots restore`. Flip side: if the destination setlist
+  held references helixgen does NOT track, a later targeted `device sync
+  <setlist>` will strip those untracked references — inherent managed-mirror
+  semantics; prefer importing into a fresh setlist when the destination has
+  untracked members you want to keep.
 - **NOT idempotent on retry.** Re-running an import after a partial failure
   installs + references the already-succeeded slots AGAIN (duplicate pool
   presets + references). Before retrying, delete the setlist and the
   orphaned pool presets — or import into a fresh setlist. (Dedupe-on-retry
   is future work; backlog #31.)
-- The filled-slot byte framing is an **inferred assumption** (backlog #31) —
-  only an empty `.hss` sample has been captured so far. Treat an import as
-  provisional until a real non-empty export confirms it; verify the result
-  with `device setlist list` / `device list --setlist <name>` afterward.
-- MCP mirror: `device_import_hss(model, hss_path, setlist?, list_only?,
-  dry_run?)`.
+- **`export-hss`** builds a `.hss` from a device setlist, embedding each
+  referenced preset's **local `.hsp`** (resolved by preset name via the tone
+  library) — mirroring how the app embeds a `.hsp` per preset. A referenced
+  preset with **no local `.hsp`** (device-born / untracked) is **skipped**
+  with a warning: helixgen has no device-content → `.hsp` converter (backlog
+  #31 residual), so only tones the tone library backs export. The container
+  framing (header, gzip header, ustar layout) is byte-faithful to a real app
+  export; two benign envelope differences remain — the gzip DEFLATE stream
+  (non-zlib app encoder) and compact vs pretty `.hsp` JSON (helixgen embeds
+  compact; both re-import fine).
+- MCP mirrors: `device_import_hss(model, hss_path, setlist?, list_only?,
+  dry_run?)` and `device_export_hss(model, setlist, out_path)`.
 
 ### IR maintenance (delete / rename / prune) + preset info
 

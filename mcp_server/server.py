@@ -671,8 +671,10 @@ def device_import_hss(
     Stadium app's "export setlist" file.
 
     `list_only=True` decodes the bundle fully offline (no device needed) and
-    returns `{ok, name, device_id, device_version, slots: [{pos, filled,
-    name}]}` — use this first to see what's inside before importing.
+    returns `{ok, name, device_id, device_version, mtime, slots: [{pos, filled,
+    name, format}]}` — use this first to see what's inside before importing.
+    `format` is `"hsp"` (a real export's payload), `"sbepgsm"` (a content
+    blob), or `"unknown"`.
 
     Otherwise each filled slot is installed into the device pool
     (non-activating) and referenced into a device setlist (`setlist`, or the
@@ -680,8 +682,9 @@ def device_import_hss(
     order. `dry_run=True` returns the plan (`would_install`, each entry with
     a `would_skip` flag for unrecognizable payloads) without writing.
     Per-slot failures are reported in `errors` without aborting the rest.
-    Returns `{ok, setlist, cid, created, installed, errors}` (plus
-    `manifest_warnings` on local name conflicts).
+    Returns `{ok, setlist, cid, created, installed, warnings, errors}` (plus
+    `manifest_warnings` on local name conflicts). `warnings` carries per-slot
+    manifest-type/payload disagreements.
 
     Imported presets ARE recorded in the local tone library as pathless
     tones (source `import-hss`) with membership in the destination setlist,
@@ -691,14 +694,43 @@ def device_import_hss(
     and orphaned pool presets, or import into a fresh setlist, before
     retrying.
 
-    The filled-slot byte framing this consumes is an INFERRED assumption
-    (only an empty `.hss` sample has been captured so far — see
-    `src/helixgen/device/hss.py`); treat results with appropriate caution
-    until a real non-empty export confirms it.
+    Both the container and the filled-slot framing are pinned against real
+    captured exports (a filled slot embeds the preset's `.hsp`, transcoded to
+    device content on import) — see `src/helixgen/device/hss.py`.
     """
     return _tools.device_import_hss_handler(
         model, ip=ip, hss_path=hss_path, setlist=setlist,
         list_only=list_only, dry_run=dry_run,
+    )
+
+
+@app.tool()
+def device_export_hss(
+    model: str,
+    setlist: str,
+    out_path: str,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Export a DEVICE setlist to a `.hss` bundle (backlog #31). EXPERIMENTAL.
+
+    Required `model`: `"stadium"` or `"stadium_xl"`. Reads the named device
+    setlist's references and writes a `.hss` to `out_path` (path-based, no
+    base64), embedding each referenced preset's local `.hsp` (resolved by
+    preset name via the tone library) verbatim — mirroring how the Stadium app
+    embeds a `.hsp` per preset. The container framing (24-byte header, gzip
+    header, ustar layout) is byte-faithful to a real app export; the gzip
+    DEFLATE stream differs (non-zlib app encoder), and helixgen embeds
+    compact-JSON `.hsp` where the app pretty-prints — same format family,
+    re-importable.
+
+    A referenced preset with NO local `.hsp` (device-born or untracked by the
+    tone library) is SKIPPED — helixgen has no device-content → `.hsp`
+    converter (backlog #31 residual). The `.hss` is still written with the
+    presets that resolved. Returns `{ok, setlist, path, embedded, skipped,
+    bytes}` (`ok` is `not skipped`).
+    """
+    return _tools.device_export_hss_handler(
+        model, ip=ip, setlist=setlist, out_path=out_path,
     )
 
 

@@ -65,7 +65,8 @@ the verb index plus the mental-model rules that must stay in front of an agent.
 - **Setlists + sync:** `device setlist create|rename|delete|duplicate`
   (device-side; never orphan pool presets), `device setlist
   list|add|remove|create-local` (local manifest membership), `device setlist
-  import-hss` (EXPERIMENTAL `.hss` bundle import, READ side), `device sync
+  import-hss` / `export-hss` (EXPERIMENTAL `.hss` setlist-bundle import **and**
+  byte-faithful export; filled slot = embedded `.hsp`), `device sync
   <setlist>` / `device sync --all [--gc]` (pool-first, reference-rebuilding,
   IR-uploading, idempotent; **not** a destructive mirror). `--repush` (either
   form) forces a content re-push of every in-scope tone already in the pool

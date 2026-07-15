@@ -940,8 +940,10 @@ def device_import_hss_handler(
     128 fixed slot files.
 
     ``list_only=True`` decodes the bundle fully offline (no device needed) and
-    returns ``{ok, name, device_id, device_version, slots: [{pos, filled,
-    name}]}`` — no blobs, no device write.
+    returns ``{ok, name, device_id, device_version, mtime, slots: [{pos,
+    filled, name, format}]}`` — no blobs, no device write. ``format`` is
+    ``"hsp"`` (a real export's `.hsp` payload), ``"sbepgsm"`` (a device content
+    blob), or ``"unknown"``.
 
     Otherwise each filled slot is installed into the device POOL
     (non-activating) and referenced into a device setlist (named ``setlist``,
@@ -966,10 +968,11 @@ def device_import_hss_handler(
     references). After a partial failure, delete the setlist + orphaned pool
     presets (or import into a fresh setlist) before retrying.
 
-    Container framing (header/gzip/tar/manifest/128-slot/empty-sentinel) is
-    pinned against a real captured export. The FILLED-SLOT byte framing is an
-    inferred assumption — pinned only against synthesized fixtures, not a real
-    non-empty `.hss` export — see `src/helixgen/device/hss.py`.
+    Both the container framing (header/gzip/tar/manifest/128-slot/empty-sentinel)
+    and the FILLED-slot framing are pinned against real captured exports. A
+    filled slot embeds the preset's `.hsp` (`rpshnosj` + JSON), transcoded to
+    device content on import; `_sbepgsm` / `/SetContentData` content blobs are
+    also accepted (detected by magic bytes).
     """
     _validate_model(model)
     from helixgen.device import hss as hss_mod
@@ -983,9 +986,11 @@ def device_import_hss_handler(
             "name": bundle.name,
             "device_id": bundle.device_id,
             "device_version": bundle.device_version,
+            "mtime": bundle.mtime,
             "slots": [
                 {"pos": s.pos, "filled": s.filled,
-                 "name": s.name if s.filled else None}
+                 "name": s.name if s.filled else None,
+                 "format": s.payload_format if s.filled else None}
                 for s in bundle.slots
             ],
         }
@@ -997,13 +1002,14 @@ def device_import_hss_handler(
 
     if not filled:
         return {"ok": True, "setlist": target_setlist, "cid": None, "created": False,
-                "installed": [], "errors": []}
+                "installed": [], "warnings": [], "errors": []}
 
     if dry_run:
         return {
             "ok": True, "setlist": target_setlist, "dry_run": True,
             "would_install": [
                 {"pos": s.pos, "name": hss_mod.slot_label(s),
+                 "format": s.payload_format,
                  "would_skip": not hss_mod.looks_like_content_blob(s.blob)}
                 for s in filled],
         }
@@ -1033,6 +1039,50 @@ def device_import_hss_handler(
         pass
 
     return result
+
+
+def device_export_hss_handler(
+    model: str,
+    *,
+    ip: str = _DEFAULT_DEVICE_IP,
+    setlist: str,
+    out_path: str,
+) -> dict[str, Any]:
+    """Export a DEVICE setlist to a `.hss` bundle (backlog #31). EXPERIMENTAL.
+
+    Reads the named device setlist's references (order + slot) and writes a
+    `.hss` to ``out_path`` (path-based — the bytes never round-trip through
+    agent context), embedding each referenced preset's local ``.hsp`` (resolved
+    by preset name via the tone library) verbatim, mirroring how the Stadium
+    app embeds a `.hsp` per preset. The container framing (24-byte header,
+    gzip header, ustar layout) is byte-faithful to a real app export; the gzip
+    DEFLATE stream differs (non-zlib app encoder), and helixgen embeds
+    compact-JSON `.hsp` where the app pretty-prints — same format family,
+    re-importable.
+
+    A referenced preset with NO local ``.hsp`` (device-born, or untracked by the
+    tone library) is SKIPPED — helixgen has no device-content → `.hsp` converter
+    (backlog #31 residual). The `.hss` is still written with the presets that
+    resolved. Returns ``{ok, setlist, path, embedded, skipped, bytes}``
+    (``ok`` is ``not skipped``).
+    """
+    _validate_model(model)
+    from helixgen.device import hss as hss_mod
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            result = hss_mod.export_setlist_to_hss(client, setlist)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    except OSError as e:
+        raise ValueError(f"could not read a tone's local .hsp: {e}") from e
+
+    from pathlib import Path as _Path
+    _Path(out_path).write_bytes(result["bytes"])
+    return {"ok": result["ok"], "setlist": setlist, "path": out_path,
+            "embedded": result["embedded"], "skipped": result["skipped"],
+            "bytes": len(result["bytes"])}
 
 
 # ---------------------------------------------------------------------------

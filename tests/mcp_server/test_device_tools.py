@@ -837,7 +837,7 @@ def test_device_import_hss_list_only_offline(tmp_path):
     assert res["device_id"] == 0x260000
     assert len(res["slots"]) == 128
     filled = [s for s in res["slots"] if s["filled"]]
-    assert filled == [{"pos": 1, "filled": True, "name": "Lead"}]
+    assert filled == [{"pos": 1, "filled": True, "name": "Lead", "format": "sbepgsm"}]
     # no blob bytes leak into the returned dict (path-based tools never
     # round-trip content through agent context)
     assert "blob" not in filled[0]
@@ -849,7 +849,7 @@ def test_device_import_hss_dry_run(polish_client, tmp_path):
     res = tools.device_import_hss_handler(MODEL, hss_path=str(p), dry_run=True)
     assert res == {"ok": True, "setlist": "Gigs", "dry_run": True,
                    "would_install": [{"pos": 2, "name": "Only Tone",
-                                      "would_skip": False}]}
+                                      "format": "sbepgsm", "would_skip": False}]}
     assert "installed" not in FakeClient.record
 
 
@@ -862,8 +862,8 @@ def test_device_import_hss_dry_run_flags_would_skip(polish_client, tmp_path):
                    filled={1: ("Bad Payload", bad), 2: ("Good", good)})
     res = tools.device_import_hss_handler(MODEL, hss_path=str(p), dry_run=True)
     assert res["would_install"] == [
-        {"pos": 1, "name": "Bad Payload", "would_skip": True},
-        {"pos": 2, "name": "Good", "would_skip": False},
+        {"pos": 1, "name": "Bad Payload", "format": "unknown", "would_skip": True},
+        {"pos": 2, "name": "Good", "format": "sbepgsm", "would_skip": False},
     ]
     assert "installed" not in FakeClient.record
 
@@ -925,7 +925,7 @@ def test_device_import_hss_empty_bundle_is_a_noop(polish_client, tmp_path):
     p = _hss_bytes(tmp_path, setlist_name="Empty")
     res = tools.device_import_hss_handler(MODEL, hss_path=str(p))
     assert res == {"ok": True, "setlist": "Empty", "cid": None,
-                   "created": False, "installed": [], "errors": []}
+                   "created": False, "installed": [], "warnings": [], "errors": []}
 
 
 def test_device_import_hss_no_name_requires_explicit_setlist(polish_client, tmp_path):

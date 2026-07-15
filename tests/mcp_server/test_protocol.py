@@ -66,6 +66,7 @@ def test_server_registers_documented_tools():
         "device_save_preset",
         "device_install_preset",
         "device_import_hss",
+        "device_export_hss",
         "device_setlist_list",
         "device_setlist_add",
         "device_setlist_remove",
