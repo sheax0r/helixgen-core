@@ -335,18 +335,19 @@ def sync_setlists(
                     # loop and the update loop (--repush can bump a pathless
                     # pool-present tone into update).
                     raise ValueError(
-                        f"tone {name!r} has no .hsp source (pathless); "
-                        f"nothing local to transcode its content from")
+                        "no .hsp source (pathless); "
+                        "nothing local to transcode its content from")
                 try:
                     body = read_hsp(path)
-                except FileNotFoundError:
+                except FileNotFoundError as e:
                     # Distinct from pathless: the manifest HAS a path but the
                     # file is gone (renamed/moved since registration). The raw
-                    # FileNotFoundError names only the path, not the tone or
-                    # the likely cause.
+                    # FileNotFoundError names only the path, not the likely
+                    # cause. No tone-name prefix — the per-tone catch sites
+                    # add one.
                     raise ValueError(
-                        f"tone {name!r}: manifest .hsp path missing on disk: "
-                        f"{path} (file renamed or moved since registration?)")
+                        f"manifest .hsp path missing on disk: {path} "
+                        f"(file renamed or moved since registration?)") from e
                 if not exclude_irs:
                     missing = sorted(bridge.check_irs(client, body).get("missing", []))
                     if missing:

@@ -1042,36 +1042,51 @@ def test_missing_tone_file_is_per_tone_error_not_crash(tmp_path, monkeypatch):
     # error in BOTH buckets — install and update — not escape as a raw
     # FileNotFoundError that aborts the whole sync (real-world crash:
     # `device sync --all --repush` after a tone file was slug-renamed,
-    # 2026-07-14). Healthy tones in the same run must still sync.
+    # 2026-07-14). Healthy tones in the same run must still sync. A THIRD
+    # tone raising a non-FileNotFoundError OSError (PermissionError) pins the
+    # except-tuple half of the fix independently of the _author re-raise.
     _stub_bridge(monkeypatch)
     m = _manifest(tmp_path, monkeypatch,
-                  {"helixgen": ["Tone A", "Ghost Update", "Ghost Install"]},
+                  {"helixgen": ["Tone A", "Ghost Update", "Ghost Install",
+                                "Locked"]},
                   hashes={"Tone A": "sha256:a", "Ghost Update": "sha256:g",
-                          "Ghost Install": "sha256:gi"})
+                          "Ghost Install": "sha256:gi", "Locked": "sha256:l"})
     m.record_observed_pool("Tone A", cid=5000, posi=0, synced_hash="sha256:a")
     m.record_observed_pool("Ghost Update", cid=5001, posi=1,
                            synced_hash="sha256:g")
+    m.record_observed_pool("Locked", cid=5002, posi=2, synced_hash="sha256:l")
 
     def _read(path):
         if "Ghost" in str(path):
             raise FileNotFoundError(2, "No such file or directory", str(path))
+        if "Locked" in str(path):
+            raise PermissionError(13, "Permission denied", str(path))
         return {"_hsp": str(path)}
 
     monkeypatch.setattr(ss, "read_hsp", _read)
     client = FakeClient(setlists={"helixgen": 42},
-                        pool=[("Tone A", 5000, 0), ("Ghost Update", 5001, 1)])
+                        pool=[("Tone A", 5000, 0), ("Ghost Update", 5001, 1),
+                              ("Locked", 5002, 2)])
     monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
 
     res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"], repush=True)
 
-    # never a crash: both ghosts are per-tone errors naming the missing path
+    # never a crash: every broken tone is a per-tone error
     assert res["ok"] is False
-    assert any("Ghost Update" in e for e in res["errors"])
-    assert any("Ghost Install" in e for e in res["errors"])
-    assert all("Ghost" in e for e in res["errors"])
+    # the missing-file ghosts carry the readable cause + the stale path,
+    # WITHOUT a doubled "tone 'X': tone 'X':" prefix (the catch site adds it)
+    for ghost in ("Ghost Update", "Ghost Install"):
+        err = next(e for e in res["errors"] if ghost in e)
+        assert "missing on disk" in err
+        assert f"/tones/{ghost}.hsp" in err
+        assert "renamed or moved" in err
+        assert err.count(f"tone '{ghost}'") == 1
+    # the PermissionError tone is a per-tone error too (OSError catch)
+    assert any("Locked" in e and "Permission denied" in e
+               for e in res["errors"])
     # the healthy tone still repushed its content
     assert res["pool"]["updated"] == ["Tone A"]
     assert (5000, b"BLOB") in client.set_content_data_calls
-    # nothing was installed or deleted for the ghosts
+    # nothing was installed or deleted for the broken tones
     assert res["pool"]["installed"] == []
     assert client.deleted == []
