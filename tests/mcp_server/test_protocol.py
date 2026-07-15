@@ -84,6 +84,7 @@ def test_server_registers_documented_tools():
         # reorder + meters (P5/P6 parity, decoded 2026-07-14).
         "device_reorder",
         "device_meters",
+        "device_measure",
     }
     assert names == expected, f"unexpected tool set: {names}"
 
