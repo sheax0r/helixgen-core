@@ -912,6 +912,66 @@ def set_input(body: dict[str, Any], path: int, jack: str) -> None:
 
 # --- controller wiring: wire_footswitch / wire_expression / wire_wah_toe ----
 
+def _validate_fs_args(behavior, curve, color, param, min, max, block) -> None:
+    """Validate footswitch-assignment arguments; raise ``MutateError`` on any
+    bad ``behavior``/``curve``/``color`` or missing/misapplied ``min``/``max``
+    (mirrors the spec-side validation)."""
+    if behavior not in ("latching", "momentary"):
+        raise MutateError(
+            f"Unknown footswitch behavior {behavior!r}; must be 'latching' or 'momentary'."
+        )
+    if curve is not None and curve not in controllers.CURVES:
+        raise MutateError(
+            f"Unknown curve {curve!r}; must be one of {list(controllers.CURVES)}."
+        )
+    if color is not None and color not in controllers.FS_COLORS:
+        raise MutateError(
+            f"Unknown footswitch color {color!r}; "
+            f"must be one of {sorted(controllers.FS_COLORS)}."
+        )
+    if param is not None and not all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) for v in (min, max)
+    ):
+        raise MutateError(
+            f"FS param target {block!r}.{param!r} requires numeric min and max "
+            f"(the two raw param values the switch toggles between)."
+        )
+    if param is None and (min is not None or max is not None):
+        raise MutateError(
+            "min/max apply only to param footswitch targets; a bypass "
+            "assignment toggles the block on/off (mirrors spec validation)."
+        )
+
+
+def _write_fs_scribble(entry, switch, source_id, label, color) -> None:
+    """Set a switch's scribble strip (``fs_label``/``fs_color``) in its
+    ``sources`` entry, in place. Only the stomp banks (A ``0x010101NN`` / B
+    ``0x010102NN``) have strips; a label/color on the toe switch or an EXP pedal
+    would be silently invisible on the device — warn and keep the entry
+    corpus-shaped (toe/EXP entries carry no ``fs_*`` keys)."""
+    import sys
+    if (source_id & 0xFFFFFF00) not in (0x01010100, 0x01010200):
+        print(
+            f"warning: switch {switch!r} has no scribble strip on the "
+            f"device; its label/color will not be shown (only FS1–FS5 / "
+            f"FS7–FS11 have strips).",
+            file=sys.stderr,
+        )
+        return
+    if label is not None and len(label) > controllers.FS_LABEL_MAX:
+        print(
+            f"warning: footswitch label {label!r} is "
+            f"{len(label)} chars; the device shows at most "
+            f"{controllers.FS_LABEL_MAX}.",
+            file=sys.stderr,
+        )
+    # Full scribble-strip shape observed across real exports:
+    # {bypass, fs_color, fs_label, fs_topidx}.
+    entry.setdefault("fs_topidx", 0)
+    entry["fs_label"] = label if label is not None else entry.get("fs_label", "")
+    entry["fs_color"] = color if color is not None else entry.get("fs_color", "auto")
+
+
 def wire_footswitch(
     body: dict[str, Any],
     switch: str,
@@ -954,31 +1014,7 @@ def wire_footswitch(
     is last-wins. Only an invalid `behavior`/`curve`/`color` or an
     unresolvable `switch`/`block`/`param` raises `MutateError`.
     """
-    if behavior not in ("latching", "momentary"):
-        raise MutateError(
-            f"Unknown footswitch behavior {behavior!r}; must be 'latching' or 'momentary'."
-        )
-    if curve is not None and curve not in controllers.CURVES:
-        raise MutateError(
-            f"Unknown curve {curve!r}; must be one of {list(controllers.CURVES)}."
-        )
-    if color is not None and color not in controllers.FS_COLORS:
-        raise MutateError(
-            f"Unknown footswitch color {color!r}; "
-            f"must be one of {sorted(controllers.FS_COLORS)}."
-        )
-    if param is not None and not all(
-        isinstance(v, (int, float)) and not isinstance(v, bool) for v in (min, max)
-    ):
-        raise MutateError(
-            f"FS param target {block!r}.{param!r} requires numeric min and max "
-            f"(the two raw param values the switch toggles between)."
-        )
-    if param is None and (min is not None or max is not None):
-        raise MutateError(
-            "min/max apply only to param footswitch targets; a bypass "
-            "assignment toggles the block on/off (mirrors spec validation)."
-        )
+    _validate_fs_args(behavior, curve, color, param, min, max, block)
     fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     device_id = _chassis_device_id(body)
     try:
@@ -1031,31 +1067,7 @@ def wire_footswitch(
     wrapped["controller"] = controller
     entry = sources.setdefault(str(source_id), {"bypass": False})
     if label is not None or color is not None:
-        import sys
-        # Only the stomp banks (A 0x010101NN / B 0x010102NN) have scribble
-        # strips; a label/color on the toe switch or an EXP pedal would be
-        # silently invisible on the device — warn and keep the sources entry
-        # corpus-shaped (toe/EXP entries carry no fs_* keys).
-        if (source_id & 0xFFFFFF00) not in (0x01010100, 0x01010200):
-            print(
-                f"warning: switch {switch!r} has no scribble strip on the "
-                f"device; its label/color will not be shown (only FS1–FS5 / "
-                f"FS7–FS11 have strips).",
-                file=sys.stderr,
-            )
-        else:
-            if label is not None and len(label) > controllers.FS_LABEL_MAX:
-                print(
-                    f"warning: footswitch label {label!r} is "
-                    f"{len(label)} chars; the device shows at most "
-                    f"{controllers.FS_LABEL_MAX}.",
-                    file=sys.stderr,
-                )
-            # Full scribble-strip shape observed across real exports:
-            # {bypass, fs_color, fs_label, fs_topidx}.
-            entry.setdefault("fs_topidx", 0)
-            entry["fs_label"] = label if label is not None else entry.get("fs_label", "")
-            entry["fs_color"] = color if color is not None else entry.get("fs_color", "auto")
+        _write_fs_scribble(entry, switch, source_id, label, color)
 
 
 def wire_expression(

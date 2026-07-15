@@ -241,6 +241,24 @@ def test_read_handler_maps_helixerror_to_valueerror(monkeypatch):
         tools.device_list_presets_handler(MODEL)
 
 
+def test_device_client_seam_yields_client(fake_client):
+    """S10 consolidation seam: `_device_client` yields the connected client and
+    forwards the ip to `HelixClient` (honoring the monkeypatch = call-time
+    import)."""
+    with tools._device_client("10.0.0.7") as client:
+        assert isinstance(client, FakeClient)
+    assert fake_client.record["init"].get("ip") == "10.0.0.7"
+
+
+def test_device_client_seam_maps_helixerror(monkeypatch):
+    """The `_device_client` seam maps a HelixError raised inside the block to the
+    `device error: ...` ValueError the MCP surface returns."""
+    monkeypatch.setattr(device, "HelixClient", FakeClient)
+    with pytest.raises(ValueError, match="device error: boom"):
+        with tools._device_client("1.2.3.4") as client:
+            raise device.HelixError("boom in body")
+
+
 # -- create/delete reach the raw primitives via client._raw -------------------
 
 def test_create_preset_uses_raw_create_from(fake_client):

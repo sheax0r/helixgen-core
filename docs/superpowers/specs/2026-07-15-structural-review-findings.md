@@ -190,7 +190,35 @@ acceptance net green after every commit:
 | S5 | #51 derive `_SLOT_LABELS` from `client.slot_label` | done | 1665 pass (+1) |
 | S6 | extract `cli_device.py` (pure move) | done — `cli.py` 2792→649; command tree byte-identical | 1665 pass |
 
-**Deferred → backlog #54:** S7 (fold 65 lazy device imports — moves the
-optional-extra ImportError surface, needs a lazy accessor), S8 (rename
-`hss.slot_label`), S9 (decompose F5 oversized functions), S10 (`mcp_server`
-result-shape consolidation). All behavior-preserving, no user input needed.
+**Deferred → backlog #54** (executed in a follow-up session — see below): S7,
+S8, S9, S10.
+
+## Phase 4 — S7–S10 execution record (2026-07-15, structural pass 2)
+
+Executed the #54 residual (steps S7–S10), one commit per step; full suite +
+211-export acceptance net green after every step, recursive click command-tree
+dump byte-identical to `main` throughout.
+
+| Step | Commit topic | Result | Suite |
+|---|---|---|---|
+| S8 | rename `hss.slot_label` → `hss_slot_label` | done | 1665 pass |
+| S7 | fold 65 lazy device imports → `_client()`/`_manifest()` accessors | done — ImportError surface fixed by construction; new poisoned-imports pin test | 1675 pass (+10) |
+| S9 | decompose F5 oversized functions | done — see below | 1675 pass |
+| S10 | consolidate MCP device connect+error boilerplate → `_device_client(ip)` | done — 24 handlers routed; new seam pin tests | 1677 pass (+2 in that step's file) |
+
+**S9 note.** F5's per-function line counts were mislabeled (they named the
+innermost *nested* def — e.g. `_new_midi_ctrl`/`_hrns_for` — not the real
+bodies). Real targets by AST body length: `synthesize_sfg` 125→62
+(`_place_serial_flow`/`_place_split_flow_coords`/`_place_split_flow_nocoords` +
+`_append_output_group`), `_to_hsp_bnn` 120→85 (`_build_bnn_enabled_wrapper` +
+`_apply_trails_harness`), `wire_footswitch` 144→96 (`_validate_fs_args` +
+`_write_fs_scribble`), `device_setlist_import_hss` 105→81 (`_hss_print_listing`
+/ `_hss_print_dry_run` / `_hss_record_import_manifest`), and
+`_synth_cg_from_recipe` 340→290 (extracted `_synth_commands` + `_emit_snapshots`;
+its closure-heavy controller core deliberately left — extraction would need a
+state-object rewrite, not behavior-preserving-cheap).
+
+**S10 note.** `server.py` intentionally unchanged — its per-tool docstrings are
+the agent-facing schema, not duplicated result-shaping. Deeper per-handler
+result-dict restructuring remains a separate review pass (F6's own caveat) and
+is not tracked as an active residual.

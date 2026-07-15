@@ -3,6 +3,7 @@ registration time. Importable + directly testable.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Any
@@ -449,6 +450,26 @@ def patch_preset_handler(
 _DEFAULT_DEVICE_IP = os.environ.get("HELIXGEN_HELIX_IP") or "192.168.4.84"
 
 
+@contextlib.contextmanager
+def _device_client(ip: str):
+    """Connect to the networked Helix, translating a device-layer ``HelixError``
+    into the ``ValueError("device error: ...")`` the MCP surface returns
+    (FastMCP renders it as an ``isError`` block). Consolidates the connect +
+    error-shaping boilerplate repeated across the ``device_*`` handlers.
+
+    The ``HelixClient``/``HelixError`` import is deliberately call-time so the
+    device-tool tests' ``monkeypatch.setattr(device, "HelixClient", ...)`` is
+    honored and the optional ``device`` extra stays lazy.
+    """
+    from helixgen.device import HelixClient, HelixError
+
+    try:
+        with HelixClient(ip=ip) as client:
+            yield client
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+
+
 def _device_container(setlist: str) -> int:
     """Map a setlist name (``"user"``/``"factory"``/``"throwaway"``) to a container id.
 
@@ -472,14 +493,10 @@ def device_list_presets_handler(
     ``cid_``, ``name``, ``cctp``, ``posi``), sorted by slot position.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
     container = _device_container(setlist)
-    try:
-        with HelixClient(ip=ip) as client:
-            return client.list_presets(container=container)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return client.list_presets(container=container)
 
 
 def device_info_handler(model: str, *, ip: str = _DEFAULT_DEVICE_IP) -> dict[str, Any]:
@@ -489,13 +506,9 @@ def device_info_handler(model: str, *, ip: str = _DEFAULT_DEVICE_IP) -> dict[str
     sd storage totals, and the full 4CC-decoded reply under ``raw``.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return client.product_info()
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return client.product_info()
 
 
 def device_settings_list_handler(
@@ -543,14 +556,10 @@ def device_settings_get_handler(
 ) -> dict[str, Any]:
     """Read one Global-Settings value with its definition (name/range/enum)."""
     from helixgen.device import settings as S
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            d = client.get_property_def(key)
-            v = client.get_property(key)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        d = client.get_property_def(key)
+        v = client.get_property(key)
     return {"key": key, "name": d.name, "value": v.value,
             "display": S.render_value(d, v.value), "type": d.type,
             "min": d.vmin, "max": d.vmax, "default": d.default,
@@ -565,16 +574,12 @@ def device_settings_set_handler(
     property's range/enum before sending. Returns ``{ok, key, value, display}``.
     """
     from helixgen.device import settings as S
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            d = client.get_property_def(key)
-            coerced = S.coerce_value(d, str(value))
-            ok = client.set_property(key, d.type, coerced)
-            readback = client.get_property(key)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        d = client.get_property_def(key)
+        coerced = S.coerce_value(d, str(value))
+        ok = client.set_property(key, d.type, coerced)
+        readback = client.get_property(key)
     return {"ok": bool(ok), "key": key, "value": readback.value,
             "display": S.render_value(d, readback.value), "name": d.name}
 
@@ -670,13 +675,9 @@ def device_blocks_handler(*, ip: str = _DEFAULT_DEVICE_IP) -> dict[str, Any]:
     """List the live edit buffer's blocks with (path, block) coordinates + model
     + on/off state — the coordinates device_bypass/device_model/device_set_param
     address. Reads only (does not change the tone). Returns ``{blocks: [...]}``."""
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return {"blocks": client.edit_buffer_blocks()}
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return {"blocks": client.edit_buffer_blocks()}
 
 
 def device_bypass_handler(
@@ -685,13 +686,9 @@ def device_bypass_handler(
     """Enable (``enable=True``) or bypass (``False``) a block in the live edit
     buffer (`/BlockEnableSet`). Coordinates from device_blocks. Changes the
     ACTIVE tone. Returns ``{ok, path, block, enabled}``."""
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            ok = client.set_block_enable(path, block, bool(enable))
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        ok = client.set_block_enable(path, block, bool(enable))
     return {"ok": bool(ok), "path": int(path), "block": int(block),
             "enabled": bool(enable)}
 
@@ -703,7 +700,6 @@ def device_model_handler(
     numeric model id or a model-id string (e.g. ``HD2_AmpBritPlexiNrm``). The
     device rejects a cross-category swap. Changes the ACTIVE tone. Returns
     ``{ok, path, block, model, model_id}``."""
-    from helixgen.device import HelixClient, HelixError
     from helixgen.device import defs as _defs
 
     if str(model).lstrip("-").isdigit():
@@ -714,11 +710,8 @@ def device_model_handler(
             raise ValueError(
                 f"unknown model {model!r}; pass a numeric id or exact model-id "
                 "string (see list_blocks)")
-    try:
-        with HelixClient(ip=ip) as client:
-            ok = client.set_block_model(path, block, model_id)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        ok = client.set_block_model(path, block, model_id)
     return {"ok": bool(ok), "path": int(path), "block": int(block),
             "model": model, "model_id": model_id}
 
@@ -728,13 +721,9 @@ def device_list_setlists_handler(
 ) -> list[dict[str, Any]]:
     """List the device's virtual setlist containers that currently resolve."""
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return client.list_setlists()
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return client.list_setlists()
 
 
 def device_read_preset_handler(
@@ -745,13 +734,9 @@ def device_read_preset_handler(
     Raises ValueError if the device has no content at that ``cid``.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            ref = client.get_ref(cid)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        ref = client.get_ref(cid)
     if ref is None:
         raise ValueError(f"no content at cid {cid!r}")
     return ref
@@ -765,13 +750,9 @@ def device_load_preset_handler(
     Returns ``{"ok": <bool>}`` — the device's acknowledgement status.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return {"ok": bool(client.load_preset(cid))}
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return {"ok": bool(client.load_preset(cid))}
 
 
 def device_create_preset_handler(
@@ -788,14 +769,10 @@ def device_create_preset_handler(
     the device did not report a new cid for the copy.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
     container = _device_container(setlist)
-    try:
-        with HelixClient(ip=ip) as client:
-            new_cid = client._raw.create_from(src_cid, container, pos)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        new_cid = client._raw.create_from(src_cid, container, pos)
     return {"ok": new_cid is not None, "cid": new_cid}
 
 
@@ -804,13 +781,9 @@ def device_rename_preset_handler(
 ) -> dict[str, Any]:
     """Rename the preset at ``cid`` to ``name``. Returns ``{"ok": <bool>}``."""
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return {"ok": bool(client.rename(cid, name))}
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return {"ok": bool(client.rename(cid, name))}
 
 
 def device_delete_preset_handler(
@@ -818,14 +791,10 @@ def device_delete_preset_handler(
 ) -> dict[str, Any]:
     """Delete the preset at ``cid`` from ``setlist``. Returns ``{"ok": <bool>}``."""
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
     container = _device_container(setlist)
-    try:
-        with HelixClient(ip=ip) as client:
-            return {"ok": bool(client._raw.delete(container, [cid]))}
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return {"ok": bool(client._raw.delete(container, [cid]))}
 
 
 def device_set_param_handler(
@@ -843,13 +812,9 @@ def device_set_param_handler(
     the target param; ``value`` is the normalized float.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return {"ok": bool(client.set_param(path, block, param_id, value))}
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return {"ok": bool(client.set_param(path, block, param_id, value))}
 
 
 def device_install_preset_handler(
@@ -879,7 +844,7 @@ def device_install_preset_handler(
     EXPERIMENTAL.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError, bridge, ir_upload, transcode
+    from helixgen.device import bridge, ir_upload, transcode
 
     body = _read_hsp_body(hsp_path)
     container = _device_container(setlist)
@@ -892,18 +857,15 @@ def device_install_preset_handler(
     except (bridge.UnresolvedModel, ValueError) as e:
         raise ValueError(str(e)) from e
     irs_results: list[dict[str, Any]] = []
-    try:
-        with HelixClient(ip=ip) as client:
-            # strict (backlog #40): a listing timeout must raise, not read as
-            # "empty" and let the write through into an actually-occupied slot.
-            if client.find_by_pos(container, pos, strict=True) is not None:
-                raise ValueError(f"{setlist} slot {pos} is not empty")
-            irs_results = ir_upload.sync_preset_irs(
-                client, body, ip, auto_irs=auto_irs)
-            with client.mutating():
-                cid = client._raw.push_to_slot(container, pos, name, blob)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        # strict (backlog #40): a listing timeout must raise, not read as
+        # "empty" and let the write through into an actually-occupied slot.
+        if client.find_by_pos(container, pos, strict=True) is not None:
+            raise ValueError(f"{setlist} slot {pos} is not empty")
+        irs_results = ir_upload.sync_preset_irs(
+            client, body, ip, auto_irs=auto_irs)
+        with client.mutating():
+            cid = client._raw.push_to_slot(container, pos, name, blob)
     if cid is not None:
         try:
             from helixgen.device.manifest import SetlistManifest, _posi_to_slot
@@ -1008,19 +970,14 @@ def device_import_hss_handler(
         return {
             "ok": True, "setlist": target_setlist, "dry_run": True,
             "would_install": [
-                {"pos": s.pos, "name": hss_mod.slot_label(s),
+                {"pos": s.pos, "name": hss_mod.hss_slot_label(s),
                  "format": s.payload_format,
                  "would_skip": not hss_mod.looks_like_content_blob(s.blob)}
                 for s in filled],
         }
 
-    from helixgen.device import HelixClient, HelixError
-
-    try:
-        with HelixClient(ip=ip) as client:
-            result = hss_mod.import_bundle(client, bundle, setlist=setlist)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        result = hss_mod.import_bundle(client, bundle, setlist=setlist)
 
     # Record the imported presets in the tone library (pathless, source
     # "import-hss") + the setlist's membership — load-bearing: without it a
@@ -1233,16 +1190,12 @@ def device_save_preset_handler(
     empty). Returns ``{"ok": <bool>, "cid": <new cid or None>}``.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
     container = _device_container(setlist)
-    try:
-        with HelixClient(ip=ip) as client:
-            if client.find_by_pos(container, pos, strict=True) is not None:
-                raise ValueError(f"{setlist} slot {pos} is not empty")
-            new_cid = client._raw.save_edit_buffer_to(container, pos, name)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        if client.find_by_pos(container, pos, strict=True) is not None:
+            raise ValueError(f"{setlist} slot {pos} is not empty")
+        new_cid = client._raw.save_edit_buffer_to(container, pos, name)
     return {"ok": new_cid is not None, "cid": new_cid}
 
 
@@ -1267,15 +1220,11 @@ def device_delete_ir_handler(
     (or more than one name) matches.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
     from helixgen.device import maintenance as mt
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return mt.delete_device_ir(client, name_or_hash, ip=ip,
-                                       force_wedge=force_wedge)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return mt.delete_device_ir(client, name_or_hash, ip=ip,
+                                   force_wedge=force_wedge)
 
 
 def device_rename_ir_handler(
@@ -1288,15 +1237,11 @@ def device_rename_ir_handler(
     name).
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
     from helixgen.device import maintenance as mt
 
-    try:
-        with HelixClient(ip=ip) as client:
-            target = mt.resolve_device_ir_live(client, name_or_hash)
-            ok = client.rename(target["cid_"], new_name)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        target = mt.resolve_device_ir_live(client, name_or_hash)
+        ok = client.rename(target["cid_"], new_name)
     return {"ok": bool(ok), "cid": target.get("cid_"), "name": new_name,
             "hash": target.get("hash")}
 
@@ -1391,15 +1336,11 @@ def device_setlist_create_handler(
     Returns ``{ok, cid, name}``.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            if client.resolve_setlist_cid(name) is not None:
-                raise ValueError(f"setlist {name!r} already exists on the device")
-            cid = client.create_setlist(name)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        if client.resolve_setlist_cid(name) is not None:
+            raise ValueError(f"setlist {name!r} already exists on the device")
+        cid = client.create_setlist(name)
     if cid is None:
         raise ValueError(f"device refused to create setlist {name!r}")
     try:
@@ -1425,19 +1366,15 @@ def device_setlist_rename_handler(
     ``{ok, cid, name}`` (``name`` = the new name).
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            cid = client.resolve_setlist_cid(name)
-            if cid is None:
-                raise ValueError(f"setlist {name!r} not found on the device")
-            if client.resolve_setlist_cid(new_name) is not None:
-                raise ValueError(
-                    f"a setlist named {new_name!r} already exists on the device")
-            ok = client.rename(cid, new_name)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        cid = client.resolve_setlist_cid(name)
+        if cid is None:
+            raise ValueError(f"setlist {name!r} not found on the device")
+        if client.resolve_setlist_cid(new_name) is not None:
+            raise ValueError(
+                f"a setlist named {new_name!r} already exists on the device")
+        ok = client.rename(cid, new_name)
     try:
         from helixgen.device.manifest import SetlistManifest
 
@@ -1459,16 +1396,12 @@ def device_setlist_delete_handler(
     (marked unsynced). Returns ``{ok, cid, name}``.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            cid = client.resolve_setlist_cid(name)
-            if cid is None:
-                raise ValueError(f"setlist {name!r} not found on the device")
-            ok = client.delete_setlist(cid)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        cid = client.resolve_setlist_cid(name)
+        if cid is None:
+            raise ValueError(f"setlist {name!r} not found on the device")
+        ok = client.delete_setlist(cid)
     try:
         from helixgen.device.manifest import SetlistManifest
 
@@ -1495,23 +1428,19 @@ def device_setlist_duplicate_handler(
     Returns ``{ok, src_cid, dst_cid, created, copied}``.
     """
     _validate_model(model)
-    from helixgen.device import HelixClient, HelixError
 
-    try:
-        with HelixClient(ip=ip) as client:
-            src_cid = client.resolve_setlist_cid(src)
-            if src_cid is None:
-                raise ValueError(f"setlist {src!r} not found on the device")
-            dst_cid = client.resolve_setlist_cid(dst)
-            created = False
+    with _device_client(ip) as client:
+        src_cid = client.resolve_setlist_cid(src)
+        if src_cid is None:
+            raise ValueError(f"setlist {src!r} not found on the device")
+        dst_cid = client.resolve_setlist_cid(dst)
+        created = False
+        if dst_cid is None:
+            dst_cid = client.create_setlist(dst)
+            created = True
             if dst_cid is None:
-                dst_cid = client.create_setlist(dst)
-                created = True
-                if dst_cid is None:
-                    raise ValueError(f"device refused to create setlist {dst!r}")
-            copied = client.duplicate_setlist_refs(src_cid, dst_cid)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+                raise ValueError(f"device refused to create setlist {dst!r}")
+        copied = client.duplicate_setlist_refs(src_cid, dst_cid)
     if created:
         try:
             from helixgen.device.manifest import SetlistManifest
@@ -1547,14 +1476,10 @@ def device_reorder_handler(
     which only takes effect on the device on the next sync. Returns
     ``{ok, container, moved_cid, new_pos, items, warnings}``.
     """
-    from helixgen.device import HelixClient, HelixError
     from helixgen.device import reorder as R
 
-    try:
-        with HelixClient(ip=ip) as client:
-            return R.reorder_setlist_item(client, setlist, target, to_index)
-    except HelixError as e:
-        raise ValueError(f"device error: {e}") from e
+    with _device_client(ip) as client:
+        return R.reorder_setlist_item(client, setlist, target, to_index)
 
 
 def device_meters_handler(

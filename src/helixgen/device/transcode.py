@@ -668,6 +668,86 @@ def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
     return blk
 
 
+def _append_output_group(placements: List[Tuple[int, dict]], out_params) -> None:
+    """Append the row-0 OutputMatrix + row-1 InputNone/OutputNone endpoint
+    group that terminates every synthesized flow (identical across the serial
+    and both split placement strategies)."""
+    placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
+    placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
+    placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+
+
+def _place_serial_flow(placements, instance_ids, pi, base, modeled) -> None:
+    """SERIAL / dual-DSP flow: user blocks fill row 0 (positions 1..12).
+    (Hardware-confirmed 2026-07-13.) Overflow blocks past row 0 are dropped."""
+    gp = 1
+    for bi, spec in enumerate(modeled):
+        if gp > _ROW0_LAST_USER:
+            break  # row 0 is full; overflow blocks are dropped
+        lane = int(spec.get("lane", 0))
+        pos = int(spec.get("pos", bi))
+        placements.append((gp, _make_user_block(spec, 0)))
+        instance_ids[(pi, lane, pos)] = base + gp
+        gp += 1
+
+
+def _place_split_flow_coords(placements, instance_ids, pi, base, modeled, structural) -> None:
+    """SPLIT flow, faithful placement from .hsp grid coordinates (hardware-
+    derived 2026-07-13): lane-0 blocks/split/join at gridpos == pos (row 0),
+    lane-1 blocks at gridpos == 14 + pos (row 1). The split's branch pointer
+    (bblk) is the first lane-1 grid slot; the join's is the row-1 slot beneath
+    the join (14 + join.pos)."""
+    for spec in modeled:
+        lane = int(spec.get("lane", 0))
+        pos = int(spec["pos"])
+        gp = pos if lane == 0 else _ROW1_INPUT + pos
+        placements.append((gp, _make_user_block(spec, 0)))
+        instance_ids[(pi, lane, pos)] = base + gp
+    lane1_gps = [_ROW1_INPUT + int(s["pos"]) for s in modeled
+                 if int(s.get("lane", 0)) == 1]
+    first_lane1_gp = min(lane1_gps) if lane1_gps else _ROW1_INPUT + 1
+    for scaffold in structural:
+        blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
+        spos = int(scaffold["_pos"])
+        if blk.get("type") == 3:      # split -> first lane-1 slot
+            blk["bblk"], blk["bflw"] = base + first_lane1_gp, pi
+        elif blk.get("type") == 4:    # join <- row-1 slot beneath it
+            blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
+        placements.append((spos, blk))
+
+
+def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, structural) -> None:
+    """SPLIT flow WITHOUT .hsp coordinates (round-trip of a device preset whose
+    modeled blocks lost their grid pos): best-effort contiguous placement —
+    lane-0 in row 0, lane-1 in row 1, split/join between."""
+    lane0 = [s for s in modeled if int(s.get("lane", 0)) == 0]
+    lane1 = [s for s in modeled if int(s.get("lane", 0)) == 1]
+    gp = 1
+    for bi, spec in enumerate(lane0):
+        if gp > _ROW0_LAST_USER - 1:
+            break
+        placements.append((gp, _make_user_block(spec, 0)))
+        instance_ids[(pi, 0, int(spec.get("pos", bi)))] = base + gp
+        gp += 1
+    split_gp, join_gp = gp, gp + 1
+    gp1 = _ROW1_INPUT + 1
+    for bi, spec in enumerate(lane1):
+        if gp1 > _ROW1_LAST_USER:
+            break
+        placements.append((gp1, _make_user_block(spec, 0)))
+        instance_ids[(pi, 1, int(spec.get("pos", bi)))] = base + gp1
+        gp1 += 1
+    for scaffold in structural:
+        typ = scaffold.get("type")
+        slot = split_gp if typ == 3 else join_gp
+        blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
+        if typ == 3:
+            blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
+        elif typ == 4:
+            blk["bblk"], blk["bflw"] = base + join_gp, pi
+        placements.append((slot, blk))
+
+
 def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, int], int]]:
     """Build an ``sfg_`` dict for every modeled DSP path (dual-amp spec §3.2).
 
@@ -712,82 +792,19 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         instance_ids[(pi, -1, -1)] = base + _ROW0_INPUT
         placements: List[Tuple[int, dict]] = [(_ROW0_INPUT, input_block)]
 
+        # Three mutually-exclusive placement strategies, each populating
+        # ``placements`` + registering user-block ``instance_ids``; every flow
+        # then terminates with the same OutputMatrix/InputNone/OutputNone group.
         if not structural:
-            # SERIAL / dual-DSP path: user blocks fill row 0 (positions 1..12),
-            # then the OutputMatrix group. (Hardware-confirmed 2026-07-13.)
-            gp = 1
-            for bi, spec in enumerate(modeled):
-                if gp > _ROW0_LAST_USER:
-                    break  # row 0 is full; overflow blocks are dropped
-                lane = int(spec.get("lane", 0))
-                pos = int(spec.get("pos", bi))
-                placements.append((gp, _make_user_block(spec, 0)))
-                instance_ids[(pi, lane, pos)] = base + gp
-                gp += 1
-            placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
-            placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
-            placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+            _place_serial_flow(placements, instance_ids, pi, base, modeled)
         elif all("_pos" in s for s in structural) and \
                 all("pos" in s for s in modeled):
-            # SPLIT path, faithful placement from .hsp grid coordinates
-            # (hardware-derived 2026-07-13): lane-0 blocks/split/join at
-            # gridpos == pos (row 0), lane-1 blocks at gridpos == 14 + pos
-            # (row 1). The split's branch pointer (bblk) is the first lane-1
-            # grid slot; the join's is the row-1 slot beneath the join
-            # (14 + join.pos). A normal OutputMatrix terminates row 0.
-            for spec in modeled:
-                lane = int(spec.get("lane", 0))
-                pos = int(spec["pos"])
-                gp = pos if lane == 0 else _ROW1_INPUT + pos
-                placements.append((gp, _make_user_block(spec, 0)))
-                instance_ids[(pi, lane, pos)] = base + gp
-            lane1_gps = [_ROW1_INPUT + int(s["pos"]) for s in modeled
-                         if int(s.get("lane", 0)) == 1]
-            first_lane1_gp = min(lane1_gps) if lane1_gps else _ROW1_INPUT + 1
-            for scaffold in structural:
-                blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
-                spos = int(scaffold["_pos"])
-                if blk.get("type") == 3:      # split -> first lane-1 slot
-                    blk["bblk"], blk["bflw"] = base + first_lane1_gp, pi
-                elif blk.get("type") == 4:    # join <- row-1 slot beneath it
-                    blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
-                placements.append((spos, blk))
-            placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
-            placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
-            placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+            _place_split_flow_coords(placements, instance_ids, pi, base,
+                                     modeled, structural)
         else:
-            # SPLIT path without .hsp coordinates (round-trip of a device preset
-            # whose modeled blocks lost their grid pos): best-effort contiguous
-            # placement — lane-0 in row 0, lane-1 in row 1, split/join between.
-            lane0 = [s for s in modeled if int(s.get("lane", 0)) == 0]
-            lane1 = [s for s in modeled if int(s.get("lane", 0)) == 1]
-            gp = 1
-            for bi, spec in enumerate(lane0):
-                if gp > _ROW0_LAST_USER - 1:
-                    break
-                placements.append((gp, _make_user_block(spec, 0)))
-                instance_ids[(pi, 0, int(spec.get("pos", bi)))] = base + gp
-                gp += 1
-            split_gp, join_gp = gp, gp + 1
-            gp1 = _ROW1_INPUT + 1
-            for bi, spec in enumerate(lane1):
-                if gp1 > _ROW1_LAST_USER:
-                    break
-                placements.append((gp1, _make_user_block(spec, 0)))
-                instance_ids[(pi, 1, int(spec.get("pos", bi)))] = base + gp1
-                gp1 += 1
-            for scaffold in structural:
-                typ = scaffold.get("type")
-                slot = split_gp if typ == 3 else join_gp
-                blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
-                if typ == 3:
-                    blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
-                elif typ == 4:
-                    blk["bblk"], blk["bflw"] = base + join_gp, pi
-                placements.append((slot, blk))
-            placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
-            placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
-            placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+            _place_split_flow_nocoords(placements, instance_ids, pi, base,
+                                       modeled, structural)
+        _append_output_group(placements, out_params)
 
         flows.append(_canonical_flow(placements, base))
 
@@ -1030,6 +1047,76 @@ def _command_payload(ctype: Any, func: int, params: dict, *,
         out.update(_pv("psp", [False] * 12))
         return out
     return None
+
+
+def _synth_commands(recipe, srcs, trgs, next_trg, instance_ids):
+    """Synthesize the Command Center records (#16) for a recipe.
+
+    Each command is an ENTITY (its ``cmnd.cid_`` == its trg ``eID_``, ``enty``
+    6, ``type`` 4). Authored NATIVELY in ``preset.commands``; here we build the
+    ``cg__`` srcs->cmnd->trgs relational records. Command ``srcs`` are APPENDED
+    after the controller srcs — helixgen rejects a switch shared by a footswitch
+    controller AND a command, so the two never contend for one srcs entry, and
+    ``sm__.scid`` (controllers only) is untouched.
+
+    Mutates ``srcs`` and ``trgs`` in place (appends command sources/targets) and
+    returns ``(cmnd, next_cmd_entity, next_trg)``.
+    """
+    cmnd: List[dict] = []
+    next_cmd_entity = max(instance_ids.values(), default=0) + 1
+    cmd_src_index: Dict[int, int] = {}       # source id -> srcs id
+    cmd_src_cmds: Dict[int, List[int]] = {}   # srcs id -> [command entity ids]
+    for cmd in (recipe.get("commands") or []):
+        lct = _command_locl_ctxt_type(cmd.get("source"))
+        if lct is None:
+            continue
+        locl, ctxt, srtype = lct
+        payload = _command_payload(cmd.get("type"), cmd.get("func", 0),
+                                   cmd.get("params") or {}, ctxt=ctxt)
+        if payload is None:
+            continue
+        entity = next_cmd_entity
+        next_cmd_entity += 1
+        tid = next_trg
+        next_trg += 1
+        trgs.append({"eID_": entity, "enty": 6, "id__": tid, "pid_": 0,
+                     "slot": 0, "type": 4})
+        src = cmd["source"]
+        sid = cmd_src_index.get(src)
+        if sid is None:
+            sid = len(srcs) + 1
+            cmd_src_index[src] = sid
+            srcs.append({"byps": False, "cmds": [-1, -1], "cnt1": 0, "cnt2": 0,
+                         "cnt3": 0, "ctxt": ctxt, "id__": sid, "locl": locl,
+                         "mtms": 0, "mtyp": 0, "type": srtype})
+            cmd_src_cmds[sid] = []
+        cmd_src_cmds[sid].append(entity)
+        rec = {"behv": _behv(cmd.get("behavior"), 0), "cid_": entity, "curv": 5,
+               "dlay": 0, "goid": 0, "thrs": 0.0, "tid_": tid,
+               "togl": bool(cmd.get("toggle", False)), "trig": sid}
+        rec.update(payload)
+        cmnd.append(rec)
+    for sid, cids in cmd_src_cmds.items():
+        srcs[sid - 1]["cmds"] = cids + [-1] * max(0, 2 - len(cids))
+    return cmnd, next_cmd_entity, next_trg
+
+
+def _emit_snapshots(tracked, snap_meta):
+    """Build the 8 ``snps`` dicts. Each snapshot's ``tamv`` is the flat
+    ``[trg_id, value, …]`` over every snapshot-tracked target (an unset trailing
+    value reuses the last), plus its name/exsw/bpm metadata."""
+    snps: List[dict] = []
+    for i in range(8):
+        tamv: List[Any] = []
+        for tid, vals in tracked:
+            v = vals[i] if i < len(vals) else vals[-1]
+            tamv.extend([tid, v])
+        meta = snap_meta[i] if i < len(snap_meta) else {}
+        name, exsw, bpm = _snap_meta(meta, i)
+        snps.append({"bpm_": bpm, "camv": [], "colr": 1, "exsw": exsw,
+                     "iras": [], "name": name, "si__": i, "tamv": tamv,
+                     "tgls": [], "vald": True})
+    return snps
 
 
 def _synth_cg_from_recipe(
@@ -1293,64 +1380,14 @@ def _synth_cg_from_recipe(
     for sid in sorted(src_cids):
         scid.extend([sid, src_cids[sid]])
 
-    # 3) Command Center commands (#16): each command is an ENTITY (its
-    #    ``cmnd.cid_`` == its trg ``eID_``, ``enty`` 6, ``type`` 4). Authored
-    #    NATIVELY in ``preset.commands``; here we synthesize the ``cg__``
-    #    srcs->cmnd->trgs relational records. Command ``srcs`` are APPENDED after
-    #    the controller srcs — helixgen rejects a switch shared by a footswitch
-    #    controller AND a command, so the two never contend for one srcs entry,
-    #    and ``sm__.scid`` (controllers only) is untouched.
-    cmnd: List[dict] = []
-    next_cmd_entity = max(instance_ids.values(), default=0) + 1
-    cmd_src_index: Dict[int, int] = {}       # source id -> srcs id
-    cmd_src_cmds: Dict[int, List[int]] = {}   # srcs id -> [command entity ids]
-    for cmd in (recipe.get("commands") or []):
-        lct = _command_locl_ctxt_type(cmd.get("source"))
-        if lct is None:
-            continue
-        locl, ctxt, srtype = lct
-        payload = _command_payload(cmd.get("type"), cmd.get("func", 0),
-                                   cmd.get("params") or {}, ctxt=ctxt)
-        if payload is None:
-            continue
-        entity = next_cmd_entity
-        next_cmd_entity += 1
-        tid = next_trg
-        next_trg += 1
-        trgs.append({"eID_": entity, "enty": 6, "id__": tid, "pid_": 0,
-                     "slot": 0, "type": 4})
-        src = cmd["source"]
-        sid = cmd_src_index.get(src)
-        if sid is None:
-            sid = len(srcs) + 1
-            cmd_src_index[src] = sid
-            srcs.append({"byps": False, "cmds": [-1, -1], "cnt1": 0, "cnt2": 0,
-                         "cnt3": 0, "ctxt": ctxt, "id__": sid, "locl": locl,
-                         "mtms": 0, "mtyp": 0, "type": srtype})
-            cmd_src_cmds[sid] = []
-        cmd_src_cmds[sid].append(entity)
-        rec = {"behv": _behv(cmd.get("behavior"), 0), "cid_": entity, "curv": 5,
-               "dlay": 0, "goid": 0, "thrs": 0.0, "tid_": tid,
-               "togl": bool(cmd.get("toggle", False)), "trig": sid}
-        rec.update(payload)
-        cmnd.append(rec)
-    for sid, cids in cmd_src_cmds.items():
-        srcs[sid - 1]["cmds"] = cids + [-1] * max(0, 2 - len(cids))
+    # 3) Command Center commands (#16) — appends command srcs/trgs in place.
+    cmnd, next_cmd_entity, next_trg = _synth_commands(
+        recipe, srcs, trgs, next_trg, instance_ids)
 
     if not tracked and not ctrl and not cmnd:
         return _synth_cg(max_id), bindings
 
-    snps: List[dict] = []
-    for i in range(8):
-        tamv: List[Any] = []
-        for tid, vals in tracked:
-            v = vals[i] if i < len(vals) else vals[-1]
-            tamv.extend([tid, v])
-        meta = snap_meta[i] if i < len(snap_meta) else {}
-        name, exsw, bpm = _snap_meta(meta, i)
-        snps.append({"bpm_": bpm, "camv": [], "colr": 1, "exsw": exsw,
-                     "iras": [], "name": name, "si__": i, "tamv": tamv,
-                     "tgls": [], "vald": True})
+    snps = _emit_snapshots(tracked, snap_meta)
 
     return {
         "asnp": 0,

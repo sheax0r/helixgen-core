@@ -318,9 +318,14 @@ def _read_tar(tf: tarfile.TarFile, version: int) -> HssBundle:
     )
 
 
-def slot_label(slot: HssSlot) -> str:
+def hss_slot_label(slot: HssSlot) -> str:
     """Human-readable label for a slot, for ``--list`` output — never crashes
-    on the unconfirmed name field."""
+    on the unconfirmed name field.
+
+    Named ``hss_slot_label`` (not ``slot_label``) to avoid the readability trap
+    of colliding with the unrelated ``client.slot_label`` (posi->bank label);
+    this one labels an ``HssSlot`` bundle entry.
+    """
     if not slot.filled:
         return "(empty)"
     return slot.name or f"(unnamed — slot {slot.pos})"
@@ -426,7 +431,7 @@ def import_bundle(client: Any, bundle: HssBundle, *,
     warnings: List[str] = []
     errors: List[str] = []
     for s in filled:
-        name = slot_label(s)
+        name = hss_slot_label(s)
         fmt = s.payload_format or detect_payload_format(s.blob)
         if fmt == FMT_UNKNOWN:
             errors.append(

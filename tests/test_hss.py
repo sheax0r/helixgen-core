@@ -218,7 +218,7 @@ def test_read_hss_filled_slot_missing_name_falls_back_gracefully():
     slot = bundle.slots[0]
     assert slot.filled is True
     assert slot.name is None
-    assert hss.slot_label(slot) == "(unnamed — slot 1)"
+    assert hss.hss_slot_label(slot) == "(unnamed — slot 1)"
 
 
 def test_read_hss_multiple_filled_slots_preserve_order():
@@ -233,9 +233,9 @@ def test_read_hss_multiple_filled_slots_preserve_order():
     assert [s.pos for s in bundle.slots] == list(range(1, 129))
 
 
-def test_slot_label_empty():
+def test_hss_slot_label_empty():
     empty_slot = hss.HssSlot(pos=7, filled=False)
-    assert hss.slot_label(empty_slot) == "(empty)"
+    assert hss.hss_slot_label(empty_slot) == "(empty)"
 
 
 def test_hss_format_error_is_value_error():

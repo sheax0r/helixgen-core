@@ -469,6 +469,59 @@ def _rewrite_input_endpoint(path_dict: dict[str, Any], target_model: str) -> Non
     slot["model"] = target_model
 
 
+def _build_bnn_enabled_wrapper(
+    base_enabled: bool,
+    enabled_overrides: list[bool | None] | None,
+    fs_controller: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the bNN-level ``@enabled`` wrapper carrying the real base bypass.
+
+    The per-snapshot array fills unset slots with True (an unset snapshot is
+    enabled, independent of the base) — do NOT reuse ``_wrap_value_with_snapshots``
+    here, which would fill with ``base_enabled`` and wrongly bypass enabled
+    snapshots. ``value`` is the device's live/on-load bypass state, which must
+    mirror the active snapshot (activesnapshot is always 0): when snapshot 0
+    disables the block, a stale ``value: True`` leaves it audibly active on first
+    load until snapshots are toggled away and back. A footswitch bypass
+    ``fs_controller`` (when given) attaches to the wrapper.
+    """
+    enabled_wrapped: dict[str, Any] = {"value": base_enabled}
+    if enabled_overrides and any(o is not None for o in enabled_overrides):
+        enabled_wrapped["snapshots"] = [
+            True if o is None else o for o in enabled_overrides
+        ]
+        first = enabled_overrides[0]
+        enabled_wrapped["value"] = base_enabled if first is None else first
+    if fs_controller is not None:
+        enabled_wrapped["controller"] = fs_controller
+    return enabled_wrapped
+
+
+def _apply_trails_harness(bnn: dict[str, Any], trails: bool) -> None:
+    """Stamp the author-facing Trails (delay/reverb spillover) into the bNN
+    harness, in place. Start from any verbatim harness (raw), else synthesize a
+    complete one using the device constants observed across real exports, then
+    set the authoritative Trails value (overriding any verbatim value)."""
+    harness = bnn.get("harness")
+    if not isinstance(harness, dict):
+        harness = {
+            "@enabled": {"value": True},
+            "params": {
+                "EvtIdx": {"value": -1},
+                "Trails": {"value": trails},
+                "bypass": {"value": False},
+                "upper": {"value": True},
+            },
+        }
+        bnn["harness"] = harness
+    else:
+        params = harness.get("params")
+        if not isinstance(params, dict):
+            params = {}
+            harness["params"] = params
+        params["Trails"] = {"value": trails}
+
+
 def _to_hsp_bnn(
     block: Block,
     user_params: dict[str, Any],
@@ -532,23 +585,9 @@ def _to_hsp_bnn(
         params[k] = wrapped
     slot_inner["params"] = params
 
-    # bNN-level @enabled carries the real base bypass value. The per-snapshot
-    # array fills unset slots with True (an unset snapshot is enabled,
-    # independent of the base) — do NOT reuse _wrap_value_with_snapshots here,
-    # which would fill with base_enabled and wrongly bypass enabled snapshots.
-    enabled_wrapped: dict[str, Any] = {"value": base_enabled}
-    if enabled_overrides and any(o is not None for o in enabled_overrides):
-        enabled_wrapped["snapshots"] = [
-            True if o is None else o for o in enabled_overrides
-        ]
-        # `value` is the device's live/on-load bypass state, which must mirror
-        # the active snapshot (activesnapshot is always 0). When snapshot 0
-        # disables the block, a stale `value: True` leaves it audibly active
-        # on first load until snapshots are toggled away and back.
-        first = enabled_overrides[0]
-        enabled_wrapped["value"] = base_enabled if first is None else first
-    if fs_controller is not None:
-        enabled_wrapped["controller"] = fs_controller
+    # bNN-level @enabled carries the real base bypass value + snapshot array.
+    enabled_wrapped = _build_bnn_enabled_wrapper(
+        base_enabled, enabled_overrides, fs_controller)
 
     bnn: dict[str, Any] = {
         "@enabled": enabled_wrapped,
@@ -566,28 +605,7 @@ def _to_hsp_bnn(
         if isinstance(extra_slots, list):
             bnn["slot"].extend(copy.deepcopy(s) for s in extra_slots)
     if trails is not None:
-        # Author-facing Trails (delay/reverb spillover) lives in the bNN harness.
-        # Start from any verbatim harness (raw), else synthesize a complete one
-        # using the device constants observed across real exports, then set the
-        # authoritative Trails value (overriding any verbatim value).
-        harness = bnn.get("harness")
-        if not isinstance(harness, dict):
-            harness = {
-                "@enabled": {"value": True},
-                "params": {
-                    "EvtIdx": {"value": -1},
-                    "Trails": {"value": trails},
-                    "bypass": {"value": False},
-                    "upper": {"value": True},
-                },
-            }
-            bnn["harness"] = harness
-        else:
-            params = harness.get("params")
-            if not isinstance(params, dict):
-                params = {}
-                harness["params"] = params
-            params["Trails"] = {"value": trails}
+        _apply_trails_harness(bnn, trails)
     return bnn
 
 

@@ -18,6 +18,70 @@ import click
 from helixgen.hsp import read_hsp
 
 
+# --- lazy device-layer accessors (backlog #54 / S7) -----------------------
+#
+# The networked-device layer is imported lazily *inside* each command body so
+# the optional `device` extra's (pyzmq + msgpack) ImportError stays at
+# device-verb call time — it must never surface at `helixgen`/`device --help`
+# or CLI import. Importing `helixgen.device` itself is dependency-free (the
+# third-party imports are lazy inside the client), so these accessors keep the
+# ImportError surface exactly where it is while folding the ~65 formerly
+# copy-pasted `from helixgen.device import ...` statements into two places.
+
+
+def _client():
+    """Lazy import of the device client pair `(HelixClient, HelixError)`."""
+    from helixgen.device import HelixClient, HelixError
+
+    return HelixClient, HelixError
+
+
+def _manifest():
+    """Lazy import of the manifest pair `(SetlistManifest, ManifestError)`."""
+    from helixgen.device.manifest import SetlistManifest, ManifestError
+
+    return SetlistManifest, ManifestError
+
+
+def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
+    """`--list` output for `device setlist import-hss`: per-slot filled/empty
+    state, payload format, and preset name (fully offline)."""
+    click.echo(f"{hss_file.name}: setlist {bundle.name!r} "
+               f"({len(filled)}/{len(bundle.slots)} slots filled)")
+    for s in bundle.slots:
+        state = "filled" if s.filled else "empty"
+        fmt = f"[{s.payload_format}]" if s.filled else ""
+        label = hss_mod.hss_slot_label(s) if s.filled else ""
+        click.echo(f"  {s.pos:>3}  {state:6}  {fmt:9} {label}")
+
+
+def _hss_print_dry_run(hss_file, target_setlist, filled, hss_mod) -> None:
+    """`--dry-run` output for `device setlist import-hss`: the filled slots that
+    would be imported, flagging any non-.hsp/non-content payload as a skip."""
+    click.echo(f"DRY RUN: would import {len(filled)} preset(s) into "
+               f"setlist {target_setlist!r}:")
+    for s in filled:
+        note = (f"  [{s.payload_format}]" if hss_mod.looks_like_content_blob(s.blob)
+                else "  (would SKIP: payload isn't a .hsp or content blob)")
+        click.echo(f"  slot {s.pos}: {hss_mod.hss_slot_label(s)}{note}")
+
+
+def _hss_record_import_manifest(result, hss_mod) -> None:
+    """Record freshly-imported presets in the tone library (pathless, source
+    "import-hss") + the setlist's membership — load-bearing: without it a later
+    targeted `device sync <setlist>` computes desired=[] and strips every
+    reference the import just wrote. Best-effort (the device write succeeded)."""
+    try:
+        SetlistManifest, _ = _manifest()
+
+        m = SetlistManifest.load()
+        for w in hss_mod.record_import_in_manifest(m, result):
+            click.echo(f"warning: {w}", err=True)
+        m.save()
+    except Exception as e:  # noqa: BLE001 — advisory; device write succeeded
+        click.echo(f"warning: could not update local manifest: {e}", err=True)
+
+
 # --- device: network control of a Line 6 Helix Stadium --------------------
 
 def _device_option(f):
@@ -102,7 +166,7 @@ def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
     failure warns but never fails the device command (the write already
     succeeded)."""
     try:
-        from helixgen.device.manifest import SetlistManifest
+        SetlistManifest, _ = _manifest()
 
         m = SetlistManifest.load()
         if name not in m.tones:
@@ -135,7 +199,7 @@ def _slot_from_posi(posi):
 def _ledger_rename(cid: int, new_name: str) -> None:
     """Best-effort: reflect a device rename in the tone library."""
     try:
-        from helixgen.device.manifest import SetlistManifest
+        SetlistManifest, _ = _manifest()
 
         m = SetlistManifest.load()
         old = _tone_by_cid(m, cid)
@@ -152,7 +216,7 @@ def _ledger_remove(cid: int) -> None:
     """Best-effort: drop a deleted preset from the tone library (membership +
     on-device state; the tone stays in the library)."""
     try:
-        from helixgen.device.manifest import SetlistManifest
+        SetlistManifest, _ = _manifest()
 
         m = SetlistManifest.load()
         name = _tone_by_cid(m, cid)
@@ -229,7 +293,8 @@ def device() -> None:
 @_device_option
 def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
     """List the presets in a setlist (default: user)."""
-    from helixgen.device import HelixClient, HelixError, slot_label
+    HelixClient, HelixError = _client()
+    from helixgen.device import slot_label
 
     container = _setlist_container(setlist)
     try:
@@ -252,7 +317,7 @@ def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
 @_device_option
 def device_setlists(as_json: bool, ip: str, port: int) -> None:
     """List the device's setlist containers."""
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -278,7 +343,7 @@ def device_info(as_json: bool, ip: str, port: int) -> None:
     Read-only (`/ProductInfoGet` — part of the editor's own connect
     handshake); never touches presets or the edit buffer.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -333,7 +398,7 @@ def device_settings() -> None:
 def device_settings_list(page, values, as_json, ip, port):
     """List Global-Settings keys, grouped by page (offline unless --values)."""
     from helixgen.device import settings as S
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         catalog = {page: S.keys_for_page(page)} if page else S.pages()
@@ -407,7 +472,7 @@ def device_settings_list(page, values, as_json, ip, port):
 def device_settings_get(key, as_json, ip, port):
     """Read one Global-Settings value (with its name, range, and enum labels)."""
     from helixgen.device import settings as S
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -439,7 +504,7 @@ def device_settings_set(key, value, ip, port):
     """Write one Global-Settings value. VALUE may be a number or an enum label
     (e.g. `helixgen device settings set global.tuner.type Strobe`)."""
     from helixgen.device import settings as S
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -516,7 +581,7 @@ def device_globaleq_set(output, band, param, value, ip, port):
       helixgen device globaleq set pho - level -2.0
     """
     from helixgen.device import globaleq as G
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     band_arg = "" if band.strip() in ("-", "") else band
     try:
@@ -541,7 +606,8 @@ def device_globaleq_set(output, band, param, value, ip, port):
 @_device_option
 def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
     """Read the content ref for a CID (name/slot/parent)."""
-    from helixgen.device import HelixClient, HelixError, slot_label
+    HelixClient, HelixError = _client()
+    from helixgen.device import slot_label
 
     try:
         with HelixClient(ip, port) as h:
@@ -566,7 +632,7 @@ def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
 @_device_option
 def device_load(cid: int, ip: str, port: int) -> None:
     """Load a preset into the edit buffer by CID."""
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -589,7 +655,7 @@ def device_load(cid: int, ip: str, port: int) -> None:
 @_device_option
 def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> None:
     """Copy a preset into a setlist slot; prints the new CID."""
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     container = _setlist_container(setlist)
     try:
@@ -613,7 +679,7 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
 @_device_option
 def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
     """Rename the preset at CID."""
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -636,7 +702,7 @@ def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
 @_device_option
 def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None:
     """Delete the preset at CID from a setlist."""
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     if not yes:
         click.confirm(f"Delete cid {cid} from {setlist} setlist?", abort=True)
@@ -663,7 +729,7 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
 def device_set_param(path: int, block: int, param_id: int, value: float,
                      ip: str, port: int) -> None:
     """Set one param in the edit buffer (path block param_id value)."""
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -687,7 +753,7 @@ def device_snapshot(index: int, ip: str, port: int) -> None:
     Changes the ACTIVE tone's current snapshot immediately (like stepping the
     snapshot footswitch). `/activateSnapshot`.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -710,7 +776,7 @@ def device_blocks(as_json: bool, ip: str, port: int) -> None:
     The on/off shown is the preset's *saved* base bypass; a volatile live
     `device bypass` toggle is not reflected here until the preset is saved.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
     from helixgen.ingest import humanize_model_id
 
     try:
@@ -746,7 +812,7 @@ def device_bypass(path: int, block: int, state: str, ip: str, port: int) -> None
     (so `device blocks`, which reads the saved base state, won't reflect it)
     until you save the preset.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     enable = state == "on"
     try:
@@ -771,7 +837,7 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
     (see `list-blocks`). The device rejects a cross-category swap. Changes the
     ACTIVE tone. `/ModelSet`.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
     from helixgen.device import defs as _defs
 
     if model.lstrip("-").isdigit():
@@ -813,7 +879,7 @@ def device_reorder(setlist: str, target: str, to_index: int,
     recorded order and takes effect on the device on the next `device sync`
     (which may then reorder things right back to the manifest's order).
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
     from helixgen.device import reorder as R
 
     try:
@@ -839,7 +905,7 @@ def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
     Reads via the non-activating ``/GetContentData`` — the device's live tone is
     never disturbed.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -866,7 +932,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     of reading as empty). Whatever preset/edits are live on the device are
     persisted.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     container = _setlist_container(setlist)
     try:
@@ -891,7 +957,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
 @_device_option
 def device_list_irs(as_json: bool, ip: str, port: int) -> None:
     """List the impulse responses on the device (name + hash)."""
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -925,7 +991,7 @@ def device_delete_ir(name_or_hash: str, yes: bool, force_wedge: bool,
     cab until it is re-imported. See ``ir-prune`` to clean up ALL unreferenced
     IRs at once.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
     from helixgen.device import maintenance as mt
 
     if not yes:
@@ -960,7 +1026,7 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
     Renaming changes only the display name — the IR's hash (which presets
     reference) is untouched, so nothing breaks.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
     from helixgen.device import maintenance as mt
 
     try:
@@ -1005,7 +1071,7 @@ def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
     re-verified immediately before any delete (a disagreement aborts with
     nothing deleted).
     """
-    from helixgen.device import HelixError
+    _, HelixError = _client()
     from helixgen.device import maintenance as mt
 
     try:
@@ -1061,7 +1127,7 @@ def device_set_info(cids: tuple[int, ...], color: str | None, notes: str | None,
     Color is a content attr; notes are written via a non-activating content
     round-trip — the device's live tone is never disturbed.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
     from helixgen.device import maintenance as mt
 
     if color is None and notes is None:
@@ -1109,7 +1175,7 @@ def device_push_ir(wav: Path, ip: str) -> None:
     chunk holding helixgen's ``irhash`` (as the editor's file does), so the
     device registers it under exactly that hash and the preset resolves.
     """
-    from helixgen.device import HelixError
+    _, HelixError = _client()
     from helixgen.device import sftp as _sftp
 
     try:
@@ -1141,7 +1207,7 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
     Use `device sftp-ls` semantics: pass the exact `.wav` basename (see the
     device's ir/ directory).
     """
-    from helixgen.device import HelixError
+    _, HelixError = _client()
     from helixgen.device import sftp as _sftp
 
     try:
@@ -1171,7 +1237,7 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
     template. With --auto-irs, missing IRs are uploaded first. EXPERIMENTAL.
     """
     from helixgen.hsp import read_hsp
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     body = read_hsp(hsp_file)
     container = _setlist_container(setlist)
@@ -1206,7 +1272,7 @@ def device_setlist() -> None:
               help="Emit the whole manifest document as JSON.")
 def device_setlist_list(as_json: bool) -> None:
     """List the manifest's setlists with their tone counts and members."""
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     if as_json:
@@ -1236,7 +1302,7 @@ def device_setlist_add_cmd(setlist: str, hsp_file: Path, pos: int | None) -> Non
     Idempotent within a setlist; only errors if the tone's name is already
     registered to a different .hsp file (names must be unique).
     """
-    from helixgen.device.manifest import SetlistManifest, ManifestError
+    SetlistManifest, ManifestError = _manifest()
 
     m = SetlistManifest.load()
     try:
@@ -1253,7 +1319,7 @@ def device_setlist_add_cmd(setlist: str, hsp_file: Path, pos: int | None) -> Non
 @click.argument("tone_name")
 def device_setlist_remove_cmd(setlist: str, tone_name: str) -> None:
     """Drop a tone from a setlist's membership (TONE_NAME is the tone's display name)."""
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     if not m.remove_tone(setlist, tone_name):
@@ -1272,7 +1338,7 @@ def device_setlist_create_local(setlist: str) -> None:
     To also create it on the device, run `helixgen device setlist create`
     (which records it locally too).
     """
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     m.create_setlist(setlist)
@@ -1291,8 +1357,8 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
     root) — no Stadium app needed. Errors if a setlist with that name already
     exists on the device.
     """
-    from helixgen.device import HelixClient, HelixError
-    from helixgen.device.manifest import SetlistManifest
+    HelixClient, HelixError = _client()
+    SetlistManifest, _ = _manifest()
 
     try:
         with HelixClient(ip, port) as h:
@@ -1323,8 +1389,8 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
 @_device_option
 def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -> None:
     """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked)."""
-    from helixgen.device import HelixClient, HelixError
-    from helixgen.device.manifest import SetlistManifest, ManifestError
+    HelixClient, HelixError = _client()
+    SetlistManifest, ManifestError = _manifest()
 
     try:
         with HelixClient(ip, port) as h:
@@ -1365,8 +1431,8 @@ def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> No
     A local manifest setlist of the same name is kept as a local-only draft
     (marked unsynced).
     """
-    from helixgen.device import HelixClient, HelixError
-    from helixgen.device.manifest import SetlistManifest
+    HelixClient, HelixError = _client()
+    SetlistManifest, _ = _manifest()
 
     try:
         with HelixClient(ip, port) as h:
@@ -1406,7 +1472,7 @@ def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None
     DST is created on the device if absent; if it exists it must be empty.
     References are pointers — the pool presets are shared, not copied.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -1428,7 +1494,7 @@ def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None
         raise click.ClickException(str(e)) from e
     if created:
         try:
-            from helixgen.device.manifest import SetlistManifest
+            SetlistManifest, _ = _manifest()
 
             m = SetlistManifest.load()
             m.create_setlist(dst)
@@ -1488,13 +1554,7 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     filled = bundle.filled_slots
 
     if list_only:
-        click.echo(f"{hss_file.name}: setlist {bundle.name!r} "
-                   f"({len(filled)}/{len(bundle.slots)} slots filled)")
-        for s in bundle.slots:
-            state = "filled" if s.filled else "empty"
-            fmt = f"[{s.payload_format}]" if s.filled else ""
-            label = hss_mod.slot_label(s) if s.filled else ""
-            click.echo(f"  {s.pos:>3}  {state:6}  {fmt:9} {label}")
+        _hss_print_listing(hss_file, bundle, filled, hss_mod)
         return
 
     target_setlist = setlist_name or bundle.name
@@ -1507,15 +1567,10 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
         return
 
     if dry_run:
-        click.echo(f"DRY RUN: would import {len(filled)} preset(s) into "
-                   f"setlist {target_setlist!r}:")
-        for s in filled:
-            note = (f"  [{s.payload_format}]" if hss_mod.looks_like_content_blob(s.blob)
-                    else "  (would SKIP: payload isn't a .hsp or content blob)")
-            click.echo(f"  slot {s.pos}: {hss_mod.slot_label(s)}{note}")
+        _hss_print_dry_run(hss_file, target_setlist, filled, hss_mod)
         return
 
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -1532,20 +1587,7 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     click.echo(f"imported {len(installed)}/{len(filled)} preset(s) from {hss_file.name} "
                f"into setlist {result['setlist']!r} "
                f"({'created, ' if result['created'] else ''}cid {result['cid']})")
-    # Record the imported presets in the tone library (pathless, source
-    # "import-hss") + the setlist's membership — load-bearing: without it a
-    # later targeted `device sync <setlist>` computes desired=[] and strips
-    # every reference the import just wrote. Best-effort like
-    # _record_placement (the device write already succeeded).
-    try:
-        from helixgen.device.manifest import SetlistManifest
-
-        m = SetlistManifest.load()
-        for w in hss_mod.record_import_in_manifest(m, result):
-            click.echo(f"warning: {w}", err=True)
-        m.save()
-    except Exception as e:  # noqa: BLE001 — advisory; device write succeeded
-        click.echo(f"warning: could not update local manifest: {e}", err=True)
+    _hss_record_import_manifest(result, hss_mod)
     for w in result.get("warnings", []):
         click.echo(f"  warning: {w}", err=True)
     if errors:
@@ -1576,7 +1618,7 @@ def device_setlist_export_hss(setlist: str, out_file: Path, ip: str, port: int) 
     residual). The `.hss` is still written with the presets that did resolve.
     """
     from helixgen.device import hss as hss_mod
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -1599,7 +1641,7 @@ def device_setlist_export_hss(setlist: str, out_file: Path, ip: str, port: int) 
 @click.argument("setlist")
 def device_setlist_sync_on(setlist: str) -> None:
     """Mark a setlist as device-synced (marks all its tones for the device)."""
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     m.set_setlist_synced(setlist, True)
@@ -1611,7 +1653,7 @@ def device_setlist_sync_on(setlist: str) -> None:
 @click.argument("setlist")
 def device_setlist_sync_off(setlist: str) -> None:
     """Mark a setlist as a local-only draft (not mirrored to the device)."""
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     m.set_setlist_synced(setlist, False)
@@ -1625,7 +1667,7 @@ def device_setlist_sync_off(setlist: str) -> None:
               help="Desired user slot ('1A'..'128D') or 'auto' (default; sync picks).")
 def device_add_cmd(tone: str, slot: str) -> None:
     """Mark a library tone for the device (placed on the next `device sync`)."""
-    from helixgen.device.manifest import SetlistManifest, ManifestError
+    SetlistManifest, ManifestError = _manifest()
 
     m = SetlistManifest.load()
     try:
@@ -1640,7 +1682,7 @@ def device_add_cmd(tone: str, slot: str) -> None:
 @click.argument("tone")
 def device_unsync_cmd(tone: str) -> None:
     """Take a tone off the device on next sync (keeps it in the library)."""
-    from helixgen.device.manifest import SetlistManifest, ManifestError
+    SetlistManifest, ManifestError = _manifest()
 
     m = SetlistManifest.load()
     try:
@@ -1658,7 +1700,7 @@ def device_unsync_cmd(tone: str) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit raw JSON.")
 def device_library_cmd(as_json: bool) -> None:
     """List every library tone: slot, on/off device, setlist memberships."""
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     rows = SetlistManifest.load().library()
     if as_json:
@@ -1703,9 +1745,9 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     A setlist the device doesn't have is reported as a clear error (create
     it first with `helixgen device setlist create <name>`). EXPERIMENTAL.
     """
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
     from helixgen.device.setlist_sync import sync_setlists
-    from helixgen.device import HelixError
+    _, HelixError = _client()
 
     if bool(setlist_name) == bool(all_setlists):
         raise click.ClickException(
@@ -1770,7 +1812,7 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     slot must be empty (checked strictly — backlog #40 — so a listing timeout
     raises instead of reading as empty).
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     container = _setlist_container(setlist)
     blob = infile.read_bytes()
@@ -1799,7 +1841,7 @@ def device_restore(infile: Path, cid: int, ip: str, port: int) -> None:
 
     Warning: replaces the content at CID in place.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     blob = infile.read_bytes()
     try:
@@ -1834,13 +1876,13 @@ def device_slots(ctx: click.Context) -> None:
 @_device_option
 def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
     """List every library tone: slot, on/off device, setlists. Offline unless --verify."""
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     rows = m.library()
 
     if verify:
-        from helixgen.device import HelixClient, HelixError
+        HelixClient, HelixError = _client()
 
         on_device = {}
         try:
@@ -1894,7 +1936,7 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     .sbe (from `push`) is re-pushed. Tones saved from the live edit buffer or
     copied on-device have no local source and can't be restored this way.
     """
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     name = target if target in m.tones else None
@@ -1929,7 +1971,7 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     if not src.is_file():
         raise click.ClickException(f"recorded source no longer exists: {src}")
 
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
@@ -1970,7 +2012,7 @@ def device_slots_reorder(target: str, to_index: int, setlist_name: str) -> None:
     Local only — reorders the manifest; run `device sync <setlist>` to apply it to
     the device. TARGET is the tone name.
     """
-    from helixgen.device.manifest import SetlistManifest
+    SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
     members = m.tones_in(setlist_name)
@@ -2008,7 +2050,7 @@ def device_backup(setlist: str, out_dir, ip: str, port: int) -> None:
     Reads each preset via the non-activating `/GetContentData`, so the device's
     live tone is never disturbed. Works offline afterwards via `device local-list`.
     """
-    from helixgen.device import HelixClient, HelixError
+    HelixClient, HelixError = _client()
     from helixgen.device import backup as _backup
     from datetime import datetime, timezone
 
@@ -2051,7 +2093,7 @@ def device_local_list(out_dir, as_json: bool) -> None:
 def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
     """Watch the device's live property/telemetry streams (ports 2001/2003)."""
     from helixgen.device.subscribe import HelixSubscriber
-    from helixgen.device import HelixError
+    _, HelixError = _client()
 
     flt = set(filter_addr) or None
     try:
@@ -2078,7 +2120,7 @@ def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
     always live). Play a note and watch the note/cents update. Ctrl-C to stop.
     """
     from helixgen.device.subscribe import HelixSubscriber
-    from helixgen.device import HelixError
+    _, HelixError = _client()
     from helixgen.device import tuner as T
 
     def _bar(cents: int) -> str:
@@ -2136,7 +2178,7 @@ def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
     Ctrl-C to stop.
     """
     from helixgen.device.subscribe import HelixSubscriber
-    from helixgen.device import HelixError
+    _, HelixError = _client()
     from helixgen.device import meters as M
 
     def _bar(peak: float, scale: float = 0.08, cells: int = 24) -> str:
