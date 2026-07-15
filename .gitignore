@@ -12,3 +12,6 @@ tests/fixtures/hss/
 # local dev venv + macOS cruft (never commit)
 .venv/
 .DS_Store
+
+# paid commercial IR packs — never commit (user rule; see irs/_catalog for the shareable index)
+irs/
