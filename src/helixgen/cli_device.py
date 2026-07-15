@@ -2236,17 +2236,21 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
     from helixgen.device import HelixError
     from helixgen.device import measure as ME
 
+    collected = []
     try:
         with HelixSubscriber(ip) as sub:
             events = sub.stream(duration=seconds,
                                 filter_addrs={"/dspEvent"},
                                 include_noise=True)
-            result = ME.summarize(ME.samples_from_events(events),
-                                  seconds=seconds, min_playing=min_playing)
+            for sample in ME.samples_from_events(events):
+                collected.append(sample)
+    except KeyboardInterrupt:
+        pass  # summarize the partial window instead of discarding it
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
+    result = ME.summarize(collected, seconds=seconds, min_playing=min_playing)
 
     if as_json:
         click.echo(json.dumps({k: (round(v, 2) if isinstance(v, float) else v)

@@ -808,8 +808,11 @@ def device_set_param_handler(
 ) -> dict[str, Any]:
     """Set one param in the device's edit buffer. Returns ``{"ok": <bool>}``.
 
-    ``path``/``block``/``param_id`` are the device's numeric coordinates for
-    the target param; ``value`` is the normalized float.
+    ``path``/``block`` are ``device_blocks`` coordinates (block = the odd
+    position key, translated to the wire's ``(key-1)/2`` internally);
+    ``param_id`` is the numeric param id from the model defs; ``value`` is in
+    the param's RAW units (e.g. dB for the output block's ``gain``) — NOT
+    normalized.
     """
     _validate_model(model)
 

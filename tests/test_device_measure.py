@@ -100,3 +100,25 @@ def test_summarize_p75_orders_outputs():
     r = measure.summarize(quiet + loud, seconds=10.0, min_playing=10)
     assert meters.to_db(0.25) <= r.output_db <= meters.to_db(0.5)
     assert r.output_db_p75 >= r.output_db
+
+
+def test_summarize_p75_nearest_rank():
+    # nearest-rank p75 of [0.1, 0.2, 0.3, 0.4] is 0.3 — NOT the max
+    samples = [measure.MeasureSample(0.02, v, 40.0)
+               for v in (0.1, 0.2, 0.3, 0.4)]
+    r = measure.summarize(samples, seconds=1.0, min_playing=1)
+    assert r.output_db_p75 == pytest.approx(meters.to_db(0.3), abs=1e-6)
+
+
+def test_stale_pitch_stops_gating_samples():
+    # one real pitch, then a long run of meter bursts with NO pitch events:
+    # once the pitch reading is stale the samples must stop counting as
+    # playing (guards against a pitch stream that only emits on change).
+    events = _burst(40.0, 0.02, 0.5)
+    for _ in range(measure.PITCH_STALE_AFTER + 10):
+        events += _burst(40.0, 0.02, 0.5)[1:]   # input+output only, no pitch
+    samples = list(measure.samples_from_events(events))
+    assert samples[0].pitch == pytest.approx(40.0)
+    assert samples[-1].pitch is None
+    fresh = [s for s in samples if s.pitch is not None]
+    assert len(fresh) == measure.PITCH_STALE_AFTER + 1

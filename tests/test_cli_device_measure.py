@@ -102,3 +102,22 @@ def test_mcp_device_measure_handler_reports_gate_failure(monkeypatch):
     _patch(monkeypatch, [e for _ in range(10) for e in _burst(-1.0, 0.02, 0.5)])
     out = tools.device_measure_handler(seconds=6.0)
     assert out["ok"] is False and "playing" in out["reason"]
+
+
+def test_cli_measure_summarizes_partial_window_on_interrupt(monkeypatch):
+    class InterruptingSubscriber(FakeSubscriber):
+        def stream(self, duration=None, filter_addrs=None, include_noise=False):
+            yield from type(self).events
+            raise KeyboardInterrupt
+
+    from helixgen.device import subscribe as sub_mod
+    InterruptingSubscriber.events = [
+        e for _ in range(60) for e in _burst(40.0, 0.02, 0.5)]
+    monkeypatch.setattr(sub_mod, "HelixSubscriber", InterruptingSubscriber)
+    result = CliRunner().invoke(
+        cli, ["device", "measure", "--seconds", "600", "--json"],
+        standalone_mode=False, catch_exceptions=True)
+    # the partial window still gets summarized instead of being discarded
+    assert result.exit_code in (0, None) or result.exception is None
+    payload = json.loads(result.output)
+    assert payload["ok"] is True and payload["n_playing"] == 60

@@ -24,6 +24,7 @@ CLI verb / ``device_measure`` MCP tool own the subscribe loop.
 """
 from __future__ import annotations
 
+import math
 import statistics
 from typing import Any, Iterable, Iterator, List, NamedTuple, Optional
 
@@ -40,6 +41,12 @@ INPUT_FLOOR = 1e-4
 # Default minimum gated samples for a trustworthy measurement (~4 s of
 # actual playing at the observed stream rate).
 MIN_PLAYING = 40
+
+# A pitch reading older than this many output readings (~2 s at the stream
+# rate) is treated as unknown — guards the hum gate against a pitch stream
+# that stops re-emitting (observed to re-emit continuously, but cheap to not
+# depend on it).
+PITCH_STALE_AFTER = 20
 
 
 class MeasureSample(NamedTuple):
@@ -69,6 +76,7 @@ def samples_from_events(events: Iterable[Any]) -> Iterator[MeasureSample]:
     the latest-seen pitch and input levels."""
     last_pitch: Optional[float] = None
     last_input = 0.0
+    pitch_age = 0
     for ev in events:
         args = getattr(ev, "args", None)
         if not isinstance(args, (list, tuple)):
@@ -79,6 +87,7 @@ def samples_from_events(events: Iterable[Any]) -> Iterator[MeasureSample]:
             p = tuner.pitch_from_map(payload)
             if p is not None:
                 last_pitch = p
+                pitch_age = 0
                 continue
             r = meters.reading_from_map(payload)
             if r is None:
@@ -86,9 +95,11 @@ def samples_from_events(events: Iterable[Any]) -> Iterator[MeasureSample]:
             if r.mid == meters.INPUT_MID:
                 last_input = meters.input_level(r)
             elif r.mid == meters.OUTPUT_MID:
+                pitch = last_pitch if pitch_age <= PITCH_STALE_AFTER else None
                 yield MeasureSample(input_level=last_input,
                                     output_level=meters.output_level(r),
-                                    pitch=last_pitch)
+                                    pitch=pitch)
+                pitch_age += 1
 
 
 def is_playing(s: MeasureSample, input_floor: float = INPUT_FLOOR) -> bool:
@@ -111,7 +122,8 @@ def summarize(samples: Iterable[MeasureSample], seconds: float,
             in_db = meters.to_db(statistics.median(s.input_level for s in playing))
             outs = sorted(s.output_level for s in playing)
             out_db = meters.to_db(statistics.median(outs))
-            p75_db = meters.to_db(outs[min(len(outs) - 1, (len(outs) * 3) // 4)])
+            p75_db = meters.to_db(
+                outs[max(0, math.ceil(0.75 * len(outs)) - 1)])
             gain_db = statistics.median(
                 meters.to_db(s.output_level) - meters.to_db(s.input_level)
                 for s in playing)

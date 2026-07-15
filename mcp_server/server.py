@@ -434,9 +434,13 @@ def device_set_param(
 ) -> dict[str, Any]:
     """Set one param in the device's live edit buffer.
 
-    Required `model`: `"stadium"` or `"stadium_xl"`. `path`/`block`/`param_id`
-    are the device's numeric coordinates for the target param; `value` is the
-    normalized float. Returns `{"ok": <bool>}`.
+    Required `model`: `"stadium"` or `"stadium_xl"`. `path`/`block` are the
+    coordinates from `device_blocks` (block = the odd position key; the wire's
+    `(key-1)/2` translation happens internally); `param_id` is the numeric
+    param id from the model defs. `value` is in the param's RAW units (e.g.
+    dB for the output block's `gain`, pid 2) — NOT normalized. Mutates the
+    ACTIVE tone immediately (volatile until the preset is saved). Returns
+    `{"ok": <bool>}`.
     """
     return _tools.device_set_param_handler(
         model, ip=ip, path=path, block=block, param_id=param_id, value=value
