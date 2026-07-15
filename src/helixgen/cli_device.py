@@ -2210,3 +2210,56 @@ def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
+
+
+@device.command(name="measure")
+@click.option("--seconds", type=float, default=20.0, show_default=True,
+              help="How long to sample the telemetry window.")
+@click.option("--min-playing", type=int, default=40, show_default=True,
+              help="Minimum playing-gated samples for a trustworthy result "
+                   "(~10 samples/sec of actual playing).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the result as one JSON object.")
+@_device_option
+def device_measure(seconds: float, min_playing: int, as_json: bool,
+                   ip: str, port: int) -> None:
+    """Measure how loud the ACTIVE tone is while you play — read-only.
+
+    Samples the 2003 telemetry for --seconds and reduces the playing-gated
+    readings (real pitch + non-silent input; hum and silence are ignored) to
+    robust dB statistics: instrument input level, chain-out level, and the
+    input-invariant chain gain (output/input). PLAY STEADILY during the
+    window — the result reports how much actual playing it saw and fails
+    (exit code 1) when there wasn't enough to trust.
+    """
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+    from helixgen.device import measure as ME
+
+    try:
+        with HelixSubscriber(ip) as sub:
+            events = sub.stream(duration=seconds,
+                                filter_addrs={"/dspEvent"},
+                                include_noise=True)
+            result = ME.summarize(ME.samples_from_events(events),
+                                  seconds=seconds, min_playing=min_playing)
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+
+    if as_json:
+        click.echo(json.dumps({k: (round(v, 2) if isinstance(v, float) else v)
+                               for k, v in result._asdict().items()}))
+    else:
+        click.echo(f"window   : {result.seconds:.0f}s "
+                   f"({result.n_samples} samples, "
+                   f"{result.playing_seconds:.1f}s playing)")
+        click.echo(f"input    : {result.input_db:7.2f} dB")
+        click.echo(f"output   : {result.output_db:7.2f} dB "
+                   f"(p75 {result.output_db_p75:.2f} dB)")
+        click.echo(f"gain     : {result.gain_db:7.2f} dB (chain out/in)")
+        if not result.ok:
+            click.echo(f"NOT OK   : {result.reason}")
+    if not result.ok:
+        raise SystemExit(1)

@@ -1052,3 +1052,24 @@ def device_meters(
     samples}` — the latest reading seen per mid.
     """
     return _tools.device_meters_handler(seconds=seconds, ip=ip)
+
+
+@app.tool()
+def device_measure(
+    seconds: float = 20.0,
+    min_playing: int = 40,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Measure how loud the Stadium's ACTIVE tone is while the player plays.
+
+    Read-only: samples the port-2003 telemetry for `seconds` and reduces the
+    playing-gated readings (real pitch + non-silent input; hum and silence
+    are ignored) to robust dB stats. TELL THE PLAYER TO PLAY STEADILY during
+    the window. Returns `{seconds, n_samples, n_playing, playing_seconds,
+    input_db, output_db, output_db_p75, gain_db, ok, reason}` — `gain_db`
+    (chain out/in, input-invariant) is the number to compare across
+    snapshots/presets when level-matching; `ok=False` + `reason` means the
+    window had too little actual playing to trust (re-run it).
+    """
+    return _tools.device_measure_handler(
+        seconds=seconds, min_playing=min_playing, ip=ip)
