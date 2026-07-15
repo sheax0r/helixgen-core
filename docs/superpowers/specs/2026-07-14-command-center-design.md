@@ -134,26 +134,43 @@ A command is an **entity**. For each recipe command helixgen emits:
   togl, trig, tid_, pvl*, psp*}`:
   - `cid_` = the command's **entity id** (allocated after block entities).
   - `type` = family: **1 = PresetSnapshot, 6 = MIDI**.
-  - `func` = subtype = the native `Command` param (MIDI: 0 PC/1 CC/2 MMC/3 Note).
+  - `func` = subtype. The native `.hsp` `Command` param orders MIDI subtypes
+    `0`=PC/`1`=CC/`2`=MMC/`3`=Note, but the **device footswitch/Instant `func`
+    swaps Note/MMC**: `0`=PC/`1`=CC/**`2`=Note/`3`=MMC** (HW capture 2026-07-15).
+    `_command_payload` maps the `.hsp` `Command` value → device `func` via
+    `_HSP_TO_DEVICE_MIDI_FUNC` before emitting.
   - `trig` = its `srcs.id__`; `tid_` = its target id.
-  - **slot layout differs by source class** (findings §5 "different layout"):
+  - **slot layout differs by source class** (findings §5 "different layout";
+    footswitch vs Instant now HW-anchored):
     - **continuous/EXP** command → 5 int slots `pvla..pvle` + 5 bool `pspa..pspe`.
       Anchored (ZZCAP EXP-A CC, `func 1`): `pvla=channel, pvlb=CC#, pvlc=min,
-      pvld=max`.
-    - **footswitch/Instant** command → 12 int slots `pvla..pvll` + 12 bool
-      `pspa..pspl`. Anchored (ZZCAP Instant PC, `func 0`): `pvlb=channel`;
-      Bank MSB/LSB in `pvlc`/`pvld` (`-1`=off). Remaining slots (`pvla`, `pvle..`)
-      are written from the ZZCAP-observed defaults; their per-param semantics are
-      **only partially anchored** (one device example) — see honesty note.
-      > **CORRECTION 2026-07-15** (`../2026-07-15-hss-and-cc-capture-findings.md`):
-      > the **footswitch** class is NOT the same layout as Instant. Real saved
-      > blobs (CC/Note/MMC isolated) show footswitch reserves `pvlb` = **subtype**
-      > (`func` mirror; enum `0`=Bank/Program,`1`=CC,**`2`=Note,`3`=MMC** — Note/MMC
-      > OPPOSITE the `.hsp` `Command` order) and shifts data +1: `pvlc`=channel,
-      > `pvld`/`pvle`=MSB/LSB, `pvlg`=CC#, `pvlh`=CC value, `pvli`=note#,
-      > `pvlj`=velocity, `pvll`=MMC message. Instant keeps `pvlb`=channel (no
-      > subtype slot). `_command_payload` uses the Instant layout for both → wrong
-      > for footswitch; fix filed under #16.
+      pvld=max`. Not authored (out of scope, #16 residual).
+    - **footswitch** command → 12 int slots, layout **HW-captured 2026-07-15**
+      (`../2026-07-15-hss-and-cc-capture-findings.md` §TARGET D): footswitch
+      reserves `pvlb`=**subtype** (device `func` mirror) and shifts data +1 vs
+      Instant — `pvla`=PC program (Bank/Program subtype), `pvlc`=channel,
+      `pvld`/`pvle`=Bank MSB/LSB (`-1`=off), `pvlf`=reserved(`-1`), `pvlg`=CC#,
+      `pvlh`=CC value, `pvli`=note#, `pvlj`=velocity (`100` default for
+      CC/MMC/PC), `pvlk`=const `1`, `pvll`=MMC message. Captured (distinct,
+      isolated) values, byte-for-byte:
+      - CC (`func 1`): `[0,1,ch,-1,-1,-1,CC#,val,0,100,1,0]`
+      - Note (`func 2`): `[0,2,ch,-1,-1,-1,0,0,note,vel,1,0]`
+      - MMC (`func 3`): `[0,3,ch,-1,-1,-1,0,0,0,100,1,msg]`
+      - PC (`func 0`): `[prog,0,ch,MSB,LSB,-1,0,0,0,100,1,0]` (PC not isolated
+        on hardware but the +1 shift is fixed by the CC/Note/MMC captures).
+    - **Instant** command → 12 int slots, `pvlb`=channel, **no subtype slot**.
+      Anchored (ZZCAP Instant PC, `func 0`): `[0,ch,MSB,LSB,-1,0,0,0,100,1,0,0]`.
+      Instant CC/Note/MMC slot placement is still inferred (only PC captured).
+      The Note/MMC `func` swap is ALSO applied to Instant, but by **ASSUMPTION**,
+      not capture: the `func` enum is treated as a property of the `cmnd` record
+      schema (global), not the source class — only Instant PC was captured, and
+      `0→0` is swap-invariant, so there is zero HW evidence either way. The
+      assumed direction is pinned by golden tests
+      (`test_transcode_instant_note_func_swapped` / `..._mmc_...`). Verifying it
+      needs an app-authored Instant Note/MMC capture — currently **user-gated**
+      (the capture rig needs the user to unlock the screen / grant
+      Accessibility, same gate as the XY/set-edit-buffer captures). #16
+      residual.
     - PresetSnapshot (Mandarin, `func 0`, all-zero) reproduces byte-for-byte.
 - a **`trgs`** entry `{eID_: cid_, enty: 6, id__: tid_, pid_: 0, slot: 0,
   type: 4}` (a command-target entity; `sm__.scid` lists only controllers, NOT
@@ -174,13 +191,20 @@ command survives a block insert/remove unchanged.
 
 - **Native `.hsp` round-trip** (author/view/mutate) is corpus-proven and fully
   offline-tested — the load-bearing deliverable.
-- **Transcoder → device**: structure is anchored to three real device records
-  (Mandarin PresetSnapshot; ZZCAP EXP CC + Instant PC). The **footswitch/Instant
-  MIDI 12-slot param→slot semantics are only partially anchored** (one PC
-  example, channel + bank pinned; program/value/note slots inferred). HW
+- **Transcoder → device**: structure is anchored to real device records
+  (Mandarin PresetSnapshot; ZZCAP EXP CC + Instant PC; and the 2026-07-15
+  **footswitch CC/Note/MMC** isolated captures). The **footswitch** MIDI
+  12-slot layout + the Note/MMC `func` swap are now **HW-anchored** (isolated,
+  distinct-value captures — findings §TARGET D — pinned as golden assertions in
+  `tests/test_commands.py`). Still inferred: **Instant** CC/Note/MMC slot
+  placement (only Instant PC captured) and footswitch **PC/Bank** slots (PC not
+  isolated on hardware — the +1 shift is fixed by the other three subtypes). HW
   validation asserts **byte-for-byte survival** (device accepts + preserves the
   synthesized `cmnd`, the #33 pattern), NOT audible/functional response — that
-  stays uncharacterized, exactly like #33.
+  stays uncharacterized, exactly like #33 (needs physical MIDI gear). The
+  Note/MMC `func` swap on **Instant** sources is an ASSUMPTION (global-enum
+  reasoning, zero HW evidence — see §3), pinned by golden tests; verifying it
+  is user-gated (capture rig needs screen unlock / Accessibility).
 - **No live authoring verb.** The wire path (`/attachCommandWithType` +
   `/setCommandParamVal`, 2-byte framing, handle allocation) is left
   unimplemented; commands are authored into the preset.

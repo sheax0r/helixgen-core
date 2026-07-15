@@ -342,11 +342,12 @@ block. Add a top-level `commands` list:
   the device `cg__.entt` `srcs`/`cmnd`/`trgs` on `device install`/`sync`;
   `view` lifts it back. Commands are switch-keyed, so surgical block edits
   (`add-block`/`remove-block`/`swap-model`) leave them untouched.
-- **EXPERIMENTAL.** STORAGE hardware-validated on Stadium XL (a snapshot + MIDI
-  PC command round-tripped byte-for-byte); audible/functional response
-  uncharacterized, and the footswitch CC/Note/MMC slot placements are a
-  hypothesis (only PC/snapshot are byte-anchored). No live `device` verb.
-  Stadium-only; ignored for `.hlx` chassis output.
+- **EXPERIMENTAL.** STORAGE hardware-validated on Stadium XL: snapshot + MIDI
+  PC and the **footswitch CC/Note/MMC** slot layouts all round-trip
+  byte-for-byte (the footswitch layouts were HW-captured 2026-07-15). Still
+  inferred: Instant CC/Note/MMC slots + footswitch PC/Bank slots. The
+  audible/functional MIDI response is uncharacterized (needs physical MIDI
+  gear). No live `device` verb. Stadium-only; ignored for `.hlx` chassis output.
 
 ## Optional: per-block IR reference
 

@@ -441,26 +441,36 @@ orthogonal to it.
   SetContentData'd → GetContentData'd back preserved both `cmnd` + `srcs`
   byte-for-byte (the #33 bar; the create-path hit the #38 anomaly, restore path
   worked).
-  **Residuals (honest):** no live authoring verb (the wire path
+  **Footswitch CC/Note/MMC layouts — ✅ HW-ANCHORED + FIXED (2026-07-15,
+  PR `command-center-layout-fix`).** Real saved-blob capture (each subtype
+  isolated on `ZZCAP-CC`, distinct values) pinned the footswitch 12-slot layout
+  — it **reserves pvl1 = subtype and shifts data +1** vs the Instant layout
+  (`ch@pvl2`, `MSB/LSB@pvl3/4`, `CC#@pvl6`, `CC value@pvl7`, `Note#@pvl8`,
+  `velocity@pvl9`, `MMC message@pvl11`) — AND the device **`func` enum is
+  Note=2 / MMC=3** (the opposite of the `.hsp` `Command` order Note=3/MMC=2).
+  `transcode.py::_command_payload` now branches on source class
+  (footswitch/`ctxt==1` vs Instant) and swaps `.hsp Command`→device `func` via
+  `_HSP_TO_DEVICE_MIDI_FUNC`; the captured `pvl` arrays are golden assertions in
+  `tests/test_commands.py`, and the HW round-trip (author FS CC+Note+MMC →
+  `device install` → non-activating pull) confirmed the stored `cmnd` records
+  match the captured tables byte-for-byte. Findings + tables:
+  `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`.
+  **Remaining residuals (honest):** no live authoring verb (the wire path
   `/attachCommandWithType` + `/setCommandParamVal` stays unimplemented);
   **recall-`preset` family deferred** (unanchored + byte-indistinguishable from
   snapshot 0 without a decoded discriminator — adversarial-review H1/H2);
-  HotKey/Utility (family 4) + EXP continuous commands out of scope (no anchor);
-  **footswitch CC/Note/MMC placements — CAPTURED + the transcoder found WRONG
-  (2026-07-15), ⚠️ CODE FIX NEEDED (not in this PR):**
-  `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`. Real
-  saved-blob capture (each subtype isolated on `ZZCAP-CC`) shows the footswitch
-  12-slot layout **reserves pvl1 = subtype and shifts data +1** vs the
-  Instant/PC layout `transcode.py::_command_payload` uses for all sources:
-  ch@**pvl2** (not pvl1), MSB/LSB@pvl3/4, CC#@**pvl6**, CC value@**pvl7**,
-  Note#@**pvl8**, velocity@**pvl9**, MMC message@**pvl11**. AND the device
-  **`func` enum is Note=2 / MMC=3** (app subtype-tab index), the **opposite** of
-  the transcoder's Note=3/MMC=2 → `.hsp`↔device func needs a Note↔MMC swap. The
-  **Instant** layout (ch@pvl1, no subtype slot) is byte-correct as-is, so the
-  fix must branch on source class (footswitch/`ctxt==1` vs Instant). HW-validated
-  for byte survival only, not audible/functional MIDI (like #33). Precise slot
-  tables + the exact `pvl` arrays are in the findings spec.
-  audible/functional response uncharacterized (like #33); FS command-src
+  **HotKey/Utility (family 4)** + **EXP-continuous commands** out of scope
+  (no anchor / not authored); **FS+command composition** (a switch carrying both
+  a block-bypass footswitch AND a command) still rejected at authoring time
+  (see below); **Instant** CC/Note/MMC slot placement + footswitch PC/Bank slots
+  still inferred (only Instant PC + footswitch CC/Note/MMC captured) — and the
+  Note/MMC `func` swap on **Instant** sources is an ASSUMPTION (global-enum
+  reasoning; Instant PC's `0→0` is swap-invariant, so zero HW evidence),
+  pinned by golden tests, verifiable only via an app-authored Instant Note/MMC
+  capture which is **user-gated** (capture rig needs screen unlock /
+  Accessibility — same gate as the XY/set-edit-buffer captures); and the
+  **audible/functional MIDI pass is uncharacterized** (byte-survival only, like
+  #33 — needs the user's physical MIDI gear). FS command-src
   `locl` for FS2–FS11 is EXTRAPOLATED from the single FS1 anchor (`25+NN`
   controller progression); a switch shared by `footswitches` + `commands` is
   rejected at AUTHORING time (device allows it; composing the two stores is

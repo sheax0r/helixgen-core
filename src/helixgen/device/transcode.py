@@ -944,17 +944,31 @@ def _command_locl_ctxt_type(source: Any) -> Optional[Tuple[int, int, int]]:
     return None
 
 
-def _command_payload(ctype: Any, func: int, params: dict) -> Optional[dict]:
+# The ``.hsp`` native ``Command`` subtype value (corpus-anchored: PC=0, CC=1,
+# MMC=2, Note=3 — see :data:`mutate._MIDI_SUBTYPE`) maps to the DEVICE
+# footswitch/Instant ``func`` (HW capture 2026-07-15, findings §TARGET D):
+# PC=0, CC=1, **Note=2, MMC=3** — Note and MMC are SWAPPED between the two
+# encodings. Applies to both footswitch and Instant sources.
+_HSP_TO_DEVICE_MIDI_FUNC = {0: 0, 1: 1, 2: 3, 3: 2}
+
+
+def _command_payload(ctype: Any, func: int, params: dict, *,
+                     ctxt: int) -> Optional[dict]:
     """The family-specific ``cg__`` ``cmnd`` payload — ``type`` + ``pvl*`` int
     slots + ``psp*`` bool slots — for a native ``preset.commands`` record.
 
-    Byte-exact anchors (live pulls 2026-07-14): PresetSnapshot (5 int + 5 bool,
-    Mandarin Fuzz all-zero) and MIDI footswitch/Instant (12 int + 12 bool,
-    ZZCAP-CC Instant PC: ``[0, ch, msb, lsb, -1, 0,0,0, 100, 1, 0,0]``). The
-    MIDI PC + snapshot cases reproduce those pulls byte-for-byte; the CC / Note /
-    MMC slot placements are a documented hypothesis (no non-PC MIDI footswitch
-    example was captured) — see the #16 design spec §5. Continuous/EXP MIDI
-    (a different 5-slot layout) is not authored (out of scope)."""
+    ``func`` is the ``.hsp`` native ``Command`` subtype value (PC=0/CC=1/MMC=2/
+    Note=3); ``ctxt`` is the device source class (``1`` = footswitch, ``0`` =
+    Instant) — the two use DIFFERENT MIDI slot layouts.
+
+    Byte-exact HW anchors: PresetSnapshot (5 int + 5 bool, Mandarin Fuzz
+    all-zero, 2026-07-14); Instant MIDI PC (12 int + 12 bool, ZZCAP-CC:
+    ``[0, ch, msb, lsb, -1, 0,0,0, 100, 1, 0,0]``, 2026-07-14); and the
+    **footswitch** CC / Note / MMC 12-slot layouts (2026-07-15, findings
+    §TARGET D) — the footswitch reserves ``pvl1``=subtype and shifts data +1
+    vs the Instant layout, and the emitted ``func`` uses the device
+    Note/MMC-swapped enum. Continuous/EXP MIDI (a different 5-slot layout) is
+    not authored (out of scope, #16 residual)."""
     def _pv(prefix: str, vals: list) -> dict:
         return {f"{prefix}{chr(ord('a') + i)}": v for i, v in enumerate(vals)}
 
@@ -971,20 +985,54 @@ def _command_payload(ctype: Any, func: int, params: dict) -> Optional[dict]:
         return out
     if ctype == "MIDI":
         ch = _g("MIDI Ch", 1)
-        msb, lsb = _g("MSB"), _g("LSB")
-        pvl = [0, ch, msb, lsb, -1, 0, 0, 0, 100, 1, 0, 0]
-        if func == 0:      # PC
-            pvl[0] = _g("PC")
-        elif func == 1:    # CC
-            pvl[5] = _g("CC#")
-            pvl[6] = _g("Value")
-        elif func == 3:    # Note
-            pvl[8] = _g("Velocity", 100)
-            pvl[10] = _g("Note")
-            pvl[11] = _g("NoteOff")
-        elif func == 2:    # MMC
-            pvl[7] = _g("Message")
-        out = {"type": 6, "func": int(func)}
+        dev_func = _HSP_TO_DEVICE_MIDI_FUNC.get(int(func), int(func))
+        if ctxt == 1:
+            # Footswitch 12-slot layout (HW capture 2026-07-15): pvl0=PC program
+            # (Bank/Program subtype), pvl1=subtype, pvl2=channel, pvl3/4=Bank
+            # MSB/LSB, pvl5=reserved(-1), pvl6/7=CC#/value, pvl8/9=note/velocity
+            # (9 defaults 100 for non-Note), pvl10=const 1, pvl11=MMC message.
+            if func == 0:      # PC / Bank
+                pvl = [_g("PC"), 0, ch, _g("MSB", -1), _g("LSB", -1),
+                       -1, 0, 0, 0, 100, 1, 0]
+            elif func == 1:    # CC
+                pvl = [0, 1, ch, -1, -1, -1, _g("CC#"), _g("Value"),
+                       0, 100, 1, 0]
+            elif func == 3:    # Note (.hsp Command 3 -> device func 2)
+                pvl = [0, 2, ch, -1, -1, -1, 0, 0, _g("Note"),
+                       _g("Velocity", 100), 1, 0]
+            elif func == 2:    # MMC (.hsp Command 2 -> device func 3)
+                pvl = [0, 3, ch, -1, -1, -1, 0, 0, 0, 100, 1, _g("Message")]
+            else:
+                # Out-of-range ``Command`` (a hand-edited .hsp reaching
+                # install/sync): drop with a warning, per project convention.
+                import sys
+                print(f"warning: unknown MIDI Command subtype {func!r} on a "
+                      f"footswitch command; command dropped.", file=sys.stderr)
+                return None
+        else:
+            # Instant layout (ch@pvl1, NO subtype slot) — HW-anchored for PC
+            # (ZZCAP-CC). Note/MMC slot placement here is uncaptured (#16
+            # residual); the emitted ``func`` uses the device enum (Note/MMC
+            # swap) by ASSUMPTION — the func enum is treated as a property of
+            # the cmnd record schema, not the source class; no Instant
+            # Note/MMC capture exists yet (user-gated). An out-of-range
+            # ``Command`` here stays best-effort (base pvl defaults emitted,
+            # unmapped func passed through) — the Instant layout has no
+            # subtype slot to corrupt, so the record degrades gracefully
+            # instead of dropping.
+            pvl = [0, ch, _g("MSB"), _g("LSB"), -1, 0, 0, 0, 100, 1, 0, 0]
+            if func == 0:      # PC
+                pvl[0] = _g("PC")
+            elif func == 1:    # CC
+                pvl[5] = _g("CC#")
+                pvl[6] = _g("Value")
+            elif func == 3:    # Note
+                pvl[8] = _g("Velocity", 100)
+                pvl[10] = _g("Note")
+                pvl[11] = _g("NoteOff")
+            elif func == 2:    # MMC
+                pvl[7] = _g("Message")
+        out = {"type": 6, "func": dev_func}
         out.update(_pv("pvl", pvl))
         out.update(_pv("psp", [False] * 12))
         return out
@@ -1265,11 +1313,13 @@ def _synth_cg_from_recipe(
     cmd_src_cmds: Dict[int, List[int]] = {}   # srcs id -> [command entity ids]
     for cmd in (recipe.get("commands") or []):
         lct = _command_locl_ctxt_type(cmd.get("source"))
-        payload = _command_payload(cmd.get("type"), cmd.get("func", 0),
-                                   cmd.get("params") or {})
-        if lct is None or payload is None:
+        if lct is None:
             continue
         locl, ctxt, srtype = lct
+        payload = _command_payload(cmd.get("type"), cmd.get("func", 0),
+                                   cmd.get("params") or {}, ctxt=ctxt)
+        if payload is None:
+            continue
         entity = next_cmd_entity
         next_cmd_entity += 1
         tid = next_trg

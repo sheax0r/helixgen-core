@@ -192,6 +192,105 @@ def test_transcode_midi_pc_cmnd_matches_zzcap_anchor(tmp_path):
     assert (src["locl"], src["ctxt"], src["type"]) == (1, 0, 4)  # Instant2 = locl 1
 
 
+def test_transcode_footswitch_cc_matches_capture(tmp_path):
+    """FS CC command reproduces the HW-captured footswitch 12-slot layout
+    (2026-07-15 findings §TARGET D): device func=1, and the footswitch layout
+    reserves pvl1=subtype and shifts data +1 vs Instant:
+    pvl=[0, 1, ch, -1, -1, -1, CC#, val, 0, 100, 1, 0]."""
+    cg = _transcode_entt(tmp_path, [
+        {"switch": "FS1", "command": "midi_cc", "cc": 45, "value": 0,
+         "channel": 5}])
+    cm = cg["entt"]["cmnd"][0]
+    assert cm["type"] == 6 and cm["func"] == 1
+    assert [cm[f"pvl{c}"] for c in "abcdefghijkl"] == \
+        [0, 1, 5, -1, -1, -1, 45, 0, 0, 100, 1, 0]
+    assert all(cm[f"psp{c}"] is False for c in "abcdefghijkl")
+    src = next(s for s in cg["entt"]["srcs"] if s["id__"] == cm["trig"])
+    assert (src["locl"], src["ctxt"], src["type"]) == (25, 1, 1)  # FS1
+
+
+def test_transcode_footswitch_note_matches_capture(tmp_path):
+    """FS Note: device func=2 (.hsp ``Command`` 3 -> device 2 — Note/MMC
+    swapped), note@pvl8, vel@pvl9. HW capture: [0,2,7,-1,-1,-1,0,0,40,77,1,0]."""
+    cg = _transcode_entt(tmp_path, [
+        {"switch": "FS1", "command": "midi_note", "note": 40, "velocity": 77,
+         "channel": 7}])
+    cm = cg["entt"]["cmnd"][0]
+    assert cm["type"] == 6 and cm["func"] == 2
+    assert [cm[f"pvl{c}"] for c in "abcdefghijkl"] == \
+        [0, 2, 7, -1, -1, -1, 0, 0, 40, 77, 1, 0]
+
+
+def test_transcode_footswitch_mmc_matches_capture(tmp_path):
+    """FS MMC: device func=3 (.hsp ``Command`` 2 -> device 3), message@pvl11.
+    HW capture: [0,3,1,-1,-1,-1,0,0,0,100,1,5]."""
+    cg = _transcode_entt(tmp_path, [
+        {"switch": "FS1", "command": "midi_mmc", "message": 5, "channel": 1}])
+    cm = cg["entt"]["cmnd"][0]
+    assert cm["type"] == 6 and cm["func"] == 3
+    assert [cm[f"pvl{c}"] for c in "abcdefghijkl"] == \
+        [0, 3, 1, -1, -1, -1, 0, 0, 0, 100, 1, 5]
+
+
+def test_transcode_footswitch_pc_layout(tmp_path):
+    """FS PC/Bank: the footswitch 12-slot layout puts program@pvl0,
+    subtype@pvl1=0, ch@pvl2, MSB@pvl3, LSB@pvl4 (extends the captured
+    footswitch layout; PC not isolated on hardware but the +1 shift is fixed)."""
+    cg = _transcode_entt(tmp_path, [
+        {"switch": "FS1", "command": "midi_pc", "program": 12, "channel": 3,
+         "bank_msb": 1, "bank_lsb": 2}])
+    cm = cg["entt"]["cmnd"][0]
+    assert cm["type"] == 6 and cm["func"] == 0
+    assert [cm[f"pvl{c}"] for c in "abcdefghijkl"] == \
+        [12, 0, 3, 1, 2, -1, 0, 0, 0, 100, 1, 0]
+
+
+def test_transcode_instant_layout_unchanged_by_fs_fix(tmp_path):
+    """Regression: the Instant layout (ch@pvl1, NO subtype slot) must NOT pick
+    up the footswitch +1 shift. Instant CC keeps CC#@pvl5, val@pvl6, func=1."""
+    cg = _transcode_entt(tmp_path, [
+        {"switch": "Instant1", "command": "midi_cc", "cc": 45, "value": 7,
+         "channel": 5}])
+    cm = cg["entt"]["cmnd"][0]
+    assert cm["type"] == 6 and cm["func"] == 1
+    assert [cm[f"pvl{c}"] for c in "abcdefghijkl"] == \
+        [0, 5, 0, 0, -1, 45, 7, 0, 100, 1, 0, 0]
+
+
+def test_transcode_instant_note_func_swapped(tmp_path):
+    """Instant Note emits DEVICE func=2 (.hsp Command 3 -> device 2). The swap
+    direction on Instant is ASSUMED (global func enum; only Instant PC was
+    captured, and 0 is swap-invariant) — this pins the assumption so an
+    accidental reversion is caught. Slot layout stays Instant (note@pvl10,
+    vel@pvl8 — the pre-capture placement, also uncaptured)."""
+    cg = _transcode_entt(tmp_path, [
+        {"switch": "Instant1", "command": "midi_note", "note": 40,
+         "velocity": 77, "channel": 7}])
+    cm = cg["entt"]["cmnd"][0]
+    assert cm["type"] == 6 and cm["func"] == 2
+    assert cm["pvlb"] == 7  # ch@pvl1: Instant layout, no subtype slot
+
+
+def test_transcode_instant_mmc_func_swapped(tmp_path):
+    """Instant MMC emits DEVICE func=3 (.hsp Command 2 -> device 3) — same
+    pinned assumption as Instant Note."""
+    cg = _transcode_entt(tmp_path, [
+        {"switch": "Instant1", "command": "midi_mmc", "message": 5,
+         "channel": 1}])
+    cm = cg["entt"]["cmnd"][0]
+    assert cm["type"] == 6 and cm["func"] == 3
+    assert cm["pvlb"] == 1  # ch@pvl1: Instant layout, no subtype slot
+
+
+def test_transcode_footswitch_unknown_func_drops_with_warning(tmp_path, capsys):
+    """A hand-edited .hsp with an out-of-range MIDI ``Command`` on a footswitch
+    is dropped with a stderr warning (not silently)."""
+    from helixgen.device import transcode
+    payload = transcode._command_payload("MIDI", 9, {"MIDI Ch": 1}, ctxt=1)
+    assert payload is None
+    assert "unknown MIDI Command subtype" in capsys.readouterr().err
+
+
 def test_transcode_midi_cc_and_merged_instant(tmp_path):
     cg = _transcode_entt(tmp_path, [
         {"switch": "Instant1", "command": "midi_cc", "cc": 85, "value": 127,
