@@ -53,7 +53,7 @@ structure:
   and sibling sends at slightly different trims) fed by the path output.
 - Values **exceed 1.0** (max observed 1.0563) → linear float amplitude
   envelope, not a clamped 0–1 UI value. dB math is `20·log10(v)`.
-- Update rate ≈ **2–3 readings/sec per mid** (~15 per mid in a 6 s window).
+- Update rate ≈ **2–3 readings/sec per mid** as first sampled; phase 0 measured the true rate at **~10 Hz per mid** (the first probe's CLI path under-sampled).
 - Stream is **always on**: no app, no tuner engage, no device mutation —
   read-only subscribe (same as the network tuner).
 
@@ -82,7 +82,7 @@ free.
 
 The Stadium is a USB audio interface, so the Mac can record the actual
 processed audio. This is a categorically richer signal than the meters: the
-grid cells are **scalar amplitude envelopes at ~2–3 Hz** — they can say *how
+grid cells are **scalar amplitude envelopes at ~10 Hz** — they can say *how
 loud*, never *what it sounds like*. Everything spectral (§4) requires this
 tier. Costs: cabling/routing config the network path doesn't need, an
 audio-capture dependency (core is stdlib+click; capture needs `ffmpeg`
@@ -129,7 +129,7 @@ subscribe, gate on playing (§2.2), and accumulate per gated reading:
 - report robust statistics in dB: median and p75 of `output`, median `gain`,
   sample count, and % of the window that was gated silent (so the caller knows
   the measurement is trustworthy — reject windows with < ~20 playing samples,
-  i.e. ~10 s of actual playing at the observed 2–3 Hz rate).
+  i.e. ~4 s of actual playing at the phase-0-measured ~10 Hz rate).
 
 Read-only; safe under device-write gating.
 
@@ -258,9 +258,47 @@ so the same grep-first tags used to *choose* an IR also *verify* the result.
 - **Layout generality.** Cell mapping was probed on one serial preset; splits,
   dual-amp, and DSP-1 layouts must be pinned in phase 0 before `label_cells`
   can be trusted.
-- **~2–3 Hz sampling** → each target needs ~10–20 s of playing; a full 8-snapshot
-  pass is a couple of minutes of riffing. Fine, but set expectations.
+- **~10 Hz sampling** (phase-0 corrected) → each target needs a few seconds
+  of steady playing; a full 8-snapshot pass is well under a minute of riffing.
 - **Network flakiness** — standard rule applies: re-run; the loop is
   idempotent (measure → trim to absolute target, not cumulative).
 - **Device-write gating** — phases 0 and 2 mutate the active tone; both are
   user-invoked with the consent flow, never autonomous.
+
+## 6. Phase-0 findings (2026-07-14, Stadium XL — hardware-verified)
+
+Phase 0 ran the day the spec landed. Hypothesis scoreboard:
+
+- **CONFIRMED: the grids are live per-node audio envelopes.** Bypassing the
+  amp collapsed the downstream cells −33 dB and restored cleanly. Linear
+  amplitude, values >1.0 legal, **~10 Hz per mid** (the spec's initial
+  "2–3 Hz" was a CLI sampling artifact).
+- **CONFIRMED: cell roles** (serial path-0 preset): pairs, L+R duplicated —
+  cells 0–1 instrument input; 8–9 == 26–27 chain out; 22–25 post-amp;
+  mid 800's populated cells = output-send pairs carrying the chain-out level.
+  ×4 clusters and the full per-layout index formula remain uncharacterized.
+- **CORRECTED: all meter taps sit UPSTREAM of the output block's `gain`** — a
+  landed −60 dB output-gain write moves **no** cell. So §3's phase-0 "output
+  level −6 dB" calibration idea can't work on the output block (an in-chain
+  actuator like a bypass does the job, and did); and phase 2's output-gain
+  trims are *applied* exactly (dB-native) but *not verifiable* via the grid —
+  verify via an in-chain actuator or accept the dB math.
+- **NEW: the live-ops wire addresses blocks by `(blks_key − 1) / 2`.** The
+  parity capture's "`block_id` = the blks position key" was wrong (erratum
+  filed): at a raw key the device **echoes success while toggling the wrong
+  block**, and `/ParamValueSet` **silently drops the write** (no ack, no
+  echo) — which is why `device set-param` had never worked and `device
+  bypass`/`device model` targeted the wrong block. Fixed in
+  `client._wire_block` (public coordinates unchanged). Echoes are NOT
+  landing-proof; the meters are.
+- **CONFIRMED: `/ParamValueSet` values ride in raw units** (dB floats
+  verbatim — no normalization).
+- **CONFIRMED: pitch-gating beats level-gating.** Single-coil hum
+  (0.01–0.07) overlaps playing input levels but reads `-1.0` on the pitch
+  stream; `measure` gates on real-pitch + input floor.
+- **OPEN: the `/meter` OSC address never appeared** in any 2003/2001 window
+  observed today (only `/dspEvent`, `/trigger`, `/heartbeat`) — likely
+  conditional (looper? app-attached?); still worth a dump if it ever shows.
+
+Phase 1 shipped alongside (`device measure` + MCP `device_measure`); phase 2
+(`device normalize`) and the full cell-index map remain backlog #58.

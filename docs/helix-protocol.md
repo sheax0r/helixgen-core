@@ -404,7 +404,7 @@ msgpack map.
 
 | Op | Address | Typetags / args | Reply | Notes |
 |----|---------|-----------------|-------|-------|
-| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, block, 0, paramId, floatValue, -1]` | edit-buffer update (echoed on 2001) | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `block` = block index within the path (a reverb-block change was captured as `path=0, block=6`); the `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f`; int/bool params are passed as their float encoding. |
+| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, block, 0, paramId, floatValue, -1]` | edit-buffer update (echoed on 2001) | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `block` = the **wire block index = (blks_key−1)/2** (HW-verified 2026-07-14 — at a raw `blks` key the device silently drops the write: no ack, no 2001 echo; the captured `block=6` was blks key 13). The `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f` in the param's **raw units** (dB floats accepted verbatim); int/bool params are passed as their float encoding. |
 | **MODEL SET** | `/ModelSet` | `,iiiii` → `[cmd, dsp, block_id, subpos, modelId]` | edit-buffer update (echo `/setModelWithMID`) | Places/replaces a model. Args **decoded 2026-07-14** (e.g. `[117, 0, 4, 0, 70]` = cmd, dsp 0, block 4, subpos 0, MID 70); `modelId` is the **numeric** model id from the model defs (§8). A model swap **cascades**: `/setBlockEnable`, `/setBlockFavorite`, `/assignSnapshotBypass`, `/attachBlockBypassControllerWithBlob` (a `lrtcpgsm` blob), `/setControllerSource`+`/setSourceEnable`, and a batch of `/setPropertyValue` param defaults for the new model — replay these for a faithful live swap. |
 | **SNAPSHOT NAME** | `/SetSnapshotName` | `,iis` → `[reqid, snapshotIndex, "Name"]` | `/status` | Renames snapshot `snapshotIndex` (0–7). |
 | **EDIT BUFFER GET** | `/EditBufferStateGet` | `(reqid:i)` | `/getEditBufferState` → `[reqid, len:h, blob:b]` where blob = `_sbepgsm…` | Pulls the entire current edit buffer as the dialect-B blob (§4). `len` is an int64 (`h`) byte count. |
@@ -413,7 +413,7 @@ msgpack map.
 
 Live-control commands pinned by the 2026-07-14 capture (full writeup:
 `docs/superpowers/specs/2026-07-14-parity-capture-findings.md`). All on 2002;
-`cmd` = the leading monotonic id; block addressing is `(dsp, block_id)`.
+`cmd` = the leading monotonic id; block addressing is `(dsp, block_id)` where **`block_id` = (blks_key − 1) / 2** — the wire does NOT take the `sfg_.flow[dsp].blks` position key (HW-verified 2026-07-14: at a raw key the device acks/echoes but targets the wrong block; `/ParamValueSet` silently drops the write).
 
 | Op | Address | Typetags / args | Notes |
 |----|---------|-----------------|-------|
@@ -450,7 +450,18 @@ sync). Shipped as `device globaleq list|set` (+ MCP); codec
 `/dspEvent` blobs are msgpack `{id__:{eid_,mid_}, vals:[…]}`. A **continuous
 background pitch detector** streams on `{eid_:10, mid_:796}` as a **single float
 = fractional MIDI note** (int = note, frac×100 = cents, `-1.0` = silence).
-Grid **meters** stream on `{eid_:1, mid_:796/800}` as 128-float arrays. The
+Grid **meters** stream on `{eid_:1, mid_:796/800}` as 128-float arrays at
+**~10 Hz per mid** — live per-node **audio envelopes** (linear amplitude,
+values >1.0 legal; dB = `20*log10(v)`). HW-characterized 2026-07-14 on a
+serial-path preset: mid 796 = the path chain nodes as adjacent L/R cell pairs
+(cells 0–1 = instrument input; cells 8–9 == 26–27 = chain out), mid 800's
+populated cells = the output-send stereo pairs, each carrying the chain-out
+level. **Every tap sits upstream of the output block's `gain`** (a landed
+−60 dB output-gain write moves no cell). Bypassing the amp collapses the
+downstream cells ~−33 dB — the meters are the ground truth for whether a
+live-op actually landed (the 2001 echo is NOT: the device echoes success for
+a toggle of the wrong block). Full per-layout cell-index formula still open
+(backlog #58). The
 hardware tuner is engaged via FS12 (`volatile.press.taptempo` /
 `volatile.held.taptempo`; exit `volatile.press.exittuner`) — but the pitch
 stream is always live regardless, so a network tuner needs no engage.

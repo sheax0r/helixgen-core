@@ -60,7 +60,7 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   bypass), `device model <path> <block> <model>` (live model swap), `device
   reorder <setlist> <target> --to <N>` (direct DEVICE-side preset reorder —
   distinct from the local-manifest `device slots reorder`; numeric args are
-  **cid-first**), `device tuner` / `device meters` (read-only 2003 telemetry).
+  **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #58).
   Decoded + HW-validated 2026-07-14.
 - **Global Settings + Global EQ:** `device settings list|get|set` (161 `global.*`
   keys; enum labels validated) and `device globaleq list|set <output> <band>
@@ -88,7 +88,7 @@ the verb index plus the mental-model rules that must stay in front of an agent.
 
 **Device-write gating.** Verbs that only read or list device state are safe —
 e.g. `info`, `read`, `list`, `list-irs`, `blocks`, `settings list`/`get`,
-`tuner`, `meters`, `watch`, `backup`, `pull`/`pull-ir`, plus the offline verbs
+`tuner`, `meters`, `measure`, `watch`, `backup`, `pull`/`pull-ir`, plus the offline verbs
 (`local-list`, `library`, `slots list`, `globaleq list`, `--list`/`--dry-run`
 variants). Anything that writes content, properties, or files **mutates the
 device** — the live-ops verbs change the ACTIVE tone immediately. When unsure,
