@@ -15,3 +15,7 @@ tests/fixtures/hss/
 
 # paid commercial IR packs — never commit (user rule; see irs/_catalog for the shareable index)
 irs/
+
+# WAV audio is never committed (paid-IR incident guard); force-add (-f) intentional synthesized fixtures
+*.wav
+*.WAV
