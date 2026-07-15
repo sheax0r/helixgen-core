@@ -1002,6 +1002,32 @@ behavior wins" for each reconciliation.
   - **S10** — `mcp_server` (`tools.py` 1591 + `server.py` 1054) result-shape
     consolidation; belongs in its own review pass.
 
+### Three-repo split (2026-07-14)
+
+helixgen was split into three repos under `sheax0r`: **helixgen-core** (this
+repo — libs + CLI + MCP server, full git history carried over),
+**helixgen** (the Claude Code plugin/marketplace + skills, keeps its repo
+identity so installed users' marketplace URL keeps working), and
+**helixgen-tui** (the terminal UI, backlog #29 — design spec still pending).
+Consumers take core as a PyPI dependency (name `helixgen`, availability
+verified 2026-07-14). Remaining follow-ups:
+
+- **#55 Publish `helixgen` to PyPI + CI publish workflow** — build/twine or
+  trusted-publisher GitHub Action on `vX.Y.Z` tags; until then consumers
+  install from git. Needs the owner's PyPI account/token.
+- **#56 Slim the plugin repo to plugin-only content** — once core is
+  installable from PyPI: drop `src/`, `mcp_server/`, `tests/`, core docs from
+  `sheax0r/helixgen`; repoint `.mcp.json` at `uv run --with
+  'helixgen[mcp,device]==X.Y.Z' -m mcp_server` (plus a new home for the
+  bundled block library, which currently ships at
+  `mcp_server/data/library`); keep skills + `.claude-plugin/` + release
+  workflow. Until #56 lands, the plugin repo continues to bundle core
+  source and ships releases exactly as before — nothing breaks for users.
+- **#57 Backlog + docs curation across repos** — this file stays core's
+  backlog; plugin- and TUI-specific work moves to each repo's own
+  `docs/BACKLOG.md` as it arises (TUI's #29 design brainstorm is seeded
+  there). Parity matrix + protocol docs stay in core.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

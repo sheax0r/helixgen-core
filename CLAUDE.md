@@ -1,8 +1,17 @@
-# helixgen
+# helixgen-core
 
-CLI that generates Line 6 Helix Stadium `.hsp` presets (and legacy `.hlx`) from
-JSON tone specs. The library lives at `~/.helixgen/library/` (override with
+Core library + CLI that generates Line 6 Helix Stadium `.hsp` presets (and
+legacy `.hlx`) from JSON tone specs, and controls a Stadium over the LAN. The
+block library lives at `~/.helixgen/library/` (override with
 `$HELIXGEN_LIBRARY`) and is built by ingesting real device exports.
+
+**Repo family (all under `sheax0r`):** this repo (`helixgen-core`) is the
+Python package `helixgen` — libs, CLI, and the MCP server;
+[`helixgen`](https://github.com/sheax0r/helixgen) is the Claude Code
+plugin/marketplace repo carrying the `setup`/`tone`/`device` skills;
+[`helixgen-tui`](https://github.com/sheax0r/helixgen-tui) is the terminal UI.
+The plugin and TUI consume this repo as a PyPI dependency (package name
+`helixgen` — verified available 2026-07-14; first publish still pending).
 
 User IRs (impulse responses) registered with `helixgen register-irs` live at
 `~/.helixgen/irs/` by default (override with `$HELIXGEN_IRS`). The mapping
@@ -101,8 +110,8 @@ a slot.** There is no separate slot ledger. Presets are addressed by integer
 it installs/updates/reorders/deletes only the tones helixgen manages and
 **never touches untracked device presets**.
 
-**Pushing tones to the device is driven by the `device` skill**
-(`.claude/skills/device/`), which runs after `tone` has authored the `.hsp` and
+**Pushing tones to the device is driven by the `device` skill** (in the
+plugin repo, `sheax0r/helixgen`), which runs after `tone` has authored the `.hsp` and
 centers on `device sync <setlist>` / `device_sync_setlist`. Read it before
 scripting a setlist sync. Design + protocol refs:
 [`docs/CLI.md`](docs/CLI.md), `docs/helix-protocol.md`, and
@@ -214,7 +223,7 @@ reference).
 
 ## User preferences (`preferences.json`)
 
-The `setup` / `tone` skills read explicit settings from a user-editable JSON
+The `setup` / `tone` skills (plugin repo) read explicit settings from a user-editable JSON
 file — `~/.helixgen/preferences.json` (override the whole-file location with
 `$HELIXGEN_PREFS`; override any single key with `HELIXGEN_<KEY>`, e.g.
 `HELIXGEN_FAVOR_IRS=1`). Loaded by `src/helixgen/preferences.py`; per-key
@@ -222,7 +231,8 @@ precedence is env var > file value > built-in default. Keys include
 `device.model`, `favor_irs`, `reveal_in_finder`, `guard_paid_irs_in_git`,
 `preset_output_dir`, `author`, `default_guitar`, `instruments`, and
 `git_commit_tones` (default `"auto"` — the skills git-commit changed tone/IR
-artifacts when the target directory is git-managed; see the skill files).
+artifacts when the target directory is git-managed; see the skill files in the
+plugin repo).
 
 - **`default_guitar`** (string, default `null`) — which of the user's
   `instruments` to default to when a tone request doesn't name a guitar. Env
@@ -324,9 +334,7 @@ op.
 
 - `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (the `helixgen device` verb group, imported back into `cli`), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`
 - `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
-- `mcp_server/` — the MCP server the plugin bundles; tool descriptions here are agent-facing behavioral contracts
-- `.claude/skills/` — the three plugin skills: `setup` (device/prefs onboarding), `tone` (author a `.hsp` from a tone request), `device` (push/sync authored tones onto the hardware)
-- `.claude-plugin/` — `plugin.json` + `marketplace.json`; bumping the version here on `main` is what triggers a release (see Releasing)
+- `mcp_server/` — the MCP server (ships in the `helixgen` pip package; the plugin repo's `.mcp.json` launches it); tool descriptions here are agent-facing behavioral contracts
 - `docs/` — `BACKLOG.md` (THE backlog), `CLI.md` (the full CLI + per-verb **device** reference), `recipe-reference.md` (the exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
 - `tests/fixtures/` — synthetic + real-export fixtures
@@ -346,11 +354,13 @@ op.
   regressions, spec violations — not summarize it). Confirmed findings are fixed
   or explicitly deferred to `docs/BACKLOG.md`. Major changes also get a committed
   review doc in `docs/superpowers/specs/` (see the PR #31 review for the shape).
-- **Agent-facing surfaces ship in sync.** Any change to CLI-, MCP-, or
-  skill-visible behavior updates, in the same PR, every surface that describes
-  it: `.claude/skills/*`, this CLAUDE.md, the MCP tool descriptions in
-  `mcp_server/`, and `docs/CLI.md`. Drift between code and these surfaces is a
-  bug, not a docs chore.
+- **Agent-facing surfaces ship in sync.** Any change to CLI- or MCP-visible
+  behavior updates, in the same PR, every surface in this repo that describes
+  it: this CLAUDE.md, the MCP tool descriptions in `mcp_server/`, and
+  `docs/CLI.md`. Drift between code and these surfaces is a bug, not a docs
+  chore. Behavior changes that skills describe also need a companion PR in the
+  plugin repo (`sheax0r/helixgen`, `.claude/skills/*`) — land the two together
+  and note the cross-repo pairing in both PR descriptions.
 - **Backlog discipline.** `docs/BACKLOG.md` is the single project backlog.
   Deferred work gets a numbered entry there — not a TODO comment, not a
   side file.
@@ -358,28 +368,16 @@ op.
 - Pure stdlib + `click` for the CLI; no other runtime deps.
 - Real-export fixtures live in `tests/fixtures/presets/` and are loaded by tests under skip-if-not-present guards so the suite stays green on a clean clone.
 
-## Releasing (automated — do NOT move `stable` or push tags by hand)
+## Releasing
 
-Releases are published by `.github/workflows/release.yml`, which fires when
-`.claude-plugin/plugin.json` or `.claude-plugin/marketplace.json` changes on
-`main`. The plugin is installed from the GitHub **`stable` branch**, so merging
-to `main` does NOT ship a release — only the version bump + workflow does.
+This repo releases the **`helixgen` PyPI package** (version in
+`pyproject.toml` + `src/helixgen/__init__.py` — bump both together; the
+version feeds generated presets' `meta`). The PyPI publish workflow is not
+wired up yet — until it is, releases are manual `python -m build` + `twine
+upload` from a tagged `main` commit (tag `vX.Y.Z`).
 
-To cut a release:
-
-1. Bump the version in **both** `.claude-plugin/plugin.json` and
-   `.claude-plugin/marketplace.json` (the workflow fails the build if they
-   disagree). Conventionally also bump the lib version in `pyproject.toml` and
-   `src/helixgen/__init__.py` (separate `0.1.x` line; feeds preset `meta`).
-2. Commit `release X.Y.Z — …`, open a PR, merge to `main`.
-3. The workflow then auto-creates the annotated tag `helixgen--vX.Y.Z` and
-   fast-forwards `stable` to that commit. It is idempotent (no-op if the tag
-   exists) and refuses to force-push if `stable` diverged.
-
-Do **not** manually `git branch -f stable …`, push `stable`, or push a
-`helixgen--v*` tag — the workflow owns those refs. The release is live once the
-workflow has run; users then get it via `/plugin` update.
-
-The plugin's MCP server loads its **bundled** `helixgen` + `mcp_server` from
-`${CLAUDE_PLUGIN_ROOT}` (set via `PYTHONPATH` in `.mcp.json`), not a global
-`pip install`. Only the `mcp` SDK + `click` must exist in the environment.
+Plugin releases (the `stable` branch + `helixgen--vX.Y.Z` tags) live in the
+**plugin repo** (`sheax0r/helixgen`) and are owned by its release workflow —
+nothing in this repo moves those refs. When a core release changes behavior a
+skill or the plugin's `.mcp.json` depends on, cut the core release first, then
+bump the plugin's pinned `helixgen` version in its own PR.
