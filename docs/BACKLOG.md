@@ -6,6 +6,13 @@ device/network work: base capability (preset CRUD + content read/save + live
 param edits) shipped in **2.0.0**; IR transfer + auto-load shipped through
 **2.5.0**. Ordered loosely.
 
+## What "open" means after the 2026-07-15 drain
+
+Every remaining open entry below is **gated on user input** — a design decision,
+a brainstorm, physical access (front panel / screen unlock / MIDI gear), or a
+prioritization call on an optional feature. There is no deferred-but-doable
+work parked here; that class was drained by the 2.26.0/2.27.0 sweeps.
+
 ## Corrected mental models — READ THIS FIRST (2026-07-12)
 
 Recurring places agents (incl. this project's own assistant) got the model wrong
@@ -344,7 +351,7 @@ assumption — see #9); the reference-based redesign below then **shipped
   transcode-hash scheme (auto-detecting a transcoder-version bump) was
   considered and rejected for now in favor of the simpler explicit flag.
 
-### Double-click a `.hsp` to load onto the Helix's ACTIVE slot **[device-write]**
+### Double-click a `.hsp` to load onto the Helix's ACTIVE slot **[device-write]** — **needs user input: capture session** (unlock the screen + grant macOS Accessibility to the harness so the app's native File menu responds; the set-edit-buffer command must be captured from the app)
 - Requested 2026-07-13. A macOS file-association / tiny app wrapper so
   double-clicking a `.hsp` transcodes it and pushes it onto the Helix's
   **currently-active** edit-buffer/slot — something HX Edit itself can't do.
@@ -356,7 +363,7 @@ assumption — see #9); the reference-based redesign below then **shipped
   `helixgen device load-hsp <file>` verb first, then the double-click wrapper.
 
 ### Guitar profiles + per-guitar tone generation **[local][skill]**
-- **#22 Guitar-aware tone authoring** — requested 2026-07-13. Make the user's
+- **#22 Guitar-aware tone authoring** — **needs user input: brainstorm + design spec** (profiles schema, per-guitar behavior). Requested 2026-07-13. Make the user's
   guitars first-class in the library, each with a **profile** of what that
   guitar is "for" (pickups, tonal character, typical roles — e.g. "Les Paul Jr:
   P-90 grind, raw rock rhythm" vs "Strandberg: modern fusion lead"). Builds on
@@ -582,7 +589,7 @@ orthogonal to it.
     names are guarded and warned) — but a future guard should preserve or at
     least warn on overwriting an existing pathless record's provenance.
     Findings spec §8 + `2026-07-15-hss-and-cc-capture-findings.md`.
-  - IR folders / move-to-folder (matrix §7) — content-path surface not RE'd.
+  - IR folders / move-to-folder (matrix §7) — content-path surface not RE'd. **Needs user input: capture session** (same screen-unlock/Accessibility gate as #34).
   - **Active-preset select (#1) — ✅ RESOLVED 2026-07-14:** the app's "make
     active" is `/LoadPresetWithCID` (load-by-CID) = existing `device load`; there
     is no separate active-index. (Only Songs have `/setActiveSongRef`.)
@@ -633,7 +640,7 @@ orthogonal to it.
      the Stadium XL persisted BOTH ctrl records **byte-for-byte** (`cnt2`
      61/79, `midi` 0xB03D/0xB04F, `type` 3/1, `min_`/`max_`, `tid_`, `ptid`
      `[65538,1]`, empty `srcs`/`scid`) — the device accepts + preserves the
-     synthesized records. **Still uncharacterized:** the *audible* response (no
+     synthesized records. **Still uncharacterized — needs user input: physical MIDI gear** — the *audible* response (no
      external CC source was sent) — whether the device actually reacts to
      incoming CC61/79 with this stored shape is unverified.
   3. **MIDI Note is out of scope** (CC-only): §6 pinned only the CC controller
@@ -663,7 +670,7 @@ orthogonal to it.
      audible-response validation pass; (c) a MIDI param whose library name has
      no device mapping is silently dropped in `bridge` (pre-existing
      `ctl_params` pattern).
-- **#34 XY-controller assignment** **[device-write] — ACTIVATION DECODED
+- **#34 XY-controller assignment** — **needs user input: capture session** (screen unlock + Accessibility grant; exploratory zone-storage dig). **[device-write] — ACTIVATION DECODED
   2026-07-14; storage still open.** Selecting an XY zone emits
   `/SetBatchedParamValues` = a 12-tuple `[dsp,block,sub,paramId,valueF64]` batch
   (the block's whole param set; no zone-index — the batch *is* the activation).
@@ -720,17 +727,17 @@ LED control, focus-view/UI cosmetics.
   section into `src/helixgen/cli_device.py` as a pure move (`cli.py` 2792 → 649
   lines; `device` group re-imported via `cli.add_command(device)`,
   `_auto_upload_irs` re-exported, `helixgen.cli:cli` entry point + full command
-  tree byte-identical). **Deferred (no user input needed) → #54:** S7 (fold the
+  tree byte-identical). **Deferred → #54 (since ✅ SHIPPED, structural pass 2):** S7 (fold the
   65 lazy device imports), S8 (rename `hss.slot_label`), S9 (decompose the
   oversized functions in F5), S10 (`mcp_server` result-shape consolidation).
-- **#29 helixgen-tui** — design + implement a TUI that covers everything the
+- **#29 helixgen-tui** — **needs user input: brainstorm + design spec** (stack, UX; also see the 3-repo split). Design + implement a TUI that covers everything the
   Stadium desktop app does (the parity matrix above), driving the same library/
   device engines. **Key requirement: "slots" are invisible** — an implementation
   detail the user never sees or types; the UI speaks in tones and setlists only
   (the tone-library model's "slots are just addresses" taken to its conclusion).
   Needs its own brainstorm + design spec before any code.
 
-- **#30 Slot semantics for slot-only tones — verify + decide** — `device add`
+- **#30 Slot semantics for slot-only tones — verify + decide** — **needs user input: front-panel check** (is a reference-less pool preset browsable from the device panel?) **+ the (a)/(b) decision.** — `device add`
   + sync installs a slot-marked tone into the **pool** but references it into no
   setlist, so its slot label is an address in name only: nothing is placed at
   `5A` in the user setlist, and `assign_slots` never fetches real device
@@ -764,7 +771,7 @@ LED control, focus-view/UI cosmetics.
   (d) theoretical: multi-message paginated listings (never observed; blob
   chunking IS covered) could evade the cross-check — **note only** (still open).
 
-- **#35 Tone naming schema + embedded metadata + guitar variants** — requested
+- **#35 Tone naming schema + embedded metadata + guitar variants** — **needs user input: brainstorm + design spec** (explicitly required by the entry). Requested
   2026-07-13. Three coupled changes to the tone library (needs its own
   brainstorm → design spec before implementation; #33/#34 are reserved by the
   in-flight PR #38):
@@ -795,7 +802,7 @@ LED control, focus-view/UI cosmetics.
      **Default: (b) "different presets within the same tone"** unless the
      user chooses otherwise.
 
-- **#36 IR metadata at registration — research + record** — requested
+- **#36 IR metadata at registration — research + record** — **needs user input: brainstorm** (schema, research depth, backfill policy). Requested
   2026-07-13. When IRs are registered with the library (`register-irs`,
   `ir-scan`, MCP IR tools), research each IR and record descriptive metadata
   in the library JSON format (same shape/home as #35's per-tone metadata):
@@ -1016,31 +1023,55 @@ behavior wins" for each reconciliation.
     ever wanted) remains a genuinely-separate review pass — F6's own "belongs in
     its own review" caveat — and is not tracked as an active residual.
 
+- **#55 PURGE paid IR WAVs from git history — needs user input: destructive
+  force-push decision.** 1605 York Audio `.wav` files were accidentally
+  committed in `4b503c1` (2026-07-13, manifest schema v2 — `irs/` was never
+  actually gitignored despite the documented rule) and were public until
+  untracked at HEAD on 2026-07-15 (PR #64, which also added the ignore rule).
+  The blobs remain in git history (~100 MB of objects). Removing them requires
+  a coordinated history rewrite + force-push of `main`/`stable`/tags (the
+  1.0.3 mailmap-scrub playbook applies), which invalidates clones and is the
+  owner's call — including whether to also rotate the release tags the
+  workflow owns. Local files are untouched.
+
+- **#56 `.hss`/CC optional follow-ups — needs user input: prioritization.**
+  Genuinely optional features surfaced by the 2026-07-15 work, none blocked,
+  build on request: (a) dedupe-on-retry for `import-hss` (skip-by-name against
+  the pool, like sync's hash-skip); (b) device-born (pathless) presets in
+  `export-hss` (needs a general `_sbepgsm`→`.hsp` converter — the decompiler
+  round-trip problem, big); (c) live MIDI-CC/Command authoring verbs over the
+  wire (`/attachParamController`/`/ControllerMIDISourceAdd`/
+  `/attachCommandWithType` — protocol pinned, verbs unbuilt); (d) the
+  `_synth_cg_from_recipe` closure-core rewrite the #28 findings doc rated
+  net-negative without a state-object conversion.
+
 ### Three-repo split (2026-07-14)
 
 helixgen was split into three repos under `sheax0r`: **helixgen-core** (this
-repo — libs + CLI + MCP server, full git history carried over),
-**helixgen** (the Claude Code plugin/marketplace + skills, keeps its repo
-identity so installed users' marketplace URL keeps working), and
-**helixgen-tui** (the terminal UI, backlog #29 — design spec still pending).
-Consumers take core as a PyPI dependency (name `helixgen`, availability
-verified 2026-07-14). Remaining follow-ups:
+repo — libs + CLI + MCP server, history carried over then purged of `irs/`,
+so #55's blobs do NOT ship here), **helixgen** (the Claude Code
+plugin/marketplace + skills, keeps its repo identity), and **helixgen-tui**
+(the terminal UI, backlog #29 — design spec still pending, tracked in that
+repo's own backlog). Consumers take core as a PyPI dependency (name
+`helixgen`, availability verified 2026-07-14). Note #55 (the paid-IR history
+purge of the ORIGINAL repo) is unchanged by the split and still pending.
+Remaining follow-ups:
 
-- **#55 Publish `helixgen` to PyPI + CI publish workflow** — build/twine or
-  trusted-publisher GitHub Action on `vX.Y.Z` tags; until then consumers
-  install from git. Needs the owner's PyPI account/token.
-- **#56 Slim the plugin repo to plugin-only content** — once core is
-  installable from PyPI: drop `src/`, `mcp_server/`, `tests/`, core docs from
-  `sheax0r/helixgen`; repoint `.mcp.json` at `uv run --with
-  'helixgen[mcp,device]==X.Y.Z' -m mcp_server` (plus a new home for the
-  bundled block library, which currently ships at
+- **#57 Publish `helixgen` to PyPI via trusted publisher** — publish
+  workflow committed (`.github/workflows/publish.yml`, OIDC trusted
+  publishing on `v*` tags); the PyPI-side pending-publisher registration
+  needs the owner's PyPI account. Until the first publish, consumers install
+  from git (`uv` git pin).
+- **#58 Slim the plugin repo to plugin-only content** — drop `src/`,
+  `mcp_server/`, `tests/`, core docs from `sheax0r/helixgen`; repoint
+  `.mcp.json` at core via `uv` git pin now, PyPI pin after #57's first
+  publish; relocate the bundled block library (currently
   `mcp_server/data/library`); keep skills + `.claude-plugin/` + release
-  workflow. Until #56 lands, the plugin repo continues to bundle core
-  source and ships releases exactly as before — nothing breaks for users.
-- **#57 Backlog + docs curation across repos** — this file stays core's
+  workflow. Until #58 lands, the plugin repo keeps bundling core source and
+  ships releases exactly as before — nothing breaks for users.
+- **#59 Backlog + docs curation across repos** — this file stays core's
   backlog; plugin- and TUI-specific work moves to each repo's own
-  `docs/BACKLOG.md` as it arises (TUI's #29 design brainstorm is seeded
-  there). Parity matrix + protocol docs stay in core.
+  `docs/BACKLOG.md` as it arises. Parity matrix + protocol docs stay in core.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
