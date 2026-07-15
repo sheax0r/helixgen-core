@@ -1,0 +1,31 @@
+# Run the test suite on every PR and on pushes to main.
+#
+# libsndfile is installed so the IR-hash tests (ctypes bindings) run instead
+# of skipping; fixture-gated tests (real device exports, the user's local
+# tone library) skip cleanly on a bare clone by design.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install libsndfile
+        run: sudo apt-get update && sudo apt-get install -y libsndfile1
+
+      - name: Install package + extras
+        run: python -m pip install -e '.[dev,device,mcp]'
+
+      - name: Run tests
+        run: python -m pytest -q
