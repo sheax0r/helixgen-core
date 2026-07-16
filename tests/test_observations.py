@@ -16,6 +16,8 @@ from helixgen.device.observations import (
     load_observations,
     lookup_name_by_cid,
     lookup_tone,
+    remove_tone,
+    rename_tone,
     save_observations,
 )
 
@@ -122,3 +124,56 @@ def test_corrupt_file_loads_empty(tmp_home):
     (home.devices_dir() / "SN-BAD.json").write_text("{ not json")
     obs = load_observations("SN-BAD")
     assert obs.tones == {}
+
+
+# ---------------------------------------------------------------------------
+# Minor 5: rename_tone / remove_tone keep the `tones` key in sync with a
+# device-side `device rename` / `device delete` (cli_device._ledger_rename /
+# _ledger_remove used to update the manifest but leave the stale name key
+# sitting in devices/<serial>.json).
+# ---------------------------------------------------------------------------
+
+
+def test_rename_tone_updates_key_in_place(tmp_home):
+    obs = DeviceObservations(serial="SN-R1")
+    obs.record_pool("Old Name", cid=5000, posi=0, synced_hash="sha256:a")
+    save_observations(obs)
+
+    rename_tone("Old Name", "New Name")
+
+    back = load_observations("SN-R1")
+    assert "Old Name" not in back.tones
+    assert back.tones["New Name"] == {"cid": 5000, "posi": 0}
+
+
+def test_rename_tone_across_multiple_device_files(tmp_home):
+    a = DeviceObservations(serial="SN-A")
+    a.record_pool("Shared", cid=1, posi=0)
+    save_observations(a)
+    b = DeviceObservations(serial="SN-B")
+    b.record_pool("Shared", cid=2, posi=1)
+    save_observations(b)
+
+    rename_tone("Shared", "Renamed")
+
+    assert load_observations("SN-A").tones == {"Renamed": {"cid": 1, "posi": 0}}
+    assert load_observations("SN-B").tones == {"Renamed": {"cid": 2, "posi": 1}}
+
+
+def test_rename_tone_absent_everywhere_is_a_silent_no_op(tmp_home):
+    rename_tone("Nope", "Still Nope")  # no device files at all -- must not raise
+
+
+def test_remove_tone_drops_key(tmp_home):
+    obs = DeviceObservations(serial="SN-D1")
+    obs.record_pool("Gone Tomorrow", cid=42, posi=2)
+    save_observations(obs)
+
+    remove_tone("Gone Tomorrow")
+
+    back = load_observations("SN-D1")
+    assert "Gone Tomorrow" not in back.tones
+
+
+def test_remove_tone_absent_is_a_silent_no_op(tmp_home):
+    remove_tone("Never There")  # no device files at all -- must not raise

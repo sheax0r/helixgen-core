@@ -211,34 +211,43 @@ def _slot_from_posi(posi):
 
 
 def _ledger_rename(cid: int, new_name: str) -> None:
-    """Best-effort: reflect a device rename in the tone library."""
+    """Best-effort: reflect a device rename in the tone library — the
+    manifest's intent record AND the per-device observation file's ``tones``
+    key (Minor 5: the observation file used to keep the stale name)."""
     try:
         SetlistManifest, _ = _manifest()
 
         m = SetlistManifest.load()
         old = _tone_by_cid(cid)
-        if old and old != new_name and old in m.tones:
-            m.tones[new_name] = m.tones.pop(old)
-            for rec in m.setlists_map.values():
-                rec["tones"] = [new_name if t == old else t for t in rec["tones"]]
-            m.save()
+        if old and old != new_name:
+            if old in m.tones:
+                m.tones[new_name] = m.tones.pop(old)
+                for rec in m.setlists_map.values():
+                    rec["tones"] = [new_name if t == old else t for t in rec["tones"]]
+                m.save()
+            from helixgen.device import observations as obsmod
+            obsmod.rename_tone(old, new_name)
     except Exception as e:  # noqa: BLE001
         click.echo(f"warning: could not update tone library: {e}", err=True)
 
 
 def _ledger_remove(cid: int) -> None:
     """Best-effort: drop a deleted preset from the tone library (clears its
-    desired on-device slot; the tone stays in the library). Its per-device
-    observation self-heals on the next sync."""
+    desired on-device slot; the tone stays in the library) and drop its key
+    from the per-device observation file's ``tones`` map (Minor 5). The rest
+    of that observation file self-heals on the next sync."""
     try:
         SetlistManifest, _ = _manifest()
 
         m = SetlistManifest.load()
         name = _tone_by_cid(cid)
-        if name and name in m.tones:
-            m.tones[name]["slot"] = None
-            m.tones[name].pop("auto_marked", None)
-            m.save()
+        if name:
+            if name in m.tones:
+                m.tones[name]["slot"] = None
+                m.tones[name].pop("auto_marked", None)
+                m.save()
+            from helixgen.device import observations as obsmod
+            obsmod.remove_tone(name)
     except Exception as e:  # noqa: BLE001
         click.echo(f"warning: could not update tone library: {e}", err=True)
 

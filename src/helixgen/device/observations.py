@@ -193,3 +193,59 @@ def lookup_name_by_cid(cid: int) -> Optional[str]:
                 if isinstance(entry, dict) and entry.get("cid") == cid:
                     return nm
     return None
+
+
+def _rewrite_tones_key(path: Path, data: Dict[str, Any],
+                       transform) -> None:
+    """Apply ``transform(tones_dict)`` in place and, if it changed anything,
+    write the file back via :func:`save_observations`. Used by
+    :func:`rename_tone` / :func:`remove_tone`."""
+    tones = data.get("tones")
+    if not isinstance(tones, dict):
+        return
+    before = dict(tones)
+    transform(tones)
+    if tones == before:
+        return
+    obs = DeviceObservations(
+        serial=str(data.get("serial") or path.stem),
+        tones=_coerce_map(tones),
+        pool=_coerce_map(data.get("pool")),
+        setlists=_coerce_map(data.get("setlists")),
+    )
+    save_observations(obs)
+
+
+def rename_tone(old_name: str, new_name: str) -> None:
+    """Best-effort: rename ``old_name`` -> ``new_name`` in the ``tones`` map
+    of every ``devices/*.json`` file that has it (mirrors a ``device rename``
+    reflected in the manifest — see ``cli_device._ledger_rename``, Minor 5).
+    A missing/corrupt file, or the name simply not being present anywhere, is
+    a silent no-op."""
+    for path in _device_files():
+        data = _read(path)
+        if data is None:
+            continue
+
+        def _do_rename(tones: Dict[str, Any], _old=old_name, _new=new_name) -> None:
+            if _old in tones:
+                tones[_new] = tones.pop(_old)
+
+        _rewrite_tones_key(path, data, _do_rename)
+
+
+def remove_tone(name: str) -> None:
+    """Best-effort: drop ``name`` from the ``tones`` map of every
+    ``devices/*.json`` file that has it (mirrors a ``device delete`` reflected
+    in the manifest — see ``cli_device._ledger_remove``, Minor 5). A
+    missing/corrupt file, or the name simply not being present anywhere, is a
+    silent no-op."""
+    for path in _device_files():
+        data = _read(path)
+        if data is None:
+            continue
+
+        def _do_remove(tones: Dict[str, Any], _name=name) -> None:
+            tones.pop(_name, None)
+
+        _rewrite_tones_key(path, data, _do_remove)

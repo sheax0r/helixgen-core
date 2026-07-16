@@ -92,23 +92,26 @@ def test_manifest_save_commits_by_default(tmp_path):
 
 
 def test_manifest_save_inits_repo_even_when_commits_disabled(tmp_path, monkeypatch):
-    """Repo init is unconditional (git present => init); only the commit is
-    gated by git_commit_tones."""
+    """Repo init (and writing `.gitignore`) is unconditional whenever git is
+    present; but with commits disabled, NOT EVEN the initial content commit
+    happens (Important 4 — the old behavior of unconditionally `add -A` +
+    committing right after `git init` was itself a bug: a `git_commit_tones:
+    false` user got one commit for free before any gating kicked in)."""
     _write_prefs(tmp_path, monkeypatch, git_commit_tones=False)
     manifest_path = tmp_path / "setlists" / "manifest.json"
     m = SetlistManifest(manifest_path)
     m.save()
     assert (tmp_path / ".git").is_dir()
-    # the repo does exist and has its initial commit -- init happened
-    assert "helixgen: initialize library" in _git_log(tmp_path)
+    assert (tmp_path / ".gitignore").exists()
+    # no commit at all -- not even the initial one
+    assert _git_log(tmp_path).strip() == ""
 
-    # a further change must NOT produce an "update manifest" commit
+    # a further change must NOT produce an "update manifest" commit either
     m.tones["Placeholder"] = {"path": None, "content_hash": None,
                               "source": "authored", "slot": None}
     m.save()
     log = _git_log(tmp_path)
-    assert "helixgen: update manifest" not in log
-    assert log.count("\n") == 1  # still just the one (init) commit
+    assert log.strip() == ""
 
 
 def test_manifest_save_skips_commit_for_manifest_outside_home(
