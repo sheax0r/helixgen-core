@@ -337,6 +337,37 @@ def _empty_summary(dry_run: bool) -> Dict[str, Any]:
     }
 
 
+# Keys `run_migration`/`_migrate_tones`/`_migrate_one_tone` read with `e[...]`
+# (not `.get`) on every planned tone -- a hand-edited `--plan` missing any of
+# them must fail with a clear error, not an uncaught KeyError deep in the run.
+REQUIRED_TONE_KEYS = ("name", "path", "logical", "new_name", "new_slug")
+
+
+class PlanError(ValueError):
+    """A supplied (hand-edited) migration plan is malformed."""
+
+
+def validate_plan(plan: Dict[str, Any]) -> None:
+    """Validate a plan's per-tone entries before :func:`run_migration` touches
+    anything, raising :class:`PlanError` naming the offending entry.
+
+    Only the tone list is validated (IRs/instruments are read defensively with
+    ``.get``); the required keys mirror exactly what ``run_migration`` indexes
+    with ``e[...]``."""
+    tones = plan.get("tones", [])
+    if not isinstance(tones, list):
+        raise PlanError("plan 'tones' must be a list")
+    for i, e in enumerate(tones):
+        if not isinstance(e, dict):
+            raise PlanError(f"plan tone #{i} is not a JSON object: {e!r}")
+        missing = [k for k in REQUIRED_TONE_KEYS if k not in e]
+        if missing:
+            label = e.get("name") or e.get("new_slug") or f"#{i}"
+            raise PlanError(
+                f"plan tone {label!r} is missing required key(s): "
+                f"{', '.join(missing)}")
+
+
 def run_migration(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, Any]:
     """Execute ``plan`` idempotently + data-safely; return a summary dict.
 
@@ -453,6 +484,33 @@ def _migrate_irs(entries: List[Dict[str, Any]], mapping: IrMapping,
     return dirty
 
 
+def _ir_content_matches(existing: Path, src: Path) -> bool:
+    """True when an already-present library copy is byte-identical to ``src``.
+
+    Guards the "adopt the existing dest" path: adopting a byte-DIFFERENT file
+    would silently alias a distinct IR onto this hash's mapping."""
+    try:
+        return existing.read_bytes() == src.read_bytes()
+    except OSError:
+        return False
+
+
+def _choose_ir_dest(lib_irs: Path, pack: str, src: Path, h: str) -> tuple[Path, Path]:
+    """Pick the library ``(wav_dest, stub)`` for ``src``.
+
+    Normally ``<pack>/<basename>`` (+ ``<stem>.json``). But two source packs
+    that slugify to the SAME ``<pack>`` dir can share a WAV basename while
+    holding DIFFERENT content; if the natural dest already exists and is NOT
+    byte-identical to ``src``, disambiguate by prefixing the irhash so two
+    distinct IRs never collapse onto one file (silent wrong-content mapping)."""
+    natural = lib_irs / pack / src.name
+    if not natural.exists() or _ir_content_matches(natural, src):
+        return natural, lib_irs / pack / (src.stem + ".json")
+    prefix = (h or "")[:8] or "ir"
+    dis = lib_irs / pack / f"{src.stem}-{prefix}{src.suffix}"
+    return dis, lib_irs / pack / f"{dis.stem}.json"
+
+
 def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
                     summary: Dict[str, Any], dry_run: bool, lib_irs: Path) -> bool:
     h = ir["hash"]
@@ -466,11 +524,13 @@ def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
         return False
 
     pack = naming.slugify(src.parent.name) or "unknown"
-    dest = lib_irs / pack / src.name
-    stub = lib_irs / pack / (src.stem + ".json")
+    # `dest` is chosen so it either does not exist yet, or is byte-identical to
+    # `src` (safe to adopt). A different-content basename collision from another
+    # pack is routed to a hash-disambiguated `dest` instead of aliasing.
+    dest, stub = _choose_ir_dest(lib_irs, pack, src, h)
 
     if dest.exists() and stub.exists():
-        # already copied; make the mapping point at it if it doesn't yet.
+        # already copied (byte-identical); point the mapping at it if it doesn't yet.
         if str(mapping.entries.get(h)) != str(dest):
             if not dry_run:
                 mapping.entries[h] = str(dest)

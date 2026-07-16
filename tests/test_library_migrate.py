@@ -343,3 +343,144 @@ def test_scaffold_ir_stub_shape(tmp_path):
     data = json.loads(stub.read_text())
     assert data == {"schema": 1, "irhash": "a" * 32, "wav": "cab.wav",
                     "imported_from": "/x/cab.wav"}
+
+
+
+# ---------------------------------------------------------------------------
+# M1: a malformed --plan (missing a required per-tone key) exits 1 cleanly
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_plan_missing_key_is_clean_clickexception(tmp_home, monkeypatch):
+    """An edited plan whose tone is missing ``new_slug`` must exit 1 with a
+    ClickException naming the offender -- NOT crash with an uncaught KeyError."""
+    from click.testing import CliRunner
+    from helixgen.cli import cli
+
+    _write_prefs(tmp_home, monkeypatch, [])
+    plan = {
+        "tones": [{"name": "Broken One", "path": "/tmp/x.hsp",
+                   "logical": "broken-one", "new_name": "Broken One"}],  # new_slug missing
+        "instruments": [],
+        "irs": [],
+    }
+    plan_file = tmp_home / "plan.json"
+    plan_file.write_text(json.dumps(plan))
+
+    res = CliRunner().invoke(
+        cli, ["library", "migrate", "--plan", str(plan_file)],
+        catch_exceptions=False)
+    assert res.exit_code == 1, res.output
+    assert "new_slug" in res.output
+    assert "Broken One" in res.output
+    assert "Traceback" not in res.output
+
+
+# ---------------------------------------------------------------------------
+# M2: cross-pack IR basename collision -> distinct library copies, no aliasing
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_irs_disambiguates_cross_pack_basename_collision(tmp_home, monkeypatch):
+    """Two IRs sharing a WAV basename AND a slugified pack dir but with
+    DIFFERENT content must each get their own library copy (no silent aliasing
+    of the second onto the first's bytes)."""
+    _write_prefs(tmp_home, monkeypatch, [])
+    # Two distinct on-disk dirs that slugify to the SAME pack slug "ya-bogn".
+    pack_a = tmp_home / "packs" / "YA BOGN"
+    pack_b = tmp_home / "packs" / "YA_BOGN"
+    pack_a.mkdir(parents=True)
+    pack_b.mkdir(parents=True)
+    wav_a = pack_a / "cab.wav"
+    wav_b = pack_b / "cab.wav"
+    wav_a.write_bytes(b"RIFFaaaaWAVE-content-A")
+    wav_b.write_bytes(b"RIFFbbbbWAVE-content-B-totally-different")
+    h_a = "a" * 32
+    h_b = "b" * 32  # h_a sorts before h_b -> A copied first (natural), B disambiguated
+    mapping = IrMapping.load()
+    mapping.register(h_a, wav_a)
+    mapping.register(h_b, wav_b)
+    mapping.save()
+
+    migrate.run_migration(migrate.plan_migration())
+
+    mapping2 = IrMapping.load()
+    dest_a = Path(mapping2.entries[h_a]).resolve()
+    dest_b = Path(mapping2.entries[h_b]).resolve()
+
+    assert dest_a != dest_b  # no aliasing: distinct library copies
+    assert dest_a.read_bytes() == wav_a.read_bytes()
+    assert dest_b.read_bytes() == wav_b.read_bytes()
+    # both live under the shared pack slug dir
+    lib_pack = home.library_irs_dir() / "ya-bogn"
+    assert dest_a.parent == lib_pack.resolve()
+    assert dest_b.parent == lib_pack.resolve()
+
+
+# ---------------------------------------------------------------------------
+# test net: old_name != new_name re-key (em-dash legacy name -> hyphen)
+# ---------------------------------------------------------------------------
+
+
+def test_run_migration_rekeys_when_name_changes(tmp_home, monkeypatch):
+    """A legacy em-dash name migrates to a hyphen display name: the OLD manifest
+    key must be gone, the NEW key present at the new path, and any setlist
+    membership rewritten to the new key."""
+    _write_prefs(tmp_home, monkeypatch, [{"name": "Les Paul Jr", "type": "guitar"}])
+    exports = tmp_home / "exports"
+    exports.mkdir()
+    hsp = exports / "old.hsp"
+    old_name = "White Limo — Les Paul Jr"  # em-dash separator
+    _write_hsp(hsp, old_name)
+
+    m = SetlistManifest.load()
+    name = m.register_tone(hsp, source="authored")
+    assert name == old_name
+    m.tones[name]["slot"] = "2B"
+    m.create_setlist("Live")
+    m.add_to_setlist("Live", name)
+    m.save()
+
+    migrate.run_migration(migrate.plan_migration())
+
+    new_name = "White Limo - Les Paul Jr"  # hyphen separator (re-key)
+    assert new_name != old_name
+
+    m2 = SetlistManifest.load()
+    assert old_name not in m2.tones  # old key gone
+    assert new_name in m2.tones  # new key present
+    dest = home.tones_dir() / "white-limo-les-paul-jr.hsp"
+    assert Path(m2.tones[new_name]["path"]).resolve() == dest.resolve()
+    assert m2.tones[new_name]["slot"] == "2B"  # slot preserved
+    # setlist membership rewritten to the new key
+    assert m2.setlists_map["Live"]["tones"] == [new_name]
+
+
+# ---------------------------------------------------------------------------
+# test net: verify-failure data safety (source preserved, no partial dest)
+# ---------------------------------------------------------------------------
+
+
+def test_data_safe_place_preserves_source_on_verify_failure(tmp_home, monkeypatch):
+    """If the copy's byte-verify fails, the SOURCE must be preserved (never
+    deleted) and no partial destination left behind."""
+    _write_prefs(tmp_home, monkeypatch, [])
+    exports = tmp_home / "exports"
+    exports.mkdir()
+    hsp = exports / "good.hsp"
+    _write_hsp(hsp, "Verify Fail Tone")
+    _register(hsp)
+
+    def _bad_copy(src, dst, *a, **k):
+        # write mismatching bytes so the byte-verify in _data_safe_place fails
+        Path(dst).write_bytes(b"CORRUPTED-does-not-match-source")
+        return dst
+
+    monkeypatch.setattr(migrate.shutil, "copy2", _bad_copy)
+
+    summary = migrate.run_migration(migrate.plan_migration())
+
+    assert hsp.exists()  # source preserved (move never completed)
+    dest = home.tones_dir() / "verify-fail-tone.hsp"
+    assert not dest.exists()  # partial dest cleaned up
+    assert any(e["name"] == "Verify Fail Tone" for e in summary["tones"]["errors"])

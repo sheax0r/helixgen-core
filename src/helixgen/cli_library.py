@@ -442,6 +442,11 @@ def migrate_cmd(dry_run: bool, plan_file: Path | None) -> None:
     else:
         plan = migrate.plan_migration()
 
+    try:
+        migrate.validate_plan(plan)
+    except migrate.PlanError as err:
+        raise click.ClickException(str(err)) from err
+
     summary = migrate.run_migration(plan)
     click.echo(json.dumps(summary, indent=2))
 
@@ -480,6 +485,14 @@ def import_cmd(source: Path, artist: str | None, song: str | None,
     overwritten. When SOURCE is a directory, every *.hsp under it is imported
     self-named from its meta.name (per-tone identity flags aren't allowed for a
     directory; --guitar / --keep-source still apply to all).
+
+    A directory import is ATOMIC on naming collisions: the whole batch is
+    pre-validated (identities + target slugs) and refused -- moving NOTHING --
+    if any two files collide or clash with the existing library. During the
+    move pass, an unexpected per-file error is recorded and the run CONTINUES,
+    and the manifest is always saved, so tones that already succeeded are
+    registered on disk (never left in an unreconcilable half-imported state);
+    the command exits nonzero when any file failed.
     """
     source = Path(source)
     if source.is_dir():
@@ -487,28 +500,78 @@ def import_cmd(source: Path, artist: str | None, song: str | None,
             raise click.ClickException(
                 "--artist/--song/--descriptor apply to a single .hsp; importing "
                 "a directory self-names each file from its meta.name")
-        hsps = sorted(source.rglob("*.hsp"))
-        if not hsps:
-            raise click.ClickException(f"no .hsp files found under {source}")
-        manifest = SetlistManifest.load()
-        for hsp in hsps:
-            _import_one(hsp, None, None, None, guitar, keep_source, manifest)
-        manifest.save()
+        _import_directory(source, guitar, keep_source)
     else:
-        manifest = SetlistManifest.load()
-        _import_one(source, artist, song, descriptor, guitar, keep_source, manifest)
-        manifest.save()
+        _import_single(source, artist, song, descriptor, guitar, keep_source)
 
+
+def _import_single(source: Path, artist: str | None, song: str | None,
+                   descriptor: str | None, guitar: str | None,
+                   keep_source: bool) -> None:
+    """Import one .hsp. Collisions are pre-checked BEFORE any move so a
+    manifest/slug clash can't strand a moved file; the manifest is saved in a
+    ``finally`` so a post-move register failure never silently loses progress."""
+    manifest = SetlistManifest.load()
+    r = _resolve_import(source, artist, song, descriptor, guitar)
+    reason = _import_collision_reason(r, manifest, tones_dir=home.tones_dir())
+    if reason:
+        raise click.ClickException(reason)  # nothing moved yet
+    try:
+        _place_and_register(r, keep_source, manifest)
+    finally:
+        manifest.save()
     gitops.auto_commit(home.helixgen_home(), "helixgen: import tone(s) into library")
 
 
-def _import_one(src: Path, artist: str | None, song: str | None,
-                descriptor: str | None, guitar: str | None, keep_source: bool,
-                manifest: SetlistManifest) -> None:
-    """Resolve identity + collision the SAME way `generate` does, then place one
-    .hsp into the library and register it. Raises ClickException on any bad
-    identity combo / slug collision (nothing is moved)."""
-    # Identity: flags win; otherwise the .hsp's own meta.name is the descriptor.
+def _import_directory(source: Path, guitar: str | None, keep_source: bool) -> None:
+    """Import every ``*.hsp`` under ``source`` atomically-on-collision and
+    record-and-continue on unexpected per-file errors (see ``import`` --help)."""
+    hsps = sorted(source.rglob("*.hsp"))
+    if not hsps:
+        raise click.ClickException(f"no .hsp files found under {source}")
+    manifest = SetlistManifest.load()
+    tones_dir = home.tones_dir()
+
+    # PHASE A -- pre-validate the WHOLE batch before moving anything. Resolve
+    # each file's identity + target slug, then refuse atomically on any
+    # intra-batch OR existing-library naming collision (MOVE NOTHING).
+    resolved = [_resolve_import(h, None, None, None, guitar) for h in hsps]
+    collisions = _detect_batch_collisions(resolved, manifest, tones_dir)
+    if collisions:
+        raise click.ClickException(
+            "refusing to import -- naming collisions (nothing moved):\n  "
+            + "\n  ".join(collisions))
+
+    # PHASE B -- move pass: record-and-continue, and ALWAYS save (finally) so
+    # tones already moved+registered are persisted even if a later file fails.
+    failures: List[tuple[Path, Exception]] = []
+    try:
+        for r in resolved:
+            try:
+                _place_and_register(r, keep_source, manifest)
+            except Exception as exc:  # noqa: BLE001 - record + continue (C1)
+                failures.append((r["src"], exc))
+                click.echo(f"error: failed to import {r['src'].name}: {exc}", err=True)
+    finally:
+        manifest.save()
+    gitops.auto_commit(home.helixgen_home(), "helixgen: import tone(s) into library")
+
+    if failures:
+        raise click.ClickException(
+            f"{len(failures)} of {len(resolved)} file(s) failed to import "
+            "(the rest were saved): "
+            + ", ".join(f"{src.name} ({exc})" for src, exc in failures))
+
+
+def _resolve_import(src: Path, artist: str | None, song: str | None,
+                    descriptor: str | None, guitar: str | None) -> Dict[str, Any]:
+    """Resolve one .hsp's identity the SAME way `generate` does, WITHOUT moving
+    anything (reads only ``src``'s meta.name and a sibling ``.md``).
+
+    Raises ``ClickException`` on a bad identity combo / empty slug / an
+    identity-equality mismatch against an existing logical JSON. Returns a dict
+    with everything ``_place_and_register`` needs."""
+    src = Path(src)
     if artist or song or descriptor:
         r_artist, r_song, r_descriptor = artist, song, descriptor
     else:
@@ -553,24 +616,77 @@ def _import_one(src: Path, artist: str | None, song: str | None,
                 f"identity ({existing.display_base!r}); rename this tone "
                 "(--artist/--song/--descriptor) to disambiguate.")
 
-    # Sibling .md fold (missing -> null + warning, per spec).
     md_path = src.with_suffix(".md")
-    if md_path.exists():
-        description_md = md_path.read_text()
-    else:
-        description_md = None
-        click.echo(f"warning: no sibling .md for {src.name}; description_md left null",
-                   err=True)
+    md_missing = not md_path.exists()
+    description_md = None if md_missing else md_path.read_text()
 
+    return {
+        "src": src, "artist": r_artist, "song": r_song, "descriptor": r_descriptor,
+        "guitar_slug": guitar_slug, "guitar_short": guitar_short,
+        "preset_name": preset_name, "logical": logical, "new_slug": new_slug,
+        "description_md": description_md, "md_missing": md_missing,
+    }
+
+
+def _import_collision_reason(r: Dict[str, Any], manifest: SetlistManifest, *,
+                             tones_dir: Path) -> str | None:
+    """A human message when placing ``r`` would overwrite an existing tone .hsp
+    or clash with a differently-pathed manifest name; else ``None``. Checked
+    BEFORE any move so a collision never strands a moved source."""
+    dest = tones_dir / f"{r['new_slug']}.hsp"
+    if dest.exists():
+        return (f"a tone already exists at {dest} -- refusing to overwrite. "
+                "Rename this one (change --descriptor/--artist/--song or --guitar).")
+    existing = manifest.tones.get(r["preset_name"])
+    if existing is not None and existing.get("path") not in (None, str(dest.resolve())):
+        return (f"the manifest already registers a tone named {r['preset_name']!r} "
+                f"at a different path ({existing.get('path')}) -- refusing to "
+                "overwrite. Rename this one (--descriptor/--artist/--song/--guitar).")
+    return None
+
+
+def _detect_batch_collisions(resolved: List[Dict[str, Any]],
+                             manifest: SetlistManifest,
+                             tones_dir: Path) -> List[str]:
+    """Every naming collision in a directory batch, as human strings (empty ==
+    safe): two files sharing a target slug (intra-batch), or a file clashing
+    with the existing library/manifest."""
+    problems: List[str] = []
+    by_slug: Dict[str, List[Dict[str, Any]]] = {}
+    for r in resolved:
+        by_slug.setdefault(r["new_slug"], []).append(r)
+    for slug, group in sorted(by_slug.items()):
+        if len(group) > 1:
+            names = ", ".join(sorted(x["src"].name for x in group))
+            problems.append(
+                f"{len(group)} files map to the same target slug {slug!r}: {names}")
+    for r in resolved:
+        if len(by_slug[r["new_slug"]]) > 1:
+            continue  # already reported as an intra-batch slug collision
+        reason = _import_collision_reason(r, manifest, tones_dir=tones_dir)
+        if reason:
+            problems.append(f"{r['src'].name}: {reason}")
+    return problems
+
+
+def _place_and_register(r: Dict[str, Any], keep_source: bool,
+                        manifest: SetlistManifest) -> None:
+    """Place one resolved tone into the library and register it into ``manifest``
+    (in memory -- the caller saves). Warns on a missing sibling .md; converts
+    ``place_tone``/``register_tone`` failure modes to ``ClickException``."""
+    if r["md_missing"]:
+        click.echo(
+            f"warning: no sibling .md for {r['src'].name}; description_md left null",
+            err=True)
     try:
         dest = migrate.place_tone(
-            src, artist=r_artist, song=r_song, descriptor=r_descriptor,
-            guitar_slug=guitar_slug, guitar_short=guitar_short,
-            new_name=preset_name, logical=logical, new_slug=new_slug,
-            move=not keep_source, description_md=description_md)
+            r["src"], artist=r["artist"], song=r["song"], descriptor=r["descriptor"],
+            guitar_slug=r["guitar_slug"], guitar_short=r["guitar_short"],
+            new_name=r["preset_name"], logical=r["logical"], new_slug=r["new_slug"],
+            move=not keep_source, description_md=r["description_md"])
     except migrate.ToneCollision:
         raise click.ClickException(
-            f"a tone already exists at {home.tones_dir() / (new_slug + '.hsp')} "
+            f"a tone already exists at {home.tones_dir() / (r['new_slug'] + '.hsp')} "
             "-- refusing to overwrite. Rename this one (change "
             "--descriptor/--artist/--song or --guitar).")
 
@@ -579,8 +695,9 @@ def _import_one(src: Path, artist: str | None, song: str | None,
     except ManifestError as err:
         raise click.ClickException(str(err)) from err
 
-    click.echo(f"Imported {src.name} -> {dest}")
-    click.echo(f"Preset name: {preset_name}")
+    click.echo(f"Imported {r['src'].name} -> {dest}")
+    click.echo(f"Preset name: {r['preset_name']}")
+
 
 
 # ---------------------------------------------------------------------------

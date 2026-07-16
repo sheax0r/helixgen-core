@@ -167,3 +167,96 @@ def test_import_directory_imports_each_hsp(tmp_home):
     assert res.exit_code == 0, res.output
     assert (home.tones_dir() / "tone-one.hsp").exists()
     assert (home.tones_dir() / "tone-two.hsp").exists()
+
+
+
+# ---------------------------------------------------------------------------
+# C1: directory import is atomic on a mid-batch collision + always persists
+# ---------------------------------------------------------------------------
+
+
+def test_import_directory_name_collision_moves_nothing(tmp_home):
+    """Two exports in the dir sharing meta.name collide on slug: the whole batch
+    is refused BEFORE anything is moved (atomic refusal), and the on-disk
+    manifest stays empty -- no unreconcilable partial state."""
+    ext = tmp_home / "batch"
+    ext.mkdir()
+    _write_hsp(ext / "one.hsp", "Same Tone")
+    _write_hsp(ext / "two.hsp", "Same Tone")  # same meta.name -> same slug
+
+    res = CliRunner().invoke(cli, ["library", "import", str(ext)],
+                             catch_exceptions=False)
+    assert res.exit_code != 0
+    assert "collision" in res.output.lower()
+
+    # NOTHING moved: both sources still present
+    assert (ext / "one.hsp").exists()
+    assert (ext / "two.hsp").exists()
+    # library empty + manifest unchanged (nothing registered on disk)
+    if home.tones_dir().exists():
+        assert not list(home.tones_dir().glob("*.hsp"))
+    assert SetlistManifest.load().tones == {}
+
+
+def test_import_directory_registers_all_in_ondisk_manifest(tmp_home):
+    """A clean 3-tone dir import moves AND registers every tone in the ON-DISK
+    manifest (manifest.save() ran)."""
+    ext = tmp_home / "batch"
+    ext.mkdir()
+    _write_hsp(ext / "a.hsp", "Alpha Tone")
+    _write_hsp(ext / "b.hsp", "Beta Tone")
+    _write_hsp(ext / "c.hsp", "Gamma Tone")
+
+    res = _run(["library", "import", str(ext)])
+    assert res.exit_code == 0, res.output
+    for slug in ("alpha-tone", "beta-tone", "gamma-tone"):
+        assert (home.tones_dir() / f"{slug}.hsp").exists()
+
+    m = SetlistManifest.load()  # reload from disk -> proves save() happened
+    for name in ("Alpha Tone", "Beta Tone", "Gamma Tone"):
+        assert name in m.tones
+
+
+def test_import_directory_midbatch_failure_saves_progress_and_reconciles(
+        tmp_home, monkeypatch):
+    """An UNEXPECTED mid-batch error is recorded and the loop CONTINUES; the
+    manifest is always saved (finally), so already-moved tones are registered on
+    disk (not stranded) and a re-run reconciles the failed one."""
+    ext = tmp_home / "batch"
+    ext.mkdir()
+    _write_hsp(ext / "a.hsp", "Alpha Tone")
+    _write_hsp(ext / "b.hsp", "Beta Tone")
+    _write_hsp(ext / "c.hsp", "Gamma Tone")
+
+    from helixgen import migrate as _migrate
+    real_place = _migrate.place_tone
+    calls = {"n": 0}
+
+    def _flaky_place(src, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:  # trips exactly once, on the 2nd tone
+            raise RuntimeError("boom mid-batch")
+        return real_place(src, **kw)
+
+    monkeypatch.setattr("helixgen.migrate.place_tone", _flaky_place)
+
+    res = CliRunner().invoke(cli, ["library", "import", str(ext)],
+                             catch_exceptions=False)
+    assert res.exit_code != 0  # the batch reported a failure
+
+    # first + third tones registered ON DISK despite the mid-batch failure
+    m = SetlistManifest.load()
+    assert "Alpha Tone" in m.tones
+    assert "Gamma Tone" in m.tones
+    assert "Beta Tone" not in m.tones
+    assert (home.tones_dir() / "alpha-tone.hsp").exists()
+    assert (home.tones_dir() / "gamma-tone.hsp").exists()
+    # the failed tone's source survived (its place raised BEFORE the move)
+    assert (ext / "b.hsp").exists()
+
+    # re-run reconciles: the flaky counter is already spent, so Beta imports now
+    res2 = _run(["library", "import", str(ext)])
+    assert res2.exit_code == 0, res2.output
+    m2 = SetlistManifest.load()
+    assert "Beta Tone" in m2.tones
+    assert (home.tones_dir() / "beta-tone.hsp").exists()
