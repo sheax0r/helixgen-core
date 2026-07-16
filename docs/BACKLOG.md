@@ -133,6 +133,28 @@ and had to be redirected. Start here so future work begins from the right model.
   Deliberate exclusions documented in `tests/live/conftest.py` (`restore`,
   `sync --all`, `bootstrap`, `globaleq set`, real-cache `ir-cache --clear`).
 
+- **#71 Machine-local advisory device locks** — **✅ SHIPPED 0.22.0,
+  2026-07-16** (mirrors workspace backlog #71 — motivated by two agents
+  colliding on the device 2026-07-16). Lease files
+  `~/.helixgen/locks/<ip>/<scope>.lock` (`$HELIXGEN_LOCKS` overrides the
+  root; JSON `{pid, hostname, acquired_at, ttl_seconds, label, token?,
+  kind, nonce}`; atomic tmp+hardlink create with O_EXCL fallback — the file
+  is the source of truth, no held fcntl handles, so per-call-pid shell-agent
+  flows work). Scopes `editbuffer`/`library`/`irs`/`globals` + exclusive
+  `all`; every mutating verb auto-acquires its scope(s) for the verb's
+  duration (`sync` = library+irs; dry-run modes take nothing; verb→scope
+  table in `docs/CLI.md` "Device locks"); read verbs take nothing. Session
+  leases via `device lock --scope … --label …` (+ `--status [--json]`,
+  `device unlock [--force]`); passthrough for covered verbs by
+  `$HELIXGEN_LOCK_TOKEN` or same-shell parent-pid, with TTL renewal on each
+  covered verb. Contention waits `$HELIXGEN_LOCK_TIMEOUT` (default 30 s,
+  0 = fail fast) then errors naming the holder; stale leases (expired TTL /
+  dead same-host pid) reclaimed with a warning, live ones never broken
+  implicitly; `--no-lock` per-verb escape hatch. `tests/live/` is the
+  flagship consumer (session `all` lease, label `live-test-suite`, `locks`
+  marker group). Advisory + machine-local only: other hosts and the Stadium
+  desktop editor are NOT covered.
+
 ## 🔲 Remaining
 
 ### Deferred from the 0.21.0 adversarial review (2026-07-15)

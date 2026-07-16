@@ -10,7 +10,9 @@ extra), exactly as before.
 """
 from __future__ import annotations
 
+import functools
 import json
+import os
 from pathlib import Path
 
 import click
@@ -126,6 +128,51 @@ def _device_option(f):
         help="Helix device control port.",
     )(f)
     return f
+
+
+# --- machine-local advisory device locks (workspace #71, 0.22.0) ----------
+
+_NO_LOCK_HELP = ("Skip the machine-local advisory device lock for this verb "
+                 "(DANGEROUS: concurrent helixgen processes may collide on "
+                 "the device; see `helixgen device lock --help`).")
+
+
+def _locked(*scopes: str, verb: str, when=None):
+    """Auto-acquire the verb's advisory device-lock scope(s) for its duration.
+
+    Innermost decorator (right above ``def``): wraps the raw callback, adds
+    the per-verb ``--no-lock`` escape hatch, and — unless skipped — holds
+    one lease per scope around the verb body (released on exit, even on
+    failure). ``when(kwargs)`` may narrow the scopes dynamically (e.g.
+    dry-run modes → no lock). A scope already covered by a session lease we
+    own ($HELIXGEN_LOCK_TOKEN, or a `device lock` taken from this shell)
+    is passed through and its TTL renewed. On contention, waits up to
+    $HELIXGEN_LOCK_TIMEOUT (default 30 s; 0 = fail fast), then errors
+    naming the holder.
+    """
+    def deco(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            no_lock = kwargs.pop("no_lock", False)
+            eff = tuple(when(kwargs)) if when is not None else scopes
+            if no_lock or not eff:
+                return f(*args, **kwargs)
+            from helixgen import locks
+
+            ip = (kwargs.get("ip")
+                  or os.environ.get("HELIXGEN_HELIX_IP") or "192.168.4.84")
+            try:
+                lease = locks.acquire(ip, eff, label=f"helixgen device {verb}")
+            except locks.LockHeld as e:
+                raise click.ClickException(
+                    f"{e} — wait and retry, raise HELIXGEN_LOCK_TIMEOUT, or "
+                    f"(dangerous) pass --no-lock") from e
+            with lease:
+                return f(*args, **kwargs)
+
+        return click.option("--no-lock", "no_lock", is_flag=True,
+                            default=False, help=_NO_LOCK_HELP)(wrapper)
+    return deco
 
 
 def _resolve_setlist_dest(h, name: str):
@@ -436,7 +483,142 @@ def device() -> None:
     manifest.
 
     SEE ALSO: docs/CLI.md "Device commands" for the full per-verb reference.
+
+    LOCKING: every device-MUTATING verb auto-acquires a machine-local
+    advisory lock scope (editbuffer / library / irs / globals) for its
+    duration so concurrent helixgen processes on this machine don't collide;
+    hold scopes across calls with `device lock`, inspect with `device lock
+    --status`, and see docs/CLI.md "Device locks" for the verb -> scope table.
     """
+
+
+_LOCK_SCOPE_HELP = (
+    "editbuffer = live-ops on the ACTIVE tone; library = pool/setlist/"
+    "preset-content writes; irs = device IR writes; globals = Global "
+    "Settings/EQ writes; all = exclusive over the whole device.")
+
+
+@device.command(name="lock")
+@click.option("--scope", "scopes", multiple=True,
+              type=click.Choice(["editbuffer", "library", "irs", "globals",
+                                 "all"]),
+              default=("all",), show_default=True,
+              help="Scope(s) to hold (repeatable). " + _LOCK_SCOPE_HELP)
+@click.option("--label", default=None,
+              help="Who/what holds the lock (shown to blocked processes; "
+                   "required unless --status).")
+@click.option("--ttl", type=float, default=None, show_default="900",
+              help="Lease time-to-live in seconds; every covered verb you "
+                   "run renews it. An expired lease is reclaimed by the "
+                   "next contender.")
+@click.option("--status", "show_status", is_flag=True, default=False,
+              help="Don't lock — report the device's current leases "
+                   "(scope, holder, age, live/stale, ours) and exit 0.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="With --status: emit the lease rows as JSON.")
+@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84",
+              show_default=True, help=_IP_HELP)
+def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
+    """Hold a machine-local advisory device lock across CLI calls (a session
+    lease), so concurrent helixgen processes don't collide on the device.
+
+    Every device-MUTATING verb already auto-acquires its scope(s) for the
+    verb's duration — `device lock` is for holding a scope ACROSS calls
+    (an agent session, a test run). Leases are JSON files under
+    ~/.helixgen/locks/<ip>/<scope>.lock ($HELIXGEN_LOCKS overrides the
+    root); no daemon, no fcntl. Purely local: the device itself is never
+    contacted, and clients on OTHER machines or the Stadium desktop editor
+    are NOT covered (advisory, machine-local only).
+
+    The printed HELIXGEN_LOCK_TOKEN is how your later CLI calls prove the
+    lease is theirs — export it, and covered verbs pass through (renewing
+    the TTL) instead of blocking; calls from the same shell also pass
+    through by parent-pid. Contenders wait $HELIXGEN_LOCK_TIMEOUT seconds
+    (default 30; 0 = fail fast), reclaim stale leases (expired TTL or dead
+    same-host pid) with a warning, then fail naming the holder. Release
+    with `device unlock`; inspect with `device lock --status [--json]`.
+    """
+    from helixgen import locks
+
+    if show_status:
+        rows = locks.status(ip)
+        if as_json:
+            click.echo(json.dumps(rows, indent=2))
+            return
+        if not rows:
+            click.echo(f"no device locks held for {ip}")
+            return
+        for r in rows:
+            click.echo(
+                f"{r['scope']:<10} {r['state']:<5} "
+                f"{'ours' if r['ours'] else '    '}  {r['label']!r}  "
+                f"pid {r['pid']} on {r['hostname']}  "
+                f"age {r['age_seconds']:.0f}s / ttl {r['ttl_seconds']:g}s")
+        return
+
+    if not label:
+        raise click.ClickException(
+            "--label is required (name the session holding the lock, e.g. "
+            "--label 'setlist rebuild agent')")
+    token = locks.env_token() or locks.new_token()
+    try:
+        # Session leases record the INVOKING SHELL's pid (this CLI process
+        # exits immediately); never released here — `device unlock` frees them.
+        locks.acquire(ip, scopes, label=label,
+                      ttl=locks.DEFAULT_SESSION_TTL if ttl is None else ttl,
+                      token=token, pid=os.getppid(), kind="session")
+    except locks.LockHeld as e:
+        raise click.ClickException(str(e)) from e
+    except locks.LockError as e:
+        raise click.ClickException(str(e)) from e
+    for s in dict.fromkeys(scopes):
+        click.echo(f"locked '{s}' on {ip} (label {label!r})")
+    click.echo(f"HELIXGEN_LOCK_TOKEN={token}")
+    click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
+               "through this lock; release with `helixgen device unlock`.",
+               err=True)
+
+
+@device.command(name="unlock")
+@click.option("--scope", "scopes", multiple=True,
+              type=click.Choice(["editbuffer", "library", "irs", "globals",
+                                 "all"]),
+              default=None,
+              help="Scope(s) to release (repeatable; default: every lease "
+                   "you own). " + _LOCK_SCOPE_HELP)
+@click.option("--force", is_flag=True, default=False,
+              help="Also break leases you do NOT own (dangerous — the "
+                   "holder may be mid-write on the device).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit {released, kept} as JSON.")
+@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84",
+              show_default=True, help=_IP_HELP)
+def device_unlock(scopes, force, as_json, ip) -> None:
+    """Release advisory device locks taken with `device lock`.
+
+    Ownership is proven by $HELIXGEN_LOCK_TOKEN or by calling from the same
+    shell that locked (parent-pid match). Without --scope, every lease you
+    own is released and foreign leases are left (reported, not an error);
+    an EXPLICIT --scope you don't own is an error unless --force (which
+    breaks even a live foreign lease — dangerous). Stale leases (expired
+    TTL / dead pid) can always be cleared.
+    """
+    from helixgen import locks
+
+    try:
+        res = locks.release_scopes(ip, list(scopes) if scopes else None,
+                                   force=force)
+    except locks.LockError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+        return
+    for s in res["released"]:
+        click.echo(f"released '{s}' on {ip}")
+    if not res["released"]:
+        click.echo(f"no leases of yours to release on {ip}")
+    for k in res["kept"]:
+        click.echo(f"kept '{k['scope']}' — held by {k['holder']}", err=True)
 
 
 @device.command(name="list")
@@ -678,6 +860,7 @@ def device_settings_get(key, as_json, ip, port):
 @click.argument("key")
 @click.argument("value")
 @_device_option
+@_locked("globals", verb="settings set")
 def device_settings_set(key, value, ip, port):
     """Write one Global-Settings value. VALUE may be a number or an enum label
     (e.g. `helixgen device settings set global.tuner.type Strobe`)."""
@@ -745,6 +928,7 @@ def device_globaleq_list(as_json):
 @click.argument("param")
 @click.argument("value")
 @_device_option
+@_locked("globals", verb="globaleq set")
 def device_globaleq_set(output, band, param, value, ip, port):
     """Write one Global EQ parameter.
 
@@ -808,6 +992,7 @@ def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
 @device.command(name="load")
 @click.argument("cid", type=int)
 @_device_option
+@_locked("editbuffer", verb="load")
 def device_load(cid: int, ip: str, port: int) -> None:
     """Load a preset into the edit buffer by CID."""
     HelixClient, HelixError = _client()
@@ -832,6 +1017,7 @@ def device_load(cid: int, ip: str, port: int) -> None:
 @click.option("--pos", type=int, required=True,
               help="Destination position (0-based posi; required).")
 @_device_option
+@_locked("library", verb="create")
 def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> None:
     """Copy or reference a preset into a slot; prints the new CID.
 
@@ -879,6 +1065,7 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
 @click.argument("cid", type=int)
 @click.argument("new_name")
 @_device_option
+@_locked("library", verb="rename")
 def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
     """Rename the preset at CID."""
     HelixClient, HelixError = _client()
@@ -902,6 +1089,7 @@ def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
               help="Where the preset lives: " + _SETLIST_HELP)
 @click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
 @_device_option
+@_locked("library", verb="delete")
 def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None:
     """Delete the preset at CID (pool), or a reference from a named setlist.
 
@@ -949,6 +1137,7 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
 @click.argument("param_id", type=int)
 @click.argument("value", type=float)
 @_device_option
+@_locked("editbuffer", verb="set-param")
 def device_set_param(path: int, block: int, param_id: int, value: float,
                      ip: str, port: int) -> None:
     """Set one param in the live edit buffer (PATH BLOCK PARAM_ID VALUE).
@@ -983,6 +1172,7 @@ def device_set_param(path: int, block: int, param_id: int, value: float,
 @device.command(name="snapshot")
 @click.argument("index", type=int)
 @_device_option
+@_locked("editbuffer", verb="snapshot")
 def device_snapshot(index: int, ip: str, port: int) -> None:
     """Recall a snapshot (0-based, 0..7) on the live device.
 
@@ -1113,6 +1303,7 @@ def device_active(as_json: bool, ip: str, port: int) -> None:
 @click.argument("block", type=int)
 @click.argument("state", type=click.Choice(["on", "off"]))
 @_device_option
+@_locked("editbuffer", verb="bypass")
 def device_bypass(path: int, block: int, state: str, ip: str, port: int) -> None:
     """Enable/bypass a block in the live edit buffer (PATH BLOCK on|off).
 
@@ -1141,6 +1332,7 @@ def device_bypass(path: int, block: int, state: str, ip: str, port: int) -> None
 @click.argument("block", type=int)
 @click.argument("model")
 @_device_option
+@_locked("editbuffer", verb="model")
 def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
     """Set a block's model in the live edit buffer (PATH BLOCK MODEL).
 
@@ -1176,6 +1368,7 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
 @click.option("--to", "to_index", type=int, required=True,
               help="New 0-based position within the container.")
 @_device_option
+@_locked("library", verb="reorder")
 def device_reorder(setlist: str, target: str, to_index: int,
                    ip: str, port: int) -> None:
     """Move a preset to a new position within a setlist (`/ReorderContainerContent`).
@@ -1243,6 +1436,7 @@ def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
               help="Destination: " + _SETLIST_HELP)
 @click.option("--pos", type=int, required=True, help="Destination slot (posi).")
 @_device_option
+@_locked("library", verb="save")
 def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     """Save the device's CURRENT edit buffer as a new preset; prints the new CID.
 
@@ -1330,6 +1524,7 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
                    "wedge), remove the orphaned file. Do NOT use on an IR you "
                    "just imported — its listing may merely be lagging.")
 @_device_option
+@_locked("irs", verb="delete-ir")
 def device_delete_ir(name_or_hash: str, yes: bool, force_wedge: bool,
                      ip: str, port: int) -> None:
     """Delete one user IR from the device, by name or 32-hex hash.
@@ -1368,6 +1563,7 @@ def device_delete_ir(name_or_hash: str, yes: bool, force_wedge: bool,
 @click.argument("name_or_hash")
 @click.argument("new_name")
 @_device_option
+@_locked("irs", verb="rename-ir")
 def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> None:
     """Rename a user IR on the device (match by name or 32-hex hash).
 
@@ -1403,6 +1599,7 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result dict as JSON.")
 @_device_option
+@_locked(verb="ir-prune", when=lambda kw: ("irs",) if kw.get("yes") else ())
 def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
                     only: str | None, as_json: bool,
                     ip: str, port: int) -> None:
@@ -1469,6 +1666,7 @@ def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
                    "or a raw index 0-11.")
 @click.option("--notes", default=None, help="Preset notes text (Preset Info panel).")
 @_device_option
+@_locked("library", verb="set-info")
 def device_set_info(cids: tuple[int, ...], color: str | None, notes: str | None,
                     ip: str, port: int) -> None:
     """Set preset color and/or notes on one or more CIDs (batch-capable).
@@ -1515,6 +1713,7 @@ def device_set_info(cids: tuple[int, ...], color: str | None, notes: str | None,
 @click.argument("wav", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84",
               show_default=True, help=_IP_HELP)
+@_locked("irs", verb="push-ir")
 def device_push_ir(wav: Path, ip: str) -> None:
     """Import an impulse-response .wav onto the device — instantly, like the editor.
 
@@ -1582,6 +1781,7 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
               help="Upload any referenced IRs that aren't on the device yet "
                    "(resolved from your local IR mapping.json).")
 @_device_option
+@_locked("library", verb="install")
 def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
                    auto_irs: bool, ip: str, port: int) -> None:
     """Author a helixgen .hsp onto the device as a new, playable preset.
@@ -1736,6 +1936,7 @@ def device_setlist_create_local(setlist: str) -> None:
 @device_setlist.command(name="create")
 @click.argument("setlist")
 @_device_option
+@_locked("library", verb="setlist create")
 def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
     """Create a new empty setlist ON THE DEVICE (and in the local manifest).
 
@@ -1773,6 +1974,7 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
 @click.argument("setlist")
 @click.argument("new_name")
 @_device_option
+@_locked("library", verb="setlist rename")
 def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -> None:
     """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked)."""
     HelixClient, HelixError = _client()
@@ -1810,6 +2012,7 @@ def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -
 @click.argument("setlist")
 @click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
 @_device_option
+@_locked("library", verb="setlist delete")
 def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> None:
     """Delete a setlist ON THE DEVICE. Its references die with it — the pool
     presets they pointed at are NEVER deleted (never-orphan).
@@ -1852,6 +2055,7 @@ def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> No
 @click.argument("src")
 @click.argument("dst")
 @_device_option
+@_locked("library", verb="setlist duplicate")
 def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None:
     """Duplicate a setlist ON THE DEVICE: copy SRC's references into DST.
 
@@ -1900,6 +2104,7 @@ def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None
 @click.option("--dry-run", is_flag=True, default=False,
               help="Show what would be installed/created without writing to the device.")
 @_device_option
+@_locked(verb="setlist import-hss", when=lambda kw: () if (kw.get("list_only") or kw.get("dry_run")) else ("library",))
 def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str | None,
                               dry_run: bool, ip: str, port: int) -> None:
     """EXPERIMENTAL: import a `.hss` setlist-bundle export (backlog #31, READ side).
@@ -2119,6 +2324,7 @@ def device_library_cmd(as_json: bool) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw engine result dict as JSON.")
 @_device_option
+@_locked(verb="sync", when=lambda kw: ("library",) if kw.get("exclude_irs") else ("library", "irs"))
 def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
                 exclude_irs: bool, repush: bool, as_json: bool,
                 ip: str, port: int) -> None:
@@ -2199,6 +2405,7 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
               help="Destination: " + _SETLIST_HELP)
 @click.option("--pos", type=int, required=True, help="Destination slot (posi); must be empty.")
 @_device_option
+@_locked("library", verb="push")
 def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     """Install a local content file (.sbe backup) into a new preset slot.
 
@@ -2243,6 +2450,7 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
 @click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("cid", type=int)
 @_device_option
+@_locked("library", verb="restore")
 def device_restore(infile: Path, cid: int, ip: str, port: int) -> None:
     """Overwrite an EXISTING preset's content from a local file (.sbe).
 
@@ -2337,6 +2545,7 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
 @click.option("--force", is_flag=True, default=False,
               help="Push even if the destination slot is occupied.")
 @_device_option
+@_locked("library", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                          force: bool, ip: str, port: int) -> None:
     """Put a recorded tone back in its slot. TARGET is the tone name or slot label.

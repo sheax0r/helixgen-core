@@ -27,8 +27,21 @@ Targeted subsets by impact area (markers registered in pyproject.toml)::
 
 Marker taxonomy: ``live`` on everything, plus one group marker per module —
 ``authoring``, ``library``, ``ir`` (local IR verbs), ``device_read``,
-``device_write``, ``liveops``, ``setlists``, ``sync``, ``device_ir``, and
-``live_global`` (the extra-gated global-settings writes).
+``device_write``, ``liveops``, ``setlists``, ``sync``, ``device_ir``,
+``locks`` (the machine-local advisory device locks), and ``live_global``
+(the extra-gated global-settings writes).
+
+Device-lock integration (workspace #71)
+---------------------------------------
+The suite is the flagship consumer of the machine-local advisory device
+locks: the ``cli`` fixture takes the REAL ``all`` lease (label
+``live-test-suite``) for the whole run and releases it at teardown, so any
+unrelated helixgen process on this machine blocks/fails instead of
+colliding with the suite. ``live_env`` carries a per-run
+``HELIXGEN_LOCK_TOKEN`` so the suite's own CLI calls pass through. The
+locks root is deliberately NOT redirected to scratch (real coordination is
+the point); lock files live under ``~/.helixgen/locks/<ip>/`` and the
+teardown ``device unlock`` clears them.
 
 Safety model (encoded as fixtures)
 ----------------------------------
@@ -91,6 +104,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -190,6 +204,12 @@ def live_env(scratch: Path, real_library: Path) -> dict:
         "HELIXGEN_PREFS": str(scratch / "preferences.json"),
         "HELIXGEN_LIBRARY": str(real_library),
         "HELIXGEN_HELIX_IP": DEVICE_IP,
+        # The suite holds the REAL machine-local `all` device lock for the
+        # whole run (workspace #71 — flagship consumer); this token lets
+        # every CLI call the suite makes pass through that session lease.
+        # The locks root is deliberately NOT redirected to scratch: the
+        # point is excluding OTHER helixgen processes on this machine.
+        "HELIXGEN_LOCK_TOKEN": f"live-test-suite-{uuid.uuid4().hex}",
     })
     return env
 
@@ -211,7 +231,19 @@ def cli(live_env: dict):
             env=live_env, cwd=str(REPO_ROOT), input=stdin)
         return proc.returncode, proc.stdout, proc.stderr
 
-    return run
+    # Hold the machine-local `all` device lock for the entire run
+    # (workspace #71): any helixgen process on this machine that isn't
+    # carrying our HELIXGEN_LOCK_TOKEN blocks/fails instead of colliding
+    # with the suite's device work. Purely local — works device-offline too.
+    code, out, err = run("device", "lock", "--scope", "all",
+                         "--label", "live-test-suite", "--ttl", "7200")
+    assert code == 0, ("could not acquire the session 'all' device lock — "
+                       "is another helixgen session holding the device? "
+                       f"{err or out}")
+    try:
+        yield run
+    finally:
+        run("device", "unlock")
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -188,6 +188,36 @@ def test_new_agent_surfaces_keep_contract_phrases(path, phrases):
             f"phrase {phrase!r}")
 
 
+#: 0.22.0 agent surfaces: the machine-local advisory device locks
+#: (workspace backlog #71) — `device lock`/`unlock`, per-verb auto-acquire,
+#: and the --no-lock escape hatch must keep their contract phrases.
+LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
+    (["device", "lock"],
+     ["machine-local", "advisory", "session lease", "HELIXGEN_LOCK_TOKEN",
+      "HELIXGEN_LOCK_TIMEOUT", "fail fast", "stale", "NOT covered",
+      "auto-acquires", "device unlock", "--status"]),
+    (["device", "unlock"],
+     ["HELIXGEN_LOCK_TOKEN", "parent-pid", "--force", "dangerous",
+      "Stale leases"]),
+    # every mutating verb carries the --no-lock escape hatch; pin one from
+    # each scope so the option (and its danger warning) can't silently drop
+    (["device", "load"], ["machine-local advisory device lock", "DANGEROUS"]),
+    (["device", "sync"], ["machine-local advisory device lock"]),
+    (["device", "push-ir"], ["machine-local advisory device lock"]),
+    (["device", "settings", "set"], ["machine-local advisory device lock"]),
+]
+
+
+@pytest.mark.parametrize(
+    "path,phrases", LOCK_SURFACES, ids=[" ".join(row[0]) for row in LOCK_SURFACES])
+def test_lock_surfaces_keep_contract_phrases(path, phrases):
+    combined = _full_help(_resolve(path))
+    for phrase in phrases:
+        assert phrase in combined, (
+            f"CLI verb {' '.join(path)!r} help lost the 0.22.0 lock "
+            f"contract phrase {phrase!r}")
+
+
 def test_top_level_help_orients_agents():
     res = CliRunner().invoke(cli, ["--help"])
     assert res.exit_code == 0
@@ -202,7 +232,8 @@ def test_device_group_help_carries_mental_models():
     raw = _resolve(["device"]).help or ""
     for phrase in ["READ vs WRITE", "MUTATES", "ACTIVE tone", "flaky",
                    "re-run", "idempotent", "tone library",
-                   "never touches untracked", "docs/CLI.md"]:
+                   "never touches untracked", "docs/CLI.md",
+                   "LOCKING", "auto-acquires", "device lock"]:
         assert phrase in raw, f"device group help lost {phrase!r}"
 
 
