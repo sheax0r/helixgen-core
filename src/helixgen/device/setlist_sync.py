@@ -196,7 +196,7 @@ def _build_blob(body):
 def sync_setlists(
     manifest: SetlistManifest,
     *,
-    ip: str = "192.168.4.84",
+    ip: Optional[str] = None,
     port: Optional[int] = None,
     setlists: Optional[List[str]] = None,
     gc: bool = False,
@@ -268,6 +268,12 @@ def sync_setlists(
             s for s in manifest.setlists()
             if not manifest.is_synced(s) and manifest.tones_in(s)]
 
+    if ip is None:
+        # #74 resolution chain — no hardcoded default IP; the resolved
+        # address also keys the per-device serial fallback + IR uploads.
+        from . import discovery
+
+        ip = discovery.resolve_ip()
     client_kwargs: Dict[str, Any] = {"ip": ip}
     if port is not None:
         client_kwargs["port"] = port

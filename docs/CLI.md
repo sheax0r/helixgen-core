@@ -255,10 +255,54 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
 
 With the `device` extra (`pip install 'helixgen[device]'` → pyzmq+msgpack)
 helixgen talks to a **Stadium** over the LAN directly (OSC-over-ZeroMQ; no
-editor app). Addressing precedence: `--ip` wins, else `$HELIXGEN_HELIX_IP`,
-else the **built-in default `192.168.4.84`** (yes, even with no env set —
-pass `--ip`/set the env var for any other address); `--port` defaults to
+editor app). Addressing precedence (0.23.0, workspace #74): `--ip` wins,
+else `$HELIXGEN_HELIX_IP`, else the device record persisted by
+**`helixgen device discover`** — there is **no built-in default IP**
+anymore (the old baked-in `192.168.x.x` literal was the maintainer's own
+DHCP lease: a guaranteed-wrong default for anyone else that failed as a
+long connect stall). With none of the three available, verbs **fail fast**
+with an instructive error naming `device discover`; `--port` defaults to
 2002. Protocol reference: [`helix-protocol.md`](helix-protocol.md).
+
+#### `device discover` — find + persist the Stadium's address (0.23.0)
+
+```
+helixgen device discover [--timeout N] [--probe/--no-probe] [--json]
+```
+
+Run **once** (and again whenever the device's DHCP lease changes). Two
+mechanisms, both verified on hardware (Stadium XL, fw 1.3.2, 2026-07-16):
+
+1. **mDNS/Bonjour (primary).** The Stadium advertises the DNS-SD service
+   `_stadiumserver._tcp.local.` and answers a one-shot multicast PTR query
+   itself with PTR + SRV + A in a single datagram (instance `p35x1`, target
+   `p35x1.local.`; the SRV port is 2001 — the change-stream port, not the
+   RPC port). Pure stdlib — no zeroconf dependency. `--timeout` is the
+   listen window (default 3 s).
+2. **Local-subnet TCP probe (fallback, `--probe`, default on).** For
+   networks that block multicast: a bounded concurrent TCP connect-probe of
+   the machine's **own /24 only** on RPC port 2002 (the device ignores
+   ICMP). Short per-connect timeouts, bounded concurrency, never probes
+   beyond the local subnet. `--no-probe` disables it.
+
+Every candidate is **confirmed** with the read-only `/ProductInfoGet`
+handshake before being trusted; confirmed devices are persisted (ip, serial,
+model, firmware) into the library-foundations per-device records
+`~/.helixgen/devices/<serial>.json` — the same files sync observations live
+in; discovery fields round-trip through sync rebuilds. Discovery is
+read-only on the device: no lock scope is taken.
+
+**Why discover-once + direct-IP:** community prior art on the Stadium
+desktop app is that its *discovery* layer is flaky while *direct-to-IP*
+sessions are stable. helixgen therefore uses discovery exactly once to find
+the device, persists the result, and keeps every session direct-to-IP.
+
+**Multiple devices:** all found devices are listed and persisted; the
+resolver deterministically picks the most recently discovered
+(`ip_updated_at` desc, then serial desc) and warns when several records
+disagree — pass `--ip` on any verb to target another. `--json` emits the
+confirmed rows (`ip`, `serial`, `model`, `firmware`, `via` = `mdns|probe`,
+`record` path, `default`).
 **Stadium-only**; these verbs **mutate the device** — prefer an empty/expendable
 slot when testing. CLAUDE.md carries the concise verb list + the mental-model
 rules (device-write gating, flaky-network, tone-library); this is the full

@@ -36,6 +36,15 @@ def _isolate_device_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_device_ip(monkeypatch: pytest.MonkeyPatch):
+    """Drop any inherited $HELIXGEN_HELIX_IP so the #74 resolution chain is
+    deterministic in the offline suite (a developer shell's env must not
+    change fail-fast behavior). Tests that assert on env resolution set it
+    themselves via monkeypatch."""
+    monkeypatch.delenv("HELIXGEN_HELIX_IP", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_device_locks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Point the advisory device-lock root at a per-test tmp dir, so no test
     ever reads/writes the real `~/.helixgen/locks/` (a developer's live

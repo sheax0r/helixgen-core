@@ -57,6 +57,31 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## ✅ Shipped
 
+- **Workspace #74 — `device discover` + persisted-IP resolution chain
+  (0.23.0).** (Authoritative entry in the coordination workspace's
+  `BACKLOG.md`.) The hardcoded default `192.168.4.84` — the maintainer's own
+  fossilized DHCP lease, a guaranteed-wrong default for anyone else that
+  failed as a long connect stall — is **gone from src/ entirely** (pinned by
+  a grep-style regression test). New verb `helixgen device discover
+  [--timeout] [--probe/--no-probe] [--json]`: mDNS first (the Stadium
+  advertises `_stadiumserver._tcp.local.` and answers a one-shot stdlib
+  multicast PTR query itself — verified live; single datagram carries
+  PTR+SRV+A, SRV port 2001), local-/24 TCP connect-probe fallback (port
+  2002, bounded, never beyond the local subnet), every candidate confirmed
+  via read-only `/ProductInfoGet` before being persisted into the
+  library-foundations per-device records (`devices/<serial>.json` gains
+  round-tripped `ip`/`ip_updated_at`/`model`/`firmware`). Resolution chain
+  everywhere an IP is needed: `--ip` > `$HELIXGEN_HELIX_IP` > persisted
+  record > immediate instructive failure naming `device discover`
+  (`discovery.resolve_ip()`; multi-device: most-recently-discovered wins
+  deterministically, ip_updated_at desc then serial desc, warning on
+  disagreement). Community prior art (discover-once, then direct-to-IP —
+  the desktop app's discovery layer is flaky, direct sessions stable) is
+  the design's reason and documented in `docs/CLI.md`. Live suite: new
+  `discover` marker group; `$HELIXGEN_HOME` now scratch-redirected (real
+  `devices/` records untouchable) with `$HELIXGEN_LOCKS` pinned back to the
+  real root.
+
 - **Workspace #67 + #68-core + #65 — live-validation fixes (0.21.0).** (The
   authoritative entries live in the coordination workspace's `BACKLOG.md`.)
   #67a: live-ops block coordinates corrected to the DSP **grid slot** (the

@@ -56,7 +56,7 @@ def _last_sent(h):
 
 
 def test_activate_snapshot_wire():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h)
     assert h.activate_snapshot(2) is True
     addr, args = _last_sent(h)
@@ -67,7 +67,7 @@ def test_activate_snapshot_wire():
 
 @pytest.mark.parametrize("bad", [-1, 8, 99])
 def test_activate_snapshot_range(bad):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h)
     with pytest.raises(ValueError):
         h.activate_snapshot(bad)
@@ -76,7 +76,7 @@ def test_activate_snapshot_range(bad):
 def test_set_block_enable_wire():
     # The grid slot goes on the wire unchanged — including the output
     # block's non-contiguous slot 13 (HW-proven 2026-07-15).
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h)
     h.set_block_enable(0, 3, False)
     addr, args = _last_sent(h)
@@ -90,7 +90,7 @@ def test_set_block_enable_wire():
 
 
 def test_set_block_model_wire():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h)
     h.set_block_model(0, 4, 70)
     addr, args = _last_sent(h)
@@ -103,7 +103,7 @@ def test_set_param_wire():
     # /ParamValueSet [reqid, path, grid_slot, 0, paramId, value, -1] with the
     # value in RAW units (dB floats verbatim; HW 2026-07-15: slot 13 gain
     # 6.0→3.0→6.0 acked + read back).
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h)
     h.set_param(0, 13, 2, -6.0)
     addr, args = _last_sent(h)
@@ -117,7 +117,7 @@ def test_get_param_wire_and_reply():
     reply = osc_encode("/getParamValue",
                        [("i", 1000), ("i", 0), ("i", 13), ("i", 0),
                         ("i", 2), ("f", 6.0)])
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [reply])
     assert h.get_param(0, 13, 2) == 6.0
     addr, args = _last_sent(h)
@@ -132,7 +132,7 @@ def test_get_param_no_value_raises():
     # coordinate — must raise, not return junk.
     reply = osc_encode("/getParamValue",
                        [("i", 1000), ("i", 0), ("i", 5), ("i", 0)])
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [reply])
     with pytest.raises(HelixError, match="no value"):
         h.get_param(0, 5, 2)
@@ -141,7 +141,7 @@ def test_get_param_no_value_raises():
 @pytest.mark.parametrize("bad_slot", [-3, -1, 28, 99])
 def test_liveops_reject_out_of_grid_slots(bad_slot):
     from helixgen.device.client import HelixError
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h)
     for call in (lambda: h.set_block_enable(0, bad_slot, True),
                  lambda: h.set_block_model(0, bad_slot, 70),
@@ -171,7 +171,7 @@ _FLAT_EB = {
 
 
 def test_edit_buffer_blocks_reports_grid_slots(monkeypatch):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
     blocks = h.edit_buffer_blocks()
     coords = {(b["path"], b["block"]) for b in blocks}
@@ -191,21 +191,21 @@ def test_edit_buffer_blocks_dict_shape_passthrough(monkeypatch):
             }},
         ]}
     }
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(h, "read_edit_buffer", lambda: fake_eb)
     coords = {(b["path"], b["block"]) for b in h.edit_buffer_blocks()}
     assert coords == {(0, 1), (0, 3)}
 
 
 def test_edit_buffer_blocks_empty_on_bad_shape(monkeypatch):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(h, "read_edit_buffer", lambda: {"sfg_": {}})
     assert h.edit_buffer_blocks() == []
 
 
 def test_edit_buffer_params_joins_defs(monkeypatch):
     # Model 783 = P35_OutputMatrix: defs say pan = pid 1, gain = pid 2.
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
     info = h.edit_buffer_params(0, 13)
     assert info["model"] == "P35_OutputMatrix"
@@ -216,7 +216,7 @@ def test_edit_buffer_params_joins_defs(monkeypatch):
 
 
 def test_edit_buffer_params_unknown_pid_kept(monkeypatch):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
     info = h.edit_buffer_params(0, 1)  # HD2_AmpA30FawnBrt
     by_pid = {p["pid"]: p for p in info["params"]}
@@ -229,7 +229,7 @@ def test_edit_buffer_params_unknown_pid_kept(monkeypatch):
 
 def test_edit_buffer_params_no_block_raises(monkeypatch):
     from helixgen.device.client import HelixError
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
     with pytest.raises(HelixError, match="device blocks"):
         h.edit_buffer_params(0, 5)
@@ -238,7 +238,7 @@ def test_edit_buffer_params_no_block_raises(monkeypatch):
 def test_active_preset(monkeypatch):
     from helixgen.device import settings as S
 
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(
         h, "get_property",
         lambda key: S.PropertyValue(key=key, type="i", value=1202))
@@ -254,7 +254,7 @@ def test_active_preset(monkeypatch):
 def test_active_preset_unresolvable_ref(monkeypatch):
     from helixgen.device import settings as S
 
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(
         h, "get_property",
         lambda key: S.PropertyValue(key=key, type="i", value=0))

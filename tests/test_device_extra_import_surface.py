@@ -19,6 +19,13 @@ import pytest
 from click.testing import CliRunner
 
 
+@pytest.fixture(autouse=True)
+def _configured_device_ip(monkeypatch):
+    """#74: device verbs no longer have a built-in default IP. These tests
+    exercise verb logic against fakes, so simulate a configured user."""
+    monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
+
+
 @pytest.fixture
 def no_device_extra(monkeypatch):
     """Make ``import zmq`` and ``import msgpack`` raise ImportError process-wide

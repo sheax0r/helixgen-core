@@ -114,7 +114,7 @@ def _last_sent(h):
 
 
 def test_reorder_container_wire_shape():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode(
         "/updateContainerContent",
         [("i", 1000), ("b", msgpack.packb([]))])
@@ -130,7 +130,7 @@ def test_reorder_container_wire_shape():
 
 
 def test_reorder_container_parses_update_reply():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     listing = [{"cid_": 10, "posi": 0, "cctp": 1003, "rcid": 900},
                {"cid_": 11, "posi": 1, "cctp": 1003, "rcid": 901}]
     reply = osc_encode(
@@ -145,7 +145,7 @@ def test_reorder_container_empty_update_reply_is_not_a_fallback_trigger():
     """An /updateContainerContent reply that is OBSERVED but legitimately
     empty must not be confused with "no reply seen" — only one RPC call
     (the reorder itself) should be sent."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode(
         "/updateContainerContent",
         [("i", 1000), ("b", msgpack.packb([]))])
@@ -156,7 +156,7 @@ def test_reorder_container_empty_update_reply_is_not_a_fallback_trigger():
 
 
 def test_reorder_container_falls_back_to_relist_when_no_update_reply():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     # rpc 1000: /ReorderContainerContent -> bare /status, no listing
     reorder_reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
     # rpc 1001: fallback /GetContainerContents
@@ -172,7 +172,7 @@ def test_reorder_container_falls_back_to_relist_when_no_update_reply():
 def test_reorder_container_error_reply_raises():
     """A device /error must raise, not silently fall back to a re-list of the
     unchanged container (which would read as a false success)."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/error", [("i", 1000), ("i", 0), ("s", "NOPE")])
     _wire(h, [reply])
     with pytest.raises(HelixError, match="rejected"):
@@ -182,7 +182,7 @@ def test_reorder_container_error_reply_raises():
 def test_reorder_container_failing_status_raises():
     """A /status whose code field (args[1], the _ok convention) is non-zero is
     a refusal, not a confirmation-on-another-channel."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", -21), ("i", 0)])
     _wire(h, [reply])
     with pytest.raises(HelixError, match="refused"):

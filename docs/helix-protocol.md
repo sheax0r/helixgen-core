@@ -46,9 +46,19 @@ control:**
   Wi-Fi AP or a wired LAN segment). Treat exposure to any wider network as a
   full compromise of the device's content.
 
-Device addressing: fixed/observed IP e.g. `192.168.4.84`; mDNS/Bonjour hostname
-`p35x1.local` (`p35` is the internal model code for the Stadium; `p37` is a
-sibling model that shares the definition-file format).
+Device addressing: DHCP-assigned IP; mDNS/Bonjour hostname `p35x1.local`
+(`p35` is the internal model code for the Stadium; `p37` is a sibling model
+that shares the definition-file format). **mDNS discovery (verified live
+2026-07-16, Stadium XL fw 1.3.2):** the device advertises the DNS-SD service
+`_stadiumserver._tcp.local.` and answers a one-shot multicast PTR query
+itself — a single response datagram from the device carries PTR
+(`_stadiumserver._tcp.local.` → `p35x1._stadiumserver._tcp.local.`), SRV
+(port **2001**, target `p35x1.local.` — the change-stream port, NOT the
+2002 RPC port), and the A record. `helixgen device discover` uses exactly
+this query (stdlib, one shot), confirms candidates with `/ProductInfoGet`,
+and persists the address (`~/.helixgen/devices/<serial>.json`) — sessions
+then connect direct-to-IP (the desktop app's discovery layer is known
+flaky; direct sessions are stable).
 
 ---
 

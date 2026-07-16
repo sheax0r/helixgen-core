@@ -444,7 +444,7 @@ def delete_device_ir(client, name_or_hash: str, *, ip: str,
 
 def ir_prune(
     *,
-    ip: str = "192.168.4.84",
+    ip: Optional[str] = None,
     port: Optional[int] = None,
     execute: bool = False,
     force: bool = False,
@@ -486,6 +486,12 @@ def ir_prune(
     ``referenced`` entries list their ``presets``; ``protected`` their
     ``local_tones``).
     """
+    if ip is None:
+        # #74 resolution chain — no hardcoded default IP; the resolved
+        # address is also what the SFTP file-removal path connects to.
+        from . import discovery
+
+        ip = discovery.resolve_ip()
     kwargs: Dict[str, Any] = {"ip": ip}
     if port is not None:
         kwargs["port"] = port

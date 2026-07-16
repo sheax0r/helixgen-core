@@ -1,5 +1,6 @@
 """CLI tests for the `helixgen device slots` group (list / --verify / restore)."""
 import json
+import pytest
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -7,6 +8,13 @@ from click.testing import CliRunner
 from helixgen.cli import cli
 from helixgen.device import observations as _obs
 from helixgen.device.manifest import SetlistManifest
+
+@pytest.fixture(autouse=True)
+def _configured_device_ip(monkeypatch):
+    """#74: device verbs no longer have a built-in default IP. These tests
+    exercise verb logic against fakes, so simulate a configured user."""
+    monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
+
 
 HSP_MAGIC = b"rpshnosj"
 
