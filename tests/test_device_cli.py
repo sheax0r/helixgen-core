@@ -164,7 +164,38 @@ def test_device_error_path_nonzero_exit(monkeypatch):
     assert "boom" in result.output
 
 
-def test_device_setlist_maps_to_constant(monkeypatch):
+class SetlistFakeClient(FakeClient):
+    """FakeClient with one named device setlist ('Throwaway', cid 816)
+    holding one reference (ref cid 5001 -> pool cid 102 at posi 0)."""
+
+    SETLIST_CID = 816
+    REFS = [{"cid_": 5001, "cctp": 1003, "posi": 0, "rcid": 102,
+             "name": "Lead Tone"}]
+
+    def resolve_setlist_cid(self, name, *, strict=True):
+        self.calls.append(("resolve_setlist_cid", name))
+        return self.SETLIST_CID if name.strip().lower() == "throwaway" else None
+
+    def list_setlists(self, *, strict=False):
+        return [{"cid_": self.SETLIST_CID, "name": "Throwaway", "cctp": 1001}]
+
+    def list_container(self, cid, *, strict=False):
+        self.calls.append(("list_container", cid))
+        return list(self.REFS) if cid == self.SETLIST_CID else []
+
+    def remove_reference(self, setlist_cid, ref_cid):
+        self.calls.append(("remove_reference", setlist_cid, ref_cid))
+        return True
+
+    def reference_into_setlist(self, setlist_cid, pool_cid, pos):
+        self.calls.append(("reference_into_setlist", setlist_cid, pool_cid, pos))
+        return 5002
+
+    def _lowest_empty_posi(self, container):
+        return 7
+
+
+def test_device_list_user_keyword_hits_pool(monkeypatch):
     holder = {}
 
     class Recorder(FakeClient):
@@ -173,9 +204,243 @@ def test_device_setlist_maps_to_constant(monkeypatch):
             return CANNED_PRESETS
 
     _patch_client(monkeypatch, Recorder)
-    result = CliRunner().invoke(cli, ["device", "list", "--setlist", "throwaway"])
+    result = CliRunner().invoke(cli, ["device", "list", "--setlist", "user"])
     assert result.exit_code == 0
-    assert holder["container"] == -5  # THROWAWAY
+    assert holder["container"] == -2  # the preset POOL
+
+
+def test_device_list_named_setlist_lists_references(monkeypatch):
+    # #68b: --setlist accepts real device setlist names; 'throwaway' now
+    # resolves the setlist actually named Throwaway (the old -5 root mapping
+    # listed nothing).
+    _patch_client(monkeypatch, SetlistFakeClient)
+    result = CliRunner().invoke(cli, ["device", "list", "--setlist", "throwaway"])
+    assert result.exit_code == 0, result.output
+    assert "rcid=102" in result.output and "Lead Tone" in result.output
+
+
+def test_device_list_unknown_setlist_names_the_real_ones(monkeypatch):
+    _patch_client(monkeypatch, SetlistFakeClient)
+    result = CliRunner().invoke(cli, ["device", "list", "--setlist", "nope"])
+    assert result.exit_code != 0
+    assert "no device setlist named 'nope'" in result.output
+    assert "Throwaway" in result.output
+
+
+def test_device_delete_from_named_setlist_removes_reference(monkeypatch):
+    holder = {}
+
+    class Recorder(SetlistFakeClient):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    # by the referenced pool cid (rcid)
+    result = CliRunner().invoke(
+        cli, ["device", "delete", "102", "--setlist", "throwaway", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert ("remove_reference", 816, 5001) in holder["client"].calls
+    assert "pool preset was not touched" in result.output
+    # the pool preset itself must never be deleted through a setlist
+    assert not any(c[0] == "delete" for c in holder["client"].calls)
+
+
+def test_device_create_into_named_setlist_references(monkeypatch):
+    holder = {}
+
+    class Recorder(SetlistFakeClient):
+        REFS = []  # destination position free
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "create", "--from", "101", "--setlist", "Throwaway",
+              "--pos", "3"])
+    assert result.exit_code == 0, result.output
+    assert ("reference_into_setlist", 816, 101, 3) in holder["client"].calls
+    assert "reference" in result.output
+    # no pool copy is made
+    assert not any(c[0] == "create_from" for c in holder["client"].calls)
+
+
+def test_device_push_into_named_setlist_pools_then_references(monkeypatch, tmp_path):
+    holder = {}
+
+    class Recorder(SetlistFakeClient):
+        REFS = []
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(sbe), "HGTEST T", "--setlist", "Throwaway",
+              "--pos", "2"])
+    assert result.exit_code == 0, result.output
+    calls = holder["client"].calls
+    # content lands in the POOL at the lowest empty posi (7)...
+    assert ("push_to_slot", -2, 7, "HGTEST T") in calls
+    # ...and a reference is added into the setlist at --pos
+    assert ("reference_into_setlist", 816, 900, 2) in calls
+
+
+def test_device_push_into_setlist_pool_failure_sends_no_reference(monkeypatch, tmp_path):
+    """Review finding 1: a failed pool write must never be followed by a
+    nil-cid /AddContentsToContainer reference."""
+    holder = {}
+
+    class Recorder(SetlistFakeClient):
+        REFS = []
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+        def push_to_slot(self, container, pos, name, blob):
+            self.calls.append(("push_to_slot", container, pos, name))
+            return None  # pool create failed (e.g. reply timeout)
+
+    _patch_client(monkeypatch, Recorder)
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(sbe), "T", "--setlist", "Throwaway",
+              "--pos", "0"])
+    assert result.exit_code != 0
+    assert "failed to push" in result.output
+    assert not any(c[0] == "reference_into_setlist"
+                   for c in holder["client"].calls)
+
+
+def test_device_push_records_canonical_setlist_case(monkeypatch, tmp_path):
+    """Review finding 3: the typed case ('throwaway') must resolve to the
+    device's canonical display name ('Throwaway') everywhere the label is
+    used, or the local manifest mints a duplicate setlist key."""
+    class Recorder(SetlistFakeClient):
+        REFS = []
+
+    _patch_client(monkeypatch, Recorder)
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(sbe), "T", "--setlist", "throwaway",
+              "--pos", "0"])
+    assert result.exit_code == 0, result.output
+    assert "'Throwaway'" in result.output          # canonical case echoed
+    assert "'throwaway'" not in result.output
+
+
+def test_device_save_into_named_setlist(monkeypatch):
+    holder = {}
+
+    class Recorder(SetlistFakeClient):
+        REFS = []
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "save", "HG Save", "--setlist", "Throwaway",
+              "--pos", "4"])
+    assert result.exit_code == 0, result.output
+    calls = holder["client"].calls
+    assert ("save_edit_buffer_to", -2, 7, "HG Save") in calls
+    assert ("reference_into_setlist", 816, 901, 4) in calls
+
+
+def test_device_slots_restore_named_setlist_requires_pos(monkeypatch, tmp_path):
+    """Review finding 2: a tone's recorded slot/posi is a POOL position;
+    restoring into a named setlist without an explicit --pos must refuse."""
+    import helixgen.device.manifest as manifest_mod
+
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    manifest = tmp_path / "setlists.json"
+    manifest.write_text(json.dumps({
+        "version": 2,
+        "tones": {"T": {"path": str(sbe), "content_hash": None, "doc": None,
+                        "source": "push", "slot": "3A", "device": None}},
+        "setlists": {},
+    }))
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(manifest))
+    _patch_client(monkeypatch, SetlistFakeClient)
+    result = CliRunner().invoke(
+        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway"])
+    assert result.exit_code != 0
+    assert "--pos" in result.output and "POOL position" in result.output
+
+
+def test_device_write_verbs_refuse_factory(monkeypatch):
+    _patch_client(monkeypatch, FakeClient)
+    result = CliRunner().invoke(
+        cli, ["device", "create", "--from", "101", "--setlist", "factory",
+              "--pos", "0"])
+    assert result.exit_code != 0
+    assert "read-only" in result.output
+
+
+def test_device_active_human_and_json(monkeypatch):
+    class ActiveFake(FakeClient):
+        def active_preset(self):
+            return {"cid": 1202, "name": "Prehistoric Dog", "posi": 17,
+                    "slot": "5B", "ccid": -2}
+
+    _patch_client(monkeypatch, ActiveFake)
+    result = CliRunner().invoke(cli, ["device", "active"])
+    assert result.exit_code == 0, result.output
+    assert "1202" in result.output and "Prehistoric Dog" in result.output
+    result = CliRunner().invoke(cli, ["device", "active", "--json"])
+    assert json.loads(result.output)["cid"] == 1202
+
+
+def test_device_params_human_and_json(monkeypatch):
+    info = {"path": 0, "block": 13, "model_id": 783,
+            "model": "P35_OutputMatrix", "enabled": True,
+            "params": [
+                {"pid": 1, "name": "pan", "value": 0.5, "type": "f",
+                 "min": 0, "max": 1, "default": 0.5},
+                {"pid": 2, "name": "gain", "value": 6.0, "type": "f",
+                 "min": -60, "max": 6, "default": 0.0},
+            ]}
+
+    class ParamsFake(FakeClient):
+        def edit_buffer_params(self, path, block):
+            self.calls.append(("edit_buffer_params", path, block))
+            return info
+
+    _patch_client(monkeypatch, ParamsFake)
+    result = CliRunner().invoke(cli, ["device", "params", "0", "13"])
+    assert result.exit_code == 0, result.output
+    assert "pid    2" in result.output and "gain" in result.output
+    result = CliRunner().invoke(cli, ["device", "params", "0", "13", "--json"])
+    data = json.loads(result.output)
+    assert data["block"] == 13
+    assert {"pid", "name", "value"} <= set(data["params"][0])
+
+
+def test_device_list_irs_json_carries_file_basename(monkeypatch):
+    class IrFake(FakeClient):
+        def list_irs(self, strict=False):
+            return [{"cid_": 7, "name": "My IR", "hash": "ab" * 16,
+                     "mono": True, "posi": 0}]
+
+        def ir_path_for_hash(self, hh):
+            return "/data/stadium-family-fw/ir/original upload name.wav"
+
+    _patch_client(monkeypatch, IrFake)
+    result = CliRunner().invoke(cli, ["device", "list-irs", "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data[0]["file"] == "original upload name.wav"
 
 
 def test_device_pull_writes_blob(monkeypatch, tmp_path):

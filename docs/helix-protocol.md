@@ -229,10 +229,15 @@ This is the level at which a device preset and a helixgen `.hsp` describe the
 **same thing** (blocks → a model + named params) — they differ only in encoding.
 
 **`blks` is a FLAT alternating list** `[int, dict, int, dict, …]`. Each
-`(int, dict)` **pair is one block**: the `int` is the block's index/key and the
-`dict` is the block. `bcnt` = number of blocks; `bmap` = the index map
-`[0 .. bcnt-1]`. Iterate the list two elements at a time (or use `bmap`) to
-recover blocks.
+`(int, dict)` **pair is one block**: the `int` is the block's **DSP grid
+slot** (0..27 — the coordinate the live-ops wire commands take, see §6) and
+the `dict` is the block. The slots are **not necessarily contiguous**: on a
+Stadium XL the chain blocks occupy 0, 1, 2, … but the output block sits at
+slot **13**, the hidden second input at **14**, and the trailing output at
+**27** (live-decoded 2026-07-15). `bcnt` = number of blocks; `bmap` = the
+index map. Iterate the list two elements at a time to recover
+`(grid_slot, block)` pairs — do NOT use a running position counter as the
+block's identity.
 
 **Block dict** keys:
 
@@ -272,11 +277,12 @@ recover blocks.
 | `pid_` | **param id** — resolves via `defs.param_meta(model_id, name)` / the model-params table. |
 | `snap` | per-snapshot marker |
 | `tid_` | topology id |
-| `valu` | **the value — a normalized float** |
+| `valu` | **the value — in the param's RAW units** (correction 2026-07-15: previously described as "normalized"; many knobs *are* 0..1 by definition, but dB params store dB — an amp `Level` reads `-9.0`, the output block `gain` `6.0` — cut frequencies store Hz (`85.0`), int/bool enums their raw encoding. Same unit convention as the defs' `min`/`max` (§8), `/ParamValueSet`, and `.hsp` wire values.) |
 
 Worked example: for model `310` (`HD2_DistScream808Mono`), a `parm` with
 `pid_ = 1, valu = 0.18` — the defs say `pid 1 = "Gain"` (also `pid 2 = "Tone"`,
-`pid 3 = "Level"`). So that block is a Screamer 808 with Gain ≈ 0.18.
+`pid 3 = "Level"`). So that block is a Screamer 808 with Gain ≈ 0.18 (Gain's
+raw range is 0..1).
 
 **Key takeaway — same semantic model, two encodings.** The device edit buffer
 and helixgen's `.hsp` both model a preset as **blocks → (a model + named
@@ -286,7 +292,7 @@ params)**. They differ only in how a model and a param are named:
 |---------|-------------------|-------------------|
 | Model | model-id **string** (e.g. `HD2_DistScream808Mono`) | numeric `id__` |
 | Param | param **name** (e.g. `Gain`) | numeric `pid_` |
-| Value | normalized float | normalized float `valu` (same scale) |
+| Value | raw wire value (0-1 knobs, dB, Hz) | `valu` (same raw scale) |
 
 The **bundled modeldefs (`defs.py`, §8) is the translation table** in both
 directions: `defs.model_id_for(name)` / `defs.model_name_for(id__)` and
@@ -404,8 +410,9 @@ msgpack map.
 
 | Op | Address | Typetags / args | Reply | Notes |
 |----|---------|-----------------|-------|-------|
-| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, block, 0, paramId, floatValue, -1]` | edit-buffer update (echoed on 2001) | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `block` = the **wire block index = (blks_key−1)/2** (HW-verified 2026-07-14 — at a raw `blks` key the device silently drops the write: no ack, no 2001 echo; the captured `block=6` was blks key 13). The `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f` in the param's **raw units** (dB floats accepted verbatim); int/bool params are passed as their float encoding. |
-| **MODEL SET** | `/ModelSet` | `,iiiii` → `[cmd, dsp, block_id, subpos, modelId]` | edit-buffer update (echo `/setModelWithMID`) | Places/replaces a model. Args **decoded 2026-07-14** (e.g. `[117, 0, 4, 0, 70]` = cmd, dsp 0, **wire block 4 = blks key 9**, subpos 0, MID 70 — `block_id` is the wire index `(blks_key−1)/2`, not the blks key); `modelId` is the **numeric** model id from the model defs (§8). A model swap **cascades**: `/setBlockEnable`, `/setBlockFavorite`, `/assignSnapshotBypass`, `/attachBlockBypassControllerWithBlob` (a `lrtcpgsm` blob), `/setControllerSource`+`/setSourceEnable`, and a batch of `/setPropertyValue` param defaults for the new model — replay these for a faithful live swap. |
+| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, grid_slot, 0, paramId, floatValue, -1]` | `/status` + edit-buffer echo on 2001 | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `grid_slot` = the block's **grid slot** — the int PAIRED with the block dict in `blks` (§4). **ERRATUM 2026-07-15** to the 2026-07-14 `(blks_key−1)/2` finding: that formula translated the block's flat-list *position* and only coincided with the true slot for chains occupying contiguous slots from 0 (all early captures) — the output block (slot 13) was unaddressable under it. HW-proof: slot-13 `gain` write acked `/status 0` and read back via `/ParamValueGet`; a write at a slot with no block is silently dropped (no ack). The `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f` in the param's **raw units** (dB floats accepted verbatim); int/bool params are passed as their float encoding. |
+| **PARAM GET** | `/ParamValueGet` | `,iiiii` → `[reqid, path, grid_slot, 0, paramId]` | `/getParamValue [reqid, path, grid_slot, 0, paramId, value]` | **Live-verified 2026-07-15.** Reads one parameter's current value in RAW units. A coordinate with no block/param answers with a SHORT reply (no value field) rather than an error. Backs `helixgen device params` / `get_param`. |
+| **MODEL SET** | `/ModelSet` | `,iiiii` → `[cmd, dsp, grid_slot, subpos, modelId]` | edit-buffer update (echo `/setModelWithMID`) | Places/replaces a model. Args **decoded 2026-07-14** (e.g. `[117, 0, 4, 0, 70]`); the block coordinate is the **grid slot** (2026-07-15 erratum, same as PARAM SET — the capture's `4` was a contiguous chain where slot == `(blks_key−1)/2`); `modelId` is the **numeric** model id from the model defs (§8). A model swap **cascades**: `/setBlockEnable`, `/setBlockFavorite`, `/assignSnapshotBypass`, `/attachBlockBypassControllerWithBlob` (a `lrtcpgsm` blob), `/setControllerSource`+`/setSourceEnable`, and a batch of `/setPropertyValue` param defaults for the new model — replay these for a faithful live swap. |
 | **SNAPSHOT NAME** | `/SetSnapshotName` | `,iis` → `[reqid, snapshotIndex, "Name"]` | `/status` | Renames snapshot `snapshotIndex` (0–7). |
 | **EDIT BUFFER GET** | `/EditBufferStateGet` | `(reqid:i)` | `/getEditBufferState` → `[reqid, len:h, blob:b]` where blob = `_sbepgsm…` | Pulls the entire current edit buffer as the dialect-B blob (§4). `len` is an int64 (`h`) byte count. |
 
@@ -413,17 +420,35 @@ msgpack map.
 
 Live-control commands pinned by the 2026-07-14 capture (full writeup:
 `docs/superpowers/specs/2026-07-14-parity-capture-findings.md`). All on 2002;
-`cmd` = the leading monotonic id; block addressing is `(dsp, block_id)` where **`block_id` = (blks_key − 1) / 2** — the wire does NOT take the `sfg_.flow[dsp].blks` position key (HW-verified 2026-07-14: at a raw key the device acks/echoes but targets the wrong block; `/ParamValueSet` silently drops the write).
+`cmd` = the leading monotonic id; block addressing is `(dsp, grid_slot)` where **`grid_slot` is the int paired with the block dict in `sfg_.flow[dsp].blks`** (§4). **ERRATUM 2026-07-15:** the 2026-07-14 formula `(blks_key − 1) / 2` translated the block's flat-list position and held only for contiguous chains; the paired int is the real wire coordinate (proven by `/ParamValueGet`/`Set` at the output block's slot 13). At a coordinate holding no block the device acks/echoes without effect (`/ParamValueSet` silently drops the write) — the meters, or a `/ParamValueGet` read-back, are the ground truth that an op landed.
 
 | Op | Address | Typetags / args | Notes |
 |----|---------|-----------------|-------|
-| **Recall snapshot (live)** | `/activateSnapshot` | `,ii` → `[cmd, snapshotIndex]` | Index **absolute, 0-based**. Followed by `/setBatchedParamVals` (the snapshot's param deltas). No atomic *copy*-snapshot opcode exists — the app duplicates via `/AddContentsToContainer` or a batch of property writes. |
-| **Bypass/enable block (live)** | `/BlockEnableSet` | `,iiii` → `[cmd, dsp, block_id, enable]` | `enable` 0/1; echoed `/setBlockEnable` on 2001. |
+| **Recall snapshot (live)** | `/activateSnapshot` | `,ii` → `[cmd, snapshotIndex]` | Index **absolute, 0-based**. Followed by `/setBatchedParamVals` (the snapshot's param deltas). No atomic *copy*-snapshot opcode exists — the app duplicates via `/AddContentsToContainer` or a batch of property writes. Read the current index with `/ActiveSnapshotIndexGet` → `/getActiveSnapshotIndex [reqid, index]` (live-verified 2026-07-15). |
+| **Bypass/enable block (live)** | `/BlockEnableSet` | `,iiii` → `[cmd, dsp, grid_slot, enable]` | `enable` 0/1; echoed `/setBlockEnable` on 2001. |
 | **Reorder container** | `/ReorderContainerContent` | `,iibi` → `[cmd, containerCID, msgpack[movedCIDs], newPos]` | Moves the listed CIDs to `newPos`. Works on both a **setlist's presets** and the **setlists** themselves (a setlist is a container under `-5`). `/updateContainerContent` returns the new order. |
 
 `/LoadPresetWithCID` (above) is **load-by-CID** — the app's "make active" click
 is this same command; there is no separate active-index (backlog #1 resolved).
 `/ParamValueSet` and `/ModelSet` (above) are the other two live edit verbs.
+
+### The ACTIVE preset + the full property catalog (2026-07-15)
+
+The device exposes the **active preset's cid** as a live property:
+**`server.active.preset.id`** (int; display name "Active Preset"). Read it
+with `/PropertyValueGet` like any Global Setting; resolve the cid with
+`/GetContentRef`. Live-verified fw 1.3.2: it reflected the player's own panel
+selection before any network activity, and tracks `/LoadPresetWithCID`. Each
+load also broadcasts **`/loadContentRef [seq, 1001, ref-map]`** on the 2001
+stream (the full dialect-A ref of the newly-active preset) — subscribe for
+push-style tracking. Backs `helixgen device active`.
+
+The property catalog itself is enumerable: **`/MatchingPropertyDefinitionsGet
+[reqid, glob:s]`** (e.g. `"*"`, `"server*"`) replies with an `sfdppgsm` blob —
+`{defs: [{dval: {key_, type, val_}, id__, name, vmin, vmax, vnme, …}]}` —
+~302 defs on fw 1.3.2, a superset of the 161 curated `global.*` keys
+(`server.*`, `preset.*`, proxy keys, …). This is how
+`server.active.preset.id` was discovered.
 
 ### Global EQ properties (`dsp.globaleq.*`)
 
@@ -721,9 +746,10 @@ footswitch/controller assignment commands are parameterised on the device.
 - **`/SavePresetWithCID` 4th arg `N`.** Meaning unknown (not the block count;
   editor sent `6`, `0` works byte-faithfully). Harmless but uncharacterised.
 - ~~**`/ModelSet` leading args.**~~ **Decoded 2026-07-14**:
-  `[cmd, dsp, block_id, subpos, modelId]` (see §6 "Live device control").
-  (`/ParamValueSet`'s `[reqid, path, block, 0, paramId, value, -1]` layout is
-  also confirmed live.)
+  `[cmd, dsp, grid_slot, subpos, modelId]` (see §6 "Live device control";
+  block coordinate corrected to the grid slot 2026-07-15).
+  (`/ParamValueSet`'s `[reqid, path, grid_slot, 0, paramId, value, -1]`
+  layout is also confirmed live, plus its read twin `/ParamValueGet`.)
 - **`/status` error codes.** Only `code == 0` (OK) is confirmed; the non-zero
   error taxonomy is uncatalogued. **`/CreateContent` code-1 anomaly (2026-07-14,
   cleared 2026-07-15):** on one session `/CreateContent` returned `code == 1`

@@ -619,6 +619,31 @@ def test_local_refs_warn_and_fail_closed_on_unreadable_paths(fake_client,
     assert [m["name"] for m in res["deleted"]] != []
 
 
+def test_local_refs_decode_sbe_sources(fake_client, tmp_path):
+    """#68i: a tone whose recorded source is a .sbe (device content, the
+    record `device push` writes) is decoded as device content — its irmd
+    hashes protect IRs, and there is no bogus "missing rpshnosj magic"
+    warning for a perfectly normal push flow."""
+    sbe = tmp_path / "pushed.sbe"
+    sbe.write_bytes(_content.encode_content_data(
+        {"sfg_": {"flow": [{"blks": {"b1": {
+            "mdls": [{"irmd": bytes.fromhex(H2)}]}}}]}}))
+    manifest = FakeManifest(tones={"Pushed Tone": {"path": str(sbe)}})
+    hashes, warnings = mt.local_referenced_ir_hashes(manifest)
+    assert warnings == []
+    assert hashes.get(H2) == ["Pushed Tone"]
+
+
+def test_local_refs_unreadable_sbe_warns_accurately(fake_client, tmp_path):
+    sbe = tmp_path / "corrupt.sbe"
+    sbe.write_bytes(b"not a content blob at all")
+    manifest = FakeManifest(tones={"Bad Push": {"path": str(sbe)}})
+    hashes, warnings = mt.local_referenced_ir_hashes(manifest)
+    assert hashes == {}
+    assert warnings and ".sbe device-content source" in warnings[0]
+    assert "rpshnosj" not in warnings[0]
+
+
 def test_ir_prune_force_and_ignore_warnings_are_independent(fake_client,
                                                             tmp_path):
     """#32a: ``force`` (delete protected) and ``ignore_warnings`` (proceed over

@@ -113,22 +113,42 @@ def slot_label(posi: Optional[int]) -> str:
     return f"{posi // 4 + 1}{_SLOT_LETTERS[posi % 4]}"
 
 
-def _wire_block(blks_key: int) -> int:
-    """Public block coordinate -> live-ops wire block index.
+#: The device's per-DSP block grid size (slots 0..27; inputs sit at 0/14,
+#: outputs at 13/27 on a Stadium XL).
+GRID_SLOTS = 28
 
-    Everything user-facing (``device blocks``, ``edit_buffer_blocks``, the
-    ``sfg_.flow[dsp].blks`` map) addresses blocks by their blks position key —
-    odd ints 1, 3, 5, …. The live-ops wire commands (``/BlockEnableSet``,
-    ``/ModelSet``, ``/ParamValueSet``) instead want ``(key - 1) / 2``.
-    HW-verified 2026-07-14: at the raw key the device acks/echoes but targets
-    the wrong block (or, for ``/ParamValueSet``, silently drops the write).
+#: The device property carrying the ACTIVE preset's cid (discovered via
+#: ``/MatchingPropertyDefinitionsGet``, live-verified 2026-07-15 fw 1.3.2:
+#: it reflected the player's own panel selection before any network load,
+#: and tracks ``/LoadPresetWithCID``).
+ACTIVE_PRESET_KEY = "server.active.preset.id"
+
+
+def _grid_slot(block: int) -> int:
+    """Validate a public block coordinate (the device's DSP **grid slot**).
+
+    The live-ops wire commands (``/BlockEnableSet``, ``/ModelSet``,
+    ``/ParamValueSet``, ``/ParamValueGet``) address a block by its grid
+    slot — the int PAIRED with each block dict in the ``sfg_.flow[dsp].blks``
+    flat list (0..27; e.g. inputs 0/14, outputs 13/27) — which is exactly
+    what ``device blocks`` / :meth:`HelixClient.edit_buffer_blocks` now
+    report, passed through unchanged.
+
+    ERRATUM (2026-07-15, fw 1.3.2) to the 2026-07-14 ``(key-1)/2`` finding:
+    that formula translated the block's *flat-list position* and only
+    coincided with the true slot while a chain occupies contiguous slots
+    from 0. HW-proof: ``/ParamValueGet`` answers at the paired key (output
+    block ``gain`` pid 2 read 6.0 dB at slot 13) and a ``/ParamValueSet``
+    at slot 13 landed and read back, while the formula index addressed the
+    wrong slot whenever the grid had gaps (the root cause of the "output
+    block set-param always fails" live finding).
     """
-    k = int(blks_key)
-    if k <= 0 or k % 2 == 0:
+    k = int(block)
+    if not 0 <= k < GRID_SLOTS:
         raise HelixError(
-            f"block {blks_key!r} is not a blks position key (odd int >= 1) — "
-            "use the coordinates printed by `device blocks`")
-    return (k - 1) // 2
+            f"block {block!r} is not a DSP grid slot (int 0..{GRID_SLOTS - 1})"
+            " — use the coordinates printed by `device blocks`")
+    return k
 
 
 class _RawOps:
@@ -725,48 +745,69 @@ class HelixClient:
     def set_block_enable(self, path: int, block: int, enable: bool) -> bool:
         """Bypass/enable a block in the live edit buffer.
 
-        ``/BlockEnableSet [reqid, dsp, wire_block, enable]``. ``path`` = DSP
-        index (0/1), ``block`` = the public block position key from
-        :meth:`edit_buffer_blocks` / ``device blocks`` (odd ints); the wire
-        wants ``(key-1)/2``, translated here (HW-verified 2026-07-14 — at the
-        raw key the device echoes success but toggles the wrong block).
+        ``/BlockEnableSet [reqid, dsp, grid_slot, enable]``. ``path`` = DSP
+        index (0/1), ``block`` = the grid slot printed by ``device blocks`` /
+        :meth:`edit_buffer_blocks`, sent unchanged (see :func:`_grid_slot`
+        for the 2026-07-15 indexing erratum).
         """
         self._rpc("/BlockEnableSet",
-                  [("i", int(path)), ("i", _wire_block(block)),
+                  [("i", int(path)), ("i", _grid_slot(block)),
                    ("i", 1 if enable else 0)])
         return True
 
     def set_block_model(self, path: int, block: int, model_id: int) -> bool:
         """Set a block's model in the live edit buffer.
 
-        ``/ModelSet [reqid, dsp, wire_block, sub=0, modelId]``. ``block`` is
-        the public blks position key (wire ``(key-1)/2`` translated here).
-        ``model_id`` is the numeric model id (see
+        ``/ModelSet [reqid, dsp, grid_slot, sub=0, modelId]``. ``block`` is
+        the grid slot printed by ``device blocks`` (sent unchanged; see
+        :func:`_grid_slot`). ``model_id`` is the numeric model id (see
         :mod:`helixgen.device.defs`). The device rejects a cross-category swap;
         the app also re-attaches controllers + pushes the new model's param
         defaults (not replayed here).
         """
         self._rpc("/ModelSet",
-                  [("i", int(path)), ("i", _wire_block(block)), ("i", 0),
+                  [("i", int(path)), ("i", _grid_slot(block)), ("i", 0),
                    ("i", int(model_id))])
         return True
 
+    @staticmethod
+    def _blks_pairs(dsp: Any):
+        """Yield ``(grid_slot, block_dict)`` pairs from a flow entry's
+        ``blks``.
+
+        On the wire ``blks`` is a FLAT alternating list ``[int, dict, …]``
+        whose int is the block's **grid slot** (0..27 — NOT its list
+        position; outputs sit at 13/27 with a gap before them). A dict-shaped
+        ``blks`` (synthetic/decoded variants) yields its items as-is.
+        """
+        blks = dsp.get("blks") if isinstance(dsp, dict) else None
+        if isinstance(blks, dict):
+            yield from blks.items()
+            return
+        if not isinstance(blks, list):
+            return
+        i = 0
+        while i + 1 < len(blks):
+            key, b = blks[i], blks[i + 1]
+            if isinstance(key, int) and isinstance(b, dict):
+                yield key, b
+                i += 2
+            else:
+                i += 1
+
     def edit_buffer_blocks(self) -> List[Dict[str, Any]]:
         """List the live edit buffer's modeled blocks as
-        ``[{path, block, model_id, model, enabled}]`` — the coordinates
-        :meth:`set_block_enable` / :meth:`set_block_model` address."""
+        ``[{path, block, model_id, model, enabled}]`` — ``block`` is the DSP
+        **grid slot** (the int paired with the block in ``blks``), the exact
+        coordinate :meth:`set_block_enable` / :meth:`set_block_model` /
+        :meth:`set_param` / :meth:`get_param` send on the wire."""
         eb = self.read_edit_buffer()
         flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
         out: List[Dict[str, Any]] = []
         if not isinstance(flow, list):
             return out
         for path, dsp in enumerate(flow):
-            blks = dsp.get("blks") if isinstance(dsp, dict) else None
-            items = (blks.items() if isinstance(blks, dict)
-                     else enumerate(blks or []))
-            for pos, b in items:
-                if not isinstance(b, dict):
-                    continue
+            for pos, b in self._blks_pairs(dsp):
                 mdls = b.get("mdls")
                 m0 = mdls[0] if isinstance(mdls, list) and mdls else {}
                 mid = m0.get("id__") if isinstance(m0, dict) else None
@@ -777,6 +818,98 @@ class HelixClient:
                     "model": _defs.model_name_for(mid),
                     "enabled": bool(b.get("enbl", 1))})
         return out
+
+    def edit_buffer_params(self, path: int, block: int) -> Dict[str, Any]:
+        """The params of one edit-buffer block, with their numeric pids.
+
+        Returns ``{path, block, model_id, model, enabled, params}`` where
+        ``params`` is a pid-sorted list of ``{pid, name, value, type, min,
+        max, default}``: the union of the model's defs table (names/types/
+        ranges from the vendored modeldefs) and the block's stored ``parm``
+        entries (``value`` = the stored ``valu``, in the param's RAW units —
+        dB/Hz/enum-int, the same units ``/ParamValueSet`` takes; ``None``
+        when the buffer stores no explicit entry for that pid). A pid the
+        defs don't know keeps ``name=None``.
+
+        Raises :class:`HelixError` when no modeled block sits at
+        ``(path, block)`` — coordinates come from :meth:`edit_buffer_blocks`.
+        """
+        slot = _grid_slot(block)
+        eb = self.read_edit_buffer()
+        flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+        dsp = flow[path] if isinstance(flow, list) and 0 <= int(path) < len(flow) else None
+        if dsp is None:
+            raise HelixError(f"no DSP path {path} in the edit buffer")
+        b = next((blk for pos, blk in self._blks_pairs(dsp)
+                  if int(pos) == slot), None)
+        mdls = b.get("mdls") if isinstance(b, dict) else None
+        m0 = mdls[0] if isinstance(mdls, list) and mdls else None
+        mid = m0.get("id__") if isinstance(m0, dict) else None
+        if not isinstance(mid, int):
+            raise HelixError(
+                f"no block at path {path} block {slot} — use the coordinates "
+                "printed by `device blocks`")
+        stored: Dict[int, Any] = {}
+        for p in (m0.get("parm") or []):
+            if isinstance(p, dict) and isinstance(p.get("pid_"), int):
+                stored[p["pid_"]] = p.get("valu")
+        rows: Dict[int, Dict[str, Any]] = {}
+        for name, meta in _defs.model_params_for(mid).items():
+            pid = meta.get("id")
+            if not isinstance(pid, int):
+                continue
+            rows[pid] = {"pid": pid, "name": name,
+                         "value": stored.get(pid),
+                         "type": meta.get("type"), "min": meta.get("min"),
+                         "max": meta.get("max"), "default": meta.get("def")}
+        for pid, valu in stored.items():
+            rows.setdefault(pid, {"pid": pid, "name": None, "value": valu,
+                                  "type": None, "min": None, "max": None,
+                                  "default": None})
+        return {"path": int(path), "block": slot, "model_id": mid,
+                "model": _defs.model_name_for(mid),
+                "enabled": bool(b.get("enbl", 1)),
+                "params": [rows[k] for k in sorted(rows)]}
+
+    def get_param(self, path: int, block: int, param_id: int) -> Any:
+        """Read one edit-buffer param's CURRENT value, in RAW units.
+
+        ``/ParamValueGet [reqid, dsp, grid_slot, 0, paramId]`` →
+        ``/getParamValue [reqid, dsp, grid_slot, 0, paramId, value]``
+        (live-verified 2026-07-15). A reply without the value field means no
+        block/param answers at that coordinate — raises :class:`HelixError`.
+        """
+        replies = self._rpc(
+            "/ParamValueGet",
+            [("i", int(path)), ("i", _grid_slot(block)), ("i", 0),
+             ("i", int(param_id))])
+        for addr, args in replies:
+            if addr == "/getParamValue" and len(args) >= 6:
+                return args[5]
+        raise HelixError(
+            f"no value in /getParamValue reply for path {path} block {block} "
+            f"pid {param_id} — is there a block with that pid at that "
+            "coordinate? (see `device blocks` / `device params`)")
+
+    def active_preset(self) -> Dict[str, Any]:
+        """The device's ACTIVE preset: ``{cid, name, posi, slot, ccid}``.
+
+        Reads the live device property ``server.active.preset.id`` (an int
+        cid; see :data:`ACTIVE_PRESET_KEY`) and resolves it with the
+        read-only ``/GetContentRef``. ``name``/``posi``/``slot``/``ccid``
+        are ``None``/empty when the cid doesn't resolve to a content ref.
+        Read-only — never touches presets or the edit buffer.
+        """
+        raw = self.get_property(ACTIVE_PRESET_KEY).value
+        try:
+            cid = int(raw)
+        except (TypeError, ValueError) as e:
+            raise HelixError(
+                f"unexpected {ACTIVE_PRESET_KEY} value {raw!r} from the "
+                "device (malformed property reply?)") from e
+        ref = self.get_ref(cid) or {}
+        return {"cid": cid, "name": ref.get("name"), "posi": ref.get("posi"),
+                "slot": slot_label(ref.get("posi")), "ccid": ref.get("ccid")}
 
     def load_preset(self, cid: int) -> bool:
         return self._ok(self._rpc("/LoadPresetWithCID", [("i", cid)]))
@@ -895,17 +1028,18 @@ class HelixClient:
 
     def set_param(self, path: int, block: int, param_id: int, value: float) -> bool:
         """Set a param in the edit buffer:
-        ``/ParamValueSet [_, path, wire_block, 0, paramId, value, -1]``.
+        ``/ParamValueSet [_, path, grid_slot, 0, paramId, value, -1]``.
 
-        ``block`` is the public blks position key (wire ``(key-1)/2``
-        translated here); ``value`` is in the param's RAW units (e.g. dB for
-        the output block's ``gain``), not normalized. HW-verified 2026-07-14 —
-        at a raw blks key the device silently drops the write (no ack, no
-        echo), which is why this verb previously always returned False.
+        ``block`` is the grid slot printed by ``device blocks`` (sent
+        unchanged; see :func:`_grid_slot` for the 2026-07-15 indexing
+        erratum); ``value`` is in the param's RAW units (e.g. dB for the
+        output block's ``gain`` pid 2 — HW-proof 2026-07-15: slot 13 gain
+        6.0→3.0→6.0, each write acked ``/status 0`` and read back via
+        :meth:`get_param`), not normalized.
         """
         return self._ok(self._rpc(
             "/ParamValueSet",
-            [("i", path), ("i", _wire_block(block)), ("i", 0), ("i", param_id),
+            [("i", path), ("i", _grid_slot(block)), ("i", 0), ("i", param_id),
              ("f", float(value)), ("i", -1)]))
 
     def set_model(self, model_id: int) -> bool:
