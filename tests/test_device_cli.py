@@ -491,6 +491,60 @@ def test_device_delete_yes_skips_prompt(monkeypatch):
     assert holder["args"] == (-2, [101])
 
 
+# -- Minor 5: rename/delete keep the per-device observation file's `tones`
+#    key in sync, not just the manifest ------------------------------------
+
+
+def test_device_rename_updates_observation_tones_key(monkeypatch):
+    from helixgen.device import observations as obsmod
+    from helixgen.device.manifest import SetlistManifest
+
+    obs = obsmod.DeviceObservations(serial="SN-INT-RENAME")
+    obs.record_pool("Old Name", cid=102, posi=1)
+    obsmod.save_observations(obs)
+
+    m = SetlistManifest.load()
+    m.register_pathless("Old Name", source="save")
+    m.mark_on_device("Old Name", "auto")
+    m.save()
+
+    _patch_client(monkeypatch, FakeClient)
+    result = CliRunner().invoke(cli, ["device", "rename", "102", "New Name"])
+    assert result.exit_code == 0
+
+    back = obsmod.load_observations("SN-INT-RENAME")
+    assert "Old Name" not in back.tones
+    assert back.tones["New Name"] == {"cid": 102, "posi": 1}
+
+    reloaded = SetlistManifest.load()
+    assert "New Name" in reloaded.tones
+    assert "Old Name" not in reloaded.tones
+
+
+def test_device_delete_updates_observation_tones_key(monkeypatch):
+    from helixgen.device import observations as obsmod
+    from helixgen.device.manifest import SetlistManifest
+
+    obs = obsmod.DeviceObservations(serial="SN-INT-DELETE")
+    obs.record_pool("Doomed Tone", cid=101, posi=0)
+    obsmod.save_observations(obs)
+
+    m = SetlistManifest.load()
+    m.register_pathless("Doomed Tone", source="save")
+    m.mark_on_device("Doomed Tone", "auto")
+    m.save()
+
+    _patch_client(monkeypatch, FakeClient)
+    result = CliRunner().invoke(cli, ["device", "delete", "101", "--yes"])
+    assert result.exit_code == 0
+
+    back = obsmod.load_observations("SN-INT-DELETE")
+    assert "Doomed Tone" not in back.tones
+
+    reloaded = SetlistManifest.load()
+    assert reloaded.tones["Doomed Tone"]["slot"] is None
+
+
 # -- auto-load IRs (_auto_upload_irs) -----------------------------------------
 
 class _FakeMapping:
@@ -1452,8 +1506,8 @@ def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(
     sbe = tmp_path / "lead.sbe"
     sbe.write_bytes(b"_sbepgsm-fake")
     m = SetlistManifest.load()
-    m.tones["Lead"] = {"path": str(sbe), "content_hash": None, "doc": None,
-                       "source": "push", "slot": "2B", "device": None}
+    m.tones["Lead"] = {"path": str(sbe), "content_hash": None,
+                       "source": "push", "slot": "2B"}
     m.save()
 
     RaisingFindByPosClient.WRITE_CALLS = []

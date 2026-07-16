@@ -43,6 +43,19 @@ def _manifest():
     return SetlistManifest, ManifestError
 
 
+def _serial_of(h, ip: str) -> str:
+    """The connected device's serial (`/ProductInfoGet`), for keying its
+    `devices/<serial>.json` observation file; falls back to `f"ip-{ip}"` when
+    the query fails or reports no serial. Best-effort — never raises."""
+    try:
+        serial = (h.product_info() or {}).get("serial")
+        if serial:
+            return str(serial)
+    except Exception:  # noqa: BLE001 — advisory identity, never fatal
+        pass
+    return f"ip-{ip}"
+
+
 def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
     """`--list` output for `device setlist import-hss`: per-slot filled/empty
     state, payload format, and preset name (fully offline)."""
@@ -251,24 +264,25 @@ def _auto_upload_irs(ip: str, hashes) -> None:
             "IR upload failed: " + "; ".join(upload_errors))
 
 
-def _tone_by_cid(m, cid: int):
-    """Return the manifest tone name whose observed device cid matches, or None."""
-    for name, rec in m.tones.items():
-        dev = rec.get("device")
-        if isinstance(dev, dict) and dev.get("cid") == cid:
-            return name
-    return None
+def _tone_by_cid(cid: int):
+    """Return the tone name whose observed device cid matches, or None. Reads
+    the per-device observation files (design §3 — cid/posi no longer lives in
+    the manifest)."""
+    from helixgen.device import observations as obsmod
+    return obsmod.lookup_name_by_cid(cid)
 
 
 def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
                       source_kind: str, source_path: str | None = None,
-                      model: str | None = None,
+                      model: str | None = None, serial: str | None = None,
                       setlist_pos: int | None = None) -> None:
-    """Record a device placement in the tone-library manifest. Best-effort: a
+    """Record a device placement: the desired ``slot``/setlist membership go
+    into the tone-library manifest (intent); the observed ``cid``/``posi`` go
+    into ``devices/<serial>.json`` (observation). ``posi`` is the POOL
+    position; ``setlist_pos`` (when the write targeted a named setlist) is the
+    tone's position within that setlist's membership order. Best-effort: a
     failure warns but never fails the device command (the write already
-    succeeded). ``posi`` is the POOL position; ``setlist_pos`` (when the
-    write targeted a named setlist) is the tone's position within that
-    setlist's membership order."""
+    succeeded)."""
     try:
         SetlistManifest, _ = _manifest()
 
@@ -279,18 +293,21 @@ def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
             elif source_path:
                 # a pushed .sbe (or other local source): store the path verbatim
                 m.tones[name] = {"path": str(source_path), "content_hash": None,
-                                 "doc": None, "source": "push", "slot": None,
-                                 "device": None}
+                                 "source": "push", "slot": None}
             else:
                 m.register_pathless(name, source="save" if source_kind == "save" else "create")
         slot = _slot_from_posi(posi)
         if slot:
             m.mark_on_device(name, slot)
-        if cid is not None:
-            m.tones[name]["device"] = {"cid": cid, "posi": posi}
         if setlist and setlist != "user":
             m.add_to_setlist(setlist, name, pos=setlist_pos)
         m.save()
+        # Observed placement -> the connected device's observation file.
+        if cid is not None and serial:
+            from helixgen.device import observations as obsmod
+            obs = obsmod.load_observations(serial)
+            obs.tones[name] = {"cid": cid, "posi": posi}
+            obsmod.save_observations(obs)
     except Exception as e:  # noqa: BLE001 — advisory, never fatal
         click.echo(f"warning: could not update tone library: {e}", err=True)
 
@@ -301,33 +318,43 @@ def _slot_from_posi(posi):
 
 
 def _ledger_rename(cid: int, new_name: str) -> None:
-    """Best-effort: reflect a device rename in the tone library."""
+    """Best-effort: reflect a device rename in the tone library — the
+    manifest's intent record AND the per-device observation file's ``tones``
+    key (Minor 5: the observation file used to keep the stale name)."""
     try:
         SetlistManifest, _ = _manifest()
 
         m = SetlistManifest.load()
-        old = _tone_by_cid(m, cid)
+        old = _tone_by_cid(cid)
         if old and old != new_name:
-            m.tones[new_name] = m.tones.pop(old)
-            for rec in m.setlists_map.values():
-                rec["tones"] = [new_name if t == old else t for t in rec["tones"]]
-            m.save()
+            if old in m.tones:
+                m.tones[new_name] = m.tones.pop(old)
+                for rec in m.setlists_map.values():
+                    rec["tones"] = [new_name if t == old else t for t in rec["tones"]]
+                m.save()
+            from helixgen.device import observations as obsmod
+            obsmod.rename_tone(old, new_name)
     except Exception as e:  # noqa: BLE001
         click.echo(f"warning: could not update tone library: {e}", err=True)
 
 
 def _ledger_remove(cid: int) -> None:
-    """Best-effort: drop a deleted preset from the tone library (membership +
-    on-device state; the tone stays in the library)."""
+    """Best-effort: drop a deleted preset from the tone library (clears its
+    desired on-device slot; the tone stays in the library) and drop its key
+    from the per-device observation file's ``tones`` map (Minor 5). The rest
+    of that observation file self-heals on the next sync."""
     try:
         SetlistManifest, _ = _manifest()
 
         m = SetlistManifest.load()
-        name = _tone_by_cid(m, cid)
+        name = _tone_by_cid(cid)
         if name:
-            m.tones[name]["slot"] = None
-            m.tones[name]["device"] = None
-            m.save()
+            if name in m.tones:
+                m.tones[name]["slot"] = None
+                m.tones[name].pop("auto_marked", None)
+                m.save()
+            from helixgen.device import observations as obsmod
+            obsmod.remove_tone(name)
     except Exception as e:  # noqa: BLE001
         click.echo(f"warning: could not update tone library: {e}", err=True)
 
@@ -398,11 +425,15 @@ def device() -> None:
     NOT-idempotent retry (see its --help). If it keeps dropping, reboot
     the Helix.
 
-    The tone library manifest (~/.helixgen/setlists.json) is the single
-    management record: every generated tone auto-registers there; "on the
-    device" ⟺ the tone has a slot; `device sync` mirrors ONLY managed tones
-    and never touches untracked device presets. Presets live once in the
-    pool (cid container -2) and setlists hold references to them.
+    The tone library manifest (~/.helixgen/setlists/manifest.json, override
+    $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json auto-migrates on
+    first load) is the single management record: every generated tone
+    auto-registers there; "on the device" ⟺ the tone has a slot; `device
+    sync` mirrors ONLY managed tones and never touches untracked device
+    presets. Presets live once in the pool (cid container -2) and setlists
+    hold references to them. A specific Helix's OBSERVED placement (cid/posi)
+    lives separately, in ~/.helixgen/devices/<serial>.json — not in the
+    manifest.
 
     SEE ALSO: docs/CLI.md "Device commands" for the full per-verb reference.
     """
@@ -827,6 +858,7 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
                 new_cid = h.reference_into_setlist(container, src_cid, pos)
             else:
                 new_cid = h._raw.create_from(src_cid, container, pos)
+            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -840,7 +872,7 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
         return
     click.echo(f"created cid {new_cid}")
     _record_placement(setlist=setlist, posi=pos, name=f"(copy of cid {src_cid})",
-                      cid=new_cid, source_kind="copy")
+                      cid=new_cid, source_kind="copy", serial=serial)
 
 
 @device.command(name="rename")
@@ -1235,6 +1267,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
 
             new_cid, pool_pos, ref_cid = _install_via_dest(
                 h, kind, container, label, pos, _writer)
+            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1245,7 +1278,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
              if kind == "setlist" else f"{label} slot {pos}")
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {where}")
     _record_placement(setlist=label, posi=pool_pos, name=name, cid=new_cid,
-                      source_kind="edit-buffer",
+                      source_kind="edit-buffer", serial=serial,
                       setlist_pos=pos if kind == "setlist" else None)
 
 
@@ -1585,6 +1618,7 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
 
             cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, pos, _writer)
+            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1594,6 +1628,7 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
     click.echo(f"installed {hsp_file.name} as cid {cid} ({name!r}) in {where}")
     _record_placement(setlist=label, posi=pool_pos, name=name, cid=cid,
                       source_kind="hsp", source_path=str(hsp_file.resolve()),
+                      serial=serial,
                       setlist_pos=pos if kind == "setlist" else None)
 
 
@@ -1601,7 +1636,9 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
 
 @device.group(name="setlist")
 def device_setlist() -> None:
-    """Manage the local setlist manifest (~/.helixgen/setlists.json).
+    """Manage the local setlist manifest (~/.helixgen/setlists/manifest.json,
+    override $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json
+    auto-migrates on first load).
 
     A tone is added to a setlist here (desired membership); `device sync` then
     pushes that membership onto the device as a preset pool + references. The
@@ -2186,6 +2223,7 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
 
             new_cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, pos, _writer)
+            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -2197,6 +2235,7 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     click.echo(f"pushed {infile.name} as cid {new_cid} ({name!r}) in {where}")
     _record_placement(setlist=label, posi=pool_pos, name=name, cid=new_cid,
                       source_kind="sbe", source_path=str(infile.resolve()),
+                      serial=serial,
                       setlist_pos=pos if kind == "setlist" else None)
 
 
@@ -2322,13 +2361,15 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     src_path = rec.get("path")
     dest_setlist = setlist or "user"
     # Slot resolution (#25): an explicit --pos wins; else the recorded slot
-    # label; else the last observed device posi (a synced tone records its
-    # concrete position under ``device.posi`` even when ``slot`` is unresolved).
+    # label; else the last observed device posi (a synced tone's concrete
+    # position is recorded in devices/<serial>.json even when ``slot`` is
+    # unresolved).
     dest_pos = pos
     if dest_pos is None:
         dest_pos = _posi_from_slot(rec.get("slot"))
     if dest_pos is None:
-        dev = rec.get("device")
+        from helixgen.device import observations as obsmod
+        dev = obsmod.lookup_tone(name)
         if isinstance(dev, dict) and isinstance(dev.get("posi"), int):
             dest_pos = dev["posi"]
     if dest_pos is None:
@@ -2374,6 +2415,7 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
 
             cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, dest_pos, _writer, force=force)
+            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -2385,6 +2427,7 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     click.echo(f"restored {name!r} to {where} (cid {cid}) from {src.name}")
     _record_placement(setlist=label, posi=pool_pos, name=name,
                       cid=cid, source_kind=src.suffix.lstrip("."), source_path=str(src),
+                      serial=serial,
                       setlist_pos=dest_pos if kind == "setlist" else None)
 
 

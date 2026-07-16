@@ -9,6 +9,7 @@ from helixgen.ir import IrMapping, IrMappingError, default_irs_path
 
 def test_default_irs_path_uses_home(monkeypatch):
     monkeypatch.delenv("HELIXGEN_IRS", raising=False)
+    monkeypatch.delenv("HELIXGEN_HOME", raising=False)
     monkeypatch.setenv("HOME", "/tmp/fake-home")
     assert default_irs_path() == Path("/tmp/fake-home/.helixgen/irs")
 

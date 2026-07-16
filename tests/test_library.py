@@ -29,6 +29,7 @@ def test_block_round_trips_through_dict():
 
 def test_default_library_path_uses_home(monkeypatch):
     monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+    monkeypatch.delenv("HELIXGEN_HOME", raising=False)
     monkeypatch.setenv("HOME", "/tmp/fake-home")
     assert default_library_path() == Path("/tmp/fake-home/.helixgen/library")
 

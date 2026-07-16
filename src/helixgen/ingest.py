@@ -407,6 +407,9 @@ INGEST_EXTENSIONS = {".hlx", ".hsp", ".json"}
 
 def ingest_path(path: Path, library: Library) -> IngestSummary:
     """Ingest a file or recursively all .hlx/.json files in a directory."""
+    from helixgen import libinit
+
+    libinit.ensure_initialized()
     path = Path(path)
     summary = IngestSummary()
 

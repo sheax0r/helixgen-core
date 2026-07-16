@@ -21,15 +21,30 @@ def _isolate_irhash_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_device_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Point the device slot ledger + setlist manifest at per-test tmp files, so
-    no test ever reads or writes the real `~/.helixgen/setlists.json` or the
-    legacy `~/.helixgen/device-slots.json`. The ledger is now folded into the
-    manifest file (`$HELIXGEN_SETLISTS`); the legacy `$HELIXGEN_DEVICE_SLOTS`
-    path is only read for migration. Tests that assert on path resolution
-    override these envs themselves.
+    """Point the helixgen home, device slot ledger, and setlist manifest at
+    per-test tmp files, so no test ever reads or writes the real
+    `~/.helixgen/setlists.json`, the legacy `~/.helixgen/device-slots.json`, or
+    the per-device `~/.helixgen/devices/<serial>.json` observation files. The
+    ledger is now folded into the manifest file (`$HELIXGEN_SETLISTS`); the
+    legacy `$HELIXGEN_DEVICE_SLOTS` path is only read for migration.
+    `$HELIXGEN_HOME` isolation also captures `devices/` (observations, manifest
+    v3). Tests that assert on path resolution override these envs themselves.
     """
+    monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path))
     monkeypatch.setenv("HELIXGEN_SETLISTS", str(tmp_path / "_setlists.json"))
     monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "_device_slots.json"))
+
+
+@pytest.fixture
+def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A tmp `~/.helixgen` home with the *default* manifest/devices layout in
+    force (no `$HELIXGEN_SETLISTS` override), so migration tests exercise the
+    real `manifest_path()` / `legacy_manifest_path()` / `devices_dir()` paths.
+    """
+    monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path))
+    monkeypatch.delenv("HELIXGEN_SETLISTS", raising=False)
+    monkeypatch.delenv("HELIXGEN_DEVICE_SLOTS", raising=False)
+    return tmp_path
 
 
 @pytest.fixture

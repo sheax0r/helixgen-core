@@ -23,6 +23,59 @@ file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
 new work (its "corrected mental models" preamble first); deferred work and
 punted review findings get a numbered entry there, not a TODO comment.
 
+## Home directory and git plumbing (`~/.helixgen`)
+
+Design: `docs/superpowers/specs/2026-07-15-library-metadata-design.md`
+(backlog #22/#35/#36; sequencing in
+`docs/superpowers/plans/2026-07-15-library-metadata.md`). This section
+describes only what **exists today** — the artifact library (`library/tones`,
+`library/guitars`, per-IR metadata) is later-PR work and isn't documented here
+yet.
+
+- **`$HELIXGEN_HOME`** (`src/helixgen/home.py`) is the root of everything
+  helixgen persists — default `~/.helixgen`. It centralizes default-path
+  computation; the existing per-area overrides (`$HELIXGEN_LIBRARY`,
+  `$HELIXGEN_IRS`, `$HELIXGEN_SETLISTS`, `$HELIXGEN_PREFS`, `$HELIXGEN_CACHE`)
+  keep working and always win over a `$HELIXGEN_HOME`-derived default.
+- **The home becomes a git repo automatically** (`src/helixgen/gitops.py` +
+  `src/helixgen/libinit.py`). The first write to the home — a manifest save,
+  a block-library ingest, and (in later PRs) a tone/guitar/IR metadata save —
+  calls `libinit.ensure_initialized()`, which `mkdir`s the home if needed and
+  `git init`s it (writing a `.gitignore` that excludes `devices/`, `cache/`,
+  `tone3000/`, `*.bak*`, and IR audio) if it isn't a repo yet. **Repo init is
+  unconditional whenever `git` is on PATH** — it does not depend on any
+  preference. If git is absent, helixgen warns once to stderr and continues
+  without git (advisory only; nothing fails because of a missing repo).
+  `ensure_initialized()` is cheap to call from every write path: a
+  module-level once-per-process flag skips repeat subprocess work for a home
+  already initialized this process.
+- **Auto-commit is advisory and preference-gated.** Every manifest save calls
+  `gitops.auto_commit(home, message)` afterward, which stages and commits
+  everything under the home — but only when the `git_commit_tones` preference
+  allows it (default `"auto"`; `"false"` skips the commit). A commit failure,
+  a missing git binary, or a load-preferences failure never fails the
+  triggering operation — it warns to stderr and moves on. The very first
+  write to a fresh home has nothing left to separately commit: `git init`'s
+  own `add -A` already captures it as part of the `"helixgen: initialize
+  library"` commit; `auto_commit`'s own `"helixgen: update manifest"` message
+  shows up starting with the second write.
+- **The manifest lives at `~/.helixgen/setlists/manifest.json`** (override
+  `$HELIXGEN_SETLISTS`, unchanged) — manifest v3, intent-only (see "The tone
+  library / slots" below). A legacy `~/.helixgen/setlists.json` (v1 or v2)
+  auto-migrates up to the new location on first load: a `.bak-v1`/`.bak-v2`
+  backup is written first, then the legacy file is renamed
+  `*.migrated-v2` so a re-run never re-migrates. **Migration note:** because
+  a v2→v3 migration also splits per-device observed placement out into
+  `devices/legacy.json` (see next bullet), the first `device sync` after
+  migrating re-pushes every managed tone once — the device's real serial
+  hasn't observed anything yet under its own file, so sync treats the whole
+  managed set as needing a (harmless, idempotent) placement refresh.
+- **Per-device observed state lives in `~/.helixgen/devices/<serial>.json`**
+  (`src/helixgen/device/observations.py`), one file per Helix serial (from
+  `device info`'s `/ProductInfoGet`), NOT the manifest and NOT committed
+  (`devices/` is gitignored) — it is rebuilt wholesale by every `device
+  sync`, so losing it costs nothing.
+
 ## CLI
 
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
@@ -113,15 +166,19 @@ slot instead; `setlist import-hss` is the one NOT-idempotent retry. If it
 keeps dropping, reboot the Helix.**
 
 **The tone library is the single management record.** Every tone helixgen
-generates auto-registers into the manifest `~/.helixgen/setlists.json` (override
-`$HELIXGEN_SETLISTS`). A **tone** = content + identity + management state; its
-desired **user slot** (`null` = off device, `"auto"` = wants device, or
-`"1A".."8D"`) plus its **setlist memberships**. **"On the device" ⟺ the tone has
-a slot.** There is no separate slot ledger. Presets are addressed by integer
-**CID**; a preset lives once in the **pool** (`-2`) and is referenced by
-**setlists** under the setlists root `-5`. **Sync is a managed-set mirror** —
-it installs/updates/reorders/deletes only the tones helixgen manages and
-**never touches untracked device presets**.
+generates auto-registers into the manifest, now at
+`~/.helixgen/setlists/manifest.json` (override `$HELIXGEN_SETLISTS`; a legacy
+`~/.helixgen/setlists.json` v2 manifest auto-migrates up to the new location
+on first load — see "Home directory and git plumbing" below). A **tone** =
+content + identity + management **intent**; its desired **user slot**
+(`null` = off device, `"auto"` = wants device, or `"1A".."8D"`) plus its
+**setlist memberships**. **"On the device" ⟺ the tone has a slot.** There is
+no separate slot ledger. Presets are addressed by integer **CID**; a preset
+lives once in the **pool** (`-2`) and is referenced by **setlists** under the
+setlists root `-5`. **Sync is a managed-set mirror** — it
+installs/updates/reorders/deletes only the tones helixgen manages and
+**never touches untracked device presets**. A specific Helix's **observed**
+placement (`cid`/`posi`) is not part of the manifest — see below.
 
 **Pushing tones to the device is driven by the `device` skill** (in the
 plugin repo, `sheax0r/helixgen`), which runs after `tone` has authored the `.hsp` and

@@ -12,8 +12,7 @@ def _mk(tmp_path, tones):
     m = SetlistManifest(tmp_path / "s.json")
     for name, slot in tones.items():
         m.tones[name] = {"path": f"/x/{name}.hsp", "content_hash": f"sha256:{name}",
-                         "doc": None, "source": "authored", "slot": slot,
-                         "device": None}
+                         "source": "authored", "slot": slot}
     return m
 
 
