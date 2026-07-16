@@ -113,6 +113,24 @@ def slot_label(posi: Optional[int]) -> str:
     return f"{posi // 4 + 1}{_SLOT_LETTERS[posi % 4]}"
 
 
+def _wire_block(blks_key: int) -> int:
+    """Public block coordinate -> live-ops wire block index.
+
+    Everything user-facing (``device blocks``, ``edit_buffer_blocks``, the
+    ``sfg_.flow[dsp].blks`` map) addresses blocks by their blks position key —
+    odd ints 1, 3, 5, …. The live-ops wire commands (``/BlockEnableSet``,
+    ``/ModelSet``, ``/ParamValueSet``) instead want ``(key - 1) / 2``.
+    HW-verified 2026-07-14: at the raw key the device acks/echoes but targets
+    the wrong block (or, for ``/ParamValueSet``, silently drops the write).
+    """
+    k = int(blks_key)
+    if k <= 0 or k % 2 == 0:
+        raise HelixError(
+            f"block {blks_key!r} is not a blks position key (odd int >= 1) — "
+            "use the coordinates printed by `device blocks`")
+    return (k - 1) // 2
+
+
 class _RawOps:
     """The raw, model-blind protocol primitives, namespaced off a client as
     ``client._raw``.
@@ -707,24 +725,29 @@ class HelixClient:
     def set_block_enable(self, path: int, block: int, enable: bool) -> bool:
         """Bypass/enable a block in the live edit buffer.
 
-        ``/BlockEnableSet [reqid, dsp, block, enable]``. ``path`` = DSP index
-        (0/1), ``block`` = block position (see :meth:`edit_buffer_blocks`).
+        ``/BlockEnableSet [reqid, dsp, wire_block, enable]``. ``path`` = DSP
+        index (0/1), ``block`` = the public block position key from
+        :meth:`edit_buffer_blocks` / ``device blocks`` (odd ints); the wire
+        wants ``(key-1)/2``, translated here (HW-verified 2026-07-14 — at the
+        raw key the device echoes success but toggles the wrong block).
         """
         self._rpc("/BlockEnableSet",
-                  [("i", int(path)), ("i", int(block)),
+                  [("i", int(path)), ("i", _wire_block(block)),
                    ("i", 1 if enable else 0)])
         return True
 
     def set_block_model(self, path: int, block: int, model_id: int) -> bool:
         """Set a block's model in the live edit buffer.
 
-        ``/ModelSet [reqid, dsp, block, sub=0, modelId]``. ``model_id`` is the
-        numeric model id (see :mod:`helixgen.device.defs`). The device rejects a
-        cross-category swap; the app also re-attaches controllers + pushes the
-        new model's param defaults (not replayed here).
+        ``/ModelSet [reqid, dsp, wire_block, sub=0, modelId]``. ``block`` is
+        the public blks position key (wire ``(key-1)/2`` translated here).
+        ``model_id`` is the numeric model id (see
+        :mod:`helixgen.device.defs`). The device rejects a cross-category swap;
+        the app also re-attaches controllers + pushes the new model's param
+        defaults (not replayed here).
         """
         self._rpc("/ModelSet",
-                  [("i", int(path)), ("i", int(block)), ("i", 0),
+                  [("i", int(path)), ("i", _wire_block(block)), ("i", 0),
                    ("i", int(model_id))])
         return True
 
@@ -871,10 +894,18 @@ class HelixClient:
         return items
 
     def set_param(self, path: int, block: int, param_id: int, value: float) -> bool:
-        """Set a param in the edit buffer: /ParamValueSet [_, path, block, 0, paramId, value, -1]."""
+        """Set a param in the edit buffer:
+        ``/ParamValueSet [_, path, wire_block, 0, paramId, value, -1]``.
+
+        ``block`` is the public blks position key (wire ``(key-1)/2``
+        translated here); ``value`` is in the param's RAW units (e.g. dB for
+        the output block's ``gain``), not normalized. HW-verified 2026-07-14 —
+        at a raw blks key the device silently drops the write (no ack, no
+        echo), which is why this verb previously always returned False.
+        """
         return self._ok(self._rpc(
             "/ParamValueSet",
-            [("i", path), ("i", block), ("i", 0), ("i", param_id),
+            [("i", path), ("i", _wire_block(block)), ("i", 0), ("i", param_id),
              ("f", float(value)), ("i", -1)]))
 
     def set_model(self, model_id: int) -> bool:

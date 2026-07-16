@@ -1073,6 +1073,28 @@ Remaining follow-ups:
   backlog; plugin- and TUI-specific work moves to each repo's own
   `docs/BACKLOG.md` as it arises. Parity matrix + protocol docs stay in core.
 
+- **#62 Loudness feedback loop — measured volume normalization** — the 2003
+  `/dspEvent` meter grids (`{eid_:1, mid_:796/800}`) are per-node live audio
+  envelopes with instrument-input and chain-out levels in the same burst.
+  Spec + phase-0 hardware findings:
+  `docs/superpowers/specs/2026-07-14-loudness-feedback-normalization.md`.
+  **Phases 0–1 SHIPPED 2026-07-14** (same session as the spec): grid
+  semantics characterized on hardware (~10 Hz, linear amplitude, taps
+  upstream of output-block gain), the live-ops wire-index bug fixed
+  (`(blks_key−1)/2` — bypass/model/set-param had been targeting the wrong
+  blocks), and `device measure` + MCP `device_measure` (playing-gated robust
+  dB stats incl. the input-invariant output÷input chain gain). **Remaining:**
+  (a) phase 2 `device normalize` — per-snapshot / per-setlist closed loop;
+  needs snapshot-aware `set-param` in `mutate` for per-snapshot `.hsp`
+  trims, and note the phase-0 caveat that output-gain trims are dB-exact but
+  invisible to the grid (verify via an in-chain actuator or trust the math);
+  (b) the full per-layout cell-index formula (splits, dual-amp, DSP1, the ×4
+  clusters) → `label_cells(reading, layout)`; (c) phase 3 USB-audio capture →
+  quality metrics (LUFS, crest factor, FFT band energies in the IR-catalog
+  vocabulary) feeding a tone-skill refinement loop at creation time when the
+  device is online, and later iteration via the device skill; (d) skills
+  integration lives in the plugin repo (cross-repo, after #56).
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

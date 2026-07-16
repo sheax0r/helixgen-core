@@ -808,8 +808,11 @@ def device_set_param_handler(
 ) -> dict[str, Any]:
     """Set one param in the device's edit buffer. Returns ``{"ok": <bool>}``.
 
-    ``path``/``block``/``param_id`` are the device's numeric coordinates for
-    the target param; ``value`` is the normalized float.
+    ``path``/``block`` are ``device_blocks`` coordinates (block = the odd
+    position key, translated to the wire's ``(key-1)/2`` internally);
+    ``param_id`` is the numeric param id from the model defs; ``value`` is in
+    the param's RAW units (e.g. dB for the output block's ``gain``) — NOT
+    normalized.
     """
     _validate_model(model)
 
@@ -1514,3 +1517,34 @@ def device_meters_handler(
                  "values": [round(v, 4) for v in r.values]}
                 for mid, r in sorted(last.items())],
             "samples": samples}
+
+
+def device_measure_handler(
+    *, seconds: float = 20.0, min_playing: int = 40,
+    ip: str = _DEFAULT_DEVICE_IP
+) -> dict[str, Any]:
+    """Measure the ACTIVE tone's loudness while the player plays — read-only.
+
+    Samples the 2003 telemetry for ``seconds`` and reduces the playing-gated
+    readings (real pitch + non-silent input; hum/silence ignored) to robust
+    dB statistics. Returns the ``MeasureResult`` fields: ``{seconds,
+    n_samples, n_playing, playing_seconds, input_db, output_db,
+    output_db_p75, gain_db, ok, reason}``. ``gain_db`` (chain out/in) is the
+    input-invariant loudness metric to compare across snapshots/presets.
+    ``ok`` is False (with ``reason``) when the window contained too little
+    actual playing to trust.
+    """
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import HelixError
+    from helixgen.device import measure as ME
+
+    try:
+        with HelixSubscriber(ip=ip) as sub:
+            events = sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
+                                include_noise=True)
+            result = ME.summarize(ME.samples_from_events(events),
+                                  seconds=seconds, min_playing=min_playing)
+    except HelixError as e:
+        raise ValueError(f"device error: {e}") from e
+    return {k: (round(v, 2) if isinstance(v, float) else v)
+            for k, v in result._asdict().items()}

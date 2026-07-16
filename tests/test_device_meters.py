@@ -76,3 +76,46 @@ def test_string_key_form_also_decodes():
     m = {"id__": {"eid_": 1, "mid_": 800}, "vals": [0.05] * 4}
     r = meters.reading_from_map(m)
     assert r is not None and r.mid == 800 and r.peak == pytest.approx(0.05)
+
+
+# -- chain-level extraction (input/output cells, dB) -------------------------
+# Cell semantics HW-characterized 2026-07-14 (loudness spec phase 0): mid 796
+# cells 0-1 = instrument input pair; mid 800's populated cells = the
+# output-send stereo pairs, all carrying the chain-out level.
+
+def _reading(mid, cells):
+    vals = [0.0] * 128
+    for i, v in cells.items():
+        vals[i] = v
+    r = meters.reading_from_map(_map(1, mid, vals))
+    assert r is not None
+    return r
+
+
+def test_input_level_is_max_of_input_pair():
+    r = _reading(796, {0: 0.020, 1: 0.021, 8: 0.5})
+    assert meters.input_level(r) == pytest.approx(0.021)
+
+
+def test_input_level_zero_when_silent_or_wrong_mid():
+    assert meters.input_level(_reading(796, {})) == 0.0
+    # output grid never carries the input pair
+    assert meters.input_level(_reading(800, {0: 0.5, 1: 0.5})) == 0.0
+
+
+def test_output_level_is_median_of_populated_cells():
+    r = _reading(800, {108: 0.50, 109: 0.50, 110: 0.52, 111: 0.52,
+                       116: 0.51, 117: 0.51})
+    assert meters.output_level(r) == pytest.approx(0.51)
+
+
+def test_output_level_zero_when_empty_or_wrong_mid():
+    assert meters.output_level(_reading(800, {})) == 0.0
+    assert meters.output_level(_reading(796, {8: 0.5, 9: 0.5})) == 0.0
+
+
+def test_to_db():
+    assert meters.to_db(1.0) == pytest.approx(0.0)
+    assert meters.to_db(0.5) == pytest.approx(-6.0206, abs=1e-3)
+    assert meters.to_db(0.0) == -140.0
+    assert meters.to_db(-0.1) == -140.0

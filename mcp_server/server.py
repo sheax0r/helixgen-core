@@ -434,9 +434,13 @@ def device_set_param(
 ) -> dict[str, Any]:
     """Set one param in the device's live edit buffer.
 
-    Required `model`: `"stadium"` or `"stadium_xl"`. `path`/`block`/`param_id`
-    are the device's numeric coordinates for the target param; `value` is the
-    normalized float. Returns `{"ok": <bool>}`.
+    Required `model`: `"stadium"` or `"stadium_xl"`. `path`/`block` are the
+    coordinates from `device_blocks` (block = the odd position key; the wire's
+    `(key-1)/2` translation happens internally); `param_id` is the numeric
+    param id from the model defs. `value` is in the param's RAW units (e.g.
+    dB for the output block's `gain`, pid 2) — NOT normalized. Mutates the
+    ACTIVE tone immediately (volatile until the preset is saved). Returns
+    `{"ok": <bool>}`.
     """
     return _tools.device_set_param_handler(
         model, ip=ip, path=path, block=block, param_id=param_id, value=value
@@ -1052,3 +1056,24 @@ def device_meters(
     samples}` — the latest reading seen per mid.
     """
     return _tools.device_meters_handler(seconds=seconds, ip=ip)
+
+
+@app.tool()
+def device_measure(
+    seconds: float = 20.0,
+    min_playing: int = 40,
+    ip: str = _tools._DEFAULT_DEVICE_IP,
+) -> dict[str, Any]:
+    """Measure how loud the Stadium's ACTIVE tone is while the player plays.
+
+    Read-only: samples the port-2003 telemetry for `seconds` and reduces the
+    playing-gated readings (real pitch + non-silent input; hum and silence
+    are ignored) to robust dB stats. TELL THE PLAYER TO PLAY STEADILY during
+    the window. Returns `{seconds, n_samples, n_playing, playing_seconds,
+    input_db, output_db, output_db_p75, gain_db, ok, reason}` — `gain_db`
+    (chain out/in, input-invariant) is the number to compare across
+    snapshots/presets when level-matching; `ok=False` + `reason` means the
+    window had too little actual playing to trust (re-run it).
+    """
+    return _tools.device_measure_handler(
+        seconds=seconds, min_playing=min_playing, ip=ip)
