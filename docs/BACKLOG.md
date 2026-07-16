@@ -114,6 +114,24 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## 🔲 Remaining
 
+### Deferred from the 0.21.0 adversarial review (2026-07-15)
+
+- **#69 `slots restore --force` into a named setlist may stack a duplicate
+  reference [device-write]** — `_install_via_dest` skips the setlist-position
+  occupancy check under `--force` and `reference_into_setlist` never removes
+  an incumbent; what the device does with two references at one posi is
+  uncataloged. Either refuse `--force` on the setlist branch or characterize
+  + document the outcome on hardware.
+- **#70 Deprecated `throwaway`→`-5` remnants + stale dated docs [local]** —
+  `container_for_setlist_keyword`/`THROWAWAY` still map `"throwaway"` to the
+  setlists root (no production caller; pinned by a unit test), preserving
+  semantics 0.21.0 established never worked — remove the dead API in the next
+  breaking pass. The dated archives
+  `docs/superpowers/plans/2026-07-14-loudness-measure-implementation.md` and
+  `docs/superpowers/specs/2026-07-14-loudness-feedback-normalization.md`
+  still state the superseded `(key-1)/2` wire rule with no erratum pointer
+  (the three living contract docs are corrected).
+
 Legend: **[local]** = pure local code, no device needed. **[device-write]** =
 implementation is code, but *hardware validation* requires a device write
 (gated by the auto-mode classifier — run via `!` or grant a Bash permission

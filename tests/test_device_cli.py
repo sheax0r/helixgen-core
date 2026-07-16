@@ -291,6 +291,94 @@ def test_device_push_into_named_setlist_pools_then_references(monkeypatch, tmp_p
     assert ("reference_into_setlist", 816, 900, 2) in calls
 
 
+def test_device_push_into_setlist_pool_failure_sends_no_reference(monkeypatch, tmp_path):
+    """Review finding 1: a failed pool write must never be followed by a
+    nil-cid /AddContentsToContainer reference."""
+    holder = {}
+
+    class Recorder(SetlistFakeClient):
+        REFS = []
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+        def push_to_slot(self, container, pos, name, blob):
+            self.calls.append(("push_to_slot", container, pos, name))
+            return None  # pool create failed (e.g. reply timeout)
+
+    _patch_client(monkeypatch, Recorder)
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(sbe), "T", "--setlist", "Throwaway",
+              "--pos", "0"])
+    assert result.exit_code != 0
+    assert "failed to push" in result.output
+    assert not any(c[0] == "reference_into_setlist"
+                   for c in holder["client"].calls)
+
+
+def test_device_push_records_canonical_setlist_case(monkeypatch, tmp_path):
+    """Review finding 3: the typed case ('throwaway') must resolve to the
+    device's canonical display name ('Throwaway') everywhere the label is
+    used, or the local manifest mints a duplicate setlist key."""
+    class Recorder(SetlistFakeClient):
+        REFS = []
+
+    _patch_client(monkeypatch, Recorder)
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(sbe), "T", "--setlist", "throwaway",
+              "--pos", "0"])
+    assert result.exit_code == 0, result.output
+    assert "'Throwaway'" in result.output          # canonical case echoed
+    assert "'throwaway'" not in result.output
+
+
+def test_device_save_into_named_setlist(monkeypatch):
+    holder = {}
+
+    class Recorder(SetlistFakeClient):
+        REFS = []
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "save", "HG Save", "--setlist", "Throwaway",
+              "--pos", "4"])
+    assert result.exit_code == 0, result.output
+    calls = holder["client"].calls
+    assert ("save_edit_buffer_to", -2, 7, "HG Save") in calls
+    assert ("reference_into_setlist", 816, 901, 4) in calls
+
+
+def test_device_slots_restore_named_setlist_requires_pos(monkeypatch, tmp_path):
+    """Review finding 2: a tone's recorded slot/posi is a POOL position;
+    restoring into a named setlist without an explicit --pos must refuse."""
+    import helixgen.device.manifest as manifest_mod
+
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    manifest = tmp_path / "setlists.json"
+    manifest.write_text(json.dumps({
+        "version": 2,
+        "tones": {"T": {"path": str(sbe), "content_hash": None, "doc": None,
+                        "source": "push", "slot": "3A", "device": None}},
+        "setlists": {},
+    }))
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(manifest))
+    _patch_client(monkeypatch, SetlistFakeClient)
+    result = CliRunner().invoke(
+        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway"])
+    assert result.exit_code != 0
+    assert "--pos" in result.output and "POOL position" in result.output
+
+
 def test_device_write_verbs_refuse_factory(monkeypatch):
     _patch_client(monkeypatch, FakeClient)
     result = CliRunner().invoke(

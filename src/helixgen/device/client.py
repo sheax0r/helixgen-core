@@ -900,7 +900,13 @@ class HelixClient:
         are ``None``/empty when the cid doesn't resolve to a content ref.
         Read-only — never touches presets or the edit buffer.
         """
-        cid = int(self.get_property(ACTIVE_PRESET_KEY).value)
+        raw = self.get_property(ACTIVE_PRESET_KEY).value
+        try:
+            cid = int(raw)
+        except (TypeError, ValueError) as e:
+            raise HelixError(
+                f"unexpected {ACTIVE_PRESET_KEY} value {raw!r} from the "
+                "device (malformed property reply?)") from e
         ref = self.get_ref(cid) or {}
         return {"cid": cid, "name": ref.get("name"), "posi": ref.get("posi"),
                 "slot": slot_label(ref.get("posi")), "ccid": ref.get("ccid")}

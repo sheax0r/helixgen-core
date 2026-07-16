@@ -148,7 +148,16 @@ def _resolve_setlist_dest(h, name: str):
         raise click.ClickException(
             f"no device setlist named {name!r}; device setlists: {have}. "
             "Also valid: 'user' (the preset pool) and 'factory'.")
-    return "setlist", int(cid), name
+    # Return the setlist's CANONICAL display name, not the user's typed case
+    # (the match is case-insensitive but the local manifest's setlist keys
+    # are case-sensitive — a typed-case label would mint a duplicate).
+    label = name
+    try:
+        label = next((str(m.get("name")) for m in h.list_setlists()
+                      if m.get("cid_") == cid), name)
+    except HelixError:
+        pass
+    return "setlist", int(cid), label
 
 
 def _setlist_refs(h, setlist_cid: int, *, strict: bool = False):
@@ -194,6 +203,9 @@ def _install_via_dest(h, kind: str, dest_cid: int, label: str, pos: int,
             f"setlist {label!r} position {pos} is not empty")
     pool_pos = h._lowest_empty_posi(Container.POOL)
     new_cid = writer(int(Container.POOL), pool_pos)
+    if new_cid is None:
+        # the pool write failed — never send a nil-cid reference to the device
+        return None, pool_pos, None
     ref_cid = h.reference_into_setlist(dest_cid, new_cid, pos)
     if ref_cid is None:
         click.echo(
@@ -250,10 +262,13 @@ def _tone_by_cid(m, cid: int):
 
 def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
                       source_kind: str, source_path: str | None = None,
-                      model: str | None = None) -> None:
+                      model: str | None = None,
+                      setlist_pos: int | None = None) -> None:
     """Record a device placement in the tone-library manifest. Best-effort: a
     failure warns but never fails the device command (the write already
-    succeeded)."""
+    succeeded). ``posi`` is the POOL position; ``setlist_pos`` (when the
+    write targeted a named setlist) is the tone's position within that
+    setlist's membership order."""
     try:
         SetlistManifest, _ = _manifest()
 
@@ -274,7 +289,7 @@ def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
         if cid is not None:
             m.tones[name]["device"] = {"cid": cid, "posi": posi}
         if setlist and setlist != "user":
-            m.add_to_setlist(setlist, name)
+            m.add_to_setlist(setlist, name, pos=setlist_pos)
         m.save()
     except Exception as e:  # noqa: BLE001 — advisory, never fatal
         click.echo(f"warning: could not update tone library: {e}", err=True)
@@ -434,7 +449,9 @@ def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
         return
     if kind == "setlist":
         for m in items:
-            click.echo(f"{m.get('posi'):>3}  cid={m.get('cid_')}  "
+            posi = m.get("posi")
+            click.echo(f"{'?' if posi is None else posi:>3}  "
+                       f"cid={m.get('cid_')}  "
                        f"rcid={m.get('rcid')}  {m.get('name', '')}")
         return
     for m in items:
@@ -1228,7 +1245,8 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
              if kind == "setlist" else f"{label} slot {pos}")
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {where}")
     _record_placement(setlist=label, posi=pool_pos, name=name, cid=new_cid,
-                      source_kind="edit-buffer")
+                      source_kind="edit-buffer",
+                      setlist_pos=pos if kind == "setlist" else None)
 
 
 @device.command(name="list-irs")
@@ -1575,7 +1593,8 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
              if kind == "setlist" else f"{label} slot {pos}")
     click.echo(f"installed {hsp_file.name} as cid {cid} ({name!r}) in {where}")
     _record_placement(setlist=label, posi=pool_pos, name=name, cid=cid,
-                      source_kind="hsp", source_path=str(hsp_file.resolve()))
+                      source_kind="hsp", source_path=str(hsp_file.resolve()),
+                      setlist_pos=pos if kind == "setlist" else None)
 
 
 # --- device setlist: the local manifest of desired setlist membership -------
@@ -2177,7 +2196,8 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
              if kind == "setlist" else f"{label} slot {pos}")
     click.echo(f"pushed {infile.name} as cid {new_cid} ({name!r}) in {where}")
     _record_placement(setlist=label, posi=pool_pos, name=name, cid=new_cid,
-                      source_kind="sbe", source_path=str(infile.resolve()))
+                      source_kind="sbe", source_path=str(infile.resolve()),
+                      setlist_pos=pos if kind == "setlist" else None)
 
 
 @device.command(name="restore")
@@ -2327,6 +2347,11 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     try:
         with HelixClient(ip, port) as h:
             kind, container, label = _resolve_setlist_dest(h, dest_setlist)
+            if kind == "setlist" and pos is None:
+                raise click.ClickException(
+                    f"restoring into a named setlist needs an explicit --pos: "
+                    f"the recorded slot/posi for {name!r} is a POOL position, "
+                    f"not a position within setlist {label!r}")
 
             if src.suffix == ".sbe":
                 def _writer(cont, cpos):
@@ -2359,7 +2384,8 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
              f"{dest_pos}" if kind == "setlist" else f"{label} slot {dest_pos}")
     click.echo(f"restored {name!r} to {where} (cid {cid}) from {src.name}")
     _record_placement(setlist=label, posi=pool_pos, name=name,
-                      cid=cid, source_kind=src.suffix.lstrip("."), source_path=str(src))
+                      cid=cid, source_kind=src.suffix.lstrip("."), source_path=str(src),
+                      setlist_pos=dest_pos if kind == "setlist" else None)
 
 
 @device_slots.command(name="reorder")
