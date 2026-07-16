@@ -177,7 +177,8 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "list-irs"], ["file", "pull-ir"]),
     (["device", "unsync"], ["SYNCED setlist", "membership"]),
     # --- library metadata group + describe (Task 8) ---
-    (["library"], ["logical slug", "preset_name", "cross-link", "describe"]),
+    (["library"], ["logical slug", "preset_name", "cross-link", "describe",
+                   "all populated"]),
     (["library", "list"], ["guitar profiles", "grouped", "per-IR metadata"]),
     (["library", "show"], ["metadata filename", "ambiguous", "describe", "guitar profile"]),
     (["library", "doc"], ["mutually exclusive", "advisory-commits", "notes_md"]),
@@ -186,7 +187,8 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["describe"], ["guitar_settings", "verbatim", "Artist - Song"]),
     # --- library import + migrate (Task 9) ---
     (["library", "migrate"],
-     ["IDEMPOTENT", "COPIED", "slug collision", "--dry-run", "--plan"]),
+     ["IDEMPOTENT", "COPIED", "slug collision", "--dry-run", "--plan",
+      "SEEDED", "guitar profile", "preset_output_dir", "default_guitar"]),
     (["library", "import"],
      ["MOVED", "--keep-source", "description_md", "overwritten"]),
     # --- IR metadata: copy-by-default + backfill (Task 12) ---

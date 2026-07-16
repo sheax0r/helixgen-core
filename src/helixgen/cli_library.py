@@ -219,7 +219,7 @@ def library() -> None:
     Subcommands:
 
     \b
-      list      enumerate tones (+ guitars/IRs -- empty until a later PR)
+      list      enumerate tones, guitar profiles, and IRs (all populated)
       show      one tone's metadata, human summary or raw --json
       doc       set a tone's description_md, or one variant's notes_md
       validate  shape + cross-link checks across every tone's metadata
@@ -528,8 +528,11 @@ def migrate_cmd(dry_run: bool, plan_file: Path | None) -> None:
     manifest/mapping churn); a tone move is copy -> byte-verify -> remove-source;
     a per-tone/IR error is recorded and the run CONTINUES. A slug collision (two
     tones -> one destination) is recorded with a rename suggestion and NEITHER
-    is moved. Instrument -> guitar-profile seeding is DEFERRED to a later PR
-    (the plan records instruments; nothing is written).
+    is moved. Each prefs ``instruments`` entry is SEEDED into a guitar profile
+    (library/guitars/<slug>.json); the retired ``instruments`` and
+    ``preset_output_dir`` keys are then removed from preferences.json, and
+    ``default_guitar`` is reconciled against the seeded profiles -- a
+    still-unresolved value is WARNED (stderr) and recorded, never rewritten.
 
     \b
       --dry-run        print the plan JSON, mutate nothing
