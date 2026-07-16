@@ -1,0 +1,169 @@
+"""CLI tests for `helixgen analyze-audio` (backlog #62 phase 3).
+
+The per-verb --help is the agent contract (the MCP server is gone), so the
+help text's key phrases are pinned here the same way test_cli_parity.py pins
+the older verbs. Record mode is exercised offline with a fake `sounddevice`
+module injected into sys.modules — no hardware, no PortAudio.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import types
+import wave
+from pathlib import Path
+
+import numpy as np
+import pytest
+from click.testing import CliRunner
+
+from helixgen.cli import cli
+
+
+RATE = 48000
+
+
+def _write_sine(path: Path, freq: float = 1000.0, seconds: float = 2.0,
+                amp: float = 0.5) -> Path:
+    t = np.arange(int(seconds * RATE)) / RATE
+    x = amp * np.sin(2 * np.pi * freq * t)
+    ints = np.round(x * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(ints.tobytes())
+    return path
+
+
+def _full_help(cmd) -> str:
+    opt_help = " ".join(getattr(p, "help", None) or "" for p in cmd.params)
+    return " ".join(((cmd.help or "") + "\n" + opt_help).split())
+
+
+class TestHelpContract:
+    def test_verb_exists(self):
+        assert "analyze-audio" in cli.commands
+
+    @pytest.mark.parametrize("phrase", [
+        "LUFS",
+        "BS.1770",
+        "crest factor",
+        "band",
+        "low_mid",
+        "helixgen[analyze]",
+        "helixgen[capture]",
+        "EXPERIMENTAL",
+        "read-only",
+        "--json",
+    ])
+    def test_key_contract_phrases(self, phrase: str):
+        assert phrase in _full_help(cli.commands["analyze-audio"]), (
+            f"agent-contract phrase {phrase!r} missing from "
+            "`analyze-audio --help`")
+
+
+class TestAnalyzeFile:
+    def test_human_output(self, tmp_path: Path):
+        wav = _write_sine(tmp_path / "tone.wav")
+        result = CliRunner().invoke(cli, ["analyze-audio", str(wav)])
+        assert result.exit_code == 0, result.output
+        assert "LUFS" in result.output
+        assert "crest" in result.output
+        assert "high_mid" in result.output
+
+    def test_json_output_shape(self, tmp_path: Path):
+        wav = _write_sine(tmp_path / "tone.wav")
+        result = CliRunner().invoke(cli, ["analyze-audio", str(wav), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["lufs_integrated"] == pytest.approx(-9.03, abs=0.15)
+        assert data["crest_db"] == pytest.approx(3.01, abs=0.1)
+        assert data["rate"] == RATE
+        assert data["channels"] == 1
+        assert data["clipped"] is False
+        assert {b["band"] for b in data["bands"]} == {
+            "low", "low_mid", "mid", "high_mid", "high"}
+        assert data["file"].endswith("tone.wav")
+
+    def test_unreadable_file_is_clean_error(self, tmp_path: Path):
+        bad = tmp_path / "bad.wav"
+        bad.write_bytes(b"nope" * 100)
+        result = CliRunner().invoke(cli, ["analyze-audio", str(bad)])
+        assert result.exit_code != 0
+        assert "Error" in result.output
+        assert "Traceback" not in result.output
+
+    def test_no_args_is_usage_error(self):
+        result = CliRunner().invoke(cli, ["analyze-audio"])
+        assert result.exit_code != 0
+        assert "--record" in result.output
+
+
+class TestRecordMode:
+    def _fake_sounddevice(self, frames_store: dict):
+        mod = types.ModuleType("sounddevice")
+
+        def rec(frames, samplerate, channels, dtype, device=None):
+            frames_store["frames"] = frames
+            frames_store["samplerate"] = samplerate
+            frames_store["channels"] = channels
+            frames_store["device"] = device
+            t = np.arange(frames) / samplerate
+            x = 0.5 * np.sin(2 * np.pi * 1000.0 * t)
+            return np.tile(x[:, None], (1, channels)).astype(np.float32)
+
+        mod.rec = rec
+        mod.wait = lambda: None
+        return mod
+
+    def test_record_requires_output_path(self):
+        result = CliRunner().invoke(cli, ["analyze-audio", "--record", "2"])
+        assert result.exit_code != 0
+        assert "-o" in result.output
+
+    def test_record_and_file_are_mutually_exclusive(self, tmp_path: Path):
+        wav = _write_sine(tmp_path / "tone.wav")
+        result = CliRunner().invoke(
+            cli, ["analyze-audio", str(wav), "--record", "2",
+                  "-o", str(tmp_path / "cap.wav")])
+        assert result.exit_code != 0
+
+    def test_record_captures_writes_and_analyzes(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store: dict = {}
+        monkeypatch.setitem(sys.modules, "sounddevice",
+                            self._fake_sounddevice(store))
+        out = tmp_path / "cap.wav"
+        result = CliRunner().invoke(
+            cli, ["analyze-audio", "--record", "1.5", "-o", str(out),
+                  "--json"])
+        assert result.exit_code == 0, result.output
+        assert out.exists()
+        assert store["frames"] == int(1.5 * 48000)
+        assert store["samplerate"] == 48000
+        assert store["channels"] == 2
+        data = json.loads(result.output)
+        # stereo 1 kHz sine at 0.5: mono value -9.03 + 3.01 channel sum
+        assert data["lufs_integrated"] == pytest.approx(-6.02, abs=0.2)
+        assert data["file"] == str(out)
+
+    def test_record_device_name_passthrough(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store: dict = {}
+        monkeypatch.setitem(sys.modules, "sounddevice",
+                            self._fake_sounddevice(store))
+        result = CliRunner().invoke(
+            cli, ["analyze-audio", "--record", "1", "-o",
+                  str(tmp_path / "c.wav"), "--input", "Helix Stadium"])
+        assert result.exit_code == 0, result.output
+        assert store["device"] == "Helix Stadium"
+
+    def test_missing_sounddevice_hint(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setitem(sys.modules, "sounddevice", None)
+        result = CliRunner().invoke(
+            cli, ["analyze-audio", "--record", "1",
+                  "-o", str(tmp_path / "c.wav")])
+        assert result.exit_code != 0
+        assert "helixgen[capture]" in result.output

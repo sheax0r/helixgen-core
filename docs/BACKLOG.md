@@ -1209,11 +1209,19 @@ Remaining follow-ups:
   trims, and note the phase-0 caveat that output-gain trims are dB-exact but
   invisible to the grid (verify via an in-chain actuator or trust the math);
   (b) the full per-layout cell-index formula (splits, dual-amp, DSP1, the ×4
-  clusters) → `label_cells(reading, layout)`; (c) phase 3 USB-audio capture →
-  quality metrics (LUFS, crest factor, FFT band energies in the IR-catalog
-  vocabulary) feeding a tone-skill refinement loop at creation time when the
-  device is online, and later iteration via the device skill; (d) skills
-  integration lives in the plugin repo (cross-repo, after #56).
+  clusters) → `label_cells(reading, layout)`; (c) phase 3 quality metrics —
+  **offline half SHIPPED 2026-07-16**: `helixgen analyze-audio` +
+  `src/helixgen/audio_metrics.py` (BS.1770 LUFS incl. gating, crest/peak/
+  true-peak/RMS, clipping, centroid, 5-band FFT energies; numpy under the
+  new `analyze` extra, EXPERIMENTAL `--record` under `capture`/sounddevice).
+  Remaining residuals: hardware validation of the `--record` USB-capture
+  path against the real Stadium (rig-gated — no signal chain was connected),
+  and reconciling the provisional band edges (60/200/500/1200/4000/10000 Hz,
+  documented in `audio_metrics.GUITAR_BANDS`) with the IR catalog's actual
+  measured-tag FFT pass (`irs/_catalog/`, machine-local) — plus feeding a
+  tone-skill refinement loop at creation time when the device is online, and
+  later iteration via the device skill; (d) skills integration lives in the
+  plugin repo (cross-repo, after #56).
 - **#63 MCP server removal — CLI is the only engine surface** — **✅ SHIPPED
   0.20.0** (mirrored in the coordination-workspace backlog, which is now the
   authoritative one). `mcp_server/` + `tests/mcp_server/` + the `[mcp]` extra
