@@ -15,9 +15,19 @@ plugin/marketplace repo carrying the `setup`/`tone`/`device` skills;
 The plugin and TUI consume this repo as a PyPI dependency (package name
 `helixgen`, published to PyPI since 0.19.1).
 
-User IRs (impulse responses) registered with `helixgen register-irs` live at
-`~/.helixgen/irs/` by default (override with `$HELIXGEN_IRS`). The mapping
-file `mapping.json` records `irhash → wav-path`. See `helixgen list-irs`.
+User IRs (impulse responses) registered with `helixgen register-irs` /
+`helixgen ir-scan` are, by default, **copied into the library** at
+`~/.helixgen/library/irs/<pack>/` (pack = the slugified source-folder name),
+each with a scaffolded metadata sidecar JSON, and the mapping file
+`~/.helixgen/library/irs/mapping.json` records `irhash → wav-path` pointed at
+the library copy (the original path is recorded in the sidecar's
+`imported_from`). Pass `--no-copy` to register a WAV in place with no metadata
+(the pre-library behavior). `$HELIXGEN_IRS` overrides the whole IR dir and,
+when set, is used verbatim (no bridge). A pre-existing legacy
+`~/.helixgen/irs/mapping.json` (the old default location) is auto-bridged up
+to the library location on first use — entries preserved, relative values
+absolutized — and the legacy file is renamed `mapping.json.migrated-legacy`.
+See `helixgen list-irs`.
 
 **The project backlog lives at `docs/BACKLOG.md`** — check it before starting
 new work (its "corrected mental models" preamble first); deferred work and
@@ -28,12 +38,13 @@ punted review findings get a numbered entry there, not a TODO comment.
 Design: `docs/superpowers/specs/2026-07-15-library-metadata-design.md`
 (backlog #22/#35/#36; sequencing in
 `docs/superpowers/plans/2026-07-15-library-metadata.md`). This section
-describes what **exists today**: the tone half of the artifact library
-(`library/tones/<logical-slug>.json` + per-variant `.hsp`, the naming schema,
-and the `helixgen library` / `describe` verbs — see "Tone naming and the
-library" and "The `helixgen library` verb group" below, further down this
-file). Guitar profiles (`library/guitars/`) and per-IR metadata are still
-later-PR work and aren't documented here yet.
+describes the artifact library, which now carries all three artifact kinds:
+tones (`library/tones/<logical-slug>.json` + per-variant `.hsp`), **guitar
+profiles** (`library/guitars/<slug>.json`), and **per-IR metadata**
+(`library/irs/<pack>/<name>.json` sidecars next to the copied `<name>.wav`,
+which stay gitignored, plus `library/irs/mapping.json`). See "Tone naming and
+the library", "Guitar profiles", "The `helixgen library` verb group" below,
+and the IR paragraph near the top of this file.
 
 - **`$HELIXGEN_HOME`** (`src/helixgen/home.py`) is the root of everything
   helixgen persists — default `~/.helixgen`. It centralizes default-path
@@ -84,13 +95,13 @@ later-PR work and aren't documented here yet.
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
 - `helixgen show-block "<name>"` — print a block's exact param names, types, defaults, and observed ranges. **Run this before writing a spec** — param names are case-sensitive and the generator rejects unknown ones.
 - **`--json`** — verbs whose output agents consume programmatically take a `--json` flag for machine-readable stdout (`list-blocks`, `show-block`, `list-irs`, `irhash`, `patch`, `controllers`, and the `device` read verbs); `view` prints JSON by default.
-- `helixgen generate <recipe.json> [-o <out.hsp>]` — author a preset from a transient recipe (no sidecar is written). `-o` is now **optional**: with no `-o`, `generate` writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON, naming the tone from `--artist`/`--song` (song identity, paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar`; with no naming flag the recipe's bare `name` becomes the descriptor. An explicit `-o <out.hsp>` preserves today's exact legacy behavior — writes there, auto-registers, naming flags are ignored, and **no metadata JSON is written**. Output extension `.hsp` writes a Stadium-format file (8-byte magic + compact JSON); `.hlx` writes pretty JSON for the original Helix.
+- `helixgen generate <recipe.json> [-o <out.hsp>]` — author a preset from a transient recipe (no sidecar is written). `-o` is now **optional**: with no `-o`, `generate` writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON, naming the tone from `--artist`/`--song` (song identity, paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (resolved to a guitar **profile** — see "Guitar profiles" below); with no naming flag the recipe's bare `name` becomes the descriptor. An explicit `-o <out.hsp>` preserves today's exact legacy behavior — writes there, auto-registers, naming flags are ignored, and **no metadata JSON is written**. Output extension `.hsp` writes a Stadium-format file (8-byte magic + compact JSON); `.hlx` writes pretty JSON for the original Helix.
 - `helixgen view <preset.hsp> [-o recipe.json]` — read-only projection of a `.hsp` back into the recipe shape (replaces the old `decompile`; `-o` dump is non-authoritative).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
-- `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg. Use `--force` to overwrite existing mappings.
-- `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash directly (no device export needed) and register. Requires libsndfile (`brew install libsndfile` on macOS). Only 48 kHz sources supported; non-48 kHz raises an error suggesting `sox`. This 48 kHz limit is a **helixgen** input constraint (it does not resample) — the **device** itself accepts any sample rate and normalizes internally, so a non-48k IR still works once imported onto the hardware; you just can't hash it off-device with helixgen without resampling first. Stereo WAVs are reduced to the left channel (matches Stadium's import).
+- `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg. Use `--force` to overwrite existing mappings. By default each wav is **copied** into `library/irs/<pack>/` with a scaffolded metadata sidecar and `mapping.json` points at the copy; `--no-copy` registers in place with no metadata.
+- `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash directly (no device export needed) and register. By default each wav is **copied** into `library/irs/<pack>/` with a scaffolded metadata sidecar and `mapping.json` points at the copy; `--no-copy` registers in place with no metadata. Requires libsndfile (`brew install libsndfile` on macOS). Only 48 kHz sources supported; non-48 kHz raises an error suggesting `sox`. This 48 kHz limit is a **helixgen** input constraint (it does not resample) — the **device** itself accepts any sample rate and normalizes internally, so a non-48k IR still works once imported onto the hardware; you just can't hash it off-device with helixgen without resampling first. Stereo WAVs are reduced to the left channel (matches Stadium's import).
 - `helixgen irhash <wav-or-dir>... [--json]` — compute Stadium hashes **statelessly** (nothing registered; use `register-irs`/`ir-scan` to persist). Directories are recursed for `*.wav`; per-file failures inside a directory walk warn and continue, an explicitly named file that fails is fatal.
-- `helixgen ir-scan <dir>... [--rescan] [--remove <basename>]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache. A WAV is skipped only when it is already registered **and** its cached hash is still valid for the file on disk (matching mtime + size), so an edited or replaced WAV is detected and re-hashed; `--rescan` recomputes unconditionally. Per-file failures (non-48 kHz, libsndfile errors) print a stderr warning and the scan continues. `--remove <basename>` forgets a single entry. Use this to bulk-register a whole IR library at once; use `register-irs` for one-off binding from a preset.
+- `helixgen ir-scan <dir>... [--rescan] [--remove <basename>]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache. A WAV is skipped only when it is already registered **and** its cached hash is still valid for the file on disk (matching mtime + size), so an edited or replaced WAV is detected and re-hashed; `--rescan` recomputes unconditionally. Per-file failures (non-48 kHz, libsndfile errors) print a stderr warning and the scan continues. `--remove <basename>` forgets a single entry. By default each newly-hashed wav is **copied** into `library/irs/<pack>/` with a scaffolded metadata sidecar and `mapping.json` points at the copy (a re-scan of the same content is a no-op — content-addressed by hash); `--no-copy` registers in place with no metadata. Use this to bulk-register a whole IR library at once; use `register-irs` for one-off binding from a preset.
 - `helixgen list-irs` — print `<hash>  <wav-path>` for every registered IR.
 - `helixgen analyze-audio <capture.wav> [--json]` — offline audio-quality metrics from a WAV capture (LUFS per BS.1770, crest factor, clipping, spectral centroid, 5-band guitar-vocabulary energies; backlog #62 phase 3). Needs numpy (`pip install 'helixgen[analyze]'`). EXPERIMENTAL `--record N -o out.wav` captures from an audio input first (`helixgen[capture]`, sounddevice/PortAudio; untested on hardware). Read-only + offline; full contract in `analyze-audio --help` and [`docs/CLI.md`](docs/CLI.md). Band edges are provisional pending reconciliation with the IR catalog's measured-tag pass.
 - `helixgen ir-cache --stats | --clear | --prune` — inspect/maintain the IR-hash **cache** (a pure-local perf layer that memoizes expensive Stadium-hash computes, keyed by absolute path + mtime + size; **not** `mapping.json`). `--stats` prints entry count, path, and size; `--clear` deletes the cache file; `--prune` drops entries whose backing WAV is gone. Default location `~/.helixgen/cache/irhash.json` (override with `$HELIXGEN_IRHASH_CACHE`, or `$HELIXGEN_CACHE` for the cache dir). All IR-hashing paths (`register-irs`, `ir-scan`, `irhash`) share it transparently.
@@ -341,10 +352,21 @@ precedence is env var > file value > built-in default. Keys include
 artifacts when the target directory is git-managed; see the skill files in the
 plugin repo).
 
-- **`default_guitar`** (string, default `null`) — which of the user's
-  `instruments` to default to when a tone request doesn't name a guitar. Env
-  override `HELIXGEN_DEFAULT_GUITAR`. When unset and the `tone` skill needs a
-  guitar, the skill asks the user and offers to save the answer here.
+- **`default_guitar`** (string, default `null`) — which **guitar profile**
+  (by slug or name/short_name) to default to when a tone request doesn't name
+  a guitar. Env override `HELIXGEN_DEFAULT_GUITAR`. When unset and the `tone`
+  skill needs a guitar, the skill asks the user and offers to save the answer
+  here. `library migrate` warns (stderr + summary field
+  `default_guitar_unresolved`) if an existing value no longer names a profile
+  after seeding.
+- **Deprecated keys.** `instruments` (replaced by guitar profiles at
+  `library/guitars/*.json` — the single source of guitar truth) and
+  `preset_output_dir` (replaced by the `library/tones/` default write
+  location) are deprecated. Loading a preferences file that still carries
+  either key (present + non-empty) prints a one-line stderr warning pointing
+  at `library migrate`; both keys are still parsed for back-compat. `library
+  migrate` seeds guitar profiles from `instruments` and then **removes** both
+  keys from the file.
 
 ## Tone naming and the library
 
@@ -373,18 +395,52 @@ now folded into the tone metadata's `description_md` (no sidecar file) —
 authored/updated via `helixgen library doc` (see below). Per-variant notes
 live in that variant's `notes_md`.
 
+## Guitar profiles
+
+A **guitar profile** at `library/guitars/<slug>.json` (schema 1) is the single
+source of truth for one guitar the user owns — it **replaces
+`preferences.instruments`**. `slug` = `slugify(name)`. Fields: `name`,
+`short_name` (what appears in preset display names / filename slugs), `type`,
+`active`, `pickups`, `construction`, `character_md` (tonal character — what the
+guitar is *for*, read by the `tone` skill to adapt params), `genres[]`, and
+`controls[]` — the **control inventory**: each control is
+`{name, kind, positions?, notes?}` where `kind` is one of `knob` / `switch` /
+`push-pull` / `other`. A tone variant's `guitar_settings` keys validate against
+these control names.
+
+**Guitar resolution (`generate --guitar <label>`, `library import --guitar`).**
+The label resolves to a guitar profile by slug / name / short_name
+(case-insensitive, most-specific tier first):
+
+- a match uses that profile's slug + short_name;
+- profiles exist but none matches → error listing the known guitars;
+- the label matches 2+ distinct profiles → error telling you to disambiguate
+  by the exact slug;
+- **no** profiles exist yet (fresh / pre-migration library) → literal
+  `slugify(label)` fallback with a one-line stderr notice, so tone authoring
+  keeps working before `library migrate` seeds profiles.
+
+Profiles are seeded from `preferences.instruments` by `helixgen library
+migrate` (which then removes the deprecated `instruments` / `preset_output_dir`
+prefs keys). Create/edit them via the `setup` skill.
+
 ## The `helixgen library` verb group
 
-New verb group over `library/tones/*.json` (guitar profiles / per-IR metadata
-are later-PR — see "Home directory and git plumbing" above). Every
-library-mutating verb auto-commits the home repo afterward (advisory, gated
-by the `git_commit_tones` preference, same posture as tone auto-registration).
+Verb group over the artifact library — tones (`library/tones/*.json`), guitar
+profiles (`library/guitars/*.json`), and per-IR metadata
+(`library/irs/**/*.json` sidecars). Every library-mutating verb auto-commits
+the home repo afterward (advisory, gated by the `git_commit_tones` preference,
+same posture as tone auto-registration).
 
-- `helixgen library list [--tones|--guitars|--irs] [--json]` — list tones
-  (plus guitars/IRs sections, always empty until their later-PR verbs ship).
-- `helixgen library show <name> [--json]` — one tone's metadata: compact
-  human summary, or the exact on-disk JSON with `--json`. `<name>` resolves
-  as the logical slug, the metadata filename, or any variant's `preset_name`.
+- `helixgen library list [--tones|--guitars|--irs] [--json]` — list the
+  library's tones, guitar profiles, and per-IR metadata (grouped; a flag
+  narrows to one section). `--json` emits `{"tones": [...], "guitars": [...],
+  "irs": [...]}`.
+- `helixgen library show <name> [--json]` — one tone's — or one guitar
+  profile's — metadata: compact human summary, or the exact on-disk JSON with
+  `--json`. `<name>` resolves as a TONE first (logical slug, metadata
+  filename, or any variant's `preset_name`); if no tone matches it is then
+  tried as a GUITAR profile (slug / name / short_name, case-insensitive).
 - `helixgen describe <tone>` — the longer, human-oriented counterpart to
   `library show`: identity, tags, a variants table, and the full
   `description_md` verbatim.
@@ -392,20 +448,33 @@ by the `git_commit_tones` preference, same posture as tone auto-registration).
   set the tone's `description_md`, or (with `--variant`) one variant's
   `notes_md`. This is now how a tone's write-up gets authored — no more `.md`
   sidecars.
-- `helixgen library validate [--json]` — shape + cross-link checks (variant
-  `.hsp` exists, `preset_name` matches the manifest, guitar slug is known)
-  across every tone; exits 1 if any problems are found. **The guitar-slug
-  check is inert in this release** — with no `library/guitars/` yet, it falls
-  back to accepting whatever variant keys are already in use instead of a
-  real profile lookup; a later PR (guitar profiles) makes it exact.
+- `helixgen library validate [--json]` — shape + cross-link checks. Across
+  every tone: each variant's `.hsp` exists, its `preset_name` is registered in
+  the manifest, and its guitar key is a known guitar-profile slug (or the
+  special `generic`) — now checked exactly against `library/guitars/*.json`
+  (falling back to the variant keys already in use ONLY when no profiles exist
+  yet). IR sidecars are cross-checked too: each `irhash` is registered in
+  `mapping.json` and its `wav` exists. Those are **problems** (exit 1). A
+  separate **warnings** channel (never changes the exit code) flags
+  `guitar_settings` control keys that aren't controls on the target guitar's
+  profile (case-insensitive match; skipped when that guitar has no profile)
+  and IR tags outside the controlled vocabulary. `--json` emits
+  `{"problems": [...], "warnings": [...]}`.
 - `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]
   [--guitar] [--keep-source]` — bring an external `.hsp` into the library
   under the naming schema (moves by default; `--keep-source` copies), folding
   a sibling `.md` into `description_md` if present.
 - `helixgen library migrate [--dry-run | --plan <plan.json>]` — one-shot,
   idempotent migration of a pre-library `~/.helixgen` (existing tones + IR
-  mapping + manifest) into the new library layout; `--dry-run` prints an
-  editable plan to correct before executing.
+  mapping + manifest + `preferences.instruments`) into the new library layout;
+  seeds guitar profiles from `instruments`, strips the deprecated
+  `instruments` / `preset_output_dir` prefs keys, and reconciles
+  `default_guitar`; `--dry-run` prints an editable plan to correct before
+  executing.
+- `helixgen library ir-backfill [--json]` — for every `mapping.json` entry
+  whose WAV lives outside `library/irs/` or lacks a sidecar: copy it in
+  (never moved), scaffold its metadata sidecar, and rewrite `mapping.json` to
+  the library copy. Idempotent (a re-run is all skips); prints a summary.
 
 ## Surgical edits
 
@@ -492,7 +561,7 @@ on a `patch` op.
 
 ## Project layout
 
-- `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (the `helixgen device` verb group, imported back into `cli`), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`, `locks` (machine-local advisory device locks)
+- `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (the `helixgen device` verb group, imported back into `cli`), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`, `locks` (machine-local advisory device locks), `home`/`libinit`/`gitops` (the `~/.helixgen` home root, its auto-init, and advisory auto-commit), `naming`, `tone_meta`, `guitars` (guitar profiles), `ir_meta` (per-IR sidecars), `migrate` (library migration), `cli_library` (the `helixgen library` verb group)
 - `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
 - `docs/` — `BACKLOG.md` (THE backlog), `CLI.md` (the full CLI + per-verb **device** reference), `recipe-reference.md` (the exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
