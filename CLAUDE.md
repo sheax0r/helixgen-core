@@ -77,7 +77,7 @@ later-PR work and aren't documented here yet.
   (`src/helixgen/device/observations.py`), one file per Helix serial (from
   `device info`'s `/ProductInfoGet`), NOT the manifest and NOT committed
   (`devices/` is gitignored) — the placement state is rebuilt wholesale by
-  every `device sync`. Since 0.23.0 the same file also carries the device's
+  every `device sync`. Since 0.24.0 the same file also carries the device's
   **discovered address record** (`ip`, `ip_updated_at`, `model`, `firmware` —
   written by `helixgen device discover`, round-tripped through sync
   rebuilds), so losing the file costs one re-`discover`.
@@ -109,7 +109,7 @@ Run **`helixgen device discover`** once to find the Stadium (mDNS
 via the read-only `/ProductInfoGet` handshake) and persist its address into
 `~/.helixgen/devices/<serial>.json`; every verb then resolves the IP as
 `--ip` > `$HELIXGEN_HELIX_IP` > that persisted record — **no built-in
-default** (0.23.0, workspace #74; with none set, verbs fail fast pointing at
+default** (0.24.0, workspace #74; with none set, verbs fail fast pointing at
 `device discover` instead of stalling). Discovery is used once; sessions stay
 direct-to-IP (the desktop app's discovery layer is flaky, direct sessions are
 stable). **Stadium-only**; these

@@ -58,7 +58,7 @@ and had to be redirected. Start here so future work begins from the right model.
 ## ✅ Shipped
 
 - **Workspace #74 — `device discover` + persisted-IP resolution chain
-  (0.23.0).** (Authoritative entry in the coordination workspace's
+  (0.24.0).** (Authoritative entry in the coordination workspace's
   `BACKLOG.md`.) The hardcoded default `192.168.4.84` — the maintainer's own
   fossilized DHCP lease, a guaranteed-wrong default for anyone else that
   failed as a long connect stall — is **gone from src/ entirely** (pinned by
@@ -183,9 +183,9 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## 🔲 Remaining
 
-### Deferred from the 0.23.0 discovery adversarial review (2026-07-16)
+### Deferred from the 0.24.0 discovery adversarial review (2026-07-16)
 
-- **#75 Discovery residuals** (workspace #74 shipped 0.23.0; PR #12 review):
+- **#75 Discovery residuals** (workspace #74 shipped 0.24.0; PR #12 review):
   (a) interface/subnet awareness — `local_ipv4()` picks the default-route
   interface, so a VPN default route makes both mDNS and the probe miss a
   LAN-attached Stadium, and the /24 probe has no RFC1918 guard or real

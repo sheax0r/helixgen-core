@@ -22,6 +22,13 @@ from tests.golden import harness
 msgpack = pytest.importorskip("msgpack")
 
 # in=0.02 with outs 0.5 / 1.0 / 0.52 -> chain gains +27.96 / +33.98 / +28.30 dB
+@pytest.fixture(autouse=True)
+def _configured_device_ip(monkeypatch):
+    """#74: device verbs no longer have a built-in default IP. These tests
+    exercise verb logic against fakes, so simulate a configured user."""
+    monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
+
+
 IN_LEVEL = 0.02
 GAINS = {("snap", 0): 0.5, ("snap", 1): 1.0, ("snap", 2): 0.52}
 

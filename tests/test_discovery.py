@@ -1,4 +1,4 @@
-"""Device discovery + the #74 IP-resolution chain (0.23.0).
+"""Device discovery + the #74 IP-resolution chain (0.24.0).
 
 Offline coverage: mDNS wire parsing (synthetic packets — no network), the
 resolution chain (--ip > $HELIXGEN_HELIX_IP > persisted record > fail fast),

@@ -1,4 +1,4 @@
-"""Live `device discover` + the #74 IP-resolution chain (0.23.0).
+"""Live `device discover` + the #74 IP-resolution chain (0.24.0).
 
 Discovery itself is read-only on the device (an mDNS query the Stadium
 answers itself, plus the read-only /ProductInfoGet confirmation), so no

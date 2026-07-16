@@ -255,7 +255,7 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
 
 With the `device` extra (`pip install 'helixgen[device]'` → pyzmq+msgpack)
 helixgen talks to a **Stadium** over the LAN directly (OSC-over-ZeroMQ; no
-editor app). Addressing precedence (0.23.0, workspace #74): `--ip` wins,
+editor app). Addressing precedence (0.24.0, workspace #74): `--ip` wins,
 else `$HELIXGEN_HELIX_IP`, else the device record persisted by
 **`helixgen device discover`** — there is **no built-in default IP**
 anymore (the old baked-in `192.168.x.x` literal was the maintainer's own
@@ -264,7 +264,7 @@ long connect stall). With none of the three available, verbs **fail fast**
 with an instructive error naming `device discover`; `--port` defaults to
 2002. Protocol reference: [`helix-protocol.md`](helix-protocol.md).
 
-#### `device discover` — find + persist the Stadium's address (0.23.0)
+#### `device discover` — find + persist the Stadium's address (0.24.0)
 
 ```
 helixgen device discover [--timeout N] [--probe/--no-probe] [--json]
