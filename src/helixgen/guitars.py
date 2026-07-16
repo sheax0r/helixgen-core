@@ -166,20 +166,79 @@ def load_all_profiles() -> List[GuitarProfile]:
     return profiles
 
 
+class AmbiguousGuitarError(ValueError):
+    """A guitar label matched two or more DISTINCT profiles.
+
+    Mirrors how tone resolution (``cli_library._resolve_slug``) refuses to
+    silently pick one of several matches -- resolving an ambiguous guitar
+    silently would bake the wrong guitar into a preset's slug/display name.
+    Carries the colliding profiles' (unique) ``slugs`` so the caller can tell
+    the user exactly what to disambiguate with.
+    """
+
+    def __init__(self, label: str, slugs: List[str]) -> None:
+        self.label = label
+        self.slugs = list(slugs)
+        super().__init__(
+            f"guitar {label!r} is ambiguous: it matches {len(self.slugs)} "
+            f"distinct guitar profiles ({', '.join(self.slugs)}) -- "
+            "disambiguate by using the exact guitar slug"
+        )
+
+
 def find_profile(label: str) -> Optional[GuitarProfile]:
     """Resolve ``label`` to a profile by ``slug`` / ``name`` / ``short_name``
-    (case-insensitive). Returns ``None`` when nothing matches.
+    (case-insensitive), most-specific tier first. Returns ``None`` when nothing
+    matches; raises :class:`AmbiguousGuitarError` when the label matches 2+
+    DISTINCT profiles within a tier.
 
-    ``slug`` is already lowercase; ``name`` / ``short_name`` are compared
-    stripped + lowercased. A blank/``None`` label never matches.
+    Resolution tiers (a match in an earlier tier wins outright -- "most specific
+    wins" -- so an exact ``slug``, which is unique by construction (it is the
+    filename stem), always resolves deterministically even when short_names
+    collide):
+
+    1. exact ``slug`` -- unique, so at most one profile can match;
+    2. exact ``name`` (stripped + lowercased);
+    3. exact ``short_name`` (stripped + lowercased).
+
+    In tiers 2/3, 2+ DISTINCT profiles (deduped by their unique slug) matching
+    the label is ambiguous and raises. A blank/``None`` label never matches.
+    """
+    return find_profile_in(label, load_all_profiles())
+
+
+def find_profile_in(
+    label: str, profiles: List[GuitarProfile]
+) -> Optional[GuitarProfile]:
+    """Resolve ``label`` against an EXPLICIT ``profiles`` list (see
+    :func:`find_profile` for the tiering + ambiguity contract).
+
+    Split out so callers that need to resolve against a *hypothetical* profile
+    set -- e.g. migration reconciling ``default_guitar`` against the profiles it
+    is ABOUT to seed (dry-run: not yet on disk) -- reuse the exact same
+    most-specific-wins logic without duplicating it.
     """
     if not label or not label.strip():
         return None
     target = label.strip().lower()
-    for p in load_all_profiles():
-        candidates = {p.slug, p.name.strip().lower(), p.short_name.strip().lower()}
-        if target in candidates:
+
+    # Tier 1: exact slug (already lowercase; unique by construction).
+    for p in profiles:
+        if p.slug == target:
             return p
+
+    # Tiers 2/3: exact name, then short_name. Dedupe matches by slug so a single
+    # profile matching a label two ways is never mistaken for two profiles.
+    for attr in ("name", "short_name"):
+        matches: Dict[str, GuitarProfile] = {
+            p.slug: p
+            for p in profiles
+            if getattr(p, attr).strip().lower() == target
+        }
+        if len(matches) == 1:
+            return next(iter(matches.values()))
+        if len(matches) > 1:
+            raise AmbiguousGuitarError(target, sorted(matches))
     return None
 
 

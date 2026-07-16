@@ -547,9 +547,13 @@ def test_deprecated_instruments_key_warns_on_stderr(tmp_path, capsys):
     p = load_preferences(prefs)
     # still parsed for back-compat
     assert len(p.instruments) == 1
-    err = capsys.readouterr().err
+    captured = capsys.readouterr()
+    err = captured.err
     assert "instruments" in err and "deprecated" in err
     assert "library migrate" in err
+    # deprecation notices go to STDERR only -- stdout must stay clean so a
+    # sibling `--json` command's machine-readable output is never corrupted.
+    assert captured.out == ""
 
 
 def test_deprecated_preset_output_dir_warns_on_stderr(tmp_path, capsys):
@@ -557,8 +561,11 @@ def test_deprecated_preset_output_dir_warns_on_stderr(tmp_path, capsys):
     prefs.write_text(json.dumps({
         "schema_version": 1, "preset_output_dir": "~/presets"}))
     load_preferences(prefs)
-    err = capsys.readouterr().err
+    captured = capsys.readouterr()
+    err = captured.err
     assert "preset_output_dir" in err and "deprecated" in err
+    # stdout stays clean (guards --json output from deprecation-notice corruption)
+    assert captured.out == ""
 
 
 def test_no_deprecation_warning_when_keys_absent_or_empty(tmp_path, capsys):

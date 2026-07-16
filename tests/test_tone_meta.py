@@ -481,3 +481,23 @@ def test_guitar_settings_warnings_skips_variant_without_profile(tmp_home):
     # a profile exists, but not for THIS variant key -> profile may lag -> no warning
     assert tone_meta.guitar_settings_warnings(
         meta, guitar_profiles={"other": _profile()}) == []
+
+
+def test_guitar_settings_warnings_control_match_is_case_insensitive(tmp_home):
+    """A guitar_settings key differing only in case from a real control must NOT
+    warn -- the rest of the guitar surface matches case-insensitively (FIX C)."""
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].guitar_settings = {"Volume": "8", "Tone": "7"}
+    profile = _profile(controls=("volume", "tone"))
+    assert tone_meta.guitar_settings_warnings(
+        meta, guitar_profiles={"g1": profile}) == []
+
+
+def test_guitar_settings_warnings_still_flags_genuinely_unknown_key(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].guitar_settings = {"Volume": "8", "bogus": "x"}
+    profile = _profile(controls=("volume", "tone"))
+    warnings = tone_meta.guitar_settings_warnings(
+        meta, guitar_profiles={"g1": profile})
+    assert len(warnings) == 1
+    assert "bogus" in warnings[0]

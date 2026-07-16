@@ -41,6 +41,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -609,6 +610,7 @@ def migrate_instruments(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[
 
     created: List[str] = []
     skipped: List[Dict[str, Any]] = []
+    built: List["guitars.GuitarProfile"] = []
     for d in plan.get("instruments", []) or []:
         try:
             profile = guitars.profile_from_instrument(d)
@@ -616,6 +618,7 @@ def migrate_instruments(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[
             skipped.append({"instrument": (d or {}).get("name") if isinstance(d, dict) else None,
                             "reason": f"malformed instrument entry: {exc}"})
             continue
+        built.append(profile)  # tracks the post-migration profile set (dry-run too)
         if guitars.profile_path(profile.slug).exists():
             skipped.append({"slug": profile.slug, "reason": "profile already exists"})
             continue
@@ -624,10 +627,68 @@ def migrate_instruments(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[
         created.append(profile.slug)
 
     prefs_keys_removed = _strip_deprecated_prefs_keys(dry_run=dry_run)
+    default_guitar_unresolved = _reconcile_default_guitar(built)
 
     return {
         "status": "migrated",
         "profiles_created": created,
         "skipped": skipped,
         "prefs_keys_removed": prefs_keys_removed,
+        "default_guitar_unresolved": default_guitar_unresolved,
     }
+
+
+def _read_default_guitar() -> Optional[str]:
+    """Read the persisted ``default_guitar`` straight from the preferences FILE.
+
+    Deliberately NOT via ``load_preferences`` -- that would (a) re-emit the
+    deprecation warnings for the ``instruments``/``preset_output_dir`` keys this
+    same run is retiring, and (b) apply the ``HELIXGEN_DEFAULT_GUITAR`` env
+    override. Reconciliation is about the value written on disk. Null/absent/
+    parse-failure safe: returns ``None`` for a missing/non-dict/unreadable file."""
+    from helixgen.preferences import default_prefs_path
+
+    path = default_prefs_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("default_guitar")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _reconcile_default_guitar(seeded: List["Any"]) -> Optional[str]:
+    """After seeding, check the persisted ``default_guitar`` still resolves.
+
+    ``seeded`` is every profile this run built (created OR already-present),
+    UNIONed with whatever is already on disk -- so the check reflects the
+    post-migration profile set even under dry-run (where ``seeded`` is not yet
+    written). If a non-null ``default_guitar`` no longer resolves, emit a
+    one-line STDERR warning and return the value (recorded in the summary);
+    otherwise return ``None``. Never crashes: an *ambiguous* match is treated as
+    resolving (it does name known profiles), not as unresolved."""
+    from helixgen import guitars
+
+    default_guitar = _read_default_guitar()
+    if not default_guitar:
+        return None
+
+    post = list(guitars.load_all_profiles()) + list(seeded)
+    try:
+        resolved = guitars.find_profile_in(default_guitar, post) is not None
+    except guitars.AmbiguousGuitarError:
+        resolved = True
+    if resolved:
+        return None
+
+    print(
+        f"helixgen: preferences default_guitar {default_guitar!r} no longer "
+        "names a known guitar profile after migration -- update it to an "
+        "existing profile's slug/name (see `helixgen library list`).",
+        file=sys.stderr,
+    )
+    return default_guitar

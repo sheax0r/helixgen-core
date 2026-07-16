@@ -384,7 +384,10 @@ def _resolve_guitar(label: str) -> tuple[str, str]:
     """
     from helixgen import guitars
 
-    profile = guitars.find_profile(label)
+    try:
+        profile = guitars.find_profile(label)
+    except guitars.AmbiguousGuitarError as exc:
+        raise click.ClickException(str(exc)) from exc
     if profile is not None:
         return profile.slug, profile.short_name
 

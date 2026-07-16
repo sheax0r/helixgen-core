@@ -328,6 +328,26 @@ def test_generate_unknown_guitar_errors_when_profiles_exist(tmp_home, hsp_librar
     assert not list(home.tones_dir().glob("*.hsp")) if home.tones_dir().exists() else True
 
 
+def test_generate_ambiguous_guitar_errors_exit1_no_traceback(tmp_home, hsp_library, tmp_path):
+    """Two profiles sharing a short_name -> --guitar by that short_name is a
+    clean ClickException (exit 1), never a silently-picked wrong guitar."""
+    _save_lp_profile()  # short_name "Les Paul Jr"
+    guitars.save_profile(guitars.GuitarProfile(
+        name="Epiphone Les Paul Junior", short_name="Les Paul Jr", type="guitar",
+        active=None, pickups=None, construction=None, character_md=None,
+        genres=[], controls=[]))
+    spec = _write_recipe(tmp_path)
+    res = _run(hsp_library, str(spec), "--descriptor", "Warm Jazz Clean",
+               "--guitar", "Les Paul Jr")
+    assert res.exit_code == 1
+    combined = (res.output + res.stderr).lower()
+    assert "ambiguous" in combined
+    assert "exact guitar slug" in combined
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    # nothing written
+    assert not list(home.tones_dir().glob("*.hsp")) if home.tones_dir().exists() else True
+
+
 def test_generate_guitar_literal_fallback_when_no_profiles(tmp_home, hsp_library, tmp_path):
     spec = _write_recipe(tmp_path)
     res = _run(hsp_library, str(spec), "--descriptor", "Warm Jazz Clean",

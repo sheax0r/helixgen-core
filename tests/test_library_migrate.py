@@ -390,6 +390,67 @@ def test_migrate_instruments_dry_run_writes_nothing(tmp_home, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# migrate_instruments: default_guitar reconciliation (Task 11 review FIX B)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_instruments_flags_unresolved_default_guitar(tmp_home, monkeypatch, capsys):
+    """A pre-existing default_guitar set to a SHORT form no longer resolves once
+    ``profile_from_instrument`` seeds ``short_name = name`` -- migrate must warn
+    (STDERR) and record it, never crash, never silently rewrite."""
+    _write_prefs_full(tmp_home, monkeypatch, {
+        "schema_version": 1,
+        "default_guitar": "Les Paul Jr",
+        "instruments": [{"name": "Gibson Les Paul Junior", "type": "guitar"}],
+    })
+    summary = migrate.migrate_instruments(migrate.plan_migration())
+    assert summary["default_guitar_unresolved"] == "Les Paul Jr"
+    err = capsys.readouterr().err
+    assert "default_guitar" in err and "Les Paul Jr" in err
+    # default_guitar is NOT stripped/rewritten -- only warned about
+    assert json.loads((tmp_home / "preferences.json").read_text())["default_guitar"] == "Les Paul Jr"
+
+
+def test_migrate_instruments_resolvable_default_guitar_no_warning(tmp_home, monkeypatch, capsys):
+    """A default_guitar that DOES resolve post-migration (equals the instrument
+    name) produces no unresolved flag and no default_guitar warning."""
+    _write_prefs_full(tmp_home, monkeypatch, {
+        "schema_version": 1,
+        "default_guitar": "Gibson Les Paul Junior",
+        "instruments": [{"name": "Gibson Les Paul Junior", "type": "guitar"}],
+    })
+    summary = migrate.migrate_instruments(migrate.plan_migration())
+    assert summary["default_guitar_unresolved"] is None
+    assert "default_guitar" not in capsys.readouterr().err
+
+
+def test_migrate_instruments_null_default_guitar_no_warning(tmp_home, monkeypatch, capsys):
+    _write_prefs_full(tmp_home, monkeypatch, {
+        "schema_version": 1,
+        "instruments": [{"name": "Gibson Les Paul Junior", "type": "guitar"}],
+    })
+    summary = migrate.migrate_instruments(migrate.plan_migration())
+    assert summary["default_guitar_unresolved"] is None
+    assert "default_guitar" not in capsys.readouterr().err
+
+
+def test_migrate_instruments_dry_run_flags_unresolved_default_writes_nothing(
+        tmp_home, monkeypatch, capsys):
+    """Dry-run reconciliation uses the WOULD-be-seeded profiles (in memory) so it
+    reports the would-warn correctly while writing nothing."""
+    _write_prefs_full(tmp_home, monkeypatch, {
+        "schema_version": 1,
+        "default_guitar": "Les Paul Jr",
+        "instruments": [{"name": "Gibson Les Paul Junior", "type": "guitar"}],
+    })
+    summary = migrate.migrate_instruments(migrate.plan_migration(), dry_run=True)
+    assert summary["default_guitar_unresolved"] == "Les Paul Jr"
+    assert "default_guitar" in capsys.readouterr().err
+    # nothing written
+    assert not home.guitars_dir().exists() or not list(home.guitars_dir().glob("*.json"))
+
+
+# ---------------------------------------------------------------------------
 # dry-run mutates nothing
 # ---------------------------------------------------------------------------
 

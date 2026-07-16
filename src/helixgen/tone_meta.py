@@ -400,9 +400,12 @@ def guitar_settings_warnings(
         profile = guitar_profiles.get(key)
         if profile is None:
             continue
-        control_names = {c.name for c in profile.controls}
+        # Case-insensitive: the rest of the guitar surface matches labels
+        # case-folded (see guitars.find_profile), so a "Volume" setting key
+        # against a "volume" control must NOT warn.
+        control_names = {c.name.casefold() for c in profile.controls}
         for setting_key in variant.guitar_settings:
-            if setting_key not in control_names:
+            if setting_key.casefold() not in control_names:
                 warnings.append(
                     f"variant {key!r}: guitar_settings key {setting_key!r} is not "
                     f"a control on the {profile.short_name!r} guitar profile"

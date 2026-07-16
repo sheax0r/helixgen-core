@@ -308,7 +308,10 @@ def show_cmd(name: str, as_json: bool) -> None:
         return
 
     # Not a tone -- try a guitar profile (slug / name / short_name).
-    profile = guitars.find_profile(name)
+    try:
+        profile = guitars.find_profile(name)
+    except guitars.AmbiguousGuitarError as exc:
+        raise click.ClickException(str(exc)) from exc
     if profile is None:
         raise tone_error  # surface the original "no tone found ..." message
     if as_json:

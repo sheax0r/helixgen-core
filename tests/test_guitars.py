@@ -135,6 +135,59 @@ def test_find_profile_blank_label_is_none(tmp_home):
     assert guitars.find_profile("   ") is None
 
 
+def _second_les_paul_jr() -> guitars.GuitarProfile:
+    """A DISTINCT profile (different name/slug) that shares the short_name
+    "Les Paul Jr" with ``_sample_profile()`` -- the ambiguity trigger."""
+    return guitars.GuitarProfile(
+        name="Epiphone Les Paul Junior",
+        short_name="Les Paul Jr",
+        type="guitar",
+        active=False,
+        pickups="one bridge P-90",
+        construction=None,
+        character_md="budget P-90.",
+        genres=["punk"],
+        controls=[guitars.Control(name="volume", kind="knob")],
+    )
+
+
+def test_find_profile_ambiguous_short_name_raises(tmp_home):
+    guitars.save_profile(_sample_profile())        # short_name "Les Paul Jr"
+    guitars.save_profile(_second_les_paul_jr())    # short_name "Les Paul Jr"
+    with pytest.raises(guitars.AmbiguousGuitarError) as exc:
+        guitars.find_profile("Les Paul Jr")
+    # names the colliding profiles by their (unique) slugs
+    assert "epiphone-les-paul-junior" in str(exc.value)
+    assert "gibson-les-paul-junior" in str(exc.value)
+
+
+def test_find_profile_exact_slug_resolves_despite_short_name_collision(tmp_home):
+    guitars.save_profile(_sample_profile())
+    guitars.save_profile(_second_les_paul_jr())
+    # An exact slug is unique by construction -> must still resolve deterministically.
+    assert guitars.find_profile("gibson-les-paul-junior").name == "Gibson Les Paul Junior"
+    assert guitars.find_profile("epiphone-les-paul-junior").name == "Epiphone Les Paul Junior"
+
+
+def test_find_profile_exact_name_wins_over_short_name_collision(tmp_home):
+    """Most-specific-wins: an exact NAME match resolves even when the label also
+    collides with another profile's short_name."""
+    guitars.save_profile(_sample_profile())        # short_name "Les Paul Jr"
+    # A profile whose *name* is literally "Les Paul Jr".
+    guitars.save_profile(guitars.GuitarProfile(
+        name="Les Paul Jr", short_name="LPJ", type="guitar", active=None,
+        pickups=None, construction=None, character_md=None, genres=[], controls=[]))
+    # Name-tier match is unique (only the second profile) -> resolves, no raise.
+    assert guitars.find_profile("Les Paul Jr").slug == "les-paul-jr"
+
+
+def test_find_profile_ambiguous_error_is_valueerror(tmp_home):
+    guitars.save_profile(_sample_profile())
+    guitars.save_profile(_second_les_paul_jr())
+    with pytest.raises(ValueError):
+        guitars.find_profile("les paul jr")
+
+
 # ---------------------------------------------------------------------------
 # profile_from_instrument
 # ---------------------------------------------------------------------------
