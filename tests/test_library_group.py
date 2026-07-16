@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from helixgen import home, naming, tone_meta
+from helixgen import guitars, home, naming, tone_meta
 from helixgen.cli import cli
 from helixgen.device.manifest import SetlistManifest
 
@@ -281,7 +281,7 @@ def test_validate_json_shape_when_clean(tmp_home, hsp_library, tmp_path):
     _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
     res = CliRunner().invoke(cli, ["library", "validate", "--json"])
     assert res.exit_code == 0, res.output
-    assert json.loads(res.output) == {"problems": []}
+    assert json.loads(res.output) == {"problems": [], "warnings": []}
 
 
 def test_validate_reports_missing_hsp_on_disk(tmp_home, hsp_library, tmp_path):
@@ -339,7 +339,7 @@ def test_validate_still_exits_0_with_only_valid_metas(tmp_home, hsp_library, tmp
 
     res_json = CliRunner().invoke(cli, ["library", "validate", "--json"])
     assert res_json.exit_code == 0, res_json.output
-    assert json.loads(res_json.output) == {"problems": []}
+    assert json.loads(res_json.output) == {"problems": [], "warnings": []}
 
 
 def test_validate_accepts_guitar_targeted_variant_key_when_no_guitar_profiles(
@@ -355,7 +355,7 @@ def test_validate_accepts_guitar_targeted_variant_key_when_no_guitar_profiles(
 
     res_json = CliRunner().invoke(cli, ["library", "validate", "--json"])
     assert res_json.exit_code == 0, res_json.output
-    assert json.loads(res_json.output) == {"problems": []}
+    assert json.loads(res_json.output) == {"problems": [], "warnings": []}
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +536,71 @@ def test_describe_embedded_null_byte_name_is_clean_not_found(tmp_home):
     assert isinstance(res.exception, SystemExit)
     assert "ValueError" not in res.output
     assert "Traceback" not in res.output
+
+
+# ---------------------------------------------------------------------------
+# library list --guitars / library show <guitar> (Task 11)
+# ---------------------------------------------------------------------------
+
+
+def _save_profile():
+    guitars.save_profile(guitars.GuitarProfile(
+        name="Gibson Les Paul Junior", short_name="Les Paul Jr", type="guitar",
+        active=False, pickups="one bridge P-90", construction=None,
+        character_md="P-90 grind", genres=["punk"],
+        controls=[guitars.Control(name="volume", kind="knob"),
+                  guitars.Control(name="tone", kind="knob", notes="no split")],
+    ))
+
+
+def test_library_list_json_includes_guitars(tmp_home):
+    _save_profile()
+    res = CliRunner().invoke(cli, ["library", "list", "--json"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["guitars"] == [{
+        "slug": "gibson-les-paul-junior", "name": "Gibson Les Paul Junior",
+        "short_name": "Les Paul Jr", "type": "guitar"}]
+
+
+def test_library_list_guitars_human(tmp_home):
+    _save_profile()
+    res = CliRunner().invoke(cli, ["library", "list", "--guitars"])
+    assert res.exit_code == 0, res.output
+    assert "Guitars (1):" in res.output
+    assert "gibson-les-paul-junior" in res.output
+    assert "Les Paul Jr" in res.output
+
+
+def test_library_show_resolves_guitar_by_short_name(tmp_home):
+    _save_profile()
+    res = CliRunner().invoke(cli, ["library", "show", "Les Paul Jr"])
+    assert res.exit_code == 0, res.output
+    assert "gibson-les-paul-junior" in res.output
+    assert "Controls (2):" in res.output
+    assert "volume [knob]" in res.output
+
+
+def test_library_show_guitar_json_dumps_profile(tmp_home):
+    _save_profile()
+    res = CliRunner().invoke(cli, ["library", "show", "gibson-les-paul-junior", "--json"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["short_name"] == "Les Paul Jr"
+    assert data["controls"][0]["name"] == "volume"
+
+
+def test_library_show_unknown_name_still_errors(tmp_home):
+    _save_profile()
+    res = CliRunner().invoke(cli, ["library", "show", "Nonexistent Thing"])
+    assert res.exit_code != 0
+
+
+def test_library_show_prefers_tone_over_guitar(tmp_home, hsp_library, tmp_path):
+    # A tone and a guitar could share a name; the tone wins (resolved first).
+    _save_profile()
+    _make_tone(hsp_library, tmp_path, descriptor="Les Paul Jr")
+    res = CliRunner().invoke(cli, ["library", "show", "les-paul-jr"])
+    assert res.exit_code == 0, res.output
+    # tone output has a "Variants (" line; guitar output has "Controls ("
+    assert "Variants (" in res.output

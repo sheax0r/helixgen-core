@@ -148,6 +148,10 @@ def _validate_device_model(model: Any) -> str | None:
 
 
 def _validate_default_guitar(value: Any) -> str | None:
+    """The user's default guitar: names a guitar PROFILE (its slug or name/
+    short_name -- see ``guitars.find_profile``), used when a tone request
+    doesn't name a guitar. Stored as an opaque string here; resolution to a
+    profile happens at generate time."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -195,6 +199,30 @@ def _parse_instruments(raw: Any) -> list[Instrument]:
     return [Instrument.from_dict(item, index=i) for i, item in enumerate(raw)]
 
 
+# Preferences keys retired by the library-metadata migration (design §6):
+# ``instruments`` is replaced by guitar profiles (``library/guitars/*.json``),
+# ``preset_output_dir`` by the ``library/tones/`` default write location. Both
+# are still PARSED for back-compat, but loading a FILE that still carries a
+# non-empty value warns (once per load) pointing at ``library migrate``.
+_DEPRECATED_KEYS = {
+    "instruments": "instruments (guitar profiles replace it)",
+    "preset_output_dir": "preset_output_dir (the library/tones/ default replaces it)",
+}
+
+
+def _warn_deprecated_keys(data: dict[str, Any]) -> None:
+    """Emit a one-line stderr deprecation notice for each retired key that is
+    actually PRESENT and non-empty in the on-disk ``data`` (never on a default
+    / absent / empty value; never to stdout, which ``--json`` reads)."""
+    for key, why in _DEPRECATED_KEYS.items():
+        if data.get(key):
+            print(
+                f"helixgen: preferences key {why} is deprecated; run "
+                "`helixgen library migrate` to convert it.",
+                file=sys.stderr,
+            )
+
+
 def load_preferences(path: Path | None = None) -> Preferences:
     """Load preferences, applying per-key env overrides.
 
@@ -222,6 +250,8 @@ def load_preferences(path: Path | None = None) -> Preferences:
             f"$HELIXGEN_PREFS points at {resolved_path}, but no such file exists"
         )
     # else: missing default-path file -> data stays {} -> all defaults
+
+    _warn_deprecated_keys(data)
 
     device_block = data.get("device") or {}
     if not isinstance(device_block, dict):

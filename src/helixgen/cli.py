@@ -369,12 +369,40 @@ def generate_cmd(
 
 
 def _resolve_guitar(label: str) -> tuple[str, str]:
-    """Resolve a --guitar label into ``(slug, short_name)``.
+    """Resolve a --guitar label into ``(slug, short_name)`` via guitar profiles.
 
-    PR 2 seam: the slug is ``naming.slugify(label)`` and the short name is the
-    literal label. PR 3 (guitar profiles) swaps the internals to look the label
-    up as a profile by slug/name/short_name; callers keep this signature.
+    - A label matching a profile (by slug / name / short_name, case-insensitive)
+      resolves to that profile's ``(slug, short_name)``.
+    - If profiles EXIST but none match, this is a hard error listing the known
+      guitars -- ``--guitar`` must reference a real profile once any exist.
+    - If NO profiles exist yet (a fresh library, pre-migration), fall back to the
+      literal ``(naming.slugify(label), label)`` with a one-line stderr notice,
+      so tone authoring keeps working before ``library migrate`` seeds profiles.
+
+    Signature is unchanged from the PR 2 seam; ``generate`` still applies its own
+    empty-slug guard on the returned slug afterward.
     """
+    from helixgen import guitars
+
+    profile = guitars.find_profile(label)
+    if profile is not None:
+        return profile.slug, profile.short_name
+
+    profiles = guitars.load_all_profiles()
+    if profiles:
+        known = ", ".join(sorted(p.short_name for p in profiles))
+        raise click.ClickException(
+            f"unknown guitar {label!r}: no matching guitar profile. "
+            f"Known guitars: {known}. Create one (setup skill) or run "
+            "`helixgen library migrate`."
+        )
+
+    click.echo(
+        f"helixgen: no guitar profiles exist yet -- using --guitar {label!r} "
+        "literally (run `helixgen library migrate` or the setup skill to add "
+        "guitar profiles).",
+        err=True,
+    )
     return naming.slugify(label), label
 
 

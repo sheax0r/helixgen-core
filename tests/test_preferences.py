@@ -531,3 +531,40 @@ def test_env_git_commit_tones_invalid_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("HELIXGEN_GIT_COMMIT_TONES", "sometimes")
     with pytest.raises(PreferencesError):
         load_preferences(tmp_path / "missing.json")
+
+
+# ---------------------------------------------------------------------------
+# deprecation warnings for retired keys (Task 11)
+# ---------------------------------------------------------------------------
+
+
+def test_deprecated_instruments_key_warns_on_stderr(tmp_path, capsys):
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({
+        "schema_version": 1,
+        "instruments": [{"name": "Les Paul Jr", "type": "guitar"}],
+    }))
+    p = load_preferences(prefs)
+    # still parsed for back-compat
+    assert len(p.instruments) == 1
+    err = capsys.readouterr().err
+    assert "instruments" in err and "deprecated" in err
+    assert "library migrate" in err
+
+
+def test_deprecated_preset_output_dir_warns_on_stderr(tmp_path, capsys):
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({
+        "schema_version": 1, "preset_output_dir": "~/presets"}))
+    load_preferences(prefs)
+    err = capsys.readouterr().err
+    assert "preset_output_dir" in err and "deprecated" in err
+
+
+def test_no_deprecation_warning_when_keys_absent_or_empty(tmp_path, capsys):
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({
+        "schema_version": 1, "instruments": [], "preset_output_dir": None}))
+    load_preferences(prefs)
+    err = capsys.readouterr().err
+    assert "deprecated" not in err

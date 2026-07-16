@@ -30,9 +30,10 @@ Design guarantees:
   are recorded as a collision with a rename suggestion and NEITHER is moved —
   one ``.hsp`` never silently overwrites another.
 
-Instruments are RECORDED in the plan but :func:`migrate_instruments` is a no-op
-in this PR (guitar profiles land in PR 3 / Task 11); it returns a marker and
-does not touch ``preferences.json`` or create any profile.
+Instruments are RECORDED in the plan and seeded into guitar profiles by
+:func:`migrate_instruments` (Task 11): each entry becomes a
+``library/guitars/<slug>.json`` and the retired ``instruments`` /
+``preset_output_dir`` keys are stripped from ``preferences.json``.
 """
 from __future__ import annotations
 
@@ -376,7 +377,7 @@ def run_migration(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, A
     mapping are re-saved (and the home advisory-committed) only when this run
     actually changed something, so a re-run on a migrated home is inert."""
     summary = _empty_summary(dry_run)
-    summary["instruments"] = migrate_instruments(plan)
+    summary["instruments"] = migrate_instruments(plan, dry_run=dry_run)
 
     if not dry_run:
         libinit.ensure_initialized()
@@ -552,19 +553,81 @@ def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
 
 
 # ---------------------------------------------------------------------------
-# migrate_instruments — deferred to PR 3
+# migrate_instruments — seed guitar profiles + retire prefs keys (Task 11)
 # ---------------------------------------------------------------------------
 
 
-def migrate_instruments(plan: Dict[str, Any]) -> Dict[str, Any]:
-    """No-op hook: seeding guitar profiles from ``prefs.instruments`` is PR 3.
+def _strip_deprecated_prefs_keys(*, dry_run: bool) -> List[str]:
+    """Drop the retired ``instruments`` / ``preset_output_dir`` keys from the
+    preferences FILE on disk (design §6), atomically. Returns the list of keys
+    actually removed (empty when neither is present, so a re-run is inert).
 
-    Records nothing to disk — does NOT delete ``prefs.instruments`` and does NOT
-    create any guitar profile. Returns a marker so callers/summaries can show
-    that instrument migration was intentionally deferred."""
+    Null/absent/parse-failure safe: a missing file, non-dict JSON, or unreadable
+    file removes nothing. With ``dry_run`` the file is left untouched but the
+    keys that WOULD be removed are still reported."""
+    from helixgen.preferences import default_prefs_path
+
+    path = default_prefs_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    removed = [k for k in ("instruments", "preset_output_dir") if k in data]
+    if not removed or dry_run:
+        return removed
+
+    for k in removed:
+        data.pop(k, None)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+    return removed
+
+
+def migrate_instruments(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, Any]:
+    """Seed a guitar profile from each ``plan["instruments"]`` entry, then retire
+    the deprecated preferences keys.
+
+    - For each instrument dict (optionally carrying a plan-added ``short_name``),
+      build ``guitars.profile_from_instrument`` and ``guitars.save_profile`` it.
+      IDEMPOTENT: an entry whose profile file already exists is skipped, so a
+      re-run is all skips. A malformed entry (missing ``name``) is recorded under
+      ``skipped`` with a reason rather than aborting the run.
+    - After seeding, strip ``instruments`` + ``preset_output_dir`` from the
+      preferences file (see :func:`_strip_deprecated_prefs_keys`).
+    - With ``dry_run`` nothing is written (no profiles, no prefs rewrite); the
+      summary still reports what WOULD happen.
+
+    Returns ``{"status": "migrated", "profiles_created": [...slugs],
+    "skipped": [...], "prefs_keys_removed": [...]}``."""
+    from helixgen import guitars
+
+    created: List[str] = []
+    skipped: List[Dict[str, Any]] = []
+    for d in plan.get("instruments", []) or []:
+        try:
+            profile = guitars.profile_from_instrument(d)
+        except (KeyError, TypeError) as exc:
+            skipped.append({"instrument": (d or {}).get("name") if isinstance(d, dict) else None,
+                            "reason": f"malformed instrument entry: {exc}"})
+            continue
+        if guitars.profile_path(profile.slug).exists():
+            skipped.append({"slug": profile.slug, "reason": "profile already exists"})
+            continue
+        if not dry_run:
+            guitars.save_profile(profile)
+        created.append(profile.slug)
+
+    prefs_keys_removed = _strip_deprecated_prefs_keys(dry_run=dry_run)
+
     return {
-        "status": "deferred",
-        "deferred_to": "PR 3",
-        "instruments_recorded": len(plan.get("instruments", [])),
-        "detail": "guitar-profile seeding from prefs.instruments lands in PR 3 (Task 11)",
+        "status": "migrated",
+        "profiles_created": created,
+        "skipped": skipped,
+        "prefs_keys_removed": prefs_keys_removed,
     }

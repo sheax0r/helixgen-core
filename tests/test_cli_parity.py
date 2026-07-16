@@ -177,10 +177,11 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "unsync"], ["SYNCED setlist", "membership"]),
     # --- library metadata group + describe (Task 8) ---
     (["library"], ["logical slug", "preset_name", "cross-link", "describe"]),
-    (["library", "list"], ["later-PR features", "guitar profiles", "grouped"]),
-    (["library", "show"], ["metadata filename", "ambiguous", "describe"]),
+    (["library", "list"], ["guitar profiles", "grouped", "later-PR feature"]),
+    (["library", "show"], ["metadata filename", "ambiguous", "describe", "guitar profile"]),
     (["library", "doc"], ["mutually exclusive", "advisory-commits", "notes_md"]),
-    (["library", "validate"], ["cross-link checks", "generic", "logical slug"]),
+    (["library", "validate"],
+     ["cross-link checks", "generic", "logical slug", "warnings"]),
     (["describe"], ["guitar_settings", "verbatim", "Artist - Song"]),
     # --- library import + migrate (Task 9) ---
     (["library", "migrate"],

@@ -43,9 +43,12 @@ import os
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
 from helixgen import gitops, home, libinit, naming
+
+if TYPE_CHECKING:  # avoid a runtime import cycle; only for type hints
+    from helixgen.guitars import GuitarProfile
 
 
 @dataclass
@@ -367,3 +370,41 @@ def validate_tone_meta(
                 "not registered in the manifest"
             )
     return problems
+
+
+# ---------------------------------------------------------------------------
+# guitar_settings_warnings (a SEPARATE, non-fatal channel from validate_tone_meta)
+# ---------------------------------------------------------------------------
+
+
+def guitar_settings_warnings(
+    meta: ToneMeta,
+    *,
+    guitar_profiles: "Dict[str, GuitarProfile] | None" = None,
+) -> List[str]:
+    """Warnings (NOT errors) for ``guitar_settings`` keys that aren't controls
+    on the variant's target guitar profile (design §5.1/§8).
+
+    - ``guitar_profiles`` maps a guitar slug -> its ``GuitarProfile``. When a
+      variant's key has NO profile in the map (the profile may lag the tone --
+      design §8), that variant is skipped silently: no profile, no warning.
+    - For a variant whose key DOES have a profile, each ``guitar_settings`` key
+      not matching one of the profile's control ``name``s yields one warning.
+    - This is deliberately a sibling of :func:`validate_tone_meta` (which stays
+      ``List[str]`` errors): warnings never fail ``library validate``.
+    """
+    warnings: List[str] = []
+    if not guitar_profiles:
+        return warnings
+    for key, variant in meta.variants.items():
+        profile = guitar_profiles.get(key)
+        if profile is None:
+            continue
+        control_names = {c.name for c in profile.controls}
+        for setting_key in variant.guitar_settings:
+            if setting_key not in control_names:
+                warnings.append(
+                    f"variant {key!r}: guitar_settings key {setting_key!r} is not "
+                    f"a control on the {profile.short_name!r} guitar profile"
+                )
+    return warnings

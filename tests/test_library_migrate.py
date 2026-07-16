@@ -12,7 +12,8 @@ so these tests hammer:
 - IDEMPOTENCE (re-run == all skips, no dup files, mapping.json byte-identical).
 - SLUG COLLISION (two tones -> one slug -> recorded, no overwrite).
 - DATA SAFETY (a per-tone error is recorded and does not abort the run).
-- ``migrate_instruments`` is a no-op returning a "deferred to PR 3" marker.
+- ``migrate_instruments`` seeds guitar profiles from prefs.instruments and
+  strips the retired ``instruments`` / ``preset_output_dir`` prefs keys.
 
 Git identity is isolated like ``tests/test_gitops.py`` so a dev machine's git
 config can't leak into the tmp home repos, and the module skips when git is
@@ -26,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from helixgen import home, migrate, naming, tone_meta
+from helixgen import guitars, home, migrate, naming, tone_meta
 from helixgen.hsp import read_hsp, write_hsp
 from helixgen.ir import IrMapping
 from helixgen.device.manifest import SetlistManifest
@@ -304,18 +305,88 @@ def test_run_migration_continues_past_a_missing_source(tmp_home, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# migrate_instruments is a no-op deferred to PR 3
+# migrate_instruments: seed guitar profiles + strip retired prefs keys (Task 11)
 # ---------------------------------------------------------------------------
 
 
-def test_migrate_instruments_is_a_deferred_noop(tmp_home, monkeypatch):
-    _write_prefs(tmp_home, monkeypatch, [{"name": "Les Paul Jr", "type": "guitar"}])
+def _write_prefs_full(home_dir, monkeypatch, data: dict) -> Path:
+    prefs = home_dir / "preferences.json"
+    prefs.write_text(json.dumps(data))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(prefs))
+    return prefs
+
+
+def test_migrate_instruments_seeds_four_profiles_and_strips_prefs(tmp_home, monkeypatch):
+    prefs = _write_prefs_full(tmp_home, monkeypatch, {
+        "schema_version": 1,
+        "preset_output_dir": "~/presets",
+        "instruments": [
+            {"name": "Gibson Les Paul Junior", "short_name": "Les Paul Jr",
+             "type": "guitar", "pickups": "one bridge P-90", "selector": "none",
+             "active": False, "genres": ["punk"], "notes": "P-90 grind"},
+            {"name": "Fender Stratocaster", "type": "guitar",
+             "selector": "5-way", "genres": ["blues"]},
+            {"name": "Fender Jazzmaster", "type": "guitar"},
+            {"name": "Fender Precision Bass", "type": "bass"},
+        ],
+    })
     plan = migrate.plan_migration()
-    marker = migrate.migrate_instruments(plan)
-    text = json.dumps(marker).lower()
-    assert "pr 3" in text or "deferred" in text
-    # prefs untouched, no guitar profiles created
-    assert not home.guitars_dir().exists() or not any(home.guitars_dir().glob("*.json"))
+    # `preferences.Instrument` has no short_name field, so plan_migration can't
+    # carry it -- the agent adds it when editing the plan. Simulate that for the
+    # Les Paul entry; the others fall back to short_name = name.
+    for entry in plan["instruments"]:
+        if entry["name"] == "Gibson Les Paul Junior":
+            entry["short_name"] = "Les Paul Jr"
+    summary = migrate.migrate_instruments(plan)
+
+    assert summary["status"] == "migrated"
+    assert set(summary["profiles_created"]) == {
+        "gibson-les-paul-junior", "fender-stratocaster",
+        "fender-jazzmaster", "fender-precision-bass"}
+    # four profile files on disk
+    assert len(list(home.guitars_dir().glob("*.json"))) == 4
+
+    lp = guitars.load_profile("gibson-les-paul-junior")
+    assert lp.short_name == "Les Paul Jr"
+    assert lp.character_md == "P-90 grind"          # notes -> character_md
+    assert lp.controls[0].name == "pickup selector"  # selector -> control
+    assert lp.controls[0].notes == "none"
+
+    # prefs file had both retired keys removed
+    assert set(summary["prefs_keys_removed"]) == {"instruments", "preset_output_dir"}
+    on_disk = json.loads(prefs.read_text())
+    assert "instruments" not in on_disk
+    assert "preset_output_dir" not in on_disk
+    assert on_disk["schema_version"] == 1  # other keys preserved
+
+
+def test_migrate_instruments_is_idempotent(tmp_home, monkeypatch):
+    _write_prefs_full(tmp_home, monkeypatch, {
+        "schema_version": 1,
+        "instruments": [{"name": "Les Paul Jr", "type": "guitar"}],
+    })
+    first = migrate.migrate_instruments(migrate.plan_migration())
+    assert first["profiles_created"] == ["les-paul-jr"]
+
+    # re-run: instruments already stripped from prefs, profile already exists
+    second = migrate.migrate_instruments(migrate.plan_migration())
+    assert second["profiles_created"] == []
+    assert second["prefs_keys_removed"] == []
+    assert len(list(home.guitars_dir().glob("*.json"))) == 1
+
+
+def test_migrate_instruments_dry_run_writes_nothing(tmp_home, monkeypatch):
+    prefs = _write_prefs_full(tmp_home, monkeypatch, {
+        "schema_version": 1,
+        "instruments": [{"name": "Les Paul Jr", "type": "guitar"}],
+    })
+    summary = migrate.migrate_instruments(migrate.plan_migration(), dry_run=True)
+    # reports what WOULD happen...
+    assert summary["profiles_created"] == ["les-paul-jr"]
+    assert summary["prefs_keys_removed"] == ["instruments"]
+    # ...but nothing was written
+    assert not home.guitars_dir().exists() or not list(home.guitars_dir().glob("*.json"))
+    assert "instruments" in json.loads(prefs.read_text())
 
 
 # ---------------------------------------------------------------------------
