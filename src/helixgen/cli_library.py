@@ -18,10 +18,10 @@ ambiguous match, malformed on-disk metadata, or a metadata file whose content
 computes a different identity slug than its own filename are all a
 ``ClickException`` (exit 1) -- see ``_resolve_slug`` and ``_load_meta_for``.
 
-``library list`` now lists guitar profiles (``library/guitars/*.json``)
-alongside tones; per-IR metadata is still a later-PR feature so the ``irs``
-section stays empty. ``library show`` resolves a NAME as a tone first, then
-as a guitar profile. ``library validate`` checks each variant key against the
+``library list`` now lists guitar profiles (``library/guitars/*.json``) AND
+per-IR metadata (``library/irs/**/*.json`` sidecars) alongside tones (narrow
+with ``--tones``/``--guitars``/``--irs``). ``library show`` resolves a NAME as
+a tone first, then as a guitar profile. ``library validate`` checks each variant key against the
 real profile slugs (falling back to the on-disk variant keys only when NO
 profiles exist yet) and adds a separate ``guitar_settings`` warnings channel.
 """

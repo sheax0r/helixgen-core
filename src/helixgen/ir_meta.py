@@ -63,6 +63,11 @@ CONTROLLED_TAGS: frozenset[str] = frozenset({
     "lead", "rhythm", "stereo", "room",
 })
 
+# Casefolded lookup set: tag validation is case-insensitive (a ``"Bright"`` tag
+# is as valid as ``"bright"``), matching the case-insensitive guitar_settings
+# check elsewhere in this PR.
+_CONTROLLED_TAGS_CF: frozenset[str] = frozenset(t.casefold() for t in CONTROLLED_TAGS)
+
 
 # ---------------------------------------------------------------------------
 # dataclass
@@ -164,6 +169,31 @@ def _guess_mix(name: str) -> Optional[str]:
     if not match:
         return None
     return f"Mix {match.group(1)}"
+
+
+# Generic container dirs that a commercial pack nests its WAVs under
+# (``<PackName>/Mixes/*.wav``); the pack IDENTITY is the grandparent, not this.
+_GENERIC_PACK_DIRS: frozenset[str] = frozenset({
+    "mixes", "mix", "wavs", "wav", "irs", "ir",
+})
+
+
+def derive_pack(src: Path) -> str:
+    """Derive the library pack-subdir slug for a source WAV.
+
+    Normally ``slugify(src.parent.name)``. But commercial packs are laid out
+    ``<PackName>/Mixes/*.wav``, so when the immediate parent is a generic
+    container (``mixes``/``wavs``/``irs``/... -- see :data:`_GENERIC_PACK_DIRS`)
+    AND a grandparent exists, the grandparent (the real pack dir) names the
+    subdir instead. This keeps every pack's WAVs grouped under their own dir
+    rather than colliding in a shared ``mixes/`` (design §5.3). Falls back to
+    ``"unknown"`` when the chosen name slugifies to empty."""
+    src = Path(src)
+    parent = src.parent
+    name = parent.name
+    if name.lower() in _GENERIC_PACK_DIRS and parent.parent.name:
+        name = parent.parent.name
+    return naming.slugify(name) or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +303,10 @@ def import_wav(src: Path, irhash: str, *,
     """Copy ``src`` into the library and scaffold its sidecar; return
     ``(wav_path, meta_path)``.
 
-    - Destination is ``library_irs_dir()/<pack or slugify(src.parent.name)>/
+    - Destination is ``library_irs_dir()/<pack or derive_pack(src)>/
       <src.name>`` (basename collisions across packs disambiguated by irhash
-      prefix — see :func:`_choose_dest`). An identical file already at the
+      prefix — see :func:`_choose_dest`; see :func:`derive_pack` for the
+      ``<Pack>/Mixes/`` grandparent rule). An identical file already at the
       destination is NOT re-copied.
     - When ``src`` is ALREADY under ``library_irs_dir()`` it is left in place
       (no copy, ``imported_from`` recorded as ``None`` — it originated here).
@@ -290,7 +321,7 @@ def import_wav(src: Path, irhash: str, *,
         dest = src
         imported_from = None
     else:
-        pack_dir = pack or naming.slugify(src.parent.name) or "unknown"
+        pack_dir = pack or derive_pack(src)
         dest = _choose_dest(lib, pack_dir, src, irhash)
         if not dest.exists():
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -366,7 +397,7 @@ def validate_ir_metas(metas: List[IrMeta],
         if not m.wav or not (lib / m.wav).exists():
             problems.append(f"IR {label}: wav file not found: {m.wav}")
         for t in m.tags:
-            if t not in CONTROLLED_TAGS:
+            if t.casefold() not in _CONTROLLED_TAGS_CF:
                 warnings.append(
                     f"IR {label}: tag {t!r} is not in the controlled vocabulary")
     return problems, warnings

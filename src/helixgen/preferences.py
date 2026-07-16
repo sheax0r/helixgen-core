@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from helixgen import home
+
 SCHEMA_VERSION = 1
 
 _VALID_DEVICE_MODELS = ("Stadium", "Stadium XL")
@@ -33,14 +35,18 @@ class PreferencesError(ValueError):
 def default_prefs_path() -> Path:
     """Return the preferences file path, honoring the HELIXGEN_PREFS env var.
 
-    Parallels ``default_irs_path`` / ``$HELIXGEN_LIBRARY``: the whole-file
-    location can be redirected via env; otherwise it lives under the
-    ``~/.helixgen`` convention.
+    Parallels ``default_irs_path`` / ``$HELIXGEN_LIBRARY``: an explicit
+    ``$HELIXGEN_PREFS`` redirects the whole file; otherwise the default is
+    anchored under ``home.helixgen_home()`` (so ``$HELIXGEN_HOME`` relocates it
+    too, and the common no-env case is unchanged at
+    ``~/.helixgen/preferences.json``). Anchoring here keeps the destructive
+    ``library migrate`` prefs-key strip -- and every prefs read -- inside the
+    resolved home, never the real ``~/.helixgen``.
     """
     env = os.environ.get("HELIXGEN_PREFS")
     if env:
         return Path(env)
-    return Path.home() / ".helixgen" / "preferences.json"
+    return home.helixgen_home() / "preferences.json"
 
 
 def _parse_bool_env(name: str, raw: str) -> bool:

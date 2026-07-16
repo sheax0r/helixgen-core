@@ -496,6 +496,36 @@ def test_migrated_ir_sidecar_has_full_irmeta_shape(tmp_home, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# FIX 1: the destructive prefs-key strip honors $HELIXGEN_HOME (never the real
+# ~/.helixgen) even when $HELIXGEN_PREFS is unset.
+# ---------------------------------------------------------------------------
+
+
+def test_strip_deprecated_prefs_keys_honors_helixgen_home(tmp_home, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
+    # A sentinel standing in for the REAL home: it must stay untouched.
+    real_home = tmp_home / "_real_home_guard"
+    real_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: real_home))
+
+    prefs = home.helixgen_home() / "preferences.json"
+    prefs.parent.mkdir(parents=True, exist_ok=True)
+    prefs.write_text(json.dumps({
+        "schema_version": 1,
+        "instruments": [{"name": "X", "type": "guitar"}],
+        "preset_output_dir": "~/presets",
+    }))
+
+    removed = migrate._strip_deprecated_prefs_keys(dry_run=False)
+
+    assert set(removed) == {"instruments", "preset_output_dir"}
+    on_disk = json.loads(prefs.read_text())
+    assert "instruments" not in on_disk and "preset_output_dir" not in on_disk
+    # the real-home sentinel was never written to
+    assert not (real_home / ".helixgen" / "preferences.json").exists()
+
+
+# ---------------------------------------------------------------------------
 # M1: a malformed --plan (missing a required per-tone key) exits 1 cleanly
 # ---------------------------------------------------------------------------
 

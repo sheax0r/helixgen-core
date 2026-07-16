@@ -505,7 +505,7 @@ def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
         summary["irs"]["errors"].append({"hash": h, "error": f"wav missing: {src}"})
         return False
 
-    pack = naming.slugify(src.parent.name) or "unknown"
+    pack = ir_meta.derive_pack(src)
     # `dest` is chosen so it either does not exist yet, or is byte-identical to
     # `src` (safe to adopt). A different-content basename collision from another
     # pack is routed to a hash-disambiguated `dest` instead of aliasing.

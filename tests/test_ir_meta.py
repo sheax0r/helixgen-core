@@ -143,6 +143,61 @@ def test_import_wav_leaves_in_library_file_in_place(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# FIX 2: pack-subdir derivation collapses the standard <Pack>/Mixes/ layout to
+# the PACK name, not the generic "mixes" container.
+# ---------------------------------------------------------------------------
+
+
+def test_import_wav_uses_grandparent_pack_for_mixes_layout(tmp_path):
+    # commercial layout <PackName>/Mixes/*.wav -> library/irs/<pack>/, not mixes/
+    src = _wav(tmp_path / "York Audio BOGN" / "Mixes" / "Mix 01.wav")
+    wav_path, _ = ir_meta.import_wav(src, "d" * 32)
+    assert wav_path == home.library_irs_dir() / "york-audio-bogn" / "Mix 01.wav"
+
+
+def test_import_wav_uses_parent_when_not_generic_container(tmp_path):
+    # a WAV whose immediate parent is a real pack dir keeps the parent name
+    src = _wav(tmp_path / "SomePack" / "cab.wav")
+    wav_path, _ = ir_meta.import_wav(src, "e" * 32)
+    assert wav_path == home.library_irs_dir() / "somepack" / "cab.wav"
+
+
+def test_derive_pack_rules():
+    from pathlib import Path as _P
+    # generic container with a real grandparent -> grandparent
+    assert ir_meta.derive_pack(_P("/x/York Audio BOGN/Mixes/Mix 01.wav")) == "york-audio-bogn"
+    # non-generic parent -> parent
+    assert ir_meta.derive_pack(_P("/x/SomePack/cab.wav")) == "somepack"
+    # generic parent but NO grandparent -> fall back to the parent name
+    assert ir_meta.derive_pack(_P("Mixes/x.wav")) == "mixes"
+    # bare <dir>/x.wav still works
+    assert ir_meta.derive_pack(_P("guitar-cabs/x.wav")) == "guitar-cabs"
+
+
+# ---------------------------------------------------------------------------
+# FIX 3: IR-tag validation is case-insensitive (matches guitar_settings).
+# ---------------------------------------------------------------------------
+
+
+def test_validate_ir_metas_tag_check_is_case_insensitive(tmp_path):
+    lib = home.library_dir()
+    wav_rel = "irs/p/x.wav"
+    (lib / "irs" / "p").mkdir(parents=True)
+    (lib / wav_rel).write_bytes(b"RIFFxxxx")
+    mapping = IrMapping.load()
+    mapping.register("a" * 32, lib / wav_rel)
+
+    ok = ir_meta.IrMeta(irhash="a" * 32, wav=wav_rel, tags=["Bright", "TIGHT"])
+    problems, warnings = ir_meta.validate_ir_metas([ok], mapping)
+    assert problems == []
+    assert not any("Bright" in w or "TIGHT" in w for w in warnings)
+
+    bad = ir_meta.IrMeta(irhash="a" * 32, wav=wav_rel, tags=["sparkly"])
+    _, warnings2 = ir_meta.validate_ir_metas([bad], mapping)
+    assert any("sparkly" in w for w in warnings2)
+
+
+# ---------------------------------------------------------------------------
 # register-irs / ir-scan copy-by-default (via CLI)
 # ---------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 """Bootstrap hook: make sure the helixgen home exists and is a git repo.
 
 Every write path that puts a file under ``~/.helixgen`` (the manifest, the
-block library, and — in later PRs — tone/guitar/IR metadata) calls
+block library, and the tone/guitar/IR metadata) calls
 :func:`ensure_initialized` first. It does two things, in order:
 
 1. ``mkdir(parents=True, exist_ok=True)`` the home directory. ``gitops``
