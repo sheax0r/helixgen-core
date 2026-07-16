@@ -67,6 +67,30 @@ def _make_tone(hsp_library, tmp_path, *, descriptor, guitar=None, tags=None):
     return logical, variant_key, meta.variants[variant_key].preset_name
 
 
+def _make_song_tone(hsp_library, tmp_path, *, artist, song, guitar=None, spec_stem=None):
+    """Like `_make_tone` but for an artist+song identity (rather than a
+    descriptor) -- used to build tones whose preset_name legitimately
+    contains characters like "/" or ".." (e.g. artist "AC/DC"). The recipe
+    file itself is named from a filesystem-safe `spec_stem` (defaults to a
+    slugified artist-song), never from the raw artist/song text.
+
+    Returns (logical_slug, guitar_variant_key, preset_name).
+    """
+    stem = spec_stem or naming.slugify(f"{artist}-{song}") or "song-tone"
+    spec = _write_recipe(tmp_path, stem, block="Brit Amp")
+    args = [str(spec), "--artist", artist, "--song", song,
+            "--library", str(hsp_library.root)]
+    if guitar:
+        args += ["--guitar", guitar]
+    res = CliRunner().invoke(cli, ["generate", *args])
+    assert res.exit_code == 0, res.output
+
+    logical = naming.logical_slug(artist=artist, song=song)
+    variant_key = naming.slugify(guitar) if guitar else "generic"
+    meta = tone_meta.load_tone_meta(logical)
+    return logical, variant_key, meta.variants[variant_key].preset_name
+
+
 # ---------------------------------------------------------------------------
 # library list
 # ---------------------------------------------------------------------------
@@ -398,11 +422,65 @@ def test_doc_metadata_filename_diverges_from_identity_slug_exits_1(tmp_home):
     assert json.loads(mismatched_path.read_text())["description_md"] is None
 
 
-def test_show_rejects_name_with_path_separator(tmp_home):
+def test_show_resolves_preset_name_containing_slash(tmp_home, hsp_library, tmp_path):
+    """A real preset_name legitimately containing "/" (artist "AC/DC") must
+    resolve via `library show`, `describe`, and `library doc` -- the
+    path-traversal guard only gates the filename-lookup branch, never the
+    in-memory preset_name match (regression for the fix on top of ceec06c,
+    which had made `_reject_unsafe_name` reject the raw NAME up front for
+    ALL resolution, including this legitimate preset_name branch)."""
+    logical, variant_key, preset_name = _make_song_tone(
+        hsp_library, tmp_path, artist="AC/DC", song="Thunderstruck", guitar="Strat"
+    )
+    assert preset_name == "AC/DC - Thunderstruck - Strat"
+
+    res_show = CliRunner().invoke(cli, ["library", "show", preset_name])
+    assert res_show.exit_code == 0, res_show.output
+    assert logical in res_show.output
+
+    res_describe = CliRunner().invoke(cli, ["describe", preset_name])
+    assert res_describe.exit_code == 0, res_describe.output
+    assert preset_name in res_describe.output
+
+    res_doc = CliRunner().invoke(
+        cli, ["library", "doc", preset_name, "-"], input="AC/DC notes"
+    )
+    assert res_doc.exit_code == 0, res_doc.output
+    assert tone_meta.load_tone_meta(logical).description_md == "AC/DC notes"
+
+
+def test_show_resolves_preset_name_containing_dotdot(tmp_home, hsp_library, tmp_path):
+    """A preset_name containing ".." (an ellipsis in a descriptor) must
+    resolve via preset_name matching, not be hard-rejected."""
+    logical, variant_key, preset_name = _make_tone(
+        hsp_library, tmp_path, descriptor="To Be...", guitar="Strat"
+    )
+    assert preset_name == "To Be... - Strat"
+
+    res_show = CliRunner().invoke(cli, ["library", "show", preset_name])
+    assert res_show.exit_code == 0, res_show.output
+    assert logical in res_show.output
+
+    res_describe = CliRunner().invoke(cli, ["describe", preset_name])
+    assert res_describe.exit_code == 0, res_describe.output
+    assert preset_name in res_describe.output
+
+
+def test_show_traversal_name_not_file_or_preset_name_is_clean_not_found(tmp_home):
+    """A NAME that is neither a metadata file nor any preset_name, and looks
+    like a path (e.g. "../etc/passwd"), must be a clean "not found" exit 1
+    -- no traceback, and it must never actually resolve/read outside
+    tones_dir() (there is nothing there to match in a fresh tmp_home, so a
+    'no tone found' message -- not an ambiguous/other match -- proves no
+    escape happened)."""
     res = CliRunner().invoke(cli, ["library", "show", "../etc/passwd"])
     assert res.exit_code == 1
+    assert isinstance(res.exception, SystemExit)
+    assert "no tone found" in res.output.lower()
 
 
-def test_show_rejects_name_with_dotdot(tmp_home):
-    res = CliRunner().invoke(cli, ["library", "show", "foo/../bar"])
+def test_show_traversal_name_with_embedded_dotdot_is_clean_not_found(tmp_home):
+    res = CliRunner().invoke(cli, ["library", "show", "foo/../../bar"])
     assert res.exit_code == 1
+    assert isinstance(res.exception, SystemExit)
+    assert "no tone found" in res.output.lower()

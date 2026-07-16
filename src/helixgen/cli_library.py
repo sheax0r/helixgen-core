@@ -41,29 +41,51 @@ from helixgen.device.manifest import SetlistManifest
 # ---------------------------------------------------------------------------
 
 
-def _reject_unsafe_name(name: str) -> None:
-    """Cheap path-traversal guard: NAME addresses a tone, never a path."""
-    if "/" in name or "\\" in name or ".." in name:
-        raise click.ClickException(
-            f"{name!r} looks like a path, not a tone name -- pass a logical "
-            "slug, a variant's preset_name, or a metadata filename stem"
-        )
+def _is_safe_slug_candidate(candidate: str) -> bool:
+    """True when treating ``candidate`` as a metadata filename stem resolves
+    to a path that stays inside ``tones_dir()``.
+
+    This is the ONLY path-traversal guard in name resolution: it gates
+    whether NAME is even considered for the file-match branch. A candidate
+    with a separator or a ``..`` segment (e.g. ``"../etc/passwd"``, or
+    ``"foo/../bar"`` if it happened to escape) simply fails this check and
+    is never treated as a file -- it falls through to (safe, in-memory)
+    ``preset_name`` matching instead of raising. A legitimate preset_name
+    that happens to contain ``/`` or ``..`` (e.g. artist "AC/DC", or a title
+    with an ellipsis) is therefore never blocked, because preset_name
+    matching never touches the filesystem.
+    """
+    if not candidate:
+        return False
+    tones = home.tones_dir()
+    try:
+        cand = (tones / f"{candidate}.json").resolve()
+        return cand.parent == tones.resolve()
+    except OSError:
+        return False
 
 
 def _resolve_slug(name: str) -> str:
     """Resolve ``name`` to a logical tone slug (see module docstring).
 
     Checks BOTH resolution mechanisms (not one-then-fallback): does NAME
-    name an existing metadata file, AND does NAME separately match some
-    variant's ``preset_name``. Raises ``click.ClickException`` (exit 1)
-    when nothing matches; when more than one tone's variant ``preset_name``
+    name an existing metadata file (guarded by ``_is_safe_slug_candidate``
+    so this branch can never read outside ``tones_dir()``), AND does NAME
+    separately match some variant's ``preset_name`` (an in-memory lookup
+    over already-loaded metadata -- inherently safe, so it is never guarded
+    against ``/``/``..``; a real preset_name legitimately containing either
+    must still resolve). Raises ``click.ClickException`` (exit 1) when
+    nothing matches; when more than one tone's variant ``preset_name``
     matches; or when NAME resolves to a metadata file AND ALSO matches a
     *different* tone's variant ``preset_name`` -- picking the file silently
     in that case would hide a real naming collision.
     """
-    _reject_unsafe_name(name)
     candidate = name[:-5] if name.endswith(".json") else name
-    file_match = candidate if tone_meta.meta_path(candidate).exists() else None
+    file_match = (
+        candidate
+        if _is_safe_slug_candidate(candidate) and tone_meta.meta_path(candidate).exists()
+        else None
+    )
 
     preset_matches = {
         meta.logical_slug
@@ -327,9 +349,13 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
     # via `generate --guitar <name>` (the documented mainline) as "not a
     # known guitar slug" -- so when no profiles exist yet, fall back to
     # every variant key actually present across the library instead of the
-    # empty set, keeping the rest of this check (missing hsp, identity
-    # shape, schema, unregistered preset_name) useful without spurious
-    # guitar-key failures.
+    # empty set. This fallback makes the guitar-key check INERT (a no-op
+    # that can never flag anything, since it always allows exactly the keys
+    # already on disk) rather than "partial protection" -- it is not
+    # catching typos or bad guitar keys today, it is just deferring the
+    # check until Task 11 wires in real profile slugs. The rest of this
+    # check (missing hsp, identity shape, schema, unregistered preset_name)
+    # stays useful without spurious guitar-key failures in the meantime.
     guitar_slugs = known_guitar_slugs or {
         key for meta in metas for key in meta.variants
     }
