@@ -175,6 +175,18 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "pull-ir"], ["list-irs --json", "file", "DISPLAY name"]),
     (["device", "list-irs"], ["file", "pull-ir"]),
     (["device", "unsync"], ["SYNCED setlist", "membership"]),
+    # --- library metadata group + describe (Task 8) ---
+    (["library"], ["logical slug", "preset_name", "cross-link", "describe"]),
+    (["library", "list"], ["later-PR features", "guitar profiles", "grouped"]),
+    (["library", "show"], ["metadata filename", "ambiguous", "describe"]),
+    (["library", "doc"], ["mutually exclusive", "advisory-commits", "notes_md"]),
+    (["library", "validate"], ["cross-link checks", "generic", "logical slug"]),
+    (["describe"], ["guitar_settings", "verbatim", "Artist - Song"]),
+    # --- library import + migrate (Task 9) ---
+    (["library", "migrate"],
+     ["IDEMPOTENT", "COPIED", "slug collision", "--dry-run", "--plan"]),
+    (["library", "import"],
+     ["MOVED", "--keep-source", "description_md", "overwritten"]),
 ]
 
 

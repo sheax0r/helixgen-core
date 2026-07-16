@@ -28,9 +28,12 @@ punted review findings get a numbered entry there, not a TODO comment.
 Design: `docs/superpowers/specs/2026-07-15-library-metadata-design.md`
 (backlog #22/#35/#36; sequencing in
 `docs/superpowers/plans/2026-07-15-library-metadata.md`). This section
-describes only what **exists today** — the artifact library (`library/tones`,
-`library/guitars`, per-IR metadata) is later-PR work and isn't documented here
-yet.
+describes what **exists today**: the tone half of the artifact library
+(`library/tones/<logical-slug>.json` + per-variant `.hsp`, the naming schema,
+and the `helixgen library` / `describe` verbs — see "Tone naming and the
+library" and "The `helixgen library` verb group" below, further down this
+file). Guitar profiles (`library/guitars/`) and per-IR metadata are still
+later-PR work and aren't documented here yet.
 
 - **`$HELIXGEN_HOME`** (`src/helixgen/home.py`) is the root of everything
   helixgen persists — default `~/.helixgen`. It centralizes default-path
@@ -81,7 +84,7 @@ yet.
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
 - `helixgen show-block "<name>"` — print a block's exact param names, types, defaults, and observed ranges. **Run this before writing a spec** — param names are case-sensitive and the generator rejects unknown ones.
 - **`--json`** — verbs whose output agents consume programmatically take a `--json` flag for machine-readable stdout (`list-blocks`, `show-block`, `list-irs`, `irhash`, `patch`, `controllers`, and the `device` read verbs); `view` prints JSON by default.
-- `helixgen generate <recipe.json> -o <out.hsp>` — author a preset from a transient recipe (no sidecar is written). The `-o` flag is required. Output extension `.hsp` writes a Stadium-format file (8-byte magic + compact JSON); `.hlx` writes pretty JSON for the original Helix.
+- `helixgen generate <recipe.json> [-o <out.hsp>]` — author a preset from a transient recipe (no sidecar is written). `-o` is now **optional**: with no `-o`, `generate` writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON, naming the tone from `--artist`/`--song` (song identity, paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar`; with no naming flag the recipe's bare `name` becomes the descriptor. An explicit `-o <out.hsp>` preserves today's exact legacy behavior — writes there, auto-registers, naming flags are ignored, and **no metadata JSON is written**. Output extension `.hsp` writes a Stadium-format file (8-byte magic + compact JSON); `.hlx` writes pretty JSON for the original Helix.
 - `helixgen view <preset.hsp> [-o recipe.json]` — read-only projection of a `.hsp` back into the recipe shape (replaces the old `decompile`; `-o` dump is non-authoritative).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
 - `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg. Use `--force` to overwrite existing mappings.
@@ -329,15 +332,66 @@ plugin repo).
   override `HELIXGEN_DEFAULT_GUITAR`. When unset and the `tone` skill needs a
   guitar, the skill asks the user and offers to save the answer here.
 
-**Preset naming convention.** Generated presets are named for the guitar they
-target — the target guitar is appended to the preset **display title**, the
-`.hsp`/`.md` **filename** slug, and stated near the top of the companion
-markdown **description** (format `"<Tone Name> — <Guitar>"`, e.g. `White Limo
-Lead — Les Paul Jr`). The guitar is omitted only when a tone is explicitly not
-targeted at a specific guitar (a guitar-agnostic/generic patch). Guitar
+## Tone naming and the library
+
+**Naming schema (supersedes the old `"<Tone Name> — <Guitar>"` convention).**
+A tone's display name is `"$Artist - $Song - $Guitar"`, or `"$Descriptor -
+$Guitar"` when the tone has no artist/song (guitar = the target guitar's
+short name). The guitar segment is omitted only for a tone that's explicitly
+guitar-agnostic (generic patch). Filenames are the same schema, slugged
+lowercase-with-dashes (e.g. `foo-fighters-white-limo-les-paul-jr.hsp`). Guitar
 resolution order in the `tone` skill: a user-named guitar wins; else
 `default_guitar`; else the skill asks and offers to save the choice as
 `default_guitar`.
+
+**Logical tone vs. variant.** A **logical tone** — one artist+song, or one
+descriptor — owns exactly one metadata JSON at
+`library/tones/<logical-slug>.json`, plus one or more **variants**, each a
+real `.hsp` targeting a single guitar and keyed by that guitar's profile slug
+(or `"generic"` for a guitar-agnostic variant). The manifest and the device
+still key by the *variant's* display name — that's what a device preset is;
+the metadata JSON just groups variants that share an artist/song/descriptor
+identity. Creating a new variant of an existing tone is `generate --guitar
+<other-guitar>` against the same artist/song/descriptor.
+
+The companion write-up that used to be a `.md` sidecar next to the `.hsp` is
+now folded into the tone metadata's `description_md` (no sidecar file) —
+authored/updated via `helixgen library doc` (see below). Per-variant notes
+live in that variant's `notes_md`.
+
+## The `helixgen library` verb group
+
+New verb group over `library/tones/*.json` (guitar profiles / per-IR metadata
+are later-PR — see "Home directory and git plumbing" above). Every
+library-mutating verb auto-commits the home repo afterward (advisory, gated
+by the `git_commit_tones` preference, same posture as tone auto-registration).
+
+- `helixgen library list [--tones|--guitars|--irs] [--json]` — list tones
+  (plus guitars/IRs sections, always empty until their later-PR verbs ship).
+- `helixgen library show <name> [--json]` — one tone's metadata: compact
+  human summary, or the exact on-disk JSON with `--json`. `<name>` resolves
+  as the logical slug, the metadata filename, or any variant's `preset_name`.
+- `helixgen describe <tone>` — the longer, human-oriented counterpart to
+  `library show`: identity, tags, a variants table, and the full
+  `description_md` verbatim.
+- `helixgen library doc <name> (--from-file <md> | -) [--variant <guitar>]` —
+  set the tone's `description_md`, or (with `--variant`) one variant's
+  `notes_md`. This is now how a tone's write-up gets authored — no more `.md`
+  sidecars.
+- `helixgen library validate [--json]` — shape + cross-link checks (variant
+  `.hsp` exists, `preset_name` matches the manifest, guitar slug is known)
+  across every tone; exits 1 if any problems are found. **The guitar-slug
+  check is inert in this release** — with no `library/guitars/` yet, it falls
+  back to accepting whatever variant keys are already in use instead of a
+  real profile lookup; a later PR (guitar profiles) makes it exact.
+- `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]
+  [--guitar] [--keep-source]` — bring an external `.hsp` into the library
+  under the naming schema (moves by default; `--keep-source` copies), folding
+  a sibling `.md` into `description_md` if present.
+- `helixgen library migrate [--dry-run | --plan <plan.json>]` — one-shot,
+  idempotent migration of a pre-library `~/.helixgen` (existing tones + IR
+  mapping + manifest) into the new library layout; `--dry-run` prints an
+  editable plan to correct before executing.
 
 ## Surgical edits
 
