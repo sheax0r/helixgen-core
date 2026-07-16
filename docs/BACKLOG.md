@@ -57,6 +57,24 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## ✅ Shipped
 
+- **Workspace #67 + #68-core + #65 — live-validation fixes (0.21.0).** (The
+  authoritative entries live in the coordination workspace's `BACKLOG.md`.)
+  #67a: live-ops block coordinates corrected to the DSP **grid slot** (the
+  int paired in `blks`; the `(key-1)/2` formula was a contiguous-chain
+  coincidence — HW-proven at the output block, slot 13) and pid discovery
+  shipped as `device params <path> <block>` (pid + name + current RAW value,
+  via defs join + `/ParamValueGet`); `set-param --help` example proven live.
+  #67b: ACTIVE-preset read shipped as `device active` (property
+  `server.active.preset.id`, discovered via `/MatchingPropertyDefinitionsGet`).
+  #68b: `--setlist` on list/backup/create/save/push/install/delete/`slots
+  restore` accepts real device setlist names (pool+reference model; the old
+  `throwaway`→`-5` token was broken); #68c: `pull-ir` help fixed +
+  `list-irs --json` carries the on-device `file` basename; #68e/g/h: unsync/
+  --ip/ingest/add-block/create helps made honest; #68i: `ir-prune` decodes
+  `.sbe` sources natively. Also resolves workspace #64b (the list-shape
+  `edit_buffer_blocks` fallback was the live path, emitting wrong
+  coordinates).
+
 - **Preset CRUD + content read/save + live param edits** (2.0.0) — `device
   list/read/load/create/save/rename/delete/set-param`.
 - **Local backup library** (`device backup` / `local-list`) — bulk-pull a

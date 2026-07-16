@@ -91,7 +91,9 @@ def _entry_filename(posi: Optional[int], name: str, fmt: str) -> str:
 
 def backup_setlist(client, container: int = USER,
                    out_dir: Optional[Path] = None, *,
-                   now: Optional[str] = None) -> List[Dict[str, Any]]:
+                   now: Optional[str] = None,
+                   presets: Optional[List[Dict[str, Any]]] = None,
+                   setlist_name: Optional[str] = None) -> List[Dict[str, Any]]:
     """Back up every preset in ``container`` to files under ``out_dir``.
 
     For each preset: read its ``.sbe`` content blob via the **non-activating**
@@ -104,6 +106,12 @@ def backup_setlist(client, container: int = USER,
     ``saved_at``; when ``None`` the field is omitted (this function never calls
     ``datetime`` itself, so callers control the clock / determinism).
 
+    ``presets``/``setlist_name`` let a caller back up a **named setlist**
+    (#68b): pass the pre-resolved preset dicts (``cid_`` = the *pool* cid a
+    reference points at, ``posi`` = the position within the setlist, ``name``)
+    and the setlist's display name; ``container`` is then ignored for
+    listing/labeling.
+
     Because ``get_content`` is non-activating, backing up a setlist no longer
     disturbs the musician's live tone — there is no load/restore dance.
 
@@ -112,9 +120,10 @@ def backup_setlist(client, container: int = USER,
     out_dir = Path(out_dir) if out_dir is not None else default_backup_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    presets = client.list_presets(container)
+    if presets is None:
+        presets = client.list_presets(container)
 
-    setlist = _setlist_name(container)
+    setlist = setlist_name if setlist_name is not None else _setlist_name(container)
     entries: List[Dict[str, Any]] = []
     for p in presets:
         cid = p.get("cid_")

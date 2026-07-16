@@ -217,9 +217,9 @@ render controllers in this English form (via `helixgen controllers` /
 `controllers.english_for_controller`), never a bare `FS#`. When a human *describes* a control in plain language
 ("the top-left switch", "second from right on the bottom", "the wah toe"),
 translate it to a canonical identifier with a dedicated small-model
-translation sub-agent fed `controller_mapping(stadium_xl)` — it returns exactly
-one identifier (or `AMBIGUOUS`/`NONE`); validate the result against the
-canonical set before writing it into a recipe. `view` never drops controls it
+translation sub-agent fed the `helixgen controllers --json` table — it returns
+exactly one identifier (or `AMBIGUOUS`/`NONE`); validate the result against
+the canonical set before writing it into a recipe. `view` never drops controls it
 can't map: an un-tabled/out-of-v1-scope source is kept and labeled under a
 separate top-level `unknown_controllers` list (ignored by `parse_spec`, so it
 stays round-trip safe).
