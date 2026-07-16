@@ -155,7 +155,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
 - `helixgen show-block "<name>"` — print a block's exact param names, types, defaults, and observed ranges. **Run this before writing a spec** — param names are case-sensitive and the generator rejects unknown ones.
-- `helixgen generate <spec.json> -o <out.hsp>` — generate a preset. The `-o` flag is required. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix.
+- `helixgen generate <spec.json> [-o <out.hsp>]` — generate a preset. `-o` is now **optional**. Default (no `-o`): writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON — name the tone with `--artist`/`--song` (paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (appended to the display name + slug); with no naming flag, the recipe's bare `name` becomes the descriptor. A slug collision (target `.hsp` already exists) errors with a rename suggestion — never overwrites. Explicit `-o <out.hsp>` preserves the legacy behavior exactly: writes there, auto-registers, naming flags ignored, **no metadata JSON written**. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix.
 - `helixgen patch <preset.hsp> <ops.json|-> [--json]` — apply a JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`) to the `.hsp` in one atomic invocation: all ops are applied in memory and the file is written once at the end, so an invalid op anywhere in the list leaves the file untouched. `-` reads the ops from stdin. Preferred over repeated single-op verbs for multi-edit sessions.
 - `helixgen set-param <preset> <block> <param> <value> [--path/--lane/--pos]` — surgical edit of one param, in place. Besides library blocks, accepts the signal-flow pseudo-blocks `input` / `output` / `split` / `join` (`merge` alias) — e.g. `helixgen set-param t.hsp input impedance 1M`, `helixgen set-param t.hsp output level -- -3`, `helixgen set-param t.hsp join "A Level" -- -2`. **Negative values need the `--` sentinel** (else the shell-style parser reads `-3` as an option); put any `--path`/`--lane`/`--pos` flags *before* the `--`. See CLAUDE.md "Surgical edits" for the full verb set (`enable`/`disable`/`add-block`/`remove-block`/`swap-model`/`view`).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
@@ -168,6 +168,86 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 - `helixgen controllers [--json]` — the device's assignable controllers (FS/EXP) with English names + positions.
 
 **Machine-readable output:** verbs whose output agents/scripts consume take `--json` (`list-blocks`, `show-block`, `list-irs`, `irhash`, `patch`, `controllers`, and the `device` read verbs); `view` prints JSON by default. `tests/test_cli_parity.py` pins the help-as-contract phrases and `--json` shapes.
+
+
+## Library commands (`helixgen library …`)
+
+Manage the tone metadata library at `library/tones/*.json` (one JSON per
+**logical tone** — an artist+song or a descriptor — grouping one or more
+**variants**, each a real `.hsp` targeting a guitar). Guitar profiles and
+per-IR metadata are later-PR work; see "Tone naming and the library" in
+CLAUDE.md for the naming schema and the logical-tone/variant model. Every
+library-mutating verb (`import`, `migrate`, `doc`, and `generate`'s default
+no-`-o` path) auto-commits the home repo afterward — advisory, gated by the
+`git_commit_tones` preference, same posture as tone auto-registration.
+
+A tone `<name>` is resolved, in this order, as: the logical slug, the
+metadata filename (`<slug>.json`), or any variant's `preset_name`; an unknown
+or ambiguous name exits 1. This resolution order is shared by `library show`,
+`library doc`, and the top-level `describe`.
+
+- `helixgen library list [--tones|--guitars|--irs] [--json]` — list the
+  library's metadata, grouped by section, or narrowed to one with a flag.
+  `--guitars`/`--irs` sections are always empty in this release (no
+  guitar-profile or per-IR metadata library yet — reserved for a later PR);
+  `--json` emits `{"tones": [...], "guitars": [...], "irs": [...]}`.
+- `helixgen library show <name> [--json]` — one tone's metadata: a compact
+  human summary (identity, tags, description presence, each variant's
+  key/preset_name/hsp path), or the exact on-disk JSON with `--json`.
+- `helixgen describe <tone>` — human-oriented write-up: header ("Artist -
+  Song" or the descriptor), a variants table (guitar key, preset_name,
+  guitar_settings), then the full `description_md` verbatim below a blank
+  line. The longer-form counterpart to `library show`'s compact summary.
+- `helixgen library doc <name> (--from-file <path> | -) [--variant <guitar>]`
+  — set a tone's markdown write-up. Content comes from exactly one of
+  `--from-file PATH` or a literal `-` argument (reads stdin) — giving neither
+  or both is an error. Without `--variant`, sets the logical tone's
+  `description_md` (what `describe` prints verbatim); with `--variant
+  GUITAR_SLUG`, sets that variant's `notes_md` instead (exits 1 if the tone
+  has no such variant). Bumps the tone's `updated` date and auto-commits.
+- `helixgen library validate [--json]` — shape + cross-link checks across
+  every tone: each variant's `.hsp` exists, its `preset_name` is registered
+  in the setlist manifest, and its guitar key is known. **The guitar-slug
+  check is inert in this release** — with no `library/guitars/` yet, it
+  falls back to accepting whatever variant keys already appear across the
+  library (instead of validating against real guitar profiles), so tones
+  made with `generate --guitar` aren't falsely flagged; a later PR (guitar
+  profiles) makes this check exact. Each problem line is prefixed with its
+  tone's logical slug. Exits 1 if any problems are found, 0 if clean.
+  `--json` emits `{"problems": [...]}` (empty when clean) with the same
+  exit-code rule.
+- `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]
+  [--guitar] [--keep-source]` — import an external `.hsp` (or every `*.hsp`
+  in a directory) into the library. By default the source is **moved** into
+  `library/tones/` under the resolved naming schema; `--keep-source`
+  **copies** instead. A sibling `.md` (same stem) is folded into
+  `description_md`; a missing `.md` leaves it `null` with a warning. Naming
+  flags use the same identity rules as `generate` (exactly one of
+  `--artist`+`--song` or `--descriptor`; with neither, the `.hsp`'s own
+  `meta.name` becomes the descriptor) — for a **directory** import, per-file
+  identity flags aren't allowed (each file is self-named from its own
+  `meta.name`); `--guitar`/`--keep-source` still apply to all. A target slug
+  that already exists is refused (exit 1) — the existing `.hsp` is never
+  overwritten. A directory import is **atomic on naming collisions** (the
+  whole batch is pre-validated and refused, moving nothing, on any collision)
+  but **not** atomic on per-file errors during the move pass — an
+  unexpected per-file error is recorded and the run continues, the manifest
+  is always saved, and the command exits nonzero if any file failed.
+- `helixgen library migrate [--dry-run | --plan <plan.json>]` — one-shot,
+  idempotent migration of a pre-library `~/.helixgen` into the tone library:
+  moves each manifest tone's `.hsp` into `library/tones/<slug>.hsp` under the
+  new naming schema, folds a sibling `.md` into `description_md`, writes the
+  per-tone metadata JSON, and re-keys the manifest; each mapped IR WAV is
+  **copied** (never moved) into `library/irs/<pack>/` with a scaffolded
+  metadata sidecar and `mapping.json` rewritten to the library copy.
+  Guitar-profile seeding from `preferences.instruments` is deferred to a
+  later PR. `--dry-run` prints the inferred plan as JSON and mutates
+  nothing; `--plan FILE` executes a (possibly agent- or user-edited) plan
+  instead of re-inferring one; with neither flag, plans and runs in one go.
+  A per-tone/IR error is recorded and the run continues; a slug collision
+  (two tones mapping to one destination) is recorded with a rename
+  suggestion and neither tone is moved. Output is a JSON summary of
+  moves/skips/errors/collisions.
 
 
 ## Device commands (`helixgen device …`)
