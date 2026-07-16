@@ -61,16 +61,7 @@ def ensure_home_repo(home: Path) -> bool:
         _warn("git not found on PATH; skipping repo init")
         return False
 
-    if (home / ".git").exists():
-        return True
-
-    try:
-        result = _run_git(["rev-parse", "--is-inside-work-tree"], cwd=home)
-    except OSError as exc:
-        _warn(f"git check failed: {exc}")
-        return False
-
-    if result.returncode == 0 and result.stdout.strip() == "true":
+    if _is_repo(home):
         return True
 
     commit_env = {**os.environ, **_GIT_IDENTITY_ENV}
@@ -122,16 +113,17 @@ def _should_auto_commit() -> bool:
     except Exception as exc:  # noqa: BLE001 - advisory: never let prefs break commits
         _warn(f"could not load preferences ({exc}); defaulting git_commit_tones=auto")
         pref = "auto"
-    return pref in ("auto", "true", True)
+    return pref in ("auto", "true")
 
 
 def auto_commit(home: Path, message: str) -> None:
     """Advisory auto-commit: stage and commit everything under ``home``.
 
     No-op (silently) unless the ``git_commit_tones`` preference allows it
-    (``"auto"``/``True`` → commit, ``"false"``/``False`` → skip) AND ``home``
-    is a git repo. "Nothing to commit" (clean tree) is silent success, not a
-    warning. Every other failure warns to stderr; this function never raises.
+    (normalized to ``"auto"``/``"true"`` → commit, ``"false"`` → skip — see
+    ``preferences._validate_git_commit_tones``) AND ``home`` is a git repo.
+    "Nothing to commit" (clean tree) is silent success, not a warning. Every
+    other failure warns to stderr; this function never raises.
     """
     try:
         if not _should_auto_commit():

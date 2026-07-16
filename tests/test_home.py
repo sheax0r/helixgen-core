@@ -36,3 +36,20 @@ def test_area_env_overrides_win(monkeypatch, tmp_path):
     # legacy paths are always home-derived, never area-overridden
     assert home.legacy_manifest_path() == tmp_path / "setlists.json"
     assert home.legacy_irs_dir() == tmp_path / "irs"
+
+
+def test_env_vars_expanduser(monkeypatch):
+    """Every env-var branch expands a leading ``~`` — a user setting e.g.
+    ``HELIXGEN_HOME=~/elsewhere`` (or the per-area overrides) must resolve
+    against the real home directory, not be treated as a literal ``~`` path
+    component."""
+    monkeypatch.setenv("HELIXGEN_HOME", "~/elsewhere-home")
+    monkeypatch.setenv("HELIXGEN_LIBRARY", "~/elsewhere-library")
+    monkeypatch.setenv("HELIXGEN_SETLISTS", "~/elsewhere-setlists.json")
+    monkeypatch.setenv("HELIXGEN_IRS", "~/elsewhere-irs")
+
+    real_home = Path.home()
+    assert home.helixgen_home() == real_home / "elsewhere-home"
+    assert home.library_dir() == real_home / "elsewhere-library"
+    assert home.manifest_path() == real_home / "elsewhere-setlists.json"
+    assert home.library_irs_dir() == real_home / "elsewhere-irs"
