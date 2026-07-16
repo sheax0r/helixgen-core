@@ -119,13 +119,15 @@ _SETLIST_HELP = ("'user' (the preset POOL, where every user preset lives), "
 def _resolve_ip_or_fail(explicit=None):
     """The #74 resolution chain (--ip > $HELIXGEN_HELIX_IP > persisted
     device record), converted to a crisp CLI failure — immediate, no
-    network, naming `helixgen device discover` — when nothing resolves."""
+    network, naming `helixgen device discover` — when nothing resolves.
+    ClickException (exit 1), matching what the client-resolving verbs
+    surface, so agents see ONE exit code for the unconfigured state."""
     from helixgen.device import discovery
 
     try:
         return discovery.resolve_ip(explicit)
     except discovery.IPResolutionError as e:
-        raise click.UsageError(str(e)) from e
+        raise click.ClickException(str(e)) from e
 
 
 def _ip_callback(ctx, param, value):
@@ -585,10 +587,18 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
     same-host pid) with a warning, then fail naming the holder. Release
     with `device unlock`; inspect with `device lock --status [--json]`.
     """
-    ip = ip or _resolve_ip_or_fail()  # locks are keyed per-ip (#74)
     from helixgen import locks
 
     if show_status:
+        # Read-only introspection stays usable on an unconfigured machine
+        # (0.22.0 behavior: exit 0), locks being keyed per-ip.
+        if not ip:
+            if as_json:
+                click.echo(json.dumps([], indent=2))
+            else:
+                click.echo("no device IP configured (run `helixgen device "
+                           "discover` or pass --ip) — no leases to report")
+            return
         rows = locks.status(ip)
         if as_json:
             click.echo(json.dumps(rows, indent=2))
@@ -608,6 +618,7 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
                 f"age {age} / ttl {ttl}")
         return
 
+    ip = ip or _resolve_ip_or_fail()  # locks are keyed per-ip (#74)
     if not label:
         raise click.ClickException(
             "--label is required (name the session holding the lock, e.g. "
@@ -836,6 +847,15 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     default_serial = recorded[0]["serial"] if recorded else None
     for row in confirmed:
         row["default"] = row["serial"] == default_serial
+
+    # $HELIXGEN_HELIX_IP outranks the record — a stale export would keep
+    # verbs pointed at the old address no matter how often you re-discover.
+    env_ip = os.environ.get("HELIXGEN_HELIX_IP")
+    if env_ip and not any(r["ip"] == env_ip for r in confirmed):
+        click.echo(f"warning: $HELIXGEN_HELIX_IP={env_ip} is set and outranks "
+                   "the persisted record — verbs will keep using it, not the "
+                   "address just discovered; unset it (or update it) to use "
+                   "the record", err=True)
 
     click.echo(f"persisted {len(confirmed)} device record(s) under "
                f"~/.helixgen/devices/ — device verbs now resolve the IP "
@@ -1884,6 +1904,10 @@ def device_push_ir(wav: Path, ip: str) -> None:
     chunk holding helixgen's ``irhash`` (as the editor's file does), so the
     device registers it under exactly that hash and the preset resolves.
     """
+    # sftp path needs a real address even when --no-lock skipped the
+    # _locked wrapper's resolution (#74; HelixSFTP(None) would try
+    # localhost).
+    ip = ip or _resolve_ip_or_fail()
     _, HelixError = _client()
     from helixgen.device import sftp as _sftp
 

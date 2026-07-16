@@ -489,9 +489,15 @@ def ir_prune(
     if ip is None:
         # #74 resolution chain — no hardcoded default IP; the resolved
         # address is also what the SFTP file-removal path connects to.
+        # Re-raised as HelixError so callers (the CLI included) that catch
+        # the module's documented error type get the fail-fast message,
+        # never a raw traceback.
         from . import discovery
 
-        ip = discovery.resolve_ip()
+        try:
+            ip = discovery.resolve_ip()
+        except discovery.IPResolutionError as e:
+            raise HelixError(str(e)) from e
     kwargs: Dict[str, Any] = {"ip": ip}
     if port is not None:
         kwargs["port"] = port

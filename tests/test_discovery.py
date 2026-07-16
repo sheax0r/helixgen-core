@@ -329,6 +329,64 @@ class TestCli:
             discovery.resolve_ip()  # nothing was persisted
 
 
+class TestFailFastCoverage:
+    """Review findings 1/2/4/8 (PR #12): every unconfigured path must
+    surface the instructive fail-fast error — never a raw traceback — and
+    read-only lock introspection must stay usable (exit 0)."""
+
+    def test_ir_prune_dry_run_fails_fast_not_traceback(self):
+        r = CliRunner().invoke(cli, ["device", "ir-prune"])
+        assert r.exit_code == 1, r.output
+        assert "helixgen device discover" in r.output
+        assert "Traceback" not in r.output
+        assert not isinstance(r.exception, discovery.IPResolutionError)
+
+    def test_sync_no_lock_fails_fast_not_traceback(self):
+        r = CliRunner().invoke(cli, ["device", "sync", "--all", "--no-lock"])
+        assert r.exit_code == 1, r.output
+        assert "helixgen device discover" in r.output
+        assert "Traceback" not in r.output
+        assert not isinstance(r.exception, discovery.IPResolutionError)
+
+    def test_push_ir_no_lock_fails_fast(self, tmp_path):
+        wav = tmp_path / "x.wav"
+        wav.write_bytes(b"RIFF")
+        r = CliRunner().invoke(
+            cli, ["device", "push-ir", str(wav), "--no-lock"])
+        assert r.exit_code == 1, r.output
+        assert "helixgen device discover" in r.output
+
+    def test_lock_status_unconfigured_exits_zero(self):
+        r = CliRunner().invoke(cli, ["device", "lock", "--status"])
+        assert r.exit_code == 0, r.output
+        assert "no device IP configured" in r.output
+        rj = CliRunner().invoke(
+            cli, ["device", "lock", "--status", "--json"])
+        assert rj.exit_code == 0, rj.output
+        assert json.loads(rj.stdout) == []
+
+    def test_unconfigured_exit_code_is_uniform(self):
+        """One condition, one exit code (1) — parse-resolved verbs and
+        client-resolving verbs alike."""
+        for args in (["device", "info"], ["device", "unlock"],
+                     ["device", "lock", "--scope", "all", "--label", "x"]):
+            r = CliRunner().invoke(cli, args)
+            assert r.exit_code == 1, (args, r.exit_code, r.output)
+            assert "helixgen device discover" in r.output, args
+
+    def test_discover_warns_when_env_overrides_record(self, monkeypatch):
+        monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.1.1.1")
+        cand = discovery.Candidate(ip="10.0.0.5", via="mdns")
+        monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [cand])
+        _FakeClient.infos = {"10.0.0.5": {"serial": "S1", "model": "stadium",
+                                          "firmware": "1.3.2"}}
+        monkeypatch.setattr("helixgen.cli_device._client",
+                            lambda: (_FakeClient, discovery.IPResolutionError))
+        r = CliRunner().invoke(cli, ["device", "discover"])
+        assert r.exit_code == 0, r.output
+        assert "outranks" in r.output
+
+
 # ---------------------------------------------------------------------------
 # subnet-probe safety (no sockets — pure target-set checks)
 # ---------------------------------------------------------------------------

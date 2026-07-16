@@ -183,6 +183,28 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## 🔲 Remaining
 
+### Deferred from the 0.23.0 discovery adversarial review (2026-07-16)
+
+- **#75 Discovery residuals** (workspace #74 shipped 0.23.0; PR #12 review):
+  (a) interface/subnet awareness — `local_ipv4()` picks the default-route
+  interface, so a VPN default route makes both mDNS and the probe miss a
+  LAN-attached Stadium, and the /24 probe has no RFC1918 guard or real
+  netmask awareness (a directly-public-addressed machine would connect-scan
+  253 public hosts on 2002); consider per-interface queries + a
+  private-address gate. (b) `mdns_discover` binds an ephemeral port and
+  never joins the 224.0.0.251 group, so multicast-only responses (RFC 6762
+  QU-ignore cases) are invisible — fine against fw 1.3.2 (unicast reply
+  verified live), other firmware may fall through to the probe.
+  (c) polish: `--timeout` values <0.5 s are silently floored (undocumented);
+  `discover` neither takes nor persists a nonstandard RPC port; no
+  `discover --forget`/prune for stale records (`ip-<addr>` fallback serials
+  accumulate per DHCP lease and keep the multi-device warning firing); the
+  "persisted under ~/.helixgen/devices/" message ignores a $HELIXGEN_HOME
+  override; `tools/re_capture_parity.py` still hardcodes the old IP (the
+  regression sweep covers src/ only); live conftest `_persisted_device_ip`
+  tie-breaks missing serials as `""` vs `devices_with_ips`'s `path.stem`;
+  `--ip ""` is treated as unset rather than rejected.
+
 ### Deferred from the 0.22.0 lock-system adversarial review (2026-07-16)
 
 - **#72 Lock-layer residuals** (review doc:
