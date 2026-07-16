@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from helixgen import gitops, home, libinit, mutate, naming, tone_meta
+from helixgen import gitops, home, ir_meta, libinit, mutate, naming, tone_meta
 from helixgen.bootstrap import bootstrap
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.generate import GenerateError, ParamValidationError, generate_preset
@@ -56,6 +56,21 @@ def _irs_option(f):
 
 def _resolved_irs(irs_dir: Path | None) -> IrMapping:
     return IrMapping.load(irs_dir if irs_dir is not None else default_irs_path())
+
+
+def _commit_home_for_irs(mapping: IrMapping, message: str) -> None:
+    """Advisory-commit the home after an IR mapping + sidecar write, but ONLY
+    when the mapping lives under ``helixgen_home()`` (skipped when
+    ``$HELIXGEN_IRS``/``--irs-dir`` points elsewhere, so an unrelated repo is
+    never swept up). Never raises."""
+    home_dir = home.helixgen_home()
+    try:
+        under = mapping.irs_dir.resolve().is_relative_to(home_dir.resolve())
+    except (OSError, ValueError):
+        under = False
+    if under:
+        libinit.ensure_initialized()
+        gitops.auto_commit(home_dir, message)
 
 
 def _format_summary(summary: IngestSummary, library: Library) -> str:
@@ -828,10 +843,15 @@ def bootstrap_cmd(ref: str, library_path: Path | None) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
 @click.option("--force", is_flag=True, default=False, help="Overwrite existing hash mappings.")
+@click.option("--no-copy", "no_copy", is_flag=True, default=False,
+              help="Register each WAV in place (its current path) instead of "
+                   "copying it into the library + scaffolding metadata. Escape "
+                   "hatch for callers who don't want library ownership.")
 @_irs_option
 def register_irs_cmd(
     paths: tuple[Path, ...],
     force: bool,
+    no_copy: bool,
     irs_dir: Path | None,
 ) -> None:
     """Register user impulse-response WAVs so generated presets can reference them.
@@ -844,6 +864,14 @@ def register_irs_cmd(
     - register-irs <wav1> <wav2> ...                compute each wav's Stadium
                                                     hash directly (no device export
                                                     needed) and register it
+
+    By DEFAULT each WAV is COPIED into the library
+    (`library/irs/<pack>/`, pack = the source folder name) and a metadata
+    sidecar JSON is scaffolded next to it; mapping.json then points at the
+    library copy (the source path is recorded in the sidecar's
+    `imported_from`). WAV bytes stay gitignored; the sidecar + mapping.json
+    are committed. Pass `--no-copy` to register each WAV in place with no
+    metadata (the pre-library behavior).
 
     Prints each `<hash>  <wav>` pair as it registers. REMINDER: registering
     only updates the local mapping.json — the hash resolves on the hardware
@@ -888,10 +916,16 @@ def register_irs_cmd(
     mapping = _resolved_irs(irs_dir)
     try:
         for h, wav in zip(hashes, wav_paths):
-            mapping.register(h, wav, force=force)
+            if no_copy:
+                mapping.register(h, wav, force=force)
+            else:
+                dest, _ = ir_meta.import_wav(wav, h)
+                mapping.register(h, dest, force=force)
     except IrMappingError as e:
         raise click.ClickException(str(e)) from e
     mapping.save()
+    if not no_copy:
+        _commit_home_for_irs(mapping, "helixgen: register IR(s)")
     for h, wav in zip(hashes, wav_paths):
         click.echo(f"{h}  {wav}")
     click.echo(f"Registered {len(hashes)} IR(s) to {mapping.irs_dir / 'mapping.json'}")
@@ -919,12 +953,16 @@ def register_irs_cmd(
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit a per-category summary as JSON: {registered, "
                    "already_registered, conflicts, failed}.")
+@click.option("--no-copy", "no_copy", is_flag=True, default=False,
+              help="Register each WAV in place instead of copying it into the "
+                   "library + scaffolding metadata (pre-library behavior).")
 @_irs_option
 def ir_scan_cmd(
     directories: tuple[Path, ...],
     rescan: bool,
     remove_basename: str | None,
     as_json: bool,
+    no_copy: bool,
     irs_dir: Path | None,
 ) -> None:
     """Recursively scan directories for .wav files and cache their Stadium hashes.
@@ -941,7 +979,12 @@ def ir_scan_cmd(
     re-run with --rescan to overwrite], "failed": [{basename, reason}]}.
     Partial success is persisted either way.
 
-    Use --remove <basename> to forget a single entry (no directory args).
+    By DEFAULT each newly-hashed WAV is COPIED into the library
+    (`library/irs/<pack>/`) with a scaffolded metadata sidecar, and
+    mapping.json points at the library copy; a re-scan of the same content is
+    a no-op (idempotent, content-addressed by hash). --no-copy registers each
+    WAV in place with no metadata. --remove <basename> forgets a single entry
+    (no directory args).
     """
     mapping = _resolved_irs(irs_dir)
 
@@ -983,12 +1026,14 @@ def ir_scan_cmd(
                 continue
             scanned += 1
             wav_abs = wav.resolve()
-            # Skip only when already registered AND the cached hash is still
-            # valid for the file on disk (stat unchanged). An edited/replaced
-            # WAV misses the cache and is recomputed below.
-            if not rescan and wav_abs in registered_paths and cache.get(wav) is not None:
-                already.append(wav.name)
-                continue
+
+            if no_copy:
+                # In-place registration (no library copy, no metadata). Skip
+                # only when already registered AND the cached hash is still
+                # valid for the file on disk (stat unchanged).
+                if not rescan and wav_abs in registered_paths and cache.get(wav) is not None:
+                    already.append(wav.name)
+                    continue
             try:
                 if rescan:
                     h = compute_stadium_irhash(wav)
@@ -1000,8 +1045,23 @@ def ir_scan_cmd(
                 click.echo(f"skip {wav}: {e}", err=True)
                 failed.append({"basename": wav.name, "reason": str(e)})
                 continue
+
+            if not no_copy and not rescan and h in mapping.entries:
+                # Content-addressed idempotence: this exact IR is already
+                # registered (a re-scan of the same source, or a duplicate WAV).
+                already.append(wav.name)
+                continue
+
+            target = wav
+            if not no_copy:
+                try:
+                    target, _ = ir_meta.import_wav(wav, h)
+                except OSError as e:
+                    click.echo(f"skip {wav}: {e}", err=True)
+                    failed.append({"basename": wav.name, "reason": str(e)})
+                    continue
             try:
-                mapping.register(h, wav, force=rescan)
+                mapping.register(h, target, force=rescan)
             except IrMappingError as e:
                 click.echo(f"skip {wav}: {e}", err=True)
                 conflicts.append(wav.name)
@@ -1011,6 +1071,8 @@ def ir_scan_cmd(
 
     mapping.save()
     cache.save()
+    if not no_copy:
+        _commit_home_for_irs(mapping, "helixgen: ir-scan register IR(s)")
     if as_json:
         click.echo(json.dumps({
             "registered": registered,

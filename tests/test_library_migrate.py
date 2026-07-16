@@ -238,7 +238,7 @@ def test_run_migration_is_idempotent(tmp_home, monkeypatch):
 
     tones_after_first = sorted(p.name for p in home.tones_dir().glob("*.hsp"))
     irs_after_first = sorted(p.name for p in (home.library_irs_dir() / "ya-bogn").iterdir())
-    mapping_bytes = (home.legacy_irs_dir() / "mapping.json").read_bytes()
+    mapping_bytes = (home.library_irs_dir() / "mapping.json").read_bytes()
     manifest_bytes = home.manifest_path().read_bytes()
 
     # second run: all skips, no churn
@@ -248,7 +248,7 @@ def test_run_migration_is_idempotent(tmp_home, monkeypatch):
 
     assert sorted(p.name for p in home.tones_dir().glob("*.hsp")) == tones_after_first
     assert sorted(p.name for p in (home.library_irs_dir() / "ya-bogn").iterdir()) == irs_after_first
-    assert (home.legacy_irs_dir() / "mapping.json").read_bytes() == mapping_bytes
+    assert (home.library_irs_dir() / "mapping.json").read_bytes() == mapping_bytes
     assert home.manifest_path().read_bytes() == manifest_bytes
 
 
@@ -464,17 +464,34 @@ def test_run_migration_dry_run_mutates_nothing(tmp_home, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _scaffold_ir_stub shape
-# ---------------------------------------------------------------------------
+# migrated IR sidecar shape (ir_meta.scaffold, PR 3)
 
 
-def test_scaffold_ir_stub_shape(tmp_path):
-    stub = tmp_path / "s.json"
-    migrate._scaffold_ir_stub(stub, irhash="a" * 32, wav="cab.wav",
-                              imported_from="/x/cab.wav")
+def test_migrated_ir_sidecar_has_full_irmeta_shape(tmp_home, monkeypatch):
+    """After migration, each copied IR's sidecar is the full IrMeta shape
+    (schema/irhash/imported_from + mix guessed, measured null), not the old
+    minimal stub -- migrate now routes the scaffold through ir_meta."""
+    from helixgen import ir_meta
+    _write_prefs(tmp_home, monkeypatch, [])
+    pack = tmp_home / "packs" / "YA BOGN"
+    pack.mkdir(parents=True)
+    wav = pack / "YA BOGN Mix 03.wav"
+    wav.write_bytes(b"RIFFxxxxWAVE-fake-audio")
+    h = "abc123" * 5 + "de"
+    mapping = IrMapping.load()
+    mapping.register(h, wav)
+    mapping.save()
+
+    migrate.run_migration(migrate.plan_migration())
+
+    stub = home.library_irs_dir() / "ya-bogn" / "YA BOGN Mix 03.json"
     data = json.loads(stub.read_text())
-    assert data == {"schema": 1, "irhash": "a" * 32, "wav": "cab.wav",
-                    "imported_from": "/x/cab.wav"}
+    assert data["schema"] == 1
+    assert data["irhash"] == h
+    assert data["imported_from"] == str(wav.resolve())
+    assert data["mix"] == "Mix 03"      # guessed from the filename
+    assert data["measured"] is None     # NO numpy in core
+    assert data["wav"] == "irs/ya-bogn/YA BOGN Mix 03.wav"
 
 
 

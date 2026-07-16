@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from helixgen.cli import cli
+from helixgen.ir import IrMapping
 
 HSP_MAGIC = b"rpshnosj"
 
@@ -194,7 +195,11 @@ def test_register_irs_auto_computes_hash_from_wav(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     mapping = json.loads((irs_dir / "mapping.json").read_text())
     assert expected_hash in mapping
-    assert mapping[expected_hash] == str(wav)
+    # copy-by-default: mapping points at the library copy, source is preserved
+    resolved = IrMapping.load(irs_dir).resolve_by_hash(expected_hash)
+    assert resolved.resolve().is_relative_to(irs_dir.resolve())
+    assert resolved.exists() and resolved.read_bytes() == wav.read_bytes()
+    assert wav.exists()
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
@@ -212,9 +217,11 @@ def test_register_irs_auto_handles_multiple_wavs(tmp_path, monkeypatch):
 
     result = CliRunner().invoke(cli, ["register-irs", str(wav1), str(wav2)])
     assert result.exit_code == 0, result.output
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping[h1] == str(wav1)
-    assert mapping[h2] == str(wav2)
+    m = IrMapping.load(irs_dir)
+    for h, src in ((h1, wav1), (h2, wav2)):
+        got = m.resolve_by_hash(h)
+        assert got.resolve().is_relative_to(irs_dir.resolve())
+        assert got.read_bytes() == src.read_bytes()
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
@@ -364,9 +371,11 @@ def test_ir_scan_recurses_and_caches(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "2 wav(s)" in result.output and "2 added" in result.output
 
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping[h_a] == str(a)
-    assert mapping[h_b] == str(b)
+    m = IrMapping.load(irs_dir)
+    for h, src in ((h_a, a), (h_b, b)):
+        got = m.resolve_by_hash(h)  # copy-by-default -> library copy
+        assert got.resolve().is_relative_to(irs_dir.resolve())
+        assert got.read_bytes() == src.read_bytes()
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
@@ -416,8 +425,11 @@ def test_ir_scan_warns_on_non_48k_but_continues(tmp_path, monkeypatch, capfd):
     assert "1 added" in result.output and "1 skipped (errors)" in result.output
     # click 8.x CliRunner merges stderr into result.output
     assert "bad.wav" in result.output
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping == {h_good: str(good)}
+    m = IrMapping.load(irs_dir)
+    assert list(m.entries) == [h_good]  # only the good WAV registered
+    got = m.resolve_by_hash(h_good)
+    assert got.resolve().is_relative_to(irs_dir.resolve())
+    assert got.read_bytes() == good.read_bytes()
 
 
 def test_ir_scan_second_run_does_zero_recompute(tmp_path, monkeypatch):
@@ -469,8 +481,9 @@ def test_ir_scan_recomputes_when_file_changes(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "1 added" in result.output
     assert "0 already cached" in result.output
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping[h2] == str(a)
+    got = IrMapping.load(irs_dir).resolve_by_hash(h2)  # new library copy
+    assert got.resolve().is_relative_to(irs_dir.resolve())
+    assert got.read_bytes() == a.read_bytes()
 
 
 def test_ir_scan_remove_drops_entry_by_basename(tmp_path, monkeypatch):
@@ -574,8 +587,9 @@ def test_ir_scan_json_per_category_summary(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
-def test_ir_scan_json_reports_conflicts(tmp_path, monkeypatch):
-    """A hash already mapped to a DIFFERENT path lands in `conflicts`."""
+def test_ir_scan_copy_dedupes_identical_content(tmp_path, monkeypatch):
+    """Copy-by-default is content-addressed: a second WAV with identical bytes
+    (hence the same hash) is already-registered, NOT a conflict."""
     irs_dir = tmp_path / "irs"
     monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
     src_a = tmp_path / "a"
@@ -585,6 +599,26 @@ def test_ir_scan_json_reports_conflicts(tmp_path, monkeypatch):
 
     CliRunner().invoke(cli, ["ir-scan", str(src_a)])
     result = CliRunner().invoke(cli, ["ir-scan", "--json", str(src_b)])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["conflicts"] == []
+    assert data["registered"] == []
+    assert data["already_registered"] == ["same-content-other-path.wav"]
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_no_copy_reports_path_conflicts(tmp_path, monkeypatch):
+    """--no-copy keeps the pre-library path-based conflict: same hash mapped to
+    a DIFFERENT in-place path lands in `conflicts`."""
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_a = tmp_path / "a"
+    src_b = tmp_path / "b"
+    _write_synth_wav(src_a / "same.wav", n_frames=64)
+    _write_synth_wav(src_b / "same-content-other-path.wav", n_frames=64)
+
+    CliRunner().invoke(cli, ["ir-scan", "--no-copy", str(src_a)])
+    result = CliRunner().invoke(cli, ["ir-scan", "--no-copy", "--json", str(src_b)])
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["conflicts"] == ["same-content-other-path.wav"]

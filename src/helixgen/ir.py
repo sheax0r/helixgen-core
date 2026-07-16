@@ -20,16 +20,15 @@ class IrMappingError(ValueError):
 
 
 def default_irs_path() -> Path:
-    """Return the IRs directory path, honoring HELIXGEN_IRS env var.
+    """Return the default IRs directory: ``home.library_irs_dir()``.
 
-    Still the pre-migration default (``helixgen_home()/"irs"``) — the flip to
-    the library-owned ``library/irs`` default (``home.library_irs_dir()``) is
-    a later PR.
+    Honors ``$HELIXGEN_IRS`` (``library_irs_dir()`` checks it first), falling
+    back to ``library_dir()/"irs"``. mapping.json + the per-IR sidecars live
+    here as of the library-metadata flip; :meth:`IrMapping.load` bridges a
+    pre-flip ``mapping.json`` still sitting at ``legacy_irs_dir()`` up to this
+    location on first use.
     """
-    env = os.environ.get("HELIXGEN_IRS")
-    if env:
-        return Path(env)
-    return home.legacy_irs_dir()
+    return home.library_irs_dir()
 
 
 @dataclass
@@ -38,23 +37,88 @@ class IrMapping:
 
     irs_dir: Path
     entries: dict[str, str] = field(default_factory=dict)
+    # Set only when this mapping was bridged from a pre-flip legacy
+    # mapping.json (``legacy_irs_dir()``): the path to rename to
+    # ``mapping.json.migrated`` after the first successful save() at the new
+    # (library) location. ``None`` in every other case.
+    _legacy_source: Path | None = field(default=None, repr=False, compare=False)
 
     @classmethod
-    def load(cls, irs_dir: Path | None = None) -> "IrMapping":
-        irs_dir = irs_dir if irs_dir is not None else default_irs_path()
+    def _load_from(cls, irs_dir: Path) -> "IrMapping":
+        """Load mapping.json straight out of ``irs_dir`` (no legacy bridge)."""
+        irs_dir = Path(irs_dir)
         mapping_file = irs_dir / "mapping.json"
         if not mapping_file.exists():
             return cls(irs_dir=irs_dir, entries={})
         data = json.loads(mapping_file.read_text())
         return cls(irs_dir=irs_dir, entries=dict(data))
 
+    @classmethod
+    def load(cls, irs_dir: Path | None = None) -> "IrMapping":
+        """Load the IR mapping, bridging a pre-flip legacy mapping.json up to
+        the library location on first use.
+
+        Path precedence:
+
+        - An explicit ``irs_dir`` (or ``$HELIXGEN_IRS``) is a self-consistent,
+          caller-chosen location — loaded directly, NEVER bridged.
+        - Otherwise the default (library) location wins if its mapping.json
+          exists. If it does NOT but a pre-flip ``mapping.json`` still sits at
+          ``legacy_irs_dir()`` (``~/.helixgen/irs``), its entries are ADOPTED
+          while ``irs_dir`` is set to the library location, so the next
+          ``save()`` writes to the new place (and renames the legacy file to
+          ``mapping.json.migrated``). Relative legacy values are absolutized
+          against the legacy dir first so they keep resolving. Mirrors
+          ``SetlistManifest``'s v2->v3 legacy bridge.
+        - A second run finds the library mapping.json and never re-bridges.
+        """
+        if irs_dir is not None:
+            return cls._load_from(Path(irs_dir))
+        if os.environ.get("HELIXGEN_IRS"):
+            # An explicit env override is a self-consistent location: no bridge.
+            return cls._load_from(home.library_irs_dir())
+
+        lib = home.library_irs_dir()
+        if (lib / "mapping.json").exists():
+            return cls._load_from(lib)
+
+        legacy_file = home.legacy_irs_dir() / "mapping.json"
+        if legacy_file.exists():
+            legacy_dir = home.legacy_irs_dir()
+            data = json.loads(legacy_file.read_text())
+            bridged: dict[str, str] = {}
+            for h, v in dict(data).items():
+                p = Path(v)
+                if not p.is_absolute():
+                    p = (legacy_dir / p).resolve()
+                bridged[h] = str(p)
+            m = cls(irs_dir=lib, entries=bridged)
+            m._legacy_source = legacy_file
+            return m
+
+        return cls(irs_dir=lib, entries={})
+
     def save(self) -> None:
-        """Write mapping.json atomically. Creates irs_dir if needed."""
+        """Write mapping.json atomically. Creates irs_dir if needed.
+
+        When this mapping was bridged from a pre-flip legacy ``mapping.json``
+        (``load()`` set ``_legacy_source``), the legacy file is renamed to
+        ``mapping.json.migrated`` AFTER the new file is safely written — never
+        before, and only once (so a re-run never re-bridges). A rename failure
+        is swallowed (advisory, matches ``SetlistManifest``)."""
         self.irs_dir.mkdir(parents=True, exist_ok=True)
         target = self.irs_dir / "mapping.json"
         tmp = target.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.entries, indent=2, sort_keys=True))
         os.replace(tmp, target)
+        legacy = self._legacy_source
+        if legacy is not None and Path(legacy).resolve() != target.resolve():
+            try:
+                Path(legacy).replace(
+                    Path(legacy).with_name(Path(legacy).name + ".migrated"))
+            except OSError:
+                pass
+            self._legacy_source = None
 
     def register(self, hash_: str, wav_path: Path, *, force: bool = False) -> None:
         """Bind hash → wav_path. Idempotent for same (hash, file). Raises IrMappingError on conflict unless force=True."""

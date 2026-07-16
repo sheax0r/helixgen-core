@@ -34,8 +34,9 @@ from typing import Any, Dict, List
 
 import click
 
-from helixgen import gitops, guitars, home, migrate, naming, tone_meta
+from helixgen import gitops, guitars, home, ir_meta, migrate, naming, tone_meta
 from helixgen.device.manifest import ManifestError, SetlistManifest
+from helixgen.ir import IrMapping
 from helixgen.hsp import read_hsp
 
 
@@ -174,6 +175,18 @@ def _guitar_summary(p: "guitars.GuitarProfile") -> Dict[str, Any]:
     }
 
 
+def _ir_summary(m: "ir_meta.IrMeta") -> Dict[str, Any]:
+    """The JSON shape for one IR in ``library list --irs``: hash, library-
+    relative wav, pack name (if known), mix, and character tags."""
+    return {
+        "irhash": m.irhash,
+        "wav": m.wav,
+        "pack": (m.pack or {}).get("name") if isinstance(m.pack, dict) else None,
+        "mix": m.mix,
+        "tags": list(m.tags),
+    }
+
+
 def _echo_guitar_profile(p: "guitars.GuitarProfile") -> None:
     """Human-readable one-guitar summary for ``library show <guitar>``."""
     click.echo(f"{p.slug}  -- {p.name} ({p.short_name})")
@@ -226,8 +239,8 @@ def library() -> None:
 @click.option("--guitars", "only_guitars", is_flag=True, default=False,
               help="List only guitar profiles (from library/guitars/*.json).")
 @click.option("--irs", "only_irs", is_flag=True, default=False,
-              help="List only per-IR metadata. Always empty in this release "
-                   "(no per-IR metadata yet) -- reserved for a later PR.")
+              help="List only per-IR metadata (from library/irs/**/*.json "
+                   "sidecars: hash, wav, pack, mix, tags).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help='Emit {"tones": [...], "guitars": [...], "irs": [...]} JSON '
                    "instead of a human-readable listing.")
@@ -237,15 +250,15 @@ def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool
     Tones are read from every ``~/.helixgen/library/tones/*.json`` (one
     logical tone per file: artist+song or a descriptor, with one or more
     guitar-targeted variants); guitar profiles from
-    ``~/.helixgen/library/guitars/*.json`` (slug, name, short_name, type).
-    Per-IR metadata is a later-PR feature -- its section is always an empty
-    list today; the --irs flag and the --json shape exist now so both stay
-    stable once that library grows. --tones/--guitars/--irs narrow the human
-    listing to one section; with none given, everything is shown grouped.
+    ``~/.helixgen/library/guitars/*.json`` (slug, name, short_name, type);
+    per-IR metadata from the ``~/.helixgen/library/irs/**/*.json`` sidecars
+    (irhash, library-relative wav, pack, mix, character tags).
+    --tones/--guitars/--irs narrow the human listing to one section; with none
+    given, everything is shown grouped.
     """
     tones = [_tone_summary(m) for m in tone_meta.load_all_tone_metas()]
     guitar_rows = [_guitar_summary(g) for g in guitars.load_all_profiles()]
-    irs: List[Dict[str, Any]] = []
+    irs = [_ir_summary(m) for m in ir_meta.load_all_ir_metas()]
 
     if as_json:
         click.echo(json.dumps(
@@ -270,7 +283,13 @@ def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool
             click.echo(
                 f"  {g['slug']}  -- {g['name']} ({g['short_name']}) [{g['type']}]")
     if show_all or only_irs:
-        click.echo(f"IRs ({len(irs)}): (none yet -- per-IR metadata is a later PR)")
+        click.echo(f"IRs ({len(irs)}):")
+        if not irs:
+            click.echo("  (none)")
+        for r in irs:
+            label = (r["irhash"] or "?")[:8]
+            tags = f"  [{', '.join(r['tags'])}]" if r["tags"] else ""
+            click.echo(f"  {label}  {r['wav']}{tags}")
 
 
 @library.command(name="show")
@@ -397,12 +416,17 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
     exists the check is exact. Each problem line is prefixed with its tone's
     logical slug.
 
+    IR sidecars (``library/irs/**/*.json``) are cross-checked too: each
+    ``irhash`` must be registered in ``mapping.json`` and its ``wav`` must
+    exist (problems); each character tag must be in the controlled vocabulary
+    (warnings).
+
     SEPARATELY, a non-fatal WARNINGS channel flags ``guitar_settings`` keys
     that aren't controls on the target guitar's profile (skipped when that
-    guitar has no profile -- it may lag). Warnings never change the exit
-    code: the command exits 1 only when a PROBLEM (error) is found across the
-    library, 0 when clean. --json emits {"problems": [...], "warnings": [...]}
-    (both empty when clean) with that same exit-code rule.
+    guitar has no profile -- it may lag) and off-vocabulary IR tags. Warnings
+    never change the exit code: the command exits 1 only when a PROBLEM (error)
+    is found across the library, 0 when clean. --json emits {"problems": [...],
+    "warnings": [...]} (both empty when clean) with that same exit-code rule.
 
     This is the safety net for hand/skill-edited JSON: unlike ``library
     list`` (built on ``load_all_tone_metas()``, which silently skips any
@@ -447,6 +471,13 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
             meta, guitar_profiles=guitar_profiles
         ):
             warnings.append(f"{meta.logical_slug}: {w}")
+
+    # IR sidecar checks: each irhash present in mapping.json + its wav exists
+    # (problems); each tag in the controlled vocabulary (warnings).
+    ir_problems, ir_warnings = ir_meta.validate_ir_metas(
+        ir_meta.load_all_ir_metas(), IrMapping.load())
+    problems.extend(ir_problems)
+    warnings.extend(ir_warnings)
 
     if as_json:
         click.echo(json.dumps(
@@ -787,6 +818,55 @@ def _place_and_register(r: Dict[str, Any], keep_source: bool,
     click.echo(f"Imported {r['src'].name} -> {dest}")
     click.echo(f"Preset name: {r['preset_name']}")
 
+
+
+# ---------------------------------------------------------------------------
+# ir-backfill (Task 12 -- scaffold metadata for library IRs lacking it)
+# ---------------------------------------------------------------------------
+
+
+@library.command(name="ir-backfill")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help='Emit {"backfilled": [...], "skipped": [...], '
+                   '"errors": [...]} JSON instead of a human summary.')
+def ir_backfill_cmd(as_json: bool) -> None:
+    """Scaffold library metadata for every registered IR that lacks it.
+
+    For each ``mapping.json`` entry whose WAV lives OUTSIDE
+    ``library/irs/`` or has no sidecar JSON: the WAV is COPIED into
+    ``library/irs/<pack>/`` (never moved -- paid packs stay in place), a
+    metadata sidecar is scaffolded next to it (mix guessed from the filename;
+    provenance/tags left blank for the skill to enrich), and mapping.json is
+    rewritten to the library copy. An entry already in-library WITH a sidecar
+    is skipped, so this is IDEMPOTENT -- a re-run is all skips and never
+    re-copies. The home is advisory-committed when the mapping lives under it.
+
+    WAV bytes stay gitignored; only the sidecar + mapping.json are committed.
+    Use this once after adopting the library layout (or the `setup` skill runs
+    it) so already-registered IRs get metadata; the skill then fills each
+    sidecar's provenance and character tags.
+    """
+    mapping = IrMapping.load()
+    result = ir_meta.backfill(mapping)
+    if result["backfilled"]:
+        mapping.save()
+        home_dir = home.helixgen_home()
+        try:
+            under = mapping.irs_dir.resolve().is_relative_to(home_dir.resolve())
+        except (OSError, ValueError):
+            under = False
+        if under:
+            gitops.auto_commit(home_dir, "helixgen: ir-backfill IR metadata")
+
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+        return
+    click.echo(
+        f"Backfilled {len(result['backfilled'])} IR(s), "
+        f"{len(result['skipped'])} already had metadata, "
+        f"{len(result['errors'])} error(s).")
+    for e in result["errors"]:
+        click.echo(f"  error {e.get('hash')}: {e.get('error')}", err=True)
 
 
 # ---------------------------------------------------------------------------

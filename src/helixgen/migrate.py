@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from helixgen import gitops, home, libinit, naming, tone_meta
+from helixgen import gitops, home, ir_meta, libinit, naming, tone_meta
 from helixgen.hsp import read_hsp, write_hsp
 from helixgen.ir import IrMapping
 from helixgen.preferences import load_preferences
@@ -189,26 +189,6 @@ def plan_migration() -> Dict[str, Any]:
         pass
 
     return {"tones": tones, "instruments": instruments, "irs": irs}
-
-
-# ---------------------------------------------------------------------------
-# IR sidecar stub (superseded by PR 3's ir_meta.py)
-# ---------------------------------------------------------------------------
-
-
-def _scaffold_ir_stub(path: Path | str, *, irhash: str, wav: str,
-                      imported_from: str) -> None:
-    """Write the minimal per-IR sidecar JSON next to a copied WAV.
-
-    ``{"schema": 1, "irhash": …, "wav": …, "imported_from": …}`` — a placeholder
-    PR 3's ``ir_meta.py`` supersedes with pack-mined provenance. Written
-    atomically (temp file + ``os.replace``)."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"schema": 1, "irhash": irhash, "wav": wav, "imported_from": imported_from}
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -547,7 +527,8 @@ def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)  # COPY, never move — paid packs stay in place
-    _scaffold_ir_stub(stub, irhash=h, wav=dest.name, imported_from=str(src))
+    ir_meta._write_meta_atomic(
+        ir_meta.scaffold(dest, h, imported_from=str(src)), stub)
     mapping.entries[h] = str(dest)
     summary["irs"]["copied"].append({"hash": h, "to": str(dest)})
     return True
