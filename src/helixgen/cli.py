@@ -343,7 +343,13 @@ def generate_cmd(
             )
             tone_meta.save_tone_meta(meta)  # atomic write + advisory commit
             _auto_register_tone(out)
-            # One coherent commit sweeps up the manifest write too (advisory).
+            # This default path produces TWO advisory commits: save_tone_meta
+            # above already committed the .hsp + metadata JSON, and
+            # _auto_register_tone's manifest.save() already committed the
+            # manifest write. The gitops.auto_commit call below is therefore
+            # a no-op in the common case (nothing left dirty to commit) --
+            # kept only as a safety net for anything else this block might
+            # someday touch before both of those commits land.
             gitops.auto_commit(
                 home.helixgen_home(), f"helixgen: generate tone {variant}"
             )

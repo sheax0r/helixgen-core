@@ -339,10 +339,27 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
     prefixed with its tone's logical slug. Exits 1 if any problems are found
     across the whole library, 0 if it's fully clean. --json emits
     {"problems": [...]} (empty list when clean) with the same exit-code rule.
+
+    This is the safety net for hand/skill-edited JSON: unlike ``library
+    list`` (built on ``load_all_tone_metas()``, which silently skips any
+    ``tones/*.json`` that fails to parse -- the right behavior for a
+    listing), ``validate`` ALSO independently re-globs ``tones_dir()`` and
+    attempts to parse every ``*.json`` file itself; one that isn't valid
+    JSON is reported as a problem (prefixed with its filename, since a
+    broken file has no parseable identity to key a logical slug by) and
+    forces a nonzero exit, instead of silently vanishing from the report.
     """
     manifest = SetlistManifest.load()
     tones_dir = home.tones_dir()
     metas = tone_meta.load_all_tone_metas()
+
+    malformed: List[str] = []
+    if tones_dir.is_dir():
+        for p in sorted(tones_dir.glob("*.json")):
+            try:
+                json.loads(p.read_text())
+            except (OSError, ValueError) as err:
+                malformed.append(f"{p.name}: not valid JSON ({err})")
 
     guitars_path = home.guitars_dir()
     known_guitar_slugs: set[str] = (
@@ -365,7 +382,7 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
         key for meta in metas for key in meta.variants
     }
 
-    problems: List[str] = []
+    problems: List[str] = list(malformed)
     for meta in metas:
         for p in tone_meta.validate_tone_meta(
             meta, tones_dir=tones_dir, manifest=manifest, guitar_slugs=guitar_slugs

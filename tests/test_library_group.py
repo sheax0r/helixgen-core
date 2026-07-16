@@ -311,6 +311,37 @@ def test_validate_reports_preset_name_not_in_manifest(tmp_home, hsp_library, tmp
     assert "manifest" in res.output.lower()
 
 
+def test_validate_reports_malformed_json_and_exits_1(tmp_home):
+    """`library validate` is documented (design §8) as the safety net for
+    hand/skill-edited JSON -- but it was built on `load_all_tone_metas()`,
+    which silently skips any file that fails to parse. A syntactically
+    broken tones/*.json must be surfaced as a problem and force exit 1, both
+    in human output and --json, naming the broken file."""
+    _write_broken_json("broken")
+
+    res = CliRunner().invoke(cli, ["library", "validate"])
+    assert res.exit_code == 1
+    assert "broken.json" in res.output
+
+    res_json = CliRunner().invoke(cli, ["library", "validate", "--json"])
+    assert res_json.exit_code == 1
+    data = json.loads(res_json.output)
+    assert data["problems"]
+    assert any("broken.json" in p for p in data["problems"])
+
+
+def test_validate_still_exits_0_with_only_valid_metas(tmp_home, hsp_library, tmp_path):
+    """Regression: a library containing only valid metadata is unaffected by
+    the malformed-JSON check -- validate stays clean/exit 0."""
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "validate"])
+    assert res.exit_code == 0, res.output
+
+    res_json = CliRunner().invoke(cli, ["library", "validate", "--json"])
+    assert res_json.exit_code == 0, res_json.output
+    assert json.loads(res_json.output) == {"problems": []}
+
+
 def test_validate_accepts_guitar_targeted_variant_key_when_no_guitar_profiles(
     tmp_home, hsp_library, tmp_path
 ):
