@@ -790,6 +790,10 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         if path.get("input_enabled") is False:
             input_block["enbl"] = 0
         instance_ids[(pi, -1, -1)] = base + _ROW0_INPUT
+        # The row-0 OutputMatrix endpoint gets the ``(pi, -2, -2)`` sentinel:
+        # its gain/pan can be snapshot-tracked param targets (#62 phase 2 —
+        # per-snapshot output-level trims).
+        instance_ids[(pi, -2, -2)] = base + _ROW0_OUTPUT
         placements: List[Tuple[int, dict]] = [(_ROW0_INPUT, input_block)]
 
         # Three mutually-exclusive placement strategies, each populating
@@ -1218,6 +1222,35 @@ def _synth_cg_from_recipe(
         stid.append(tid)
         tracked.append((tid, [bool(x) for x in ibypass]))
         bindings["bypass"][eid] = tid
+
+    # 1c) Output-endpoint snapshot params (#62 phase 2). Per-snapshot
+    #     output-level trims ride ``output_snap_params`` (lifted by
+    #     ``bridge.hsp_to_paths`` from the b13 gain/pan ``snapshots``
+    #     arrays); the OutputMatrix instance id is stashed under the
+    #     ``(pi, -2, -2)`` sentinel. Emit a param trg per varying array —
+    #     the values are raw device units (dB for ``gain``), exactly like a
+    #     user-block ``snap_params`` row.
+    out_mid = _OUTPUT_MATRIX["mdls"][0]["id__"]  # 783 = P35_OutputMatrix
+    for pi, path in enumerate(recipe.get("paths") or []):
+        osnap = path.get("output_snap_params")
+        if not isinstance(osnap, dict):
+            continue
+        eid = instance_ids.get((pi, -2, -2))
+        if eid is None:
+            continue
+        for pname, pvals in osnap.items():
+            if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
+                continue
+            pid = defs.param_id_for(out_mid, pname)
+            if pid is None:
+                continue
+            tid = _new_trg({"eID_": eid, "enty": 3, "mmid": out_mid,
+                            "pid_": pid, "pmid": out_mid, "ppid": pid,
+                            "slot": 0, "type": 2}, (eid, pid, 2))
+            stid.append(tid)
+            ptid.extend([(eid << 16) | pid, tid])
+            tracked.append((tid, list(pvals)))
+            bindings["param"][(eid, pid)] = tid
 
     # 2) Controller graph (Part B): source->bypass + source->param (EXP sweeps
     #    and footswitch param toggles). One physical source gets ONE ``srcs``

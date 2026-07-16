@@ -302,3 +302,28 @@ Phase 0 ran the day the spec landed. Hypothesis scoreboard:
 
 Phase 1 shipped alongside (`device measure` + MCP `device_measure`); phase 2
 (`device normalize`) and the full cell-index map remain backlog #62.
+
+## 7. Phase-2 notes (2026-07-16 — shipped offline, hardware rig-gated)
+
+Phase 2 shipped 2026-07-16 (backlog #62; hardware validation deferred to
+backlog #73): snapshot-aware `set-param --snapshot`, per-snapshot
+output-level overrides through the transcoder (a param snapshot target keyed
+by the OutputMatrix endpoint's instance id — synthesized by analogy with the
+HW-proven user-block targets, not yet device-verified), and `helixgen device
+normalize` (snapshot + setlist scopes, dry-run by default, trims written to
+the local `.hsp` only). Per §6's meter-tap finding, the loop **trusts the dB
+math** for output-gain trims and never re-measures to confirm them — §3's
+"re-measure once to confirm within ±1 dB" step is dropped for the output
+actuator (it would always read "no change"); the tolerance band survives as
+the *planning* dead-band (deltas ≤ 1 dB are not trimmed).
+
+**Erratum — hardware-validation signal source.** §3's interaction contract
+assumed a human "plays the same riff" per target. Validation instead uses a
+**looped pitched test signal** (audio interface / phone output → inst1): it
+passes `measure`'s playing gate — a real sustained pitch (the tuner stream
+must report a note, so use a pitched riff/tone loop, not broadband noise,
+which gates out exactly like hum) above `INPUT_FLOOR`, held for ≥ ~4 s of
+gated samples per window — and makes runs repeatable in a way human picking
+is not. The "play the same riff" prompt remains the human-facing contract;
+the rig is the validation substitute. No rig was connected for the phase-2
+implementation session, hence #73.

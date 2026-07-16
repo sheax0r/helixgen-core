@@ -475,18 +475,34 @@ def _run_mutation(preset_path: Path, library_path, irs_dir, mutation) -> None:
 @click.argument("block")
 @click.argument("param")
 @click.argument("value")
+@click.option("--snapshot", default=None, metavar="NAME_OR_INDEX",
+              help="Set the value for ONE snapshot (a snapshot name, or a "
+                   "0-based index — names win) instead of the base value: "
+                   "writes that slot of the param's 8-slot per-snapshot "
+                   "overrides array. The param must already have a base "
+                   "value; untouched slots densify to it, and the base is "
+                   "re-synced to the active snapshot. On pseudo-blocks, only "
+                   "`output` supports --snapshot (per-snapshot level/pan).")
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--lane", type=int, default=None)
 @click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
-def set_param_cmd(preset_path, block, param, value, path_idx, lane, pos, library_path, irs_dir):
+def set_param_cmd(preset_path, block, param, value, snapshot, path_idx, lane,
+                  pos, library_path, irs_dir):
     """Set one param on one block: `set-param preset.hsp "Brit Amp" Drive 0.85`.
 
     Mutates the .hsp in place (no sidecar). Run `show-block` first — param
     names are case-sensitive. VALUE is auto-coerced (bool -> int -> float ->
     string). A NEGATIVE value needs the `--` sentinel after any flags:
     `helixgen set-param t.hsp output level -- -3`.
+
+    With `--snapshot NAME_OR_INDEX` the value applies to that ONE snapshot
+    only (a per-snapshot override; the base and other snapshots keep their
+    values) — e.g. `helixgen set-param t.hsp "Brit Amp" ChVol 0.6 --snapshot
+    Lead`, or a per-snapshot output trim: `helixgen set-param t.hsp output
+    level --snapshot 1 -- -3`. Snapshot overrides round-trip through `view`
+    and are realized on the device by `device install`/`sync`.
 
     Besides library blocks, BLOCK may be a signal-flow pseudo-block:
     `input` / `output` / `split` / `join` (`merge` = alias), addressing the
@@ -499,7 +515,7 @@ def set_param_cmd(preset_path, block, param, value, path_idx, lane, pos, library
     """
     def _mutation(body, library, irs):
         mutate.set_param(body, block, param, _coerce_cli_value(value), library,
-                          path=path_idx, lane=lane, pos=pos)
+                          snapshot=snapshot, path=path_idx, lane=lane, pos=pos)
 
     _run_mutation(preset_path, library_path, irs_dir, _mutation)
 
@@ -619,7 +635,8 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
 
     Op fields mirror the single-op verbs: optional "path"/"lane"/"pos" ints
     disambiguate a block name placed more than once (dual-cab, both lanes of
-    a split); "set_enabled" takes an optional "snapshot" name. "set_param"
+    a split); "set_enabled" and "set_param" take an optional "snapshot"
+    (name or 0-based index) for a per-snapshot override. "set_param"
     also accepts the signal-flow pseudo-blocks `input` / `output` / `split` /
     `join` (`merge` = alias) — see `set-param --help`. Run `show-block` first
     to confirm exact, case-sensitive param names.

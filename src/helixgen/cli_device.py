@@ -2933,3 +2933,299 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
             click.echo(f"NOT OK   : {result.reason}")
     if not result.ok:
         raise SystemExit(1)
+
+
+# --- device normalize (loudness phase 2, backlog #62) -----------------------
+
+def _measure_window(ip: str, seconds: float, min_playing: int):
+    """One playing-gated telemetry window -> ``measure.MeasureResult``
+    (the same reduction `device measure` performs)."""
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.device import measure as ME
+
+    collected = []
+    with HelixSubscriber(ip) as sub:
+        events = sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
+                            include_noise=True)
+        for sample in ME.samples_from_events(events):
+            collected.append(sample)
+    return ME.summarize(collected, seconds=seconds, min_playing=min_playing)
+
+
+def _normalize_resolve_target(results, target_db):
+    """The gain target for a normalize run: ``--target-db`` when given, else
+    the FIRST successfully measured target (the anchor). Returns
+    ``(target_gain_db, anchor_result_or_None)``; raises ``ClickException``
+    when no anchor exists."""
+    if target_db is not None:
+        return float(target_db), None
+    for r in results:
+        if r.get("ok"):
+            return r["gain_db"], r
+    raise click.ClickException(
+        "no target could be measured (every window had too little playing) "
+        "— nothing to anchor the trims to; re-run and play steadily, or "
+        "give --target-db")
+
+
+def _normalize_plan(results, target, tolerance_db):
+    """Stamp each ok result with its ``trim_db`` (0.0 = in band)."""
+    from helixgen.device import normalize as NZ
+
+    for r in results:
+        r["trim_db"] = (NZ.compute_trim(r["gain_db"], target, tolerance_db)
+                        if r.get("ok") else None)
+        r["applied"] = False
+
+
+@device.command(name="normalize")
+@click.argument("preset", required=False,
+                type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--setlist", default=None, metavar="NAME",
+              help="Level-match every tone of this LOCAL manifest setlist "
+                   "instead of one preset's snapshots (mutually exclusive "
+                   "with the PRESET argument).")
+@click.option("--target-db", type=float, default=None,
+              help="Absolute target for the median chain gain in dB "
+                   "(output/input, as `device measure` reports). Default: "
+                   "the first successfully measured target is the anchor "
+                   "and everything else is trimmed to match it.")
+@click.option("--seconds", type=float, default=20.0, show_default=True,
+              help="Measurement window per target.")
+@click.option("--min-playing", type=int, default=40, show_default=True,
+              help="Minimum playing-gated samples for a trustworthy "
+                   "measurement (~10 samples/sec of actual playing).")
+@click.option("--tolerance-db", type=float, default=1.0, show_default=True,
+              help="Deltas at or below this magnitude are in band and NOT "
+                   "trimmed (don't chase meter noise).")
+@click.option("--yes", is_flag=True, default=False,
+              help="Actually write the trims into the local .hsp file(s) "
+                   "(default is a measure-and-report dry-run).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the run (per-target measurements, trims, written "
+                   "files) as one JSON object; progress goes to stderr.")
+@_device_option
+@_locked("editbuffer", verb="normalize")
+def device_normalize(preset: Path | None, setlist: str | None,
+                     target_db: float | None, seconds: float,
+                     min_playing: int, tolerance_db: float, yes: bool,
+                     as_json: bool, ip: str, port: int) -> None:
+    """Level-match snapshots or a setlist by MEASURING while you play (DRY-RUN
+    by default).
+
+    The closed loop over `device measure` (loudness spec phase 2): recall
+    each target on the device, prompt you to PLAY the same riff steadily for
+    the window, then compute each target's dB trim of the median chain gain
+    toward the target level — the anchor (the first target that measured ok)
+    unless --target-db gives an absolute gain target. Targets whose window
+    had too little actual playing are SKIPPED with a warning (and the run
+    exits 1 to flag the partial result).
+
+    Two scopes: `device normalize <preset.hsp>` level-matches the preset's
+    NAMED snapshots — it recalls each snapshot on the device, so the ACTIVE
+    device tone must BE this preset (device sync/install it first).
+    `device normalize --setlist <name>` level-matches every tone of a local
+    manifest setlist that has a local .hsp and an observed device placement
+    (loads each by CID; tones without either are SKIPPED).
+
+    DRY-RUN by default: measuring happens, trims are only reported. Re-run
+    with --yes to write them into the LOCAL .hsp file(s) — the source of
+    truth — as output-block `level` moves (per-snapshot overrides in
+    snapshot scope; a whole-preset shift, base plus any per-snapshot array,
+    in setlist scope). The device copy is NOT written by this verb: run
+    `device sync <setlist>` (or `device install`) afterwards to rebuild it
+    from the .hsp. Recalling snapshots / loading presets does change the
+    device's ACTIVE tone selection while measuring.
+
+    The output block's `level` is dB-native, so a trim is EXACT by
+    construction — and (phase-0 hardware finding) every meter tap sits
+    UPSTREAM of the output block's gain, so the trim is INVISIBLE to
+    `device measure`: the loop trusts the dB math and deliberately does NOT
+    re-measure to confirm (a re-measure would falsely report "no change").
+    """
+    HelixClient, HelixError = _client()
+    from helixgen.device import normalize as NZ
+    from helixgen.hsp import write_hsp
+
+    if (preset is None) == (setlist is None):
+        raise click.ClickException(
+            "give exactly one scope: a PRESET .hsp (snapshot scope) or "
+            "--setlist NAME (setlist scope)")
+
+    say = (lambda msg: click.echo(msg, err=True)) if as_json else click.echo
+    results: list[dict] = []
+    written: list[str] = []
+    warnings: list[str] = []
+
+    def _measured_fields(res) -> dict:
+        return {"ok": res.ok, "reason": res.reason,
+                "gain_db": round(res.gain_db, 2),
+                "output_db": round(res.output_db, 2),
+                "playing_seconds": round(res.playing_seconds, 1)}
+
+    try:
+        if preset is not None:
+            scope = "snapshots"
+            body = read_hsp(preset)
+            targets = NZ.snapshot_targets(body)
+            if not targets:
+                raise click.ClickException(
+                    f"{preset} has no named snapshots to level-match "
+                    f"(name them in the recipe/on the device first)")
+            if len(targets) < 2 and target_db is None:
+                raise click.ClickException(
+                    "only one named snapshot — nothing to match it against "
+                    "(give --target-db for an absolute target)")
+            say(f"normalize (snapshot scope): {len(targets)} named "
+                f"snapshot(s) in {preset}")
+            say("NOTE: the device's ACTIVE tone must be this preset "
+                "(device sync/install it first)")
+            with HelixClient(ip, port) as h:
+                for idx, name in targets:
+                    h.activate_snapshot(idx)
+                    say(f"snapshot {idx} {name!r}: PLAY the same riff "
+                        f"steadily for ~{seconds:.0f}s ...")
+                    res = _measure_window(ip, seconds, min_playing)
+                    if res.ok:
+                        say(f"  measured chain gain {res.gain_db:+.2f} dB "
+                            f"({res.playing_seconds:.1f}s playing)")
+                    else:
+                        say(f"  warning: SKIPPED — {res.reason}")
+                    results.append({"snapshot": idx, "name": name,
+                                    **_measured_fields(res)})
+                # leave the device on the preset's on-load snapshot
+                active = ((body.get("preset") or {}).get("params")
+                          or {}).get("activesnapshot", 0)
+                try:
+                    h.activate_snapshot(active if isinstance(active, int)
+                                        and not isinstance(active, bool) else 0)
+                except HelixError:
+                    pass
+
+            target, anchor = _normalize_resolve_target(results, target_db)
+            _normalize_plan(results, target, tolerance_db)
+            if yes:
+                for r in results:
+                    if r.get("ok") and r["trim_db"]:
+                        warnings.extend(NZ.apply_snapshot_trim(
+                            body, r["snapshot"], r["trim_db"]))
+                        r["applied"] = True
+                if any(r["applied"] for r in results):
+                    write_hsp(preset, body)
+                    written.append(str(preset))
+            anchor_json = ({"snapshot": anchor["snapshot"],
+                            "name": anchor["name"]} if anchor else None)
+            payload = {"scope": scope, "preset": str(preset)}
+        else:
+            scope = "setlist"
+            SetlistManifest, _ManifestError = _manifest()
+            from helixgen.device import observations as OBS
+
+            m = SetlistManifest.load()
+            rec = m.setlists_map.get(setlist)
+            if rec is None:
+                raise click.ClickException(
+                    f"setlist {setlist!r} is not in the local manifest "
+                    f"(see `device setlist list`)")
+            tone_names = [t for t in (rec.get("tones") or [])]
+            if not tone_names:
+                raise click.ClickException(f"setlist {setlist!r} has no tones")
+            say(f"normalize (setlist scope): {len(tone_names)} tone(s) in "
+                f"{setlist!r}")
+            with HelixClient(ip, port) as h:
+                obs = OBS.load_observations(_serial_of(h, ip))
+                for name in tone_names:
+                    trec = m.tones.get(name) or {}
+                    hsp_path = trec.get("path")
+                    placement = obs.tone_placement(name)
+                    if not hsp_path or not Path(hsp_path).exists():
+                        say(f"warning: {name!r}: SKIPPED — no local .hsp to "
+                            f"write trims into")
+                        results.append({"tone": name, "path": hsp_path,
+                                        "ok": False,
+                                        "reason": "no local .hsp"})
+                        continue
+                    if not placement or placement.get("cid") is None:
+                        say(f"warning: {name!r}: SKIPPED — no observed device "
+                            f"placement (run `device sync {setlist}` first)")
+                        results.append({"tone": name, "path": hsp_path,
+                                        "ok": False,
+                                        "reason": "not observed on device"})
+                        continue
+                    h.load_preset(int(placement["cid"]))
+                    say(f"tone {name!r}: PLAY the same riff steadily for "
+                        f"~{seconds:.0f}s ...")
+                    res = _measure_window(ip, seconds, min_playing)
+                    if res.ok:
+                        say(f"  measured chain gain {res.gain_db:+.2f} dB "
+                            f"({res.playing_seconds:.1f}s playing)")
+                    else:
+                        say(f"  warning: SKIPPED — {res.reason}")
+                    results.append({"tone": name, "path": hsp_path,
+                                    **_measured_fields(res)})
+
+            target, anchor = _normalize_resolve_target(results, target_db)
+            _normalize_plan(results, target, tolerance_db)
+            if yes:
+                for r in results:
+                    if r.get("ok") and r["trim_db"]:
+                        tone_body = read_hsp(Path(r["path"]))
+                        warnings.extend(NZ.apply_base_trim(
+                            tone_body, r["trim_db"]))
+                        write_hsp(Path(r["path"]), tone_body)
+                        written.append(r["path"])
+                        r["applied"] = True
+            anchor_json = {"tone": anchor["tone"]} if anchor else None
+            payload = {"scope": scope, "setlist": setlist}
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+
+    for w in warnings:
+        say(f"warning: {w}")
+
+    skipped = [r for r in results if not r.get("ok")]
+    if as_json:
+        payload.update({
+            "target_gain_db": round(target, 2),
+            "anchor": anchor_json,
+            "tolerance_db": tolerance_db,
+            "dry_run": not yes,
+            "targets": results,
+            "written": written,
+        })
+        click.echo(json.dumps(payload, indent=2))
+    else:
+        anchor_desc = ("--target-db" if anchor_json is None else
+                       f"anchor {anchor_json.get('name', anchor_json.get('tone'))!r}")
+        click.echo(f"plan (target = {anchor_desc}, {target:+.2f} dB chain gain):")
+        for r in results:
+            label = (f"snapshot {r['snapshot']} {r['name']!r}"
+                     if scope == "snapshots" else f"tone {r['tone']!r}")
+            if not r.get("ok"):
+                click.echo(f"  {label}: SKIPPED ({r['reason']})")
+            elif r["trim_db"]:
+                state = "applied" if r["applied"] else "would trim"
+                click.echo(f"  {label}: {r['gain_db']:+.2f} dB — {state} "
+                           f"{r['trim_db']:+.1f} dB")
+            else:
+                mark = " (anchor)" if r is anchor else ""
+                click.echo(f"  {label}: {r['gain_db']:+.2f} dB — in band "
+                           f"(±{tolerance_db:g} dB){mark}")
+        if yes:
+            if written:
+                for p in written:
+                    click.echo(f"wrote {p}")
+                click.echo(
+                    "run `helixgen device sync <setlist>` (or `device "
+                    "install`) to rebuild the device copy — output-level "
+                    "trims are exact dB moves the meter grids cannot see "
+                    "(deliberately NOT re-measured).")
+            else:
+                click.echo("nothing to write (every target in band or skipped)")
+        else:
+            click.echo("dry-run: no trims written — re-run with --yes to "
+                       "write them into the .hsp")
+    if skipped:
+        raise SystemExit(1)
