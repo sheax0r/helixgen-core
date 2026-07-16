@@ -32,8 +32,9 @@ from typing import Any, Dict, List
 
 import click
 
-from helixgen import home, tone_meta
-from helixgen.device.manifest import SetlistManifest
+from helixgen import gitops, home, migrate, naming, tone_meta
+from helixgen.device.manifest import ManifestError, SetlistManifest
+from helixgen.hsp import read_hsp
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +383,204 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
 
     if problems:
         ctx.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# migrate + import (Task 9 -- data movement into the tone library)
+# ---------------------------------------------------------------------------
+
+
+@library.command(name="migrate")
+@click.option("--dry-run", "dry_run", is_flag=True, default=False,
+              help="Print the migration PLAN as JSON and mutate NOTHING. Edit "
+                   "it and feed it back with --plan to execute an adjusted run.")
+@click.option("--plan", "plan_file", default=None,
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help="Execute a (previously --dry-run, agent-edited) plan JSON "
+                   "instead of re-inferring one. Mutually exclusive with "
+                   "--dry-run.")
+def migrate_cmd(dry_run: bool, plan_file: Path | None) -> None:
+    """One-shot migration of a pre-library ~/.helixgen into the tone library.
+
+    Inspects the manifest + preferences + IR mapping and, for every tone with a
+    backing .hsp, MOVES it into ~/.helixgen/library/tones/<slug>.hsp under the
+    new naming schema, rewrites its meta.name, folds a sibling .md into
+    description_md, writes the per-tone metadata JSON, and re-keys the manifest
+    (slot + source preserved, content_hash recomputed). Each mapped IR WAV is
+    COPIED (never moved -- paid packs stay in place) into
+    library/irs/<pack>/ with a scaffolded sidecar, and mapping.json is
+    rewritten to the library copy.
+
+    IDEMPOTENT + data-safe: re-running is all skips (no duplicate files, no
+    manifest/mapping churn); a tone move is copy -> byte-verify -> remove-source;
+    a per-tone/IR error is recorded and the run CONTINUES. A slug collision (two
+    tones -> one destination) is recorded with a rename suggestion and NEITHER
+    is moved. Instrument -> guitar-profile seeding is DEFERRED to a later PR
+    (the plan records instruments; nothing is written).
+
+    \b
+      --dry-run        print the plan JSON, mutate nothing
+      --plan FILE      execute an edited plan
+      (no flag)        plan + run in one go
+
+    Output is a JSON summary of moves / skips / errors / collisions.
+    """
+    if dry_run and plan_file is not None:
+        raise click.ClickException("--dry-run and --plan are mutually exclusive")
+
+    if dry_run:
+        click.echo(json.dumps(migrate.plan_migration(), indent=2))
+        return
+
+    if plan_file is not None:
+        try:
+            plan = json.loads(Path(plan_file).read_text())
+        except (OSError, ValueError) as err:
+            raise click.ClickException(f"could not read plan {plan_file}: {err}")
+        if not isinstance(plan, dict):
+            raise click.ClickException(f"plan {plan_file} must be a JSON object")
+    else:
+        plan = migrate.plan_migration()
+
+    summary = migrate.run_migration(plan)
+    click.echo(json.dumps(summary, indent=2))
+
+
+@library.command(name="import")
+@click.argument("source", type=click.Path(exists=True, path_type=Path))
+@click.option("--artist", default=None, help="Song identity: artist (needs --song).")
+@click.option("--song", default=None, help="Song identity: song title (needs --artist).")
+@click.option("--descriptor", default=None,
+              help="Descriptor identity (mutually exclusive with --artist/--song). "
+                   "Defaults to the .hsp's meta.name when no identity flag is given.")
+@click.option("--guitar", "guitar", default=None,
+              help="Target guitar label; slugified and appended to the display "
+                   "name + filename.")
+@click.option("--keep-source", "keep_source", is_flag=True, default=False,
+              help="COPY the source .hsp into the library instead of MOVING it "
+                   "(default moves it in).")
+def import_cmd(source: Path, artist: str | None, song: str | None,
+               descriptor: str | None, guitar: str | None,
+               keep_source: bool) -> None:
+    """Import an external .hsp (or a directory of them) into the tone library.
+
+    By DEFAULT the source .hsp is MOVED into ~/.helixgen/library/tones/ under
+    the resolved naming schema; --keep-source COPIES it instead (leaving the
+    original in place). A sibling .md (same stem) is folded into the tone's
+    description_md; a MISSING .md leaves description_md null and prints a
+    warning. meta.name is rewritten to the resolved display name, the per-tone
+    metadata JSON is written, the tone is registered in the manifest, and the
+    home is advisory-committed.
+
+    Naming flags drive identity with the SAME validation + collision rules as
+    `generate`: exactly one of (--artist + --song) OR --descriptor (each
+    requires the other where paired), plus an optional --guitar. With no
+    identity flag the .hsp's own meta.name becomes the descriptor. A target
+    slug that already exists is refused (exit 1) -- the existing .hsp is never
+    overwritten. When SOURCE is a directory, every *.hsp under it is imported
+    self-named from its meta.name (per-tone identity flags aren't allowed for a
+    directory; --guitar / --keep-source still apply to all).
+    """
+    source = Path(source)
+    if source.is_dir():
+        if artist or song or descriptor:
+            raise click.ClickException(
+                "--artist/--song/--descriptor apply to a single .hsp; importing "
+                "a directory self-names each file from its meta.name")
+        hsps = sorted(source.rglob("*.hsp"))
+        if not hsps:
+            raise click.ClickException(f"no .hsp files found under {source}")
+        manifest = SetlistManifest.load()
+        for hsp in hsps:
+            _import_one(hsp, None, None, None, guitar, keep_source, manifest)
+        manifest.save()
+    else:
+        manifest = SetlistManifest.load()
+        _import_one(source, artist, song, descriptor, guitar, keep_source, manifest)
+        manifest.save()
+
+    gitops.auto_commit(home.helixgen_home(), "helixgen: import tone(s) into library")
+
+
+def _import_one(src: Path, artist: str | None, song: str | None,
+                descriptor: str | None, guitar: str | None, keep_source: bool,
+                manifest: SetlistManifest) -> None:
+    """Resolve identity + collision the SAME way `generate` does, then place one
+    .hsp into the library and register it. Raises ClickException on any bad
+    identity combo / slug collision (nothing is moved)."""
+    # Identity: flags win; otherwise the .hsp's own meta.name is the descriptor.
+    if artist or song or descriptor:
+        r_artist, r_song, r_descriptor = artist, song, descriptor
+    else:
+        try:
+            r_descriptor = (read_hsp(src).get("meta") or {}).get("name") or src.stem
+        except (OSError, ValueError):
+            r_descriptor = src.stem
+        r_artist = r_song = None
+
+    guitar_slug = naming.slugify(guitar) if guitar else None
+    guitar_short = guitar if guitar else None
+    if guitar and not guitar_slug:
+        raise click.ClickException(
+            f"--guitar {guitar!r} has no slug-able characters (needs letters or "
+            "digits) -- pick a different guitar label.")
+
+    try:
+        preset_name = naming.display_name(
+            artist=r_artist, song=r_song, descriptor=r_descriptor,
+            guitar_short=guitar_short)
+        logical = naming.logical_slug(
+            artist=r_artist, song=r_song, descriptor=r_descriptor)
+    except ValueError as err:
+        raise click.ClickException(str(err)) from err
+    if not logical:
+        raise click.ClickException(
+            "the tone identity has no slug-able characters (letters or digits) "
+            "-- give a --descriptor/--artist/--song with real text.")
+    new_slug = naming.variant_slug(logical, guitar_slug)
+
+    # Identity-equality guard (mirrors generate): appending a variant to a
+    # logical JSON that already belongs to a DIFFERENT identity is refused.
+    existing = (tone_meta.load_tone_meta(logical)
+                if tone_meta.meta_path(logical).exists() else None)
+    if existing is not None:
+        def _norm(v: str | None) -> str | None:
+            return v.strip() if v and v.strip() else None
+        if (_norm(r_artist), _norm(r_song), _norm(r_descriptor)) != (
+                _norm(existing.artist), _norm(existing.song), _norm(existing.descriptor)):
+            raise click.ClickException(
+                f"logical slug {logical!r} already belongs to a different tone "
+                f"identity ({existing.display_base!r}); rename this tone "
+                "(--artist/--song/--descriptor) to disambiguate.")
+
+    # Sibling .md fold (missing -> null + warning, per spec).
+    md_path = src.with_suffix(".md")
+    if md_path.exists():
+        description_md = md_path.read_text()
+    else:
+        description_md = None
+        click.echo(f"warning: no sibling .md for {src.name}; description_md left null",
+                   err=True)
+
+    try:
+        dest = migrate.place_tone(
+            src, artist=r_artist, song=r_song, descriptor=r_descriptor,
+            guitar_slug=guitar_slug, guitar_short=guitar_short,
+            new_name=preset_name, logical=logical, new_slug=new_slug,
+            move=not keep_source, description_md=description_md)
+    except migrate.ToneCollision:
+        raise click.ClickException(
+            f"a tone already exists at {home.tones_dir() / (new_slug + '.hsp')} "
+            "-- refusing to overwrite. Rename this one (change "
+            "--descriptor/--artist/--song or --guitar).")
+
+    try:
+        manifest.register_tone(dest, source="import-local")
+    except ManifestError as err:
+        raise click.ClickException(str(err)) from err
+
+    click.echo(f"Imported {src.name} -> {dest}")
+    click.echo(f"Preset name: {preset_name}")
 
 
 # ---------------------------------------------------------------------------

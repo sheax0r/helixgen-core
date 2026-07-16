@@ -1,0 +1,510 @@
+"""One-shot migration of a pre-library (v2-era) ``~/.helixgen`` into the tone
+library layout, plus the shared per-tone placement used by ``library import``.
+
+Design: ``docs/superpowers/specs/2026-07-15-library-metadata-design.md`` §2/§4/§8.
+
+Two public entry points, kept CLI-free (they raise / return data; the
+``cli_library`` verbs translate to click output):
+
+- :func:`plan_migration` inspects the manifest + preferences + IR mapping and
+  emits an **editable plan** dict (name inference only; never guesses beyond
+  the documented rules).
+- :func:`run_migration` executes a plan **idempotently and data-safely**:
+  moving each tone's ``.hsp`` into ``tones_dir()`` under its new slug, rewriting
+  ``meta.name``, folding a sibling ``.md`` into ``description_md``, building the
+  ToneMeta JSON, re-keying the manifest, and **copying** each mapped IR WAV into
+  ``library_irs_dir()/<pack>/`` (copy, never move — paid packs stay in place)
+  with a scaffolded sidecar and a rewritten ``mapping.json``.
+
+Design guarantees:
+
+- **Idempotence.** Re-running on an already-migrated home is all skips: a tone
+  whose plan path already resolves to its destination is skipped; an IR WAV
+  already living under ``library_irs_dir()`` is skipped. No duplicate files, no
+  manifest/mapping churn (the manifest and mapping are re-saved only when this
+  run actually changed them).
+- **Data safety.** A tone move is copy → byte-verify → remove-source (never a
+  lossy move); a per-tone or per-IR failure is recorded in the summary and the
+  run CONTINUES (it never aborts into an unreconcilable half-migrated state).
+- **Slug collision.** Two distinct tones mapping to the same destination slug
+  are recorded as a collision with a rename suggestion and NEITHER is moved —
+  one ``.hsp`` never silently overwrites another.
+
+Instruments are RECORDED in the plan but :func:`migrate_instruments` is a no-op
+in this PR (guitar profiles land in PR 3 / Task 11); it returns a marker and
+does not touch ``preferences.json`` or create any profile.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from helixgen import gitops, home, libinit, naming, tone_meta
+from helixgen.hsp import read_hsp, write_hsp
+from helixgen.ir import IrMapping
+from helixgen.preferences import load_preferences
+from helixgen.device.manifest import SetlistManifest
+
+# " - " / " – " (en) / " — " (em), with surrounding whitespace.
+_NAME_SEP = re.compile(r"\s+[-–—]\s+")
+
+
+# ---------------------------------------------------------------------------
+# identity inference (pure)
+# ---------------------------------------------------------------------------
+
+
+def _instrument_labels() -> Dict[str, str]:
+    """Map each instrument's matchable label (name, and ``short_name`` if a
+    later schema adds one) -> the canonical display short form, lowercased for
+    case-insensitive lookup. Preference-load failures degrade to ``{}`` (no
+    guitar inference) rather than aborting the plan."""
+    try:
+        prefs = load_preferences()
+    except Exception:  # noqa: BLE001 - inference must never crash the plan
+        return {}
+    labels: Dict[str, str] = {}
+    for inst in prefs.instruments:
+        for cand in (inst.name, getattr(inst, "short_name", None)):
+            if cand:
+                labels[cand.strip().lower()] = inst.name
+    return labels
+
+
+def infer_identity(old_name: str, instrument_labels: Dict[str, str]) -> Dict[str, Any]:
+    """Infer ``(artist, song, descriptor, guitar)`` from a legacy tone name.
+
+    Rules (design §4, never guesses further):
+
+    - Split on `` - `` / `` – `` / `` — ``. If the **trailing** segment
+      case-insensitively matches an instrument label, it is the ``guitar`` and
+      the remaining leading segments are the identity: exactly two -> artist +
+      song; otherwise the whole remainder (re-joined with `` - ``) is the
+      descriptor.
+    - If the trailing segment is NOT a known instrument, the **whole** original
+      name is the descriptor (never guess artist/song from a single unknown
+      trailing token).
+    """
+    segments = [s for s in _NAME_SEP.split(old_name.strip()) if s != ""]
+    guitar: Optional[str] = None
+    artist = song = descriptor = None
+
+    if len(segments) >= 2 and segments[-1].strip().lower() in instrument_labels:
+        guitar = instrument_labels[segments[-1].strip().lower()]
+        remainder = segments[:-1]
+        if len(remainder) == 2:
+            artist, song = remainder[0].strip(), remainder[1].strip()
+        else:
+            descriptor = " - ".join(remainder)
+    else:
+        descriptor = old_name
+
+    return {"artist": artist, "song": song, "descriptor": descriptor, "guitar": guitar}
+
+
+def _variant_names(identity: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute ``logical`` / ``new_slug`` / ``new_name`` for an identity.
+
+    Returns those three plus the derived ``guitar_slug`` / ``guitar_short``.
+    Raises ``ValueError`` (via ``naming``) on a self-contradictory identity.
+    """
+    artist, song, descriptor = identity["artist"], identity["song"], identity["descriptor"]
+    guitar_short = identity["guitar"]
+    guitar_slug = naming.slugify(guitar_short) if guitar_short else None
+    if guitar_short and not guitar_slug:
+        guitar_slug = None
+        guitar_short = None
+    logical = naming.logical_slug(artist=artist, song=song, descriptor=descriptor)
+    new_slug = naming.variant_slug(logical, guitar_slug)
+    new_name = naming.display_name(
+        artist=artist, song=song, descriptor=descriptor, guitar_short=guitar_short)
+    return {"logical": logical, "new_slug": new_slug, "new_name": new_name,
+            "guitar_slug": guitar_slug, "guitar_short": guitar_short}
+
+
+# ---------------------------------------------------------------------------
+# plan_migration
+# ---------------------------------------------------------------------------
+
+
+def plan_migration() -> Dict[str, Any]:
+    """Inspect the manifest + preferences + IR mapping and emit the editable plan.
+
+    Shape::
+
+        {"tones": [{"name": <old>, "path": <abs .hsp>, "artist", "song",
+                    "descriptor", "guitar", "logical", "new_name", "new_slug"}],
+         "instruments": [<prefs instrument dicts, recorded only>],
+         "irs": [{"hash": <irhash>, "wav": <abs wav path>}]}
+
+    Only tones with a backing ``.hsp`` path are planned (pathless device-origin
+    tones have nothing to move). Inference is via :func:`infer_identity`; a name
+    whose identity is self-contradictory is skipped from the tone list (it
+    cannot be re-keyed) — such data is vanishingly rare and surfaces at run time
+    only if edited back in.
+    """
+    labels = _instrument_labels()
+    manifest = SetlistManifest.load()
+
+    tones: List[Dict[str, Any]] = []
+    for name, rec in manifest.tones.items():
+        path = rec.get("path")
+        if not path:
+            continue
+        identity = infer_identity(name, labels)
+        try:
+            derived = _variant_names(identity)
+        except ValueError:
+            continue
+        tones.append({
+            "name": name,
+            "path": str(Path(path)),
+            "artist": identity["artist"],
+            "song": identity["song"],
+            "descriptor": identity["descriptor"],
+            "guitar": identity["guitar"],
+            "logical": derived["logical"],
+            "new_name": derived["new_name"],
+            "new_slug": derived["new_slug"],
+        })
+
+    try:
+        prefs = load_preferences()
+        instruments = [i.to_dict() for i in prefs.instruments]
+    except Exception:  # noqa: BLE001
+        instruments = []
+
+    irs: List[Dict[str, Any]] = []
+    try:
+        mapping = IrMapping.load()
+        for h in mapping.entries:
+            irs.append({"hash": h, "wav": str(mapping.resolve_by_hash(h))})
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {"tones": tones, "instruments": instruments, "irs": irs}
+
+
+# ---------------------------------------------------------------------------
+# IR sidecar stub (superseded by PR 3's ir_meta.py)
+# ---------------------------------------------------------------------------
+
+
+def _scaffold_ir_stub(path: Path | str, *, irhash: str, wav: str,
+                      imported_from: str) -> None:
+    """Write the minimal per-IR sidecar JSON next to a copied WAV.
+
+    ``{"schema": 1, "irhash": …, "wav": …, "imported_from": …}`` — a placeholder
+    PR 3's ``ir_meta.py`` supersedes with pack-mined provenance. Written
+    atomically (temp file + ``os.replace``)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {"schema": 1, "irhash": irhash, "wav": wav, "imported_from": imported_from}
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# shared per-tone placement (used by run_migration AND library import)
+# ---------------------------------------------------------------------------
+
+
+class ToneCollision(Exception):
+    """The destination ``.hsp`` for a tone already exists (would overwrite)."""
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(parent.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def _data_safe_place(src: Path, dest: Path, *, move: bool) -> None:
+    """Copy ``src`` to ``dest``, byte-verify, then (if ``move``) remove ``src``.
+
+    Never a lossy move: the source is only unlinked after the destination is
+    confirmed byte-identical. ``dest`` must not already exist (callers check)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    if dest.read_bytes() != src.read_bytes():
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        raise OSError(f"copy verification failed for {src} -> {dest}")
+    if move:
+        src.unlink()
+
+
+def place_tone(
+    src: Path,
+    *,
+    artist: Optional[str],
+    song: Optional[str],
+    descriptor: Optional[str],
+    guitar_slug: Optional[str],
+    guitar_short: Optional[str],
+    new_name: str,
+    logical: str,
+    new_slug: str,
+    move: bool,
+    description_md: Optional[str],
+    tags: Optional[List[str]] = None,
+) -> Path:
+    """Place one ``.hsp`` into the tone library and record its metadata.
+
+    Moves (or copies) ``src`` to ``tones_dir()/<new_slug>.hsp``, rewrites its
+    ``meta.name`` to ``new_name``, upserts the ToneMeta variant (folding
+    ``description_md`` when given), and returns the destination path. Raises
+    :class:`ToneCollision` if the destination already exists (never overwrites).
+    The caller owns manifest registration + committing. Does not verify a
+    logical-identity mismatch — callers that need generate's identity-equality
+    guard (``library import``) enforce it before calling."""
+    libinit.ensure_initialized()
+    tones = home.tones_dir()
+    tones.mkdir(parents=True, exist_ok=True)
+    # Intentionally NOT ``.resolve()``d: the tone-metadata JSON stores the hsp
+    # path relative to ``home.library_dir()`` (via ``upsert_variant`` ->
+    # ``_to_library_relative``), which only relativizes cleanly when this path
+    # shares the un-symlink-resolved library base (matches ``generate``).
+    dest = tones / f"{new_slug}.hsp"
+    if dest.exists():
+        raise ToneCollision(str(dest))
+
+    _data_safe_place(src, dest, move=move)
+
+    body = read_hsp(dest)
+    body.setdefault("meta", {})["name"] = new_name
+    write_hsp(dest, body)
+
+    existing = (tone_meta.load_tone_meta(logical)
+                if tone_meta.meta_path(logical).exists() else None)
+    meta = tone_meta.upsert_variant(
+        existing, artist=artist, song=song, descriptor=descriptor,
+        guitar_slug=guitar_slug, guitar_short=guitar_short, hsp_path=dest,
+        tags=tags,
+    )
+    if description_md is not None:
+        meta.description_md = description_md
+    tone_meta.save_tone_meta(meta)
+    return dest
+
+
+def _rekey_manifest_tone(m: SetlistManifest, old_name: str, new_name: str,
+                         dest: Path) -> None:
+    """Re-key ``old_name`` -> ``new_name`` at ``dest`` in the manifest.
+
+    Preserves ``slot`` + ``source`` (+ the ``auto_marked`` provenance flag),
+    recomputes ``content_hash`` off the moved file, replaces any setlist
+    membership referencing the old name, and drops the dangling old key."""
+    old_rec = m.tones.get(old_name) or {}
+    slot = old_rec.get("slot")
+    source = old_rec.get("source") or "authored"
+    auto_marked = old_rec.get("auto_marked")
+
+    # Drop the stale entry (the tone was named the new style already OR the key
+    # is changing) so ``register_tone`` -- which refuses to re-point an existing
+    # name at a different path -- writes a fresh record at the moved location.
+    m.tones.pop(old_name, None)
+    if old_name != new_name:
+        m.tones.pop(new_name, None)
+        for rec in m.setlists_map.values():
+            rec["tones"] = [new_name if t == old_name else t for t in rec.get("tones", [])]
+
+    m.register_tone(dest, source=source)  # keys by dest's meta.name == new_name
+    m.tones[new_name]["slot"] = slot
+    if auto_marked:
+        m.tones[new_name]["auto_marked"] = True
+
+
+# ---------------------------------------------------------------------------
+# run_migration
+# ---------------------------------------------------------------------------
+
+
+def _empty_summary(dry_run: bool) -> Dict[str, Any]:
+    return {
+        "dry_run": dry_run,
+        "tones": {"moved": [], "skipped": [], "errors": [], "collisions": []},
+        "irs": {"copied": [], "skipped": [], "errors": []},
+        "instruments": None,
+    }
+
+
+def run_migration(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, Any]:
+    """Execute ``plan`` idempotently + data-safely; return a summary dict.
+
+    See the module docstring for the guarantees. With ``dry_run=True`` nothing
+    is written — the summary records what WOULD happen. The manifest and IR
+    mapping are re-saved (and the home advisory-committed) only when this run
+    actually changed something, so a re-run on a migrated home is inert."""
+    summary = _empty_summary(dry_run)
+    summary["instruments"] = migrate_instruments(plan)
+
+    if not dry_run:
+        libinit.ensure_initialized()
+
+    manifest = SetlistManifest.load()
+    manifest_dirty = _migrate_tones(plan.get("tones", []), manifest, summary, dry_run)
+
+    mapping = IrMapping.load()
+    mapping_dirty = _migrate_irs(plan.get("irs", []), mapping, summary, dry_run)
+
+    if not dry_run:
+        if manifest_dirty:
+            manifest.save()
+        if mapping_dirty:
+            mapping.save()
+        if manifest_dirty or mapping_dirty:
+            gitops.auto_commit(home.helixgen_home(), "helixgen: library migration")
+
+    return summary
+
+
+def _migrate_tones(entries: List[Dict[str, Any]], manifest: SetlistManifest,
+                   summary: Dict[str, Any], dry_run: bool) -> bool:
+    tones_dir = home.tones_dir()
+
+    # collision detection: two DISTINCT tones -> the same destination slug.
+    by_slug: Dict[str, List[Dict[str, Any]]] = {}
+    for e in entries:
+        by_slug.setdefault(e["new_slug"], []).append(e)
+    colliding: Dict[str, List[str]] = {}
+    for slug, group in by_slug.items():
+        distinct = sorted({e["name"] for e in group})
+        if len(distinct) > 1:
+            colliding[slug] = distinct
+            summary["tones"]["collisions"].append({
+                "new_slug": slug,
+                "names": distinct,
+                "suggestion": ("rename one of these tones (distinct "
+                               "--descriptor/--artist/--song/--guitar) so they "
+                               "no longer share the slug " + repr(slug)),
+            })
+
+    dirty = False
+    for e in entries:
+        if e["new_slug"] in colliding:
+            continue
+        try:
+            changed = _migrate_one_tone(e, manifest, summary, dry_run, tones_dir)
+            dirty = dirty or changed
+        except Exception as exc:  # noqa: BLE001 - record + continue (data safety)
+            summary["tones"]["errors"].append({"name": e.get("name"), "error": str(exc)})
+    return dirty
+
+
+def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
+                      summary: Dict[str, Any], dry_run: bool,
+                      tones_dir: Path) -> bool:
+    old_name = e["name"]
+    src = Path(e["path"]).resolve()
+    dest = (tones_dir / f"{e['new_slug']}.hsp").resolve()
+
+    if src == dest and dest.exists():
+        summary["tones"]["skipped"].append({"name": old_name, "reason": "already in place"})
+        return False
+    if dest.exists():
+        summary["tones"]["errors"].append(
+            {"name": old_name, "error": f"destination already exists: {dest}"})
+        return False
+    if not src.exists():
+        summary["tones"]["errors"].append(
+            {"name": old_name, "error": f"source .hsp missing: {src}"})
+        return False
+    if dry_run:
+        summary["tones"]["moved"].append(
+            {"old": old_name, "new_name": e["new_name"], "to": str(dest)})
+        return True
+
+    guitar_short = e.get("guitar")
+    guitar_slug = naming.slugify(guitar_short) if guitar_short else None
+    md_path = src.with_suffix(".md")
+    description_md = md_path.read_text() if md_path.exists() else None
+
+    placed = place_tone(
+        src,
+        artist=e.get("artist"), song=e.get("song"), descriptor=e.get("descriptor"),
+        guitar_slug=guitar_slug, guitar_short=guitar_short,
+        new_name=e["new_name"], logical=e["logical"], new_slug=e["new_slug"],
+        move=True, description_md=description_md,
+    )
+    _rekey_manifest_tone(manifest, old_name, e["new_name"], placed)
+    summary["tones"]["moved"].append(
+        {"old": old_name, "new_name": e["new_name"], "to": str(placed)})
+    return True
+
+
+def _migrate_irs(entries: List[Dict[str, Any]], mapping: IrMapping,
+                 summary: Dict[str, Any], dry_run: bool) -> bool:
+    lib_irs = home.library_irs_dir()
+    dirty = False
+    for ir in entries:
+        try:
+            dirty = _migrate_one_ir(ir, mapping, summary, dry_run, lib_irs) or dirty
+        except Exception as exc:  # noqa: BLE001 - record + continue
+            summary["irs"]["errors"].append({"hash": ir.get("hash"), "error": str(exc)})
+    return dirty
+
+
+def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
+                    summary: Dict[str, Any], dry_run: bool, lib_irs: Path) -> bool:
+    h = ir["hash"]
+    src = Path(ir["wav"]).resolve()
+
+    if _is_under(src, lib_irs):
+        summary["irs"]["skipped"].append({"hash": h, "reason": "already in library"})
+        return False
+    if not src.exists():
+        summary["irs"]["errors"].append({"hash": h, "error": f"wav missing: {src}"})
+        return False
+
+    pack = naming.slugify(src.parent.name) or "unknown"
+    dest = lib_irs / pack / src.name
+    stub = lib_irs / pack / (src.stem + ".json")
+
+    if dest.exists() and stub.exists():
+        # already copied; make the mapping point at it if it doesn't yet.
+        if str(mapping.entries.get(h)) != str(dest):
+            if not dry_run:
+                mapping.entries[h] = str(dest)
+            summary["irs"]["copied"].append({"hash": h, "to": str(dest)})
+            return True
+        summary["irs"]["skipped"].append({"hash": h, "reason": "already copied"})
+        return False
+
+    if dry_run:
+        summary["irs"]["copied"].append({"hash": h, "to": str(dest)})
+        return True
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)  # COPY, never move — paid packs stay in place
+    _scaffold_ir_stub(stub, irhash=h, wav=dest.name, imported_from=str(src))
+    mapping.entries[h] = str(dest)
+    summary["irs"]["copied"].append({"hash": h, "to": str(dest)})
+    return True
+
+
+# ---------------------------------------------------------------------------
+# migrate_instruments — deferred to PR 3
+# ---------------------------------------------------------------------------
+
+
+def migrate_instruments(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """No-op hook: seeding guitar profiles from ``prefs.instruments`` is PR 3.
+
+    Records nothing to disk — does NOT delete ``prefs.instruments`` and does NOT
+    create any guitar profile. Returns a marker so callers/summaries can show
+    that instrument migration was intentionally deferred."""
+    return {
+        "status": "deferred",
+        "deferred_to": "PR 3",
+        "instruments_recorded": len(plan.get("instruments", [])),
+        "detail": "guitar-profile seeding from prefs.instruments lands in PR 3 (Task 11)",
+    }
