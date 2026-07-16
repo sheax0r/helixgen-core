@@ -57,7 +57,8 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
     ("show_block", ["show-block"], ["case-sensitive", "before"]),
     ("generate_preset", ["generate"],
      ["Unknown param(s)", "show-block", "source of truth", "recipe-reference"]),
-    ("list_irs", ["list-irs"], ["stock cab", "basename", "mapping.json"]),
+    ("list_irs", ["list-irs"],
+     ["stock cab", "basename", "mapping.json", "one-time bridged"]),
     ("compute_irhash", ["irhash"], ["48 kHz", "left channel", "libsndfile"]),
     ("discover_irs", ["irhash"], ["directory", "stateless"]),
     ("register_ir", ["register-irs"], ["Stadium", "hash"]),
@@ -189,8 +190,10 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["library", "import"],
      ["MOVED", "--keep-source", "description_md", "overwritten"]),
     # --- IR metadata: copy-by-default + backfill (Task 12) ---
-    (["register-irs"], ["COPIED", "--no-copy", "imported_from"]),
-    (["ir-scan"], ["COPIED", "--no-copy", "content-addressed"]),
+    (["register-irs"],
+     ["COPIED", "--no-copy", "imported_from", "one-time bridged"]),
+    (["ir-scan"],
+     ["COPIED", "--no-copy", "content-addressed", "one-time bridged"]),
     (["library", "ir-backfill"], ["IDEMPOTENT", "sidecar", "gitignored"]),
 ]
 

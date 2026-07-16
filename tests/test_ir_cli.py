@@ -639,3 +639,110 @@ def test_register_irs_prints_hash_per_wav(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert f"{h}  {wav}" in result.output
     assert "Registered 1 IR(s)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI-level legacy-bridge regression (review CRITICAL, Task 12): every primary
+# IR verb must reach IrMapping.load() with irs_dir=None so the legacy->library
+# bridge actually runs. A prior _resolved_irs materialized the default into a
+# non-None path, silently skipping the bridge and losing pre-flip mappings.
+# ---------------------------------------------------------------------------
+
+
+def _seed_legacy_mapping(hashes_to_wavs: dict) -> Path:
+    """Write a pre-flip mapping.json at the legacy irs dir (library absent)."""
+    from helixgen import home
+
+    legacy_dir = home.legacy_irs_dir()
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_file = legacy_dir / "mapping.json"
+    legacy_file.write_text(
+        json.dumps({h: str(w) for h, w in hashes_to_wavs.items()})
+    )
+    return legacy_file
+
+
+def test_list_irs_bridges_legacy_mapping(tmp_path, monkeypatch):
+    """`list-irs` at the true default must show pre-flip legacy entries."""
+    from helixgen import home
+
+    monkeypatch.delenv("HELIXGEN_IRS", raising=False)
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+    legacy_wav = _write_wav(tmp_path / "src" / "legacy.wav")
+    _seed_legacy_mapping({"a" * 32: legacy_wav})
+    assert not (home.library_irs_dir() / "mapping.json").exists()
+
+    result = CliRunner().invoke(cli, ["list-irs"])
+    assert result.exit_code == 0, result.output
+    # bridged, not empty
+    assert "a" * 32 in result.output
+    assert "legacy.wav" in result.output
+
+
+def test_register_irs_migrates_legacy_mapping_up_to_library(tmp_path, monkeypatch):
+    """`register-irs` at the true default bridges the legacy mapping up: the new
+    library mapping.json carries BOTH the pre-flip entries AND the new one, the
+    legacy hash still resolves, and the legacy file is renamed (not lost)."""
+    from helixgen import home
+
+    monkeypatch.delenv("HELIXGEN_IRS", raising=False)
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+
+    legacy_hash = "a" * 32
+    legacy_wav = _write_wav(tmp_path / "src" / "legacy.wav")
+    legacy_file = _seed_legacy_mapping({legacy_hash: legacy_wav})
+    assert not (home.library_irs_dir() / "mapping.json").exists()
+
+    new_hash = "b" * 32
+    preset = tmp_path / "reg.hsp"
+    _write_hsp(preset, _preset_with_irs([new_hash]))
+    new_wav = _write_wav(tmp_path / "packA" / "new.wav")
+
+    result = CliRunner().invoke(cli, ["register-irs", str(preset), str(new_wav)])
+    assert result.exit_code == 0, result.output
+
+    lib_mapping_file = home.library_irs_dir() / "mapping.json"
+    assert lib_mapping_file.exists()
+    lib_mapping = json.loads(lib_mapping_file.read_text())
+    # BOTH the migrated legacy entry AND the newly-registered one survive
+    assert legacy_hash in lib_mapping, lib_mapping
+    assert new_hash in lib_mapping, lib_mapping
+    # the legacy hash still resolves to its original wav
+    reloaded = IrMapping.load()
+    assert reloaded.resolve_by_hash(legacy_hash) == legacy_wav.resolve()
+    # legacy file migrated exactly once, renamed so it isn't re-bridged
+    assert not legacy_file.exists()
+    migrated = list(legacy_file.parent.glob("mapping.json.migrated*"))
+    assert len(migrated) == 1, migrated
+
+
+def test_register_irs_env_irs_dir_skips_bridge(tmp_path, monkeypatch):
+    """An explicit $HELIXGEN_IRS is used verbatim: no legacy bridge, legacy
+    file untouched."""
+    from helixgen import home
+
+    explicit = tmp_path / "explicit-irs"
+    explicit.mkdir()
+    monkeypatch.setenv("HELIXGEN_IRS", str(explicit))
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+
+    legacy_hash = "a" * 32
+    legacy_wav = _write_wav(tmp_path / "src" / "legacy.wav")
+    legacy_file = _seed_legacy_mapping({legacy_hash: legacy_wav})
+
+    # list-irs sees the explicit (empty) dir, NOT the legacy entries
+    result = CliRunner().invoke(cli, ["list-irs"])
+    assert result.exit_code == 0, result.output
+    assert legacy_hash not in result.output
+
+    new_hash = "b" * 32
+    preset = tmp_path / "reg.hsp"
+    _write_hsp(preset, _preset_with_irs([new_hash]))
+    new_wav = _write_wav(explicit / "new.wav")
+    result = CliRunner().invoke(cli, ["register-irs", str(preset), str(new_wav)])
+    assert result.exit_code == 0, result.output
+
+    lib_mapping = json.loads((explicit / "mapping.json").read_text())
+    assert new_hash in lib_mapping
+    assert legacy_hash not in lib_mapping  # legacy NOT bridged in
+    assert legacy_file.exists()  # legacy untouched, not renamed

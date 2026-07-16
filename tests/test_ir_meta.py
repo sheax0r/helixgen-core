@@ -309,10 +309,11 @@ def test_legacy_mapping_is_bridged_up_to_library(tmp_path):
     assert m.resolve_by_hash("bbbb") == legacy_rel_wav.resolve()  # still resolves
 
     m.save()
-    # new file written at library; legacy renamed to .migrated (not lost)
+    # new file written at library; legacy renamed to .migrated-legacy (not
+    # lost) -- the "-legacy" suffix matches the home .gitignore's "*.migrated-*"
     assert (home.library_irs_dir() / "mapping.json").exists()
     assert not (legacy_dir / "mapping.json").exists()
-    assert (legacy_dir / "mapping.json.migrated").exists()
+    assert (legacy_dir / "mapping.json.migrated-legacy").exists()
 
     # idempotent: a fresh load now finds the library file, never re-bridges
     m2 = IrMapping.load()

@@ -17,7 +17,6 @@ from helixgen.ir import (
     IrMapping,
     IrMappingError,
     compute_stadium_irhash,
-    default_irs_path,
     extract_ir_hashes,
 )
 from helixgen.irhash_cache import IrHashCache, cached_irhash
@@ -50,12 +49,20 @@ def _irs_option(f):
         envvar="HELIXGEN_IRS",
         type=click.Path(file_okay=False, path_type=Path),
         default=None,
-        help="IRs directory. Defaults to ~/.helixgen/irs/ or $HELIXGEN_IRS.",
+        help="IRs directory. Defaults to the library "
+        "~/.helixgen/library/irs/, one-time bridged from the legacy "
+        "~/.helixgen/irs/ on first use. Override here or with "
+        "$HELIXGEN_IRS (which skips the bridge).",
     )(f)
 
 
 def _resolved_irs(irs_dir: Path | None) -> IrMapping:
-    return IrMapping.load(irs_dir if irs_dir is not None else default_irs_path())
+    # Pass ``irs_dir`` through UNCHANGED so a true default (neither ``--irs-dir``
+    # nor ``$HELIXGEN_IRS``) arrives as ``None`` and IrMapping.load() runs the
+    # one-time legacy->library bridge. Materializing the default here would make
+    # ``load()`` treat it as an explicit location and SKIP the bridge, silently
+    # losing a pre-flip ~/.helixgen/irs/mapping.json.
+    return IrMapping.load(irs_dir)
 
 
 def _commit_home_for_irs(mapping: IrMapping, message: str) -> None:

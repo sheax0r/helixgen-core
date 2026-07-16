@@ -39,7 +39,7 @@ class IrMapping:
     entries: dict[str, str] = field(default_factory=dict)
     # Set only when this mapping was bridged from a pre-flip legacy
     # mapping.json (``legacy_irs_dir()``): the path to rename to
-    # ``mapping.json.migrated`` after the first successful save() at the new
+    # ``mapping.json.migrated-legacy`` after the first successful save() at the
     # (library) location. ``None`` in every other case.
     _legacy_source: Path | None = field(default=None, repr=False, compare=False)
 
@@ -67,8 +67,9 @@ class IrMapping:
           ``legacy_irs_dir()`` (``~/.helixgen/irs``), its entries are ADOPTED
           while ``irs_dir`` is set to the library location, so the next
           ``save()`` writes to the new place (and renames the legacy file to
-          ``mapping.json.migrated``). Relative legacy values are absolutized
-          against the legacy dir first so they keep resolving. Mirrors
+          ``mapping.json.migrated-legacy``). Relative legacy values are
+          absolutized against the legacy dir first so they keep resolving.
+          Mirrors
           ``SetlistManifest``'s v2->v3 legacy bridge.
         - A second run finds the library mapping.json and never re-bridges.
         """
@@ -103,8 +104,9 @@ class IrMapping:
 
         When this mapping was bridged from a pre-flip legacy ``mapping.json``
         (``load()`` set ``_legacy_source``), the legacy file is renamed to
-        ``mapping.json.migrated`` AFTER the new file is safely written — never
-        before, and only once (so a re-run never re-bridges). A rename failure
+        ``mapping.json.migrated-legacy`` AFTER the new file is safely
+        written — never before, and only once (so a re-run never re-bridges).
+        A rename failure
         is swallowed (advisory, matches ``SetlistManifest``)."""
         self.irs_dir.mkdir(parents=True, exist_ok=True)
         target = self.irs_dir / "mapping.json"
@@ -115,7 +117,8 @@ class IrMapping:
         if legacy is not None and Path(legacy).resolve() != target.resolve():
             try:
                 Path(legacy).replace(
-                    Path(legacy).with_name(Path(legacy).name + ".migrated"))
+                    Path(legacy).with_name(
+                        Path(legacy).name + ".migrated-legacy"))
             except OSError:
                 pass
             self._legacy_source = None
