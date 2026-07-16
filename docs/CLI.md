@@ -203,7 +203,8 @@ lock** for its duration, so concurrent helixgen processes on the same
 machine (including agents nobody is orchestrating) never collide on the
 device. Read-only verbs acquire nothing. Locks are **lease files** —
 `~/.helixgen/locks/<device-ip>/<scope>.lock` (root override
-`$HELIXGEN_LOCKS`), JSON `{pid, hostname, acquired_at, ttl_seconds, label,
+`$HELIXGEN_LOCKS`; the default follows `$HELIXGEN_HOME` like every
+other home subarea, and `locks/` is gitignored in the home repo), JSON `{pid, hostname, acquired_at, ttl_seconds, label,
 token?, kind, nonce}` — created atomically; the file is the source of truth
 (no fcntl handle is held across processes, so shell-agent flows where every
 CLI call is a fresh pid work). **Limitations (by design):** advisory —

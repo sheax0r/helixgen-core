@@ -102,9 +102,17 @@ class LockHeld(LockError):
 
 
 def locks_root() -> Path:
-    """The lease-file root: $HELIXGEN_LOCKS or ~/.helixgen/locks."""
+    """The lease-file root: ``$HELIXGEN_LOCKS`` or
+    ``helixgen_home()/"locks"`` (i.e. ``~/.helixgen/locks``, following
+    ``$HELIXGEN_HOME`` like every other home subarea). ``locks/`` is in the
+    home repo's gitignore — leases are transient coordination state, never
+    committed."""
     env = os.environ.get("HELIXGEN_LOCKS")
-    return Path(env) if env else Path.home() / ".helixgen" / "locks"
+    if env:
+        return Path(env).expanduser()
+    from helixgen.home import helixgen_home
+
+    return helixgen_home() / "locks"
 
 
 def lock_dir(ip: str) -> Path:

@@ -184,6 +184,25 @@ def test_locks_are_per_device_ip(root):
         pass  # a lease on another device never conflicts
 
 
+def test_locks_root_follows_helixgen_home(monkeypatch, tmp_path):
+    """$HELIXGEN_LOCKS wins; else the root derives from $HELIXGEN_HOME
+    (like every other home subarea); else ~/.helixgen/locks."""
+    monkeypatch.delenv("HELIXGEN_LOCKS", raising=False)
+    monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path / "home"))
+    assert locks.locks_root() == tmp_path / "home" / "locks"
+    monkeypatch.setenv("HELIXGEN_LOCKS", str(tmp_path / "explicit"))
+    assert locks.locks_root() == tmp_path / "explicit"
+    monkeypatch.delenv("HELIXGEN_LOCKS")
+    monkeypatch.delenv("HELIXGEN_HOME")
+    assert locks.locks_root() == Path.home() / ".helixgen" / "locks"
+
+
+def test_home_gitignore_excludes_locks():
+    from helixgen import gitops
+
+    assert "locks/" in gitops.GITIGNORE
+
+
 def test_lock_timeout_env_parsing(monkeypatch):
     monkeypatch.setenv("HELIXGEN_LOCK_TIMEOUT", "12.5")
     assert locks.lock_timeout() == 12.5
