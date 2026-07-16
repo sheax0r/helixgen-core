@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from helixgen import home, tone_meta
+from helixgen import guitars, home, tone_meta
 from helixgen.cli import cli
 from helixgen.device.manifest import SetlistManifest
 from helixgen.hsp import read_hsp
@@ -287,3 +287,72 @@ def test_second_variant_same_identity_still_succeeds(tmp_home, hsp_library, tmp_
     assert r2.exit_code == 0, r2.output
     meta = tone_meta.load_tone_meta("a-s")
     assert set(meta.variants) == {"les-paul-jr", "other-guitar"}
+
+
+# ---------------------------------------------------------------------------
+# --guitar resolves against guitar profiles (Task 11)
+# ---------------------------------------------------------------------------
+
+
+def _save_lp_profile():
+    guitars.save_profile(guitars.GuitarProfile(
+        name="Gibson Les Paul Junior", short_name="Les Paul Jr", type="guitar",
+        active=None, pickups=None, construction=None, character_md=None,
+        genres=[], controls=[],
+    ))
+
+
+def test_generate_guitar_resolves_profile_short_name(tmp_home, hsp_library, tmp_path):
+    _save_lp_profile()
+    spec = _write_recipe(tmp_path)
+    # match by profile NAME; the display name must use the profile's short_name
+    res = _run(hsp_library, str(spec), "--descriptor", "Warm Jazz Clean",
+               "--guitar", "Gibson Les Paul Junior")
+    assert res.exit_code == 0, res.output
+
+    variant_hsp = home.tones_dir() / "warm-jazz-clean-gibson-les-paul-junior.hsp"
+    assert variant_hsp.exists()
+    meta = tone_meta.load_tone_meta("warm-jazz-clean")
+    assert set(meta.variants) == {"gibson-les-paul-junior"}
+    assert meta.variants["gibson-les-paul-junior"].preset_name == "Warm Jazz Clean - Les Paul Jr"
+
+
+def test_generate_unknown_guitar_errors_when_profiles_exist(tmp_home, hsp_library, tmp_path):
+    _save_lp_profile()
+    spec = _write_recipe(tmp_path)
+    res = _run(hsp_library, str(spec), "--descriptor", "Warm Jazz Clean",
+               "--guitar", "Stratocaster")
+    assert res.exit_code != 0
+    assert "unknown guitar" in (res.output + res.stderr).lower()
+    # nothing written
+    assert not list(home.tones_dir().glob("*.hsp")) if home.tones_dir().exists() else True
+
+
+def test_generate_ambiguous_guitar_errors_exit1_no_traceback(tmp_home, hsp_library, tmp_path):
+    """Two profiles sharing a short_name -> --guitar by that short_name is a
+    clean ClickException (exit 1), never a silently-picked wrong guitar."""
+    _save_lp_profile()  # short_name "Les Paul Jr"
+    guitars.save_profile(guitars.GuitarProfile(
+        name="Epiphone Les Paul Junior", short_name="Les Paul Jr", type="guitar",
+        active=None, pickups=None, construction=None, character_md=None,
+        genres=[], controls=[]))
+    spec = _write_recipe(tmp_path)
+    res = _run(hsp_library, str(spec), "--descriptor", "Warm Jazz Clean",
+               "--guitar", "Les Paul Jr")
+    assert res.exit_code == 1
+    combined = (res.output + res.stderr).lower()
+    assert "ambiguous" in combined
+    assert "exact guitar slug" in combined
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    # nothing written
+    assert not list(home.tones_dir().glob("*.hsp")) if home.tones_dir().exists() else True
+
+
+def test_generate_guitar_literal_fallback_when_no_profiles(tmp_home, hsp_library, tmp_path):
+    spec = _write_recipe(tmp_path)
+    res = _run(hsp_library, str(spec), "--descriptor", "Warm Jazz Clean",
+               "--guitar", "Les Paul Jr")
+    assert res.exit_code == 0, res.output
+    # literal slugify fallback used; a one-line notice went to stderr
+    assert (home.tones_dir() / "warm-jazz-clean-les-paul-jr.hsp").exists()
+    assert "no guitar profiles exist yet" in res.stderr

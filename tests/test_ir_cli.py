@@ -7,6 +7,7 @@ import pytest
 from click.testing import CliRunner
 
 from helixgen.cli import cli
+from helixgen.ir import IrMapping
 
 HSP_MAGIC = b"rpshnosj"
 
@@ -194,7 +195,11 @@ def test_register_irs_auto_computes_hash_from_wav(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     mapping = json.loads((irs_dir / "mapping.json").read_text())
     assert expected_hash in mapping
-    assert mapping[expected_hash] == str(wav)
+    # copy-by-default: mapping points at the library copy, source is preserved
+    resolved = IrMapping.load(irs_dir).resolve_by_hash(expected_hash)
+    assert resolved.resolve().is_relative_to(irs_dir.resolve())
+    assert resolved.exists() and resolved.read_bytes() == wav.read_bytes()
+    assert wav.exists()
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
@@ -212,9 +217,11 @@ def test_register_irs_auto_handles_multiple_wavs(tmp_path, monkeypatch):
 
     result = CliRunner().invoke(cli, ["register-irs", str(wav1), str(wav2)])
     assert result.exit_code == 0, result.output
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping[h1] == str(wav1)
-    assert mapping[h2] == str(wav2)
+    m = IrMapping.load(irs_dir)
+    for h, src in ((h1, wav1), (h2, wav2)):
+        got = m.resolve_by_hash(h)
+        assert got.resolve().is_relative_to(irs_dir.resolve())
+        assert got.read_bytes() == src.read_bytes()
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
@@ -364,9 +371,11 @@ def test_ir_scan_recurses_and_caches(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "2 wav(s)" in result.output and "2 added" in result.output
 
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping[h_a] == str(a)
-    assert mapping[h_b] == str(b)
+    m = IrMapping.load(irs_dir)
+    for h, src in ((h_a, a), (h_b, b)):
+        got = m.resolve_by_hash(h)  # copy-by-default -> library copy
+        assert got.resolve().is_relative_to(irs_dir.resolve())
+        assert got.read_bytes() == src.read_bytes()
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
@@ -416,8 +425,11 @@ def test_ir_scan_warns_on_non_48k_but_continues(tmp_path, monkeypatch, capfd):
     assert "1 added" in result.output and "1 skipped (errors)" in result.output
     # click 8.x CliRunner merges stderr into result.output
     assert "bad.wav" in result.output
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping == {h_good: str(good)}
+    m = IrMapping.load(irs_dir)
+    assert list(m.entries) == [h_good]  # only the good WAV registered
+    got = m.resolve_by_hash(h_good)
+    assert got.resolve().is_relative_to(irs_dir.resolve())
+    assert got.read_bytes() == good.read_bytes()
 
 
 def test_ir_scan_second_run_does_zero_recompute(tmp_path, monkeypatch):
@@ -469,8 +481,9 @@ def test_ir_scan_recomputes_when_file_changes(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "1 added" in result.output
     assert "0 already cached" in result.output
-    mapping = json.loads((irs_dir / "mapping.json").read_text())
-    assert mapping[h2] == str(a)
+    got = IrMapping.load(irs_dir).resolve_by_hash(h2)  # new library copy
+    assert got.resolve().is_relative_to(irs_dir.resolve())
+    assert got.read_bytes() == a.read_bytes()
 
 
 def test_ir_scan_remove_drops_entry_by_basename(tmp_path, monkeypatch):
@@ -574,8 +587,9 @@ def test_ir_scan_json_per_category_summary(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
-def test_ir_scan_json_reports_conflicts(tmp_path, monkeypatch):
-    """A hash already mapped to a DIFFERENT path lands in `conflicts`."""
+def test_ir_scan_copy_dedupes_identical_content(tmp_path, monkeypatch):
+    """Copy-by-default is content-addressed: a second WAV with identical bytes
+    (hence the same hash) is already-registered, NOT a conflict."""
     irs_dir = tmp_path / "irs"
     monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
     src_a = tmp_path / "a"
@@ -585,6 +599,26 @@ def test_ir_scan_json_reports_conflicts(tmp_path, monkeypatch):
 
     CliRunner().invoke(cli, ["ir-scan", str(src_a)])
     result = CliRunner().invoke(cli, ["ir-scan", "--json", str(src_b)])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["conflicts"] == []
+    assert data["registered"] == []
+    assert data["already_registered"] == ["same-content-other-path.wav"]
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_no_copy_reports_path_conflicts(tmp_path, monkeypatch):
+    """--no-copy keeps the pre-library path-based conflict: same hash mapped to
+    a DIFFERENT in-place path lands in `conflicts`."""
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_a = tmp_path / "a"
+    src_b = tmp_path / "b"
+    _write_synth_wav(src_a / "same.wav", n_frames=64)
+    _write_synth_wav(src_b / "same-content-other-path.wav", n_frames=64)
+
+    CliRunner().invoke(cli, ["ir-scan", "--no-copy", str(src_a)])
+    result = CliRunner().invoke(cli, ["ir-scan", "--no-copy", "--json", str(src_b)])
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["conflicts"] == ["same-content-other-path.wav"]
@@ -605,3 +639,110 @@ def test_register_irs_prints_hash_per_wav(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert f"{h}  {wav}" in result.output
     assert "Registered 1 IR(s)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# CLI-level legacy-bridge regression (review CRITICAL, Task 12): every primary
+# IR verb must reach IrMapping.load() with irs_dir=None so the legacy->library
+# bridge actually runs. A prior _resolved_irs materialized the default into a
+# non-None path, silently skipping the bridge and losing pre-flip mappings.
+# ---------------------------------------------------------------------------
+
+
+def _seed_legacy_mapping(hashes_to_wavs: dict) -> Path:
+    """Write a pre-flip mapping.json at the legacy irs dir (library absent)."""
+    from helixgen import home
+
+    legacy_dir = home.legacy_irs_dir()
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_file = legacy_dir / "mapping.json"
+    legacy_file.write_text(
+        json.dumps({h: str(w) for h, w in hashes_to_wavs.items()})
+    )
+    return legacy_file
+
+
+def test_list_irs_bridges_legacy_mapping(tmp_path, monkeypatch):
+    """`list-irs` at the true default must show pre-flip legacy entries."""
+    from helixgen import home
+
+    monkeypatch.delenv("HELIXGEN_IRS", raising=False)
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+    legacy_wav = _write_wav(tmp_path / "src" / "legacy.wav")
+    _seed_legacy_mapping({"a" * 32: legacy_wav})
+    assert not (home.library_irs_dir() / "mapping.json").exists()
+
+    result = CliRunner().invoke(cli, ["list-irs"])
+    assert result.exit_code == 0, result.output
+    # bridged, not empty
+    assert "a" * 32 in result.output
+    assert "legacy.wav" in result.output
+
+
+def test_register_irs_migrates_legacy_mapping_up_to_library(tmp_path, monkeypatch):
+    """`register-irs` at the true default bridges the legacy mapping up: the new
+    library mapping.json carries BOTH the pre-flip entries AND the new one, the
+    legacy hash still resolves, and the legacy file is renamed (not lost)."""
+    from helixgen import home
+
+    monkeypatch.delenv("HELIXGEN_IRS", raising=False)
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+
+    legacy_hash = "a" * 32
+    legacy_wav = _write_wav(tmp_path / "src" / "legacy.wav")
+    legacy_file = _seed_legacy_mapping({legacy_hash: legacy_wav})
+    assert not (home.library_irs_dir() / "mapping.json").exists()
+
+    new_hash = "b" * 32
+    preset = tmp_path / "reg.hsp"
+    _write_hsp(preset, _preset_with_irs([new_hash]))
+    new_wav = _write_wav(tmp_path / "packA" / "new.wav")
+
+    result = CliRunner().invoke(cli, ["register-irs", str(preset), str(new_wav)])
+    assert result.exit_code == 0, result.output
+
+    lib_mapping_file = home.library_irs_dir() / "mapping.json"
+    assert lib_mapping_file.exists()
+    lib_mapping = json.loads(lib_mapping_file.read_text())
+    # BOTH the migrated legacy entry AND the newly-registered one survive
+    assert legacy_hash in lib_mapping, lib_mapping
+    assert new_hash in lib_mapping, lib_mapping
+    # the legacy hash still resolves to its original wav
+    reloaded = IrMapping.load()
+    assert reloaded.resolve_by_hash(legacy_hash) == legacy_wav.resolve()
+    # legacy file migrated exactly once, renamed so it isn't re-bridged
+    assert not legacy_file.exists()
+    migrated = list(legacy_file.parent.glob("mapping.json.migrated*"))
+    assert len(migrated) == 1, migrated
+
+
+def test_register_irs_env_irs_dir_skips_bridge(tmp_path, monkeypatch):
+    """An explicit $HELIXGEN_IRS is used verbatim: no legacy bridge, legacy
+    file untouched."""
+    from helixgen import home
+
+    explicit = tmp_path / "explicit-irs"
+    explicit.mkdir()
+    monkeypatch.setenv("HELIXGEN_IRS", str(explicit))
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
+
+    legacy_hash = "a" * 32
+    legacy_wav = _write_wav(tmp_path / "src" / "legacy.wav")
+    legacy_file = _seed_legacy_mapping({legacy_hash: legacy_wav})
+
+    # list-irs sees the explicit (empty) dir, NOT the legacy entries
+    result = CliRunner().invoke(cli, ["list-irs"])
+    assert result.exit_code == 0, result.output
+    assert legacy_hash not in result.output
+
+    new_hash = "b" * 32
+    preset = tmp_path / "reg.hsp"
+    _write_hsp(preset, _preset_with_irs([new_hash]))
+    new_wav = _write_wav(explicit / "new.wav")
+    result = CliRunner().invoke(cli, ["register-irs", str(preset), str(new_wav)])
+    assert result.exit_code == 0, result.output
+
+    lib_mapping = json.loads((explicit / "mapping.json").read_text())
+    assert new_hash in lib_mapping
+    assert legacy_hash not in lib_mapping  # legacy NOT bridged in
+    assert legacy_file.exists()  # legacy untouched, not renamed

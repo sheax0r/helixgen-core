@@ -22,6 +22,7 @@ from helixgen.preferences import (
 
 def test_default_prefs_path_uses_home(monkeypatch):
     monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
+    monkeypatch.delenv("HELIXGEN_HOME", raising=False)
     monkeypatch.setenv("HOME", "/tmp/fake-home")
     assert default_prefs_path() == Path("/tmp/fake-home/.helixgen/preferences.json")
 
@@ -29,6 +30,15 @@ def test_default_prefs_path_uses_home(monkeypatch):
 def test_default_prefs_path_honors_env_var(monkeypatch):
     monkeypatch.setenv("HELIXGEN_PREFS", "/custom/prefs.json")
     assert default_prefs_path() == Path("/custom/prefs.json")
+
+
+def test_default_prefs_path_honors_helixgen_home(tmp_path, monkeypatch):
+    # With $HELIXGEN_HOME set and no $HELIXGEN_PREFS, prefs resolve UNDER the
+    # tmp home -- never the real ~/.helixgen (data-safety: `library migrate`
+    # rewrites this file).
+    monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
+    monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path))
+    assert default_prefs_path() == tmp_path / "preferences.json"
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +279,7 @@ def test_scaffold_leaves_no_tmp_file(tmp_path):
 
 def test_scaffold_default_path_honors_env(tmp_path, monkeypatch):
     monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
+    monkeypatch.delenv("HELIXGEN_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     result = scaffold_default()
     assert result == tmp_path / ".helixgen" / "preferences.json"
@@ -531,3 +542,47 @@ def test_env_git_commit_tones_invalid_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("HELIXGEN_GIT_COMMIT_TONES", "sometimes")
     with pytest.raises(PreferencesError):
         load_preferences(tmp_path / "missing.json")
+
+
+# ---------------------------------------------------------------------------
+# deprecation warnings for retired keys (Task 11)
+# ---------------------------------------------------------------------------
+
+
+def test_deprecated_instruments_key_warns_on_stderr(tmp_path, capsys):
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({
+        "schema_version": 1,
+        "instruments": [{"name": "Les Paul Jr", "type": "guitar"}],
+    }))
+    p = load_preferences(prefs)
+    # still parsed for back-compat
+    assert len(p.instruments) == 1
+    captured = capsys.readouterr()
+    err = captured.err
+    assert "instruments" in err and "deprecated" in err
+    assert "library migrate" in err
+    # deprecation notices go to STDERR only -- stdout must stay clean so a
+    # sibling `--json` command's machine-readable output is never corrupted.
+    assert captured.out == ""
+
+
+def test_deprecated_preset_output_dir_warns_on_stderr(tmp_path, capsys):
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({
+        "schema_version": 1, "preset_output_dir": "~/presets"}))
+    load_preferences(prefs)
+    captured = capsys.readouterr()
+    err = captured.err
+    assert "preset_output_dir" in err and "deprecated" in err
+    # stdout stays clean (guards --json output from deprecation-notice corruption)
+    assert captured.out == ""
+
+
+def test_no_deprecation_warning_when_keys_absent_or_empty(tmp_path, capsys):
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({
+        "schema_version": 1, "instruments": [], "preset_output_dir": None}))
+    load_preferences(prefs)
+    err = capsys.readouterr().err
+    assert "deprecated" not in err

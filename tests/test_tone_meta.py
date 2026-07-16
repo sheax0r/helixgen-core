@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from helixgen import home, tone_meta
+from helixgen import guitars, home, tone_meta
 from helixgen.device.manifest import SetlistManifest
 
 
@@ -442,3 +442,62 @@ def test_round_trip_variant_with_empty_guitar_settings_and_no_notes(tmp_home):
     v = loaded.variants["g1"]
     assert v.guitar_settings == {}
     assert v.notes_md is None
+
+
+# ---------------------------------------------------------------------------
+# guitar_settings_warnings (Task 11): a SEPARATE, non-fatal channel
+# ---------------------------------------------------------------------------
+
+
+def _profile(slug_name="G1", controls=("volume", "tone")):
+    return guitars.GuitarProfile(
+        name=slug_name, short_name=slug_name, type="guitar", active=None,
+        pickups=None, construction=None, character_md=None, genres=[],
+        controls=[guitars.Control(name=c, kind="knob") for c in controls],
+    )
+
+
+def test_guitar_settings_warnings_none_without_profiles(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].guitar_settings = {"whatever": "x"}
+    assert tone_meta.guitar_settings_warnings(meta, guitar_profiles=None) == []
+    assert tone_meta.guitar_settings_warnings(meta, guitar_profiles={}) == []
+
+
+def test_guitar_settings_warnings_flags_unknown_control_key(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].guitar_settings = {"tone": "7", "bogus": "x"}
+    profile = _profile(controls=("volume", "tone"))
+    warnings = tone_meta.guitar_settings_warnings(
+        meta, guitar_profiles={"g1": profile})
+    assert len(warnings) == 1
+    assert "bogus" in warnings[0]
+    assert "tone" not in warnings[0]  # known control -> no warning
+
+
+def test_guitar_settings_warnings_skips_variant_without_profile(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].guitar_settings = {"bogus": "x"}
+    # a profile exists, but not for THIS variant key -> profile may lag -> no warning
+    assert tone_meta.guitar_settings_warnings(
+        meta, guitar_profiles={"other": _profile()}) == []
+
+
+def test_guitar_settings_warnings_control_match_is_case_insensitive(tmp_home):
+    """A guitar_settings key differing only in case from a real control must NOT
+    warn -- the rest of the guitar surface matches case-insensitively (FIX C)."""
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].guitar_settings = {"Volume": "8", "Tone": "7"}
+    profile = _profile(controls=("volume", "tone"))
+    assert tone_meta.guitar_settings_warnings(
+        meta, guitar_profiles={"g1": profile}) == []
+
+
+def test_guitar_settings_warnings_still_flags_genuinely_unknown_key(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].guitar_settings = {"Volume": "8", "bogus": "x"}
+    profile = _profile(controls=("volume", "tone"))
+    warnings = tone_meta.guitar_settings_warnings(
+        meta, guitar_profiles={"g1": profile})
+    assert len(warnings) == 1
+    assert "bogus" in warnings[0]

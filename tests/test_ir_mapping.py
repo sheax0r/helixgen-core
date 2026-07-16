@@ -10,8 +10,10 @@ from helixgen.ir import IrMapping, IrMappingError, default_irs_path
 def test_default_irs_path_uses_home(monkeypatch):
     monkeypatch.delenv("HELIXGEN_IRS", raising=False)
     monkeypatch.delenv("HELIXGEN_HOME", raising=False)
+    monkeypatch.delenv("HELIXGEN_LIBRARY", raising=False)
     monkeypatch.setenv("HOME", "/tmp/fake-home")
-    assert default_irs_path() == Path("/tmp/fake-home/.helixgen/irs")
+    # flipped to the library location (still honors HELIXGEN_IRS first)
+    assert default_irs_path() == Path("/tmp/fake-home/.helixgen/library/irs")
 
 
 def test_default_irs_path_honors_env_var(monkeypatch):

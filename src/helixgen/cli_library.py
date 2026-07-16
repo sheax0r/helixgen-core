@@ -18,10 +18,12 @@ ambiguous match, malformed on-disk metadata, or a metadata file whose content
 computes a different identity slug than its own filename are all a
 ``ClickException`` (exit 1) -- see ``_resolve_slug`` and ``_load_meta_for``.
 
-PR 2 has no guitar profiles or per-IR metadata yet -- ``library list``'s
-``guitars``/``irs`` sections are always empty; the flags/shape exist now so
-they stay stable when a later PR fills them in. ``library validate`` passes
-a lenient ``guitar_slugs`` set for the same reason (see ``validate_cmd``).
+``library list`` now lists guitar profiles (``library/guitars/*.json``) AND
+per-IR metadata (``library/irs/**/*.json`` sidecars) alongside tones (narrow
+with ``--tones``/``--guitars``/``--irs``). ``library show`` resolves a NAME as
+a tone first, then as a guitar profile. ``library validate`` checks each variant key against the
+real profile slugs (falling back to the on-disk variant keys only when NO
+profiles exist yet) and adds a separate ``guitar_settings`` warnings channel.
 """
 from __future__ import annotations
 
@@ -32,8 +34,9 @@ from typing import Any, Dict, List
 
 import click
 
-from helixgen import gitops, home, migrate, naming, tone_meta
+from helixgen import gitops, guitars, home, ir_meta, migrate, naming, tone_meta
 from helixgen.device.manifest import ManifestError, SetlistManifest
+from helixgen.ir import IrMapping
 from helixgen.hsp import read_hsp
 
 
@@ -161,6 +164,49 @@ def _tone_summary(meta: tone_meta.ToneMeta) -> Dict[str, Any]:
     }
 
 
+def _guitar_summary(p: "guitars.GuitarProfile") -> Dict[str, Any]:
+    """The JSON shape for one guitar in ``library list --json``: slug, full
+    name, display short_name, and type."""
+    return {
+        "slug": p.slug,
+        "name": p.name,
+        "short_name": p.short_name,
+        "type": p.type,
+    }
+
+
+def _ir_summary(m: "ir_meta.IrMeta") -> Dict[str, Any]:
+    """The JSON shape for one IR in ``library list --irs``: hash, library-
+    relative wav, pack name (if known), mix, and character tags."""
+    return {
+        "irhash": m.irhash,
+        "wav": m.wav,
+        "pack": (m.pack or {}).get("name") if isinstance(m.pack, dict) else None,
+        "mix": m.mix,
+        "tags": list(m.tags),
+    }
+
+
+def _echo_guitar_profile(p: "guitars.GuitarProfile") -> None:
+    """Human-readable one-guitar summary for ``library show <guitar>``."""
+    click.echo(f"{p.slug}  -- {p.name} ({p.short_name})")
+    click.echo(f"Type: {p.type}")
+    click.echo(f"Active: {p.active}")
+    click.echo(f"Pickups: {p.pickups or '(none)'}")
+    click.echo(f"Construction: {p.construction or '(none)'}")
+    click.echo(f"Genres: {', '.join(p.genres) if p.genres else '(none)'}")
+    click.echo(f"Character: {'set' if p.character_md else '(none)'}")
+    click.echo(f"Controls ({len(p.controls)}):")
+    for c in p.controls:
+        extras = []
+        if c.positions:
+            extras.append("positions: " + "/".join(c.positions))
+        if c.notes:
+            extras.append(c.notes)
+        suffix = f"  ({'; '.join(extras)})" if extras else ""
+        click.echo(f"  {c.name} [{c.kind}]{suffix}")
+
+
 # ---------------------------------------------------------------------------
 # library group
 # ---------------------------------------------------------------------------
@@ -173,7 +219,7 @@ def library() -> None:
     Subcommands:
 
     \b
-      list      enumerate tones (+ guitars/IRs -- empty until a later PR)
+      list      enumerate tones, guitar profiles, and IRs (all populated)
       show      one tone's metadata, human summary or raw --json
       doc       set a tone's description_md, or one variant's notes_md
       validate  shape + cross-link checks across every tone's metadata
@@ -191,11 +237,10 @@ def library() -> None:
 @click.option("--tones", "only_tones", is_flag=True, default=False,
               help="List only tones (default: list everything, grouped).")
 @click.option("--guitars", "only_guitars", is_flag=True, default=False,
-              help="List only guitar profiles. Always empty in this release "
-                   "(no guitar-profile library yet) -- reserved for a later PR.")
+              help="List only guitar profiles (from library/guitars/*.json).")
 @click.option("--irs", "only_irs", is_flag=True, default=False,
-              help="List only per-IR metadata. Always empty in this release "
-                   "(no per-IR metadata yet) -- reserved for a later PR.")
+              help="List only per-IR metadata (from library/irs/**/*.json "
+                   "sidecars: hash, wav, pack, mix, tags).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help='Emit {"tones": [...], "guitars": [...], "irs": [...]} JSON '
                    "instead of a human-readable listing.")
@@ -204,18 +249,20 @@ def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool
 
     Tones are read from every ``~/.helixgen/library/tones/*.json`` (one
     logical tone per file: artist+song or a descriptor, with one or more
-    guitar-targeted variants). Guitar profiles and per-IR metadata are
-    later-PR features -- their sections are always empty lists today; the
-    --guitars/--irs flags and the --json shape exist now so both stay stable
-    once that library grows. --tones/--guitars/--irs narrow the human
-    listing to one section; with none given, everything is shown grouped.
+    guitar-targeted variants); guitar profiles from
+    ``~/.helixgen/library/guitars/*.json`` (slug, name, short_name, type);
+    per-IR metadata from the ``~/.helixgen/library/irs/**/*.json`` sidecars
+    (irhash, library-relative wav, pack, mix, character tags).
+    --tones/--guitars/--irs narrow the human listing to one section; with none
+    given, everything is shown grouped.
     """
     tones = [_tone_summary(m) for m in tone_meta.load_all_tone_metas()]
-    guitars: List[Dict[str, Any]] = []
-    irs: List[Dict[str, Any]] = []
+    guitar_rows = [_guitar_summary(g) for g in guitars.load_all_profiles()]
+    irs = [_ir_summary(m) for m in ir_meta.load_all_ir_metas()]
 
     if as_json:
-        click.echo(json.dumps({"tones": tones, "guitars": guitars, "irs": irs}, indent=2))
+        click.echo(json.dumps(
+            {"tones": tones, "guitars": guitar_rows, "irs": irs}, indent=2))
         return
 
     show_all = not (only_tones or only_guitars or only_irs)
@@ -229,9 +276,20 @@ def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool
             for key, preset_name in t["variants"].items():
                 click.echo(f"    {key}: {preset_name}")
     if show_all or only_guitars:
-        click.echo(f"Guitars ({len(guitars)}): (none yet -- guitar profiles are a later PR)")
+        click.echo(f"Guitars ({len(guitar_rows)}):")
+        if not guitar_rows:
+            click.echo("  (none)")
+        for g in guitar_rows:
+            click.echo(
+                f"  {g['slug']}  -- {g['name']} ({g['short_name']}) [{g['type']}]")
     if show_all or only_irs:
-        click.echo(f"IRs ({len(irs)}): (none yet -- per-IR metadata is a later PR)")
+        click.echo(f"IRs ({len(irs)}):")
+        if not irs:
+            click.echo("  (none)")
+        for r in irs:
+            label = (r["irhash"] or "?")[:8]
+            tags = f"  [{', '.join(r['tags'])}]" if r["tags"] else ""
+            click.echo(f"  {label}  {r['wav']}{tags}")
 
 
 @library.command(name="show")
@@ -239,27 +297,46 @@ def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Dump the exact on-disk metadata JSON instead of a human summary.")
 def show_cmd(name: str, as_json: bool) -> None:
-    """Show one tone's metadata.
+    """Show one tone's -- or one guitar profile's -- metadata.
 
-    NAME resolves, in order, as the logical slug, the metadata filename
-    (``<slug>.json``), or any variant's ``preset_name``; an unknown or
-    ambiguous NAME exits 1. Human output is a compact summary (identity,
-    tags, description presence, each variant's key/preset_name/hsp path);
-    --json dumps the exact bytes stored on disk. See also the top-level
-    `describe` command for a longer, human-oriented write-up.
+    NAME is resolved as a TONE first (logical slug, the metadata filename
+    ``<slug>.json``, or any variant's ``preset_name``); if no tone matches it
+    is then tried as a GUITAR profile (slug / name / short_name). An unknown
+    or ambiguous NAME exits 1. Human output is a compact summary; --json dumps
+    the exact bytes stored on disk (the tone or guitar JSON). See also the
+    top-level `describe` command for a longer, human-oriented write-up.
     """
-    slug = _resolve_slug(name)
-    if as_json:
-        click.echo(tone_meta.meta_path(slug).read_text())
+    tone_slug = None
+    tone_error: click.ClickException | None = None
+    try:
+        tone_slug = _resolve_slug(name)
+    except click.ClickException as err:
+        tone_error = err
+
+    if tone_slug is not None:
+        if as_json:
+            click.echo(tone_meta.meta_path(tone_slug).read_text())
+            return
+        meta = _load_meta_for(tone_slug)
+        click.echo(f"{tone_slug}  -- {meta.display_base}")
+        click.echo(f"Tags: {', '.join(meta.tags) if meta.tags else '(none)'}")
+        click.echo(f"Description: {'set' if meta.description_md else '(none)'}")
+        click.echo(f"Variants ({len(meta.variants)}):")
+        for key, variant in meta.variants.items():
+            click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]")
         return
 
-    meta = _load_meta_for(slug)
-    click.echo(f"{slug}  -- {meta.display_base}")
-    click.echo(f"Tags: {', '.join(meta.tags) if meta.tags else '(none)'}")
-    click.echo(f"Description: {'set' if meta.description_md else '(none)'}")
-    click.echo(f"Variants ({len(meta.variants)}):")
-    for key, variant in meta.variants.items():
-        click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]")
+    # Not a tone -- try a guitar profile (slug / name / short_name).
+    try:
+        profile = guitars.find_profile(name)
+    except guitars.AmbiguousGuitarError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if profile is None:
+        raise tone_error  # surface the original "no tone found ..." message
+    if as_json:
+        click.echo(guitars.profile_path(profile.slug).read_text())
+        return
+    _echo_guitar_profile(profile)
 
 
 @library.command(name="doc")
@@ -326,19 +403,30 @@ def doc_cmd(name: str, source: str | None, variant_key: str | None,
               help='Emit {"problems": [...]} JSON instead of a human report.')
 @click.pass_context
 def validate_cmd(ctx: click.Context, as_json: bool) -> None:
-    """Validate every tone's metadata: shape + cross-link checks.
+    """Validate every tone's metadata: shape + cross-link checks, plus a
+    separate guitar_settings warnings channel.
 
     Runs ``validate_tone_meta`` over every ``library/tones/*.json`` against
     the setlist manifest (each variant's ``preset_name`` must be registered)
-    and the known guitar-profile slugs. This release has no guitar-profile
-    library yet (``library/guitars/``) -- when it's empty or absent, the
-    guitar-key check falls back to every variant key already present across
-    the library instead of just ``"generic"``, so guitar-targeted tones made
-    via ``generate --guitar`` aren't falsely flagged; a later PR that ships
-    guitar profiles will make this check exact. Each problem line is
-    prefixed with its tone's logical slug. Exits 1 if any problems are found
-    across the whole library, 0 if it's fully clean. --json emits
-    {"problems": [...]} (empty list when clean) with the same exit-code rule.
+    and the known guitar-profile slugs (``library/guitars/*.json``); each
+    variant key must be a known guitar slug or the special ``generic`` key.
+    When NO guitar profiles exist yet, the guitar-key check falls back to the
+    variant keys already present across the library (so guitar-targeted tones
+    made via ``generate --guitar`` aren't falsely flagged); once ANY profile
+    exists the check is exact. Each problem line is prefixed with its tone's
+    logical slug.
+
+    IR sidecars (``library/irs/**/*.json``) are cross-checked too: each
+    ``irhash`` must be registered in ``mapping.json`` and its ``wav`` must
+    exist (problems); each character tag must be in the controlled vocabulary
+    (warnings).
+
+    SEPARATELY, a non-fatal WARNINGS channel flags ``guitar_settings`` keys
+    that aren't controls on the target guitar's profile (skipped when that
+    guitar has no profile -- it may lag) and off-vocabulary IR tags. Warnings
+    never change the exit code: the command exits 1 only when a PROBLEM (error)
+    is found across the library, 0 when clean. --json emits {"problems": [...],
+    "warnings": [...]} (both empty when clean) with that same exit-code rule.
 
     This is the safety net for hand/skill-edited JSON: unlike ``library
     list`` (built on ``load_all_tone_metas()``, which silently skips any
@@ -361,42 +449,50 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
             except (OSError, ValueError) as err:
                 malformed.append(f"{p.name}: not valid JSON ({err})")
 
-    guitars_path = home.guitars_dir()
-    known_guitar_slugs: set[str] = (
-        {p.stem for p in guitars_path.glob("*.json")} if guitars_path.is_dir() else set()
-    )
-    # PR 2 has no guitar profiles; once Task 11 (PR 3) lands, pass the real
-    # profile slug set so unknown guitar keys are caught. Until then, an
-    # empty `known_guitar_slugs` would falsely flag every variant key made
-    # via `generate --guitar <name>` (the documented mainline) as "not a
-    # known guitar slug" -- so when no profiles exist yet, fall back to
-    # every variant key actually present across the library instead of the
-    # empty set. This fallback makes the guitar-key check INERT (a no-op
-    # that can never flag anything, since it always allows exactly the keys
-    # already on disk) rather than "partial protection" -- it is not
-    # catching typos or bad guitar keys today, it is just deferring the
-    # check until Task 11 wires in real profile slugs. The rest of this
-    # check (missing hsp, identity shape, schema, unregistered preset_name)
-    # stays useful without spurious guitar-key failures in the meantime.
-    guitar_slugs = known_guitar_slugs or {
-        key for meta in metas for key in meta.variants
-    }
+    profiles = guitars.load_all_profiles()
+    guitar_profiles = {p.slug: p for p in profiles}
+    guitar_slugs: set[str] = set(guitar_profiles)
+    if not guitar_slugs:
+        # No guitar profiles on disk yet (pre-migration): don't falsely flag
+        # variant keys authored via `generate --guitar` as unknown. Fall back
+        # to every variant key already present across the library (an inert
+        # allow-list) ONLY in that genuinely-empty case; once ANY profile
+        # exists the guitar-key check is exact.
+        guitar_slugs = {key for meta in metas for key in meta.variants}
 
     problems: List[str] = list(malformed)
+    warnings: List[str] = []
     for meta in metas:
         for p in tone_meta.validate_tone_meta(
             meta, tones_dir=tones_dir, manifest=manifest, guitar_slugs=guitar_slugs
         ):
             problems.append(f"{meta.logical_slug}: {p}")
+        for w in tone_meta.guitar_settings_warnings(
+            meta, guitar_profiles=guitar_profiles
+        ):
+            warnings.append(f"{meta.logical_slug}: {w}")
+
+    # IR sidecar checks: each irhash present in mapping.json + its wav exists
+    # (problems); each tag in the controlled vocabulary (warnings).
+    ir_problems, ir_warnings = ir_meta.validate_ir_metas(
+        ir_meta.load_all_ir_metas(), IrMapping.load())
+    problems.extend(ir_problems)
+    warnings.extend(ir_warnings)
 
     if as_json:
-        click.echo(json.dumps({"problems": problems}, indent=2))
-    elif not problems:
-        click.echo("OK -- no problems found.")
+        click.echo(json.dumps(
+            {"problems": problems, "warnings": warnings}, indent=2))
     else:
-        click.echo(f"{len(problems)} problem(s) found:")
-        for p in problems:
-            click.echo(f"  {p}")
+        if not problems:
+            click.echo("OK -- no problems found.")
+        else:
+            click.echo(f"{len(problems)} problem(s) found:")
+            for p in problems:
+                click.echo(f"  {p}")
+        if warnings:
+            click.echo(f"{len(warnings)} warning(s):")
+            for w in warnings:
+                click.echo(f"  {w}")
 
     if problems:
         ctx.exit(1)
@@ -432,8 +528,11 @@ def migrate_cmd(dry_run: bool, plan_file: Path | None) -> None:
     manifest/mapping churn); a tone move is copy -> byte-verify -> remove-source;
     a per-tone/IR error is recorded and the run CONTINUES. A slug collision (two
     tones -> one destination) is recorded with a rename suggestion and NEITHER
-    is moved. Instrument -> guitar-profile seeding is DEFERRED to a later PR
-    (the plan records instruments; nothing is written).
+    is moved. Each prefs ``instruments`` entry is SEEDED into a guitar profile
+    (library/guitars/<slug>.json); the retired ``instruments`` and
+    ``preset_output_dir`` keys are then removed from preferences.json, and
+    ``default_guitar`` is reconciled against the seeded profiles -- a
+    still-unresolved value is WARNED (stderr) and recorded, never rewritten.
 
     \b
       --dry-run        print the plan JSON, mutate nothing
@@ -598,8 +697,15 @@ def _resolve_import(src: Path, artist: str | None, song: str | None,
             r_descriptor = src.stem
         r_artist = r_song = None
 
-    guitar_slug = naming.slugify(guitar) if guitar else None
-    guitar_short = guitar if guitar else None
+    # Route --guitar through the SAME profile resolution as `generate` so both
+    # surfaces agree (unknown guitar with profiles present -> error listing
+    # them; no profiles yet -> literal slugify + one-line notice). Lazy import
+    # avoids a cli <-> cli_library import cycle.
+    if guitar:
+        from helixgen.cli import _resolve_guitar
+        guitar_slug, guitar_short = _resolve_guitar(guitar)
+    else:
+        guitar_slug = guitar_short = None
     if guitar and not guitar_slug:
         raise click.ClickException(
             f"--guitar {guitar!r} has no slug-able characters (needs letters or "
@@ -715,6 +821,55 @@ def _place_and_register(r: Dict[str, Any], keep_source: bool,
     click.echo(f"Imported {r['src'].name} -> {dest}")
     click.echo(f"Preset name: {r['preset_name']}")
 
+
+
+# ---------------------------------------------------------------------------
+# ir-backfill (Task 12 -- scaffold metadata for library IRs lacking it)
+# ---------------------------------------------------------------------------
+
+
+@library.command(name="ir-backfill")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help='Emit {"backfilled": [...], "skipped": [...], '
+                   '"errors": [...]} JSON instead of a human summary.')
+def ir_backfill_cmd(as_json: bool) -> None:
+    """Scaffold library metadata for every registered IR that lacks it.
+
+    For each ``mapping.json`` entry whose WAV lives OUTSIDE
+    ``library/irs/`` or has no sidecar JSON: the WAV is COPIED into
+    ``library/irs/<pack>/`` (never moved -- paid packs stay in place), a
+    metadata sidecar is scaffolded next to it (mix guessed from the filename;
+    provenance/tags left blank for the skill to enrich), and mapping.json is
+    rewritten to the library copy. An entry already in-library WITH a sidecar
+    is skipped, so this is IDEMPOTENT -- a re-run is all skips and never
+    re-copies. The home is advisory-committed when the mapping lives under it.
+
+    WAV bytes stay gitignored; only the sidecar + mapping.json are committed.
+    Use this once after adopting the library layout (or the `setup` skill runs
+    it) so already-registered IRs get metadata; the skill then fills each
+    sidecar's provenance and character tags.
+    """
+    mapping = IrMapping.load()
+    result = ir_meta.backfill(mapping)
+    if result["backfilled"]:
+        mapping.save()
+        home_dir = home.helixgen_home()
+        try:
+            under = mapping.irs_dir.resolve().is_relative_to(home_dir.resolve())
+        except (OSError, ValueError):
+            under = False
+        if under:
+            gitops.auto_commit(home_dir, "helixgen: ir-backfill IR metadata")
+
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+        return
+    click.echo(
+        f"Backfilled {len(result['backfilled'])} IR(s), "
+        f"{len(result['skipped'])} already had metadata, "
+        f"{len(result['errors'])} error(s).")
+    for e in result["errors"]:
+        click.echo(f"  error {e.get('hash')}: {e.get('error')}", err=True)
 
 
 # ---------------------------------------------------------------------------

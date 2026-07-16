@@ -30,9 +30,10 @@ Design guarantees:
   are recorded as a collision with a rename suggestion and NEITHER is moved —
   one ``.hsp`` never silently overwrites another.
 
-Instruments are RECORDED in the plan but :func:`migrate_instruments` is a no-op
-in this PR (guitar profiles land in PR 3 / Task 11); it returns a marker and
-does not touch ``preferences.json`` or create any profile.
+Instruments are RECORDED in the plan and seeded into guitar profiles by
+:func:`migrate_instruments` (Task 11): each entry becomes a
+``library/guitars/<slug>.json`` and the retired ``instruments`` /
+``preset_output_dir`` keys are stripped from ``preferences.json``.
 """
 from __future__ import annotations
 
@@ -40,10 +41,11 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from helixgen import gitops, home, libinit, naming, tone_meta
+from helixgen import gitops, home, ir_meta, libinit, naming, tone_meta
 from helixgen.hsp import read_hsp, write_hsp
 from helixgen.ir import IrMapping
 from helixgen.preferences import load_preferences
@@ -187,26 +189,6 @@ def plan_migration() -> Dict[str, Any]:
         pass
 
     return {"tones": tones, "instruments": instruments, "irs": irs}
-
-
-# ---------------------------------------------------------------------------
-# IR sidecar stub (superseded by PR 3's ir_meta.py)
-# ---------------------------------------------------------------------------
-
-
-def _scaffold_ir_stub(path: Path | str, *, irhash: str, wav: str,
-                      imported_from: str) -> None:
-    """Write the minimal per-IR sidecar JSON next to a copied WAV.
-
-    ``{"schema": 1, "irhash": …, "wav": …, "imported_from": …}`` — a placeholder
-    PR 3's ``ir_meta.py`` supersedes with pack-mined provenance. Written
-    atomically (temp file + ``os.replace``)."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"schema": 1, "irhash": irhash, "wav": wav, "imported_from": imported_from}
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +358,7 @@ def run_migration(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, A
     mapping are re-saved (and the home advisory-committed) only when this run
     actually changed something, so a re-run on a migrated home is inert."""
     summary = _empty_summary(dry_run)
-    summary["instruments"] = migrate_instruments(plan)
+    summary["instruments"] = migrate_instruments(plan, dry_run=dry_run)
 
     if not dry_run:
         libinit.ensure_initialized()
@@ -523,7 +505,7 @@ def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
         summary["irs"]["errors"].append({"hash": h, "error": f"wav missing: {src}"})
         return False
 
-    pack = naming.slugify(src.parent.name) or "unknown"
+    pack = ir_meta.derive_pack(src)
     # `dest` is chosen so it either does not exist yet, or is byte-identical to
     # `src` (safe to adopt). A different-content basename collision from another
     # pack is routed to a hash-disambiguated `dest` instead of aliasing.
@@ -545,26 +527,149 @@ def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)  # COPY, never move — paid packs stay in place
-    _scaffold_ir_stub(stub, irhash=h, wav=dest.name, imported_from=str(src))
+    ir_meta._write_meta_atomic(
+        ir_meta.scaffold(dest, h, imported_from=str(src)), stub)
     mapping.entries[h] = str(dest)
     summary["irs"]["copied"].append({"hash": h, "to": str(dest)})
     return True
 
 
 # ---------------------------------------------------------------------------
-# migrate_instruments — deferred to PR 3
+# migrate_instruments — seed guitar profiles + retire prefs keys (Task 11)
 # ---------------------------------------------------------------------------
 
 
-def migrate_instruments(plan: Dict[str, Any]) -> Dict[str, Any]:
-    """No-op hook: seeding guitar profiles from ``prefs.instruments`` is PR 3.
+def _strip_deprecated_prefs_keys(*, dry_run: bool) -> List[str]:
+    """Drop the retired ``instruments`` / ``preset_output_dir`` keys from the
+    preferences FILE on disk (design §6), atomically. Returns the list of keys
+    actually removed (empty when neither is present, so a re-run is inert).
 
-    Records nothing to disk — does NOT delete ``prefs.instruments`` and does NOT
-    create any guitar profile. Returns a marker so callers/summaries can show
-    that instrument migration was intentionally deferred."""
+    Null/absent/parse-failure safe: a missing file, non-dict JSON, or unreadable
+    file removes nothing. With ``dry_run`` the file is left untouched but the
+    keys that WOULD be removed are still reported."""
+    from helixgen.preferences import default_prefs_path
+
+    path = default_prefs_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+
+    removed = [k for k in ("instruments", "preset_output_dir") if k in data]
+    if not removed or dry_run:
+        return removed
+
+    for k in removed:
+        data.pop(k, None)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+    return removed
+
+
+def migrate_instruments(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, Any]:
+    """Seed a guitar profile from each ``plan["instruments"]`` entry, then retire
+    the deprecated preferences keys.
+
+    - For each instrument dict (optionally carrying a plan-added ``short_name``),
+      build ``guitars.profile_from_instrument`` and ``guitars.save_profile`` it.
+      IDEMPOTENT: an entry whose profile file already exists is skipped, so a
+      re-run is all skips. A malformed entry (missing ``name``) is recorded under
+      ``skipped`` with a reason rather than aborting the run.
+    - After seeding, strip ``instruments`` + ``preset_output_dir`` from the
+      preferences file (see :func:`_strip_deprecated_prefs_keys`).
+    - With ``dry_run`` nothing is written (no profiles, no prefs rewrite); the
+      summary still reports what WOULD happen.
+
+    Returns ``{"status": "migrated", "profiles_created": [...slugs],
+    "skipped": [...], "prefs_keys_removed": [...]}``."""
+    from helixgen import guitars
+
+    created: List[str] = []
+    skipped: List[Dict[str, Any]] = []
+    built: List["guitars.GuitarProfile"] = []
+    for d in plan.get("instruments", []) or []:
+        try:
+            profile = guitars.profile_from_instrument(d)
+        except (KeyError, TypeError) as exc:
+            skipped.append({"instrument": (d or {}).get("name") if isinstance(d, dict) else None,
+                            "reason": f"malformed instrument entry: {exc}"})
+            continue
+        built.append(profile)  # tracks the post-migration profile set (dry-run too)
+        if guitars.profile_path(profile.slug).exists():
+            skipped.append({"slug": profile.slug, "reason": "profile already exists"})
+            continue
+        if not dry_run:
+            guitars.save_profile(profile)
+        created.append(profile.slug)
+
+    prefs_keys_removed = _strip_deprecated_prefs_keys(dry_run=dry_run)
+    default_guitar_unresolved = _reconcile_default_guitar(built)
+
     return {
-        "status": "deferred",
-        "deferred_to": "PR 3",
-        "instruments_recorded": len(plan.get("instruments", [])),
-        "detail": "guitar-profile seeding from prefs.instruments lands in PR 3 (Task 11)",
+        "status": "migrated",
+        "profiles_created": created,
+        "skipped": skipped,
+        "prefs_keys_removed": prefs_keys_removed,
+        "default_guitar_unresolved": default_guitar_unresolved,
     }
+
+
+def _read_default_guitar() -> Optional[str]:
+    """Read the persisted ``default_guitar`` straight from the preferences FILE.
+
+    Deliberately NOT via ``load_preferences`` -- that would (a) re-emit the
+    deprecation warnings for the ``instruments``/``preset_output_dir`` keys this
+    same run is retiring, and (b) apply the ``HELIXGEN_DEFAULT_GUITAR`` env
+    override. Reconciliation is about the value written on disk. Null/absent/
+    parse-failure safe: returns ``None`` for a missing/non-dict/unreadable file."""
+    from helixgen.preferences import default_prefs_path
+
+    path = default_prefs_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("default_guitar")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _reconcile_default_guitar(seeded: List["Any"]) -> Optional[str]:
+    """After seeding, check the persisted ``default_guitar`` still resolves.
+
+    ``seeded`` is every profile this run built (created OR already-present),
+    UNIONed with whatever is already on disk -- so the check reflects the
+    post-migration profile set even under dry-run (where ``seeded`` is not yet
+    written). If a non-null ``default_guitar`` no longer resolves, emit a
+    one-line STDERR warning and return the value (recorded in the summary);
+    otherwise return ``None``. Never crashes: an *ambiguous* match is treated as
+    resolving (it does name known profiles), not as unresolved."""
+    from helixgen import guitars
+
+    default_guitar = _read_default_guitar()
+    if not default_guitar:
+        return None
+
+    post = list(guitars.load_all_profiles()) + list(seeded)
+    try:
+        resolved = guitars.find_profile_in(default_guitar, post) is not None
+    except guitars.AmbiguousGuitarError:
+        resolved = True
+    if resolved:
+        return None
+
+    print(
+        f"helixgen: preferences default_guitar {default_guitar!r} no longer "
+        "names a known guitar profile after migration -- update it to an "
+        "existing profile's slug/name (see `helixgen library list`).",
+        file=sys.stderr,
+    )
+    return default_guitar

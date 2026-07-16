@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from helixgen import home
+
 SCHEMA_VERSION = 1
 
 _VALID_DEVICE_MODELS = ("Stadium", "Stadium XL")
@@ -33,14 +35,18 @@ class PreferencesError(ValueError):
 def default_prefs_path() -> Path:
     """Return the preferences file path, honoring the HELIXGEN_PREFS env var.
 
-    Parallels ``default_irs_path`` / ``$HELIXGEN_LIBRARY``: the whole-file
-    location can be redirected via env; otherwise it lives under the
-    ``~/.helixgen`` convention.
+    Parallels ``default_irs_path`` / ``$HELIXGEN_LIBRARY``: an explicit
+    ``$HELIXGEN_PREFS`` redirects the whole file; otherwise the default is
+    anchored under ``home.helixgen_home()`` (so ``$HELIXGEN_HOME`` relocates it
+    too, and the common no-env case is unchanged at
+    ``~/.helixgen/preferences.json``). Anchoring here keeps the destructive
+    ``library migrate`` prefs-key strip -- and every prefs read -- inside the
+    resolved home, never the real ``~/.helixgen``.
     """
     env = os.environ.get("HELIXGEN_PREFS")
     if env:
         return Path(env)
-    return Path.home() / ".helixgen" / "preferences.json"
+    return home.helixgen_home() / "preferences.json"
 
 
 def _parse_bool_env(name: str, raw: str) -> bool:
@@ -148,6 +154,10 @@ def _validate_device_model(model: Any) -> str | None:
 
 
 def _validate_default_guitar(value: Any) -> str | None:
+    """The user's default guitar: names a guitar PROFILE (its slug or name/
+    short_name -- see ``guitars.find_profile``), used when a tone request
+    doesn't name a guitar. Stored as an opaque string here; resolution to a
+    profile happens at generate time."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -195,6 +205,30 @@ def _parse_instruments(raw: Any) -> list[Instrument]:
     return [Instrument.from_dict(item, index=i) for i, item in enumerate(raw)]
 
 
+# Preferences keys retired by the library-metadata migration (design §6):
+# ``instruments`` is replaced by guitar profiles (``library/guitars/*.json``),
+# ``preset_output_dir`` by the ``library/tones/`` default write location. Both
+# are still PARSED for back-compat, but loading a FILE that still carries a
+# non-empty value warns (once per load) pointing at ``library migrate``.
+_DEPRECATED_KEYS = {
+    "instruments": "instruments (guitar profiles replace it)",
+    "preset_output_dir": "preset_output_dir (the library/tones/ default replaces it)",
+}
+
+
+def _warn_deprecated_keys(data: dict[str, Any]) -> None:
+    """Emit a one-line stderr deprecation notice for each retired key that is
+    actually PRESENT and non-empty in the on-disk ``data`` (never on a default
+    / absent / empty value; never to stdout, which ``--json`` reads)."""
+    for key, why in _DEPRECATED_KEYS.items():
+        if data.get(key):
+            print(
+                f"helixgen: preferences key {why} is deprecated; run "
+                "`helixgen library migrate` to convert it.",
+                file=sys.stderr,
+            )
+
+
 def load_preferences(path: Path | None = None) -> Preferences:
     """Load preferences, applying per-key env overrides.
 
@@ -222,6 +256,8 @@ def load_preferences(path: Path | None = None) -> Preferences:
             f"$HELIXGEN_PREFS points at {resolved_path}, but no such file exists"
         )
     # else: missing default-path file -> data stays {} -> all defaults
+
+    _warn_deprecated_keys(data)
 
     device_block = data.get("device") or {}
     if not isinstance(device_block, dict):

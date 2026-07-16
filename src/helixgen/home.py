@@ -12,13 +12,12 @@ Existing per-area env vars (``$HELIXGEN_LIBRARY``, ``$HELIXGEN_IRS``,
 working and always win over a ``$HELIXGEN_HOME``-derived default — this
 module never overrides that precedence, only what a bare default computes to.
 
-Note: ``manifest_path()`` is the current default location
-(``setlists/manifest.json``); ``SetlistManifest.load`` migrates a v2 manifest
-found at ``legacy_manifest_path()`` up to it (manifest v3). Likewise
-``library_irs_dir()`` is a NEW
-default (``library/irs``) not yet wired as ``ir.py``'s default — that flip
-is a later PR too. Both new-default functions exist now so later tasks and
-the migration path have somewhere to point.
+Note: ``manifest_path()`` is the current default manifest location
+(``setlists/manifest.json``) and IS what ``SetlistManifest.load`` uses; a v2
+manifest found at ``legacy_manifest_path()`` is migrated up to it (manifest
+v3). Likewise ``library_irs_dir()`` (``library/irs``) is now ``ir.py``'s
+default IR dir (``ir.default_irs_path()`` returns it), with a one-time bridge
+for a pre-flip ``mapping.json`` still at ``legacy_irs_dir()``.
 """
 from __future__ import annotations
 
@@ -55,8 +54,9 @@ def guitars_dir() -> Path:
 def library_irs_dir() -> Path:
     """IR artifacts: ``$HELIXGEN_IRS`` or ``library_dir()/"irs"``.
 
-    NEW default (the old default was ``~/.helixgen/irs`` —
-    see :func:`legacy_irs_dir`); not yet wired as ``ir.py``'s default.
+    This is ``ir.py``'s default IR dir (``ir.default_irs_path()`` returns it);
+    the old default was ``~/.helixgen/irs`` (see :func:`legacy_irs_dir`), which
+    ``IrMapping.load`` bridges up on first use.
     """
     env = os.environ.get("HELIXGEN_IRS")
     if env:
@@ -68,8 +68,9 @@ def manifest_path() -> Path:
     """The tone-library manifest: ``$HELIXGEN_SETLISTS`` or
     ``helixgen_home()/"setlists"/"manifest.json"``.
 
-    NEW default (the old default was ``~/.helixgen/setlists.json`` —
-    see :func:`legacy_manifest_path`); not yet used by ``SetlistManifest``.
+    This is ``SetlistManifest``'s default location; the old default was
+    ``~/.helixgen/setlists.json`` (see :func:`legacy_manifest_path`), which
+    ``SetlistManifest.load`` migrates up to here (manifest v3).
     """
     env = os.environ.get("HELIXGEN_SETLISTS")
     if env:
