@@ -242,9 +242,23 @@ def generate_cmd(
                 "to write a legacy .hlx preset to an explicit path"
             )
 
+        # RESOLVE + VALIDATE everything (guitar slug, naming, identity
+        # collision, .hsp collision) BEFORE any write, so every failure is a
+        # clean ClickException (exit 1, no traceback) that never leaves an
+        # orphan .hsp behind.
         guitar_slug, guitar_short = (
             _resolve_guitar(guitar) if guitar else (None, None)
         )
+        # A --guitar label that slugs to nothing (punctuation-only "---",
+        # emoji, non-Latin) yields guitar_slug="" (falsy) but guitar_short=the
+        # label (truthy). Left alone that produces a trailing-dash filename and
+        # an UNCAUGHT ValueError from upsert_variant AFTER the write. Reject up
+        # front.
+        if guitar and not guitar_slug:
+            raise click.ClickException(
+                f"--guitar {guitar!r} has no slug-able characters "
+                "(needs letters or digits) -- pick a different guitar label."
+            )
         # Flags win; otherwise the recipe's own name becomes the descriptor.
         if artist or song or descriptor:
             r_artist, r_song, r_descriptor = artist, song, descriptor
@@ -260,6 +274,14 @@ def generate_cmd(
             )
         except ValueError as e:
             raise click.ClickException(str(e)) from e
+        # An identity that slugs to nothing (e.g. an emoji-only descriptor)
+        # would otherwise write dotfiles literally named ".hsp"/".json".
+        if not logical:
+            raise click.ClickException(
+                "the tone identity has no slug-able characters (letters or "
+                "digits) -- give a --descriptor/--artist/--song (or recipe "
+                "name) with real text."
+            )
         variant = naming.variant_slug(logical, guitar_slug)
 
         libinit.ensure_initialized()
@@ -273,6 +295,34 @@ def generate_cmd(
                 f"--guitar), or edit the existing .hsp in place."
             )
 
+        # Two DISTINCT identities can share a logical slug yet differ by guitar
+        # variant, so the per-variant .hsp collision guard above won't catch
+        # them. Appending a variant to a mismatched logical JSON would leave one
+        # file with mutually inconsistent identity (existing artist/song vs. the
+        # new variant's preset_name). Validate identity equality BEFORE writing.
+        existing = (
+            tone_meta.load_tone_meta(logical)
+            if tone_meta.meta_path(logical).exists()
+            else None
+        )
+        if existing is not None:
+            def _norm(value: str | None) -> str | None:
+                return value.strip() if value and value.strip() else None
+
+            requested = (_norm(r_artist), _norm(r_song), _norm(r_descriptor))
+            current = (
+                _norm(existing.artist), _norm(existing.song), _norm(existing.descriptor)
+            )
+            if requested != current:
+                raise click.ClickException(
+                    f"logical slug {logical!r} already belongs to a different "
+                    f"tone identity ({existing.display_base!r}); refusing to "
+                    "merge two distinct tones into one metadata file. Rename "
+                    "this tone (change --artist/--song/--descriptor) to "
+                    "disambiguate."
+                )
+
+        # --- All resolution/validation passed; now write the .hsp. ---
         # meta.name carries the resolved display name so auto-register keys by it.
         spec.name = preset_name
         data = generate_from_recipe(
@@ -281,23 +331,29 @@ def generate_cmd(
         out.write_bytes(data)
 
         # Metadata JSON (creates or extends the logical tone), then manifest.
-        existing = (
-            tone_meta.load_tone_meta(logical)
-            if tone_meta.meta_path(logical).exists()
-            else None
-        )
-        meta = tone_meta.upsert_variant(
-            existing,
-            artist=r_artist, song=r_song, descriptor=r_descriptor,
-            guitar_slug=guitar_slug, guitar_short=guitar_short,
-            hsp_path=out,
-        )
-        tone_meta.save_tone_meta(meta)  # atomic write + advisory commit
-        _auto_register_tone(out)
-        # One coherent commit sweeps up the manifest write too (advisory).
-        gitops.auto_commit(
-            home.helixgen_home(), f"helixgen: generate tone {variant}"
-        )
+        # The .hsp is the source of truth and now exists; if the advisory
+        # metadata/manifest bookkeeping hits an unexpected error, surface it as
+        # a clean ClickException rather than a raw traceback.
+        try:
+            meta = tone_meta.upsert_variant(
+                existing,
+                artist=r_artist, song=r_song, descriptor=r_descriptor,
+                guitar_slug=guitar_slug, guitar_short=guitar_short,
+                hsp_path=out,
+            )
+            tone_meta.save_tone_meta(meta)  # atomic write + advisory commit
+            _auto_register_tone(out)
+            # One coherent commit sweeps up the manifest write too (advisory).
+            gitops.auto_commit(
+                home.helixgen_home(), f"helixgen: generate tone {variant}"
+            )
+        except click.ClickException:
+            raise
+        except Exception as e:  # noqa: BLE001 -- .hsp is already written
+            raise click.ClickException(
+                f"tone written to {out}, but recording its library metadata "
+                f"failed: {e}"
+            ) from e
 
         click.echo(f"Wrote {out}")
         click.echo(f"Preset name: {preset_name}")

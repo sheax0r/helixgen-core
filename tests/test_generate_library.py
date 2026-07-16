@@ -206,3 +206,84 @@ def test_dash_o_with_naming_flags_still_writes_no_metadata(tmp_home, hsp_library
     assert out.exists()
     if home.tones_dir().exists():
         assert list(home.tones_dir().glob("*.json")) == []
+
+
+# ---------------------------------------------------------------------------
+# adversarial-review fixes (PR 2)
+# ---------------------------------------------------------------------------
+
+
+def test_empty_slug_guitar_errors_and_writes_no_orphan(tmp_home, hsp_library, tmp_path):
+    """I-1: a --guitar label that slugs to nothing (punctuation-only) must be
+    rejected as a clean ClickException (exit 1) BEFORE any .hsp is written --
+    previously it wrote the file then raised an uncaught ValueError."""
+    spec = _write_recipe(tmp_path)
+    res = _run(hsp_library, str(spec), "--descriptor", "Warm Jazz Clean",
+               "--guitar", "---")
+    assert res.exit_code == 1, res.output
+    # clean error, not a traceback
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "slug" in res.output.lower()
+    # no orphan .hsp left behind in the tones dir
+    if home.tones_dir().exists():
+        assert list(home.tones_dir().glob("*.hsp")) == []
+        assert list(home.tones_dir().glob("*.json")) == []
+
+
+def test_logical_slug_collision_between_distinct_identities_errors(
+    tmp_home, hsp_library, tmp_path
+):
+    """I-2: two DISTINCT identities can share a logical slug but differ by
+    guitar variant. The second generate must error (exit 1), must NOT mutate
+    the first tone's JSON, and must leave no orphan .hsp."""
+    spec = _write_recipe(tmp_path, name="R")
+    # First identity: artist="A-B", song="C" -> logical slug "a-b-c"
+    r1 = _run(hsp_library, str(spec),
+              "--artist", "A-B", "--song", "C", "--guitar", "Strat")
+    assert r1.exit_code == 0, r1.output
+    logical_json = home.tones_dir() / "a-b-c.json"
+    assert logical_json.exists()
+    before = logical_json.read_text()
+
+    # Second, DISTINCT identity: artist="A", song="B-C" -> same slug "a-b-c",
+    # different guitar variant "tele" so the .hsp collision guard won't fire.
+    r2 = _run(hsp_library, str(spec),
+              "--artist", "A", "--song", "B-C", "--guitar", "Tele")
+    assert r2.exit_code == 1, r2.output
+    assert "collision" in r2.output.lower() or "different" in r2.output.lower()
+
+    # the first tone's JSON is unchanged: still only the strat variant, identity intact
+    assert logical_json.read_text() == before
+    meta = tone_meta.load_tone_meta("a-b-c")
+    assert set(meta.variants) == {"strat"}
+    assert meta.artist == "A-B" and meta.song == "C"
+    # no -tele.hsp orphan
+    assert not (home.tones_dir() / "a-b-c-tele.hsp").exists()
+
+
+def test_empty_logical_slug_errors_no_dotfiles(tmp_home, hsp_library, tmp_path):
+    """M-2: an identity that slugs to nothing (emoji-only descriptor) must
+    error instead of writing dotfiles literally named '.hsp'/'.json'."""
+    spec = _write_recipe(tmp_path)
+    res = _run(hsp_library, str(spec), "--descriptor", "\U0001f3b8")
+    assert res.exit_code == 1, res.output
+    assert "slug" in res.output.lower()
+    if home.tones_dir().exists():
+        names = [p.name for p in home.tones_dir().iterdir()]
+        assert ".hsp" not in names
+        assert ".json" not in names
+        assert not any(n.startswith(".") for n in names)
+
+
+def test_second_variant_same_identity_still_succeeds(tmp_home, hsp_library, tmp_path):
+    """Regression: the legitimate case (SAME artist/song, different guitar)
+    must still add a variant to the same logical JSON."""
+    spec = _write_recipe(tmp_path, name="R")
+    r1 = _run(hsp_library, str(spec),
+              "--artist", "A", "--song", "S", "--guitar", "Les Paul Jr")
+    assert r1.exit_code == 0, r1.output
+    r2 = _run(hsp_library, str(spec),
+              "--artist", "A", "--song", "S", "--guitar", "Other Guitar")
+    assert r2.exit_code == 0, r2.output
+    meta = tone_meta.load_tone_meta("a-s")
+    assert set(meta.variants) == {"les-paul-jr", "other-guitar"}
