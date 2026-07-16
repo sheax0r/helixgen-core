@@ -174,6 +174,29 @@ and had to be redirected. Start here so future work begins from the right model.
   peers — a pre-0.22.0 helixgen racing the same gap can still double-hold
   (mixed-version deployments only).
 
+- **#75 Loudness phase-2 hardware validation [device-write]** (authoritative
+  copy: workspace BACKLOG.md) — everything
+  #62 phase 2 shipped is offline-tested against fakes; a test-signal rig
+  (looped pitched signal into inst1 — see the spec's §7 erratum) must
+  validate on hardware: (a) the transcoder's OUTPUT-endpoint snapshot param
+  targets (`(pi, -2, -2)` sentinel → OutputMatrix gain trg) actually move
+  the output level on snapshot switch — user-block snapshot targets are
+  HW-proven, the output-endpoint variant is synthesized by analogy; (b) a
+  full `device normalize` snapshot + setlist run end-to-end (measure →
+  trim → sync → re-measure the chain-out DELTA via an in-chain actuator,
+  since the output trim itself is grid-invisible); (c) whether the mid-800
+  output sends sit pre/post Global EQ (spec §5 open).
+- **#76 Per-snapshot output level in the recipe/view surface [local]**
+  (authoritative copy: workspace BACKLOG.md) —
+  phase 2 writes per-snapshot output-level trims into the `.hsp` (the
+  source of truth) and the transcoder realizes them, but `view` does not
+  yet LIFT them into its snapshots projection and the recipe has no
+  authoring field for them (`snapshots[*].params` is user-block-keyed;
+  the `output` pseudo-block isn't addressable there). Add a snapshot-level
+  `output` field to spec/generate + the matching `view` recovery so the
+  trims survive a view→generate round-trip; until then they're preserved
+  only by direct `.hsp` edits (the canonical flow).
+
 ### Deferred from the 0.21.0 adversarial review (2026-07-15)
 
 - **#69 `slots restore --force` into a named setlist may stack a duplicate
@@ -1203,11 +1226,24 @@ Remaining follow-ups:
   upstream of output-block gain), the live-ops wire-index bug fixed
   (`(blks_key−1)/2` — bypass/model/set-param had been targeting the wrong
   blocks), and `device measure` + MCP `device_measure` (playing-gated robust
-  dB stats incl. the input-invariant output÷input chain gain). **Remaining:**
-  (a) phase 2 `device normalize` — per-snapshot / per-setlist closed loop;
-  needs snapshot-aware `set-param` in `mutate` for per-snapshot `.hsp`
-  trims, and note the phase-0 caveat that output-gain trims are dB-exact but
-  invisible to the grid (verify via an in-chain actuator or trust the math);
+  dB stats incl. the input-invariant output÷input chain gain). **Phase 2
+  SHIPPED 2026-07-16** (offline-tested; hardware validation rig-gated —
+  see #75): snapshot-aware `set-param --snapshot <name-or-index>` (mutate +
+  CLI + `patch` op; dense base-densified arrays, value re-synced to the
+  active snapshot), per-snapshot OUTPUT-level overrides end-to-end
+  (`mutate.set_flow_param(..., snapshot=)` → b13 `gain.snapshots` →
+  `bridge.hsp_to_paths` `output_snap_params` → transcoder param targets
+  keyed by the OutputMatrix instance id under the `(pi, -2, -2)` sentinel),
+  and `helixgen device normalize` (snapshot scope on a local `.hsp` /
+  `--setlist` scope over the manifest; dry-run by default, `--yes` writes
+  the trims into the local `.hsp` only — device follows via `sync`; anchors
+  on the first ok-measured target or `--target-db`; trims equalize TOTAL
+  loudness — measured gain + output level in force — so re-runs are
+  idempotent and hand-balanced presets survive [2026-07-16 review fix, spec
+  §7]; verifies the measured preset's identity via the active-preset name;
+  honors the phase-0
+  caveat by trusting the dB math instead of re-measuring output trims).
+  **Remaining:**
   (b) the full per-layout cell-index formula (splits, dual-amp, DSP1, the ×4
   clusters) → `label_cells(reading, layout)`; (c) phase 3 quality metrics —
   **offline half SHIPPED 2026-07-16**: `helixgen analyze-audio` +
@@ -1221,7 +1257,8 @@ Remaining follow-ups:
   measured-tag FFT pass (`irs/_catalog/`, machine-local) — plus feeding a
   tone-skill refinement loop at creation time when the device is online, and
   later iteration via the device skill; (d) skills integration lives in the
-  plugin repo (cross-repo, after #56).
+  plugin repo (cross-repo, after #56); (e) #75/#76 below (phase-2
+  residuals).
 - **#63 MCP server removal — CLI is the only engine surface** — **✅ SHIPPED
   0.20.0** (mirrored in the coordination-workspace backlog, which is now the
   authoritative one). `mcp_server/` + `tests/mcp_server/` + the `[mcp]` extra

@@ -241,7 +241,10 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
     string, mapped params, ``irhash``, ``(lane, pos)`` coordinate, and (when it
     varies) ``snap_bypass`` / ``snap_params`` arrays. ``structural`` holds each
     split/join as ``{"kind", "model", "params"}`` for the transcoder to
-    materialize. Signal order within a lane is preserved; endpoints (b00
+    materialize. A b13 output endpoint whose ``gain``/``pan`` wrappers carry
+    per-snapshot arrays (#62 phase 2 trims) contributes
+    ``output_snap_params`` (``{device_param: [8 values]}``) alongside
+    ``output_params``. Signal order within a lane is preserved; endpoints (b00
     input / outputs / looper / None) are skipped as user blocks (the b00 input
     mode drives ``input``).
     """
@@ -264,6 +267,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         input_enabled: Optional[bool] = None
         input_snap_bypass: Optional[List[Any]] = None
         output_params: Dict[str, Any] = {}
+        output_snap_params: Dict[str, List[Any]] = {}
         for key in sorted(k for k in flow if isinstance(k, str)
                           and k.startswith("b") and k[1:].isdigit()):
             b = flow[key]
@@ -308,6 +312,29 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 # the device param names (gain/pan) match the .hsp names.
                 if key == "b13":
                     output_params = _lift_endpoint_params(slot)
+                    # #62 phase 2: per-snapshot output-gain trims ride the b13
+                    # param wrappers' `snapshots` arrays (dense, base-filled —
+                    # written by `mutate.set_flow_param(..., snapshot=)`).
+                    # Lifted like `_snapshot_arrays`' param half, but without
+                    # the user-block name map (the .hsp names ARE the device
+                    # names here); the transcoder emits the matching snapshot
+                    # param target keyed by the OutputMatrix instance id.
+                    if has_snaps:
+                        osnap: Dict[str, List[Any]] = {}
+                        for pname, wrapped in (slot.get("params") or {}).items():
+                            if not (isinstance(wrapped, dict)
+                                    and isinstance(wrapped.get("snapshots"), list)):
+                                continue
+                            arr = wrapped["snapshots"]
+                            if not any(v is not None for v in arr):
+                                continue
+                            obase = wrapped.get("value")
+                            if obase is None and any(v is None for v in arr):
+                                continue  # nothing to densify sparse slots with
+                            osnap[pname] = [obase if v is None else v
+                                            for v in arr]
+                        if osnap:
+                            output_snap_params = osnap
                 continue
             dev_id = resolve_model(model)
             if dev_id is None:
@@ -399,6 +426,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             path_entry["input_snap_bypass"] = input_snap_bypass
         if output_params:
             path_entry["output_params"] = output_params
+        if output_snap_params:
+            path_entry["output_snap_params"] = output_snap_params
         if structural:
             path_entry["structural"] = structural
         out.append(path_entry)

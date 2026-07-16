@@ -230,6 +230,44 @@ def test_lock_surfaces_keep_contract_phrases(path, phrases):
             f"contract phrase {phrase!r}")
 
 
+#: Loudness phase-2 agent surfaces (backlog #62): the `device normalize`
+#: closed loop and snapshot-aware `set-param`. The phase-0 hardware caveat —
+#: meter taps sit UPSTREAM of the output block's gain, so output trims are
+#: exact but unverifiable by re-measuring — must never drop out of the help.
+NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
+    (["device", "normalize"],
+     ["DRY-RUN", "--yes", "anchor", "source of truth", "device sync",
+      "NAMED snapshots", "SKIPPED", "dB-native", "UPSTREAM", "INVISIBLE",
+      "NOT re-measure", "PLAY", "--target-db",
+      # C1/I1 (2026-07-16 review): trims equalize TOTAL loudness (gain +
+      # output level -> idempotent re-runs), and the measured preset's
+      # identity is verified before anything is written
+      "TOTAL loudness", "IDEMPOTENT", "verified"]),
+    (["set-param"],
+     ["--snapshot", "per-snapshot override", "base value",
+      "densify", "active snapshot", "round-trip",
+      # M3/M5: output pseudo-block overrides don't surface in `view` yet
+      # (#76), and a varying array makes a plain base edit inaudible
+      "do NOT surface in `view`", "inaudible"]),
+    # M4: enable/disable share set-param's snapshot resolver, so their
+    # --snapshot also takes a 0-based index (names win) — help must say so
+    (["enable"], ["0-based index", "names win"]),
+    (["disable"], ["0-based index", "names win"]),
+    (["patch"], ["snapshot"]),
+]
+
+
+@pytest.mark.parametrize(
+    "path,phrases", NORMALIZE_SURFACES,
+    ids=[" ".join(row[0]) for row in NORMALIZE_SURFACES])
+def test_normalize_surfaces_keep_contract_phrases(path, phrases):
+    combined = _full_help(_resolve(path))
+    for phrase in phrases:
+        assert phrase in combined, (
+            f"CLI verb {' '.join(path)!r} help lost the loudness phase-2 "
+            f"contract phrase {phrase!r}")
+
+
 def test_top_level_help_orients_agents():
     res = CliRunner().invoke(cli, ["--help"])
     assert res.exit_code == 0

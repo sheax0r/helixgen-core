@@ -192,6 +192,7 @@ def set_param(
     value: Any,
     library: Library,
     *,
+    snapshot: Any = None,
     path: int | None = None,
     lane: int | None = None,
     pos: int | None = None,
@@ -205,7 +206,7 @@ def set_param(
     `generate._to_hsp_bnn` already applies, since a raw int there can
     silently brick the block on-device).
 
-    Writes into the existing `params[param]` wrapper:
+    `snapshot=None` (default) writes into the existing `params[param]` wrapper:
       - plain `{"value": x}` — updates `value`.
       - controlled `{"controller": {...}, "value": x}` — updates `value`,
         leaves `controller` untouched.
@@ -213,10 +214,19 @@ def set_param(
         channels' `value`.
       - missing entirely — creates a plain `{"value": x}` wrapper.
 
+    `snapshot=<name-or-index>` (resolved by `_resolve_snapshot_index`) instead
+    sets that one slot of the wrapper's 8-element per-snapshot `snapshots`
+    overrides array (see `_write_snapshot_slot` for the densify/re-sync
+    contract). The wrapper must already carry a base `value` (there is no
+    base to densify the other slots to otherwise); an existing `controller`
+    is left untouched (a param can be controller-driven AND snapshot-tracked
+    on the device); stereo-shaped params are not supported.
+
     The exact names ``input`` / ``output`` / ``split`` / ``join`` / ``merge``
     are signal-flow PSEUDO-BLOCKS and route to :func:`set_flow_param` (they
     address the path's endpoints / split / merge mixer, not a library block);
-    those names win over any same-named library block by design.
+    those names win over any same-named library block by design. Per-snapshot
+    values on pseudo-blocks are supported only for ``output`` (level/pan).
     """
     if block in _FLOW_PSEUDO_BLOCKS:
         if lane is not None:
@@ -224,7 +234,8 @@ def set_param(
                 f"{block!r} is a signal-flow pseudo-block; 'lane' does not "
                 f"apply (address it with path=/pos=)."
             )
-        set_flow_param(body, block, param, value, path=path or 0, pos=pos)
+        set_flow_param(body, block, param, value, path=path or 0, pos=pos,
+                       snapshot=snapshot)
         return
     fi, key, si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     slot = _slot_dict(body, fi, key, si)
@@ -235,6 +246,25 @@ def set_param(
 
     params = slot.setdefault("params", {})
     wrapped = params.get(param)
+    if snapshot is not None:
+        if isinstance(wrapped, dict) and _is_stereo_param(wrapped):
+            raise MutateError(
+                f"Param {block!r}.{param!r} is stereo-shaped; stereo params "
+                f"are not supported for per-snapshot values."
+            )
+        if not isinstance(wrapped, dict) or wrapped.get("value") is None:
+            # a missing wrapper OR a wrapper without a base `value` (e.g.
+            # controller-only): densifying against None would corrupt it
+            # (value: None + a sparse array the transcoder silently drops)
+            raise MutateError(
+                f"Block {block!r} has no existing base value for param "
+                f"{param!r}; set the base value first (per-snapshot "
+                f"overrides densify the untouched slots to the base)."
+            )
+        idx = _resolve_snapshot_index(body, snapshot)
+        _write_snapshot_slot(body, wrapped, idx, coerced)
+        return
+    _warn_if_base_overridden(wrapped, f"{block!r} param {param!r}")
     if isinstance(wrapped, dict) and _is_stereo_param(wrapped):
         for channel in ("1", "2"):
             chan = wrapped.get(channel)
@@ -256,6 +286,25 @@ def _flow_path_dict(body: dict[str, Any], path: int) -> dict[str, Any]:
         raise MutateError(
             f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
     return flow[path]
+
+
+def _warn_if_base_overridden(wrapped: Any, label: str) -> None:
+    """Stderr warning when a plain BASE edit lands on a param whose
+    per-snapshot ``snapshots`` array VARIES: the device applies the tracked
+    per-snapshot value on every snapshot, so the base edit is inaudible
+    on-device (a uniform array is skipped by the transcoder — the base still
+    wins there, so it does not warn)."""
+    snaps = wrapped.get("snapshots") if isinstance(wrapped, dict) else None
+    if not isinstance(snaps, list):
+        return
+    vals = [v for v in snaps if v is not None]
+    if len({repr(v) for v in vals}) > 1:
+        import sys
+        print(
+            f"warning: {label}: the base value is overridden by a "
+            f"per-snapshot overrides array on all 8 snapshots — this base "
+            f"edit will be inaudible on-device. Use --snapshot to edit one "
+            f"snapshot, or edit every snapshot's slot.", file=sys.stderr)
 
 
 def _write_slot_param(slot: dict[str, Any], name: str, value: Any) -> None:
@@ -321,7 +370,10 @@ def _set_input_flow_param(body: dict[str, Any], path_dict: dict[str, Any],
     _write_slot_param(slot, hsp_name, hsp_value)
 
 
-def _set_output_flow_param(path_dict: dict[str, Any], param: str, value: Any) -> None:
+def _set_output_flow_param(
+    body: dict[str, Any], path_dict: dict[str, Any], param: str, value: Any,
+    *, snapshot: Any = None,
+) -> None:
     b13 = path_dict.get("b13")
     if not (isinstance(b13, dict) and b13.get("type") == "output"
             and b13.get("slot")):
@@ -333,8 +385,23 @@ def _set_output_flow_param(path_dict: dict[str, Any], param: str, value: Any) ->
         flowparams.validate_output_field(param, value)
     except ValueError as exc:
         raise MutateError(str(exc)) from exc
-    _write_slot_param(b13["slot"][0],
-                      flowparams.OUTPUT_FIELD_TO_HSP[param], float(value))
+    hsp_name = flowparams.OUTPUT_FIELD_TO_HSP[param]
+    if snapshot is not None:
+        slot = b13["slot"][0]
+        params = slot.setdefault("params", {})
+        wrapped = params.get(hsp_name)
+        if not isinstance(wrapped, dict):
+            # a chassis-fresh b13 often carries no wrapper at all — densify
+            # against the device default (flowparams.OUTPUT_HSP_DEFAULTS)
+            wrapped = {"value": flowparams.OUTPUT_HSP_DEFAULTS[hsp_name]}
+            params[hsp_name] = wrapped
+        idx = _resolve_snapshot_index(body, snapshot)
+        _write_snapshot_slot(body, wrapped, idx, float(value))
+        return
+    _warn_if_base_overridden(
+        (b13["slot"][0].get("params") or {}).get(hsp_name),
+        f"output {param!r}")
+    _write_slot_param(b13["slot"][0], hsp_name, float(value))
 
 
 def _set_split_join_param(path_dict: dict[str, Any], kind: str, param: str,
@@ -372,6 +439,7 @@ def set_flow_param(
     *,
     path: int = 0,
     pos: int | None = None,
+    snapshot: Any = None,
 ) -> None:
     """Set one signal-flow param on a path's pseudo-block, in place.
 
@@ -387,14 +455,27 @@ def set_flow_param(
     - ``split``/``join`` params are the literal wire names (``BalanceA``,
       ``Frequency``, ``A Level``, …), validated against the placed model's
       schema; ``pos`` disambiguates when a path carries two split regions.
+
+    ``snapshot=<name-or-index>`` writes that one slot of the param's 8-element
+    per-snapshot overrides array instead of the base value (see
+    `_write_snapshot_slot`). Supported only for ``output`` — the loudness
+    phase-2 actuator (`docs/superpowers/specs/2026-07-14-loudness-feedback-
+    normalization.md`); the transcoder synthesizes the matching device
+    snapshot target from the b13 array. Per-snapshot input/split/join values
+    have no transcoder support and are rejected.
     """
     if kind == "merge":
         kind = "join"
+    if snapshot is not None and kind != "output":
+        raise MutateError(
+            f"per-snapshot values are supported only on the \"output\" "
+            f"pseudo-block (level/pan), not {kind!r}."
+        )
     path_dict = _flow_path_dict(body, path)
     if kind == "input":
         _set_input_flow_param(body, path_dict, param, value)
     elif kind == "output":
-        _set_output_flow_param(path_dict, param, value)
+        _set_output_flow_param(body, path_dict, param, value, snapshot=snapshot)
     elif kind in ("split", "join"):
         _set_split_join_param(path_dict, kind, param, value, pos)
     else:
@@ -426,15 +507,58 @@ def _clamped_active_snapshot(body: dict[str, Any], length: int) -> int:
 
 def _resolve_snapshot_index(body: dict[str, Any], snapshot: Any) -> int:
     """Resolve a snapshot name (matched against `preset.snapshots[*].name`)
-    or a bare int index to an index into the 8-slot snapshot arrays."""
+    or a bare int index to an index into the 8-slot snapshot arrays. A
+    digit-only string that matches no snapshot NAME falls back to its int
+    value (the CLI passes `--snapshot` values as strings), so `--snapshot 2`
+    addresses index 2 unless a snapshot is literally named "2"."""
     if isinstance(snapshot, int) and not isinstance(snapshot, bool):
         return snapshot
     meta = (body.get("preset") or {}).get("snapshots") or []
     for i, s in enumerate(meta):
         if isinstance(s, dict) and s.get("name") == snapshot:
             return i
+    if isinstance(snapshot, str) and snapshot.isdigit():
+        return int(snapshot)
     names = [s.get("name") for s in meta if isinstance(s, dict)]
     raise MutateError(f"Snapshot {snapshot!r} not found. Known snapshots: {names}.")
+
+
+def _write_snapshot_slot(
+    body: dict[str, Any], wrapped: dict[str, Any], idx: int, value: Any
+) -> None:
+    """Write one slot of a param wrapper's 8-element `snapshots` overrides
+    array, in place, then densify and re-sync.
+
+    Any `null` slot is densified to the PRE-EDIT base value — param snapshot
+    arrays densify to base, matching `generate._wrap_value_with_snapshots`
+    (`@enabled` arrays densify to True instead; the two are deliberately
+    different — see `set_enabled`). `wrapped["value"]` is re-synced to the
+    active snapshot's slot (`preset.params.activesnapshot`) so the block
+    shows its active-snapshot value on load.
+
+    Requires `preset.snapshots` meta: without it the device transcoder
+    (`bridge.hsp_to_paths`'s has_snaps gate) drops every snapshots array, so
+    the override would be silently dead on-device — error instead.
+    """
+    if not (body.get("preset") or {}).get("snapshots"):
+        raise MutateError(
+            "Preset defines no snapshots (`preset.snapshots` meta is "
+            "absent) — a per-snapshot override would be silently dropped "
+            "on device install/sync. Author snapshots first (recipe "
+            "`snapshots` field), or set the base value instead."
+        )
+    if not (0 <= idx < HSP_SNAPSHOT_SLOTS):
+        raise MutateError(
+            f"Snapshot index {idx} out of range (0..{HSP_SNAPSHOT_SLOTS - 1}).")
+    base = wrapped.get("value")
+    snaps = wrapped.get("snapshots")
+    snaps = list(snaps) if isinstance(snaps, list) else [None] * HSP_SNAPSHOT_SLOTS
+    if len(snaps) < HSP_SNAPSHOT_SLOTS:
+        snaps.extend([None] * (HSP_SNAPSHOT_SLOTS - len(snaps)))
+    snaps[idx] = value
+    snaps = [base if s is None else s for s in snaps]
+    wrapped["snapshots"] = snaps
+    wrapped["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
 
 
 def set_enabled(
@@ -455,8 +579,9 @@ def set_enabled(
     `snapshot=None` (default) sets the base `@enabled.value` directly.
 
     `snapshot=<name-or-index>` instead flips that one slot of the 8-element
-    `@enabled.snapshots` array (resolved by matching `preset.snapshots[*].name`,
-    or used directly if already an int). Any other `null` slot in the array is
+    `@enabled.snapshots` array (resolved by `_resolve_snapshot_index`:
+    matched against `preset.snapshots[*].name`; an int — or a digit-only
+    string matching no name — is a 0-based index). Any other `null` slot in the array is
     densified to the pre-edit base value — a sparse (null-containing) array
     left on-device snapshot recall unreliable (see 0.5.1). After a snapshot
     edit, `@enabled.value` is re-synced to `snapshots[<active snapshot>]`
@@ -1361,6 +1486,7 @@ def wire_wah_toe(
 def _op_set_param(body: dict, library: Library, o: dict) -> list[str]:
     set_param(
         body, o["block"], o["param"], o["value"], library,
+        snapshot=o.get("snapshot"),
         path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
     )
     return []

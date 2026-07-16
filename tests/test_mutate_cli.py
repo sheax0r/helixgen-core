@@ -46,6 +46,30 @@ def test_cli_set_param_mutates_hsp_no_sidecar(tmp_path, hsp_library):
     assert not _sidecar(out).exists()
 
 
+def test_cli_set_param_snapshot_writes_override_slot(tmp_path, hsp_library):
+    lib_root, out = _setup(tmp_path, hsp_library)
+    res = CliRunner().invoke(cli, [
+        "set-param", str(out), "Tube Drive", "Gain", "0.9",
+        "--snapshot", "1", "--library", str(lib_root)])
+    assert res.exit_code == 0, res.output
+    wrapped = read_hsp(out)["preset"]["flow"][0]["b01"]["slot"][0]["params"]["Gain"]
+    # slot 1 overridden; other slots densified to the base; base untouched
+    # (active snapshot is 0)
+    assert wrapped["snapshots"] == [0.5, 0.9, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    assert wrapped["value"] == 0.5
+
+
+def test_cli_set_param_snapshot_output_level(tmp_path, hsp_library):
+    lib_root, out = _setup(tmp_path, hsp_library)
+    res = CliRunner().invoke(cli, [
+        "set-param", str(out), "output", "level",
+        "--snapshot", "1", "--library", str(lib_root), "--", "-3"])
+    assert res.exit_code == 0, res.output
+    wrapped = read_hsp(out)["preset"]["flow"][0]["b13"]["slot"][0]["params"]["gain"]
+    assert wrapped["snapshots"][1] == -3.0
+    assert wrapped["snapshots"][0] == wrapped["value"]
+
+
 def test_cli_enable_block(tmp_path, hsp_library):
     lib_root, out = _setup(tmp_path, hsp_library)
     CliRunner().invoke(cli, [

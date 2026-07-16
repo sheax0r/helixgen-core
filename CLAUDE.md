@@ -128,7 +128,21 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   reorder <setlist> <target> --to <N>` (direct DEVICE-side preset reorder —
   distinct from the local-manifest `device slots reorder`; numeric args are
   **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #62).
-  Decoded + HW-validated 2026-07-14.
+  Decoded + HW-validated 2026-07-14. `device normalize` (#62 phase 2) is the
+  closed loop over `measure`: level-match a preset's NAMED snapshots or a
+  manifest setlist while the player plays — DRY-RUN by default; `--yes`
+  writes the dB trims into the LOCAL `.hsp` only (per-snapshot / base
+  output `level`; the device follows via `sync`). Trims equalize **total
+  loudness** (measured chain gain + the output level already in force —
+  the meter taps sit upstream of output gain, so the measured gain alone
+  never includes an existing trim), which makes re-runs idempotent and
+  leaves hand-balanced presets alone. The measured preset's identity is
+  verified via the device's active-preset name (snapshot scope aborts on
+  mismatch; setlist scope skips the tone — stale CID guard), and a setlist
+  run restores the player's previously active preset. Output-gain trims
+  are dB-exact but sit downstream of every meter tap, so the loop trusts
+  the math (deliberately never re-measures to confirm). Holds `editbuffer`
+  even in dry-run (it recalls snapshots / loads presets while measuring).
 - **Global Settings + Global EQ:** `device settings list|get|set` (161 `global.*`
   keys; enum labels validated) and `device globaleq list|set <output> <band>
   <param> <value>` (three per-output-layer 7-band EQs; **write-only** — no
@@ -409,9 +423,9 @@ untouched by construction.
 **Run `helixgen show-block "<block>"` first** to confirm the exact,
 case-sensitive param name — the same guardrail `generate` already enforces.
 
-- `helixgen set-param <preset> <block> <param> <value> [--path/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string). A **negative** value needs the `--` sentinel after any flags (`helixgen set-param t.hsp output level -- -3`). The block names `input` / `output` / `split` / `join` (`merge` = alias) are **signal-flow pseudo-blocks** addressing the path's endpoints / split / merge mixer (`--path` picks the DSP; `--pos` disambiguates two splits; `--lane` does not apply): input params use the recipe vocabulary (`impedance`, `pad`, `trim`, `gate`, `threshold`, `decay`, `link`), output params are `level`/`pan`, split/join params are the wire names (`BalanceA`, `Frequency`, `"A Level"`, …).
-- `helixgen enable <preset> <block> [--snapshot NAME] [--path/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) enable it in that snapshot.
-- `helixgen disable <preset> <block> [--snapshot NAME] [--path/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) bypass it in that snapshot.
+- `helixgen set-param <preset> <block> <param> <value> [--snapshot NAME_OR_INDEX] [--path/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string). A **negative** value needs the `--` sentinel after any flags (`helixgen set-param t.hsp output level -- -3`). `--snapshot <name-or-0-based-index>` writes the value into that ONE snapshot's slot of the param's per-snapshot overrides array instead of the base (requires an existing base value; untouched slots densify to it) — library-block overrides round-trip through `view`; `output` pseudo-block overrides do NOT surface in `view` yet (#76) but are preserved in the `.hsp`; both are realized on-device by `install`/`sync`. Once a param's array varies, the device applies it on every snapshot — a later plain base edit of that param is inaudible on-device and warns. The block names `input` / `output` / `split` / `join` (`merge` = alias) are **signal-flow pseudo-blocks** addressing the path's endpoints / split / merge mixer (`--path` picks the DSP; `--pos` disambiguates two splits; `--lane` does not apply): input params use the recipe vocabulary (`impedance`, `pad`, `trim`, `gate`, `threshold`, `decay`, `link`), output params are `level`/`pan` (the only pseudo-block supporting `--snapshot`), split/join params are the wire names (`BalanceA`, `Frequency`, `"A Level"`, …).
+- `helixgen enable <preset> <block> [--snapshot NAME-or-INDEX] [--path/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) enable it in that snapshot (name or 0-based index; names win).
+- `helixgen disable <preset> <block> [--snapshot NAME-or-INDEX] [--path/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) bypass it in that snapshot (name or 0-based index; names win).
 - `helixgen add-block <preset> <block> [--path N] [--after NAME]` — insert a block (append to `--path`, default 0, or after a named block).
 - `helixgen remove-block <preset> <block> [--path/--lane/--pos]` — delete a block.
 - `helixgen swap-model <preset> <old> <new> [--path/--lane/--pos]` — replace a block with another of the **same category**; carries over params the target shares, warns on any it has to drop.
@@ -419,8 +433,8 @@ case-sensitive param name — the same guardrail `generate` already enforces.
 
 `--path`/`--lane`/`--pos` disambiguate when a block name appears more than once
 in the preset (e.g. dual-cab, both lanes of a split). (`--index` was removed in
-1.0.0 — block addressing is `(path, lane, pos)`.) `--snapshot` applies only to
-`enable`/`disable`.
+1.0.0 — block addressing is `(path, lane, pos)`.) `--snapshot` applies to
+`enable`/`disable` (per-snapshot bypass) and `set-param` (per-snapshot value).
 
 For a multi-edit session, **`helixgen patch <preset.hsp> <ops.json>`** applies
 a JSON **list** of `{op, ...}` operations (`set_param`, `set_enabled`,
