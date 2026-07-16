@@ -230,8 +230,8 @@ exit, even on failure):
 | scope(s) | verbs |
 |---|---|
 | `editbuffer` | `load`, `snapshot`, `bypass`, `model`, `set-param` |
-| `library` | `create`, `save`, `rename`, `delete`, `set-info`, `push`, `restore`, `install`, `reorder`, `slots restore`, `setlist create/rename/delete/duplicate`, `setlist import-hss` (not `--list`/`--dry-run`) |
-| `library` + `irs` | `sync` (`--exclude-irs` drops the `irs` scope) |
+| `library` | `create`, `save`, `rename`, `delete`, `set-info`, `push`, `restore`, `install` (without `--auto-irs`), `reorder`, `slots restore`, `setlist create/rename/delete/duplicate`, `setlist import-hss` (not `--list`/`--dry-run`) |
+| `library` + `irs` | `sync` (`--exclude-irs` drops the `irs` scope), `install --auto-irs` (it uploads device IRs) |
 | `irs` | `push-ir`, `delete-ir`, `rename-ir`, `ir-prune` (only with `--yes`; dry-run takes nothing) |
 | `globals` | `settings set`, `globaleq set` |
 | *(none)* | every read/list verb, the local-manifest verbs (`add`, `unsync`, `library`, `slots list/reorder`, `setlist list/add/remove/create-local/sync-on/sync-off`, `export-hss`, `local-list`), `backup`, `pull`, `pull-ir`, `watch`, `tuner`, `meters`, `measure` |
@@ -256,9 +256,21 @@ exit, even on failure):
 seconds (default **30**; `0` = fail fast) with polling backoff, then exits
 non-zero naming the holder (label, pid, host, age). **Staleness:** a lease
 whose TTL expired or whose recorded pid is dead (same host) is reclaimed
-with a stderr warning; a **live lease is never broken** implicitly. Escape
-hatch: every mutating verb takes `--no-lock` (dangerous — you're opting out
-of collision protection).
+with a stderr warning (stale-breaks are serialized through a break-mutex
+file and re-verified under it, so a renewed/re-acquired lease is never
+broken); a **live lease is never broken** implicitly. Escape hatch: every
+mutating verb takes `--no-lock` (dangerous — you're opting out of
+collision protection).
+
+Fine print: `--ttl 0` = no TTL expiry (reclaim then relies on pid-liveness
+or `device unlock`). A **session** lease whose recorded pid is dead gets a
+**120 s grace** (from its last acquisition/renewal) before pid-death makes
+it stale — so run `device lock` from your long-lived shell, not via a
+wrapper script (the wrapper's pid dies immediately; the lease then only
+survives while covered verbs keep renewing it). Pid-liveness is POSIX-only:
+on Windows it is disabled (probing would kill the probed process) and only
+TTL staleness applies. Lease files are `0600` (the token is a private
+capability).
 
 ### Preset + edit-buffer verbs
 

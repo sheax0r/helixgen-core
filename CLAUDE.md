@@ -171,10 +171,12 @@ writes), `all` (exclusive session lease). Hold scopes across calls with
 through automatically), inspect with `device lock --status [--json]`, release
 with `device unlock`. Contended verbs wait `$HELIXGEN_LOCK_TIMEOUT` s
 (default 30, 0 = fail fast) then error naming the holder; stale leases
-(expired TTL / dead pid) are reclaimed, live ones never. `--no-lock`
-per-verb opts out (dangerous). Advisory + machine-local only — other hosts
-and the Stadium desktop editor are NOT covered. Full verb → scope table:
-[`docs/CLI.md`](docs/CLI.md) "Device locks".
+(expired TTL / dead pid — session leases get a 120 s dead-pid grace, so run
+`device lock` from a long-lived shell, not a wrapper script) are reclaimed,
+live ones never. `--no-lock` per-verb opts out (dangerous). Advisory +
+machine-local only — other hosts and the Stadium desktop editor are NOT
+covered; pid-liveness is POSIX-only (TTL-only staleness on Windows). Full
+verb → scope table: [`docs/CLI.md`](docs/CLI.md) "Device locks".
 
 **The Stadium's network stack is flaky — if a sync/verb drops or stalls,
 re-run it: `sync` and the live-ops verbs are idempotent + auto-reconnecting;

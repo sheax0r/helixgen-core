@@ -64,6 +64,24 @@ AUTO_TTL = 900
 #: writer mid-write (wait) rather than junk (break).
 _CORRUPT_GRACE_S = 30.0
 
+#: A lease within this many seconds of TTL expiry is NOT passed
+#: through/renewed (it is re-acquired fresh instead): renewing exactly at
+#: the boundary is when a waiter may legitimately break + re-acquire, and
+#: an in-place renewal there could resurrect the lease on top of the
+#: waiter's (2026-07-16 review finding 5).
+RENEW_MARGIN_S = 2.0
+
+#: A SESSION lease whose recorded pid is dead is only stale after this
+#: grace since its last acquisition/renewal: `device lock` records the
+#: invoking shell's pid, and a lock taken via a short-lived wrapper
+#: (script/make/`sh -c`) would otherwise be reclaimable instantly (review
+#: finding 4). Covered verbs renew the lease, so an ACTIVE wrapper-based
+#: session survives; an idle one is reclaimable after the grace.
+SESSION_PID_GRACE_S = 120.0
+
+#: A crashed breaker's mutex file older than this is cleared.
+_BREAK_MUTEX_TTL_S = 10.0
+
 
 class LockError(Exception):
     """Base class for lock-layer errors."""
@@ -130,6 +148,10 @@ def describe(lease: dict) -> str:
 def _pid_alive(pid) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
+    if sys.platform == "win32":
+        # os.kill(pid, 0) TERMINATES the target on Windows (TerminateProcess
+        # for any non-CTRL signal) — never probe there; TTL staleness only.
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -139,45 +161,78 @@ def _pid_alive(pid) -> bool:
     return True
 
 
+def _synthetic(path: Path, label: str, *, ttl: float | None) -> dict:
+    """A placeholder lease for a file we couldn't read/parse: blocks like a
+    real lease; with a ttl it goes stale after that grace (from mtime)."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = time.time()
+    return {"label": label, "pid": None, "hostname": "?",
+            "acquired_at": mtime,
+            "ttl_seconds": _CORRUPT_GRACE_S if ttl is None else ttl,
+            "corrupt": True}
+
+
 def read_lease(path: Path) -> dict | None:
-    """Read a lease file. A missing file is None; an unparseable file is
-    surfaced as a synthetic lease that goes stale after a short grace
-    (a concurrent writer mid-write must not be broken instantly)."""
+    """Read a lease file. Missing → None. Unparseable / structurally
+    invalid → a synthetic blocking lease that goes stale after a short
+    grace (a concurrent writer mid-write must not be broken instantly).
+    Unreadable (permissions) → a synthetic lease that never goes stale by
+    itself (we can't verify what we can't read)."""
     try:
         raw = path.read_text()
     except FileNotFoundError:
         return None
+    except PermissionError:
+        return _synthetic(path, "unreadable lease (permission denied)",
+                          ttl=0)  # ttl 0 = never TTL-stale
     except OSError:
         return None
     try:
         data = json.loads(raw)
         if not isinstance(data, dict):
             raise ValueError("lease is not a JSON object")
+        if not isinstance(data.get("acquired_at"), (int, float)):
+            # field-less/foreign JSON ({} etc): reclaimable after the grace,
+            # renderable by --status (review finding 9)
+            raise ValueError("lease has no acquired_at")
         return data
     except ValueError:
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            return None
-        return {"label": "unreadable lease (corrupt file)", "pid": None,
-                "hostname": "?", "acquired_at": mtime,
-                "ttl_seconds": _CORRUPT_GRACE_S, "corrupt": True}
+        return _synthetic(path, "unreadable lease (corrupt file)", ttl=None)
 
 
-def is_stale(lease: dict) -> bool:
-    """TTL expired, or recorded pid dead on this host. Never true for a
-    live foreign-host lease inside its TTL."""
-    now = time.time()
+def _remaining_ttl(lease: dict) -> float | None:
+    """Seconds until TTL expiry; None when the lease has no expiry
+    (ttl_seconds absent or <= 0)."""
     ttl = lease.get("ttl_seconds")
     acquired = lease.get("acquired_at")
     if (isinstance(ttl, (int, float)) and ttl > 0
-            and isinstance(acquired, (int, float)) and now > acquired + ttl):
+            and isinstance(acquired, (int, float))):
+        return acquired + ttl - time.time()
+    return None
+
+
+def is_stale(lease: dict) -> bool:
+    """TTL expired, or recorded pid dead on this host (session leases get
+    :data:`SESSION_PID_GRACE_S` before pid-death counts — the recorded pid
+    is the locking shell's and may be a short-lived wrapper). Never true
+    for a live foreign-host lease inside its TTL. ttl_seconds <= 0 means
+    no TTL expiry."""
+    remaining = _remaining_ttl(lease)
+    if remaining is not None and remaining <= 0:
         return True
     if lease.get("corrupt"):
-        return False  # only the TTL path above can expire a corrupt file
+        return False  # only the TTL path above can expire a synthetic lease
     pid = lease.get("pid")
     if lease.get("hostname") == hostname() and isinstance(pid, int):
-        return not _pid_alive(pid)
+        if _pid_alive(pid):
+            return False
+        if lease.get("kind") == "session":
+            acquired = lease.get("acquired_at")
+            return (isinstance(acquired, (int, float))
+                    and time.time() > acquired + SESSION_PID_GRACE_S)
+        return True
     return False
 
 
@@ -201,7 +256,7 @@ def owned(lease: dict, token: str | None = None) -> bool:
 def _write_new(path: Path, payload: dict) -> bool:
     """Atomically create ``path`` with ``payload``; False if it now exists.
 
-    Writes a fully-formed temp file first, then links it into place
+    Writes a fully-formed 0600 temp file first, then links it into place
     (readers never observe a partial lease). Falls back to O_EXCL direct
     write on filesystems without hard links.
     """
@@ -209,7 +264,9 @@ def _write_new(path: Path, payload: dict) -> bool:
     body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
-        tmp.write_text(body)
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(body)
         try:
             os.link(tmp, path)
             return True
@@ -218,7 +275,7 @@ def _write_new(path: Path, payload: dict) -> bool:
         except OSError:
             pass  # hard links unsupported here — O_EXCL fallback below
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             return False
         with os.fdopen(fd, "w") as f:
@@ -228,33 +285,88 @@ def _write_new(path: Path, payload: dict) -> bool:
         tmp.unlink(missing_ok=True)
 
 
-def _renew(path: Path, lease: dict) -> None:
-    """Refresh a lease's acquired_at (TTL renewal). Atomic replace;
-    best-effort — a renewal never fails the verb."""
-    fresh = dict(lease)
-    fresh["acquired_at"] = time.time()
+def _rewrite(path: Path, payload: dict) -> None:
+    """Atomically replace an existing lease (renewal / re-label). The lease
+    carries the private token, so the file stays 0600. Best-effort — a
+    renewal never fails the verb."""
     tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
-        tmp.write_text(json.dumps(fresh, indent=2, sort_keys=True) + "\n")
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
         os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)
 
 
-def _break_stale(path: Path, lease: dict) -> None:
-    """Remove a stale lease, re-verifying content immediately before the
-    unlink so a lease renewed/replaced mid-decision is left alone."""
-    current = read_lease(path)
-    if current is None:
-        return
-    if current != lease and not is_stale(current):
-        return  # it changed under us and the new lease is live — keep it
-    print(f"warning: breaking stale device lock {path.name} held by "
-          f"{describe(current)}", file=sys.stderr)
+def _renew(path: Path, lease: dict) -> None:
+    """Refresh a lease's acquired_at (TTL renewal). Callers only renew
+    leases with a comfortable TTL margin (:data:`RENEW_MARGIN_S`), so this
+    replace cannot land on top of a waiter's legitimately re-acquired
+    lease (waiters only act after expiry)."""
+    fresh = dict(lease)
+    fresh["acquired_at"] = time.time()
+    _rewrite(path, fresh)
+
+
+def _break_stale(path: Path, lease: dict) -> bool:
+    """Remove a stale lease. Serialized by a break-mutex file and
+    re-verified UNDER the mutex, so two waiters can't both 'break' it and
+    the slower one can never unlink the faster one's fresh live lease
+    (2026-07-16 review finding 3). Returns True when the path is (now)
+    free to create, False when a live lease remains."""
+    mpath = path.with_name(path.name + ".break")
+    payload = {"pid": os.getpid(), "t": time.time()}
+    if not _write_new(mpath, payload):
+        # another breaker is active; if it crashed, clear its old mutex
+        try:
+            if time.time() - mpath.stat().st_mtime > _BREAK_MUTEX_TTL_S:
+                mpath.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False  # let the next poll re-assess
     try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
+        current = read_lease(path)
+        if current is None:
+            return True
+        if not is_stale(current):
+            return False  # renewed/replaced under us — a live lease stays
+        print(f"warning: breaking stale device lock {path.name} held by "
+              f"{describe(current)}", file=sys.stderr)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return True
+    finally:
+        mpath.unlink(missing_ok=True)
+
+
+def _post_create_conflict(ip: str, scope: str, payload: dict,
+                          token: str | None):
+    """After atomically creating our ``scope`` lease, re-scan the OTHER
+    conflicting files: the pre-create scan and the create are not one
+    atomic step, so a racer may have created a conflicting lease (e.g.
+    `all` vs a granular scope) in between (review finding 2). Deterministic
+    tiebreak — the OLDER (acquired_at, nonce) lease wins; both racers run
+    the same rule, so exactly one backs off. Returns the winning foreign
+    lease when WE must back off, else None."""
+    ours = (payload.get("acquired_at"), payload.get("nonce") or "")
+    own_path = lock_path(ip, scope)
+    for cpath in _conflict_paths(ip, scope):
+        if cpath == own_path:
+            continue
+        lease = read_lease(cpath)
+        if lease is None or owned(lease, token) or is_stale(lease):
+            continue
+        theirs = (lease.get("acquired_at"), lease.get("nonce") or "")
+        try:
+            we_lose = theirs < ours
+        except TypeError:
+            we_lose = True  # unorderable foreign lease: yield
+        if we_lose:
+            return lease
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -348,12 +460,20 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
                  created: list, passthrough: list) -> None:
     attempt = 0
     while True:
-        # 1. Pass through (and renew) a covering lease we already own.
+        # 1. Pass through (and renew) a covering LIVE lease we own — unless
+        #    it's within RENEW_MARGIN_S of expiry (then re-acquire fresh:
+        #    renewing at the boundary could resurrect it on top of a
+        #    waiter's legitimate re-acquisition; review finding 5).
         covered = False
         for cover in ({scope, ALL} if scope != ALL else {ALL}):
             cpath = lock_path(ip, cover)
             lease = read_lease(cpath)
-            if lease is not None and not is_stale(lease) and owned(lease, token):
+            if lease is None or not owned(lease, token):
+                continue
+            remaining_ttl = _remaining_ttl(lease)
+            if (not is_stale(lease)
+                    and (remaining_ttl is None
+                         or remaining_ttl > RENEW_MARGIN_S)):
                 _renew(cpath, lease)
                 passthrough.append(cpath)
                 covered = True
@@ -361,21 +481,42 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
         if covered:
             return
 
-        # 2. Find the blocking lease, breaking stale ones.
+        # 2. Find the blocking lease, clearing stale ones (mutex-serialized)
+        #    and our OWN expired/nearly-expired leases (a stale owned lease
+        #    must be reclaimed here, never spun on — review finding 1).
         blocker = None
         for cpath in _conflict_paths(ip, scope):
             lease = read_lease(cpath)
             if lease is None:
                 continue
             if owned(lease, token):
-                continue  # ours (e.g. our own just-created sibling scope)
+                remaining_ttl = _remaining_ttl(lease)
+                if (cpath == lock_path(ip, scope)
+                        and (is_stale(lease)
+                             or (remaining_ttl is not None
+                                 and remaining_ttl <= RENEW_MARGIN_S))):
+                    try:  # our own expired/expiring TARGET lease: clear it
+                        cpath.unlink()  # and re-create fresh below
+                    except FileNotFoundError:
+                        pass
+                # an owned covering/sibling lease never blocks us (a stale
+                # one is left for its owner or a breaker; never unlinked
+                # from here — it may be a session lease siblings rely on)
+                continue
             if is_stale(lease):
-                _break_stale(cpath, lease)
+                if not _break_stale(cpath, lease):
+                    lease = read_lease(cpath)  # live after all / breaker busy
+                    if lease is not None:
+                        blocker = lease
+                        break
                 continue
             blocker = lease
             break
 
-        # 3. Free? Try the atomic create (a racer may still beat us).
+        # 3. Free? Atomic create, then re-verify the OTHER conflicting
+        #    files (the scan and the create are not one atomic step —
+        #    review finding 2). The older lease wins the tiebreak; the
+        #    younger backs off, so both racers never proceed.
         if blocker is None:
             payload = {
                 "pid": os.getpid() if pid is None else int(pid),
@@ -390,13 +531,35 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
                 payload["token"] = token
             path = lock_path(ip, scope)
             if _write_new(path, payload):
-                created.append((path, payload["nonce"]))
-                return
-            continue  # lost the create race — reassess immediately
+                loser_of = _post_create_conflict(ip, scope, payload, token)
+                if loser_of is None:
+                    created.append((path, payload["nonce"]))
+                    return
+                # we lost the cross-file tiebreak: back off and wait
+                lease = read_lease(path)
+                if lease is not None and lease.get("nonce") == payload["nonce"]:
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                blocker = loser_of
+            else:
+                # lost the same-file create race — reassess after a beat
+                blocker = read_lease(path)
 
-        # 4. Blocked by a live foreign lease: wait (or fail fast).
+        # 4. Blocked (or racing): wait with backoff, or fail fast.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            if blocker is None or owned(blocker, token) or is_stale(blocker):
+                # a race artifact, not a live foreign holder — one more
+                # immediate pass costs nothing and avoids a bogus error
+                attempt += 1
+                if attempt < 50:
+                    time.sleep(0.02)
+                    continue
+                blocker = blocker or {"label": "create race", "pid": None,
+                                      "hostname": hostname(),
+                                      "acquired_at": time.time()}
             raise LockHeld(ip, scope, blocker, budget)
         time.sleep(min(remaining, min(1.0, 0.1 * (2 ** min(attempt, 4)))))
         attempt += 1
@@ -445,7 +608,16 @@ def release_scopes(ip: str, scopes=None, *, token: str | None = None,
     reported, not an error. Returns {"released": [...], "kept": [...]}.
     """
     explicit = scopes is not None
-    targets = _normalize_scopes(scopes) if explicit else VALID_SCOPES
+    if explicit:
+        # validate but do NOT collapse to `all` — for release, every
+        # explicitly named scope must be freed (review finding 10)
+        for s in scopes:
+            if s not in VALID_SCOPES:
+                raise ValueError(f"unknown lock scope {s!r} "
+                                 f"(valid: {', '.join(VALID_SCOPES)})")
+        targets = tuple(dict.fromkeys(scopes))
+    else:
+        targets = VALID_SCOPES
     released, kept = [], []
     for scope in targets:
         path = lock_path(ip, scope)
@@ -475,3 +647,57 @@ def release_scopes(ip: str, scopes=None, *, token: str | None = None,
 
 def new_token() -> str:
     return uuid.uuid4().hex
+
+
+def session_lock(ip: str, scopes, *, label: str, ttl: float,
+                 pid: int | None = None,
+                 timeout: float | None = None) -> tuple[str, list]:
+    """The ``device lock`` engine: per requested scope, RENEW an existing
+    owned covering lease in place (applying the new label/ttl — and
+    keeping/reporting its STORED token, so the token printed to the user
+    always actually opens the lease; review finding 7) or acquire a fresh
+    session lease. Returns ``(token, [(scope, "locked"|"renewed"), ...])``.
+    All-or-nothing for the freshly-locked scopes: on contention, leases
+    this call created are released (renewed ones are left)."""
+    want = _normalize_scopes(scopes)
+    tok = env_token()
+    # Adopt the stored token of a live owned covering lease first — the
+    # printed token must be the one that opens the lease.
+    for scope in want:
+        found = None
+        for cover in ({scope, ALL} if scope != ALL else {ALL}):
+            lease = read_lease(lock_path(ip, cover))
+            if (lease is not None and not is_stale(lease)
+                    and owned(lease, tok) and lease.get("token")):
+                found = lease["token"]
+                break
+        if found:
+            tok = found
+            break
+    tok = tok or new_token()
+    outcomes: list[tuple[str, str]] = []
+    fresh: list[LeaseSet] = []
+    try:
+        for scope in want:
+            path = lock_path(ip, scope)
+            lease = read_lease(path)
+            remaining = _remaining_ttl(lease) if lease is not None else None
+            if (lease is not None and not is_stale(lease)
+                    and owned(lease, tok)
+                    and (remaining is None or remaining > RENEW_MARGIN_S)):
+                renewed = dict(lease)
+                renewed.update(label=label, ttl_seconds=ttl, token=tok,
+                               acquired_at=time.time(), kind="session",
+                               pid=os.getppid() if pid is None else int(pid))
+                _rewrite(path, renewed)
+                outcomes.append((scope, "renewed"))
+            else:
+                fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
+                                     token=tok, pid=pid, kind="session",
+                                     timeout=timeout))
+                outcomes.append((scope, "locked"))
+    except BaseException:
+        for ls in fresh:
+            ls.release()
+        raise
+    return tok, outcomes

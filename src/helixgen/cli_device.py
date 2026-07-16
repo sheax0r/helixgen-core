@@ -510,7 +510,8 @@ _LOCK_SCOPE_HELP = (
 @click.option("--ttl", type=float, default=None, show_default="900",
               help="Lease time-to-live in seconds; every covered verb you "
                    "run renews it. An expired lease is reclaimed by the "
-                   "next contender.")
+                   "next contender. 0 = no TTL expiry (reclaim then relies "
+                   "on pid-liveness or `device unlock`).")
 @click.option("--status", "show_status", is_flag=True, default=False,
               help="Don't lock — report the device's current leases "
                    "(scope, holder, age, live/stale, ours) and exit 0.")
@@ -549,33 +550,43 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
             click.echo(f"no device locks held for {ip}")
             return
         for r in rows:
+            age = (f"{r['age_seconds']:.0f}s"
+                   if isinstance(r.get("age_seconds"), (int, float)) else "?")
+            ttl = (f"{r['ttl_seconds']:g}s"
+                   if isinstance(r.get("ttl_seconds"), (int, float)) else "?")
             click.echo(
                 f"{r['scope']:<10} {r['state']:<5} "
                 f"{'ours' if r['ours'] else '    '}  {r['label']!r}  "
                 f"pid {r['pid']} on {r['hostname']}  "
-                f"age {r['age_seconds']:.0f}s / ttl {r['ttl_seconds']:g}s")
+                f"age {age} / ttl {ttl}")
         return
 
     if not label:
         raise click.ClickException(
             "--label is required (name the session holding the lock, e.g. "
             "--label 'setlist rebuild agent')")
-    token = locks.env_token() or locks.new_token()
     try:
         # Session leases record the INVOKING SHELL's pid (this CLI process
-        # exits immediately); never released here — `device unlock` frees them.
-        locks.acquire(ip, scopes, label=label,
-                      ttl=locks.DEFAULT_SESSION_TTL if ttl is None else ttl,
-                      token=token, pid=os.getppid(), kind="session")
+        # exits immediately); never released here — `device unlock` frees
+        # them. Re-locking an owned scope renews it in place (new
+        # label/ttl, SAME stored token).
+        token, outcomes = locks.session_lock(
+            ip, scopes, label=label,
+            ttl=locks.DEFAULT_SESSION_TTL if ttl is None else ttl,
+            pid=os.getppid())
     except locks.LockHeld as e:
         raise click.ClickException(str(e)) from e
     except locks.LockError as e:
         raise click.ClickException(str(e)) from e
-    for s in dict.fromkeys(scopes):
-        click.echo(f"locked '{s}' on {ip} (label {label!r})")
+    for s, action in outcomes:
+        click.echo(f"{action} '{s}' on {ip} (label {label!r})")
     click.echo(f"HELIXGEN_LOCK_TOKEN={token}")
     click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
-               "through this lock; release with `helixgen device unlock`.",
+               "through this lock; release with `helixgen device unlock`. "
+               "Run `device lock` from your long-lived shell (not via a "
+               "wrapper script): the lease records the parent pid, and a "
+               "dead parent gives contenders a reclaim path after "
+               f"{locks.SESSION_PID_GRACE_S:.0f}s idle.",
                err=True)
 
 
@@ -1781,7 +1792,8 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
               help="Upload any referenced IRs that aren't on the device yet "
                    "(resolved from your local IR mapping.json).")
 @_device_option
-@_locked("library", verb="install")
+@_locked(verb="install", when=lambda kw: ("library", "irs")
+        if kw.get("auto_irs") else ("library",))
 def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
                    auto_irs: bool, ip: str, port: int) -> None:
     """Author a helixgen .hsp onto the device as a new, playable preset.

@@ -153,9 +153,26 @@ and had to be redirected. Start here so future work begins from the right model.
   implicitly; `--no-lock` per-verb escape hatch. `tests/live/` is the
   flagship consumer (session `all` lease, label `live-test-suite`, `locks`
   marker group). Advisory + machine-local only: other hosts and the Stadium
-  desktop editor are NOT covered.
+  desktop editor are NOT covered. Adversarial review (14 findings, 13
+  fixed pre-merge): `docs/superpowers/specs/2026-07-16-locks-adversarial-review.md`.
 
 ## 🔲 Remaining
+
+### Deferred from the 0.22.0 lock-system adversarial review (2026-07-16)
+
+- **#72 Lock-layer residuals** (review doc:
+  `docs/superpowers/specs/2026-07-16-locks-adversarial-review.md`): (a)
+  Windows portability validation — pid-liveness probing is disabled on
+  `win32` (os.kill(pid,0) would TerminateProcess the holder) so staleness
+  is TTL-only there; untested on real Windows; (b) ip-sanitization
+  collisions (`192.168.4.84` vs `192_168_4_84` share a lock dir —
+  over-locking, safe direction); (c) `LeaseSet.release`'s read→unlink
+  nonce-check micro-window when a verb outlives its own 900 s auto-TTL
+  mid-release; (d) the `RENEW_MARGIN_S` renewal guard still has a window if
+  a process stalls >2 s between the margin check and the atomic replace;
+  (e) post-create cross-file verification only mutually excludes 0.22.0+
+  peers — a pre-0.22.0 helixgen racing the same gap can still double-hold
+  (mixed-version deployments only).
 
 ### Deferred from the 0.21.0 adversarial review (2026-07-15)
 
