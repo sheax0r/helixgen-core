@@ -99,9 +99,11 @@ device** — the live-ops verbs change the ACTIVE tone immediately. When unsure,
 check the verb's entry in [`docs/CLI.md`](docs/CLI.md). Prefer an
 empty/expendable slot when testing.
 
-**The Stadium's network stack is flaky — if a sync/verb drops or stalls, just
-re-run it (the mutating paths are idempotent + auto-reconnecting); if it keeps
-dropping, reboot the Helix.**
+**The Stadium's network stack is flaky — if a sync/verb drops or stalls,
+re-run it: `sync` and the live-ops verbs are idempotent + auto-reconnecting;
+the slot-writing verbs (install/save/push/create) fail safe on an occupied
+slot instead; `setlist import-hss` is the one NOT-idempotent retry. If it
+keeps dropping, reboot the Helix.**
 
 **The tone library is the single management record.** Every tone helixgen
 generates auto-registers into the manifest `~/.helixgen/setlists.json` (override
@@ -379,9 +381,9 @@ on a `patch` op.
 
 This repo releases the **`helixgen` PyPI package** (version in
 `pyproject.toml` + `src/helixgen/__init__.py` — bump both together; the
-version feeds generated presets' `meta`). The PyPI publish workflow is not
-wired up yet — until it is, releases are manual `python -m build` + `twine
-upload` from a tagged `main` commit (tag `vX.Y.Z`).
+version feeds generated presets' `meta`). Publishing is via the OIDC
+trusted-publisher workflow (`.github/workflows/publish.yml`) on `vX.Y.Z`
+tags pushed to `main` (first publish 0.19.1).
 
 Plugin releases (the `stable` branch + `helixgen--vX.Y.Z` tags) live in the
 **plugin repo** (`sheax0r/helixgen`) and are owned by its release workflow —

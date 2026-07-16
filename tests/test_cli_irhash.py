@@ -101,3 +101,43 @@ def test_irhash_does_not_touch_mapping(tmp_path, monkeypatch):
     res = CliRunner().invoke(cli, ["irhash", str(wav)])
     assert res.exit_code == 0, res.output
     assert not (irs_dir / "mapping.json").exists()
+
+
+def test_irhash_directory_skips_valueerror_files(tmp_path, monkeypatch):
+    """Bad-magic/oversized WAVs raise ValueError from the front-door check;
+    a directory walk must skip them with a warning, not crash (review #1)."""
+    def fake(path, cache=None):
+        if path.name == "notwav.wav":
+            raise ValueError(f"{path} is not a RIFF/WAVE file (bad magic)")
+        return FAKE_HASH
+
+    monkeypatch.setattr("helixgen.cli.cached_irhash", fake)
+    d = tmp_path / "irs"
+    d.mkdir()
+    _wav(d, "notwav.wav")
+    _wav(d, "good.wav")
+    res = CliRunner().invoke(cli, ["irhash", "--json", str(d)])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.stdout)
+    assert [e["basename"] for e in data] == ["good.wav"]
+    assert "bad magic" in res.stderr
+
+
+def test_irhash_explicit_file_valueerror_is_clean_error(tmp_path, monkeypatch):
+    def fake(path, cache=None):
+        raise ValueError("x is not a RIFF/WAVE file (bad magic)")
+
+    monkeypatch.setattr("helixgen.cli.cached_irhash", fake)
+    wav = _wav(tmp_path)
+    res = CliRunner().invoke(cli, ["irhash", str(wav)])
+    assert res.exit_code != 0
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+    assert "bad magic" in res.output
+
+
+def test_irhash_dedupes_repeated_paths(tmp_path, monkeypatch):
+    _fake_hash(monkeypatch)
+    wav = _wav(tmp_path)
+    res = CliRunner().invoke(cli, ["irhash", "--json", str(wav), str(wav)])
+    assert res.exit_code == 0, res.output
+    assert len(json.loads(res.stdout)) == 1

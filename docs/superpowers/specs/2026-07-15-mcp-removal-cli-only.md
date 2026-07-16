@@ -42,7 +42,7 @@ contract phrases in help + `--json` shape checks).
 | `compute_irhash` | `helixgen irhash <wav>` | **NEW verb** (stateless hash; 48 kHz/left-channel/upload-reminder contract in help) |
 | `discover_irs` | `helixgen irhash <dir>` | **NEW verb** (directory walk; per-file failures warn + continue) |
 | `register_ir` | `helixgen register-irs <wav>` | already |
-| `register_irs` | `helixgen ir-scan <dir>` | already (richer: cache validity, `--rescan`, `--remove`) |
+| `register_irs` | `helixgen ir-scan <dir>` | already (richer: cache validity, `--rescan`, `--remove`); NEW `--json` per-category summary `{registered, already_registered, conflicts, failed}` matching the tool's return shape |
 | `view_preset` | `helixgen view` | already; stdout is JSON by default (no flag needed) |
 | `controller_mapping` | `helixgen controllers --json` | already |
 | `patch_preset` | `helixgen patch <hsp> <ops.json\|->` | **NEW verb** — see "the patch decision" below |
@@ -66,7 +66,7 @@ contract phrases in help + `--json` shape checks).
 | `device_bypass` | `device bypass` | already |
 | `device_model` | `device model` | already |
 | `device_save_preset` | `device save` | already |
-| `device_install_preset` | `device install` | already; help now pushes `--auto-irs` (the MCP default was auto_irs=True; the CLI flag stays opt-in but the silent-cab consequence is spelled out) |
+| `device_install_preset` | `device install` | already; help now pushes `--auto-irs` (the MCP default was auto_irs=True; the CLI flag stays opt-in but the silent-cab consequence is spelled out). Known deltas, accepted: the CLI aborts the install on a hard per-IR upload error (never installs a preset whose IR couldn't be pushed) where the tool tolerated it and returned per-IR results, and there is no `--json` `{ok, cid, irs}` shape — the cid is in the success line |
 | `device_import_hss` | `device setlist import-hss` | already (`--list`, `--dry-run`; NOT-idempotent warning in help) |
 | `device_export_hss` | `device setlist export-hss` | already |
 | `device_setlist_list` | `device setlist list` | already (`--json`) |
@@ -169,3 +169,62 @@ sequential `set-param`/`enable`/... calls as the equivalent, because:
   MCP references in src/tests comments. Dated design/review docs under
   `docs/superpowers/` keep their historical MCP references — they are
   records of past decisions, not living surfaces.
+
+
+## 2026-07-15 adversarial review (pre-merge)
+
+Independent break-it review of PR #4. Findings and dispositions (all fixed
+in the same PR unless marked deferred):
+
+1. **HIGH — `irhash`/`ir-scan`/`register-irs` crashed on bad-magic/oversized
+   WAVs** (`ValueError` from the front-door validator wasn't in the catch
+   tuples; a directory walk aborted with a traceback, violating the verb's
+   own help). FIXED: `ValueError` added to all three catch tuples;
+   regression tests added (`test_cli_irhash.py`, walk-skip + clean explicit
+   error).
+2. **MED — `src/helixgen.egg-info/` was still git-tracked** (the top-level
+   artifacts were removed but this one was regenerated into the commit).
+   FIXED: `git rm --cached`, covered by the new `*.egg-info/` ignore.
+3. **MED — `device reorder --help` lacked the cid-first collision
+   semantics** the removed tool description carried (and this spec claimed
+   were ported). FIXED: ported into the verb help; parity phrase upgraded
+   `"cid"` → `"cid-first"`.
+4. **MED — `register_irs`' structured per-category summary had no CLI
+   equivalent** (conflicts and hash failures were one lumped stderr count).
+   FIXED: `ir-scan --json` emits `{registered, already_registered,
+   conflicts, failed:[{basename, reason}]}`; tests added.
+5. **MED — blanket "mutating paths are idempotent — just re-run" overclaim**
+   in both help roots (contradicted by import-hss retry duplication and the
+   slot-writers' occupied-slot failure). FIXED: scoped in top-level help,
+   device-group help, and CLAUDE.md (sync + live-ops idempotent;
+   slot-writers fail safe; import-hss NOT idempotent).
+6. **MED — `patch` reported a bare `Error: 'block'` on a missing op field.**
+   FIXED: per-op required-field validation + op index in every
+   `apply_operations` error (`op 0 (set_param): missing required
+   field(s) ['block']`); test added.
+7. **LOW — `patch` accepted an unused `--irs-dir`** and carried a pointless
+   closure. FIXED: flag removed, closure inlined.
+8. **LOW — `device install` parity deltas undocumented** (abort-on-IR-error
+   vs the tool's per-IR tolerance; no `--json`). FIXED: documented in the
+   inventory row above as accepted deltas; the mangled `_auto_upload_irs`
+   docstring repaired. A `device install --json` output mode stays
+   unpicked (backlog if demand appears).
+9. **LOW — `irhash` lost its hash cache on a fatal explicit-file error and
+   didn't dedupe repeated paths.** FIXED: `try/finally cache.save()` +
+   resolved-path dedupe; test added.
+10. **LOW — `docs/stadium-app-parity.md` still cited removed
+    `device_setlist_*` tool names.** FIXED.
+11. **LOW — PyPI-status drift** (`docs/BACKLOG.md` #57 "until the first
+    publish", #58's core-path parenthetical, CLAUDE.md "publish workflow is
+    not wired up yet"). FIXED: #57 marked shipped (0.19.1 on PyPI), #58
+    reworded for the post-removal plugin slim, CLAUDE.md Releasing section
+    updated to the trusted-publisher workflow.
+12. **LOW — `register-irs` never surfaced the computed hash** (the tool
+    returned `{hash, path, reminder}`). FIXED: prints each `<hash>  <wav>`
+    pair + the upload-to-device reminder now lives in its help; test added.
+
+Reviewer-verified clean: the 50-tool inventory count matches the deleted
+server's `@app.tool()` count exactly; `patch` atomicity holds; packaging
+(wheel contents, package-data, entry point) intact; pip treats a stale
+`helixgen[mcp]` extra against >=0.20.0 as a warning (installs without the
+dep), and the plugin's `==0.19.1` pin is unaffected.

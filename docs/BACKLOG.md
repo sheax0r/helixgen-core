@@ -1057,18 +1057,18 @@ repo's own backlog). Consumers take core as a PyPI dependency (name
 purge of the ORIGINAL repo) is unchanged by the split and still pending.
 Remaining follow-ups:
 
-- **#57 Publish `helixgen` to PyPI via trusted publisher** — publish
-  workflow committed (`.github/workflows/publish.yml`, OIDC trusted
-  publishing on `v*` tags); the PyPI-side pending-publisher registration
-  needs the owner's PyPI account. Until the first publish, consumers install
-  from git (`uv` git pin).
+- **#57 Publish `helixgen` to PyPI via trusted publisher** — **✅ SHIPPED**:
+  publish workflow committed (`.github/workflows/publish.yml`, OIDC trusted
+  publishing on `v*` tags) and the first publish landed (0.19.1 is on PyPI);
+  consumers now install the PyPI package.
 - **#58 Slim the plugin repo to plugin-only content** — drop `src/`,
-  `mcp_server/`, `tests/`, core docs from `sheax0r/helixgen`; repoint
-  `.mcp.json` at core via `uv` git pin now, PyPI pin after #57's first
-  publish; relocate the bundled block library (currently
-  `mcp_server/data/library`); keep skills + `.claude-plugin/` + release
-  workflow. Until #58 lands, the plugin repo keeps bundling core source and
-  ships releases exactly as before — nothing breaks for users.
+  `mcp_server/`, `tests/`, core docs from `sheax0r/helixgen`; since core
+  0.20.0 removed the MCP server entirely (#63), the slim also drops the
+  plugin's `.mcp.json` and repoints the skills at the `helixgen` CLI (PyPI
+  pin, #57 shipped); relocate the plugin-bundled block library (the plugin's
+  own `mcp_server/data/library` copy). Keep skills + `.claude-plugin/` +
+  release workflow. Until #58 lands, the plugin repo keeps bundling core
+  source and ships releases exactly as before — nothing breaks for users.
 - **#59 Backlog + docs curation across repos** — this file stays core's
   backlog; plugin- and TUI-specific work moves to each repo's own
   `docs/BACKLOG.md` as it arises. Parity matrix + protocol docs stay in core.

@@ -121,3 +121,18 @@ def test_patch_swap_model_warnings_surface(tmp_path, hsp_library):
     assert res.exit_code == 0, res.output
     data = json.loads(res.output)
     assert isinstance(data["warnings"], list)
+
+
+def test_patch_missing_required_field_reports_op_and_field(tmp_path, hsp_library):
+    """A missing op field must report the op index + field, not a bare
+    KeyError (review #6), and leave the file untouched."""
+    out = _setup(tmp_path, hsp_library)
+    before = out.read_bytes()
+    ops = [{"op": "set_param"}]
+    res = CliRunner().invoke(cli, [
+        "patch", str(out), _ops_file(tmp_path, ops),
+        "--library", str(hsp_library.root)])
+    assert res.exit_code != 0
+    assert "op 0 (set_param)" in res.output
+    assert "missing required field" in res.output
+    assert out.read_bytes() == before

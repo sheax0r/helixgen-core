@@ -68,11 +68,11 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Function | App location | Protocol | CLI | Skill | Verdict | Notes |
 |---|---|---|---|---|---|---|
 | List setlists | sidebar | `/GetContainerContents(-5)` | full | full | ✅ | `device setlists` |
-| Create setlist | sidebar ▸ + | `/CreateContent(-5, pos, ctype=1003, {name})` | full | full | ✅ | **#8 SHIPPED** `device setlist create` / `device_setlist_create` (HW-validated 2026-07-14); `create-local` = manifest only |
-| Rename setlist | dbl-click | `/SetContentAttrs` `{name}` | full | n-a | ✅ | `device setlist rename` / `device_setlist_rename` (also renames local manifest record); HW-validated 2026-07-14 (#20) |
-| Duplicate setlist | Duplicate | copy references (rcid) into a fresh setlist | full | n-a | ✅ | `device setlist duplicate` / `device_setlist_duplicate` (auto-creates target; pool presets shared, not copied); HW-validated 2026-07-14 (#20) |
+| Create setlist | sidebar ▸ + | `/CreateContent(-5, pos, ctype=1003, {name})` | full | full | ✅ | **#8 SHIPPED** `device setlist create` (HW-validated 2026-07-14); `create-local` = manifest only |
+| Rename setlist | dbl-click | `/SetContentAttrs` `{name}` | full | n-a | ✅ | `device setlist rename` (also renames local manifest record); HW-validated 2026-07-14 (#20) |
+| Duplicate setlist | Duplicate | copy references (rcid) into a fresh setlist | full | n-a | ✅ | `device setlist duplicate` (auto-creates target; pool presets shared, not copied); HW-validated 2026-07-14 (#20) |
 | Reorder setlists | drag | `/ReorderContainerContent` (setlists are containers under -5) | full | n-a | ✅ | **SHIPPED 2026-07-14**, same verb: `device reorder setlists <target> --to <N>`; HW-validated (moved+restored a real setlist's position under `-5`) |
-| Delete / clear setlist | Delete / Clear | `/RemoveContent(-5,[cid])` | full | partial | ✅ | `device setlist delete` / `device_setlist_delete` — references die, pool presets never (never-orphan, HW-validated 2026-07-14, #20); clear = `unsync`/mirror-to-empty |
+| Delete / clear setlist | Delete / Clear | `/RemoveContent(-5,[cid])` | full | partial | ✅ | `device setlist delete` — references die, pool presets never (never-orphan, HW-validated 2026-07-14, #20); clear = `unsync`/mirror-to-empty |
 | Sync setlist(s) | (app is live) | pool+reference reconcile | full | full | ✅ | `device sync <setlist>`/`--all --gc` _(library-agent)_ |
 | Import / export setlist (.hss) | File menu | 24-byte header + gzip + tar (`manifest.json` + 128 `.N` slots) | partial | partial | 🟡 | **#31: format decoded; filled-slot framing CAPTURED + CORRECTED 2026-07-15** (real non-empty export). Filled `.N` = **`.hsp` `rpshnosj`+JSON** (`type: application/stadium-preset`), NOT `_sbepgsm`. Container read is correct; import/install path + byte-faithful writer are the remaining work. `2026-07-15-hss-and-cc-capture-findings.md` |
 

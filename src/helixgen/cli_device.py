@@ -119,16 +119,14 @@ def _auto_upload_irs(ip: str, hashes) -> None:
 
     Thin echo-formatting wrapper around the shared core in
     ``helixgen.device.ir_upload`` (backlog #6 — the same core also backs
-    ``device sync``). Unlike that path
-    (which tolerate a per-IR upload failure and keep going — a preset install
-    or sync run shouldn't be all-or-nothing on IR trouble), the CLI's
-    ``--auto-irs`` still **aborts the whole install** on a hard upload error
-    (``push_ir`` itself failing, e.g. a dropped connection) — matching the
-    original behavior of never installing a preset when an IR it references
-    couldn't be pushed. It now does so via a clean ``ClickException`` instead
-    of letting the raw exception surface, and after echoing every hash's
-    outcome (not just the first failure) so the user sees the full picture
-    before the command exits non-zero."""
+    ``device sync``). Unlike ``device sync``, which tolerates a per-IR upload
+    failure and keeps going (a sync run shouldn't be all-or-nothing on IR
+    trouble), ``device install --auto-irs`` **aborts the whole install** on a
+    hard upload error (``push_ir`` itself failing, e.g. a dropped
+    connection) — a preset whose referenced IR couldn't be pushed is never
+    installed. It does so via a clean ``ClickException``, and only after
+    echoing every hash's outcome (not just the first failure) so the user
+    sees the full picture before the command exits non-zero."""
     from helixgen.device import ir_upload
 
     upload_errors = []
@@ -287,8 +285,11 @@ def device() -> None:
     empty/expendable slot when testing writes.
 
     The Stadium's network stack is flaky: if a verb/sync drops or stalls,
-    just re-run it (the mutating paths are idempotent + auto-reconnecting);
-    if it keeps dropping, reboot the Helix.
+    re-run it — `sync` and the live-ops verbs are idempotent +
+    auto-reconnecting; the slot-writing verbs (install/save/push/create)
+    fail safe on an occupied slot instead; `setlist import-hss` is the one
+    NOT-idempotent retry (see its --help). If it keeps dropping, reboot
+    the Helix.
 
     The tone library manifest (~/.helixgen/setlists.json) is the single
     management record: every generated tone auto-registers there; "on the
@@ -905,6 +906,13 @@ def device_reorder(setlist: str, target: str, to_index: int,
     that setlist. Pass `setlists` as SETLIST to instead reorder the top-level
     setlist list itself (TARGET is then a setlist name/cid) — a real setlist
     literally named "setlists" must be addressed by its container cid.
+
+    Numeric arguments are cid-first: an all-digits TARGET/SETLIST is always
+    parsed as a cid, never a display name. If an item is display-named that
+    digit string, the cid reading wins with a stderr warning when the cid
+    resolves in the container, and the command errors (naming the item's
+    real cid) when it doesn't. --to is bounds-validated against the
+    container's current length.
 
     This is a direct, immediate DEVICE-side write — distinct from the local
     manifest's `device slots reorder`, which only edits the tone library's

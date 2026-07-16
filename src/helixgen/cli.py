@@ -109,8 +109,10 @@ def cli() -> None:
         the ACTIVE tone immediately); reads are safe. Each verb's --help
         says which it is.
       * The Stadium's network stack is flaky: if a device verb drops or
-        stalls, just re-run it (mutating paths are idempotent); if it keeps
-        dropping, reboot the Helix.
+        stalls, re-run it — `device sync` and the live-ops verbs are
+        idempotent; the slot-writing verbs (install/save/push/create) fail
+        safe on an occupied slot instead. If it keeps dropping, reboot
+        the Helix.
       * Verbs whose output agents consume support --json (machine-readable
         stdout).
 
@@ -406,8 +408,7 @@ def swap_model_cmd(preset_path, old, new, path_idx, lane, pos, library_path, irs
 @click.option("--json", "as_json", is_flag=True, default=False,
               help='Emit {"path", "warnings"} as JSON instead of text.')
 @_library_option
-@_irs_option
-def patch_cmd(preset_path: Path, ops, as_json: bool, library_path, irs_dir) -> None:
+def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
     """Apply a LIST of surgical edits to a .hsp file, in place, atomically.
 
     OPS is a JSON file (or `-` for stdin) holding a list of operations:
@@ -440,16 +441,11 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path, irs_dir) -> N
     except json.JSONDecodeError as e:
         raise click.ClickException(f"OPS is not valid JSON: {e}") from e
 
-    warnings_out: list[str] = []
-
-    def _mutation(body, library, irs):
-        return mutate.apply_operations(body, operations, library)
-
     library = _resolved_library(library_path)
     preset_path = Path(preset_path)
     try:
         body = read_hsp(preset_path)
-        warnings_out = _mutation(body, library, None) or []
+        warnings_out = mutate.apply_operations(body, operations, library)
         write_hsp(preset_path, body)
     except (MutateError, KeyError, LookupError, SpecError,
             ParamValidationError, GenerateError, ValueError) as e:
@@ -600,6 +596,13 @@ def register_irs_cmd(
     - register-irs <wav1> <wav2> ...                compute each wav's Stadium
                                                     hash directly (no device export
                                                     needed) and register it
+
+    Prints each `<hash>  <wav>` pair as it registers. REMINDER: registering
+    only updates the local mapping.json — the hash resolves on the hardware
+    only once the same WAV is also imported onto the device (`device
+    push-ir`, `device install --auto-irs`, `device sync`, or the Stadium
+    app's Librarian). Direct hashing requires libsndfile and 48 kHz sources
+    (see `irhash --help` for the constraint details).
     """
     paths_list = list(paths)
     first_ext = paths_list[0].suffix.lower()
@@ -629,7 +632,8 @@ def register_irs_cmd(
         cache = IrHashCache.load()
         try:
             hashes = [cached_irhash(w, cache=cache) for w in wav_paths]
-        except (RuntimeError, NotImplementedError, FileNotFoundError) as e:
+        except (RuntimeError, NotImplementedError, FileNotFoundError,
+                ValueError) as e:
             raise click.ClickException(str(e)) from e
         cache.save()
 
@@ -640,6 +644,8 @@ def register_irs_cmd(
     except IrMappingError as e:
         raise click.ClickException(str(e)) from e
     mapping.save()
+    for h, wav in zip(hashes, wav_paths):
+        click.echo(f"{h}  {wav}")
     click.echo(f"Registered {len(hashes)} IR(s) to {mapping.irs_dir / 'mapping.json'}")
 
 
@@ -662,11 +668,15 @@ def register_irs_cmd(
     default=None,
     help="Forget one entry by wav basename and exit.",
 )
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a per-category summary as JSON: {registered, "
+                   "already_registered, conflicts, failed}.")
 @_irs_option
 def ir_scan_cmd(
     directories: tuple[Path, ...],
     rescan: bool,
     remove_basename: str | None,
+    as_json: bool,
     irs_dir: Path | None,
 ) -> None:
     """Recursively scan directories for .wav files and cache their Stadium hashes.
@@ -676,6 +686,12 @@ def ir_scan_cmd(
     WAV is detected and re-hashed. Pass --rescan to recompute unconditionally.
     Skips files that can't be hashed (non-48 kHz, libsndfile errors) with a
     stderr warning; does not abort the scan.
+
+    --json emits a per-category summary instead of the count line:
+    {"registered": [names], "already_registered": [names],
+    "conflicts": [names whose hash already maps to a DIFFERENT path;
+    re-run with --rescan to overwrite], "failed": [{basename, reason}]}.
+    Partial success is persisted either way.
 
     Use --remove <basename> to forget a single entry (no directory args).
     """
@@ -709,9 +725,10 @@ def ir_scan_cmd(
     cache = IrHashCache.load()
 
     scanned = 0
-    added = 0
-    skipped_cached = 0
-    skipped_error = 0
+    registered: list[str] = []
+    already: list[str] = []
+    conflicts: list[str] = []
+    failed: list[dict[str, str]] = []
     for root in directories:
         for wav in sorted(root.rglob("*")):
             if not wav.is_file() or wav.suffix.lower() != ".wav":
@@ -722,7 +739,7 @@ def ir_scan_cmd(
             # valid for the file on disk (stat unchanged). An edited/replaced
             # WAV misses the cache and is recomputed below.
             if not rescan and wav_abs in registered_paths and cache.get(wav) is not None:
-                skipped_cached += 1
+                already.append(wav.name)
                 continue
             try:
                 if rescan:
@@ -730,24 +747,34 @@ def ir_scan_cmd(
                     cache.put(wav, h)
                 else:
                     h = cached_irhash(wav, cache=cache)
-            except (NotImplementedError, RuntimeError, FileNotFoundError) as e:
+            except (NotImplementedError, RuntimeError, FileNotFoundError,
+                    ValueError) as e:
                 click.echo(f"skip {wav}: {e}", err=True)
-                skipped_error += 1
+                failed.append({"basename": wav.name, "reason": str(e)})
                 continue
             try:
                 mapping.register(h, wav, force=rescan)
             except IrMappingError as e:
                 click.echo(f"skip {wav}: {e}", err=True)
-                skipped_error += 1
+                conflicts.append(wav.name)
                 continue
             registered_paths.add(wav_abs)
-            added += 1
+            registered.append(wav.name)
 
     mapping.save()
     cache.save()
+    if as_json:
+        click.echo(json.dumps({
+            "registered": registered,
+            "already_registered": already,
+            "conflicts": conflicts,
+            "failed": failed,
+        }, indent=2))
+        return
     click.echo(
-        f"Scanned {scanned} wav(s): {added} added, "
-        f"{skipped_cached} already cached, {skipped_error} skipped (errors)"
+        f"Scanned {scanned} wav(s): {len(registered)} added, "
+        f"{len(already)} already cached, "
+        f"{len(conflicts) + len(failed)} skipped (errors)"
     )
 
 
@@ -779,25 +806,33 @@ def irhash_cmd(paths: tuple[Path, ...], as_json: bool) -> None:
     """
     cache = IrHashCache.load()
     results: list[dict[str, str]] = []
+    seen: set[Path] = set()
 
     def _hash_one(wav: Path, *, fatal: bool) -> None:
+        resolved = wav.resolve()
+        if resolved in seen:
+            return
         try:
             h = cached_irhash(wav, cache=cache)
-        except (NotImplementedError, RuntimeError, FileNotFoundError) as e:
+        except (NotImplementedError, RuntimeError, FileNotFoundError,
+                ValueError) as e:
             if fatal:
                 raise click.ClickException(str(e)) from e
             click.echo(f"skip {wav}: {e}", err=True)
             return
+        seen.add(resolved)
         results.append({"hash": h, "path": str(wav), "basename": wav.name})
 
-    for p in paths:
-        if p.is_dir():
-            for wav in sorted(p.rglob("*")):
-                if wav.is_file() and wav.suffix.lower() == ".wav":
-                    _hash_one(wav, fatal=False)
-        else:
-            _hash_one(p, fatal=True)
-    cache.save()
+    try:
+        for p in paths:
+            if p.is_dir():
+                for wav in sorted(p.rglob("*")):
+                    if wav.is_file() and wav.suffix.lower() == ".wav":
+                        _hash_one(wav, fatal=False)
+            else:
+                _hash_one(p, fatal=True)
+    finally:
+        cache.save()  # keep hashes computed before any fatal error
 
     if as_json:
         click.echo(json.dumps(results, indent=2))
