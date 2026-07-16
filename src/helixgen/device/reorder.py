@@ -25,7 +25,7 @@ unit-testable against plain listings — the ``maintenance.py``/
 ``setlist_sync.py`` pattern of separating planning from device I/O).
 :meth:`HelixClient.reorder_container` is the wire primitive;
 :func:`reorder_setlist_item` below is the thin device-driving orchestrator
-the CLI (``device reorder``) and MCP (``device_reorder``) call.
+the CLI (``device reorder``) calls.
 
 **Relationship to the manifest-based ``device slots reorder``:** that verb
 edits the LOCAL manifest's desired order for a tone-library setlist — it

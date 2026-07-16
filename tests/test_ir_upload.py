@@ -3,7 +3,7 @@
 `helixgen.device.ir_upload` is the single implementation behind three
 call sites: CLI `device install --auto-irs` (`helixgen.cli._auto_upload_irs`),
 `device sync` (`helixgen.device.setlist_sync._upload_missing_irs`), and the
-MCP `device_install_preset` tool. These tests exercise the core directly, so
+`device install` path. These tests exercise the core directly, so
 its behavior is pinned independent of any one caller's wrapper.
 """
 from pathlib import Path

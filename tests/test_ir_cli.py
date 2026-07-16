@@ -544,3 +544,64 @@ def test_write_stadium_ir_embeds_hash_chunk(tmp_path):
     assert raw.find(b"fmt ") < i < raw.find(b"data")
     assert write_stadium_ir.__module__  # sanity
     assert irhash == compute_stadium_irhash(src)
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_json_per_category_summary(tmp_path, monkeypatch):
+    """--json reports the structured per-category summary (registered /
+    already_registered / conflicts / failed) an agent needs to act on a bulk
+    run — parity with the removed MCP register_irs summary (review #4)."""
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_dir = tmp_path / "library"
+    _write_synth_wav(src_dir / "good.wav", n_frames=64)
+    _write_synth_wav(src_dir / "bad.wav", n_frames=64, sr=44100)
+
+    result = CliRunner().invoke(cli, ["ir-scan", "--json", str(src_dir)])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert set(data) == {"registered", "already_registered", "conflicts", "failed"}
+    assert data["registered"] == ["good.wav"]
+    assert data["conflicts"] == []
+    assert [f["basename"] for f in data["failed"]] == ["bad.wav"]
+    assert "48" in data["failed"][0]["reason"]
+
+    # second run: good.wav lands in already_registered
+    result = CliRunner().invoke(cli, ["ir-scan", "--json", str(src_dir)])
+    data = json.loads(result.stdout)
+    assert data["already_registered"] == ["good.wav"]
+    assert data["registered"] == []
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_ir_scan_json_reports_conflicts(tmp_path, monkeypatch):
+    """A hash already mapped to a DIFFERENT path lands in `conflicts`."""
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    src_a = tmp_path / "a"
+    src_b = tmp_path / "b"
+    _write_synth_wav(src_a / "same.wav", n_frames=64)
+    _write_synth_wav(src_b / "same-content-other-path.wav", n_frames=64)
+
+    CliRunner().invoke(cli, ["ir-scan", str(src_a)])
+    result = CliRunner().invoke(cli, ["ir-scan", "--json", str(src_b)])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["conflicts"] == ["same-content-other-path.wav"]
+    assert data["registered"] == []
+
+
+@pytest.mark.skipif(not _libsndfile_available(), reason="libsndfile not installed")
+def test_register_irs_prints_hash_per_wav(tmp_path, monkeypatch):
+    """register-irs surfaces each computed `<hash>  <wav>` pair (review #12)."""
+    from helixgen.ir import compute_stadium_irhash
+
+    irs_dir = tmp_path / "irs"
+    monkeypatch.setenv("HELIXGEN_IRS", str(irs_dir))
+    wav = _write_synth_wav(tmp_path / "one.wav", n_frames=64)
+    h = compute_stadium_irhash(wav)
+
+    result = CliRunner().invoke(cli, ["register-irs", str(wav)])
+    assert result.exit_code == 0, result.output
+    assert f"{h}  {wav}" in result.output
+    assert "Registered 1 IR(s)" in result.output

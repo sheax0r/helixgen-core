@@ -1,4 +1,0 @@
-click>=8.1
-
-[dev]
-pytest>=7.4

@@ -14,7 +14,6 @@ Three call sites share this core instead of each re-implementing it:
 * ``device sync`` — ``helixgen.device.setlist_sync._upload_missing_irs`` is
   likewise a thin wrapper (kept under its original name so existing tests /
   call sites can still monkeypatch it).
-* MCP ``device_install_preset`` — calls :func:`sync_preset_irs` directly.
 """
 from __future__ import annotations
 
@@ -31,7 +30,7 @@ def upload_missing_irs(ip: str, hashes: Sequence[str]) -> List[Dict[str, Any]]:
     error, a post-upload hash mismatch, or a registration that hasn't landed
     yet) is surfaced as a per-hash entry so callers can decide how to react
     (a CLI can echo/abort, the sync engine can append to its ``errors``,  the
-    MCP tool can just return the list).
+    caller can just return the list).
 
     ``outcome`` is one of:
 

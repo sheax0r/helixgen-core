@@ -3,7 +3,7 @@
 `compute_stadium_irhash` is the hot path (two libsndfile float round-trips plus
 an MD5 over a temp WAV). This module wraps it with an on-disk cache keyed by
 **absolute resolved path + mtime_ns + size**, so an unchanged WAV is never
-re-hashed across `register-irs`, `ir-scan`, and the MCP IR tools.
+re-hashed across `register-irs`, `ir-scan`, and `irhash`.
 
 The cache is a pure-local perf layer — deliberately separate from
 `mapping.json` (the user-facing hash→wav registration binding in `ir.py`). It

@@ -16,7 +16,7 @@ editor app).
 
 | Repo | What it is |
 |---|---|
-| **helixgen-core** (this repo) | The `helixgen` Python package: libs, CLI, MCP server |
+| **helixgen-core** (this repo) | The `helixgen` Python package: libs + CLI (the engine's only surface) |
 | [helixgen](https://github.com/sheax0r/helixgen) | The Claude Code plugin — `/tone`, `/setup`, `/device` skills + marketplace |
 | [helixgen-tui](https://github.com/sheax0r/helixgen-tui) | Terminal UI for tones, setlists, and device control |
 
@@ -27,15 +27,14 @@ against it.
 
 ## Install
 
-Requires **Python 3.11+**. Not yet published to PyPI (coming); install from
-source for now:
+Requires **Python 3.11+**. Published to PyPI:
 
 ```bash
-pip install 'helixgen[device] @ git+https://github.com/sheax0r/helixgen-core'
+pip install 'helixgen[device]'
 ```
 
-Extras: `device` (network device control: pyzmq, msgpack, paramiko), `mcp`
-(the MCP server), `dev` (pytest).
+Extras: `device` (network device control: pyzmq, msgpack, paramiko),
+`dev` (pytest).
 
 A standalone install starts with an empty block library — seed it first:
 

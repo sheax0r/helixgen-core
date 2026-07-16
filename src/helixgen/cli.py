@@ -80,7 +80,45 @@ def _format_summary(summary: IngestSummary, library: Library) -> str:
 @click.group()
 @click.version_option()
 def cli() -> None:
-    """helixgen — generate Line 6 Helix .hlx presets from JSON tone specs."""
+    """helixgen — author, edit, and install Line 6 Helix Stadium presets.
+
+    This CLI is the complete engine surface (agents included: per-verb --help
+    is the behavioral contract). Verb groups:
+
+    \b
+      library    ingest, bootstrap, list-blocks, show-block
+      author     generate (recipe JSON -> .hsp), view (read-only projection)
+      edit       patch (batch ops), set-param, enable, disable, add-block,
+                 remove-block, swap-model
+      IRs        irhash, register-irs, ir-scan, list-irs, ir-cache
+      tones      register, controllers
+      device     `helixgen device ...` — network control of a Helix Stadium
+                 (see `helixgen device --help`)
+
+    Mental models that keep you out of trouble:
+
+    \b
+      * Run `show-block "<name>"` BEFORE writing params for a block — param
+        names are case-sensitive and the generator rejects unknown ones.
+      * The .hsp file is the sole source of truth. Recipes are input-only
+        (never written back); `view` output is a non-authoritative
+        projection; there is no sidecar spec file.
+      * Edit an existing .hsp with `patch` (or the single-op verbs) — never
+        regenerate it to change one setting.
+      * `helixgen device` verbs that write MUTATE the hardware (some change
+        the ACTIVE tone immediately); reads are safe. Each verb's --help
+        says which it is.
+      * The Stadium's network stack is flaky: if a device verb drops or
+        stalls, re-run it — `device sync` and the live-ops verbs are
+        idempotent; the slot-writing verbs (install/save/push/create) fail
+        safe on an occupied slot instead. If it keeps dropping, reboot
+        the Helix.
+      * Verbs whose output agents consume support --json (machine-readable
+        stdout).
+
+    SEE ALSO: docs/CLI.md (full per-verb reference), docs/recipe-reference.md
+    (every recipe field), CLAUDE.md (repo mental models).
+    """
 
 
 @cli.command(name="ingest")
@@ -107,9 +145,27 @@ def generate_cmd(
     library_path: Path | None,
     irs_dir: Path | None,
 ) -> None:
-    """Generate a .hsp preset from a JSON recipe (no sidecar is written).
+    """Generate a preset from a JSON recipe: `generate recipe.json -o out.hsp`.
 
-    For a legacy .hlx chassis, delegates to the original spec-compile path.
+    The recipe is input-only (never written back; the .hsp is the sole source
+    of truth — no sidecar). Minimal shape: {"name", optional "author",
+    "paths": [1-2 entries, each {"blocks": [{"block", "params"?}, ...]}]}.
+    Optional sections: per-path "input"/"output", "split"/"join" entries
+    (parallel routing), top-level "snapshots" / "footswitches" /
+    "expression" / "midi" / "commands", per-block "ir" (a registered IR by
+    wav basename or 32-hex hash) and "trails". Full field reference:
+    docs/recipe-reference.md.
+
+    "block" matches a display_name from `list-blocks` (case-sensitive; use
+    the model_id if ambiguous). On an `Unknown param(s)` error, run
+    `show-block "<block>"` and correct the recipe — don't guess. Output
+    extension picks the format: .hsp = Stadium (8-byte magic + JSON),
+    .hlx = legacy Helix pretty JSON.
+
+    After generating with user IRs, the same WAVs must also be on the device
+    for the cabs to resolve (`device install --auto-irs` / `device sync`
+    upload them; or import via the Stadium app). The written tone
+    auto-registers in the local tone library.
     """
     library = _resolved_library(library_path)
     irs = _resolved_irs(irs_dir)
@@ -162,7 +218,16 @@ def _auto_register_tone(hsp_path: Path) -> None:
 def view_cmd(
     hsp_path: Path, output_path: Path | None, library_path: Path | None, irs_dir: Path | None
 ) -> None:
-    """Print a read-only projection of a Stadium .hsp preset."""
+    """Print a read-only recipe-shape projection of a .hsp preset (JSON).
+
+    Use it to inspect any .hsp's blocks, params, snapshots, footswitches, and
+    expression wiring before deciding what to edit. Stdout is a JSON document
+    (machine-readable as-is; no flag needed). The projection is for
+    comprehension only — it is NOT authoritative and is not the edit surface;
+    edit the .hsp itself with `patch` / `set-param` / etc. Controllers that
+    can't be mapped are preserved under a top-level `unknown_controllers`
+    list rather than dropped.
+    """
     library = _resolved_library(library_path)
     irs = _resolved_irs(irs_dir)
     try:
@@ -230,7 +295,22 @@ def _run_mutation(preset_path: Path, library_path, irs_dir, mutation) -> None:
 @_library_option
 @_irs_option
 def set_param_cmd(preset_path, block, param, value, path_idx, lane, pos, library_path, irs_dir):
-    """Set a block param: helixgen set-param preset.hsp "Brit Amp" Drive 0.85"""
+    """Set one param on one block: `set-param preset.hsp "Brit Amp" Drive 0.85`.
+
+    Mutates the .hsp in place (no sidecar). Run `show-block` first — param
+    names are case-sensitive. VALUE is auto-coerced (bool -> int -> float ->
+    string). A NEGATIVE value needs the `--` sentinel after any flags:
+    `helixgen set-param t.hsp output level -- -3`.
+
+    Besides library blocks, BLOCK may be a signal-flow pseudo-block:
+    `input` / `output` / `split` / `join` (`merge` = alias), addressing the
+    path's endpoints / split / merge mixer (`--path` picks the DSP; `--pos`
+    disambiguates two splits; `--lane` does not apply). Input params use the
+    recipe vocabulary (impedance, pad, trim, gate, threshold, decay, link);
+    output params are level/pan; split/join params are the wire names
+    (`BalanceA`, `Frequency`, `"A Level"`, ...). Use `--path`/`--lane`/`--pos`
+    when a block name appears more than once in the preset.
+    """
     def _mutation(body, library, irs):
         mutate.set_param(body, block, param, _coerce_cli_value(value), library,
                           path=path_idx, lane=lane, pos=pos)
@@ -322,13 +402,86 @@ def swap_model_cmd(preset_path, old, new, path_idx, lane, pos, library_path, irs
     _run_mutation(preset_path, library_path, irs_dir, _mutation)
 
 
-@cli.command(name="list-blocks")
-@click.option("--category", default=None, help="Filter to one category.")
+@cli.command(name="patch")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("ops", type=click.File("r"))
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help='Emit {"path", "warnings"} as JSON instead of text.')
 @_library_option
-def list_blocks_cmd(category: str | None, library_path: Path | None) -> None:
-    """List blocks in the library, grouped by category."""
+def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
+    """Apply a LIST of surgical edits to a .hsp file, in place, atomically.
+
+    OPS is a JSON file (or `-` for stdin) holding a list of operations:
+
+    \b
+      [{"op": "set_param",   "block": "Tape Echo Stereo",
+        "param": "Mix", "value": 0.3},
+       {"op": "set_enabled", "block": "Plate Stereo", "enabled": false},
+       {"op": "add_block",   "block": "LA Studio Comp", "path": 0},
+       {"op": "remove_block","block": "Plate Stereo"},
+       {"op": "swap_model",  "old": "Brit Plexi Brt", "new": "Brit 2204"}]
+
+    All ops are applied to an in-memory copy and the file is written ONCE at
+    the end — an invalid op anywhere in the list (unknown op, bad param,
+    unresolvable block) aborts with the .hsp untouched, never half-patched.
+    Prefer this over a sequence of single-op verbs when making several edits.
+
+    Op fields mirror the single-op verbs: optional "path"/"lane"/"pos" ints
+    disambiguate a block name placed more than once (dual-cab, both lanes of
+    a split); "set_enabled" takes an optional "snapshot" name. "set_param"
+    also accepts the signal-flow pseudo-blocks `input` / `output` / `split` /
+    `join` (`merge` = alias) — see `set-param --help`. Run `show-block` first
+    to confirm exact, case-sensitive param names.
+
+    Warnings (e.g. swap_model params it had to drop) go to stderr, or into
+    the --json result's "warnings" list. Exit 0 = file patched.
+    """
+    try:
+        operations = json.load(ops)
+    except json.JSONDecodeError as e:
+        raise click.ClickException(f"OPS is not valid JSON: {e}") from e
+
+    library = _resolved_library(library_path)
+    preset_path = Path(preset_path)
+    try:
+        body = read_hsp(preset_path)
+        warnings_out = mutate.apply_operations(body, operations, library)
+        write_hsp(preset_path, body)
+    except (MutateError, KeyError, LookupError, SpecError,
+            ParamValidationError, GenerateError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps({"path": str(preset_path), "warnings": warnings_out}))
+        return
+    for w in warnings_out:
+        click.echo(f"warning: {w}", err=True)
+    click.echo(f"Patched {preset_path} ({len(operations)} op(s))")
+
+
+@cli.command(name="list-blocks")
+@click.option("--category", default=None,
+              help="Filter to one category: amp, cab, drive, delay, reverb, "
+                   "modulation, filter, eq, dynamics, pitch, volume, send.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a JSON array of {display_name, model_id, category}.")
+@_library_option
+def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | None) -> None:
+    """List blocks in the library, grouped by category.
+
+    Each line is `<display_name>  [<model_id>]`. Use the display name (or the
+    model_id, if the name is ambiguous) as the `block` value in recipes and
+    edit verbs, then run `show-block` for its exact param names before
+    writing params.
+    """
     library = _resolved_library(library_path)
     blocks = library.list_blocks(category=category)
+    if as_json:
+        click.echo(json.dumps([
+            {"display_name": b.display_name, "model_id": b.model_id,
+             "category": b.category}
+            for b in sorted(blocks, key=lambda x: (x.category, x.display_name))
+        ], indent=2))
+        return
     if not blocks:
         click.echo("(no blocks in library)")
         return
@@ -343,14 +496,35 @@ def list_blocks_cmd(category: str | None, library_path: Path | None) -> None:
 
 @cli.command(name="show-block")
 @click.argument("name_or_id")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the schema as JSON ({display_name, model_id, "
+                   "category, aliases, params}).")
 @_library_option
-def show_block_cmd(name_or_id: str, library_path: Path | None) -> None:
-    """Print a block's schema (params, defaults, types) for spec authoring."""
+def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) -> None:
+    """Print a block's schema: exact param names, types, defaults, ranges.
+
+    Accepts the display name (e.g. "Brit Plexi Brt"), the model id
+    (e.g. "HD2_AmpBritPlexiBrt"), or an alias. ALWAYS run this before
+    writing params for a block — param names are case-sensitive and
+    `generate`/`patch` reject unknown ones. Most knob params are floats
+    0.0-1.0; some are ints/bools/Hz — check the type and observed range here
+    rather than guessing.
+    """
     library = _resolved_library(library_path)
     try:
         block = library.find_block(name_or_id)
     except (KeyError, LookupError) as e:
         raise click.ClickException(str(e)) from e
+
+    if as_json:
+        click.echo(json.dumps({
+            "display_name": block.display_name,
+            "model_id": block.model_id,
+            "category": block.category,
+            "aliases": list(block.aliases or []),
+            "params": block.params,
+        }, indent=2))
+        return
 
     click.echo(f"{block.display_name}  [{block.model_id}]")
     click.echo(f"category: {block.category}")
@@ -422,6 +596,13 @@ def register_irs_cmd(
     - register-irs <wav1> <wav2> ...                compute each wav's Stadium
                                                     hash directly (no device export
                                                     needed) and register it
+
+    Prints each `<hash>  <wav>` pair as it registers. REMINDER: registering
+    only updates the local mapping.json — the hash resolves on the hardware
+    only once the same WAV is also imported onto the device (`device
+    push-ir`, `device install --auto-irs`, `device sync`, or the Stadium
+    app's Librarian). Direct hashing requires libsndfile and 48 kHz sources
+    (see `irhash --help` for the constraint details).
     """
     paths_list = list(paths)
     first_ext = paths_list[0].suffix.lower()
@@ -451,7 +632,8 @@ def register_irs_cmd(
         cache = IrHashCache.load()
         try:
             hashes = [cached_irhash(w, cache=cache) for w in wav_paths]
-        except (RuntimeError, NotImplementedError, FileNotFoundError) as e:
+        except (RuntimeError, NotImplementedError, FileNotFoundError,
+                ValueError) as e:
             raise click.ClickException(str(e)) from e
         cache.save()
 
@@ -462,6 +644,8 @@ def register_irs_cmd(
     except IrMappingError as e:
         raise click.ClickException(str(e)) from e
     mapping.save()
+    for h, wav in zip(hashes, wav_paths):
+        click.echo(f"{h}  {wav}")
     click.echo(f"Registered {len(hashes)} IR(s) to {mapping.irs_dir / 'mapping.json'}")
 
 
@@ -484,11 +668,15 @@ def register_irs_cmd(
     default=None,
     help="Forget one entry by wav basename and exit.",
 )
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a per-category summary as JSON: {registered, "
+                   "already_registered, conflicts, failed}.")
 @_irs_option
 def ir_scan_cmd(
     directories: tuple[Path, ...],
     rescan: bool,
     remove_basename: str | None,
+    as_json: bool,
     irs_dir: Path | None,
 ) -> None:
     """Recursively scan directories for .wav files and cache their Stadium hashes.
@@ -498,6 +686,12 @@ def ir_scan_cmd(
     WAV is detected and re-hashed. Pass --rescan to recompute unconditionally.
     Skips files that can't be hashed (non-48 kHz, libsndfile errors) with a
     stderr warning; does not abort the scan.
+
+    --json emits a per-category summary instead of the count line:
+    {"registered": [names], "already_registered": [names],
+    "conflicts": [names whose hash already maps to a DIFFERENT path;
+    re-run with --rescan to overwrite], "failed": [{basename, reason}]}.
+    Partial success is persisted either way.
 
     Use --remove <basename> to forget a single entry (no directory args).
     """
@@ -531,9 +725,10 @@ def ir_scan_cmd(
     cache = IrHashCache.load()
 
     scanned = 0
-    added = 0
-    skipped_cached = 0
-    skipped_error = 0
+    registered: list[str] = []
+    already: list[str] = []
+    conflicts: list[str] = []
+    failed: list[dict[str, str]] = []
     for root in directories:
         for wav in sorted(root.rglob("*")):
             if not wav.is_file() or wav.suffix.lower() != ".wav":
@@ -544,7 +739,7 @@ def ir_scan_cmd(
             # valid for the file on disk (stat unchanged). An edited/replaced
             # WAV misses the cache and is recomputed below.
             if not rescan and wav_abs in registered_paths and cache.get(wav) is not None:
-                skipped_cached += 1
+                already.append(wav.name)
                 continue
             try:
                 if rescan:
@@ -552,32 +747,123 @@ def ir_scan_cmd(
                     cache.put(wav, h)
                 else:
                     h = cached_irhash(wav, cache=cache)
-            except (NotImplementedError, RuntimeError, FileNotFoundError) as e:
+            except (NotImplementedError, RuntimeError, FileNotFoundError,
+                    ValueError) as e:
                 click.echo(f"skip {wav}: {e}", err=True)
-                skipped_error += 1
+                failed.append({"basename": wav.name, "reason": str(e)})
                 continue
             try:
                 mapping.register(h, wav, force=rescan)
             except IrMappingError as e:
                 click.echo(f"skip {wav}: {e}", err=True)
-                skipped_error += 1
+                conflicts.append(wav.name)
                 continue
             registered_paths.add(wav_abs)
-            added += 1
+            registered.append(wav.name)
 
     mapping.save()
     cache.save()
+    if as_json:
+        click.echo(json.dumps({
+            "registered": registered,
+            "already_registered": already,
+            "conflicts": conflicts,
+            "failed": failed,
+        }, indent=2))
+        return
     click.echo(
-        f"Scanned {scanned} wav(s): {added} added, "
-        f"{skipped_cached} already cached, {skipped_error} skipped (errors)"
+        f"Scanned {scanned} wav(s): {len(registered)} added, "
+        f"{len(already)} already cached, "
+        f"{len(conflicts) + len(failed)} skipped (errors)"
     )
 
 
+@cli.command(name="irhash")
+@click.argument(
+    "paths", nargs=-1, required=True,
+    type=click.Path(exists=True, path_type=Path),
+)
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a JSON array of {hash, path, basename}.")
+def irhash_cmd(paths: tuple[Path, ...], as_json: bool) -> None:
+    """Compute Stadium IR hashes for WAVs — stateless (nothing is registered).
+
+    Each PATH is a .wav file or a directory (recursed for *.wav). Prints
+    `<hash>  <path>` per WAV; the 32-hex hash is exactly what a preset's
+    `irhash` field carries, so it can be embedded in a recipe's `ir` field
+    directly. Unlike `register-irs`/`ir-scan`, this never writes to
+    mapping.json — use those to persist a mapping.
+
+    Requires libsndfile (`brew install libsndfile`). 48 kHz sources only —
+    non-48 kHz fails with a `sox in.wav -r 48000 out.wav` suggestion (the
+    DEVICE accepts any rate and resamples internally; helixgen just can't
+    hash non-48k off-device). Stereo is reduced to the left channel
+    (matching Stadium's import). REMINDER: a hash only resolves on the
+    hardware once the same WAV is imported onto the device.
+
+    A file that fails to hash: fatal when named explicitly; a stderr
+    warning (file skipped) when found via a directory walk.
+    """
+    cache = IrHashCache.load()
+    results: list[dict[str, str]] = []
+    seen: set[Path] = set()
+
+    def _hash_one(wav: Path, *, fatal: bool) -> None:
+        resolved = wav.resolve()
+        if resolved in seen:
+            return
+        try:
+            h = cached_irhash(wav, cache=cache)
+        except (NotImplementedError, RuntimeError, FileNotFoundError,
+                ValueError) as e:
+            if fatal:
+                raise click.ClickException(str(e)) from e
+            click.echo(f"skip {wav}: {e}", err=True)
+            return
+        seen.add(resolved)
+        results.append({"hash": h, "path": str(wav), "basename": wav.name})
+
+    try:
+        for p in paths:
+            if p.is_dir():
+                for wav in sorted(p.rglob("*")):
+                    if wav.is_file() and wav.suffix.lower() == ".wav":
+                        _hash_one(wav, fatal=False)
+            else:
+                _hash_one(p, fatal=True)
+    finally:
+        cache.save()  # keep hashes computed before any fatal error
+
+    if as_json:
+        click.echo(json.dumps(results, indent=2))
+        return
+    for r in results:
+        click.echo(f"{r['hash']}  {r['path']}")
+
+
 @cli.command(name="list-irs")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a JSON array of {hash, path}.")
 @_irs_option
-def list_irs_cmd(irs_dir: Path | None) -> None:
-    """List registered IR hashes and their wav paths."""
+def list_irs_cmd(as_json: bool, irs_dir: Path | None) -> None:
+    """List the LOCALLY registered user IRs: `<hash>  <wav-path>` per line.
+
+    This is helixgen's own mapping.json (irhash -> wav path), not the
+    device's IR list (`helixgen device list-irs` reads that). Check this
+    before choosing a cab in a recipe: empty output -> use a stock cab
+    (`Mic Ir_*` block); otherwise a registered IR can be referenced by wav
+    basename (or hash) in a `With Pan` block's `ir` field. The hash only
+    resolves on the hardware once the same WAV is also on the device
+    (`device push-ir`, `device install --auto-irs`, `device sync`, or the
+    Stadium app's Librarian import).
+    """
     mapping = _resolved_irs(irs_dir)
+    if as_json:
+        click.echo(json.dumps([
+            {"hash": h, "path": mapping.entries[h]}
+            for h in sorted(mapping.entries)
+        ], indent=2))
+        return
     for hash_ in sorted(mapping.entries):
         click.echo(f"{hash_}  {mapping.entries[hash_]}")
 

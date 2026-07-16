@@ -370,7 +370,7 @@ def import_bundle(client: Any, bundle: HssBundle, *,
     ``setlist`` names the destination (created if absent); ``None`` falls
     back to the bundle's own manifest name — raises :class:`ValueError` if
     neither is available. Shared by the CLI (`device setlist import-hss`) and
-    the MCP tool (`device_import_hss`) so both stay behaviorally identical.
+    any other caller so all stay behaviorally identical.
 
     Safe against a destination that already has references (a reused, populated
     setlist): new references are **appended** after whatever's already there —

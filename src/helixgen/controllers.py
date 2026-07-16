@@ -305,7 +305,7 @@ def controller_mapping(device_id) -> list[dict]:
     One dict per assignable identifier, ordered as in CONTROLLER_META. Each row
     carries the identifier, hex + int source id, kind, grid position, canonical
     name, position phrase, the rendered English string, and aliases — the data
-    the English→identifier translation sub-agent and the MCP tool consume.
+    the English→identifier translation sub-agent (`helixgen controllers --json`) consumes.
     """
     device = _resolve_device(device_id)
     meta = CONTROLLER_META[device]

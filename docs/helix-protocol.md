@@ -442,7 +442,7 @@ Bands `lowcut`(0) `lowshelf`(1) `low`(2) `mid`(3) `high`(4) `highshelf`(5)
 level = key `dsp.globaleq.<out>.level` slot 3. A full-EQ snapshot is key
 `globals.eq`. **Write-only over the network** — `/PropertyValueGet` returns an
 empty blob for `dsp.globaleq.*` (the app reads EQ state from the connect-time
-sync). Shipped as `device globaleq list|set` (+ MCP); codec
+sync). Shipped as `device globaleq list|set`; codec
 `src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
 
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
@@ -461,7 +461,7 @@ level. **Every tap sits upstream of the output block's `gain`** (a landed
 downstream cells ~−33 dB — the meters are the ground truth for whether a
 live-op actually landed (the 2001 echo is NOT: the device echoes success for
 a toggle of the wrong block). Full per-layout cell-index formula still open
-(backlog #58). The
+(backlog #62). The
 hardware tuner is engaged via FS12 (`volatile.press.taptempo` /
 `volatile.held.taptempo`; exit `volatile.press.exittuner`) — but the pitch
 stream is always live regardless, so a network tuner needs no engage.

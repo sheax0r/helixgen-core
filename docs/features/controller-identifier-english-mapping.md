@@ -146,7 +146,7 @@ un-tabled sources and never raises (decode must stay tolerant).
 New functions (pure stdlib):
 - `english_for_controller(device, identifier) -> str` — e.g. `"Footswitch 5 (top row, 5th from left)"`.
 - `controller_mapping(device) -> list[dict]` — the full structured table, JSON-serialisable, for
-  the translation sub-agent and MCP.
+  the translation sub-agent (served by `helixgen controllers --json`).
 - `resolve_controller_source(device, identifier)` — unchanged contract, but now raises a tailored
   error for reserved (`FS6`/`FS12`) vs unknown identifiers, listing the valid canonical set.
 - `controller_name_for_source(device, source_id)` — unchanged (reverse lookup).
@@ -181,10 +181,9 @@ landed there:
   (which resolve via `controllers.resolve_controller_source` and surface the tailored reserved
   errors). The deleted `generate.py`/`spec.py` controller hooks from the pre-1.0.0 design are
   **not** reintroduced.
-- `mcp_server`: new `controller_mapping(model)` tool (handler
-  `mcp_server.tools.controller_mapping_handler`) returns the full JSON table so the skill and
-  translation sub-agent get the data without a second hard-coded table. CLI mirror:
-  `helixgen controllers [--json]`.
+- `helixgen controllers [--json]` returns the full JSON table so the skill and
+  translation sub-agent get the data without a second hard-coded table. (Was
+  also an MCP `controller_mapping` tool until the 0.20.0 MCP removal.)
 - `CLAUDE.md`: correct the footswitch vocabulary (FS1–5, FS7–11, Exp Toe; FS6/FS12 reserved),
   document the English rendering and the translation-sub-agent flow.
 - `tone`/`setup` SKILL.md: auto-wire uses the corrected set (skip FS6; FS1→FS5 then FS7→FS11);

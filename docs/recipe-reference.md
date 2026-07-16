@@ -1,7 +1,7 @@
 # helixgen recipe reference
 
-The **recipe** is the JSON author-input to `helixgen generate` (and the
-`generate_preset` MCP tool). It is **input-only** — it is not written to disk
+The **recipe** is the JSON author-input to `helixgen generate`. It is
+**input-only** — it is not written to disk
 and is never read back as truth; the `.hsp` it produces is the canonical
 artifact (see [`CLAUDE.md`](../CLAUDE.md) "Architecture: `.hsp` is the source of
 truth"). `helixgen view <preset.hsp>` projects a `.hsp` back into this recipe
@@ -213,9 +213,8 @@ pedal fully forward to click it).
 (add `--json` for the machine-readable table) lists every assignable
 controller with its English name + physical position, e.g.
 `Footswitch 5 (top row, 5th from left)`. When reporting a tone to a human,
-render controllers in this English form (via
-`controllers.english_for_controller` / the `controller_mapping` MCP tool),
-never a bare `FS#`. When a human *describes* a control in plain language
+render controllers in this English form (via `helixgen controllers` /
+`controllers.english_for_controller`), never a bare `FS#`. When a human *describes* a control in plain language
 ("the top-left switch", "second from right on the bottom", "the wah toe"),
 translate it to a canonical identifier with a dedicated small-model
 translation sub-agent fed `controller_mapping(stadium_xl)` — it returns exactly

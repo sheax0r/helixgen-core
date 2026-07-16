@@ -136,7 +136,7 @@ def assign_slots(manifest: SetlistManifest, occupied) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 # IR upload helper — thin wrapper around the shared core in ir_upload.py
 # (backlog #6; the same core also backs `device install --auto-irs` and the
-# MCP `device_install_preset`). Kept under this name/signature so existing
+# other callers). Kept under this name/signature so existing
 # call sites (and tests) can keep monkeypatching it directly.
 # ---------------------------------------------------------------------------
 

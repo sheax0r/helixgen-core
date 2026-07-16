@@ -1351,3 +1351,105 @@ def wire_wah_toe(
     bounds a position switch needs (a digital FS's null bounds don't bind).
     """
     wire_footswitch(body, "EXP1Toe", block, "latching", library, path=path, lane=lane, pos=pos)
+
+
+# --- batch operations (`helixgen patch`) -------------------------------------
+
+# Each entry takes (body, library, op_dict) and mutates `body` in place,
+# returning a list[str] of warnings (empty for ops that never warn).
+
+def _op_set_param(body: dict, library: Library, o: dict) -> list[str]:
+    set_param(
+        body, o["block"], o["param"], o["value"], library,
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+    return []
+
+
+def _op_set_enabled(body: dict, library: Library, o: dict) -> list[str]:
+    set_enabled(
+        body, o["block"], o["enabled"], library,
+        snapshot=o.get("snapshot"),
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+    return []
+
+
+def _op_add_block(body: dict, library: Library, o: dict) -> list[str]:
+    add_block(
+        body, o["block"], library,
+        path=o.get("path", 0), after=o.get("after"), params=o.get("params"),
+    )
+    return []
+
+
+def _op_remove_block(body: dict, library: Library, o: dict) -> list[str]:
+    remove_block(
+        body, o["block"], library,
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+    return []
+
+
+def _op_swap_model(body: dict, library: Library, o: dict) -> list[str]:
+    return swap_model(
+        body, o["old"], o["new"], library,
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+
+
+PATCH_OPS = {
+    "set_param": _op_set_param,
+    "set_enabled": _op_set_enabled,
+    "add_block": _op_add_block,
+    "remove_block": _op_remove_block,
+    "swap_model": _op_swap_model,
+}
+
+# Required fields per op, validated up front so a missing key reports itself
+# as "op N (set_param): missing required field(s) ..." instead of a bare
+# KeyError escaping from the op body.
+_PATCH_OP_REQUIRED = {
+    "set_param": ("block", "param", "value"),
+    "set_enabled": ("block", "enabled"),
+    "add_block": ("block",),
+    "remove_block": ("block",),
+    "swap_model": ("old", "new"),
+}
+
+
+def apply_operations(
+    body: dict[str, Any], operations: list, library: Library
+) -> list[str]:
+    """Apply a sequence of `{"op": ..., ...}` dicts to a parsed `.hsp` body,
+    in place, returning the accumulated warnings (`swap_model` messages about
+    params/IRs/MIDI bindings that could not be carried over).
+
+    The op vocabulary is :data:`PATCH_OPS` (`set_param`, `set_enabled`,
+    `add_block`, `remove_block`, `swap_model`), each dispatching to the
+    matching surgical verb in this module. An unknown op raises
+    :class:`MutateError` — callers apply ops to an in-memory body and only
+    write the file after ALL ops succeeded, so a bad op never half-patches
+    the preset on disk. (This is the engine behind `helixgen patch`,
+    formerly the MCP `patch_preset` tool.)
+    """
+    if not isinstance(operations, list):
+        raise MutateError(
+            f"operations must be a JSON list of op dicts, got {type(operations).__name__}")
+    warnings: list[str] = []
+    for i, o in enumerate(operations):
+        if not isinstance(o, dict):
+            raise MutateError(f"op {i}: each operation must be a dict, got {o!r}")
+        op = o.get("op")
+        if op not in PATCH_OPS:
+            raise MutateError(
+                f"op {i}: unknown patch op {op!r}; valid: {sorted(PATCH_OPS)}")
+        missing = [k for k in _PATCH_OP_REQUIRED[op] if k not in o]
+        if missing:
+            raise MutateError(
+                f"op {i} ({op}): missing required field(s) {missing}")
+        try:
+            warnings.extend(PATCH_OPS[op](body, library, o))
+        except MutateError as e:
+            raise MutateError(f"op {i} ({op}): {e}") from e
+    return warnings

@@ -13,8 +13,8 @@ one more capture/dig required · **[idea]** = worth discussing before scoping.
 
 - **S1 · Network tuner — `device tuner`** **[ripe]** — subscribe to 2003
   `/dspEvent {eid_:10, mid_:796}`, decode the single float as fractional-MIDI
-  (note + cents), render a live in-terminal tuner (and an MCP `device_tuner`
-  one-shot). *Unique selling point:* the pitch detector is **always live**, so
+  (note + cents), render a live in-terminal tuner (with a `--json` one-shot
+  mode). *Unique selling point:* the pitch detector is **always live**, so
   this works with the Stadium app closed and needs no device-UI engage — a
   network tuner no other tool offers.
 - **S2 · Network meters — `device meters`** **[ripe]** — same 2003 stream,

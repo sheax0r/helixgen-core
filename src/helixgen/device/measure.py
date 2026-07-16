@@ -20,7 +20,7 @@ Design facts (HW-characterized 2026-07-14, Stadium XL):
   input-invariant loudness metric — robust to how hard the player picks.
 
 This module is pure (unit-tested on synthetic events); the ``device measure``
-CLI verb / ``device_measure`` MCP tool own the subscribe loop.
+CLI verb owns the subscribe loop.
 """
 from __future__ import annotations
 

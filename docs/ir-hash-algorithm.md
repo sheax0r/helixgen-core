@@ -108,8 +108,8 @@ preset → device displayed the correct IR name in the block slot).
 - CLI: `helixgen ir-scan <dir>` walks a directory, computes hashes,
   caches them in `~/.helixgen/irs/mapping.json` for use by
   `helixgen generate`.
-- MCP tool: `compute_irhash(model, wav_b64)` in `mcp_server/tools.py`
-  exposes the same primitive over the MCP transport.
+- CLI: `helixgen irhash <wav-or-dir>... [--json]` exposes the same
+  primitive statelessly (no mapping.json write).
 - Test suite: `tests/test_ir_cli.py` exercises the full pipeline with
   synthesized WAVs (no paid IR fixtures shipped).
 

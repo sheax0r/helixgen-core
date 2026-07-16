@@ -16,7 +16,7 @@ See ``docs/superpowers/specs/2026-07-14-parity-capture-findings.md`` §4.
 
 This module is the pure decoder (unit-tested against synthetic ``/dspEvent``
 maps in the same shape as the tuner's golden fixture). The ``device meters``
-CLI / ``device_meters`` MCP tool subscribe and call in here.
+CLI subscribes and calls in here.
 """
 from __future__ import annotations
 

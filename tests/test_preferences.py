@@ -384,7 +384,7 @@ def test_device_model_null_is_unset(tmp_path):
     ["stadium_xl", "STADIUM XL", "stadium-xl", "Stadium XL"],
 )
 def test_device_model_xl_forms_normalize_to_display(tmp_path, raw):
-    """Both MCP-token and display forms (any case/separator) load and normalize."""
+    """Both canonical-token and display forms (any case/separator) load and normalize."""
     path = tmp_path / "preferences.json"
     path.write_text(json.dumps({"device": {"model": raw}}))
     prefs = load_preferences(path)

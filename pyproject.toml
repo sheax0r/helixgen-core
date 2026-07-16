@@ -1,6 +1,6 @@
 [project]
 name = "helixgen"
-version = "0.19.1"
+version = "0.20.0"
 description = "Generate Line 6 Helix Stadium .hsp / legacy .hlx preset files from JSON tone specs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,9 +32,6 @@ Issues = "https://github.com/sheax0r/helixgen-core/issues"
 dev = [
     "pytest>=7.4",
 ]
-mcp = [
-    "mcp>=1.0,<2.0",
-]
 device = [
     "pyzmq>=25",
     "msgpack>=1",
@@ -49,8 +46,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["src", "."]
-include = ["helixgen*", "mcp_server*"]
+where = ["src"]
+include = ["helixgen*"]
 
 [tool.setuptools.package-data]
 "helixgen.device" = ["_defs_data.json", "_modelmap.json", "_settings_pages.json"]
