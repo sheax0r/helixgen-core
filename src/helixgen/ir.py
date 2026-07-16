@@ -12,17 +12,24 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from helixgen import home
+
 
 class IrMappingError(ValueError):
     """Raised when an IR mapping operation is rejected (conflict, ambiguity, etc.)."""
 
 
 def default_irs_path() -> Path:
-    """Return the IRs directory path, honoring HELIXGEN_IRS env var."""
+    """Return the IRs directory path, honoring HELIXGEN_IRS env var.
+
+    Still the pre-migration default (``helixgen_home()/"irs"``) — the flip to
+    the library-owned ``library/irs`` default (``home.library_irs_dir()``) is
+    a later PR.
+    """
     env = os.environ.get("HELIXGEN_IRS")
     if env:
         return Path(env)
-    return Path.home() / ".helixgen" / "irs"
+    return home.legacy_irs_dir()
 
 
 @dataclass

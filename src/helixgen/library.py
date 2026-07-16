@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from helixgen import home
 
 
 class IngestStatus(Enum):
@@ -72,10 +73,7 @@ def _validate_block_coords(model_id: str, category: str) -> None:
 
 def default_library_path() -> Path:
     """Return the library path, honoring HELIXGEN_LIBRARY env var."""
-    env = os.environ.get("HELIXGEN_LIBRARY")
-    if env:
-        return Path(env)
-    return Path.home() / ".helixgen" / "library"
+    return home.library_dir()
 
 
 def default_cache_path() -> Path:

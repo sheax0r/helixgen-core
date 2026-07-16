@@ -41,6 +41,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from helixgen import home
 from helixgen.hsp import read_hsp
 from helixgen.device.client import slot_label as _slot_label
 
@@ -76,11 +77,15 @@ def default_setlists_path() -> Path:
     """Where the tone-library manifest lives: ``~/.helixgen/setlists.json``.
 
     Overridable wholesale with ``$HELIXGEN_SETLISTS``.
+
+    Still the pre-migration (legacy) default — the flip to
+    ``home.manifest_path()``'s ``setlists/manifest.json`` location is a later
+    task (the v2->v3 migration).
     """
     override = os.environ.get("HELIXGEN_SETLISTS")
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".helixgen" / "setlists.json"
+    return home.legacy_manifest_path()
 
 
 def _legacy_ledger_path() -> Path:
