@@ -133,6 +133,28 @@ class TestCrestAndLevels:
         m = am.analyze(sine(997.0, 2.0, amp=0.5), RATE)
         assert m.true_peak_dbtp == pytest.approx(-6.02, abs=0.1)
 
+    def test_true_peak_of_sine_truncated_at_a_peak(self):
+        # A --record capture stops mid-waveform. FFT oversampling treats the
+        # buffer as periodic, so the end->start discontinuity used to ring
+        # (Gibbs) and over-read by >1 dB. The true peak of a sine IS its
+        # amplitude: a -6.02 dBFS sine must read ~-6.02 dBTP, however it is
+        # truncated.
+        x = sine(997.0, 2.0, amp=0.5)[:, 0]
+        peak_idx = int(np.argmax(x[:RATE]))
+        truncated = x[: peak_idx + 1][:, None]  # ends exactly on a peak
+        m = am.analyze(truncated, RATE)
+        assert m.true_peak_dbtp == pytest.approx(-6.02, abs=0.1)
+
+    def test_true_peak_still_sees_intersample_peaks_mid_signal(self):
+        # The edge fix must not suppress genuine inter-sample overs: a
+        # 12 kHz sine at 48 kHz samples at 45 degree offsets, so the sample
+        # peak under-reads by 3.01 dB while the true peak is the amplitude.
+        t = np.arange(RATE) / RATE
+        x = 0.5 * np.sin(2 * np.pi * 12000.0 * t + np.pi / 4)
+        m = am.analyze(x[:, None], RATE)
+        assert m.peak_dbfs == pytest.approx(-9.03, abs=0.05)
+        assert m.true_peak_dbtp == pytest.approx(-6.02, abs=0.15)
+
     def test_silence_levels_are_none(self):
         m = am.analyze(np.zeros((RATE, 1)), RATE)
         assert m.crest_db is None
@@ -151,6 +173,54 @@ class TestClipping:
     def test_clean_full_scale_sine_is_not_flagged(self):
         m = am.analyze(sine(1000.0, 2.0, amp=0.98), RATE)
         assert m.clipped is False
+
+    def test_two_sample_buffer_with_clipped_sample_does_not_crash(self):
+        # n < _CLIP_RUN made the shifted-slice AND raise a ValueError.
+        m = am.analyze(np.array([[1.0], [0.0]]), RATE)
+        assert m.clipped is False  # can't hold a 4-sample run in 2 samples
+        assert m.clipped_samples == 1
+
+
+# ---------------------------------------------------------- non-finite ----
+
+class TestNonFiniteSamples:
+    def _with_nonfinite(self) -> np.ndarray:
+        x = sine(1000.0, 2.0, amp=0.5)
+        x[100, 0] = np.nan
+        x[200, 0] = np.inf
+        x[300, 0] = -np.inf
+        return x
+
+    def test_metrics_are_finite_and_noted(self):
+        m = am.analyze(self._with_nonfinite(), RATE)
+        assert any("non-finite" in n for n in m.notes)
+        # a handful of zeroed samples barely moves a 2 s sine's metrics
+        assert m.peak_dbfs == pytest.approx(-6.02, abs=0.05)
+        assert m.lufs_integrated == pytest.approx(SINE_LUFS_0DBFS - 6.02,
+                                                  abs=0.15)
+        assert not any("silence" in n for n in m.notes)
+
+    def test_to_dict_is_strict_json_safe(self):
+        import json
+        d = am.analyze(self._with_nonfinite(), RATE).to_dict()
+        # allow_nan=False raises on NaN/Infinity — the pinned contract is
+        # "Undefined metrics are null, never NaN/-inf"
+        json.dumps(d, allow_nan=False)
+
+    def test_all_nonfinite_is_reported_not_silence(self):
+        x = np.full((RATE, 1), np.nan)
+        m = am.analyze(x, RATE)
+        assert any("non-finite" in n for n in m.notes)
+        import json
+        json.dumps(m.to_dict(), allow_nan=False)
+
+    def test_nonfinite_float32_wav_end_to_end(self, tmp_path: Path):
+        path = am.write_wav_float32(tmp_path / "nf.wav",
+                                    self._with_nonfinite(), RATE)
+        m = am.analyze_wav(path)
+        assert any("non-finite" in n for n in m.notes)
+        import json
+        json.dumps(m.to_dict(), allow_nan=False)
 
 
 # ---------------------------------------------------------------- bands ----
@@ -236,6 +306,23 @@ class TestWavIo:
         samples, _ = am.load_wav(path)
         assert samples.shape == (RATE // 2, 2)
 
+    def test_multiple_data_chunks_first_wins(self, tmp_path: Path):
+        # RIFF convention: the first `data` chunk is the audio; the reader
+        # used to take the last one.
+        first = np.full(100, 0.25, dtype="<f4").tobytes()
+        second = np.full(100, 0.75, dtype="<f4").tobytes()
+        fmt = struct.pack("<HHIIHH", 3, 1, RATE, RATE * 4, 4, 32)
+        body = (b"WAVE"
+                + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+                + b"data" + struct.pack("<I", len(first)) + first
+                + b"data" + struct.pack("<I", len(second)) + second)
+        path = tmp_path / "two-data.wav"
+        path.write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+        samples, rate = am.load_wav(path)
+        assert rate == RATE
+        assert samples.shape == (100, 1)
+        assert np.allclose(samples, 0.25)
+
     def test_garbage_file_raises(self, tmp_path: Path):
         bad = tmp_path / "bad.wav"
         bad.write_bytes(b"not a riff file at all" * 10)
@@ -264,6 +351,57 @@ class TestOptionalDependency:
         monkeypatch.setitem(sys.modules, "sounddevice", None)
         with pytest.raises(am.AudioMetricsError, match=r"helixgen\[capture\]"):
             am._sounddevice()
+
+
+# --------------------------------------------------------------- record ----
+
+class TestRecordValidation:
+    def _fake_sounddevice(self, calls: list):
+        import types
+        mod = types.ModuleType("sounddevice")
+
+        class PortAudioError(Exception):
+            pass
+
+        def rec(frames, samplerate, channels, dtype, device=None):
+            calls.append((frames, samplerate, channels))
+            return np.zeros((frames, channels), dtype=np.float32)
+
+        mod.PortAudioError = PortAudioError
+        mod.rec = rec
+        mod.wait = lambda: None
+        return mod
+
+    @pytest.mark.parametrize("kwargs,fragment", [
+        ({"rate": 0}, "rate"),
+        ({"rate": -48000}, "rate"),
+        ({"channels": 0}, "channel"),
+        ({"channels": -1}, "channel"),
+    ])
+    def test_rejects_nonpositive_rate_and_channels(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+            kwargs: dict, fragment: str):
+        calls: list = []
+        monkeypatch.setitem(sys.modules, "sounddevice",
+                            self._fake_sounddevice(calls))
+        out = tmp_path / "cap.wav"
+        with pytest.raises(am.AudioMetricsError, match=fragment):
+            am.record_wav(out, 1.0, **kwargs)
+        assert calls == []           # rejected before touching the device
+        assert not out.exists()      # ... and before writing anything
+
+    def test_portaudio_error_becomes_audio_metrics_error(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        calls: list = []
+        mod = self._fake_sounddevice(calls)
+
+        def rec(*a, **k):
+            raise mod.PortAudioError("Invalid device")
+
+        mod.rec = rec
+        monkeypatch.setitem(sys.modules, "sounddevice", mod)
+        with pytest.raises(am.AudioMetricsError, match="Invalid device"):
+            am.record_wav(tmp_path / "cap.wav", 1.0)
 
 
 # ---------------------------------------------------------------- dict ----

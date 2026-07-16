@@ -989,8 +989,10 @@ def analyze_audio_cmd(wav: Path | None, as_json: bool,
     Metrics that are undefined for the input (digital silence, or a file
     shorter than one 400 ms gating block) come back null with an
     explanatory note instead of failing — check `notes` before trusting a
-    null. Band edges are provisional pending reconciliation with the IR
-    catalog's measured-tag pass.
+    null; non-finite samples (NaN/Inf, e.g. from a wedged capture driver)
+    are zeroed and counted in `notes`, so --json output is always strictly
+    valid JSON. Band edges are provisional pending reconciliation with the
+    IR catalog's measured-tag pass.
 
     Analysis needs numpy: `pip install 'helixgen[analyze]'`. Any PCM or
     IEEE-float WAV at any sample rate is accepted (mono or stereo; stereo

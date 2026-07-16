@@ -56,6 +56,7 @@ class TestHelpContract:
         "EXPERIMENTAL",
         "read-only",
         "--json",
+        "non-finite",
     ])
     def test_key_contract_phrases(self, phrase: str):
         assert phrase in _full_help(cli.commands["analyze-audio"]), (
@@ -98,6 +99,28 @@ class TestAnalyzeFile:
         result = CliRunner().invoke(cli, ["analyze-audio"])
         assert result.exit_code != 0
         assert "--record" in result.output
+
+    def test_json_is_strictly_valid_on_nonfinite_samples(
+            self, tmp_path: Path):
+        # A wedged capture can hand back NaN/Inf samples; --json must still
+        # emit strictly valid JSON (the help pins "Undefined metrics are
+        # null, never NaN/-inf") — bare `NaN`/`Infinity` tokens are not JSON.
+        from helixgen import audio_metrics as am
+        t = np.arange(2 * RATE) / RATE
+        x = 0.5 * np.sin(2 * np.pi * 1000.0 * t)
+        x[100] = np.nan
+        x[200] = np.inf
+        wav = am.write_wav_float32(tmp_path / "nf.wav", x[:, None], RATE)
+        result = CliRunner().invoke(cli, ["analyze-audio", str(wav), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(
+            result.output,
+            parse_constant=lambda s: pytest.fail(
+                f"non-JSON constant {s!r} in --json output"))
+        assert any("non-finite" in n for n in data["notes"])
+        # a couple of zeroed samples must not null the level metrics
+        assert data["lufs_integrated"] == pytest.approx(-9.03, abs=0.2)
+        assert data["peak_dbfs"] == pytest.approx(-6.02, abs=0.1)
 
 
 class TestRecordMode:
@@ -167,3 +190,45 @@ class TestRecordMode:
                   "-o", str(tmp_path / "c.wav")])
         assert result.exit_code != 0
         assert "helixgen[capture]" in result.output
+
+    def test_portaudio_error_is_clean_error(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # A real PortAudio failure (bad device, unsupported rate) must be a
+        # clean CLI error, not a traceback.
+        mod = self._fake_sounddevice({})
+
+        class PortAudioError(Exception):
+            pass
+
+        def rec(*a, **k):
+            raise PortAudioError("Error opening InputStream: Invalid device")
+
+        mod.PortAudioError = PortAudioError
+        mod.rec = rec
+        monkeypatch.setitem(sys.modules, "sounddevice", mod)
+        result = CliRunner().invoke(
+            cli, ["analyze-audio", "--record", "1",
+                  "-o", str(tmp_path / "c.wav")])
+        assert result.exit_code != 0
+        assert "Invalid device" in result.output
+        assert "Traceback" not in result.output
+
+    @pytest.mark.parametrize("flag,value", [
+        ("--rate", "0"),
+        ("--rate", "-48000"),
+        ("--channels", "0"),
+    ])
+    def test_record_rejects_nonpositive_rate_and_channels(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+            flag: str, value: str):
+        store: dict = {}
+        monkeypatch.setitem(sys.modules, "sounddevice",
+                            self._fake_sounddevice(store))
+        out = tmp_path / "c.wav"
+        result = CliRunner().invoke(
+            cli, ["analyze-audio", "--record", "1", "-o", str(out),
+                  flag, value])
+        assert result.exit_code != 0
+        assert "Traceback" not in result.output
+        assert "frames" not in store  # never reached the device
+        assert not out.exists()

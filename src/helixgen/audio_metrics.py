@@ -44,6 +44,7 @@ working, mirroring the ``[device]`` extra pattern.
 """
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -147,7 +148,7 @@ def load_wav(path: Path | str) -> tuple["object", int]:
         body = raw[pos + 8: pos + 8 + size]
         if cid == b"fmt ":
             fmt = body
-        elif cid == b"data":
+        elif cid == b"data" and data is None:  # RIFF: first data chunk wins
             data = body
         pos += 8 + size + (size & 1)  # chunks are word-aligned
     if fmt is None or len(fmt) < 16:
@@ -228,14 +229,28 @@ def record_wav(path: Path | str, seconds: float, *, rate: int = 48000,
     Requires the `capture` extra (sounddevice/PortAudio). Blocks until the
     capture completes. Untested against real hardware — see backlog #62.
     """
-    sd = _sounddevice()
-    np = _np()
     if seconds <= 0:
         raise AudioMetricsError("--record needs a positive duration")
+    if rate <= 0:
+        raise AudioMetricsError(f"--record needs a positive sample rate "
+                                f"(got --rate {rate})")
+    if channels <= 0:
+        raise AudioMetricsError(f"--record needs a positive channel count "
+                                f"(got --channels {channels})")
+    sd = _sounddevice()
+    np = _np()
     frames = int(round(seconds * rate))
-    data = sd.rec(frames, samplerate=rate, channels=channels,
-                  dtype="float32", device=device)
-    sd.wait()
+    # PortAudioError may not exist on a stubbed module; () never matches.
+    pa_error = getattr(sd, "PortAudioError", None) or ()
+    try:
+        data = sd.rec(frames, samplerate=rate, channels=channels,
+                      dtype="float32", device=device)
+        sd.wait()
+    except pa_error as exc:
+        raise AudioMetricsError(
+            f"audio capture failed: {exc} (check --input against "
+            "`python -m sounddevice` and that --rate/--channels are "
+            "supported by the device)") from exc
     return write_wav_float32(path, np.asarray(data), rate)
 
 
@@ -416,9 +431,27 @@ def _band_energies(freqs, psd):
     return bands, centroid
 
 
+_TRUE_PEAK_PAD = 256   # reflect-pad samples per edge before FFT oversampling
+_TRUE_PEAK_TRIM = 16   # edge samples whose interpolation is not trusted
+
+
 def _true_peak(x, notes: list[str]) -> float | None:
     """Approximate true peak (linear) via 4x FFT oversampling; falls back to
-    the sample peak (with a note) on very long signals."""
+    the sample peak (with a note) on very long signals.
+
+    The FFT treats the buffer as periodic, so a capture truncated
+    mid-waveform has an end->start discontinuity whose Gibbs ringing used to
+    over-read by >1 dB. Two-part edge handling:
+
+    * each channel is reflect-padded by _TRUE_PEAK_PAD samples before the
+      FFT and only the original span is kept, moving the wraparound seam far
+      enough away that its (1/distance) ringing decays to ~0.02 dB;
+    * the reflection itself still kinks the slope at each edge, so the
+      outermost _TRUE_PEAK_TRIM samples' interpolation is excluded from the
+      max — the plain sample peak covers that region instead (a genuine
+      inter-sample over within a few samples of either end is under-read to
+      the sample peak; never over-read).
+    """
     np = _np()
     n = x.shape[0]
     sample_peak = float(np.abs(x).max())
@@ -428,11 +461,20 @@ def _true_peak(x, notes: list[str]) -> float | None:
         notes.append("signal too long for 4x oversampling; true peak is the "
                      "sample peak")
         return sample_peak
+    pad = min(n - 1, _TRUE_PEAK_PAD)
+    trim = 4 * _TRUE_PEAK_TRIM
     peak = sample_peak
     for c in range(x.shape[1]):
-        spec = np.fft.rfft(x[:, c])
-        up = np.fft.irfft(spec, 4 * n) * 4.0
-        peak = max(peak, float(np.abs(up).max()))
+        col = x[:, c]
+        if pad:
+            col = np.concatenate([col[pad:0:-1], col,
+                                  col[-2:-2 - pad:-1]])
+        m = col.shape[0]
+        spec = np.fft.rfft(col)
+        up = np.fft.irfft(spec, 4 * m) * 4.0
+        core = up[4 * pad + trim: 4 * (pad + n) - trim]
+        if core.size:
+            peak = max(peak, float(np.abs(core).max()))
     return peak
 
 
@@ -445,9 +487,10 @@ def _clipping(x) -> tuple[bool, int]:
     count = int(mask.sum())
     if count == 0:
         return False, 0
-    run = mask[: x.shape[0] - _CLIP_RUN + 1].copy()
+    end = max(0, x.shape[0] - _CLIP_RUN + 1)  # 0 when shorter than a run
+    run = mask[:end].copy()
     for k in range(1, _CLIP_RUN):
-        run &= mask[k: x.shape[0] - _CLIP_RUN + 1 + k]
+        run &= mask[k: end + k]
     return bool(run.any()), count
 
 
@@ -477,7 +520,10 @@ class AudioMetrics:
         """JSON-safe dict (plain Python floats/ints/bools, None for
         undefined metrics — never NaN/-inf)."""
         def _f(v):
-            return None if v is None else float(v)
+            if v is None:
+                return None
+            v = float(v)
+            return v if math.isfinite(v) else None  # belt-and-braces
         return {
             "file": self.file,
             "seconds": float(self.seconds),
@@ -517,6 +563,12 @@ def analyze(samples, rate: int, *, file: str | None = None) -> AudioMetrics:
     n, channels = x.shape
 
     notes: list[str] = []
+    finite = np.isfinite(x)
+    if not finite.all():
+        bad = int(x.size - int(finite.sum()))
+        x = np.where(finite, x, 0.0)
+        notes.append(f"{bad} non-finite sample{'s' if bad != 1 else ''} "
+                     "(NaN/Inf) zeroed before analysis")
     if channels > 2:
         notes.append(f"{channels} channels: all weighted 1.0 (BS.1770 "
                      "surround weights not applied)")
