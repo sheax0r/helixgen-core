@@ -484,3 +484,24 @@ def test_show_traversal_name_with_embedded_dotdot_is_clean_not_found(tmp_home):
     assert res.exit_code == 1
     assert isinstance(res.exception, SystemExit)
     assert "no tone found" in res.output.lower()
+
+
+def test_show_embedded_null_byte_name_is_clean_not_found(tmp_home):
+    """A NAME containing an embedded null byte makes Path.resolve() raise
+    ValueError (not OSError). _is_safe_slug_candidate must treat that the
+    same as any other unsafe candidate -- a clean "not found" exit 1, never
+    an uncaught ValueError traceback."""
+    res = CliRunner().invoke(cli, ["library", "show", "foo\x00bar"])
+    assert res.exit_code == 1
+    assert isinstance(res.exception, SystemExit)
+    assert "no tone found" in res.output.lower()
+    assert "ValueError" not in res.output
+    assert "Traceback" not in res.output
+
+
+def test_describe_embedded_null_byte_name_is_clean_not_found(tmp_home):
+    res = CliRunner().invoke(cli, ["describe", "foo\x00bar"])
+    assert res.exit_code == 1
+    assert isinstance(res.exception, SystemExit)
+    assert "ValueError" not in res.output
+    assert "Traceback" not in res.output

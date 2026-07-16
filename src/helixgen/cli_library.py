@@ -53,7 +53,11 @@ def _is_safe_slug_candidate(candidate: str) -> bool:
     ``preset_name`` matching instead of raising. A legitimate preset_name
     that happens to contain ``/`` or ``..`` (e.g. artist "AC/DC", or a title
     with an ellipsis) is therefore never blocked, because preset_name
-    matching never touches the filesystem.
+    matching never touches the filesystem. A candidate with an embedded
+    null byte makes ``Path.resolve()`` raise ``ValueError`` (not
+    ``OSError``) -- that is caught here too, so it is likewise treated as
+    "not a safe file candidate" rather than propagating as an uncaught
+    traceback.
     """
     if not candidate:
         return False
@@ -61,7 +65,7 @@ def _is_safe_slug_candidate(candidate: str) -> bool:
     try:
         cand = (tones / f"{candidate}.json").resolve()
         return cand.parent == tones.resolve()
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
