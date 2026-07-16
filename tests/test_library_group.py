@@ -81,7 +81,8 @@ def test_library_list_json_empty(tmp_home):
 def test_library_list_human_empty(tmp_home):
     res = CliRunner().invoke(cli, ["library", "list"])
     assert res.exit_code == 0, res.output
-    assert "0" in res.output
+    assert "Tones (0):" in res.output
+    assert "(none)" in res.output
 
 
 def test_library_list_json_includes_generated_tones(tmp_home, hsp_library, tmp_path):
@@ -284,3 +285,124 @@ def test_validate_reports_preset_name_not_in_manifest(tmp_home, hsp_library, tmp
     res = CliRunner().invoke(cli, ["library", "validate"])
     assert res.exit_code == 1
     assert "manifest" in res.output.lower()
+
+
+def test_validate_accepts_guitar_targeted_variant_key_when_no_guitar_profiles(
+    tmp_home, hsp_library, tmp_path
+):
+    """A tone made via `generate --guitar ...` uses the guitar slug (not
+    "generic") as its variant key. Since PR 2 ships no guitar-profile
+    library yet, `validate` must not flag that key as unknown -- see
+    review finding I-2."""
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean", guitar="Les Paul Jr")
+    res = CliRunner().invoke(cli, ["library", "validate"])
+    assert res.exit_code == 0, res.output
+
+    res_json = CliRunner().invoke(cli, ["library", "validate", "--json"])
+    assert res_json.exit_code == 0, res_json.output
+    assert json.loads(res_json.output) == {"problems": []}
+
+
+# ---------------------------------------------------------------------------
+# review-finding regression tests (I-1..I-4, minor path-traversal guard)
+# ---------------------------------------------------------------------------
+
+
+def _write_broken_json(name: str) -> None:
+    home.tones_dir().mkdir(parents=True, exist_ok=True)
+    (home.tones_dir() / f"{name}.json").write_text("{not valid json")
+
+
+def test_show_human_malformed_json_exits_1_clean(tmp_home):
+    _write_broken_json("broken")
+    res = CliRunner().invoke(cli, ["library", "show", "broken"])
+    assert res.exit_code == 1
+    assert isinstance(res.exception, SystemExit)
+    assert "could not read metadata" in res.output.lower()
+
+
+def test_describe_malformed_json_exits_1_clean(tmp_home):
+    _write_broken_json("broken")
+    res = CliRunner().invoke(cli, ["describe", "broken"])
+    assert res.exit_code == 1
+    assert isinstance(res.exception, SystemExit)
+    assert "could not read metadata" in res.output.lower()
+
+
+def test_doc_malformed_json_exits_1_clean(tmp_home):
+    _write_broken_json("broken")
+    res = CliRunner().invoke(cli, ["library", "doc", "broken", "-"], input="x")
+    assert res.exit_code == 1
+    assert isinstance(res.exception, SystemExit)
+    assert "could not read metadata" in res.output.lower()
+
+
+def test_show_json_raw_dump_still_fine_on_malformed_json(tmp_home):
+    """`show --json` dumps raw on-disk bytes -- it never parses, so a
+    malformed file is not this verb's problem to guard (matches existing
+    graceful posture)."""
+    _write_broken_json("broken")
+    res = CliRunner().invoke(cli, ["library", "show", "broken", "--json"])
+    assert res.exit_code == 0, res.output
+    assert res.output.strip() == "{not valid json"
+
+
+def test_show_ambiguous_file_match_and_other_preset_name_exits_1(tmp_home):
+    """Tone A's variant preset_name is literally "beta"; Tone B's own
+    logical slug is "beta" (its metadata file is beta.json). NAME "beta"
+    resolves via BOTH mechanisms to two different logical tones -- this must
+    raise ambiguous, not silently pick the filename match (I-3)."""
+    meta_a = tone_meta.ToneMeta(
+        artist=None, song=None, descriptor="Alpha Tone", tags=[],
+        description_md=None,
+        variants={"generic": tone_meta.Variant(hsp="tones/alpha.hsp", preset_name="beta")},
+        created="2026-01-01", updated="2026-01-01", schema=1,
+    )
+    tone_meta.save_tone_meta(meta_a)
+    assert meta_a.logical_slug == "alpha-tone"
+
+    meta_b = tone_meta.ToneMeta(
+        artist=None, song=None, descriptor="beta", tags=[],
+        description_md=None,
+        variants={"generic": tone_meta.Variant(hsp="tones/beta.hsp", preset_name="Beta Tone")},
+        created="2026-01-01", updated="2026-01-01", schema=1,
+    )
+    tone_meta.save_tone_meta(meta_b)
+    assert meta_b.logical_slug == "beta"
+
+    res = CliRunner().invoke(cli, ["library", "show", "beta"])
+    assert res.exit_code == 1
+    assert "ambiguous" in res.output.lower()
+
+
+def test_doc_metadata_filename_diverges_from_identity_slug_exits_1(tmp_home):
+    """tones/mytone.json's content computes logical_slug "my-tone" (a
+    hand-rename/edit divergence). `library doc` must refuse rather than
+    write to the divergent path meta_path(meta.logical_slug) (I-4)."""
+    home.tones_dir().mkdir(parents=True, exist_ok=True)
+    data = {
+        "schema": 1, "artist": None, "song": None, "descriptor": "My Tone",
+        "tags": [], "description_md": None,
+        "variants": {"generic": {"hsp": "tones/mytone.hsp", "preset_name": "My Tone",
+                                  "guitar_settings": {}, "notes_md": None}},
+        "created": "2026-01-01", "updated": "2026-01-01",
+    }
+    mismatched_path = home.tones_dir() / "mytone.json"
+    mismatched_path.write_text(json.dumps(data))
+
+    res = CliRunner().invoke(cli, ["library", "doc", "mytone", "-"], input="hello")
+    assert res.exit_code == 1
+    assert "my-tone" in res.output.lower()
+    assert not (home.tones_dir() / "my-tone.json").exists()
+    # original mismatched file is untouched
+    assert json.loads(mismatched_path.read_text())["description_md"] is None
+
+
+def test_show_rejects_name_with_path_separator(tmp_home):
+    res = CliRunner().invoke(cli, ["library", "show", "../etc/passwd"])
+    assert res.exit_code == 1
+
+
+def test_show_rejects_name_with_dotdot(tmp_home):
+    res = CliRunner().invoke(cli, ["library", "show", "foo/../bar"])
+    assert res.exit_code == 1

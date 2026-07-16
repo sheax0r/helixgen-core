@@ -8,16 +8,20 @@ group and the standalone ``describe`` command are imported back into
 ``helixgen.cli:cli`` stays the single entry point.
 
 **Name resolution** (shared by ``library show``, ``library doc``, and
-``describe``): a NAME is tried, in order, as (1) the logical tone slug
-(also accepting a trailing ``.json``, i.e. the metadata filename), then (2)
-any variant's ``preset_name`` across the whole library. Two tones whose
-variants share a ``preset_name`` collide as ambiguous; no match is a
-``ClickException`` (exit 1).
+``describe``): a NAME is tried as BOTH (1) the logical tone slug (also
+accepting a trailing ``.json``, i.e. the metadata filename) AND (2) any
+variant's ``preset_name`` across the whole library. Two tones whose variants
+share a ``preset_name`` collide as ambiguous; if NAME matches a metadata file
+AND separately matches a *different* tone's variant ``preset_name``, that is
+also ambiguous (a silent pick would hide the collision). No match, an
+ambiguous match, malformed on-disk metadata, or a metadata file whose content
+computes a different identity slug than its own filename are all a
+``ClickException`` (exit 1) -- see ``_resolve_slug`` and ``_load_meta_for``.
 
 PR 2 has no guitar profiles or per-IR metadata yet -- ``library list``'s
-``guitars``/``irs`` sections and ``library validate``'s ``guitar_slugs`` are
-always empty; the flags/shape exist now so they stay stable when a later PR
-fills them in.
+``guitars``/``irs`` sections are always empty; the flags/shape exist now so
+they stay stable when a later PR fills them in. ``library validate`` passes
+a lenient ``guitar_slugs`` set for the same reason (see ``validate_cmd``).
 """
 from __future__ import annotations
 
@@ -37,32 +41,85 @@ from helixgen.device.manifest import SetlistManifest
 # ---------------------------------------------------------------------------
 
 
+def _reject_unsafe_name(name: str) -> None:
+    """Cheap path-traversal guard: NAME addresses a tone, never a path."""
+    if "/" in name or "\\" in name or ".." in name:
+        raise click.ClickException(
+            f"{name!r} looks like a path, not a tone name -- pass a logical "
+            "slug, a variant's preset_name, or a metadata filename stem"
+        )
+
+
 def _resolve_slug(name: str) -> str:
     """Resolve ``name`` to a logical tone slug (see module docstring).
 
-    Raises ``click.ClickException`` (exit 1) when nothing matches, or when
-    more than one tone's variant ``preset_name`` matches (ambiguous).
+    Checks BOTH resolution mechanisms (not one-then-fallback): does NAME
+    name an existing metadata file, AND does NAME separately match some
+    variant's ``preset_name``. Raises ``click.ClickException`` (exit 1)
+    when nothing matches; when more than one tone's variant ``preset_name``
+    matches; or when NAME resolves to a metadata file AND ALSO matches a
+    *different* tone's variant ``preset_name`` -- picking the file silently
+    in that case would hide a real naming collision.
     """
+    _reject_unsafe_name(name)
     candidate = name[:-5] if name.endswith(".json") else name
-    if tone_meta.meta_path(candidate).exists():
-        return candidate
+    file_match = candidate if tone_meta.meta_path(candidate).exists() else None
 
-    matches = {
+    preset_matches = {
         meta.logical_slug
         for meta in tone_meta.load_all_tone_metas()
         if any(v.preset_name == name for v in meta.variants.values())
     }
-    if len(matches) == 1:
-        return next(iter(matches))
-    if len(matches) > 1:
+
+    if file_match is not None:
+        other_matches = preset_matches - {file_match}
+        if other_matches:
+            raise click.ClickException(
+                f"{name!r} is ambiguous: it names the metadata file "
+                f"{file_match!r} AND ALSO matches a different tone's "
+                f"variant preset_name (logical slugs: {sorted(other_matches)}) "
+                "-- disambiguate by using the exact logical slug or the "
+                "exact preset_name"
+            )
+        return file_match
+
+    if len(preset_matches) == 1:
+        return next(iter(preset_matches))
+    if len(preset_matches) > 1:
         raise click.ClickException(
             f"{name!r} matches more than one tone's preset_name -- ambiguous "
-            f"(logical slugs: {sorted(matches)})"
+            f"(logical slugs: {sorted(preset_matches)})"
         )
     raise click.ClickException(
         f"no tone found matching {name!r} -- tried it as a logical slug "
         "(library show/list) and as a variant's preset_name"
     )
+
+
+def _load_meta_for(slug: str) -> tone_meta.ToneMeta:
+    """Load the metadata for ``slug``, guarding both failure modes a caller
+    resolved via ``_resolve_slug`` can hit:
+
+    - malformed/unreadable on-disk JSON becomes a clean ``ClickException``
+      instead of a raw ``json.JSONDecodeError``/``OSError`` traceback (I-1);
+    - a metadata file whose own content computes a DIFFERENT identity slug
+      than the filename it was loaded from (a hand-rename/edit divergence)
+      is refused rather than silently proceeding to act on it -- a caller
+      that goes on to write via ``save_tone_meta`` would otherwise write to
+      ``meta_path(meta.logical_slug)``, a different path, orphaning/
+      duplicating the tone (I-4).
+    """
+    try:
+        meta = tone_meta.load_tone_meta(slug)
+    except (OSError, ValueError) as err:
+        raise click.ClickException(f"could not read metadata for {slug!r}: {err}")
+    if meta.logical_slug != slug:
+        raise click.ClickException(
+            f"metadata file {slug}.json does not match its own identity "
+            f"slug {meta.logical_slug!r} -- rename the file to "
+            f"{meta.logical_slug}.json or re-migrate it"
+        )
+    return meta
 
 
 def _tone_summary(meta: tone_meta.ToneMeta) -> Dict[str, Any]:
@@ -169,7 +226,7 @@ def show_cmd(name: str, as_json: bool) -> None:
         click.echo(tone_meta.meta_path(slug).read_text())
         return
 
-    meta = tone_meta.load_tone_meta(slug)
+    meta = _load_meta_for(slug)
     click.echo(f"{slug}  -- {meta.display_base}")
     click.echo(f"Tags: {', '.join(meta.tags) if meta.tags else '(none)'}")
     click.echo(f"Description: {'set' if meta.description_md else '(none)'}")
@@ -219,7 +276,7 @@ def doc_cmd(name: str, source: str | None, variant_key: str | None,
         )
 
     slug = _resolve_slug(name)
-    meta = tone_meta.load_tone_meta(slug)
+    meta = _load_meta_for(slug)
 
     if variant_key is None:
         meta.description_md = text
@@ -246,19 +303,39 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
 
     Runs ``validate_tone_meta`` over every ``library/tones/*.json`` against
     the setlist manifest (each variant's ``preset_name`` must be registered)
-    and the known guitar-profile slugs -- in this release there are no
-    guitar profiles yet, so only the special ``"generic"`` variant key
-    validates; any other key is flagged. Each problem line is prefixed with
-    its tone's logical slug. Exits 1 if any problems are found across the
-    whole library, 0 if it's fully clean. --json emits
+    and the known guitar-profile slugs. This release has no guitar-profile
+    library yet (``library/guitars/``) -- when it's empty or absent, the
+    guitar-key check falls back to every variant key already present across
+    the library instead of just ``"generic"``, so guitar-targeted tones made
+    via ``generate --guitar`` aren't falsely flagged; a later PR that ships
+    guitar profiles will make this check exact. Each problem line is
+    prefixed with its tone's logical slug. Exits 1 if any problems are found
+    across the whole library, 0 if it's fully clean. --json emits
     {"problems": [...]} (empty list when clean) with the same exit-code rule.
     """
     manifest = SetlistManifest.load()
-    guitar_slugs: set[str] = set()  # no guitar-profile library yet (later PR)
     tones_dir = home.tones_dir()
+    metas = tone_meta.load_all_tone_metas()
+
+    guitars_path = home.guitars_dir()
+    known_guitar_slugs: set[str] = (
+        {p.stem for p in guitars_path.glob("*.json")} if guitars_path.is_dir() else set()
+    )
+    # PR 2 has no guitar profiles; once Task 11 (PR 3) lands, pass the real
+    # profile slug set so unknown guitar keys are caught. Until then, an
+    # empty `known_guitar_slugs` would falsely flag every variant key made
+    # via `generate --guitar <name>` (the documented mainline) as "not a
+    # known guitar slug" -- so when no profiles exist yet, fall back to
+    # every variant key actually present across the library instead of the
+    # empty set, keeping the rest of this check (missing hsp, identity
+    # shape, schema, unregistered preset_name) useful without spurious
+    # guitar-key failures.
+    guitar_slugs = known_guitar_slugs or {
+        key for meta in metas for key in meta.variants
+    }
 
     problems: List[str] = []
-    for meta in tone_meta.load_all_tone_metas():
+    for meta in metas:
         for p in tone_meta.validate_tone_meta(
             meta, tones_dir=tones_dir, manifest=manifest, guitar_slugs=guitar_slugs
         ):
@@ -296,7 +373,7 @@ def describe(tone: str) -> None:
     raw --json dump.
     """
     slug = _resolve_slug(tone)
-    meta = tone_meta.load_tone_meta(slug)
+    meta = _load_meta_for(slug)
 
     click.echo(meta.display_base)
     click.echo(f"Tags: {', '.join(meta.tags) if meta.tags else '(none)'}")
