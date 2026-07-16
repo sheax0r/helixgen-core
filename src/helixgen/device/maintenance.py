@@ -444,7 +444,7 @@ def delete_device_ir(client, name_or_hash: str, *, ip: str,
 
 def ir_prune(
     *,
-    ip: str = "192.168.4.84",
+    ip: Optional[str] = None,
     port: Optional[int] = None,
     execute: bool = False,
     force: bool = False,
@@ -486,6 +486,18 @@ def ir_prune(
     ``referenced`` entries list their ``presets``; ``protected`` their
     ``local_tones``).
     """
+    if ip is None:
+        # #74 resolution chain — no hardcoded default IP; the resolved
+        # address is also what the SFTP file-removal path connects to.
+        # Re-raised as HelixError so callers (the CLI included) that catch
+        # the module's documented error type get the fail-fast message,
+        # never a raw traceback.
+        from . import discovery
+
+        try:
+            ip = discovery.resolve_ip()
+        except discovery.IPResolutionError as e:
+            raise HelixError(str(e)) from e
     kwargs: Dict[str, Any] = {"ip": ip}
     if port is not None:
         kwargs["port"] = port

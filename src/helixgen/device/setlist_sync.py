@@ -196,7 +196,7 @@ def _build_blob(body):
 def sync_setlists(
     manifest: SetlistManifest,
     *,
-    ip: str = "192.168.4.84",
+    ip: Optional[str] = None,
     port: Optional[int] = None,
     setlists: Optional[List[str]] = None,
     gc: bool = False,
@@ -268,6 +268,18 @@ def sync_setlists(
             s for s in manifest.setlists()
             if not manifest.is_synced(s) and manifest.tones_in(s)]
 
+    if ip is None:
+        # #74 resolution chain — no hardcoded default IP; the resolved
+        # address also keys the per-device serial fallback + IR uploads.
+        # Re-raised as HelixError so callers (the CLI included) that catch
+        # the module's documented error type get the fail-fast message,
+        # never a raw traceback.
+        from . import discovery
+
+        try:
+            ip = discovery.resolve_ip()
+        except discovery.IPResolutionError as e:
+            raise HelixError(str(e)) from e
     client_kwargs: Dict[str, Any] = {"ip": ip}
     if port is not None:
         client_kwargs["port"] = port

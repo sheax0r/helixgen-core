@@ -1,8 +1,11 @@
 """Live hardware test for the device network client.
 
 Skipped unless a real Helix Stadium is present AND explicitly enabled:
-    HELIXGEN_LIVE_DEVICE=1 HELIXGEN_HELIX_IP=192.168.4.84 \
+    HELIXGEN_LIVE_DEVICE=1 HELIXGEN_HELIX_IP=<device-ip> \
         PYTHONPATH=$PWD/src python -m pytest tests/test_device_live.py -q
+
+(#74: there is no built-in default IP — set HELIXGEN_HELIX_IP, or run
+`helixgen device discover` once so the persisted record resolves it.)
 
 It exercises the full CRUD cycle on the USER setlist's slot 2D (posi 7), which
 is empty on a stock device, and cleans up after itself so the device is left in
@@ -13,11 +16,32 @@ import os
 import pytest
 
 LIVE = os.environ.get("HELIXGEN_LIVE_DEVICE")
-IP = os.environ.get("HELIXGEN_HELIX_IP", "192.168.4.84")
+
+
+def _resolved_ip():
+    """The #74 chain (env > real persisted record), evaluated at IMPORT time
+    — i.e. against the real ~/.helixgen — because the suite's autouse
+    fixtures redirect $HELIXGEN_HOME to a scratch dir before each test
+    runs, which would make the record step read an empty devices/."""
+    env = os.environ.get("HELIXGEN_HELIX_IP")
+    if env:
+        return env
+    try:
+        from helixgen.device.discovery import resolve_ip
+
+        return resolve_ip(warn=False)
+    except Exception:  # noqa: BLE001 — unresolvable -> skip below
+        return None
+
+
+IP = _resolved_ip()
 POS = 7  # USER slot 2D — empty by default
 
 pytestmark = pytest.mark.skipif(
-    not LIVE, reason="live device test; set HELIXGEN_LIVE_DEVICE=1 to enable"
+    not LIVE or not IP,
+    reason="live device test; set HELIXGEN_LIVE_DEVICE=1 to enable (and set "
+           "HELIXGEN_HELIX_IP or run `helixgen device discover` once — "
+           "no built-in default IP, #74)",
 )
 
 

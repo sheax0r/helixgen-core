@@ -268,6 +268,34 @@ def test_normalize_surfaces_keep_contract_phrases(path, phrases):
             f"contract phrase {phrase!r}")
 
 
+#: 0.24.0 agent surfaces: `device discover` + the #74 IP-resolution chain
+#: (--ip > $HELIXGEN_HELIX_IP > persisted device record; NO built-in default,
+#: immediate instructive failure) must keep their contract phrases.
+DISCOVER_SURFACES: list[tuple[list[str], list[str]]] = [
+    (["device", "discover"],
+     ["mDNS", "_stadiumserver._tcp", "PERSIST", "/ProductInfoGet",
+      "direct-to-IP", "most recently discovered",
+      "never probes beyond the local subnet", "Read-only"]),
+    # the shared --ip help (any verb carrying it) pins the resolution chain
+    (["device", "info"],
+     ["helixgen device discover", "$HELIXGEN_HELIX_IP",
+      "NO built-in default", "fails fast"]),
+    (["device", "sync"],
+     ["helixgen device discover", "NO built-in default"]),
+]
+
+
+@pytest.mark.parametrize(
+    "path,phrases", DISCOVER_SURFACES,
+    ids=[" ".join(row[0]) for row in DISCOVER_SURFACES])
+def test_discover_surfaces_keep_contract_phrases(path, phrases):
+    combined = _full_help(_resolve(path))
+    for phrase in phrases:
+        assert phrase in combined, (
+            f"CLI verb {' '.join(path)!r} help lost the discovery "
+            f"contract phrase {phrase!r}")
+
+
 def test_top_level_help_orients_agents():
     res = CliRunner().invoke(cli, ["--help"])
     assert res.exit_code == 0

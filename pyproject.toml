@@ -1,6 +1,6 @@
 [project]
 name = "helixgen"
-version = "0.23.0"
+version = "0.24.0"
 description = "Generate Line 6 Helix Stadium .hsp / legacy .hlx preset files from JSON tone specs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -78,5 +78,6 @@ markers = [
     "sync: live group — tone-library sync (sync/add/unsync/slots reorder/reorder)",
     "device_ir: live group — device IR verbs (push-ir/rename-ir/pull-ir/delete-ir/ir-prune dry-run)",
     "locks: live group — machine-local advisory device locks (lock/unlock/--status, blocking, token passthrough, --no-lock)",
+    "discover: live group — LAN discovery + the #74 IP-resolution chain (device discover, persisted-record resolution, fail-fast)",
     "live_global: extra-gated global-settings writes; skipped unless HELIXGEN_LIVE_GLOBAL=1 too",
 ]

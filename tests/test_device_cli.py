@@ -17,6 +17,13 @@ CANNED_PRESETS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _configured_device_ip(monkeypatch):
+    """#74: device verbs no longer have a built-in default IP. These tests
+    exercise verb logic against fakes, so simulate a configured user."""
+    monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
+
+
 class FakeClient:
     """Stand-in for HelixClient. Records calls; returns canned data."""
 

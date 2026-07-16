@@ -57,6 +57,31 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## ✅ Shipped
 
+- **Workspace #74 — `device discover` + persisted-IP resolution chain
+  (0.24.0).** (Authoritative entry in the coordination workspace's
+  `BACKLOG.md`.) The hardcoded default `192.168.4.84` — the maintainer's own
+  fossilized DHCP lease, a guaranteed-wrong default for anyone else that
+  failed as a long connect stall — is **gone from src/ entirely** (pinned by
+  a grep-style regression test). New verb `helixgen device discover
+  [--timeout] [--probe/--no-probe] [--json]`: mDNS first (the Stadium
+  advertises `_stadiumserver._tcp.local.` and answers a one-shot stdlib
+  multicast PTR query itself — verified live; single datagram carries
+  PTR+SRV+A, SRV port 2001), local-/24 TCP connect-probe fallback (port
+  2002, bounded, never beyond the local subnet), every candidate confirmed
+  via read-only `/ProductInfoGet` before being persisted into the
+  library-foundations per-device records (`devices/<serial>.json` gains
+  round-tripped `ip`/`ip_updated_at`/`model`/`firmware`). Resolution chain
+  everywhere an IP is needed: `--ip` > `$HELIXGEN_HELIX_IP` > persisted
+  record > immediate instructive failure naming `device discover`
+  (`discovery.resolve_ip()`; multi-device: most-recently-discovered wins
+  deterministically, ip_updated_at desc then serial desc, warning on
+  disagreement). Community prior art (discover-once, then direct-to-IP —
+  the desktop app's discovery layer is flaky, direct sessions stable) is
+  the design's reason and documented in `docs/CLI.md`. Live suite: new
+  `discover` marker group; `$HELIXGEN_HOME` now scratch-redirected (real
+  `devices/` records untouchable) with `$HELIXGEN_LOCKS` pinned back to the
+  real root.
+
 - **Workspace #67 + #68-core + #65 — live-validation fixes (0.21.0).** (The
   authoritative entries live in the coordination workspace's `BACKLOG.md`.)
   #67a: live-ops block coordinates corrected to the DSP **grid slot** (the
@@ -157,6 +182,28 @@ and had to be redirected. Start here so future work begins from the right model.
   fixed pre-merge): `docs/superpowers/specs/2026-07-16-locks-adversarial-review.md`.
 
 ## 🔲 Remaining
+
+### Deferred from the 0.24.0 discovery adversarial review (2026-07-16)
+
+- **#75 Discovery residuals** (workspace #74 shipped 0.24.0; PR #12 review):
+  (a) interface/subnet awareness — `local_ipv4()` picks the default-route
+  interface, so a VPN default route makes both mDNS and the probe miss a
+  LAN-attached Stadium, and the /24 probe has no RFC1918 guard or real
+  netmask awareness (a directly-public-addressed machine would connect-scan
+  253 public hosts on 2002); consider per-interface queries + a
+  private-address gate. (b) `mdns_discover` binds an ephemeral port and
+  never joins the 224.0.0.251 group, so multicast-only responses (RFC 6762
+  QU-ignore cases) are invisible — fine against fw 1.3.2 (unicast reply
+  verified live), other firmware may fall through to the probe.
+  (c) polish: `--timeout` values <0.5 s are silently floored (undocumented);
+  `discover` neither takes nor persists a nonstandard RPC port; no
+  `discover --forget`/prune for stale records (`ip-<addr>` fallback serials
+  accumulate per DHCP lease and keep the multi-device warning firing); the
+  "persisted under ~/.helixgen/devices/" message ignores a $HELIXGEN_HOME
+  override; `tools/re_capture_parity.py` still hardcodes the old IP (the
+  regression sweep covers src/ only); live conftest `_persisted_device_ip`
+  tie-breaks missing serials as `""` vs `devices_with_ips`'s `path.stem`;
+  `--ip ""` is treated as unset rather than rejected.
 
 ### Deferred from the 0.22.0 lock-system adversarial review (2026-07-16)
 

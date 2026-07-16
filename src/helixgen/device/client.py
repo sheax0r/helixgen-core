@@ -194,9 +194,19 @@ class _RawOps:
 
 
 class HelixClient:
-    def __init__(self, ip: str = "192.168.4.84", port: int = 2002,
+    def __init__(self, ip: Optional[str] = None, port: int = 2002,
                  *, connect_settle: float = 0.6, rpc_timeout: float = 2.0,
                  reconnect_tries: int = 3, reconnect_backoff: float = 0.5):
+        if ip is None:
+            # #74 resolution chain ($HELIXGEN_HELIX_IP > persisted device
+            # record) — there is NO hardcoded default IP. Fails fast with
+            # an instructive HelixError instead of stalling on a connect.
+            from helixgen.device import discovery
+
+            try:
+                ip = discovery.resolve_ip()
+            except discovery.IPResolutionError as e:
+                raise HelixError(str(e)) from e
         self.ip = ip
         self.port = port
         self.connect_settle = connect_settle

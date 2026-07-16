@@ -84,7 +84,7 @@ def _frame_2003(addr, args):
 # tests
 # --------------------------------------------------------------------------
 def test_poll_returns_decoded_events_with_correct_port_and_addr():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     prop = _frame_2001("/setPropertyValue", [("i", 42), ("f", 0.5)])
     dsp = _frame_2003("/dspEvent", [("b", msgpack.packb({"blk": 3, "v": 0.25}))])
     _wire(sub, {2001: [prop], 2003: [dsp]})
@@ -106,7 +106,7 @@ def test_poll_returns_decoded_events_with_correct_port_and_addr():
 
 
 def test_12byte_prefixed_2001_frame_parses_after_skipping_header():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     frame = _frame_2001("/setEditBuffer", [("i", 1)], version=2, seq=99)
     # the header contains no '/', so find(b"/") lands on the OSC address
     assert frame.find(b"/") == 12
@@ -120,7 +120,7 @@ def test_12byte_prefixed_2001_frame_parses_after_skipping_header():
 
 
 def test_sbepgsm_content_blob_stays_raw_bytes():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     blob = _content.MAGIC + msgpack.packb({"foo": "bar"}, use_bin_type=True)
     frame = _frame_2001("/setEditBuffer", [("b", blob)])
     _wire(sub, {2001: [frame]})
@@ -132,7 +132,7 @@ def test_sbepgsm_content_blob_stays_raw_bytes():
 
 
 def test_stream_drops_trigger_noise_by_default():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     dsp = _frame_2003("/dspEvent", [("b", msgpack.packb({"v": 1}))])
     trig = _frame_2003("/trigger", [("i", 0)])
     prop = _frame_2001("/setPropertyValue", [("i", 1)])
@@ -146,7 +146,7 @@ def test_stream_drops_trigger_noise_by_default():
 
 
 def test_stream_include_noise_keeps_trigger():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     dsp = _frame_2003("/dspEvent", [("b", msgpack.packb({"v": 1}))])
     trig = _frame_2003("/trigger", [("i", 0)])
     _wire(sub, {2003: [dsp, trig]})
@@ -156,7 +156,7 @@ def test_stream_include_noise_keeps_trigger():
 
 
 def test_stream_filter_addrs_restricts_to_set():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     dsp = _frame_2003("/dspEvent", [("i", 1)])
     meter = _frame_2003("/meter", [("f", 0.9)])
     _wire(sub, {2003: [dsp, meter]})
@@ -168,14 +168,14 @@ def test_stream_filter_addrs_restricts_to_set():
 
 
 def test_stream_duration_zero_terminates_immediately():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     _wire(sub, {2003: [_frame_2003("/dspEvent", [("i", 1)])]})
     # duration already elapsed -> generator yields nothing and returns
     assert list(sub.stream(duration=0.0)) == []
 
 
 def test_poll_drains_multiple_queued_frames_per_socket():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     frames = [_frame_2003("/dspEvent", [("i", n)]) for n in range(3)]
     _wire(sub, {2003: frames})
 
@@ -184,7 +184,7 @@ def test_poll_drains_multiple_queued_frames_per_socket():
 
 
 def test_frame_without_osc_address_is_skipped():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     # no '/' anywhere -> find returns -1 -> frame yields no Event
     _wire(sub, {2003: [b"\x00\x01\x02garbage-no-slash"]})
     assert sub.poll(timeout=0.05) == []
@@ -195,7 +195,7 @@ def test_truncated_osc_frame_is_skipped_not_raised():
     # parse_osc_message's struct.unpack_from raise struct.error (NOT a
     # ValueError). poll() must skip it (counting it) rather than crash the
     # whole stream — this is exactly the tuner/watch resilience case.
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     bad = b"/dspEvent\x00\x00\x00,b\x00\x00"  # ',b' arg, but no blob length/data
     _wire(sub, {2003: [bad]})
     assert sub.poll(timeout=0.05) == []
@@ -203,7 +203,7 @@ def test_truncated_osc_frame_is_skipped_not_raised():
 
 
 def test_good_frame_after_a_malformed_one_still_delivered():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     bad = b"/dspEvent\x00\x00\x00,b\x00\x00"
     good = _frame_2003("/dspEvent", [("b", msgpack.packb({"blk": 1, "v": 0.1}))])
     _wire(sub, {2003: [bad, good]})
@@ -213,13 +213,13 @@ def test_good_frame_after_a_malformed_one_still_delivered():
 
 
 def test_poll_raises_when_not_connected():
-    sub = HelixSubscriber()  # never wired: poller is None
+    sub = HelixSubscriber("10.0.0.99")  # never wired: poller is None
     with pytest.raises(HelixError):
         sub.poll(timeout=0.01)
 
 
 def test_close_closes_sockets_and_clears_state():
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     socks = _wire(sub, {2001: [], 2003: []})
     sub.close()
     assert all(s.closed for s in socks)
@@ -228,7 +228,7 @@ def test_close_closes_sockets_and_clears_state():
 
 
 def test_context_manager_uses_connect_and_close(monkeypatch):
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     calls = []
     monkeypatch.setattr(sub, "connect", lambda: (calls.append("connect"), sub)[1])
     monkeypatch.setattr(sub, "close", lambda: calls.append("close"))
@@ -248,6 +248,6 @@ def test_missing_pyzmq_raises_helixerror(monkeypatch):
         return real_import(name, *a, **k)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    sub = HelixSubscriber()
+    sub = HelixSubscriber("10.0.0.99")
     with pytest.raises(HelixError):
         sub.connect()

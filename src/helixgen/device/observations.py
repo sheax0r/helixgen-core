@@ -11,9 +11,17 @@ rebuilds it — so this state is **not** committed to the ``~/.helixgen`` git re
 On-disk shape (``version`` 1)::
 
     {"version": 1, "serial": "<serial>",
+     "ip"?: "192.168.x.x", "ip_updated_at"?: float,
+     "model"?: "stadium", "firmware"?: "1.3.2",
      "tones":    {"<name>": {"cid": int, "posi": int}},
      "pool":     {"<name>": {"cid": int, "posi": int, "synced_hash"?: "sha256:…"}},
      "setlists": {"<name>": {"cid": int, "refs": {"<name>": {...}}}}}
+
+The optional ``ip``/``ip_updated_at``/``model``/``firmware`` fields are the
+device's **discovered address record** (workspace #74, written by
+``helixgen device discover``); they round-trip through every load/save so a
+sync rebuild never drops them. Losing a devices file now costs one
+re-``discover`` (plus the free sync rebuild).
 
 ``tones`` is the per-tone observed placement (the old per-tone ``device``
 field — read by ``slots restore``'s fallback and rename/delete-by-cid).
@@ -38,7 +46,7 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _safe_serial(serial: str) -> str:
-    """Filesystem-safe basename for a serial (``ip-192.168.4.84``, ``legacy``,
+    """Filesystem-safe basename for a serial (``ip-192.168.0.10``, ``legacy``,
     a real alphanumeric serial). Never allows path separators to escape
     ``devices/``."""
     s = _UNSAFE.sub("_", str(serial)).strip("._") or "unknown"
@@ -63,15 +71,25 @@ class DeviceObservations:
     tones: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     pool: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     setlists: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # discovered address record (workspace #74) — optional, round-tripped.
+    ip: Optional[str] = None
+    ip_updated_at: Optional[float] = None
+    model: Optional[str] = None
+    firmware: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "version": OBSERVATIONS_VERSION,
             "serial": self.serial,
             "tones": self.tones,
             "pool": self.pool,
             "setlists": self.setlists,
         }
+        for k in ("ip", "ip_updated_at", "model", "firmware"):
+            v = getattr(self, k)
+            if v is not None:
+                d[k] = v
+        return d
 
     # -- sync bookkeeping helpers (mirror the old manifest.observed_* API) ----
 
@@ -120,7 +138,24 @@ def load_observations(serial: str) -> DeviceObservations:
         tones=_coerce_map(data.get("tones")),
         pool=_coerce_map(data.get("pool")),
         setlists=_coerce_map(data.get("setlists")),
+        **_ip_fields(data),
     )
+
+
+def _ip_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The optional discovered-address fields of a raw devices dict, coerced
+    (used by every path that reconstructs a :class:`DeviceObservations` from
+    file data, so no rewrite ever drops them)."""
+    out: Dict[str, Any] = {}
+    if data.get("ip") is not None:
+        out["ip"] = str(data["ip"])
+    if isinstance(data.get("ip_updated_at"), (int, float)):
+        out["ip_updated_at"] = float(data["ip_updated_at"])
+    if data.get("model") is not None:
+        out["model"] = str(data["model"])
+    if data.get("firmware") is not None:
+        out["firmware"] = str(data["firmware"])
+    return out
 
 
 def save_observations(obs: DeviceObservations) -> None:
@@ -130,6 +165,53 @@ def save_observations(obs: DeviceObservations) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(obs.to_dict(), indent=2))
     os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# discovered address records (workspace #74)
+# ---------------------------------------------------------------------------
+
+def record_device_ip(serial: str, ip: str, *,
+                     model: Optional[str] = None,
+                     firmware: Optional[str] = None,
+                     updated_at: Optional[float] = None) -> Path:
+    """Persist a discovered device address into ``devices/<serial>.json``,
+    preserving any existing observed placement state. Returns the path."""
+    import time as _time
+
+    obs = load_observations(serial)
+    obs.ip = str(ip)
+    obs.ip_updated_at = float(updated_at if updated_at is not None
+                              else _time.time())
+    if model is not None:
+        obs.model = str(model)
+    if firmware is not None:
+        obs.firmware = str(firmware)
+    save_observations(obs)
+    return _path_for(serial)
+
+
+def devices_with_ips() -> List[Dict[str, Any]]:
+    """Every persisted device record carrying a discovered ``ip``, sorted
+    most-recently-discovered first (``ip_updated_at`` desc, serial desc as
+    the deterministic tie-break). Each row:
+    ``{serial, ip, ip_updated_at, model?, firmware?}``."""
+    rows: List[Dict[str, Any]] = []
+    for path in _device_files():
+        data = _read(path)
+        if data is None or not data.get("ip"):
+            continue
+        fields = _ip_fields(data)
+        rows.append({
+            "serial": str(data.get("serial") or path.stem),
+            "ip": fields.get("ip"),
+            "ip_updated_at": fields.get("ip_updated_at", 0.0),
+            "model": fields.get("model"),
+            "firmware": fields.get("firmware"),
+        })
+    rows.sort(key=lambda r: (r.get("ip_updated_at") or 0.0, r["serial"]),
+              reverse=True)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +294,7 @@ def _rewrite_tones_key(path: Path, data: Dict[str, Any],
         tones=_coerce_map(tones),
         pool=_coerce_map(data.get("pool")),
         setlists=_coerce_map(data.get("setlists")),
+        **_ip_fields(data),
     )
     save_observations(obs)
 

@@ -55,7 +55,7 @@ def _wire(client: HelixClient, frames):
 
 
 def test_list_presets_parses_injected_reply():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     presets = [{"cid_": 904, "name": "Dream On", "cctp": 1000, "posi": 0}]
     reply = osc_encode(
         "/GetContainerContents",
@@ -70,7 +70,7 @@ def test_list_presets_parses_injected_reply():
 
 
 def test_list_presets_filters_and_sorts_by_pos():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     items = [
         {"cid_": 2, "name": "B", "cctp": 1000, "posi": 5},
         {"cid_": 9, "name": "setlist", "cctp": 1001, "posi": 1},  # not a preset
@@ -87,7 +87,7 @@ def test_list_presets_filters_and_sorts_by_pos():
 
 
 def test_reply_with_wrong_reqid_is_ignored():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     # reply carries reqid 999, but client's first reqid is 1000 -> no match
     reply = osc_encode(
         "/GetContainerContents",
@@ -98,34 +98,34 @@ def test_reply_with_wrong_reqid_is_ignored():
 
 
 def test_ok_true_on_status_zero():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 1)])
     _wire(h, [reply])
     assert h.load_preset(904) is True
 
 
 def test_ok_false_on_status_nonzero():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 1), ("i", 0)])
     _wire(h, [reply])
     assert h.load_preset(904) is False
 
 
 def test_ok_false_when_no_status_frame():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/somethingelse", [("i", 1000), ("i", 0)])
     _wire(h, [reply])
     assert h.load_preset(904) is False
 
 
 def test_rpc_raises_when_not_connected():
-    h = HelixClient()  # never wired: sock is None
+    h = HelixClient("10.0.0.99")  # never wired: sock is None
     with pytest.raises(HelixError):
         h.list_presets()
 
 
 def test_set_model_raises_when_not_connected():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     with pytest.raises(HelixError):
         h.set_model(12345)
 
@@ -157,21 +157,21 @@ def test_container_for_setlist_keyword():
 
 def test_create_content_reads_new_cid_from_status_second_field():
     # /CreateContent replies /status [reqid, newCid, code] (cid in 2nd field!)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
     _wire(h, [reply])
     assert h._raw.create_content(-2, 7, "x") == 930
 
 
 def test_create_content_none_on_nonzero_code():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 5), ("i", 1)])  # code=1
     _wire(h, [reply])
     assert h._raw.create_content(-2, 7, "x") is None
 
 
 def test_save_preset_with_cid_ok():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
     _wire(h, [reply])
     assert h._raw.save_preset_with_cid(930) is True
@@ -179,7 +179,7 @@ def test_save_preset_with_cid_ok():
 
 def test_set_content_data_converts_and_sends():
     from helixgen.device import content as C
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
     _wire(h, [reply])
     # feed an edit-buffer (_sbepgsm) blob; set_content_data must convert it to
@@ -195,7 +195,7 @@ def test_get_content_sends_getcontentdata_and_returns_blob():
     # /GetContentData [reqid, cid] is the NON-activating read: it must send
     # /GetContentData and NEVER /LoadPresetWithCID, and return the raw blob.
     from helixgen.device import content as C
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     stored = C.encode_content_data({"cg__": {}, "pm__": [], "sfg_": {}})
     reply = osc_encode("/GetContentData", [("i", 1000), ("b", stored)])
     _wire(h, [reply])
@@ -212,7 +212,7 @@ def test_get_content_accepts_edit_buffer_magic_too():
     # If the device happened to answer with the edit-buffer (_sbepgsm) form,
     # get_content must still accept it.
     from helixgen.device import content as C
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     sbe = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
     reply = osc_encode("/GetContentData", [("i", 1000), ("b", sbe)])
     _wire(h, [reply])
@@ -220,7 +220,7 @@ def test_get_content_accepts_edit_buffer_magic_too():
 
 
 def test_get_content_raises_when_no_blob():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/GetContentData", [("i", 1000), ("i", 0)])
     _wire(h, [reply])
     with pytest.raises(HelixError):
@@ -230,7 +230,7 @@ def test_get_content_raises_when_no_blob():
 def test_malformed_reply_frame_raises_helixerror():
     # a frame that starts an OSC address but is never NUL-terminated -> the
     # parser raises ValueError, which _rpc must wrap as HelixError (not leak).
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [b"/GetContentRef no null terminator here"])
     with pytest.raises(HelixError):
         h.list_presets()
@@ -337,7 +337,7 @@ def test_backward_compat_aliases():
 # -- setlist enumeration under -5 -------------------------------------------
 
 def test_list_setlists_enumerates_cctp_1001_under_root():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     items = [
         {"cid_": 42, "name": "helixgen", "cctp": 1001, "posi": 1},
         {"cid_": 43, "name": "Throwaway", "cctp": 1001, "posi": 0},
@@ -355,7 +355,7 @@ def test_list_setlists_enumerates_cctp_1001_under_root():
 
 
 def test_resolve_setlist_cid_case_insensitive():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     items = [{"cid_": 42, "name": "Helixgen", "cctp": 1001, "posi": 0}]
     reply = osc_encode(
         "/GetContainerContents",
@@ -366,7 +366,7 @@ def test_resolve_setlist_cid_case_insensitive():
 
 
 def test_resolve_setlist_cid_absent_returns_none():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     items = [{"cid_": 42, "name": "helixgen", "cctp": 1001, "posi": 0}]
     reply = osc_encode(
         "/GetContainerContents",
@@ -380,14 +380,14 @@ def test_resolve_setlist_cid_is_strict_by_default(monkeypatch):
     """#39: a timeout/undecodable listing must raise, not read as absent — the
     default must be strict so every existing caller (which doesn't pass
     strict= explicitly) gets the safe behavior for free."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [])  # poller never fires -> _rpc returns [] -> timeout
     with pytest.raises(HelixError, match="no reply"):
         h.resolve_setlist_cid("helixgen")
 
 
 def test_resolve_setlist_cid_strict_true_forwarded_to_list_setlists(monkeypatch):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     seen = []
 
     def fake_list_setlists(*, strict=False):
@@ -402,7 +402,7 @@ def test_resolve_setlist_cid_strict_true_forwarded_to_list_setlists(monkeypatch)
 def test_resolve_setlist_cid_explicit_non_strict_still_works(monkeypatch):
     """The one deliberate lenient use (create_setlist's post-create re-list
     retry) must still be reachable via strict=False."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     seen = []
 
     def fake_list_setlists(*, strict=False):
@@ -417,7 +417,7 @@ def test_resolve_setlist_cid_explicit_non_strict_still_works(monkeypatch):
 def test_list_setlists_by_name_returns_all_matches(monkeypatch):
     """#52: the multi-match helper returns every setlist whose name matches
     (case-insensitive, stripped both sides), preserving list order."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     setlists = [
         {"cid_": 10, "name": "gigs", "cctp": 1001, "posi": 0},
         {"cid_": 20, "name": "GIGS", "cctp": 1001, "posi": 1},
@@ -431,7 +431,7 @@ def test_list_setlists_by_name_returns_all_matches(monkeypatch):
 
 def test_list_setlists_by_name_accepts_prefetched(monkeypatch):
     """When given a pre-fetched listing it filters that without an extra RPC."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
 
     def _boom(*, strict=False):
         raise AssertionError("must not re-list when setlists= is supplied")
@@ -443,7 +443,7 @@ def test_list_setlists_by_name_accepts_prefetched(monkeypatch):
 
 def test_resolve_setlist_cid_routes_through_by_name(monkeypatch):
     """resolve returns the first match's cid via the shared helper."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     monkeypatch.setattr(
         h, "list_setlists_by_name",
         lambda name, *, strict=True, setlists=None: [{"cid_": 7, "name": name}])
@@ -453,14 +453,14 @@ def test_resolve_setlist_cid_routes_through_by_name(monkeypatch):
 # -- _raw guardrail ----------------------------------------------------------
 
 def test_raw_create_content_rejects_non_pool_container():
-    h = HelixClient()  # unwired: guardrail fires before any RPC
+    h = HelixClient("10.0.0.99")  # unwired: guardrail fires before any RPC
     with pytest.raises(HelixError) as ei:
         h._raw.create_content(-5, 0, "x")
     assert "reference_into_setlist" in str(ei.value)
 
 
 def test_raw_create_content_allows_pool():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
     _wire(h, [reply])
     assert h._raw.create_content(-2, 0, "x") == 930
@@ -470,7 +470,7 @@ def test_raw_create_content_allows_pool():
 
 def test_install_into_pool_relists_by_name_for_cid(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     name = "White Limo Lead"
     # rpc 1000: _create_content -> /status [reqid, newCid=930, 0]
@@ -495,7 +495,7 @@ def test_install_into_pool_relists_by_name_for_cid(monkeypatch):
 
 def test_push_to_slot_happy_path_returns_cid(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
@@ -511,7 +511,7 @@ def test_push_to_slot_raises_and_cleans_stub_on_create_status_error(monkeypatch)
     surfaces the code + the allocated cid, and (b) verify-before-delete the
     orphan stub by re-listing (name+pos), never leaving it behind."""
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
@@ -542,7 +542,7 @@ def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypa
     """On a SetContentData failure, cleanup must delete the entry we created by
     (name, pos) from a fresh listing — NOT the unreliable create-reply cid."""
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
@@ -575,7 +575,7 @@ def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypa
 def test_create_content_status_returns_cid_and_code():
     """_create_content_status exposes (allocated_cid, code) so callers can
     recover the side-effect allocation even when code != 0."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
     _wire(h, [reply])
     cid, code = h._create_content_status(-2, 5, "X")
@@ -584,7 +584,7 @@ def test_create_content_status_returns_cid_and_code():
 
 def test_reference_into_setlist_returns_ref_cid(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     # rpc 1000: _create_copy -> /status ok
     ok = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
@@ -601,7 +601,7 @@ def test_reference_into_setlist_returns_ref_cid(monkeypatch):
 
 def test_mirror_setlist_adds_and_removes(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     # rpc 1000: mirror lists current refs -> one ref (rcid=100,posi=0) not wanted
     current = [{"cid_": 501, "cctp": 1003, "rcid": 100, "posi": 0}]
@@ -632,7 +632,7 @@ def test_mirror_setlist_current_refs_listing_is_strict(monkeypatch):
     SECOND reference to the same pool preset (a duplicate, the same failure
     class #39 fixed for setlist names)."""
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     _wire(h, [])  # the current-refs listing times out (zero reply frames)
     with pytest.raises(HelixError, match="no reply"):
@@ -671,7 +671,7 @@ def _install_fake_zmq(h):
 def test_rpc_reconnects_and_recovers_after_drop():
     # First attempt (rid 1000) raises on send; reconnect() swaps in a healthy
     # socket and the retried rpc (rid 1001) returns the reply transparently.
-    h = HelixClient(reconnect_tries=3, reconnect_backoff=0.0)
+    h = HelixClient("10.0.0.99", reconnect_tries=3, reconnect_backoff=0.0)
     _install_fake_zmq(h)
     h.sock = _DropSock()
     h.poller = FakePoller([])
@@ -690,7 +690,7 @@ def test_rpc_reconnects_and_recovers_after_drop():
 
 
 def test_rpc_raises_helixerror_after_exhausting_reconnects():
-    h = HelixClient(reconnect_tries=3, reconnect_backoff=0.0)
+    h = HelixClient("10.0.0.99", reconnect_tries=3, reconnect_backoff=0.0)
     _install_fake_zmq(h)
     h.sock = _DropSock()
     h.poller = FakePoller([])
@@ -714,7 +714,7 @@ def test_rpc_raises_helixerror_after_exhausting_reconnects():
 def test_rpc_non_drop_error_does_not_retry():
     # a malformed reply is NOT a connection drop -> propagate immediately,
     # never call reconnect().
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [b"/GetContentRef no null terminator here"])
     reconnects = []
     h.reconnect = lambda: reconnects.append(1)
@@ -725,7 +725,7 @@ def test_rpc_non_drop_error_does_not_retry():
 
 def test_reconnect_reopens_socket(monkeypatch):
     # reconnect() closes the old socket and re-runs _open_socket (no verify).
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     closed = []
 
     class OldSock:
@@ -755,7 +755,7 @@ def test_mutating_survives_subscriber_open_failure(monkeypatch):
             pass
 
     monkeypatch.setattr(sub_mod, "HelixSubscriber", BoomSub)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     ran = False
     with h.mutating():
@@ -781,7 +781,7 @@ def test_mutating_opens_and_closes_subscriber(monkeypatch):
             events.append(("close",))
 
     monkeypatch.setattr(sub_mod, "HelixSubscriber", FakeSub)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
 
     assert h._mutating == 0
@@ -805,7 +805,7 @@ from helixgen.device import settings as _S  # noqa: E402
 
 
 def test_get_property_parses_value_blob():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     blob = _S.encode_value_blob("global.midi.channel", "i", 7)
     reply = osc_encode("/getPropertyValue",
                        [("i", 1000), ("s", "global.midi.channel"), ("b", blob)])
@@ -817,7 +817,7 @@ def test_get_property_parses_value_blob():
 
 
 def test_get_property_def_parses_def_blob():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     # golden def blob for global.tuner.type (enum Needle/Strobe)
     defblob = bytes.fromhex(
         "666564707067736d8ace64697370a0ce6476616c83ce6b65795fb1676c6f6261"
@@ -833,7 +833,7 @@ def test_get_property_def_parses_def_blob():
 
 
 def test_set_property_true_on_success():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/success", [("i", 1000), ("i", 0)])
     _wire(h, [reply])
     assert h.set_property("global.midi.channel", "i", 5) is True
@@ -841,7 +841,7 @@ def test_set_property_true_on_success():
 
 
 def test_set_property_raises_on_error():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/error", [("i", 1000), ("i", 0), ("s", "NOPE")])
     _wire(h, [reply])
     with pytest.raises(HelixError):
@@ -849,7 +849,7 @@ def test_set_property_raises_on_error():
 
 
 def test_get_property_raises_on_error():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode("/error", [("i", 1000), ("i", 0), ("s", "NOPE")])
     _wire(h, [reply])
     with pytest.raises(HelixError):
@@ -857,7 +857,7 @@ def test_get_property_raises_on_error():
 
 
 def test_set_property_refuses_self_severing_key():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     # no socket wired — guard must fire BEFORE any RPC attempt (ValueError,
     # same type coerce_value raises, so the CLI set path surfaces it cleanly)
     with pytest.raises(ValueError):
@@ -868,7 +868,7 @@ def test_set_property_refuses_self_severing_key():
 
 def test_delete_irs_removes_from_user_irs_container(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     ok = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 1)])
     _wire(h, [ok])
@@ -883,7 +883,7 @@ def test_delete_irs_removes_from_user_irs_container(monkeypatch):
 
 def test_create_setlist_sends_ctype_1003_under_root(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     # rpc 1000: list -5 for the next free posi (one setlist at posi 0)
     existing = [{"cid_": 816, "name": "Throwaway", "cctp": 1001, "posi": 0}]
@@ -911,7 +911,7 @@ def test_create_setlist_sends_ctype_1003_under_root(monkeypatch):
 
 def test_create_setlist_none_on_nonzero_code(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     list1 = osc_encode(
         "/GetContainerContents",
@@ -923,7 +923,7 @@ def test_create_setlist_none_on_nonzero_code(monkeypatch):
 
 def test_delete_setlist_removes_from_root(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     ok = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 1)])
     _wire(h, [ok])
@@ -937,7 +937,7 @@ def test_delete_setlist_removes_from_root(monkeypatch):
 
 def test_duplicate_setlist_refs_copies_in_posi_order(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     calls = []
 
@@ -962,7 +962,7 @@ def test_duplicate_setlist_refs_copies_in_posi_order(monkeypatch):
 
 def test_duplicate_setlist_refs_requires_empty_destination(monkeypatch):
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     monkeypatch.setattr(
         h, "list_container",
@@ -977,7 +977,7 @@ def test_list_container_strict_raises_on_no_reply():
     """A /GetContainerContents timeout (zero reply frames) must NOT read as an
     empty container in strict mode — an empty 'pool' would make every user IR
     look like an orphan to ir-prune."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [])  # poller never fires -> _rpc returns []
     with pytest.raises(HelixError, match="no reply"):
         h.list_container(-2, strict=True)
@@ -989,7 +989,7 @@ def test_list_container_strict_raises_on_no_reply():
 def test_list_container_strict_raises_on_undecodable_blob():
     """A truncated/undecodable listing blob (chunked-reply decode failure) must
     raise in strict mode instead of silently dropping items."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     # 0xc1 is an invalid msgpack byte -> decode_blob returns raw bytes
     reply = osc_encode(
         "/GetContainerContents", [("i", 1000), ("b", b"\xc1garbage")])
@@ -1001,7 +1001,7 @@ def test_list_container_strict_raises_on_undecodable_blob():
 
 
 def test_list_container_strict_accepts_genuine_empty_array():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     reply = osc_encode(
         "/GetContainerContents",
         [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
@@ -1010,7 +1010,7 @@ def test_list_container_strict_accepts_genuine_empty_array():
 
 
 def test_list_presets_and_irs_pass_strict_through(monkeypatch):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     seen = []
 
     def fake_list(cid, strict=False):
@@ -1028,7 +1028,7 @@ def test_duplicate_setlist_refs_lists_strictly(monkeypatch):
     """duplicate's 'destination must be empty' precondition must not trust a
     silent-empty listing (review #37-1)."""
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     seen = []
 
@@ -1051,7 +1051,7 @@ def test_create_setlist_retries_relist_for_real_cid(monkeypatch):
     falling back to it (review #37-10)."""
     _patch_sub(monkeypatch)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     list1 = osc_encode(
         "/GetContainerContents",
@@ -1078,7 +1078,7 @@ def test_create_setlist_relist_tolerates_transient_listing_timeout(monkeypatch):
     blow up the whole call with a HelixError."""
     _patch_sub(monkeypatch)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     list1 = osc_encode(
         "/GetContainerContents",
@@ -1100,7 +1100,7 @@ def test_create_setlist_falls_back_to_reply_cid_with_warning(monkeypatch, caplog
 
     _patch_sub(monkeypatch)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     list1 = osc_encode(
         "/GetContainerContents",
@@ -1140,7 +1140,7 @@ def _product_info_reply(reqid=1000):
 
 
 def test_product_info_decodes_and_curates():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [_product_info_reply()])
     info = h.product_info()
     assert info["model"] == "stadium"
@@ -1157,7 +1157,7 @@ def test_product_info_decodes_and_curates():
 
 
 def test_product_info_raises_without_reply():
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [])
     with pytest.raises(HelixError, match="getProductInfo"):
         h.product_info()
@@ -1169,7 +1169,7 @@ def test_find_by_pos_default_lenient_on_listing_timeout():
     """Legacy behavior preserved: strict=False (the default) reads a listing
     timeout the same as an empty container, so find_by_pos returns None
     rather than raising."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [])
     assert h.find_by_pos(-2, 3) is None
 
@@ -1178,14 +1178,14 @@ def test_find_by_pos_strict_raises_on_listing_timeout():
     """#40: a write-gating caller must pass strict=True so a listing timeout
     raises instead of silently reading as 'slot empty' — the exact failure
     class that could let a write land on a real occupant."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [])
     with pytest.raises(HelixError, match="no reply"):
         h.find_by_pos(-2, 3, strict=True)
 
 
 def test_find_by_pos_strict_forwarded_to_list_container(monkeypatch):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     seen = []
 
     def fake_list(cid, *, strict=False):
@@ -1202,14 +1202,14 @@ def test_lowest_empty_posi_raises_on_listing_timeout():
     """#40: _lowest_empty_posi must not silently read a listing timeout as
     'container empty' — that would return posi 0 even when the container is
     full, and the caller would then /CreateContent into a real occupant."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [])
     with pytest.raises(HelixError, match="no reply"):
         h._lowest_empty_posi(-2)
 
 
 def test_lowest_empty_posi_lists_strictly(monkeypatch):
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     seen = []
 
     def fake_list(cid, *, strict=False):
@@ -1227,7 +1227,7 @@ def test_install_into_pool_aborts_before_create_on_listing_failure(monkeypatch):
     /CreateContent is attempted — never write to a computed-but-unconfirmed
     position."""
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     _wire(h, [])  # the pool listing itself times out
     from helixgen.device import content as C
@@ -1244,7 +1244,7 @@ def test_create_setlist_aborts_before_create_on_listing_failure(monkeypatch):
     _lowest_empty_posi. A strict listing failure there must raise BEFORE any
     /CreateContent is attempted."""
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     _wire(h, [])  # the setlists-root listing itself times out
 
@@ -1257,7 +1257,7 @@ def test_install_into_pool_explicit_pos_skips_lowest_empty_posi(monkeypatch):
     """An explicit pos= bypasses _lowest_empty_posi entirely — a listing
     failure elsewhere must not block a caller that already knows its slot."""
     _patch_sub(monkeypatch)
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     name = "White Limo Lead"
     create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
@@ -1278,7 +1278,7 @@ def test_reorder_container_fallback_listing_stays_lenient(monkeypatch):
     but none of it was the /updateContainerContent confirmation, the post-write
     fallback re-list inside reorder_container is deliberately left non-strict
     — pure bookkeeping for the return value, not a write gate."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     seen = []
 
     def fake_list(cid, *, strict=False):
@@ -1299,7 +1299,7 @@ def test_reorder_container_raises_on_total_timeout():
     re-listing and returning as if the reorder had been confirmed — nothing
     here indicates the device ever received/processed the request, unlike the
     'some reply, just not the confirmation frame' case above."""
-    h = HelixClient()
+    h = HelixClient("10.0.0.99")
     _wire(h, [])
     with pytest.raises(HelixError, match="no reply"):
         h.reorder_container(-2, [5], 1)

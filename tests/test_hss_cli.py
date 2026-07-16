@@ -19,6 +19,13 @@ from helixgen.device import HelixError  # noqa: E402
 from tests.test_hss import _build_hss, _real_sbepgsm_blob  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _configured_device_ip(monkeypatch):
+    """#74: device verbs no longer have a built-in default IP. These tests
+    exercise verb logic against fakes, so simulate a configured user."""
+    monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
+
+
 def _fresh_manifest_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HELIXGEN_SETLISTS", str(tmp_path / "setlists.json"))
     monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "device-slots.json"))

@@ -48,14 +48,16 @@ def _manifest():
 def _serial_of(h, ip: str) -> str:
     """The connected device's serial (`/ProductInfoGet`), for keying its
     `devices/<serial>.json` observation file; falls back to `f"ip-{ip}"` when
-    the query fails or reports no serial. Best-effort — never raises."""
+    the query fails or reports no serial (preferring the client's RESOLVED
+    address over the possibly-None --ip param, #74). Best-effort — never
+    raises."""
     try:
         serial = (h.product_info() or {}).get("serial")
         if serial:
             return str(serial)
     except Exception:  # noqa: BLE001 — advisory identity, never fatal
         pass
-    return f"ip-{ip}"
+    return f"ip-{getattr(h, 'ip', None) or ip}"
 
 
 def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
@@ -99,9 +101,12 @@ def _hss_record_import_manifest(result, hss_mod) -> None:
 
 # --- device: network control of a Line 6 Helix Stadium --------------------
 
-#: Shared --ip help: honest about the resolution order (#68g).
+#: Shared --ip help: honest about the resolution order (#68g, #74).
 _IP_HELP = ("Helix device IP. Resolution: --ip wins, else $HELIXGEN_HELIX_IP, "
-            "else the built-in default 192.168.4.84.")
+            "else the device record persisted by `helixgen device discover`. "
+            "There is NO built-in default — with none of the three set, the "
+            "verb fails fast (no network stall) telling you to run "
+            "`helixgen device discover`.")
 
 #: Shared --setlist help for the preset verbs (#68b): the closed
 #: user/factory/throwaway token set is gone — real device setlist names work.
@@ -111,15 +116,51 @@ _SETLIST_HELP = ("'user' (the preset POOL, where every user preset lives), "
                  "pool presets).")
 
 
-def _device_option(f):
-    """Add shared --ip / --port options for the networked device commands."""
-    f = click.option(
+def _resolve_ip_or_fail(explicit=None):
+    """The #74 resolution chain (--ip > $HELIXGEN_HELIX_IP > persisted
+    device record), converted to a crisp CLI failure — immediate, no
+    network, naming `helixgen device discover` — when nothing resolves.
+    ClickException (exit 1), matching what the client-resolving verbs
+    surface, so agents see ONE exit code for the unconfigured state."""
+    from helixgen.device import discovery
+
+    try:
+        return discovery.resolve_ip(explicit)
+    except discovery.IPResolutionError as e:
+        raise click.ClickException(str(e)) from e
+
+
+def _ip_callback(ctx, param, value):
+    """click callback for --ip: apply the resolution chain at parse time,
+    LENIENTLY — an unresolvable IP becomes None so offline-capable modes
+    (--list/--dry-run/local verbs) still parse and run. Anything that
+    actually needs the device resolves-or-fails at use time (HelixClient /
+    HelixSubscriber constructors, the _locked wrapper, the sftp verbs) —
+    immediately and instructively, never as a connect stall."""
+    from helixgen.device import discovery
+
+    try:
+        return discovery.resolve_ip(value)
+    except discovery.IPResolutionError:
+        return None
+
+
+def _ip_option(f):
+    """The shared --ip option (resolution chain #74) on its own, for verbs
+    that don't take --port."""
+    return click.option(
         "--ip",
         envvar="HELIXGEN_HELIX_IP",
-        default="192.168.4.84",
-        show_default=True,
+        default=None,
+        show_default="from `helixgen device discover` record",
+        callback=_ip_callback,
         help=_IP_HELP,
     )(f)
+
+
+def _device_option(f):
+    """Add shared --ip / --port options for the networked device commands."""
+    f = _ip_option(f)
     f = click.option(
         "--port",
         default=2002,
@@ -159,8 +200,14 @@ def _locked(*scopes: str, verb: str, when=None):
                 return f(*args, **kwargs)
             from helixgen import locks
 
-            ip = (kwargs.get("ip")
-                  or os.environ.get("HELIXGEN_HELIX_IP") or "192.168.4.84")
+            # _ip_callback resolves leniently (None when unconfigured); a
+            # verb about to take a device lock is going to write to the
+            # device, so here the chain is enforced — fail fast with the
+            # `device discover` pointer. The resolved value is written back
+            # so the verb body sees the same address the lock is keyed by.
+            ip = kwargs.get("ip") or _resolve_ip_or_fail()
+            if "ip" in kwargs:
+                kwargs["ip"] = ip
             try:
                 lease = locks.acquire(ip, eff, label=f"helixgen device {verb}")
             except locks.LockHeld as e:
@@ -453,8 +500,10 @@ def device() -> None:
     """Drive a networked Line 6 Helix Stadium over the LAN (Stadium-only).
 
     Requires the `device` extra (`pip install 'helixgen[device]'`) for the
-    pyzmq/msgpack transport. Point at the device with --ip / --port or set
-    $HELIXGEN_HELIX_IP.
+    pyzmq/msgpack transport. Run `helixgen device discover` ONCE to find the
+    Stadium on your LAN and persist its address; after that every verb
+    resolves the IP automatically (--ip > $HELIXGEN_HELIX_IP > the persisted
+    device record — no built-in default; with none set, verbs fail fast).
 
     READ vs WRITE: verbs that only read/list device state are safe (info,
     active, read, list, setlists, list-irs, blocks, params, settings
@@ -517,8 +566,7 @@ _LOCK_SCOPE_HELP = (
                    "(scope, holder, age, live/stale, ours) and exit 0.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="With --status: emit the lease rows as JSON.")
-@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84",
-              show_default=True, help=_IP_HELP)
+@_ip_option
 def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
     """Hold a machine-local advisory device lock across CLI calls (a session
     lease), so concurrent helixgen processes don't collide on the device.
@@ -542,6 +590,15 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
     from helixgen import locks
 
     if show_status:
+        # Read-only introspection stays usable on an unconfigured machine
+        # (0.22.0 behavior: exit 0), locks being keyed per-ip.
+        if not ip:
+            if as_json:
+                click.echo(json.dumps([], indent=2))
+            else:
+                click.echo("no device IP configured (run `helixgen device "
+                           "discover` or pass --ip) — no leases to report")
+            return
         rows = locks.status(ip)
         if as_json:
             click.echo(json.dumps(rows, indent=2))
@@ -561,6 +618,7 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
                 f"age {age} / ttl {ttl}")
         return
 
+    ip = ip or _resolve_ip_or_fail()  # locks are keyed per-ip (#74)
     if not label:
         raise click.ClickException(
             "--label is required (name the session holding the lock, e.g. "
@@ -602,8 +660,7 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
                    "holder may be mid-write on the device).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit {released, kept} as JSON.")
-@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84",
-              show_default=True, help=_IP_HELP)
+@_ip_option
 def device_unlock(scopes, force, as_json, ip) -> None:
     """Release advisory device locks taken with `device lock`.
 
@@ -614,6 +671,7 @@ def device_unlock(scopes, force, as_json, ip) -> None:
     breaks even a live foreign lease — dangerous). Stale leases (expired
     TTL / dead pid) can always be cleared.
     """
+    ip = ip or _resolve_ip_or_fail()  # locks are keyed per-ip (#74)
     from helixgen import locks
 
     try:
@@ -702,6 +760,118 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
         return
     for m in setlists:
         click.echo(f"cid={m.get('cid_')}  {m.get('name', '')}")
+
+
+@device.command(name="discover")
+@click.option("--timeout", type=float, default=3.0, show_default=True,
+              help="mDNS listen window in seconds.")
+@click.option("--probe/--no-probe", default=True, show_default=True,
+              help="If mDNS finds nothing, fall back to a bounded TCP "
+                   "connect-probe of the LOCAL /24 subnet only, on the "
+                   "Stadium's RPC port 2002 (short timeouts, bounded "
+                   "concurrency; never probes beyond the local subnet).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the discovered device records as JSON.")
+def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
+    """Find Helix Stadium devices on the LAN and PERSIST their addresses.
+
+    Discovery is mDNS/Bonjour first — the Stadium advertises
+    `_stadiumserver._tcp` and answers a one-shot multicast query itself —
+    with an optional local-subnet TCP probe fallback for networks that
+    block multicast. Every candidate is CONFIRMED with the read-only
+    /ProductInfoGet handshake (serial, model, firmware) before it is
+    trusted; confirmed devices are persisted into
+    ~/.helixgen/devices/<serial>.json, which every other device verb then
+    resolves automatically (--ip > $HELIXGEN_HELIX_IP > this record).
+
+    Run it once (and again whenever the device's DHCP lease changes).
+    Community prior art: the Stadium desktop app's DISCOVERY layer is
+    flaky while direct-to-IP sessions are stable — so helixgen discovers
+    once, persists, and keeps every session direct-to-IP.
+
+    Read-only on the device (no lock taken). With several Stadiums found,
+    all are listed and persisted; the most recently discovered becomes the
+    default (deterministic: ip_updated_at desc, then serial desc) — pass
+    --ip on any verb to target another.
+    """
+    HelixClient, HelixError = _client()
+    from helixgen.device import discovery, observations
+
+    candidates = discovery.mdns_discover(timeout=timeout)
+    if not candidates and probe:
+        click.echo("mDNS found nothing — falling back to a TCP connect-probe "
+                   "of the local /24 subnet (port 2002)…", err=True)
+        candidates = [discovery.Candidate(ip=ip, via="probe")
+                      for ip in discovery.probe_subnet()]
+    if not candidates:
+        raise click.ClickException(
+            "no Helix Stadium found on the LAN (mDNS `_stadiumserver._tcp` "
+            "browse" + (" + local-subnet probe" if probe else "") + "). "
+            "Is the device powered on and on this network/subnet? Try a "
+            "longer --timeout, or pass --ip explicitly to the other verbs.")
+
+    confirmed = []
+    for cand in sorted(candidates, key=lambda c: c.ip):
+        try:
+            with HelixClient(cand.ip) as h:
+                info = h.product_info()
+        except (HelixError, OSError) as e:
+            click.echo(f"warning: {cand.ip} (via {cand.via}) did not pass "
+                       f"the device-info handshake — skipped ({e})", err=True)
+            continue
+        serial = str(info.get("serial") or f"ip-{cand.ip}")
+        confirmed.append({
+            "ip": cand.ip,
+            "serial": serial,
+            "model": info.get("model"),
+            "helixgen_model": info.get("helixgen_model"),
+            "firmware": info.get("firmware"),
+            "hostname": cand.hostname,
+            "via": cand.via,
+        })
+    if not confirmed:
+        raise click.ClickException(
+            "discovery found candidate address(es) but none passed the "
+            "device-info handshake — see warnings above.")
+
+    # Persist serial-ascending so the LAST write (newest ip_updated_at) is
+    # the highest serial — matching the resolver's deterministic tie-break
+    # (ip_updated_at desc, then serial desc).
+    confirmed.sort(key=lambda d: d["serial"])
+    for row in confirmed:
+        path = observations.record_device_ip(
+            row["serial"], row["ip"],
+            model=row.get("model"), firmware=row.get("firmware"))
+        row["record"] = str(path)
+    recorded = observations.devices_with_ips()
+    default_serial = recorded[0]["serial"] if recorded else None
+    for row in confirmed:
+        row["default"] = row["serial"] == default_serial
+
+    # $HELIXGEN_HELIX_IP outranks the record — a stale export would keep
+    # verbs pointed at the old address no matter how often you re-discover.
+    env_ip = os.environ.get("HELIXGEN_HELIX_IP")
+    if env_ip and not any(r["ip"] == env_ip for r in confirmed):
+        click.echo(f"warning: $HELIXGEN_HELIX_IP={env_ip} is set and outranks "
+                   "the persisted record — verbs will keep using it, not the "
+                   "address just discovered; unset it (or update it) to use "
+                   "the record", err=True)
+
+    click.echo(f"persisted {len(confirmed)} device record(s) under "
+               f"~/.helixgen/devices/ — device verbs now resolve the IP "
+               f"automatically", err=True)
+    if len(confirmed) > 1:
+        click.echo("multiple devices found: the most recently discovered is "
+                   "the default; pass --ip to target another", err=True)
+    if as_json:
+        click.echo(json.dumps(confirmed, indent=2))
+        return
+    for row in confirmed:
+        model = row.get("helixgen_model") or row.get("model") or "?"
+        star = "  <- default" if row.get("default") else ""
+        click.echo(f"{row['ip']:<15}  serial {row['serial']}  {model}  "
+                   f"fw {row.get('firmware') or '?'}  (via {row['via']})"
+                   f"{star}")
 
 
 @device.command(name="info")
@@ -1722,8 +1892,7 @@ def device_set_info(cids: tuple[int, ...], color: str | None, notes: str | None,
 
 @device.command(name="push-ir")
 @click.argument("wav", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84",
-              show_default=True, help=_IP_HELP)
+@_ip_option
 @_locked("irs", verb="push-ir")
 def device_push_ir(wav: Path, ip: str) -> None:
     """Import an impulse-response .wav onto the device — instantly, like the editor.
@@ -1735,6 +1904,10 @@ def device_push_ir(wav: Path, ip: str) -> None:
     chunk holding helixgen's ``irhash`` (as the editor's file does), so the
     device registers it under exactly that hash and the preset resolves.
     """
+    # sftp path needs a real address even when --no-lock skipped the
+    # _locked wrapper's resolution (#74; HelixSFTP(None) would try
+    # localhost).
+    ip = ip or _resolve_ip_or_fail()
     _, HelixError = _client()
     from helixgen.device import sftp as _sftp
 
@@ -1760,8 +1933,7 @@ def device_push_ir(wav: Path, ip: str) -> None:
 @device.command(name="pull-ir")
 @click.argument("filename")
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
-@click.option("--ip", envvar="HELIXGEN_HELIX_IP", default="192.168.4.84",
-              show_default=True, help=_IP_HELP)
+@_ip_option
 def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
     """Download an IR .wav from the device by its on-device FILE basename.
 
@@ -1771,6 +1943,7 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
     `device rename-ir` changes only the DISPLAY name (validated live), so a
     renamed IR still downloads under its original basename. EXPERIMENTAL.
     """
+    ip = ip or _resolve_ip_or_fail()  # sftp path needs a real address (#74)
     _, HelixError = _client()
     from helixgen.device import sftp as _sftp
 

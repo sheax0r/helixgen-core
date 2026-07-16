@@ -63,8 +63,17 @@ class HelixSubscriber:
     ``poll`` call drains both ports.  Never blocks without a finite timeout.
     """
 
-    def __init__(self, ip: str = "192.168.4.84",
+    def __init__(self, ip: Optional[str] = None,
                  ports: Sequence[int] = (2001, 2003)):
+        if ip is None:
+            # #74 resolution chain — no hardcoded default IP. Fails fast
+            # with an instructive HelixError instead of a connect stall.
+            from helixgen.device import discovery
+
+            try:
+                ip = discovery.resolve_ip()
+            except discovery.IPResolutionError as e:
+                raise HelixError(str(e)) from e
         self.ip = ip
         self.ports = tuple(ports)
         self._zmq = None

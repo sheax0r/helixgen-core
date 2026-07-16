@@ -112,7 +112,35 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
 
-DEVICE_IP = os.environ.get("HELIXGEN_HELIX_IP", "192.168.4.84")
+def _persisted_device_ip() -> str | None:
+    """The #74 resolution chain's record step, replicated stdlib-only (the
+    suite must know the IP before helixgen is importable): the most recently
+    discovered ip across ~/.helixgen/devices/*.json ($HELIXGEN_HOME honored),
+    ip_updated_at desc then serial desc — exactly what `resolve_ip()` picks."""
+    home = Path(os.environ.get("HELIXGEN_HOME") or (Path.home() / ".helixgen"))
+    best: tuple | None = None
+    try:
+        files = list((home / "devices").glob("*.json"))
+    except OSError:
+        return None
+    for p in files:
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or not data.get("ip"):
+            continue
+        key = (float(data.get("ip_updated_at") or 0.0),
+               str(data.get("serial") or ""))
+        if best is None or key > best[0]:
+            best = (key, str(data["ip"]))
+    return best[1] if best else None
+
+
+# #74: no built-in default IP anymore — the suite resolves exactly like the
+# CLI ($HELIXGEN_HELIX_IP, else the record `helixgen device discover`
+# persisted). None ⇒ device-backed tests skip with a pointer to `discover`.
+DEVICE_IP = os.environ.get("HELIXGEN_HELIX_IP") or _persisted_device_ip()
 # The CLI's --port has no env override, so the probe pins the same default
 # the CLI uses (probing a different port than the verbs talk to would be a
 # false health signal).
@@ -196,6 +224,17 @@ def live_env(scratch: Path, real_library: Path) -> dict:
     env["PYTHONPATH"] = str(SRC_DIR) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env.update({
+        # $HELIXGEN_HOME to scratch isolates everything home-derived that
+        # has no dedicated override — most importantly the per-device
+        # devices/<serial>.json records (observations + the #74 discovered
+        # address), which `device sync` and `device discover` write. The
+        # user's real ~/.helixgen/devices/ is never touched by the suite.
+        "HELIXGEN_HOME": str(scratch / "home"),
+        # ...but the advisory device-lock root stays REAL (it would
+        # otherwise derive from the redirected home): the whole point of
+        # the suite's session lease is excluding OTHER helixgen processes
+        # on this machine.
+        "HELIXGEN_LOCKS": str(_REAL_HELIXGEN / "locks"),
         "HELIXGEN_SETLISTS": str(scratch / "setlists.json"),
         "HELIXGEN_DEVICE_SLOTS": str(scratch / "device-slots.json"),
         "HELIXGEN_IRS": str(scratch / "irs"),
@@ -203,7 +242,6 @@ def live_env(scratch: Path, real_library: Path) -> dict:
         "HELIXGEN_DEVICE_BACKUPS": str(scratch / "backups"),
         "HELIXGEN_PREFS": str(scratch / "preferences.json"),
         "HELIXGEN_LIBRARY": str(real_library),
-        "HELIXGEN_HELIX_IP": DEVICE_IP,
         # The suite holds the REAL machine-local `all` device lock for the
         # whole run (workspace #71 — flagship consumer); this token lets
         # every CLI call the suite makes pass through that session lease.
@@ -211,6 +249,15 @@ def live_env(scratch: Path, real_library: Path) -> dict:
         # point is excluding OTHER helixgen processes on this machine.
         "HELIXGEN_LOCK_TOKEN": f"live-test-suite-{uuid.uuid4().hex}",
     })
+    # #74: no built-in default IP. When resolvable, pin it in the env so
+    # every CLI call the suite makes targets the same device; when not,
+    # leave it unset — device-backed tests skip, and the fail-fast tests
+    # exercise the unconfigured path against the scratch home.
+    if DEVICE_IP:
+        env["HELIXGEN_HELIX_IP"] = DEVICE_IP
+    else:
+        env.pop("HELIXGEN_HELIX_IP", None)
+    (scratch / "home").mkdir(exist_ok=True)
     return env
 
 
@@ -235,15 +282,20 @@ def cli(live_env: dict):
     # (workspace #71): any helixgen process on this machine that isn't
     # carrying our HELIXGEN_LOCK_TOKEN blocks/fails instead of colliding
     # with the suite's device work. Purely local — works device-offline too.
+    # #74: locks are keyed per-ip and there is no default IP — device-less
+    # runs key the session lease under an explicit placeholder (harmless:
+    # no device work happens; the point is still to serialize suite runs).
+    lock_ip = ("--ip", DEVICE_IP) if DEVICE_IP else ("--ip", "no-device")
     code, out, err = run("device", "lock", "--scope", "all",
-                         "--label", "live-test-suite", "--ttl", "7200")
+                         "--label", "live-test-suite", "--ttl", "7200",
+                         *lock_ip)
     assert code == 0, ("could not acquire the session 'all' device lock — "
                        "is another helixgen session holding the device? "
                        f"{err or out}")
     try:
         yield run
     finally:
-        run("device", "unlock")
+        run("device", "unlock", *lock_ip)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -276,6 +328,10 @@ def _real_dotfiles_guard():
 @pytest.fixture(scope="session")
 def device() -> str:
     """Cheap reachability probe (the device ignores ICMP — TCP-connect 2002)."""
+    if not DEVICE_IP:
+        pytest.skip("no Helix IP configured (#74: no built-in default) — "
+                    "set HELIXGEN_HELIX_IP or run `helixgen device discover` "
+                    "once; device-backed live tests skipped")
     try:
         with socket.create_connection((DEVICE_IP, DEVICE_PORT), timeout=3):
             pass
