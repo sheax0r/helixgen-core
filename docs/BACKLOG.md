@@ -133,7 +133,46 @@ and had to be redirected. Start here so future work begins from the right model.
   Deliberate exclusions documented in `tests/live/conftest.py` (`restore`,
   `sync --all`, `bootstrap`, `globaleq set`, real-cache `ir-cache --clear`).
 
+- **#71 Machine-local advisory device locks** — **✅ SHIPPED 0.22.0,
+  2026-07-16** (mirrors workspace backlog #71 — motivated by two agents
+  colliding on the device 2026-07-16). Lease files
+  `~/.helixgen/locks/<ip>/<scope>.lock` (`$HELIXGEN_LOCKS` overrides the
+  root; JSON `{pid, hostname, acquired_at, ttl_seconds, label, token?,
+  kind, nonce}`; atomic tmp+hardlink create with O_EXCL fallback — the file
+  is the source of truth, no held fcntl handles, so per-call-pid shell-agent
+  flows work). Scopes `editbuffer`/`library`/`irs`/`globals` + exclusive
+  `all`; every mutating verb auto-acquires its scope(s) for the verb's
+  duration (`sync` = library+irs; dry-run modes take nothing; verb→scope
+  table in `docs/CLI.md` "Device locks"); read verbs take nothing. Session
+  leases via `device lock --scope … --label …` (+ `--status [--json]`,
+  `device unlock [--force]`); passthrough for covered verbs by
+  `$HELIXGEN_LOCK_TOKEN` or same-shell parent-pid, with TTL renewal on each
+  covered verb. Contention waits `$HELIXGEN_LOCK_TIMEOUT` (default 30 s,
+  0 = fail fast) then errors naming the holder; stale leases (expired TTL /
+  dead same-host pid) reclaimed with a warning, live ones never broken
+  implicitly; `--no-lock` per-verb escape hatch. `tests/live/` is the
+  flagship consumer (session `all` lease, label `live-test-suite`, `locks`
+  marker group). Advisory + machine-local only: other hosts and the Stadium
+  desktop editor are NOT covered. Adversarial review (14 findings, 13
+  fixed pre-merge): `docs/superpowers/specs/2026-07-16-locks-adversarial-review.md`.
+
 ## 🔲 Remaining
+
+### Deferred from the 0.22.0 lock-system adversarial review (2026-07-16)
+
+- **#72 Lock-layer residuals** (review doc:
+  `docs/superpowers/specs/2026-07-16-locks-adversarial-review.md`): (a)
+  Windows portability validation — pid-liveness probing is disabled on
+  `win32` (os.kill(pid,0) would TerminateProcess the holder) so staleness
+  is TTL-only there; untested on real Windows; (b) ip-sanitization
+  collisions (`192.168.4.84` vs `192_168_4_84` share a lock dir —
+  over-locking, safe direction); (c) `LeaseSet.release`'s read→unlink
+  nonce-check micro-window when a verb outlives its own 900 s auto-TTL
+  mid-release; (d) the `RENEW_MARGIN_S` renewal guard still has a window if
+  a process stalls >2 s between the margin check and the atomic replace;
+  (e) post-create cross-file verification only mutually excludes 0.22.0+
+  peers — a pre-0.22.0 helixgen racing the same gap can still double-hold
+  (mixed-version deployments only).
 
 ### Deferred from the 0.21.0 adversarial review (2026-07-15)
 

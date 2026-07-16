@@ -16,7 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-_REQUIRED_LINES = ["devices/", "cache/", "tone3000/", "*.bak*", "*.wav", "*.migrated-*"]
+_REQUIRED_LINES = ["devices/", "cache/", "locks/", "tone3000/", "*.bak*",
+                   "*.wav", "*.migrated-*"]
 GITIGNORE = "".join(f"{line}\n" for line in _REQUIRED_LINES)
 
 # Fallback commit identity so `git commit` works even on a machine with no

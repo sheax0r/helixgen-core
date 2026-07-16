@@ -196,6 +196,83 @@ content in the pool + add a reference at `--pos`. The old closed
 to the setlists *root* (`-5`), which never worked (empty listings, rejected
 writes); it now just names the setlist actually called "Throwaway".
 
+### Device locks (machine-local, advisory — 0.22.0)
+
+Every device-**mutating** verb auto-acquires a **machine-local advisory
+lock** for its duration, so concurrent helixgen processes on the same
+machine (including agents nobody is orchestrating) never collide on the
+device. Read-only verbs acquire nothing. Locks are **lease files** —
+`~/.helixgen/locks/<device-ip>/<scope>.lock` (root override
+`$HELIXGEN_LOCKS`; the default follows `$HELIXGEN_HOME` like every
+other home subarea, and `locks/` is gitignored in the home repo), JSON `{pid, hostname, acquired_at, ttl_seconds, label,
+token?, kind, nonce}` — created atomically; the file is the source of truth
+(no fcntl handle is held across processes, so shell-agent flows where every
+CLI call is a fresh pid work). **Limitations (by design):** advisory —
+nothing stops a `--no-lock` caller — and machine-local — direct-protocol
+clients on **other hosts** and the **Stadium desktop editor are NOT
+covered**.
+
+**Scopes** (granular, so safe parallelism is possible):
+
+| scope | covers |
+|---|---|
+| `editbuffer` | live-ops on the ACTIVE tone |
+| `library` | pool / setlist / preset-content writes |
+| `irs` | device IR writes |
+| `globals` | Global Settings / Global EQ writes |
+| `all` | exclusive: conflicts with everything (session lease for a whole run) |
+
+A scope conflicts with itself and with `all`; different granular scopes
+never conflict (e.g. one agent can run live-ops while another pushes IRs).
+
+**Verb → scope table** (auto-acquired for the verb's duration; released on
+exit, even on failure):
+
+| scope(s) | verbs |
+|---|---|
+| `editbuffer` | `load`, `snapshot`, `bypass`, `model`, `set-param` |
+| `library` | `create`, `save`, `rename`, `delete`, `set-info`, `push`, `restore`, `install` (without `--auto-irs`), `reorder`, `slots restore`, `setlist create/rename/delete/duplicate`, `setlist import-hss` (not `--list`/`--dry-run`) |
+| `library` + `irs` | `sync` (`--exclude-irs` drops the `irs` scope), `install --auto-irs` (it uploads device IRs) |
+| `irs` | `push-ir`, `delete-ir`, `rename-ir`, `ir-prune` (only with `--yes`; dry-run takes nothing) |
+| `globals` | `settings set`, `globaleq set` |
+| *(none)* | every read/list verb, the local-manifest verbs (`add`, `unsync`, `library`, `slots list/reorder`, `setlist list/add/remove/create-local/sync-on/sync-off`, `export-hss`, `local-list`), `backup`, `pull`, `pull-ir`, `watch`, `tuner`, `meters`, `measure` |
+
+**Session leases — `device lock` / `device unlock`:**
+
+- `helixgen device lock --scope <editbuffer|library|irs|globals|all> --label
+  <text> [--ttl 900]` (scope repeatable; default `all`) — hold scope(s)
+  ACROSS calls. Prints `HELIXGEN_LOCK_TOKEN=<token>`; **export it** and
+  every covered verb passes through the lease (renewing its TTL) instead of
+  deadlocking against it. Calls from the **same shell** as the `lock` also
+  pass through without the token (the lease records the invoking shell's
+  pid). Re-locking your own scope renews it (idempotent).
+- `helixgen device lock --status [--json]` — inspect the device's leases:
+  scope, label, pid, host, age, TTL, live/stale, ours. Read-only, exit 0.
+- `helixgen device unlock [--scope <s>]... [--force]` — release your leases
+  (all of them without `--scope`). An explicit `--scope` you don't own is an
+  error unless `--force` (which breaks even a live foreign lease —
+  dangerous). Foreign leases are otherwise reported and left alone.
+
+**Contention:** a blocked acquire waits up to `$HELIXGEN_LOCK_TIMEOUT`
+seconds (default **30**; `0` = fail fast) with polling backoff, then exits
+non-zero naming the holder (label, pid, host, age). **Staleness:** a lease
+whose TTL expired or whose recorded pid is dead (same host) is reclaimed
+with a stderr warning (stale-breaks are serialized through a break-mutex
+file and re-verified under it, so a renewed/re-acquired lease is never
+broken); a **live lease is never broken** implicitly. Escape hatch: every
+mutating verb takes `--no-lock` (dangerous — you're opting out of
+collision protection).
+
+Fine print: `--ttl 0` = no TTL expiry (reclaim then relies on pid-liveness
+or `device unlock`). A **session** lease whose recorded pid is dead gets a
+**120 s grace** (from its last acquisition/renewal) before pid-death makes
+it stale — so run `device lock` from your long-lived shell, not via a
+wrapper script (the wrapper's pid dies immediately; the lease then only
+survives while covered verbs keep renewing it). Pid-liveness is POSIX-only:
+on Windows it is disabled (probing would kill the probed process) and only
+TTL staleness applies. Lease files are `0600` (the token is a private
+capability).
+
 ### Preset + edit-buffer verbs
 
 - `helixgen device list [--setlist <user|factory|NAME>] [--json]` — presets in the pool (`user`, default) or factory; with a named setlist, its **references** (each row: position, the reference's own cid, `rcid=` the pool preset it points at, name).
@@ -265,7 +342,7 @@ the legacy file is renamed `*.migrated-v2` so a re-run doesn't re-migrate).
 A **tone** is *content + identity + management **intent***: its `.hsp` (or
 nothing, if it came off the device), a unique name (also the device preset
 key), a desired **user slot** (`null` = off device, `"auto"` = wants device /
-address TBD, or `"1A".."8D"`), its **setlist memberships** (ordered), and
+address TBD, or `"1A".."128D"`), its **setlist memberships** (ordered), and
 provenance `source`. **"On the device" ⟺ the tone has a slot.** There is **no
 separate slot ledger** — this one manifest is the single management-intent
 record (design `docs/superpowers/specs/2026-07-13-tone-library-model-
@@ -324,7 +401,7 @@ Presets are addressed by integer **CID**; a preset lives once in the **pool**
 root `-5` (`-5` is the *root*, **not** a setlist — `factory`=-1; `user`,
 `throwaway`, and any user-created setlist like `helixgen` are child setlists with
 their own positive cids under `-5`); slot `posi` maps to the Helix
-`1A`..`8D` label. The device's native content format (`_sbepgsm`) is a
+`1A`..`128D` label. The device's native content format (`_sbepgsm`) is a
 separate schema from `.hsp`; see [`helix-protocol.md`](helix-protocol.md) and
 `docs/superpowers/specs/2026-07-11-helix-device-v2-plan.md`.
 

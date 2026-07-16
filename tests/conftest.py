@@ -35,6 +35,18 @@ def _isolate_device_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "_device_slots.json"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_device_locks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Point the advisory device-lock root at a per-test tmp dir, so no test
+    ever reads/writes the real `~/.helixgen/locks/` (a developer's live
+    session lease must not block the suite, nor the suite leak leases), and
+    drop any inherited lock token/timeout from the invoking shell.
+    """
+    monkeypatch.setenv("HELIXGEN_LOCKS", str(tmp_path / "_locks"))
+    monkeypatch.delenv("HELIXGEN_LOCK_TOKEN", raising=False)
+    monkeypatch.delenv("HELIXGEN_LOCK_TIMEOUT", raising=False)
+
+
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A tmp `~/.helixgen` home with the *default* manifest/devices layout in

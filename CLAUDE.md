@@ -159,6 +159,25 @@ device** — the live-ops verbs change the ACTIVE tone immediately. When unsure,
 check the verb's entry in [`docs/CLI.md`](docs/CLI.md). Prefer an
 empty/expendable slot when testing.
 
+**Machine-local advisory device locks (0.22.0).** Every device-mutating verb
+auto-acquires a lease file (`~/.helixgen/locks/<ip>/<scope>.lock`, override
+root `$HELIXGEN_LOCKS`) for its duration, so concurrent helixgen processes on
+this machine never collide on the device; read-only verbs take nothing.
+Scopes: `editbuffer` (live-ops on the ACTIVE tone), `library` (pool/setlist/
+content writes), `irs` (device IR writes), `globals` (Global Settings/EQ
+writes), `all` (exclusive session lease). Hold scopes across calls with
+`device lock --scope all --label <who>` (export the printed
+`HELIXGEN_LOCK_TOKEN` so your own verbs pass through; same-shell calls pass
+through automatically), inspect with `device lock --status [--json]`, release
+with `device unlock`. Contended verbs wait `$HELIXGEN_LOCK_TIMEOUT` s
+(default 30, 0 = fail fast) then error naming the holder; stale leases
+(expired TTL / dead pid — session leases get a 120 s dead-pid grace, so run
+`device lock` from a long-lived shell, not a wrapper script) are reclaimed,
+live ones never. `--no-lock` per-verb opts out (dangerous). Advisory +
+machine-local only — other hosts and the Stadium desktop editor are NOT
+covered; pid-liveness is POSIX-only (TTL-only staleness on Windows). Full
+verb → scope table: [`docs/CLI.md`](docs/CLI.md) "Device locks".
+
 **The Stadium's network stack is flaky — if a sync/verb drops or stalls,
 re-run it: `sync` and the live-ops verbs are idempotent + auto-reconnecting;
 the slot-writing verbs (install/save/push/create) fail safe on an occupied
@@ -171,7 +190,7 @@ generates auto-registers into the manifest, now at
 `~/.helixgen/setlists.json` v2 manifest auto-migrates up to the new location
 on first load — see "Home directory and git plumbing" below). A **tone** =
 content + identity + management **intent**; its desired **user slot**
-(`null` = off device, `"auto"` = wants device, or `"1A".."8D"`) plus its
+(`null` = off device, `"auto"` = wants device, or `"1A".."128D"`) plus its
 **setlist memberships**. **"On the device" ⟺ the tone has a slot.** There is
 no separate slot ledger. Presets are addressed by integer **CID**; a preset
 lives once in the **pool** (`-2`) and is referenced by **setlists** under the
@@ -404,11 +423,11 @@ on a `patch` op.
 
 ## Project layout
 
-- `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (the `helixgen device` verb group, imported back into `cli`), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`
+- `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (the `helixgen device` verb group, imported back into `cli`), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`, `locks` (machine-local advisory device locks)
 - `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
 - `docs/` — `BACKLOG.md` (THE backlog), `CLI.md` (the full CLI + per-verb **device** reference), `recipe-reference.md` (the exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
-- `tests/live/` — **opt-in live integration suite** (backlog #66): drives the real CLI via subprocess against the real library and a real Stadium. Skipped unless `HELIXGEN_LIVE=1` (device tests also need the device reachable — TCP probe of port 2002; the device ignores ICMP). Impact-area markers (registered in `pyproject.toml`): `authoring`, `library`, `ir`, `device_read`, `device_write`, `liveops`, `setlists`, `sync`, `device_ir`, plus `live` on everything and `live_global` (extra opt-in `HELIXGEN_LIVE_GLOBAL=1` for the read→set-same→verify global-settings write). After a targeted change run its blast radius, e.g. `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest -m "live and sync" tests/live`. Safety = fixtures: scratch env for ALL local state, upfront `device backup`, before/after device-state diff (the suite fails itself on a leak), `HGTEST`-prefixed artifacts with teardown-on-failure, and a session check that the real `~/.helixgen` files are byte-identical afterwards. `tests/live/conftest.py` documents the full safety model + deliberately excluded verbs (`restore`, `sync --all`, `bootstrap`, `globaleq set`, real-cache `ir-cache --clear`). Known live gotchas are encoded as xfails: backlog #38 /CreateContent status-1 episodes (save/install/setlist create), the IR-registry non-listing wedge, and amp-pid-1-only live `set-param` (#67).
+- `tests/live/` — **opt-in live integration suite** (backlog #66): drives the real CLI via subprocess against the real library and a real Stadium. Skipped unless `HELIXGEN_LIVE=1` (device tests also need the device reachable — TCP probe of port 2002; the device ignores ICMP). Impact-area markers (registered in `pyproject.toml`): `authoring`, `library`, `ir`, `device_read`, `device_write`, `liveops`, `setlists`, `sync`, `device_ir`, `locks` (the advisory device locks: session-lease visibility, foreign-process blocking, token passthrough, `--no-lock`), plus `live` on everything and `live_global` (extra opt-in `HELIXGEN_LIVE_GLOBAL=1` for the read→set-same→verify global-settings write). The suite holds the real `all` device lock for the whole run (label `live-test-suite`) and passes its own calls through via `HELIXGEN_LOCK_TOKEN`. After a targeted change run its blast radius, e.g. `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest -m "live and sync" tests/live`. Safety = fixtures: scratch env for ALL local state, upfront `device backup`, before/after device-state diff (the suite fails itself on a leak), `HGTEST`-prefixed artifacts with teardown-on-failure, and a session check that the real `~/.helixgen` files are byte-identical afterwards. `tests/live/conftest.py` documents the full safety model + deliberately excluded verbs (`restore`, `sync --all`, `bootstrap`, `globaleq set`, real-cache `ir-cache --clear`). Known live gotchas are encoded as xfails: backlog #38 /CreateContent status-1 episodes (save/install/setlist create), the IR-registry non-listing wedge, and amp-pid-1-only live `set-param` (#67).
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports
 - `irs/` (gitignored) — paid commercial IR packs; character catalog at `irs/_catalog/`
