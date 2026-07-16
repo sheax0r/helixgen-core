@@ -301,4 +301,4 @@ Phase 0 ran the day the spec landed. Hypothesis scoreboard:
   conditional (looper? app-attached?); still worth a dump if it ever shows.
 
 Phase 1 shipped alongside (`device measure` + MCP `device_measure`); phase 2
-(`device normalize`) and the full cell-index map remain backlog #58.
+(`device normalize`) and the full cell-index map remain backlog #62.

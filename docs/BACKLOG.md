@@ -1073,7 +1073,7 @@ Remaining follow-ups:
   backlog; plugin- and TUI-specific work moves to each repo's own
   `docs/BACKLOG.md` as it arises. Parity matrix + protocol docs stay in core.
 
-- **#58 Loudness feedback loop — measured volume normalization** — the 2003
+- **#62 Loudness feedback loop — measured volume normalization** — the 2003
   `/dspEvent` meter grids (`{eid_:1, mid_:796/800}`) are per-node live audio
   envelopes with instrument-input and chain-out levels in the same burst.
   Spec + phase-0 hardware findings:

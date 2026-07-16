@@ -87,7 +87,7 @@
 - Modify: `docs/CLI.md` (measure verb entry; bypass/model/set-param entries note the wire translation is internal), `docs/helix-protocol.md` (§4 telemetry: 10 Hz, audio-envelope semantics, tap points, wire-index law; §6 PARAM SET / live-ops table correction), `docs/superpowers/specs/2026-07-14-parity-capture-findings.md` (erratum note at §"live ops": block_id is NOT the blks key), `docs/superpowers/specs/2026-07-14-loudness-feedback-normalization.md` (phase-0 findings appendix; correct 2–3 Hz → 10 Hz), `docs/BACKLOG.md` #58 (phase 0+1 done, phase 2 + full grid map remaining), `CLAUDE.md` (verb index + device-write gating list gain `measure`)
 - [x] **Commit** `docs: loudness phase-0 findings, wire-index erratum, measure verb docs`.
 
-### Task 6 (DEFERRED — stays in backlog #58): phase 2 `device normalize` + skills
+### Task 6 (DEFERRED — stays in backlog #62): phase 2 `device normalize` + skills
 
 Needs per-snapshot `.hsp` param-override writes in `mutate` (only enable/disable are snapshot-aware today), an interactive play-prompt loop, and the plugin-repo skill updates (separate repo). Out of scope for this PR by design.
 
