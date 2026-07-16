@@ -2,3 +2,8 @@ click>=8.1
 
 [dev]
 pytest>=7.4
+
+[device]
+pyzmq>=25
+msgpack>=1
+paramiko>=3.4

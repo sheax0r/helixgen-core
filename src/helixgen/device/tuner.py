@@ -15,7 +15,7 @@ Reverse-engineered + hardware-verified 2026-07-14 (a slightly-flat low-E read
 ``docs/superpowers/specs/2026-07-14-parity-capture-findings.md`` §4.
 
 This module is the pure decoder (unit-tested against a golden dspEvent). The
-``device tuner`` CLI / ``device_tuner`` MCP tool subscribe and call in here.
+``device tuner`` CLI subscribes and calls in here.
 """
 from __future__ import annotations
 

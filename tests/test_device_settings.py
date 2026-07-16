@@ -143,13 +143,6 @@ def test_keys_for_unknown_page_raises():
         S.keys_for_page("nope")
 
 
-def test_mcp_settings_list_offline():
-    from mcp_server import tools as T
-    out = T.device_settings_list_handler(page="tuner", values=False)
-    assert "pages" in out and "tuner" in out["pages"]
-    assert "global.tuner.type" in out["pages"]["tuner"]
-
-
 # --- hardening (adversarial-review fixes) ---------------------------------
 
 def test_coerce_rejects_non_finite_float():

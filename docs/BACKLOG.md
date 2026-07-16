@@ -45,12 +45,12 @@ and had to be redirected. Start here so future work begins from the right model.
    `set-info` read/round-trip content **without** activating any preset. The one
    remaining activating path is a deliberate `load_preset` (or the live-ops verbs,
    which change the ACTIVE tone by design).
-5. **Don't source-dive to answer behavior/format questions.** The running MCP is
-   the **bundled** plugin (`${CLAUDE_PLUGIN_ROOT}`), NOT the cwd checkout —
-   reading source can mislead about the live version/schema. The **tool
-   descriptions, CLI `--help`, [`docs/CLI.md`](CLI.md), `device setlist list`, and
-   the sync result dict** are the authoritative contract. (See the resolver
-   pattern, #14.)
+5. **Don't source-dive to answer behavior/format questions.** The installed
+   `helixgen` may be a **pinned release**, NOT the cwd checkout — reading
+   source can mislead about the live version/schema. The **CLI `--help`
+   text** (the agent contract since the 0.20.0 MCP removal),
+   [`docs/CLI.md`](CLI.md), `device setlist list`, and the sync result dict
+   are the authoritative contract. (See the resolver pattern, #14.)
 6. **A tone belongs in as many setlists as you want.** `device setlist add` is
    idempotent within a setlist; it errors ONLY on a name/**different-file**
    collision. Never pre-check membership or read the manifest to add safely.
@@ -1094,6 +1094,20 @@ Remaining follow-ups:
   vocabulary) feeding a tone-skill refinement loop at creation time when the
   device is online, and later iteration via the device skill; (d) skills
   integration lives in the plugin repo (cross-repo, after #56).
+- **#63 MCP server removal — CLI is the only engine surface** — **✅ SHIPPED
+  0.20.0** (mirrored in the coordination-workspace backlog, which is now the
+  authoritative one). `mcp_server/` + `tests/mcp_server/` + the `[mcp]` extra
+  deleted; every MCP tool mapped to a CLI verb (gaps closed: `helixgen patch`
+  = atomic batch ops, `helixgen irhash` = stateless hash/discovery); the MCP
+  tool descriptions' contract text ported into click `--help`; `--json` added
+  to `list-blocks`/`show-block`/`list-irs`; parity pinned by
+  `tests/test_cli_parity.py`. Spec + inventory table:
+  `docs/superpowers/specs/2026-07-15-mcp-removal-cli-only.md`. **Cross-repo
+  residual (plugin repo):** the plugin's `.mcp.json` + skills still reference
+  the MCP server of pinned `helixgen[mcp,device]==0.19.1` (unaffected — a
+  released version); when the plugin bumps to >=0.20.0 it must drop
+  `.mcp.json`/the `[mcp]` extra and repoint skills at the CLI (fold into the
+  #58 slim).
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

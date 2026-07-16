@@ -115,7 +115,7 @@ def sample_serial_preset_hsp() -> dict:
 def hsp_library(tmp_path: Path, sample_serial_preset_hsp: dict):
     """A Stadium (.hsp) Library: chassis from the hsp fixture + two synthetic
     blocks (a drive `Tube Drive` and an amp `Brit Amp`). Exemplars are
-    .hlx-normalized (params unwrapped). Shared by decompile/patch/CLI/MCP tests.
+    .hlx-normalized (params unwrapped). Shared by decompile/patch/CLI tests.
     """
     from helixgen.hsp import HSP_MAGIC
     from helixgen.ingest import ingest_path

@@ -6,12 +6,14 @@ block library lives at `~/.helixgen/library/` (override with
 `$HELIXGEN_LIBRARY`) and is built by ingesting real device exports.
 
 **Repo family (all under `sheax0r`):** this repo (`helixgen-core`) is the
-Python package `helixgen` — libs, CLI, and the MCP server;
+Python package `helixgen` — libs and the CLI (the **CLI is the only engine
+surface**; the MCP server was removed in 0.20.0 — the per-verb `--help` text
+is the agent-facing behavioral contract, pinned by `tests/test_cli_parity.py`);
 [`helixgen`](https://github.com/sheax0r/helixgen) is the Claude Code
 plugin/marketplace repo carrying the `setup`/`tone`/`device` skills;
 [`helixgen-tui`](https://github.com/sheax0r/helixgen-tui) is the terminal UI.
 The plugin and TUI consume this repo as a PyPI dependency (package name
-`helixgen` — verified available 2026-07-14; first publish still pending).
+`helixgen`, published to PyPI since 0.19.1).
 
 User IRs (impulse responses) registered with `helixgen register-irs` live at
 `~/.helixgen/irs/` by default (override with `$HELIXGEN_IRS`). The mapping
@@ -25,14 +27,16 @@ punted review findings get a numbered entry there, not a TODO comment.
 
 - `helixgen list-blocks [--category amp|cab|drive|delay|reverb|modulation|filter|eq|dynamics|pitch|volume|send]` — list blocks, optionally filtered.
 - `helixgen show-block "<name>"` — print a block's exact param names, types, defaults, and observed ranges. **Run this before writing a spec** — param names are case-sensitive and the generator rejects unknown ones.
+- **`--json`** — verbs whose output agents consume programmatically take a `--json` flag for machine-readable stdout (`list-blocks`, `show-block`, `list-irs`, `irhash`, `patch`, `controllers`, and the `device` read verbs); `view` prints JSON by default.
 - `helixgen generate <recipe.json> -o <out.hsp>` — author a preset from a transient recipe (no sidecar is written). The `-o` flag is required. Output extension `.hsp` writes a Stadium-format file (8-byte magic + compact JSON); `.hlx` writes pretty JSON for the original Helix.
 - `helixgen view <preset.hsp> [-o recipe.json]` — read-only projection of a `.hsp` back into the recipe shape (replaces the old `decompile`; `-o` dump is non-authoritative).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
 - `helixgen register-irs <preset.hsp> <wav1> <wav2> ...` — bind each unknown `irhash` in the preset (path-then-position order) to the corresponding wav arg. Use `--force` to overwrite existing mappings.
 - `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash directly (no device export needed) and register. Requires libsndfile (`brew install libsndfile` on macOS). Only 48 kHz sources supported; non-48 kHz raises an error suggesting `sox`. This 48 kHz limit is a **helixgen** input constraint (it does not resample) — the **device** itself accepts any sample rate and normalizes internally, so a non-48k IR still works once imported onto the hardware; you just can't hash it off-device with helixgen without resampling first. Stereo WAVs are reduced to the left channel (matches Stadium's import).
+- `helixgen irhash <wav-or-dir>... [--json]` — compute Stadium hashes **statelessly** (nothing registered; use `register-irs`/`ir-scan` to persist). Directories are recursed for `*.wav`; per-file failures inside a directory walk warn and continue, an explicitly named file that fails is fatal.
 - `helixgen ir-scan <dir>... [--rescan] [--remove <basename>]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache. A WAV is skipped only when it is already registered **and** its cached hash is still valid for the file on disk (matching mtime + size), so an edited or replaced WAV is detected and re-hashed; `--rescan` recomputes unconditionally. Per-file failures (non-48 kHz, libsndfile errors) print a stderr warning and the scan continues. `--remove <basename>` forgets a single entry. Use this to bulk-register a whole IR library at once; use `register-irs` for one-off binding from a preset.
 - `helixgen list-irs` — print `<hash>  <wav-path>` for every registered IR.
-- `helixgen ir-cache --stats | --clear | --prune` — inspect/maintain the IR-hash **cache** (a pure-local perf layer that memoizes expensive Stadium-hash computes, keyed by absolute path + mtime + size; **not** `mapping.json`). `--stats` prints entry count, path, and size; `--clear` deletes the cache file; `--prune` drops entries whose backing WAV is gone. Default location `~/.helixgen/cache/irhash.json` (override with `$HELIXGEN_IRHASH_CACHE`, or `$HELIXGEN_CACHE` for the cache dir). All IR-hashing paths (`register-irs`, `ir-scan`, MCP IR tools) share it transparently.
+- `helixgen ir-cache --stats | --clear | --prune` — inspect/maintain the IR-hash **cache** (a pure-local perf layer that memoizes expensive Stadium-hash computes, keyed by absolute path + mtime + size; **not** `mapping.json`). `--stats` prints entry count, path, and size; `--clear` deletes the cache file; `--prune` drops entries whose backing WAV is gone. Default location `~/.helixgen/cache/irhash.json` (override with `$HELIXGEN_IRHASH_CACHE`, or `$HELIXGEN_CACHE` for the cache dir). All IR-hashing paths (`register-irs`, `ir-scan`, `irhash`) share it transparently.
 
 Example: `helixgen ir-scan ~/IRs && helixgen list-irs | wc -l`.
 
@@ -44,7 +48,7 @@ Point at the device with `--ip`/`--port` or `$HELIXGEN_HELIX_IP` (default
 `192.168.4.84`). **Stadium-only**; these verbs **mutate the device** — prefer an
 empty/expendable slot when testing.
 
-**The full per-verb reference — every flag, gotcha, and MCP-mirror name — lives
+**The full per-verb reference — every flag and gotcha — lives
 in [`docs/CLI.md`](docs/CLI.md) "Device commands".** The rest of this section is
 the verb index plus the mental-model rules that must stay in front of an agent.
 
@@ -60,7 +64,7 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   bypass), `device model <path> <block> <model>` (live model swap), `device
   reorder <setlist> <target> --to <N>` (direct DEVICE-side preset reorder —
   distinct from the local-manifest `device slots reorder`; numeric args are
-  **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #58).
+  **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #62).
   Decoded + HW-validated 2026-07-14.
 - **Global Settings + Global EQ:** `device settings list|get|set` (161 `global.*`
   keys; enum labels validated) and `device globaleq list|set <output> <band>
@@ -112,7 +116,7 @@ it installs/updates/reorders/deletes only the tones helixgen manages and
 
 **Pushing tones to the device is driven by the `device` skill** (in the
 plugin repo, `sheax0r/helixgen`), which runs after `tone` has authored the `.hsp` and
-centers on `device sync <setlist>` / `device_sync_setlist`. Read it before
+centers on `device sync <setlist>`. Read it before
 scripting a setlist sync. Design + protocol refs:
 [`docs/CLI.md`](docs/CLI.md), `docs/helix-protocol.md`, and
 `docs/superpowers/specs/2026-07-13-tone-library-model-redesign.md`.
@@ -160,7 +164,7 @@ similar preset), use `helixgen view <preset.hsp>` — a read-only projection.
 
 ## recipe shape (author input to `generate`)
 
-The **recipe** is the JSON author-input to `generate` / `generate_preset`. It is
+The **recipe** is the JSON author-input to `generate`. It is
 input-only — never written to disk, never read back as truth. The base shape:
 
 ```json
@@ -208,10 +212,10 @@ may have several sources).
 
 **Controller vocabulary & English rendering (agent behavior).** When reporting a
 tone to a human, render controllers in English (via
-`controllers.english_for_controller` / the `controller_mapping` MCP tool), never
+`helixgen controllers` / `controllers.english_for_controller`), never
 a bare `FS#` (e.g. `Footswitch 5 (top row, 5th from left)`). When a human
 *describes* a control in plain language, translate it to a canonical identifier
-with a dedicated small-model sub-agent fed `controller_mapping(stadium_xl)` — it
+with a dedicated small-model sub-agent fed `helixgen controllers --json` — it
 returns exactly one identifier (or `AMBIGUOUS`/`NONE`); validate it against the
 canonical set before writing it into a recipe. `view` never drops controls it
 can't map — it keeps them under a top-level `unknown_controllers` list
@@ -278,15 +282,15 @@ in the preset (e.g. dual-cab, both lanes of a split). (`--index` was removed in
 1.0.0 — block addressing is `(path, lane, pos)`.) `--snapshot` applies only to
 `enable`/`disable`.
 
-MCP tools mirror the CLI for agent-driven edits, operating on `.hsp` **file
-paths** (no base64 — the bytes never round-trip through agent context):
-`generate_preset(model, recipe, out_path)` authors a `.hsp` from a recipe,
-writes it to `out_path`, and returns `{path, warnings}`; `patch_preset(model,
-hsp_path, operations)` applies a list of `{op, ...}` operations (`set_param`,
-`set_enabled`, `add_block`, `remove_block`, `swap_model`) to the file **in
-place** and returns `{path, warnings}`; `view_preset(model, hsp_path)` returns
-the read-only recipe-shape projection. The agent edit loop is just a single
-`patch_preset` call on the file — no decompile/regenerate round-trip.
+For a multi-edit session, **`helixgen patch <preset.hsp> <ops.json>`** applies
+a JSON **list** of `{op, ...}` operations (`set_param`, `set_enabled`,
+`add_block`, `remove_block`, `swap_model`) in one atomic invocation: all ops
+are applied in memory and the file is written once at the end, so an invalid
+op anywhere in the list leaves the `.hsp` untouched (never half-patched).
+`ops.json` may be `-` for stdin; `--json` emits `{path, warnings}`. Op fields
+mirror the single-op verbs' flags (`"path"`/`"lane"`/`"pos"`, `"snapshot"`,
+the signal-flow pseudo-blocks). The agent edit loop is a single `patch` call
+on the file — no decompile/regenerate round-trip.
 
 ### Worked examples
 
@@ -298,8 +302,6 @@ helixgen set-param MyTone.hsp "Tape Echo Stereo" Mix 0.3
 # mutates MyTone.hsp in place (no sidecar)
 ```
 
-MCP: `{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value": 0.3}`
-
 **Disable a block (kill the reverb):**
 
 ```bash
@@ -307,22 +309,26 @@ helixgen disable MyTone.hsp "Plate Stereo"
 # add --snapshot Lead to bypass it only in the "Lead" snapshot
 ```
 
-MCP: `{"op": "set_enabled", "block": "Plate Stereo", "enabled": false}`
-
 **Swap an amp:**
 
 ```bash
 helixgen list-blocks --category amp          # find the exact target display name
 helixgen swap-model MyTone.hsp "Brit Plexi Brt" "Brit 2204"
 # same-category only; carries over shared params, warns on any it had to drop
+# (surface any warnings to the user)
 ```
 
-MCP: `{"op": "swap_model", "old": "Brit Plexi Brt", "new": "Brit 2204"}`
-(surface any returned `warnings` to the user)
+**Several edits at once (atomic):**
+
+```bash
+echo '[{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value": 0.3},
+       {"op": "set_enabled", "block": "Plate Stereo", "enabled": false}]' \
+  | helixgen patch MyTone.hsp -
+```
 
 Disambiguate duplicate block names (e.g. two cabs across a split) with
-`--pos`/`--lane`/`--path` on the CLI, or `"pos"`/`"lane"`/`"path"` on the MCP
-op.
+`--pos`/`--lane`/`--path` on the single-op verbs, or `"pos"`/`"lane"`/`"path"`
+on a `patch` op.
 
 ## Generation notes
 
@@ -334,7 +340,6 @@ op.
 
 - `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (the `helixgen device` verb group, imported back into `cli`), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from a recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`
 - `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
-- `mcp_server/` — the MCP server (ships in the `helixgen` pip package; the plugin repo's `.mcp.json` launches it); tool descriptions here are agent-facing behavioral contracts
 - `docs/` — `BACKLOG.md` (THE backlog), `CLI.md` (the full CLI + per-verb **device** reference), `recipe-reference.md` (the exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
 - `tests/fixtures/` — synthetic + real-export fixtures
@@ -354,13 +359,15 @@ op.
   regressions, spec violations — not summarize it). Confirmed findings are fixed
   or explicitly deferred to `docs/BACKLOG.md`. Major changes also get a committed
   review doc in `docs/superpowers/specs/` (see the PR #31 review for the shape).
-- **Agent-facing surfaces ship in sync.** Any change to CLI- or MCP-visible
-  behavior updates, in the same PR, every surface in this repo that describes
-  it: this CLAUDE.md, the MCP tool descriptions in `mcp_server/`, and
-  `docs/CLI.md`. Drift between code and these surfaces is a bug, not a docs
-  chore. Behavior changes that skills describe also need a companion PR in the
-  plugin repo (`sheax0r/helixgen`, `.claude/skills/*`) — land the two together
-  and note the cross-repo pairing in both PR descriptions.
+- **Agent-facing surfaces ship in sync.** The CLI is the only engine surface;
+  its per-verb `--help` text is the agent contract (pinned by
+  `tests/test_cli_parity.py`). Any change to CLI-visible behavior updates, in
+  the same PR, every surface in this repo that describes it: the verb's help
+  text, this CLAUDE.md, and `docs/CLI.md`. Drift between code and these
+  surfaces is a bug, not a docs chore. Behavior changes that skills describe
+  also need a companion PR in the plugin repo (`sheax0r/helixgen`,
+  `.claude/skills/*`) — land the two together and note the cross-repo pairing
+  in both PR descriptions.
 - **Backlog discipline.** `docs/BACKLOG.md` is the single project backlog.
   Deferred work gets a numbered entry there — not a TODO comment, not a
   side file.
@@ -379,5 +386,5 @@ upload` from a tagged `main` commit (tag `vX.Y.Z`).
 Plugin releases (the `stable` branch + `helixgen--vX.Y.Z` tags) live in the
 **plugin repo** (`sheax0r/helixgen`) and are owned by its release workflow —
 nothing in this repo moves those refs. When a core release changes behavior a
-skill or the plugin's `.mcp.json` depends on, cut the core release first, then
-bump the plugin's pinned `helixgen` version in its own PR.
+skill depends on, cut the core release first, then bump the plugin's pinned
+`helixgen` version in its own PR.

@@ -1,6 +1,6 @@
 # Loudness feedback loop — measured volume normalization (2026-07-14)
 
-Investigation + design spec for backlog **#58**. Question investigated: *can the
+Investigation + design spec for backlog **#62**. Question investigated: *can the
 Helix give us signals that tell us how loud a tone actually is when played, so
 normalization can be driven by measurement instead of heuristics?*
 

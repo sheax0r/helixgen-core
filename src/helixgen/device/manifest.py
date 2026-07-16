@@ -30,7 +30,7 @@ On-disk shape (version 2)::
      "setlists": {"<setlist>": {"tones": ["<tone name>", …], "synced": bool}}}
 
 The manifest is **never hand-edited** — it is written by the authoring/sync
-surfaces (CLI / MCP). A version-1 document (list-valued setlists + a folded
+surface (the CLI). A version-1 document (list-valued setlists + a folded
 ``entries`` slot-ledger section) is migrated to version 2 on load.
 """
 from __future__ import annotations

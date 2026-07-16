@@ -8,7 +8,7 @@ Extracted 2026-07-13. `P35`/`P37` = Stadium / Stadium XL model codes; app intern
 The app reads/writes device global settings via `/PropertyValueGet` / `/PropertyValueSet`
 over the same 2002 RPC channel, keyed by a dotted **`global.*`** namespace (251 keys).
 This means the entire Global Settings surface is controllable over the network — the gap is
-exposing these keys as helixgen CLI/MCP verbs, plus discovering the exact PropertyValueSet arg shape (capture).
+exposing these keys as helixgen CLI verbs, plus discovering the exact PropertyValueSet arg shape (capture).
 
 ## OSC command namespace (from binary strings)
 

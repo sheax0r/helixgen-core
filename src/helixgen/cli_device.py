@@ -119,7 +119,7 @@ def _auto_upload_irs(ip: str, hashes) -> None:
 
     Thin echo-formatting wrapper around the shared core in
     ``helixgen.device.ir_upload`` (backlog #6 — the same core also backs
-    ``device sync`` and the MCP ``device_install_preset``). Unlike those two
+    ``device sync``). Unlike that path
     (which tolerate a per-IR upload failure and keep going — a preset install
     or sync run shouldn't be all-or-nothing on IR trouble), the CLI's
     ``--auto-irs`` still **aborts the whole install** on a hard upload error
@@ -272,11 +272,31 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
 
 @click.group(name="device")
 def device() -> None:
-    """Drive a networked Line 6 Helix Stadium over the LAN.
+    """Drive a networked Line 6 Helix Stadium over the LAN (Stadium-only).
 
-    Requires the ``device`` extra (``pip install 'helixgen[device]'``) for the
+    Requires the `device` extra (`pip install 'helixgen[device]'`) for the
     pyzmq/msgpack transport. Point at the device with --ip / --port or set
     $HELIXGEN_HELIX_IP.
+
+    READ vs WRITE: verbs that only read/list device state are safe (info,
+    read, list, setlists, list-irs, blocks, settings list/get, tuner, meters,
+    measure, watch, backup, pull, pull-ir, plus the offline verbs local-list,
+    library, slots list, globaleq list and --list/--dry-run modes).
+    Everything else MUTATES the device — and the live-ops verbs (snapshot,
+    bypass, model, set-param) change the ACTIVE tone immediately. Prefer an
+    empty/expendable slot when testing writes.
+
+    The Stadium's network stack is flaky: if a verb/sync drops or stalls,
+    just re-run it (the mutating paths are idempotent + auto-reconnecting);
+    if it keeps dropping, reboot the Helix.
+
+    The tone library manifest (~/.helixgen/setlists.json) is the single
+    management record: every generated tone auto-registers there; "on the
+    device" ⟺ the tone has a slot; `device sync` mirrors ONLY managed tones
+    and never touches untracked device presets. Presets live once in the
+    pool (cid container -2) and setlists hold references to them.
+
+    SEE ALSO: docs/CLI.md "Device commands" for the full per-verb reference.
     """
 
 
@@ -292,7 +312,12 @@ def device() -> None:
               help="Emit the preset list as JSON.")
 @_device_option
 def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
-    """List the presets in a setlist (default: user)."""
+    """List the presets in a setlist (default: user). Read-only.
+
+    Each row shows the slot label, the preset's integer CID (the content id
+    every other device verb addresses presets by), and its name. --json
+    emits the device's raw records (cid_, name, cctp, posi).
+    """
     HelixClient, HelixError = _client()
     from helixgen.device import slot_label
 
@@ -728,7 +753,14 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
 @_device_option
 def device_set_param(path: int, block: int, param_id: int, value: float,
                      ip: str, port: int) -> None:
-    """Set one param in the edit buffer (path block param_id value)."""
+    """Set one param in the live edit buffer (PATH BLOCK PARAM_ID VALUE).
+
+    PATH/BLOCK are `device blocks` coordinates (the odd position key; the
+    wire's (key-1)/2 translation happens internally); PARAM_ID is the numeric
+    param id from the model defs. VALUE is in the param's RAW units (e.g. dB
+    for the output block's `gain`, pid 2) — NOT normalized 0..1. Mutates the
+    ACTIVE tone immediately (volatile until the preset is saved).
+    """
     HelixClient, HelixError = _client()
 
     try:
@@ -1234,7 +1266,14 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
 
     Transcodes the .hsp straight into the device's native content format and
     installs it into an empty slot — any block chain, full fidelity, no
-    template. With --auto-irs, missing IRs are uploaded first. EXPERIMENTAL.
+    template (dual-amp, parallel splits, snapshots, footswitch/EXP
+    assignments all synthesized). MUTATES the device (the slot must be
+    empty; the active tone is untouched).
+
+    If the preset references user IRs, pass --auto-irs so any that aren't on
+    the device are uploaded first (resolved from the local mapping.json) —
+    otherwise those cabs come up SILENT until the IRs are imported. For
+    managed multi-tone workflows prefer `device sync`. EXPERIMENTAL.
     """
     from helixgen.hsp import read_hsp
     HelixClient, HelixError = _client()
@@ -1318,7 +1357,14 @@ def device_setlist_add_cmd(setlist: str, hsp_file: Path, pos: int | None) -> Non
 @click.argument("setlist")
 @click.argument("tone_name")
 def device_setlist_remove_cmd(setlist: str, tone_name: str) -> None:
-    """Drop a tone from a setlist's membership (TONE_NAME is the tone's display name)."""
+    """Drop a tone from a setlist's membership (TONE_NAME = display name).
+
+    Local-only (run `device sync` to apply). The tone stays in the registry
+    if another setlist still references it, or if it carries an explicit
+    device mark (`device add` / a concrete slot); an implicit mark
+    (auto-stamped when it joined a synced setlist) dies with its last
+    membership, so add-then-remove is a no-op.
+    """
     SetlistManifest, _ = _manifest()
 
     m = SetlistManifest.load()
@@ -1743,7 +1789,10 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     .hsp content hash hasn't changed (a transcoder upgrade can change what an
     unchanged .hsp produces, which hash-based change detection can't see).
     A setlist the device doesn't have is reported as a clear error (create
-    it first with `helixgen device setlist create <name>`). EXPERIMENTAL.
+    it first with `helixgen device setlist create <name>`). Sync is a
+    managed-set mirror: it never touches untracked device presets and never
+    orphans a pool preset another setlist still references. Idempotent — if
+    the flaky network drops a run, just re-run it. EXPERIMENTAL.
     """
     SetlistManifest, _ = _manifest()
     from helixgen.device.setlist_sync import sync_setlists
@@ -2228,9 +2277,11 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
     Samples the 2003 telemetry for --seconds and reduces the playing-gated
     readings (real pitch + non-silent input; hum and silence are ignored) to
     robust dB statistics: instrument input level, chain-out level, and the
-    input-invariant chain gain (output/input). PLAY STEADILY during the
-    window — the result reports how much actual playing it saw and fails
-    (exit code 1) when there wasn't enough to trust.
+    input-invariant chain gain (output/input) — gain_db is the number to
+    compare across snapshots/presets when level-matching. PLAY STEADILY
+    during the window — the result reports how much actual playing it saw
+    and fails (exit code 1, JSON ok:false + reason) when there wasn't
+    enough to trust; just re-run it.
     """
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.device import HelixError

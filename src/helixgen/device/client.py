@@ -75,9 +75,9 @@ CTYPE_SETLIST = 1003
 
 _SLOT_LETTERS = "ABCD"
 
-# The named ``--setlist`` keywords the CLI/MCP accept, mapped to their container
+# The named ``--setlist`` keywords the CLI accepts, mapped to their container
 # constant. Canonical keyword->container resolver (resolver pattern, #14) — the
-# CLI and MCP each wrap this for their own exception type instead of cloning the
+# CLI callers wrap this for their own exception type instead of cloning the
 # dict.
 _SETLIST_KEYWORDS = {
     "user": Container.POOL,
@@ -530,7 +530,7 @@ class HelixClient:
         for a best-effort lookup, but every real caller of this method uses
         it to gate a **write**: "is slot ``pos`` empty, so it is safe to
         ``/CreateContent``/``/SetContentData`` into it?" (``device
-        install``/``save``/``push``/``slots restore`` and their MCP mirrors).
+        install``/``save``/``push``/``slots restore``).
         Under the lenient default, a silently-truncated listing would make an
         **occupied** slot look empty and let the write through — a positional
         collision, the same failure class backlog #40 fixed in

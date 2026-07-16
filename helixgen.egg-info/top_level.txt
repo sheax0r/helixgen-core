@@ -1,2 +1,0 @@
-helixgen
-mcp_server

@@ -1,4 +1,4 @@
-"""CLI + MCP tests for `device measure` / `device_measure` (loudness phase 1).
+"""CLI tests for `device measure` (loudness phase 1).
 
 Never touch a real device: HelixSubscriber is monkeypatched to replay a
 synthetic telemetry stream (pitch + input grid + output grid bursts).
@@ -86,22 +86,6 @@ def test_cli_measure_human_output(monkeypatch):
     result = CliRunner().invoke(cli, ["device", "measure", "--seconds", "6"])
     assert result.exit_code == 0, result.output
     assert "output" in result.output and "dB" in result.output
-
-
-def test_mcp_device_measure_handler(monkeypatch):
-    from mcp_server import tools
-    _patch(monkeypatch, [e for _ in range(60) for e in _burst(40.0, 0.02, 0.5)])
-    out = tools.device_measure_handler(seconds=6.0)
-    assert out["ok"] is True
-    assert out["n_samples"] == 60
-    assert out["output_db"] == pytest.approx(-6.02, abs=0.01)
-
-
-def test_mcp_device_measure_handler_reports_gate_failure(monkeypatch):
-    from mcp_server import tools
-    _patch(monkeypatch, [e for _ in range(10) for e in _burst(-1.0, 0.02, 0.5)])
-    out = tools.device_measure_handler(seconds=6.0)
-    assert out["ok"] is False and "playing" in out["reason"]
 
 
 def test_cli_measure_summarizes_partial_window_on_interrupt(monkeypatch):
