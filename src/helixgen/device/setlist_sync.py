@@ -31,9 +31,24 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from helixgen.hsp import read_hsp
 
 from . import bridge
+from . import observations as _obs
 from .bridge import UnresolvedModel
 from .client import Container, Cctp, HelixClient, HelixError
 from .manifest import SetlistManifest
+
+
+def _device_serial(client, ip: str) -> str:
+    """The connected device's serial (``/ProductInfoGet``), for keying its
+    ``devices/<serial>.json`` observation file. Falls back to ``f"ip-{ip}"``
+    when the query fails or reports no serial (best-effort — a wrong key just
+    costs a re-observe on the next sync)."""
+    try:
+        serial = (client.product_info() or {}).get("serial")
+        if serial:
+            return str(serial)
+    except Exception:  # noqa: BLE001 — advisory identity, never fatal
+        pass
+    return f"ip-{ip}"
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +273,10 @@ def sync_setlists(
         client_kwargs["port"] = port
 
     with HelixClient(**client_kwargs) as client:
+        # Observed cid/posi is per-device state (design §3): load this device's
+        # observations, rebuild them through the sync, and save at the end.
+        serial = _device_serial(client, ip)
+        obs = _obs.load_observations(serial)
         with client.mutating():
             # 1. Resolve each target setlist by name (skip + error on absent).
             # ``resolve_setlist_cid`` is strict by default (#39): a listing
@@ -322,7 +341,7 @@ def sync_setlists(
                 in_union.add(name)
             plan = plan_pool(
                 manifest, union, list(pool_by_name.keys()),
-                observed_hash_of=manifest.observed_pool_hash,
+                observed_hash_of=obs.pool_hash,
                 force=repush,
             )
             result["pool"]["skipped"] = list(plan["skip"])
@@ -391,7 +410,7 @@ def sync_setlists(
             for name in result["pool"]["installed"] + result["pool"]["updated"]:
                 m = pool_by_name.get(name)
                 if m is not None:
-                    manifest.record_observed_pool(
+                    obs.record_pool(
                         name, _cid(m), m.get("posi"),
                         synced_hash=manifest.content_hash(name))
 
@@ -438,7 +457,7 @@ def sync_setlists(
                         if tone_name:
                             refs[tone_name] = {"ref_cid": _cid(item),
                                                "posi": item.get("posi")}
-                manifest.record_observed_setlist(name, setlist_cid, refs)
+                obs.record_setlist(name, setlist_cid, refs)
 
             # 4. Managed-set mirror deletes (design §4): a manifest tone with
             # slot=None that helixgen PLACED on the device in a prior sync
@@ -456,8 +475,8 @@ def sync_setlists(
                 if (rec.get("slot") is not None or name in in_union
                         or name in unresolved_members):
                     continue
-                if (rec.get("device") is None
-                        and manifest.observed.get("pool", {}).get(name) is None):
+                if (obs.tones.get(name) is None
+                        and obs.pool.get(name) is None):
                     continue  # no prior-placement evidence: not ours to delete
                 if pool_by_name.get(name) is None:
                     continue
@@ -484,7 +503,7 @@ def sync_setlists(
                         try:
                             if client._raw.delete(Container.POOL, [_cid(dev)]):
                                 result["pool"]["deleted"].append(name)
-                                manifest.clear_observed_pool(name)
+                                obs.clear_pool(name)
                                 pool_by_name.pop(name, None)
                         except HelixError as e:
                             errors.append(f"tone '{name}': {e}")
@@ -522,6 +541,7 @@ def sync_setlists(
                             result["gc"]["deleted"].append(name)
 
     manifest.save()
+    _obs.save_observations(obs)
     result["ok"] = not errors
     # If any per-tone failure looks like a connection drop, tell the user the
     # run is safely resumable: sync is idempotent (installed tones skip on

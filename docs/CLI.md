@@ -250,8 +250,10 @@ placement. **"On the device" ⟺ the tone has a slot.** There is **no separate
 slot ledger** — this one manifest is the single management record (design
 `docs/superpowers/specs/2026-07-13-tone-library-model-redesign.md`).
 
-- `helixgen register <tone.hsp> [--doc <md>]` — import an existing local `.hsp`
-  into the library (off-device; `source: import-local`).
+- `helixgen register <tone.hsp>` — import an existing local `.hsp`
+  into the library (off-device; `source: import-local`). (The old `--doc`
+  companion-markdown flag was retired with manifest v3 — tone descriptions now
+  live in the tone-metadata JSON, not a manifest `doc` sidecar path.)
 - `helixgen device add <tone> [--slot auto|5A]` — mark a library tone for the
   device (default `--slot auto`; placed on the next `device sync`).
 - `helixgen device unsync <tone>` — clear a tone's slot so the next sync

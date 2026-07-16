@@ -5,6 +5,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from helixgen.cli import cli
+from helixgen.device import observations as _obs
 from helixgen.device.manifest import SetlistManifest
 
 HSP_MAGIC = b"rpshnosj"
@@ -12,14 +13,19 @@ HSP_MAGIC = b"rpshnosj"
 
 def _seed(*, name="White Limo Lead", slot="4A", path="/x/white-limo.hsp",
           source="import-local", cid=147, posi=12, setlist=None):
-    """Write a manifest with one on-device tone to the isolated path."""
+    """Write a manifest with one on-device tone to the isolated path. Its
+    observed cid/posi (v3: per-device, not in the manifest) goes into a
+    devices/<serial>.json so lookups/restore-fallback find it."""
     m = SetlistManifest.load()
-    m.tones[name] = {"path": path, "content_hash": None, "doc": None,
-                     "source": source, "slot": slot,
-                     "device": {"cid": cid, "posi": posi} if cid else None}
+    m.tones[name] = {"path": path, "content_hash": None,
+                     "source": source, "slot": slot}
     if setlist:
         m.setlists_map.setdefault(setlist, {"tones": [], "synced": True})["tones"].append(name)
     m.save()
+    if cid:
+        obs = _obs.load_observations("legacy")
+        obs.tones[name] = {"cid": cid, "posi": posi}
+        _obs.save_observations(obs)
     return m
 
 

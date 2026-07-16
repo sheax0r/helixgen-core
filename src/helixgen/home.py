@@ -12,10 +12,10 @@ Existing per-area env vars (``$HELIXGEN_LIBRARY``, ``$HELIXGEN_IRS``,
 working and always win over a ``$HELIXGEN_HOME``-derived default — this
 module never overrides that precedence, only what a bare default computes to.
 
-Note: ``manifest_path()`` is a NEW default location
-(``setlists/manifest.json``) that ``SetlistManifest`` does not use yet — the
-manifest still resolves to ``legacy_manifest_path()`` until the migration
-(a later task) flips it over. Likewise ``library_irs_dir()`` is a NEW
+Note: ``manifest_path()`` is the current default location
+(``setlists/manifest.json``); ``SetlistManifest.load`` migrates a v2 manifest
+found at ``legacy_manifest_path()`` up to it (manifest v3). Likewise
+``library_irs_dir()`` is a NEW
 default (``library/irs``) not yet wired as ``ir.py``'s default — that flip
 is a later PR too. Both new-default functions exist now so later tasks and
 the migration path have somewhere to point.
@@ -30,7 +30,7 @@ def helixgen_home() -> Path:
     """The helixgen home root: ``$HELIXGEN_HOME`` or ``~/.helixgen``."""
     env = os.environ.get("HELIXGEN_HOME")
     if env:
-        return Path(env)
+        return Path(env).expanduser()
     return Path.home() / ".helixgen"
 
 
@@ -38,7 +38,7 @@ def library_dir() -> Path:
     """The artifact library: ``$HELIXGEN_LIBRARY`` or ``helixgen_home()/"library"``."""
     env = os.environ.get("HELIXGEN_LIBRARY")
     if env:
-        return Path(env)
+        return Path(env).expanduser()
     return helixgen_home() / "library"
 
 
@@ -60,7 +60,7 @@ def library_irs_dir() -> Path:
     """
     env = os.environ.get("HELIXGEN_IRS")
     if env:
-        return Path(env)
+        return Path(env).expanduser()
     return library_dir() / "irs"
 
 
@@ -73,7 +73,7 @@ def manifest_path() -> Path:
     """
     env = os.environ.get("HELIXGEN_SETLISTS")
     if env:
-        return Path(env)
+        return Path(env).expanduser()
     return helixgen_home() / "setlists" / "manifest.json"
 
 

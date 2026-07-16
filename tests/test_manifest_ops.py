@@ -68,12 +68,11 @@ def test_rename_setlist_preserves_order_and_record(tmp_path):
     assert m.rename_setlist("mid", "gigs") is True
     assert m.setlists() == ["first", "gigs", "last"]
     assert m.tones_in("gigs") == ["Alpha"]
-    # observed record follows too
-    m.record_observed_setlist("first", 1, {})
-    m.record_observed_setlist("gigs", 2, {"Alpha": {"ref_cid": 9, "posi": 0}})
+    # a second rename preserves membership + order (observed state is now
+    # per-device and rebuilt on sync, so it no longer follows a rename here)
     m.rename_setlist("gigs", "shows")
-    assert "shows" in m.observed["setlists"]
-    assert "gigs" not in m.observed["setlists"]
+    assert m.setlists() == ["first", "shows", "last"]
+    assert m.tones_in("shows") == ["Alpha"]
 
 
 def test_rename_setlist_unknown_returns_false(tmp_path):

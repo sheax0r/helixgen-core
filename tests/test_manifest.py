@@ -52,7 +52,11 @@ def test_default_path_env_override(monkeypatch, tmp_path):
 
 def test_default_path_home_fallback(monkeypatch):
     monkeypatch.delenv("HELIXGEN_SETLISTS", raising=False)
-    assert default_setlists_path() == Path.home() / ".helixgen" / "setlists.json"
+    monkeypatch.delenv("HELIXGEN_HOME", raising=False)
+    # v3 default location: setlists/manifest.json (migrated up from the legacy
+    # ~/.helixgen/setlists.json).
+    assert (default_setlists_path()
+            == Path.home() / ".helixgen" / "setlists" / "manifest.json")
 
 
 # -- empty load / save round-trip --------------------------------------------
@@ -71,7 +75,8 @@ def test_empty_save_reload_roundtrip(tmp_path):
     assert on_disk["version"] == MANIFEST_VERSION
     assert on_disk["tones"] == {}
     assert on_disk["setlists"] == {}
-    assert on_disk["observed"] == {"pool": {}, "setlists": {}}
+    # v3 is intent-only: no observed section on disk.
+    assert "observed" not in on_disk
 
     reloaded = SetlistManifest.load(path)
     assert reloaded.setlists() == []
@@ -310,38 +315,10 @@ def test_union_tones_dedups_preserving_order(tmp_path):
     assert m.union_tones(["sl1", "sl2"]) == ["Alpha", "Beta", "Gamma"]
 
 
-# -- observed -----------------------------------------------------------------
-
-def test_record_and_clear_observed(tmp_path):
-    m = SetlistManifest.load(tmp_path / "m.json")
-    m.record_observed_pool("Alpha", cid=1000, posi=3)
-    m.record_observed_setlist("sl", cid=42, refs={"Alpha": {"ref_cid": 1003, "posi": 0}})
-    m.save()
-    obs = json.loads((tmp_path / "m.json").read_text())["observed"]
-    assert obs["pool"]["Alpha"] == {"cid": 1000, "posi": 3}
-    assert obs["setlists"]["sl"]["cid"] == 42
-    assert obs["setlists"]["sl"]["refs"]["Alpha"] == {"ref_cid": 1003, "posi": 0}
-
-    m.clear_observed()
-    assert json.loads(json.dumps(m.to_dict()))["observed"] == {"pool": {}, "setlists": {}}
-
-
-def test_observed_pool_synced_hash_roundtrip(tmp_path):
-    m = SetlistManifest.load(tmp_path / "m.json")
-    # without a synced_hash the entry omits it and the reader returns None
-    m.record_observed_pool("Alpha", cid=1000, posi=0)
-    assert m.observed_pool_hash("Alpha") is None
-    assert "synced_hash" not in m.observed["pool"]["Alpha"]
-
-    # with a synced_hash it is stored and read back, surviving a save/reload
-    m.record_observed_pool("Beta", cid=1001, posi=1, synced_hash="sha256:deadbeef")
-    assert m.observed_pool_hash("Beta") == "sha256:deadbeef"
-    m.save()
-    reloaded = SetlistManifest.load(tmp_path / "m.json")
-    assert reloaded.observed_pool_hash("Beta") == "sha256:deadbeef"
-    assert reloaded.observed_pool_hash("Alpha") is None
-    # unknown preset -> None
-    assert m.observed_pool_hash("Nonexistent") is None
+# -- observed state now lives per-device (devices/<serial>.json) --------------
+# The old manifest-embedded observed API (record_observed_pool /
+# observed_pool_hash / record_observed_setlist / clear_observed) moved to
+# device/observations.py — covered by tests/test_observations.py.
 
 
 # -- migration from device-slots.json ----------------------------------------
@@ -385,14 +362,17 @@ def test_migration_from_device_slots(tmp_path, monkeypatch):
     # membership in posi order (posi 0 before posi 1)
     assert m.tones_in("user") == ["Buffer Save", "White Limo Lead"]
 
-    # observed placement
-    d = m.to_dict()
-    assert d["observed"]["pool"]["White Limo Lead"] == {"cid": 1000, "posi": 1}
-    assert d["observed"]["setlists"]["user"]["refs"]["White Limo Lead"] == {
+    # v3 manifest is intent-only — no observed section
+    assert "observed" not in m.to_dict()
+
+    # observed placement preserved into devices/legacy.json (ledger migration)
+    legacy_obs = json.loads((tmp_path / "devices" / "legacy.json").read_text())
+    assert legacy_obs["pool"]["White Limo Lead"] == {"cid": 1000, "posi": 1}
+    assert legacy_obs["setlists"]["user"]["refs"]["White Limo Lead"] == {
         "ref_cid": None, "posi": 1,
     }
 
-    # old file left in place, untouched
+    # old ledger file left in place, untouched
     assert slots.exists()
     assert json.loads(slots.read_text())["version"] == 1
 

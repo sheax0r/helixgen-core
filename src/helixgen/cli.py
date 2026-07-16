@@ -870,15 +870,13 @@ def list_irs_cmd(as_json: bool, irs_dir: Path | None) -> None:
 
 @cli.command(name="register")
 @click.argument("hsp_path", type=click.Path(exists=True, path_type=Path))
-@click.option("--doc", type=click.Path(exists=True, path_type=Path), default=None,
-              help="Optional companion markdown description to record.")
-def register_cmd(hsp_path: Path, doc: Path | None) -> None:
+def register_cmd(hsp_path: Path) -> None:
     """Register an existing local .hsp into the tone library (off-device)."""
     from helixgen.device.manifest import SetlistManifest, ManifestError
 
     m = SetlistManifest.load()
     try:
-        name = m.register_tone(hsp_path, source="import-local", doc=doc)
+        name = m.register_tone(hsp_path, source="import-local")
     except ManifestError as e:
         raise click.ClickException(str(e)) from e
     m.save()

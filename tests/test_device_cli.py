@@ -1187,8 +1187,8 @@ def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(
     sbe = tmp_path / "lead.sbe"
     sbe.write_bytes(b"_sbepgsm-fake")
     m = SetlistManifest.load()
-    m.tones["Lead"] = {"path": str(sbe), "content_hash": None, "doc": None,
-                       "source": "push", "slot": "2B", "device": None}
+    m.tones["Lead"] = {"path": str(sbe), "content_hash": None,
+                       "source": "push", "slot": "2B"}
     m.save()
 
     RaisingFindByPosClient.WRITE_CALLS = []

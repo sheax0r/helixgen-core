@@ -8,11 +8,11 @@ def _write(path: Path, doc: dict) -> None:
     path.write_text(json.dumps(doc))
 
 
-def test_version_is_2():
-    assert MANIFEST_VERSION == 2
+def test_version_is_3():
+    assert MANIFEST_VERSION == 3
 
 
-def test_loads_native_v2(tmp_path):
+def test_loads_native_v2_migrates_to_v3(tmp_path):
     p = tmp_path / "setlists.json"
     _write(p, {
         "version": 2,
@@ -22,7 +22,9 @@ def test_loads_native_v2(tmp_path):
         "setlists": {"helixgen": {"tones": ["A"], "synced": True}},
     })
     m = SetlistManifest.load(p)
+    assert m.version == 3
     assert m.tones["A"]["slot"] == "5A"
+    assert "device" not in m.tones["A"] and "doc" not in m.tones["A"]
     assert m.setlists_map["helixgen"] == {"tones": ["A"], "synced": True}
 
 
@@ -39,20 +41,24 @@ def test_migrates_v1_entries_and_list_setlists(tmp_path):
     })
     m = SetlistManifest.load(p)
     assert m.tones["A"]["slot"] == "1D"
-    assert m.tones["A"]["device"] == {"cid": 10, "posi": 3}
+    assert "device" not in m.tones["A"]  # observed placement moved out
     assert m.setlists_map["helixgen"] == {"tones": ["A"], "synced": True}
     assert m.setlists_map["user"]["synced"] is True
     m.save()
     on_disk = json.loads(p.read_text())
-    assert on_disk["version"] == 2
+    assert on_disk["version"] == 3
     assert "entries" not in on_disk
+    assert "observed" not in on_disk
+    # the v1 observed pool cid/posi landed in devices/legacy.json
+    legacy_obs = json.loads((tmp_path / "devices" / "legacy.json").read_text())
+    assert legacy_obs["tones"]["A"] == {"cid": 10, "posi": 3}
 
 
-def test_save_roundtrips_v2(tmp_path):
+def test_save_roundtrips_v3(tmp_path):
     p = tmp_path / "setlists.json"
     m = SetlistManifest(p)
-    m.tones["A"] = {"path": None, "content_hash": None, "doc": None,
-                    "source": "create", "slot": None, "device": None}
+    m.tones["A"] = {"path": None, "content_hash": None,
+                    "source": "create", "slot": None}
     m.setlists_map["draft"] = {"tones": ["A"], "synced": False}
     m.save()
     m2 = SetlistManifest.load(p)
@@ -84,8 +90,8 @@ def test_slot_labels_derived_from_client_slot_label(tmp_path):
 
 def test_mark_on_device_accepts_high_slot(tmp_path):
     m = SetlistManifest(tmp_path / "s.json")
-    m.tones["A"] = {"path": None, "content_hash": None, "doc": None,
-                    "source": "authored", "slot": None, "device": None}
+    m.tones["A"] = {"path": None, "content_hash": None,
+                    "source": "authored", "slot": None}
     m.mark_on_device("A", "100C")   # far beyond the old 8-bank ceiling
     assert m.tones["A"]["slot"] == "100C"
 
@@ -94,8 +100,8 @@ def test_assign_slots_handles_more_than_32_tones(tmp_path):
     from helixgen.device.setlist_sync import assign_slots
     m = SetlistManifest(tmp_path / "s.json")
     for i in range(40):  # >32: would have raised "device full" under 8 banks
-        m.tones[f"T{i}"] = {"path": None, "content_hash": None, "doc": None,
-                            "source": "authored", "slot": "auto", "device": None}
+        m.tones[f"T{i}"] = {"path": None, "content_hash": None,
+                            "source": "authored", "slot": "auto"}
     assigned = assign_slots(m, occupied=set())
     assert len(assigned) == 40
     assert m.tones["T39"]["slot"] == "10D"   # 40th free slot (posi 39)
