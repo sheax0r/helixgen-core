@@ -308,11 +308,15 @@ def device() -> None:
     NOT-idempotent retry (see its --help). If it keeps dropping, reboot
     the Helix.
 
-    The tone library manifest (~/.helixgen/setlists.json) is the single
-    management record: every generated tone auto-registers there; "on the
-    device" ⟺ the tone has a slot; `device sync` mirrors ONLY managed tones
-    and never touches untracked device presets. Presets live once in the
-    pool (cid container -2) and setlists hold references to them.
+    The tone library manifest (~/.helixgen/setlists/manifest.json, override
+    $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json auto-migrates on
+    first load) is the single management record: every generated tone
+    auto-registers there; "on the device" ⟺ the tone has a slot; `device
+    sync` mirrors ONLY managed tones and never touches untracked device
+    presets. Presets live once in the pool (cid container -2) and setlists
+    hold references to them. A specific Helix's OBSERVED placement (cid/posi)
+    lives separately, in ~/.helixgen/devices/<serial>.json — not in the
+    manifest.
 
     SEE ALSO: docs/CLI.md "Device commands" for the full per-verb reference.
     """
@@ -1327,7 +1331,9 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
 
 @device.group(name="setlist")
 def device_setlist() -> None:
-    """Manage the local setlist manifest (~/.helixgen/setlists.json).
+    """Manage the local setlist manifest (~/.helixgen/setlists/manifest.json,
+    override $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json
+    auto-migrates on first load).
 
     A tone is added to a setlist here (desired membership); `device sync` then
     pushes that membership onto the device as a preset pool + references. The
