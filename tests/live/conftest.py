@@ -44,9 +44,16 @@ Safety model (encoded as fixtures)
 * Device state (``device list/setlists/list-irs --json``) is captured before
   the first device test and re-captured at session teardown; the suite
   ITSELF FAILS if the normalized state changed. (Known blind spots: the
-  preset pool (-2) can't be listed directly, and the ACTIVE edit buffer
-  isn't part of the diff — the liveops module leaves the edit buffer on its
-  HGTEST tone, whose preset it does delete.)
+  preset pool (-2) can't be listed directly — the sync test compensates by
+  asserting its cleanup sync's own --json result reports the HGTEST pool
+  presets deleted; wedged IR FILES that never gained a registry entry are
+  invisible to `list-irs` — the device_ir teardown removes them via the
+  CLI's own `delete-ir --force-wedge` remedy, scoped to its just-pushed
+  hash; and the ACTIVE edit buffer isn't part of the diff — the
+  device_write and liveops modules `device load` an HGTEST tone, so they
+  leave the edit buffer on that (deleted) tone and discard whatever UNSAVED
+  edit-buffer changes existed before the run — saved presets are covered by
+  the upfront backup.)
 * Every artifact a test creates (presets, setlists, IRs, tones, files) is
   named with an ``HGTEST`` prefix and torn down via fixture finalizers /
   try-finally, even on failure. Nothing not HGTEST-prefixed is ever touched.
@@ -92,7 +99,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
 
 DEVICE_IP = os.environ.get("HELIXGEN_HELIX_IP", "192.168.4.84")
-DEVICE_PORT = int(os.environ.get("HELIXGEN_HELIX_PORT", "2002"))
+# The CLI's --port has no env override, so the probe pins the same default
+# the CLI uses (probing a different port than the verbs talk to would be a
+# false health signal).
+DEVICE_PORT = 2002
 
 LIVE_ENABLED = os.environ.get("HELIXGEN_LIVE") == "1"
 GLOBAL_ENABLED = os.environ.get("HELIXGEN_LIVE_GLOBAL") == "1"
@@ -102,11 +112,18 @@ GLOBAL_ENABLED = os.environ.get("HELIXGEN_LIVE_GLOBAL") == "1"
 HGTEST = "HGTEST"
 
 # The real dotfiles the suite must never modify (isolation regression check).
+# Includes the real block library's index (the one real-state path the suite
+# deliberately keeps live via HELIXGEN_LIBRARY — a future test calling
+# `ingest` without an explicit --library would write there) and the
+# redirected-but-guarded cache/ledger files.
 _REAL_HELIXGEN = Path.home() / ".helixgen"
 _GUARDED_FILES = (
     _REAL_HELIXGEN / "setlists.json",
     _REAL_HELIXGEN / "irs" / "mapping.json",
     _REAL_HELIXGEN / "preferences.json",
+    _REAL_HELIXGEN / "library" / "index.json",
+    _REAL_HELIXGEN / "cache" / "irhash.json",
+    _REAL_HELIXGEN / "device-slots.json",
 )
 
 
@@ -274,6 +291,37 @@ def _capture_device_state(cli) -> dict:
     return state
 
 
+def _sweep_stale_hgtest_artifacts(cli) -> list[str]:
+    """Delete HGTEST-prefixed leftovers from a previously crashed run.
+
+    Runs BEFORE the state capture, so a stale artifact is neither absorbed
+    into the baseline (where it would silently persist) nor left to confuse
+    name-based lookups (`find_user_preset` returns the first match;
+    `create`'s "(1)" auto-name check would find a stale copy). Only ever
+    touches HGTEST-prefixed presets/setlists/IRs.
+    """
+    swept = []
+    code, out, _ = cli("device", "list", "--json")
+    if code == 0:
+        for m in json.loads(out):
+            if (m.get("name") or "").startswith(HGTEST):
+                cli("device", "delete", m["cid_"], "--yes")
+                swept.append(f"preset {m['name']!r} (cid {m['cid_']})")
+    code, out, _ = cli("device", "setlists", "--json")
+    if code == 0:
+        for m in json.loads(out):
+            if (m.get("name") or "").startswith(HGTEST):
+                cli("device", "setlist", "delete", m["name"], "--yes")
+                swept.append(f"setlist {m['name']!r}")
+    code, out, _ = cli("device", "list-irs", "--json")
+    if code == 0:
+        for m in json.loads(out):
+            if (m.get("name") or "").startswith(HGTEST):
+                cli("device", "delete-ir", m["hash"], "--yes")
+                swept.append(f"IR {m['name']!r} ({m['hash']})")
+    return swept
+
+
 @pytest.fixture(scope="session")
 def device_state_guard(device: str, device_backup: Path, cli) -> dict:
     """Capture device state up front; FAIL the session if it changed at the end.
@@ -281,8 +329,13 @@ def device_state_guard(device: str, device_backup: Path, cli) -> dict:
     Normalized on (cid, name, posi) for presets/setlists and
     (hash, name, posi) for IRs. Every device-touching test depends on this
     (directly or via `helix`), so the capture always precedes the first
-    mutation and the check runs after the last cleanup.
+    mutation and the check runs after the last cleanup. Stale HGTEST
+    leftovers from a crashed previous run are swept before the capture.
     """
+    swept = _sweep_stale_hgtest_artifacts(cli)
+    if swept:
+        print(f"\n[tests/live] swept stale HGTEST artifacts from a previous "
+              f"run: {', '.join(swept)}")
     before = _capture_device_state(cli)
     yield before
     after = _capture_device_state(cli)

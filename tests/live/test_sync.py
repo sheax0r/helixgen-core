@@ -94,8 +94,20 @@ def test_sync_lifecycle(helix, cli, scratch, amp_blocks):
         code, out, err = helix("device", "setlist", "delete", SETLIST, "--yes")
         assert code == 0, err or out
     finally:
-        # belt-and-braces: unsync + sync once more, then drop HGTEST setlists
+        # belt-and-braces: unsync + sync once more, then drop HGTEST setlists.
+        # Report (never assert) cleanup problems: leaked HGTEST pool presets
+        # are invisible to the session state guard (pool container -2 can't
+        # be listed), so stderr visibility is the backstop here.
         for tone in (TONE_A, TONE_B):
             helix("device", "unsync", tone)
-        helix("device", "sync", SETLIST, timeout=600)
+        code, out, _ = helix("device", "setlists", "--json")
+        still_there = code == 0 and any(m.get("name") == SETLIST
+                                        for m in json.loads(out))
+        if still_there:  # happy path already deleted it — skip the noise
+            code, out, err = helix("device", "sync", SETLIST, "--json",
+                                   timeout=600)
+            if code != 0:
+                print(f"\n[tests/live] WARNING: cleanup sync of {SETLIST!r} "
+                      f"failed — HGTEST pool presets may remain in the pool: "
+                      f"{(err or out).strip()}")
         delete_hgtest_setlists(helix)

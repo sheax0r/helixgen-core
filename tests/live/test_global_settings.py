@@ -20,11 +20,20 @@ pytestmark = [pytest.mark.live, pytest.mark.live_global,
               pytest.mark.device_write]
 
 
+#: Pinned explicitly: the ONLY write in the whole suite must never silently
+#: retarget to a self-changing key (e.g. global.clock.minute, where
+#: set-same-value would actually perturb the clock and the verify would
+#: flake). global.tuner.type is a stable enum setting.
+SAFE_KEY = "global.tuner.type"
+
+
 def test_settings_set_same_value_roundtrip(helix):
     code, out, err = helix("device", "settings", "list", "--json")
     assert code == 0, err or out
     catalog = json.loads(out)
-    key = sorted(catalog.items())[0][1][0]
+    if not any(SAFE_KEY in keys for keys in catalog.values()):
+        pytest.skip(f"{SAFE_KEY} not in the settings catalog")
+    key = SAFE_KEY
 
     code, out, err = helix("device", "settings", "get", key, "--json")
     assert code == 0, err or out

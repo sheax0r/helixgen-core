@@ -5,6 +5,11 @@ EMPTY slot, and deleted in a finalizer even on failure.
 `device restore` is deliberately NOT exercised (recovery-only: it overwrites
 an existing preset in place; pull→push covers the same content plumbing on
 fresh HGTEST slots).
+
+Residual: `device load` (here and in liveops) changes the ACTIVE tone —
+whatever UNSAVED edit-buffer changes existed before the run are discarded,
+and the edit buffer is left on the (deleted) HGTEST tone. Saved presets are
+covered by the upfront session backup.
 """
 from __future__ import annotations
 

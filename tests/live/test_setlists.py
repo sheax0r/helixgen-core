@@ -63,8 +63,8 @@ def test_local_manifest_membership(cli, scratch, hgtest_hsp):
 
     code, out, err = cli("device", "setlist", "list", "--json")
     assert code == 0, err or out
-    listing = json.dumps(json.loads(out))
-    assert sl in listing and f"{HGTEST} Base Tone" in listing
+    doc = json.loads(out)  # full manifest document: {version, tones, setlists, observed}
+    assert f"{HGTEST} Base Tone" in doc["setlists"][sl]["tones"]
 
     code, out, err = cli("device", "setlist", "sync-on", sl)
     assert code == 0, err or out
@@ -76,7 +76,8 @@ def test_local_manifest_membership(cli, scratch, hgtest_hsp):
     assert code == 0, err or out
     code, out, err = cli("device", "setlist", "list", "--json")
     assert code == 0, err or out
-    assert f"{HGTEST} Base Tone" not in json.dumps(json.loads(out).get(sl, []))
+    doc = json.loads(out)
+    assert f"{HGTEST} Base Tone" not in doc["setlists"][sl]["tones"]
 
 
 def test_hss_export_import_roundtrip(helix, tmp_path):

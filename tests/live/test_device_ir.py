@@ -65,7 +65,9 @@ def test_push_rename_pull_delete_ir(helix, hgtest_wav, hgtest_wav_hash, tmp_path
         code, out, err = helix("device", "rename-ir", hgtest_wav_hash, renamed)
         assert code == 0, err or out
         irs = _device_ir_hashes(helix)
-        assert irs[hgtest_wav_hash]["name"].startswith(HGTEST)
+        # the display name must actually have changed (a no-op rename would
+        # still start with HGTEST — assert the new name specifically)
+        assert irs[hgtest_wav_hash]["name"] == renamed
 
         # pull-ir needs the ORIGINAL upload basename (rename-ir is
         # display-name only) — validated live 2026-07-15.
@@ -83,11 +85,21 @@ def test_push_rename_pull_delete_ir(helix, hgtest_wav, hgtest_wav_hash, tmp_path
         # hash THIS test pushed. Registry entry present -> normal delete;
         # absent -> remove the wedged file (the CLI's own remedy; safe here
         # because we are deleting our just-pushed artifact either way).
-        if hgtest_wav_hash in _device_ir_hashes(helix):
-            helix("device", "delete-ir", hgtest_wav_hash, "--yes")
+        # Never assert in this finally (it would mask the real failure) —
+        # report cleanup problems to stderr instead; the wedged FILE is
+        # invisible to the session state guard, so visibility matters.
+        code, out, err = helix("device", "list-irs", "--json")
+        listed = (code == 0 and
+                  hgtest_wav_hash in {m["hash"] for m in json.loads(out)})
+        if listed:
+            code, out, err = helix("device", "delete-ir",
+                                   hgtest_wav_hash, "--yes")
         elif not registered:
-            helix("device", "delete-ir", hgtest_wav_hash,
-                  "--force-wedge", "--yes")
+            code, out, err = helix("device", "delete-ir", hgtest_wav_hash,
+                                   "--force-wedge", "--yes")
+        if code != 0:
+            print(f"\n[tests/live] WARNING: device_ir teardown could not "
+                  f"delete IR {hgtest_wav_hash}: {(err or out).strip()}")
 
 
 def test_ir_prune_dry_run_only(helix):

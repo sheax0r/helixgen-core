@@ -19,9 +19,11 @@ def test_info_json(helix):
     code, out, err = helix("device", "info", "--json")
     assert code == 0, err or out
     info = json.loads(out)
-    assert info  # identity fields come from /ProductInfoGet
-    text = json.dumps(info).lower()
-    assert "stadium" in text or "helix" in text
+    # real /getProductInfo VALUES, not just key presence ("helixgen_model" is
+    # a literal key in every reply, so substring checks would be vacuous)
+    assert info.get("model"), info
+    assert info.get("firmware"), info
+    assert info.get("serial"), info
 
 
 def test_list_user_json_shape(helix):
