@@ -328,3 +328,117 @@ def test_save_tone_meta_produces_a_commit(tmp_home, _isolated_git_env):
         capture_output=True, text=True,
     ).stdout
     assert log.strip() != ""
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: C1 (auto-commit scoping), I2 (blank-aware identity), I3
+# (guitar_slug/guitar_short consistency), I4 (schema check), M7 (empty
+# guitar_settings / notes_md round-trip).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available on PATH")
+def test_save_tone_meta_does_not_commit_when_library_is_outside_home(
+    tmp_home, monkeypatch, _isolated_git_env, tmp_path_factory
+):
+    """CRITICAL 1: when $HELIXGEN_LIBRARY points OUTSIDE $HELIXGEN_HOME, saving
+    a tone JSON (which then lives outside home) must NOT auto-commit inside
+    home -- that would sweep in unrelated files sitting in the home repo."""
+    # home is a git repo (tmp_home / _isolated_git_env set HELIXGEN_HOME);
+    # make it a real repo with an untracked scratch file sitting in it.
+    home_dir = home.helixgen_home()
+    home_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "-C", str(home_dir), "init", "-q"], check=True)
+    scratch = home_dir / "unrelated_scratch_file.txt"
+    scratch.write_text("do not commit me")
+
+    # Point the library at a directory OUTSIDE home entirely -- a fresh temp
+    # root from tmp_path_factory, a sibling of (never nested under) home_dir.
+    external_library = tmp_path_factory.mktemp("external_library")
+    assert not external_library.resolve().is_relative_to(home_dir.resolve())
+    monkeypatch.setenv("HELIXGEN_LIBRARY", str(external_library))
+
+    meta = tone_meta.upsert_variant(
+        None, artist="A", song="B", descriptor=None,
+        guitar_slug=None, guitar_short=None,
+        hsp_path="tones/a-b.hsp", tags=[],
+    )
+    tone_meta.save_tone_meta(meta)
+
+    # The tone JSON was written under the external library, not home.
+    assert (external_library / "tones" / "a-b.json").exists()
+
+    # No commit was created in home: no .git/refs/heads and no log entries,
+    # and the scratch file remains untracked/uncommitted.
+    log = subprocess.run(
+        ["git", "-C", str(home_dir), "log", "--oneline"],
+        capture_output=True, text=True,
+    )
+    assert log.returncode != 0 or log.stdout.strip() == ""
+    status = subprocess.run(
+        ["git", "-C", str(home_dir), "status", "--porcelain"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert "unrelated_scratch_file.txt" in status  # still untracked, not committed
+
+
+def test_validate_flags_blank_artist_as_missing_identity(tmp_home):
+    """IMPORTANT 2: a blank (empty-string) artist must be treated as ABSENT,
+    consistent with naming's blank rule -- not as "present but different from
+    song", which would let a self-contradictory meta through as clean."""
+    meta, manifest = _valid_meta_and_manifest(tmp_home)
+    meta.artist = ""
+    meta.song = "Some Song"
+    problems = tone_meta.validate_tone_meta(
+        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+    )
+    assert problems  # must NOT be clean
+    assert any("artist" in p and "song" in p for p in problems)
+
+
+def test_upsert_variant_raises_when_only_guitar_slug_given():
+    with pytest.raises(ValueError):
+        tone_meta.upsert_variant(
+            None, artist="A", song="B", descriptor=None,
+            guitar_slug="g1", guitar_short=None,
+            hsp_path="tones/a-b-g1.hsp", tags=[],
+        )
+
+
+def test_upsert_variant_raises_when_only_guitar_short_given():
+    with pytest.raises(ValueError):
+        tone_meta.upsert_variant(
+            None, artist="A", song="B", descriptor=None,
+            guitar_slug=None, guitar_short="G1",
+            hsp_path="tones/a-b-g1.hsp", tags=[],
+        )
+
+
+def test_validate_flags_unsupported_schema(tmp_home):
+    """IMPORTANT 4: validate_tone_meta must check schema == 1."""
+    meta, manifest = _valid_meta_and_manifest(tmp_home)
+    meta.schema = 2
+    problems = tone_meta.validate_tone_meta(
+        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+    )
+    assert any("schema" in p for p in problems)
+
+
+def test_round_trip_variant_with_empty_guitar_settings_and_no_notes(tmp_home):
+    """MINOR 7: a Variant with empty guitar_settings={} and notes_md=None must
+    save/load faithfully."""
+    meta = tone_meta.ToneMeta(
+        artist="A", song="B", descriptor=None, tags=[], description_md=None,
+        variants={
+            "g1": tone_meta.Variant(
+                hsp="tones/a-b-g1.hsp", preset_name="A - B - G1",
+                guitar_settings={}, notes_md=None,
+            )
+        },
+        created="2020-01-01", updated="2020-01-01",
+    )
+    tone_meta.save_tone_meta(meta)
+    loaded = tone_meta.load_tone_meta(meta.logical_slug)
+    v = loaded.variants["g1"]
+    assert v.guitar_settings == {}
+    assert v.notes_md is None

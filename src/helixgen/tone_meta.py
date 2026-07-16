@@ -32,7 +32,9 @@ Every write goes through :func:`save_tone_meta`, which -- like
 ``device/manifest.py``'s ``SetlistManifest.save`` -- calls
 ``libinit.ensure_initialized()`` first, writes atomically (temp file +
 ``os.replace``), and then advisory-commits via ``gitops.auto_commit`` (never
-raises; gated by the ``git_commit_tones`` preference).
+raises; gated by the ``git_commit_tones`` preference) -- but only when the
+written file resolves under ``home.helixgen_home()``, same guard shape as
+``SetlistManifest.save``.
 """
 from __future__ import annotations
 
@@ -192,7 +194,12 @@ def save_tone_meta(meta: ToneMeta) -> ToneMeta:
       today, if falsy) is used.
     - ``updated`` is always bumped to today.
     - Written via temp file + ``os.replace`` (atomic).
-    - ``gitops.auto_commit`` afterward (advisory; never raises).
+    - ``gitops.auto_commit`` afterward -- but ONLY when the written path
+      resolves under ``home.helixgen_home()`` (mirrors
+      ``device/manifest.py``'s ``SetlistManifest.save`` guard); when
+      ``$HELIXGEN_LIBRARY`` points somewhere else entirely, the commit is
+      skipped so an unrelated home repo never gets swept up. Advisory; never
+      raises.
 
     Mutates and returns ``meta`` (its ``created``/``updated`` reflect what
     was actually written).
@@ -218,8 +225,14 @@ def save_tone_meta(meta: ToneMeta) -> ToneMeta:
     tmp.write_text(json.dumps(_meta_to_dict(meta), indent=2))
     os.replace(tmp, path)
 
-    gitops.auto_commit(home.helixgen_home(),
-                        f"helixgen: update tone metadata ({meta.logical_slug})")
+    home_dir = home.helixgen_home()
+    try:
+        under_home = path.resolve().is_relative_to(home_dir.resolve())
+    except OSError:
+        under_home = False
+    if under_home:
+        gitops.auto_commit(home_dir,
+                            f"helixgen: update tone metadata ({meta.logical_slug})")
     return meta
 
 
@@ -241,6 +254,10 @@ def upsert_variant(
 ) -> ToneMeta:
     """Create ``meta`` if absent, then add/replace one variant in place.
 
+    - ``guitar_slug`` and ``guitar_short`` must travel together: both
+      ``None``/blank (generic) or both set. Exactly one set raises
+      ``ValueError`` -- a variant key without a matching display short name
+      (or vice versa) is self-contradictory metadata.
     - Variant key is ``guitar_slug`` or ``"generic"`` when ``guitar_slug`` is
       ``None`` (guitar-agnostic tone; ``preset_name`` then omits the guitar
       segment, since ``guitar_short`` is also ``None`` in that case).
@@ -253,6 +270,14 @@ def upsert_variant(
       merged in (order-preserving, de-duplicated) and is otherwise left
       alone (mutated in place and returned).
     """
+    has_slug = not naming._is_blank(guitar_slug)
+    has_short = not naming._is_blank(guitar_short)
+    if has_slug != has_short:
+        raise ValueError(
+            "guitar_slug and guitar_short must be provided together "
+            "(both set or both absent)"
+        )
+
     today = date.today().isoformat()
     key = guitar_slug if guitar_slug is not None else "generic"
     preset_name = naming.display_name(
@@ -283,14 +308,16 @@ def upsert_variant(
 
 
 def _identity_problems(meta: ToneMeta) -> List[str]:
-    has_song_side = meta.artist is not None or meta.song is not None
-    has_descriptor = meta.descriptor is not None
+    has_artist = not naming._is_blank(meta.artist)
+    has_song = not naming._is_blank(meta.song)
+    has_descriptor = not naming._is_blank(meta.descriptor)
+    has_song_side = has_artist or has_song
     problems: List[str] = []
     if has_song_side and has_descriptor:
         problems.append("both song and descriptor are set; exactly one tone identity is allowed")
     if not has_song_side and not has_descriptor:
         problems.append("neither song nor descriptor is set; exactly one tone identity is required")
-    if bool(meta.artist is not None) != bool(meta.song is not None):
+    if has_artist != has_song:
         problems.append("artist and song must both be set or both be empty")
     return problems
 
@@ -305,7 +332,10 @@ def validate_tone_meta(
     """Shape/cross-link checks on ``meta``; returns a list of problem strings
     (empty when fully valid).
 
-    - Exactly one of song/descriptor identity (see ``_identity_problems``).
+    - Exactly one of song/descriptor identity (see ``_identity_problems``);
+      a blank/whitespace-only string counts as absent, matching ``naming``'s
+      blank rule.
+    - ``meta.schema`` must be ``1`` (the only supported schema version).
     - Each variant's ``hsp`` must exist on disk, resolved as
       ``tones_dir.parent / variant.hsp`` (== ``library_dir() / variant.hsp``
       -- see the module docstring's hsp-path convention).
@@ -318,6 +348,8 @@ def validate_tone_meta(
     profiles don't exist yet in this PR) -- not checked here.
     """
     problems = _identity_problems(meta)
+    if meta.schema != 1:
+        problems.append(f"schema {meta.schema!r} is not supported; expected 1")
     allowed_keys = set(guitar_slugs) | {"generic"}
     library_root = Path(tones_dir).parent
 
