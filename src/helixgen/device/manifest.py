@@ -48,7 +48,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from helixgen import home
+from helixgen import gitops, home, libinit
 from helixgen.hsp import read_hsp
 from helixgen.device.client import slot_label as _slot_label
 
@@ -631,8 +631,27 @@ class SetlistManifest:
         }
 
     def save(self) -> None:
-        """Atomically write the manifest as pretty JSON (temp file + ``os.replace``)."""
+        """Atomically write the manifest as pretty JSON (temp file + ``os.replace``),
+        then make sure the helixgen home is git-initialized and advisory-commit
+        the change.
+
+        The home is git-init'd unconditionally (whenever git is present);
+        the commit itself is gated by the ``git_commit_tones`` preference
+        (see :func:`helixgen.gitops.auto_commit`) AND skipped entirely when
+        this manifest doesn't live under the home at all (e.g. an explicit
+        ``$HELIXGEN_SETLISTS`` override pointing somewhere else) — committing
+        a directory outside the repo makes no sense.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".tmp")
         tmp.write_text(json.dumps(self.to_dict(), indent=2))
         os.replace(tmp, self.path)
+
+        home_dir = home.helixgen_home()
+        libinit.ensure_initialized(home_dir)
+        try:
+            under_home = self.path.resolve().is_relative_to(home_dir.resolve())
+        except OSError:
+            under_home = False
+        if under_home:
+            gitops.auto_commit(home_dir, "helixgen: update manifest")
