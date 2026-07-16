@@ -30,20 +30,30 @@ def slugify(text: str) -> str:
     """Normalize ``text`` into a lowercase, dash-separated slug.
 
     Spaces, underscores, em-dashes (``—``) and en-dashes (``–``) become a
-    single ``-``; any other punctuation is stripped outright; repeated dashes
+    single ``-``; accented/combining characters are transliterated to their
+    plain ASCII base letter (NFKD-normalize, then drop combining marks)
+    before any other punctuation is stripped outright; repeated dashes
     collapse to one; leading/trailing dashes are stripped.
     """
-    normalized = unicodedata.normalize("NFKC", text).lower()
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_marks = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    normalized = without_marks.lower()
     dashed = _DASH_LIKE.sub("-", normalized)
     stripped = _NON_SLUG_CHARS.sub("", dashed)
     collapsed = _REPEATED_DASHES.sub("-", stripped)
     return collapsed.strip("-")
 
 
+def _is_blank(value: str | None) -> bool:
+    return value is None or value.strip() == ""
+
+
 def _validate_identity(*, artist, song, descriptor) -> None:
-    has_artist_song = artist is not None or song is not None
-    has_descriptor = descriptor is not None
-    if bool(artist is not None) != bool(song is not None):
+    has_artist = not _is_blank(artist)
+    has_song = not _is_blank(song)
+    has_descriptor = not _is_blank(descriptor)
+    has_artist_song = has_artist or has_song
+    if has_artist != has_song:
         raise ValueError("artist and song must be provided together")
     if has_artist_song and has_descriptor:
         raise ValueError("provide either artist+song or descriptor, not both")
@@ -63,9 +73,10 @@ def display_name(
     The guitar segment is omitted when ``guitar_short`` is ``None``. Raises
     ``ValueError`` unless exactly one of (``artist``+``song``) or
     ``descriptor`` is supplied -- ``artist`` requires ``song`` and vice versa.
+    A blank or whitespace-only string is treated as absent for this check.
     """
     _validate_identity(artist=artist, song=song, descriptor=descriptor)
-    base = f"{artist} - {song}" if artist is not None else descriptor
+    base = f"{artist} - {song}" if not _is_blank(artist) else descriptor
     if guitar_short is None:
         return base
     return f"{base} - {guitar_short}"
@@ -80,10 +91,11 @@ def logical_slug(
     """Slug identifying the logical tone (no guitar segment).
 
     This is the metadata JSON filename stem. Same identity rules as
-    ``display_name`` apply (validated here independently of it).
+    ``display_name`` apply (validated here independently of it), including
+    treating a blank/whitespace-only field as absent.
     """
     _validate_identity(artist=artist, song=song, descriptor=descriptor)
-    base = f"{artist} - {song}" if artist is not None else descriptor
+    base = f"{artist} - {song}" if not _is_blank(artist) else descriptor
     return slugify(base)
 
 

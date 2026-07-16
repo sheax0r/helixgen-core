@@ -41,6 +41,17 @@ class TestSlugify:
     def test_mixed_separators(self):
         assert naming.slugify("Gibson_Les Paul—Junior") == "gibson-les-paul-junior"
 
+    def test_transliterates_accented_characters(self):
+        # Accents should fall back to their ASCII base letter (NFKD-normalize +
+        # strip combining marks) rather than being truncated away entirely.
+        assert naming.slugify("Café Amp") == "cafe-amp"
+        assert naming.slugify("Über Drive") == "uber-drive"
+        assert naming.slugify("Mötley Crüe") == "motley-crue"
+        assert naming.slugify("Beyoncé") == "beyonce"
+
+    def test_existing_ascii_behavior_unaffected_by_transliteration(self):
+        assert naming.slugify("Foo Fighters — White Limo!") == "foo-fighters-white-limo"
+
 
 class TestDisplayName:
     def test_artist_song_guitar(self):
@@ -81,6 +92,22 @@ class TestDisplayName:
         with pytest.raises(ValueError):
             naming.display_name(song="White Limo")
 
+    def test_raises_when_artist_blank_and_song_provided(self):
+        with pytest.raises(ValueError):
+            naming.display_name(artist="", song="White Limo")
+
+    def test_raises_when_song_blank_and_artist_provided(self):
+        with pytest.raises(ValueError):
+            naming.display_name(artist="Foo Fighters", song="")
+
+    def test_raises_when_artist_and_song_both_blank(self):
+        with pytest.raises(ValueError):
+            naming.display_name(artist="", song="")
+
+    def test_raises_when_descriptor_whitespace_only(self):
+        with pytest.raises(ValueError):
+            naming.display_name(descriptor="   ")
+
 
 class TestLogicalSlug:
     def test_artist_song(self):
@@ -89,9 +116,14 @@ class TestLogicalSlug:
     def test_descriptor(self):
         assert naming.logical_slug(descriptor="Warm Jazz Clean") == "warm-jazz-clean"
 
-    def test_no_guitar_segment(self):
-        # logical_slug never includes a guitar segment; it only takes artist/song/descriptor.
-        assert "les-paul" not in naming.logical_slug(artist="Foo Fighters", song="White Limo")
+    def test_logical_slug_excludes_guitar_segment_that_variant_slug_would_add(self):
+        # logical_slug is the "no guitar segment" half of the identity/guitar split:
+        # it must never contain a guitar's slug, while variant_slug (fed the same
+        # logical slug) is what actually appends it.
+        logical = naming.logical_slug(artist="A", song="B")
+        assert logical == naming.slugify("A - B")
+        assert "les-paul-jr" not in logical
+        assert naming.variant_slug(logical, "les-paul-jr").endswith("-les-paul-jr")
 
     def test_raises_when_neither_provided(self):
         with pytest.raises(ValueError):
@@ -108,6 +140,10 @@ class TestLogicalSlug:
     def test_raises_when_song_without_artist(self):
         with pytest.raises(ValueError):
             naming.logical_slug(song="White Limo")
+
+    def test_raises_when_artist_and_song_both_blank(self):
+        with pytest.raises(ValueError):
+            naming.logical_slug(artist="", song="")
 
 
 class TestVariantSlug:
