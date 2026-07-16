@@ -7,8 +7,9 @@ Implements the capture-free subset of backlog #20 (design:
   rename it, and ``ir_prune`` — diff the device's user IRs (container ``-11``)
   against every IR hash referenced by the presets **on** the device (scanning
   the pool with non-activating ``get_content`` reads) *and* by local
-  tone-library ``.hsp`` files, then delete the orphans. **Dry-run by
-  default**; locally-referenced ("protected") IRs need ``force``.
+  tone-library sources (``.hsp`` files and ``.sbe`` device-content blobs),
+  then delete the orphans. **Dry-run by default**; locally-referenced
+  ("protected") IRs need ``force``.
 * **Preset color / notes:** the color is the ``colr`` content attr (an int
   enum, ``/SetContentAttrs``); the notes text is the ``preset.meta.info``
   property inside the content blob's ``pm__`` list, edited via a
@@ -21,6 +22,7 @@ unit-test against plain data (the ``setlist_sync`` pattern).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from helixgen.hsp import read_hsp
@@ -210,16 +212,22 @@ def _verify_pool_covers_references(client, pool_cids) -> None:
 
 
 def local_referenced_ir_hashes(manifest=None):
-    """IR hashes referenced by the tone library's local ``.hsp`` files, plus
-    warnings for tones whose protection could NOT be verified.
+    """IR hashes referenced by the tone library's local sources — ``.hsp``
+    files AND ``.sbe`` device-content blobs (the source ``device push``
+    records) — plus warnings for tones whose protection could NOT be
+    verified.
 
     Local references protect an IR from pruning even when no on-device preset
     references it (the tone may be off-device today and synced back
-    tomorrow). A tone with a **recorded but missing/unreadable** ``.hsp``
-    can't prove which IRs it would protect — skipping it silently would make
-    the prune MORE aggressive, so each such tone is surfaced as a warning and
-    ``ir_prune`` refuses to execute over warnings without ``force``
-    (fail closed). Returns ``(hashes, warnings)``.
+    tomorrow). A ``.sbe`` source is decoded as device content and its
+    ``irmd`` hashes collected directly (backlog/live-validation #68i — it
+    used to be force-parsed as a ``.hsp`` and warn about a missing
+    ``rpshnosj`` magic on a perfectly normal ``device push`` flow). A tone
+    with a **recorded but missing/unreadable** source can't prove which IRs
+    it would protect — skipping it silently would make the prune MORE
+    aggressive, so each such tone is surfaced as a warning and ``ir_prune``
+    refuses to execute over warnings without ``force`` (fail closed).
+    Returns ``(hashes, warnings)``.
     """
     from . import bridge
 
@@ -232,14 +240,21 @@ def local_referenced_ir_hashes(manifest=None):
         path = rec.get("path") if isinstance(rec, dict) else None
         if not path:
             continue  # pathless tones (device-origin) record no local IRs
+        is_sbe = str(path).endswith(".sbe")
         try:
-            body = read_hsp(path)
-        except (OSError, ValueError) as e:
+            if is_sbe:
+                hashes = content_ir_hashes(
+                    _content.decode_any(Path(path).read_bytes()))
+            else:
+                hashes = bridge.hsp_ir_hashes(read_hsp(path))
+        except Exception as e:  # noqa: BLE001 — any unreadable source is a
+            # verification warning (fail closed), never a planning crash
             warnings.append(
-                f"tone {name!r}: cannot read its .hsp ({path}): {e} — its IR "
-                f"references cannot protect anything")
+                f"tone {name!r}: cannot read its "
+                f"{'.sbe device-content source' if is_sbe else '.hsp'} "
+                f"({path}): {e} — its IR references cannot protect anything")
             continue
-        for h in bridge.hsp_ir_hashes(body):
+        for h in hashes:
             out.setdefault(h, []).append(name)
     return out, warnings
 

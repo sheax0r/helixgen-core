@@ -125,7 +125,10 @@ def cli() -> None:
 @click.argument("path", type=click.Path(exists=True, path_type=Path))
 @_library_option
 def ingest_cmd(path: Path, library_path: Path | None) -> None:
-    """Ingest a .hlx file or a directory of presets/blocks into the library."""
+    """Ingest a .hsp/.hlx/.json preset file — or recurse a directory of
+    them — into the block library. The first file ever ingested sets the
+    library's chassis (a Stadium .hsp chassis generates .hsp output; a
+    legacy .hlx chassis generates .hlx)."""
     library = _resolved_library(library_path)
     try:
         summary = ingest_path(path, library)
@@ -357,12 +360,17 @@ def disable_cmd(preset_path, block, snapshot, path_idx, lane, pos, library_path,
 @cli.command(name="add-block")
 @click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
 @click.argument("block")
-@click.option("--path", "path_idx", type=int, default=0)
-@click.option("--after", default=None)
+@click.option("--path", "path_idx", type=int, default=0, show_default=True,
+              help="DSP path (0 or 1) to add the block to.")
+@click.option("--after", default=None, metavar="BLOCK_NAME",
+              help="Insert after this named block instead of appending to "
+                   "the end of the path.")
 @_library_option
 @_irs_option
 def add_block_cmd(preset_path, block, path_idx, after, library_path, irs_dir):
-    """Add a block to a path (optionally after another block)."""
+    """Add a block to a path (append, or --after a named block). BLOCK is a
+    library display name or model id — case-sensitive, same rules as
+    `generate` (check with `show-block`)."""
     def _mutation(body, library, irs):
         mutate.add_block(body, block, library, path=path_idx, after=after)
 

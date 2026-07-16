@@ -1,6 +1,6 @@
 [project]
 name = "helixgen"
-version = "0.20.0"
+version = "0.21.0"
 description = "Generate Line 6 Helix Stadium .hsp / legacy .hlx preset files from JSON tone specs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -55,3 +55,16 @@ include = ["helixgen*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "live: opt-in live integration test (tests/live/); skipped unless HELIXGEN_LIVE=1",
+    "authoring: live group — generate/patch/view/set-param/enable/disable/add-block/remove-block/swap-model/ingest/register",
+    "library: live group — list-blocks/show-block/controllers",
+    "ir: live group — irhash/ir-scan/register-irs/list-irs/ir-cache (local IR state)",
+    "device_read: live group — read-only device verbs (info/list/setlists/read/blocks/settings/globaleq list/tuner/meters/measure/watch/backup/list-irs/...)",
+    "device_write: live group — device-mutating preset verbs (install/load/create/rename/delete/set-info/pull/push/save)",
+    "liveops: live group — verbs that mutate the ACTIVE tone (snapshot/bypass/model/live set-param)",
+    "setlists: live group — device + local setlist management (setlist create/rename/delete/duplicate/import-hss/export-hss/add/remove/...)",
+    "sync: live group — tone-library sync (sync/add/unsync/slots reorder/reorder)",
+    "device_ir: live group — device IR verbs (push-ir/rename-ir/pull-ir/delete-ir/ir-prune dry-run)",
+    "live_global: extra-gated global-settings writes; skipped unless HELIXGEN_LIVE_GLOBAL=1 too",
+]

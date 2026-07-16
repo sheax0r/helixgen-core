@@ -149,6 +149,45 @@ def test_mcp_server_package_is_gone():
     assert "mcp" not in pyproject.lower()
 
 
+#: 0.21.0 agent surfaces (post-MCP, so not part of the removed-tool table
+#: above): the same help-as-contract pinning for the verbs/phrases the live
+#: validation added — pid discovery, the ACTIVE preset, grid-slot
+#: coordinates, and named --setlist semantics.
+NEW_SURFACES: list[tuple[list[str], list[str]]] = [
+    (["device", "params"],
+     ["pid-discovery", "RAW units", "NOT normalized", "device blocks",
+      "Read-only"]),
+    (["device", "active"],
+     ["ACTIVE preset", "server.active.preset.id", "Read-only",
+      "device load"]),
+    (["device", "set-param"],
+     ["grid slot", "device params", "proven on hardware"]),
+    (["device", "blocks"], ["grid slot", "13/27"]),
+    (["device", "bypass"], ["grid slot"]),
+    (["device", "model"], ["grid slot"]),
+    (["device", "list"], ["REFERENCES", "pool"]),
+    (["device", "create"], ["(1)", "REFERENCE", "rename"]),
+    (["device", "delete"], ["reference", "never touched"]),
+    (["device", "save"], ["POOL", "REFERENCE"]),
+    (["device", "push"], ["POOL", "REFERENCE"]),
+    (["device", "install"], ["POOL", "REFERENCE"]),
+    (["device", "backup"], ["named", "references"]),
+    (["device", "pull-ir"], ["list-irs --json", "file", "DISPLAY name"]),
+    (["device", "list-irs"], ["file", "pull-ir"]),
+    (["device", "unsync"], ["SYNCED setlist", "membership"]),
+]
+
+
+@pytest.mark.parametrize(
+    "path,phrases", NEW_SURFACES, ids=[" ".join(row[0]) for row in NEW_SURFACES])
+def test_new_agent_surfaces_keep_contract_phrases(path, phrases):
+    combined = _full_help(_resolve(path))
+    for phrase in phrases:
+        assert phrase in combined, (
+            f"CLI verb {' '.join(path)!r} help lost the 0.21.0 contract "
+            f"phrase {phrase!r}")
+
+
 def test_top_level_help_orients_agents():
     res = CliRunner().invoke(cli, ["--help"])
     assert res.exit_code == 0

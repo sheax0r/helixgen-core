@@ -57,6 +57,24 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## ✅ Shipped
 
+- **Workspace #67 + #68-core + #65 — live-validation fixes (0.21.0).** (The
+  authoritative entries live in the coordination workspace's `BACKLOG.md`.)
+  #67a: live-ops block coordinates corrected to the DSP **grid slot** (the
+  int paired in `blks`; the `(key-1)/2` formula was a contiguous-chain
+  coincidence — HW-proven at the output block, slot 13) and pid discovery
+  shipped as `device params <path> <block>` (pid + name + current RAW value,
+  via defs join + `/ParamValueGet`); `set-param --help` example proven live.
+  #67b: ACTIVE-preset read shipped as `device active` (property
+  `server.active.preset.id`, discovered via `/MatchingPropertyDefinitionsGet`).
+  #68b: `--setlist` on list/backup/create/save/push/install/delete/`slots
+  restore` accepts real device setlist names (pool+reference model; the old
+  `throwaway`→`-5` token was broken); #68c: `pull-ir` help fixed +
+  `list-irs --json` carries the on-device `file` basename; #68e/g/h: unsync/
+  --ip/ingest/add-block/create helps made honest; #68i: `ir-prune` decodes
+  `.sbe` sources natively. Also resolves workspace #64b (the list-shape
+  `edit_buffer_blocks` fallback was the live path, emitting wrong
+  coordinates).
+
 - **Preset CRUD + content read/save + live param edits** (2.0.0) — `device
   list/read/load/create/save/rename/delete/set-param`.
 - **Local backup library** (`device backup` / `local-list`) — bulk-pull a
@@ -94,7 +112,46 @@ and had to be redirected. Start here so future work begins from the right model.
   MCP tool and the directory-mirror CLI form are gone.
   (was `src/helixgen/device/sync.py`)
 
+- **#66 Live-integration test suite (`tests/live/`)** — **✅ SHIPPED
+  2026-07-15** (mirrors workspace backlog #66, marked done there). The
+  2026-07-15 one-off live CLI validation is now a permanent opt-in pytest
+  suite: subprocess-driven real-CLI invocations (arg parsing included, no
+  CliRunner) against the real block library and a real Stadium; gated on
+  `HELIXGEN_LIVE=1` + a TCP-2002 reachability probe (default/CI runs skip
+  fast and green); impact-area markers registered in `pyproject.toml`
+  (`authoring`/`library`/`ir`/`device_read`/`device_write`/`liveops`/
+  `setlists`/`sync`/`device_ir`, plus `live_global` extra-gating the
+  read→set-same→verify `settings set` probe) so subsets run after targeted
+  changes (`pytest -m "live and sync" tests/live`). Safety as fixtures:
+  scratch env for all local state, upfront `device backup`, before/after
+  device-state diff asserted by the suite itself, `HGTEST`-prefixed
+  artifacts with teardown-on-failure, and a byte-identity check on the real
+  `~/.helixgen` files. Validated device quirks are encoded (xfails for the
+  #38 /CreateContent episodes and the IR-registry wedge; #67's
+  amp-pid-1-only live `set-param`; `pull-ir` by ORIGINAL basename after
+  `rename-ir`; `measure`'s clean ok:false when idle; `create` auto-naming).
+  Deliberate exclusions documented in `tests/live/conftest.py` (`restore`,
+  `sync --all`, `bootstrap`, `globaleq set`, real-cache `ir-cache --clear`).
+
 ## 🔲 Remaining
+
+### Deferred from the 0.21.0 adversarial review (2026-07-15)
+
+- **#69 `slots restore --force` into a named setlist may stack a duplicate
+  reference [device-write]** — `_install_via_dest` skips the setlist-position
+  occupancy check under `--force` and `reference_into_setlist` never removes
+  an incumbent; what the device does with two references at one posi is
+  uncataloged. Either refuse `--force` on the setlist branch or characterize
+  + document the outcome on hardware.
+- **#70 Deprecated `throwaway`→`-5` remnants + stale dated docs [local]** —
+  `container_for_setlist_keyword`/`THROWAWAY` still map `"throwaway"` to the
+  setlists root (no production caller; pinned by a unit test), preserving
+  semantics 0.21.0 established never worked — remove the dead API in the next
+  breaking pass. The dated archives
+  `docs/superpowers/plans/2026-07-14-loudness-measure-implementation.md` and
+  `docs/superpowers/specs/2026-07-14-loudness-feedback-normalization.md`
+  still state the superseded `(key-1)/2` wire rule with no erratum pointer
+  (the three living contract docs are corrected).
 
 Legend: **[local]** = pure local code, no device needed. **[device-write]** =
 implementation is code, but *hardware validation* requires a device write
@@ -851,6 +908,30 @@ LED control, focus-view/UI cosmetics.
     added; suite 1501 passed. **No user action needed** unless the code-1
     anomaly recurs (then: power-cycle the Helix and retry — the client now
     self-cleans and names the cid to recover).
+  - **RECURRED 2026-07-15 (evening), while building the live suite (#66) —
+    now with much better telemetry.** Captured facts: (1) it is
+    **intermittent within one powered-on session** — `device setlist create`
+    got `/status [1003, <cid>, 1]` (allocated anyway), an identical raw
+    create minutes later got `/status [1002, <cid>, 0]`; (2) it looks
+    **load-correlated** — across three full `tests/live` runs the failures
+    consistently appeared LATE in each run (after dozens of rapid
+    create/delete cycles) and cleared after short idle, which is why the 5
+    rapid cycles in the 07-15 morning probe never triggered it; (3) it hit
+    `device install`, `device save`, and `device setlist create` in
+    different runs; (4) a related **IR-registry wedge** was observed in the
+    same episodes: `push-ir` sees the `/addContent` broadcast (hash-matched)
+    but the -11 registry listing NEVER gains the entry (40+ min), while the
+    path index resolves the hash — the exact wedge shape `delete-ir
+    --force-wedge` exists for, appearing WITHOUT any delete→re-import; (5) a
+    status-1 setlist allocation can **materialize in listings seconds
+    late**, and one ghost entry (mangled name `HGTEST021B`, cid 1307)
+    appeared in a listing and later vanished on its own. Two residuals:
+    `create_setlist` does NOT self-clean its allocated stub on code 1 (the
+    push/save paths do — extend `_delete_created_stub` there); consider a
+    cooldown-retry in the client for the episode. `tests/live` works around
+    all of this (self-clean + cooldown retry + xfail with this entry's
+    number), so a healthy device passes and an episode reads as xfails, not
+    failures.
 
 - **#39 `resolve_setlist_cid` is non-strict — a timeout can mint a
   duplicate-named setlist** — **✅ SHIPPED (2026-07-15).** `resolve_setlist_cid`

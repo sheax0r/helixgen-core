@@ -76,6 +76,33 @@ Run from a source checkout with the package on `PYTHONPATH`:
 PYTHONPATH=$PWD/src python -m pytest
 ```
 
+### Live integration suite (`tests/live/`)
+
+An opt-in suite that drives the **real CLI via subprocess** against the
+user's real block library and a **real Helix Stadium on the LAN**. It is
+skipped entirely (fast, green) unless `HELIXGEN_LIVE=1`:
+
+```bash
+HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest tests/live -q
+```
+
+Tests are grouped by impact area with registered markers — `authoring`,
+`library`, `ir`, `device_read`, `device_write`, `liveops`, `setlists`,
+`sync`, `device_ir` (plus `live` on everything and `live_global` for the
+extra-gated global-settings write) — so a targeted change can run just its
+blast radius, e.g.:
+
+```bash
+HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest -m "live and sync" tests/live
+```
+
+Safety is enforced by fixtures: all local state (manifest, IR mapping,
+IR-hash cache, prefs, backups) is redirected to a scratch dir; an upfront
+`device backup` runs; device state is diffed before/after (the suite fails
+itself on any leak); every artifact is `HGTEST`-prefixed and torn down even
+on failure. See `tests/live/conftest.py` for the full safety model and the
+list of deliberately excluded verbs.
+
 ## Acknowledgments
 
 helixgen leans **heavily** on

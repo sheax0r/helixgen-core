@@ -97,21 +97,27 @@ Example: `helixgen ir-scan ~/IRs && helixgen list-irs | wc -l`.
 
 Talks to a **Stadium** over the LAN directly (OSC-over-ZeroMQ; no editor app).
 Requires the `device` extra (`pip install 'helixgen[device]'` → pyzmq+msgpack).
-Point at the device with `--ip`/`--port` or `$HELIXGEN_HELIX_IP` (default
-`192.168.4.84`). **Stadium-only**; these verbs **mutate the device** — prefer an
-empty/expendable slot when testing.
+Point at the device with `--ip`/`--port` or `$HELIXGEN_HELIX_IP` (precedence:
+`--ip` > env var > built-in default `192.168.4.84`). **Stadium-only**; these
+verbs **mutate the device** — prefer an empty/expendable slot when testing.
 
 **The full per-verb reference — every flag and gotcha — lives
 in [`docs/CLI.md`](docs/CLI.md) "Device commands".** The rest of this section is
 the verb index plus the mental-model rules that must stay in front of an agent.
 
-- **Preset + edit buffer:** `device list` / `setlists` / `info` / `read` /
-  `load` / `create` / `save` / `rename` / `delete` / `set-param` / `blocks` /
-  `pull` / `push` / `restore` / `backup` / `local-list` / `watch` / `set-info` /
-  `install`. `install` transcodes a helixgen `.hsp` straight into device content
-  (`_sbepgsm`) — no template, full fidelity (dual-amp, parallel splits,
-  snapshots, footswitch/EXP assignments all synthesized); `--auto-irs` uploads
-  referenced IRs (EXPERIMENTAL).
+- **Preset + edit buffer:** `device list` / `setlists` / `info` / `active`
+  (the ACTIVE preset's cid/name/slot — save/restore the player's selection) /
+  `read` / `load` / `create` / `save` / `rename` / `delete` / `set-param` /
+  `blocks` / `params` (a block's numeric pids + names + CURRENT raw values —
+  run it before `set-param`; block coordinates are DSP **grid slots**, 0-27) /
+  `pull` / `push` / `restore` / `backup` / `local-list` / `watch` /
+  `set-info` / `install`. The `--setlist` option on
+  list/backup/create/save/push/install/delete/`slots restore` takes `user`
+  (the pool, default), `factory`, or a **real device setlist name** (its
+  entries are references to pool presets). `install` transcodes a helixgen
+  `.hsp` straight into device content (`_sbepgsm`) — no template, full
+  fidelity (dual-amp, parallel splits, snapshots, footswitch/EXP assignments
+  all synthesized); `--auto-irs` uploads referenced IRs (EXPERIMENTAL).
 - **Live device ops (mutate the ACTIVE tone):** `device snapshot <index>`
   (recall a snapshot), `device bypass <path> <block> <on|off>` (volatile block
   bypass), `device model <path> <block> <model>` (live model swap), `device
@@ -144,7 +150,8 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   sync-on|sync-off`.
 
 **Device-write gating.** Verbs that only read or list device state are safe —
-e.g. `info`, `read`, `list`, `list-irs`, `blocks`, `settings list`/`get`,
+e.g. `info`, `active`, `read`, `list`, `list-irs`, `blocks`, `params`,
+`settings list`/`get`,
 `tuner`, `meters`, `measure`, `watch`, `backup`, `pull`/`pull-ir`, plus the offline verbs
 (`local-list`, `library`, `slots list`, `globaleq list`, `--list`/`--dry-run`
 variants). Anything that writes content, properties, or files **mutates the
@@ -401,6 +408,7 @@ on a `patch` op.
 - `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
 - `docs/` — `BACKLOG.md` (THE backlog), `CLI.md` (the full CLI + per-verb **device** reference), `recipe-reference.md` (the exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); the golden-output contract (`tests/golden/`) and the 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity
+- `tests/live/` — **opt-in live integration suite** (backlog #66): drives the real CLI via subprocess against the real library and a real Stadium. Skipped unless `HELIXGEN_LIVE=1` (device tests also need the device reachable — TCP probe of port 2002; the device ignores ICMP). Impact-area markers (registered in `pyproject.toml`): `authoring`, `library`, `ir`, `device_read`, `device_write`, `liveops`, `setlists`, `sync`, `device_ir`, plus `live` on everything and `live_global` (extra opt-in `HELIXGEN_LIVE_GLOBAL=1` for the read→set-same→verify global-settings write). After a targeted change run its blast radius, e.g. `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest -m "live and sync" tests/live`. Safety = fixtures: scratch env for ALL local state, upfront `device backup`, before/after device-state diff (the suite fails itself on a leak), `HGTEST`-prefixed artifacts with teardown-on-failure, and a session check that the real `~/.helixgen` files are byte-identical afterwards. `tests/live/conftest.py` documents the full safety model + deliberately excluded verbs (`restore`, `sync --all`, `bootstrap`, `globaleq set`, real-cache `ir-cache --clear`). Known live gotchas are encoded as xfails: backlog #38 /CreateContent status-1 episodes (save/install/setlist create), the IR-registry non-listing wedge, and amp-pid-1-only live `set-param` (#67).
 - `tests/fixtures/` — synthetic + real-export fixtures
 - `data/` (gitignored) — the user's personal `.hsp` exports
 - `irs/` (gitignored) — paid commercial IR packs; character catalog at `irs/_catalog/`
