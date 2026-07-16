@@ -86,12 +86,15 @@ def cli() -> None:
     is the behavioral contract). Verb groups:
 
     \b
-      library    ingest, bootstrap, list-blocks, show-block
+      catalog    ingest, bootstrap, list-blocks, show-block
       author     generate (recipe JSON -> .hsp), view (read-only projection)
       edit       patch (batch ops), set-param, enable, disable, add-block,
                  remove-block, swap-model
       IRs        irhash, register-irs, ir-scan, list-irs, ir-cache
       tones      register, controllers
+      library    `helixgen library ...` — tone metadata: list/show/doc/
+                 validate (see `helixgen library --help`); `describe` prints
+                 one tone's full write-up
       device     `helixgen device ...` — network control of a Helix Stadium
                  (see `helixgen device --help`)
 
@@ -1052,7 +1055,14 @@ def ir_cache_cmd(stats: bool, clear_: bool, prune: bool) -> None:
 # import it from `helixgen.cli`.
 from helixgen.cli_device import device, _auto_upload_irs  # noqa: E402,F401
 
+# The `library` verb group (list/show/doc/validate) and the top-level
+# `describe` command live in `cli_library`, same extraction pattern as
+# `cli_device` above.
+from helixgen.cli_library import library as library_group, describe as describe_cmd  # noqa: E402
+
 cli.add_command(device)
+cli.add_command(library_group)
+cli.add_command(describe_cmd)
 
 
 if __name__ == "__main__":  # allow `python -m helixgen.cli ...`
