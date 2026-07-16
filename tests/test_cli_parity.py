@@ -238,10 +238,21 @@ NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "normalize"],
      ["DRY-RUN", "--yes", "anchor", "source of truth", "device sync",
       "NAMED snapshots", "SKIPPED", "dB-native", "UPSTREAM", "INVISIBLE",
-      "NOT re-measure", "PLAY", "--target-db"]),
+      "NOT re-measure", "PLAY", "--target-db",
+      # C1/I1 (2026-07-16 review): trims equalize TOTAL loudness (gain +
+      # output level -> idempotent re-runs), and the measured preset's
+      # identity is verified before anything is written
+      "TOTAL loudness", "IDEMPOTENT", "verified"]),
     (["set-param"],
      ["--snapshot", "per-snapshot override", "base value",
-      "densify", "active snapshot", "round-trip"]),
+      "densify", "active snapshot", "round-trip",
+      # M3/M5: output pseudo-block overrides don't surface in `view` yet
+      # (#76), and a varying array makes a plain base edit inaudible
+      "do NOT surface in `view`", "inaudible"]),
+    # M4: enable/disable share set-param's snapshot resolver, so their
+    # --snapshot also takes a 0-based index (names win) — help must say so
+    (["enable"], ["0-based index", "names win"]),
+    (["disable"], ["0-based index", "names win"]),
     (["patch"], ["snapshot"]),
 ]
 

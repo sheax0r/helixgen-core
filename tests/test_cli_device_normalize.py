@@ -78,9 +78,13 @@ class ScriptedSubscriber:
 
 
 class FakeClient:
-    """Stand-in for HelixClient: records calls and steers the subscriber."""
+    """Stand-in for HelixClient: records calls, steers the subscriber, and
+    models the device's ACTIVE-preset identity (cid + name) so the normalize
+    identity guard is exercised offline."""
 
     calls = []
+    names = {}                        # cid -> device preset display name
+    active = {"cid": 7, "name": None}
 
     def __init__(self, *args, **kwargs):
         pass
@@ -99,19 +103,27 @@ class FakeClient:
     def load_preset(self, cid):
         type(self).calls.append(("load_preset", cid))
         ScriptedSubscriber.state["key"] = ("cid", cid)
+        type(self).active = {"cid": cid, "name": type(self).names.get(cid)}
         return True
+
+    def active_preset(self):
+        a = type(self).active
+        return {"cid": a["cid"], "name": a["name"], "posi": 0,
+                "slot": "1A", "ccid": -2}
 
     def product_info(self):
         return {"serial": "FAKE123"}
 
 
-def _patch(monkeypatch, script):
+def _patch(monkeypatch, script, active_name="Snapshots Corpus", names=None):
     import helixgen.device as device_mod
     from helixgen.device import subscribe as sub_mod
 
     ScriptedSubscriber.script = dict(script)
     ScriptedSubscriber.state = {"key": None}
     FakeClient.calls = []
+    FakeClient.names = dict(names or {})
+    FakeClient.active = {"cid": 7, "name": active_name}
     monkeypatch.setattr(sub_mod, "HelixSubscriber", ScriptedSubscriber)
     monkeypatch.setattr(device_mod, "HelixClient", FakeClient)
 
@@ -203,12 +215,74 @@ def test_normalize_snapshots_json(monkeypatch, preset):
     assert payload["scope"] == "snapshots"
     assert payload["dry_run"] is True
     assert payload["anchor"] == {"snapshot": 0, "name": "Rhythm"}
-    assert payload["target_gain_db"] == pytest.approx(27.96, abs=0.01)
+    assert payload["target_total_db"] == pytest.approx(27.96, abs=0.01)
     by_name = {t["name"]: t for t in payload["targets"]}
+    assert by_name["Lead"]["output_level_db"] == 0.0
+    assert by_name["Lead"]["total_db"] == pytest.approx(33.98, abs=0.01)
     assert by_name["Lead"]["trim_db"] == -6.0
     assert by_name["Clean"]["trim_db"] == 0.0
     assert all(t["applied"] is False for t in payload["targets"])
     assert payload["written"] == []
+
+
+def test_normalize_snapshots_yes_rerun_is_noop(monkeypatch, preset):
+    # C1: the meters tap upstream of output gain, so a re-run measures the
+    # SAME gains — sizing trims from TOTAL loudness (gain + output level)
+    # makes the second --yes pass a dead-band no-op, not a doubled trim.
+    _patch(monkeypatch, GAINS)
+    args = ["device", "normalize", str(preset), "--seconds", "6", "--yes"]
+    assert CliRunner().invoke(cli, args).exit_code == 0
+    assert _gain(preset)["snapshots"][1] == -6.0
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert "nothing to write" in result.output
+    assert _gain(preset)["snapshots"][1] == -6.0   # NOT -12
+
+
+def test_normalize_snapshots_preserves_hand_balanced_overrides(
+        monkeypatch, preset):
+    # C1: a pre-existing hand-balanced override that already equalizes total
+    # loudness (Lead measures +6 dB hotter, its output is already -6 dB)
+    # must be left alone, not re-trimmed toward -12.
+    from helixgen.hsp import write_hsp
+    body = read_hsp(preset)
+    for fl in (0, 1):
+        body["preset"]["flow"][fl]["b13"]["slot"][0]["params"]["gain"][
+            "snapshots"] = [0.0, -6.0] + [0.0] * 6
+    write_hsp(preset, body)
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "nothing to write" in result.output
+    assert _gain(preset)["snapshots"][1] == -6.0
+
+
+def test_normalize_snapshots_aborts_on_active_preset_mismatch(
+        monkeypatch, preset):
+    # I1: the device's ACTIVE tone is verified against the .hsp's name
+    # BEFORE anything is measured — a mismatch aborts the whole run.
+    _patch(monkeypatch, GAINS, active_name="Some Other Tone")
+    before = preset.read_bytes()
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
+    assert result.exit_code != 0
+    assert "Some Other Tone" in result.output
+    assert "Snapshots Corpus" in result.output
+    assert not any(c[0] == "activate_snapshot" for c in FakeClient.calls)
+    assert preset.read_bytes() == before
+
+
+def test_normalize_snapshots_unverifiable_active_name_warns_and_proceeds(
+        monkeypatch, preset):
+    # an unresolvable active-preset name (e.g. edit buffer never saved) is
+    # not proof of a mismatch: warn and continue
+    _patch(monkeypatch, GAINS, active_name=None)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "could not verify" in result.output
+    assert _gain(preset)["snapshots"][1] == -6.0
 
 
 def test_normalize_requires_named_snapshots(monkeypatch, tmp_path):
@@ -240,7 +314,7 @@ def gig_setlist(tmp_path):
 
     # two DIFFERENT corpus presets (tone names come from meta.name and must
     # be unique in the manifest); flow_params carries a non-zero base output
-    # level (-4.5 dB) so the shift compounds on it
+    # level (-4.5 dB) so total-loudness sizing has to account for it
     a = tmp_path / "ToneA.hsp"
     b = tmp_path / "ToneB.hsp"
     shutil.copy(harness.CORPUS_DIR / "goldfinger.hsp", a)
@@ -256,8 +330,17 @@ def gig_setlist(tmp_path):
     return {"names": (name_a, name_b), "paths": (a, b)}
 
 
-def test_normalize_setlist_trims_toward_anchor(monkeypatch, gig_setlist):
-    _patch(monkeypatch, {("cid", 101): 0.5, ("cid", 102): 1.0})
+def _patch_gig(monkeypatch, gig_setlist, script=None, names=None):
+    name_a, name_b = gig_setlist["names"]
+    _patch(monkeypatch,
+           script if script is not None else {("cid", 101): 0.5,
+                                              ("cid", 102): 1.0},
+           names=names if names is not None else {101: name_a, 102: name_b})
+
+
+def test_normalize_setlist_trims_equalize_total_loudness(
+        monkeypatch, gig_setlist):
+    _patch_gig(monkeypatch, gig_setlist)
     result = CliRunner().invoke(
         cli, ["device", "normalize", "--setlist", "Gig",
               "--seconds", "6", "--yes"])
@@ -266,8 +349,83 @@ def test_normalize_setlist_trims_toward_anchor(monkeypatch, gig_setlist):
     assert ("load_preset", 102) in FakeClient.calls
     a, b = gig_setlist["paths"]
     assert _gain(a)["value"] == 0.0     # anchor untouched
-    assert _gain(b)["value"] == -10.5   # -4.5 base shifted -6.0 dB
-    assert _gain(b, flow=1)["value"] == -6.0
+    # C1: ToneB measures +6.02 dB hotter but already carries a -4.5 dB base,
+    # so its TOTAL loudness is only 1.52 dB above the anchor's — the whole
+    # preset shifts -1.5 dB (uniform, preserving intra-preset balance),
+    # ending equalized in total loudness (not shifted the full -6)
+    assert _gain(b)["value"] == -6.0
+    assert _gain(b, flow=1)["value"] == -1.5
+    # M7: the player's previously ACTIVE preset (cid 7) is restored
+    assert FakeClient.calls[-1] == ("load_preset", 7)
+
+
+def test_normalize_setlist_yes_rerun_is_noop(monkeypatch, gig_setlist):
+    _patch_gig(monkeypatch, gig_setlist)
+    args = ["device", "normalize", "--setlist", "Gig", "--seconds", "6",
+            "--yes"]
+    assert CliRunner().invoke(cli, args).exit_code == 0
+    _patch_gig(monkeypatch, gig_setlist)   # fresh call log, same telemetry
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    assert "nothing to write" in result.output
+    b = gig_setlist["paths"][1]
+    assert _gain(b)["value"] == -6.0       # NOT -7.5
+
+
+def test_normalize_setlist_skips_tone_with_mismatched_device_name(
+        monkeypatch, gig_setlist):
+    # I1: a stale observed CID that now points at a DIFFERENT preset must
+    # not be silently measured — the tone is skipped into the exit-1 path.
+    name_a, name_b = gig_setlist["names"]
+    _patch_gig(monkeypatch, gig_setlist,
+               names={101: name_a, 102: "Renamed On Device"})
+    b_before = gig_setlist["paths"][1].read_bytes()
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", "--setlist", "Gig",
+              "--seconds", "6", "--yes", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    by_tone = {t["tone"]: t for t in payload["targets"]}
+    assert by_tone[name_b]["ok"] is False
+    assert "Renamed On Device" in by_tone[name_b]["reason"]
+    assert gig_setlist["paths"][1].read_bytes() == b_before
+
+
+def test_normalize_setlist_write_failure_reports_written_files(
+        monkeypatch, gig_setlist, tmp_path):
+    # M6: a mid-run write failure must say which files were ALREADY written
+    from helixgen import hsp as hsp_mod
+    from helixgen.device.manifest import SetlistManifest
+    from helixgen.device import observations
+
+    c = tmp_path / "ToneC.hsp"
+    shutil.copy(harness.CORPUS_DIR / "snapshots.hsp", c)
+    m = SetlistManifest.load()
+    name_c = m.add_tone("Gig", c)
+    m.save()
+    obs = observations.load_observations("FAKE123")
+    obs.tones[name_c] = {"cid": 103, "posi": 2}
+    observations.save_observations(obs)
+
+    name_a, name_b = gig_setlist["names"]
+    _patch_gig(monkeypatch, gig_setlist,
+               script={("cid", 101): 0.5, ("cid", 102): 1.0,
+                       ("cid", 103): 1.0},
+               names={101: name_a, 102: name_b, 103: name_c})
+    real_write = hsp_mod.write_hsp
+
+    def failing_write(path, body):
+        if str(path).endswith("ToneC.hsp"):
+            raise OSError("disk full")
+        return real_write(path, body)
+
+    monkeypatch.setattr(hsp_mod, "write_hsp", failing_write)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", "--setlist", "Gig",
+              "--seconds", "6", "--yes"])
+    assert result.exit_code != 0
+    assert "ToneC.hsp" in result.output          # the failure itself
+    assert str(gig_setlist["paths"][1]) in result.output  # already written
 
 
 def test_normalize_setlist_skips_tone_without_placement(
@@ -277,7 +435,7 @@ def test_normalize_setlist_skips_tone_without_placement(
     obs = observations.load_observations("FAKE123")
     del obs.tones[name_b]
     observations.save_observations(obs)
-    _patch(monkeypatch, {("cid", 101): 0.5, ("cid", 102): 1.0})
+    _patch_gig(monkeypatch, gig_setlist)
     result = CliRunner().invoke(
         cli, ["device", "normalize", "--setlist", "Gig",
               "--seconds", "6", "--yes", "--json"])

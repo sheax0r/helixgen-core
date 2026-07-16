@@ -306,7 +306,7 @@ Phase 1 shipped alongside (`device measure` + MCP `device_measure`); phase 2
 ## 7. Phase-2 notes (2026-07-16 — shipped offline, hardware rig-gated)
 
 Phase 2 shipped 2026-07-16 (backlog #62; hardware validation deferred to
-backlog #73): snapshot-aware `set-param --snapshot`, per-snapshot
+backlog #75): snapshot-aware `set-param --snapshot`, per-snapshot
 output-level overrides through the transcoder (a param snapshot target keyed
 by the OutputMatrix endpoint's instance id — synthesized by analogy with the
 HW-proven user-block targets, not yet device-verified), and `helixgen device
@@ -317,6 +317,23 @@ math** for output-gain trims and never re-measures to confirm them — §3's
 actuator (it would always read "no change"); the tolerance band survives as
 the *planning* dead-band (deltas ≤ 1 dB are not trimmed).
 
+**Trims equalize TOTAL loudness (2026-07-16 adversarial-review fix).** The
+same meter-tap finding has a planning consequence the first implementation
+missed: because the measured chain gain never includes any output trim
+already in force, sizing a trim from raw gains and ADDING it to the current
+output level is cumulative — a re-run doubles every trim, and pre-balanced
+presets (correct hand-written output overrides) get destroyed. The shipped
+loop instead equalizes **total loudness**: `trim = (gain_anchor + L_anchor) −
+(gain_target + L_target)`, where `L` is the output level in force on the
+first output path (`normalize.total_loudness`). This restores §5's "trim to
+an absolute target, not cumulative" promise: re-runs land every delta in the
+dead-band (idempotent), and already-balanced state is a no-op. The loop also
+**verifies the measured preset's identity** before writing anything (the
+active-preset name vs the `.hsp` in snapshot scope — mismatch aborts; the
+loaded preset's name vs the manifest tone in setlist scope — mismatch =
+stale observed CID, tone skipped), and a setlist run restores the player's
+previously active preset.
+
 **Erratum — hardware-validation signal source.** §3's interaction contract
 assumed a human "plays the same riff" per target. Validation instead uses a
 **looped pitched test signal** (audio interface / phone output → inst1): it
@@ -326,4 +343,4 @@ which gates out exactly like hum) above `INPUT_FLOOR`, held for ≥ ~4 s of
 gated samples per window — and makes runs repeatable in a way human picking
 is not. The "play the same riff" prompt remains the human-facing contract;
 the rig is the validation substitute. No rig was connected for the phase-2
-implementation session, hence #73.
+implementation session, hence #75.

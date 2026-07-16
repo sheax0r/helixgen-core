@@ -2,18 +2,28 @@
 
 Phase 2 of the loudness-feedback spec
 (``docs/superpowers/specs/2026-07-14-loudness-feedback-normalization.md``,
-backlog #62): compare per-target `device measure` results (the input-invariant
-median chain ``gain_db``) against a target, compute dB trims, and write them
-into the LOCAL ``.hsp`` — the source of truth; the device copy is rebuilt from
-it by ``device sync`` / ``device install``.
+backlog #62): compare per-target TOTAL loudness against a target and write dB
+trims into the LOCAL ``.hsp`` — the source of truth; the device copy is
+rebuilt from it by ``device sync`` / ``device install``.
 
-The actuator is the path output block's ``level`` (``b13`` ``gain``), which is
-dB-native so a correction is exact in one move: per-snapshot overrides for the
-snapshot scope, a whole-preset shift (base + any existing per-snapshot array)
-for the setlist scope. **Phase-0 hardware caveat:** every meter-grid tap sits
-UPSTREAM of the output block's gain, so an output trim can never be confirmed
-by re-measuring — the loop trusts the dB math by design (a naive
-re-measure-to-confirm would falsely read "no change").
+**Total loudness, not raw chain gain.** Every meter-grid tap sits UPSTREAM of
+the output block's gain (the phase-0 hardware finding), so `device measure`'s
+median chain ``gain_db`` never includes any output trim already in force.
+What a listener hears is ``gain_db + output level``, and THAT is what the
+loop equalizes (:func:`total_loudness`): ``trim = (gain_anchor + L_anchor) −
+(gain_target + L_target)``. Sizing trims from totals is what makes the loop
+idempotent — a re-run measures the same gains but sees the updated levels, so
+every trim lands in the dead-band — and what keeps hand-balanced presets
+(correct output overrides already written) untouched. Sizing from raw gains
+instead would double every trim on a re-run and destroy pre-balanced state
+(the spec §5 "trim to absolute target, not cumulative" promise).
+
+The actuator is the path output block's ``level`` (``b13`` ``gain``), which
+is dB-native so a correction is exact in one move: per-snapshot overrides for
+the snapshot scope, a whole-preset shift (base + any existing per-snapshot
+array) for the setlist scope. The same meter-tap caveat means an output trim
+can never be confirmed by re-measuring — the loop trusts the dB math by
+design (a naive re-measure-to-confirm would falsely read "no change").
 
 This module is pure local logic (unit-testable offline); the ``device
 normalize`` CLI verb owns the device interaction (snapshot recall / preset
@@ -23,13 +33,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from helixgen import mutate
+from helixgen import flowparams, mutate
 from helixgen.view import _snapshot_names
 
-# The device's output-block gain range in dB (`flowparams._OUTPUT_RANGES` /
-# the vendored P35_OutputMatrix defs).
-OUTPUT_LEVEL_MIN = -120.0
-OUTPUT_LEVEL_MAX = 20.0
+# The device's output-block gain range in dB — single source:
+# `flowparams._OUTPUT_RANGES` (mirrors the vendored P35_OutputMatrix defs).
+OUTPUT_LEVEL_MIN, OUTPUT_LEVEL_MAX = flowparams._OUTPUT_RANGES["level"]
 
 
 def snapshot_targets(body: Dict[str, Any]) -> List[Tuple[int, str]]:
@@ -81,13 +90,36 @@ def effective_output_level(
     return 0.0
 
 
-def compute_trim(
-    measured_gain_db: float, target_gain_db: float, tolerance_db: float
+def reference_output_level(
+    body: Dict[str, Any], snap_idx: Optional[int] = None
 ) -> float:
-    """The dB move that takes ``measured_gain_db`` to ``target_gain_db``,
-    rounded to 0.1 dB — or 0.0 when the delta is inside the tolerance band
-    (don't chase meter noise; the spec's ±1 dB default)."""
-    delta = target_gain_db - measured_gain_db
+    """The output level (dB) in force on the preset's FIRST output path —
+    the reference the loop's total-loudness math uses (a trim moves every
+    output path by the same delta, so path 0 stands in for the preset;
+    0.0 when the body carries no output endpoint)."""
+    paths = output_paths(body)
+    return effective_output_level(body, paths[0], snap_idx) if paths else 0.0
+
+
+def total_loudness(
+    body: Dict[str, Any], gain_db: float, snap_idx: Optional[int] = None
+) -> float:
+    """What the listener hears, in dB: the measured chain ``gain_db`` plus
+    the output level in force (:func:`reference_output_level`). The meter
+    taps sit upstream of the output gain, so the measured gain alone never
+    reflects a trim — totals are what the loop equalizes, and what makes a
+    re-run idempotent."""
+    return gain_db + reference_output_level(body, snap_idx)
+
+
+def compute_trim(
+    measured_total_db: float, target_total_db: float, tolerance_db: float
+) -> float:
+    """The dB move that takes ``measured_total_db`` (a target's TOTAL
+    loudness — see :func:`total_loudness`) to ``target_total_db``, rounded
+    to 0.1 dB — or 0.0 when the delta is inside the tolerance band (don't
+    chase meter noise; the spec's ±1 dB default)."""
+    delta = target_total_db - measured_total_db
     if abs(delta) <= tolerance_db:
         return 0.0
     return round(delta, 1)
@@ -109,7 +141,9 @@ def apply_snapshot_trim(
 ) -> List[str]:
     """Add ``trim_db`` to snapshot ``snap_idx``'s effective output level on
     EVERY output path, in place, as a per-snapshot override (the untouched
-    slots densify to the base — see ``mutate._write_snapshot_slot``).
+    slots densify to the base — see ``mutate._write_snapshot_slot``). The
+    relative move preserves any per-path offsets; idempotency comes from the
+    planner sizing ``trim_db`` from TOTAL loudness (:func:`total_loudness`).
     Returns clamp warnings."""
     warnings: List[str] = []
     for pi in output_paths(body):

@@ -252,15 +252,19 @@ def set_param(
                 f"Param {block!r}.{param!r} is stereo-shaped; stereo params "
                 f"are not supported for per-snapshot values."
             )
-        if not isinstance(wrapped, dict):
+        if not isinstance(wrapped, dict) or wrapped.get("value") is None:
+            # a missing wrapper OR a wrapper without a base `value` (e.g.
+            # controller-only): densifying against None would corrupt it
+            # (value: None + a sparse array the transcoder silently drops)
             raise MutateError(
-                f"Block {block!r} has no existing value for param {param!r}; "
-                f"set the base value first (per-snapshot overrides densify "
-                f"the untouched slots to the base)."
+                f"Block {block!r} has no existing base value for param "
+                f"{param!r}; set the base value first (per-snapshot "
+                f"overrides densify the untouched slots to the base)."
             )
         idx = _resolve_snapshot_index(body, snapshot)
         _write_snapshot_slot(body, wrapped, idx, coerced)
         return
+    _warn_if_base_overridden(wrapped, f"{block!r} param {param!r}")
     if isinstance(wrapped, dict) and _is_stereo_param(wrapped):
         for channel in ("1", "2"):
             chan = wrapped.get(channel)
@@ -282,6 +286,25 @@ def _flow_path_dict(body: dict[str, Any], path: int) -> dict[str, Any]:
         raise MutateError(
             f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
     return flow[path]
+
+
+def _warn_if_base_overridden(wrapped: Any, label: str) -> None:
+    """Stderr warning when a plain BASE edit lands on a param whose
+    per-snapshot ``snapshots`` array VARIES: the device applies the tracked
+    per-snapshot value on every snapshot, so the base edit is inaudible
+    on-device (a uniform array is skipped by the transcoder — the base still
+    wins there, so it does not warn)."""
+    snaps = wrapped.get("snapshots") if isinstance(wrapped, dict) else None
+    if not isinstance(snaps, list):
+        return
+    vals = [v for v in snaps if v is not None]
+    if len({repr(v) for v in vals}) > 1:
+        import sys
+        print(
+            f"warning: {label}: the base value is overridden by a "
+            f"per-snapshot overrides array on all 8 snapshots — this base "
+            f"edit will be inaudible on-device. Use --snapshot to edit one "
+            f"snapshot, or edit every snapshot's slot.", file=sys.stderr)
 
 
 def _write_slot_param(slot: dict[str, Any], name: str, value: Any) -> None:
@@ -347,13 +370,6 @@ def _set_input_flow_param(body: dict[str, Any], path_dict: dict[str, Any],
     _write_slot_param(slot, hsp_name, hsp_value)
 
 
-# Device defaults for the output endpoint's params, used as the densify base
-# when a per-snapshot override is written before any base value exists
-# (`gain` def 0.0 dB / `pan` def 0.5, from the vendored device defs for
-# P35_OutputMatrix — a chassis-fresh b13 often carries no wrapper at all).
-_OUTPUT_HSP_DEFAULTS = {"gain": 0.0, "pan": 0.5}
-
-
 def _set_output_flow_param(
     body: dict[str, Any], path_dict: dict[str, Any], param: str, value: Any,
     *, snapshot: Any = None,
@@ -375,11 +391,16 @@ def _set_output_flow_param(
         params = slot.setdefault("params", {})
         wrapped = params.get(hsp_name)
         if not isinstance(wrapped, dict):
-            wrapped = {"value": _OUTPUT_HSP_DEFAULTS[hsp_name]}
+            # a chassis-fresh b13 often carries no wrapper at all — densify
+            # against the device default (flowparams.OUTPUT_HSP_DEFAULTS)
+            wrapped = {"value": flowparams.OUTPUT_HSP_DEFAULTS[hsp_name]}
             params[hsp_name] = wrapped
         idx = _resolve_snapshot_index(body, snapshot)
         _write_snapshot_slot(body, wrapped, idx, float(value))
         return
+    _warn_if_base_overridden(
+        (b13["slot"][0].get("params") or {}).get(hsp_name),
+        f"output {param!r}")
     _write_slot_param(b13["slot"][0], hsp_name, float(value))
 
 
@@ -514,7 +535,18 @@ def _write_snapshot_slot(
     different — see `set_enabled`). `wrapped["value"]` is re-synced to the
     active snapshot's slot (`preset.params.activesnapshot`) so the block
     shows its active-snapshot value on load.
+
+    Requires `preset.snapshots` meta: without it the device transcoder
+    (`bridge.hsp_to_paths`'s has_snaps gate) drops every snapshots array, so
+    the override would be silently dead on-device — error instead.
     """
+    if not (body.get("preset") or {}).get("snapshots"):
+        raise MutateError(
+            "Preset defines no snapshots (`preset.snapshots` meta is "
+            "absent) — a per-snapshot override would be silently dropped "
+            "on device install/sync. Author snapshots first (recipe "
+            "`snapshots` field), or set the base value instead."
+        )
     if not (0 <= idx < HSP_SNAPSHOT_SLOTS):
         raise MutateError(
             f"Snapshot index {idx} out of range (0..{HSP_SNAPSHOT_SLOTS - 1}).")
@@ -547,8 +579,9 @@ def set_enabled(
     `snapshot=None` (default) sets the base `@enabled.value` directly.
 
     `snapshot=<name-or-index>` instead flips that one slot of the 8-element
-    `@enabled.snapshots` array (resolved by matching `preset.snapshots[*].name`,
-    or used directly if already an int). Any other `null` slot in the array is
+    `@enabled.snapshots` array (resolved by `_resolve_snapshot_index`:
+    matched against `preset.snapshots[*].name`; an int — or a digit-only
+    string matching no name — is a 0-based index). Any other `null` slot in the array is
     densified to the pre-edit base value — a sparse (null-containing) array
     left on-device snapshot recall unreliable (see 0.5.1). After a snapshot
     edit, `@enabled.value` is re-synced to `snapshots[<active snapshot>]`

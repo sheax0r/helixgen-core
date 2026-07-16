@@ -2953,28 +2953,33 @@ def _measure_window(ip: str, seconds: float, min_playing: int):
 
 
 def _normalize_resolve_target(results, target_db):
-    """The gain target for a normalize run: ``--target-db`` when given, else
-    the FIRST successfully measured target (the anchor). Returns
-    ``(target_gain_db, anchor_result_or_None)``; raises ``ClickException``
+    """The TOTAL-loudness target (dB) for a normalize run: ``--target-db``
+    when given, else the FIRST successfully measured target (the anchor) —
+    its measured chain gain PLUS the output level already in force. Returns
+    ``(target_total_db, anchor_result_or_None)``; raises ``ClickException``
     when no anchor exists."""
     if target_db is not None:
         return float(target_db), None
     for r in results:
         if r.get("ok"):
-            return r["gain_db"], r
+            return r["total_db"], r
     raise click.ClickException(
         "no target could be measured (every window had too little playing) "
         "— nothing to anchor the trims to; re-run and play steadily, or "
         "give --target-db")
 
 
-def _normalize_plan(results, target, tolerance_db):
-    """Stamp each ok result with its ``trim_db`` (0.0 = in band)."""
+def _normalize_plan(results, target_total, tolerance_db):
+    """Stamp each ok result with its ``trim_db`` (0.0 = in band). Trims are
+    sized from each target's TOTAL loudness (chain gain + output level in
+    force), which is what makes a re-run of the loop a no-op — see
+    ``normalize.total_loudness``."""
     from helixgen.device import normalize as NZ
 
     for r in results:
-        r["trim_db"] = (NZ.compute_trim(r["gain_db"], target, tolerance_db)
-                        if r.get("ok") else None)
+        r["trim_db"] = (
+            NZ.compute_trim(r["total_db"], target_total, tolerance_db)
+            if r.get("ok") else None)
         r["applied"] = False
 
 
@@ -2986,10 +2991,12 @@ def _normalize_plan(results, target, tolerance_db):
                    "instead of one preset's snapshots (mutually exclusive "
                    "with the PRESET argument).")
 @click.option("--target-db", type=float, default=None,
-              help="Absolute target for the median chain gain in dB "
-                   "(output/input, as `device measure` reports). Default: "
-                   "the first successfully measured target is the anchor "
-                   "and everything else is trimmed to match it.")
+              help="Absolute target for each target's TOTAL loudness in dB "
+                   "— the median chain gain (output/input, as `device "
+                   "measure` reports) PLUS the output-block level already "
+                   "in force. Default: the first successfully measured "
+                   "target is the anchor and everything else is trimmed to "
+                   "match its total.")
 @click.option("--seconds", type=float, default=20.0, show_default=True,
               help="Measurement window per target.")
 @click.option("--min-playing", type=int, default=40, show_default=True,
@@ -3015,27 +3022,41 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
     The closed loop over `device measure` (loudness spec phase 2): recall
     each target on the device, prompt you to PLAY the same riff steadily for
-    the window, then compute each target's dB trim of the median chain gain
-    toward the target level — the anchor (the first target that measured ok)
-    unless --target-db gives an absolute gain target. Targets whose window
-    had too little actual playing are SKIPPED with a warning (and the run
-    exits 1 to flag the partial result).
+    the window, then compute each target's dB trim so its TOTAL loudness —
+    the measured median chain gain PLUS the output-block level already in
+    force (the meter taps sit upstream of the output gain, so the measured
+    gain alone never includes an existing trim) — matches the target total:
+    the anchor's (the first target that measured ok) unless --target-db
+    gives an absolute total. Sizing trims from totals makes the loop
+    IDEMPOTENT: re-running it (or running it over a hand-balanced preset
+    whose output levels already equalize) computes in-band zero trims
+    instead of compounding. Deltas within --tolerance-db are in band and
+    left alone. Targets whose window had too little actual playing are
+    SKIPPED with a warning (and the run exits 1 to flag the partial result).
 
     Two scopes: `device normalize <preset.hsp>` level-matches the preset's
     NAMED snapshots — it recalls each snapshot on the device, so the ACTIVE
-    device tone must BE this preset (device sync/install it first).
+    device tone must BE this preset (device sync/install it first). The
+    active preset's name is verified against the .hsp before anything is
+    measured; a mismatch aborts the run (an unverifiable name only warns).
     `device normalize --setlist <name>` level-matches every tone of a local
     manifest setlist that has a local .hsp and an observed device placement
-    (loads each by CID; tones without either are SKIPPED).
+    (loads each by CID and verifies the loaded preset's name matches the
+    tone — a mismatch means a stale observation and that tone is SKIPPED;
+    tones without a local .hsp or a placement are SKIPPED too). The
+    previously ACTIVE preset is restored (best-effort) after a setlist run;
+    snapshot scope restores the preset's on-load snapshot.
 
     DRY-RUN by default: measuring happens, trims are only reported. Re-run
     with --yes to write them into the LOCAL .hsp file(s) — the source of
     truth — as output-block `level` moves (per-snapshot overrides in
     snapshot scope; a whole-preset shift, base plus any per-snapshot array,
-    in setlist scope). The device copy is NOT written by this verb: run
-    `device sync <setlist>` (or `device install`) afterwards to rebuild it
-    from the .hsp. Recalling snapshots / loading presets does change the
-    device's ACTIVE tone selection while measuring.
+    in setlist scope — a uniform shift that preserves the preset's own
+    scene-to-scene and path-to-path balance). The device copy is NOT
+    written by this verb: run `device sync <setlist>` (or `device install`)
+    afterwards to rebuild it from the .hsp. If a mid-run write fails, the
+    error lists the files already written. Recalling snapshots / loading
+    presets does change the device's ACTIVE tone selection while measuring.
 
     The output block's `level` is dB-native, so a trim is EXACT by
     construction — and (phase-0 hardware finding) every meter tap sits
@@ -3078,9 +3099,25 @@ def device_normalize(preset: Path | None, setlist: str | None,
                     "(give --target-db for an absolute target)")
             say(f"normalize (snapshot scope): {len(targets)} named "
                 f"snapshot(s) in {preset}")
-            say("NOTE: the device's ACTIVE tone must be this preset "
-                "(device sync/install it first)")
+            expected_name = (body.get("meta") or {}).get("name")
             with HelixClient(ip, port) as h:
+                # identity guard: the loop recalls snapshots on whatever tone
+                # is ACTIVE — verify it IS this .hsp before measuring anything
+                try:
+                    active_info = h.active_preset()
+                except HelixError:
+                    active_info = None
+                active_name = (active_info or {}).get("name")
+                if not expected_name or not active_name:
+                    say("warning: could not verify the device's ACTIVE "
+                        "preset name — proceeding; make sure the active "
+                        "tone IS this preset (device sync/install it first)")
+                elif active_name != expected_name:
+                    raise click.ClickException(
+                        f"the device's ACTIVE preset is {active_name!r} "
+                        f"(cid {active_info.get('cid')}), not this .hsp's "
+                        f"{expected_name!r} — sync/install and select it "
+                        f"first, then re-run")
                 for idx, name in targets:
                     h.activate_snapshot(idx)
                     say(f"snapshot {idx} {name!r}: PLAY the same riff "
@@ -3091,8 +3128,13 @@ def device_normalize(preset: Path | None, setlist: str | None,
                             f"({res.playing_seconds:.1f}s playing)")
                     else:
                         say(f"  warning: SKIPPED — {res.reason}")
-                    results.append({"snapshot": idx, "name": name,
-                                    **_measured_fields(res)})
+                    entry = {"snapshot": idx, "name": name,
+                             **_measured_fields(res)}
+                    if res.ok:
+                        level = NZ.reference_output_level(body, idx)
+                        entry["output_level_db"] = round(level, 1)
+                        entry["total_db"] = round(entry["gain_db"] + level, 2)
+                    results.append(entry)
                 # leave the device on the preset's on-load snapshot
                 active = ((body.get("preset") or {}).get("params")
                           or {}).get("activesnapshot", 0)
@@ -3134,6 +3176,11 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 f"{setlist!r}")
             with HelixClient(ip, port) as h:
                 obs = OBS.load_observations(_serial_of(h, ip))
+                # save the player's current selection; restored after the run
+                try:
+                    prev_cid = (h.active_preset() or {}).get("cid")
+                except HelixError:
+                    prev_cid = None
                 for name in tone_names:
                     trec = m.tones.get(name) or {}
                     hsp_path = trec.get("path")
@@ -3153,6 +3200,26 @@ def device_normalize(preset: Path | None, setlist: str | None,
                                         "reason": "not observed on device"})
                         continue
                     h.load_preset(int(placement["cid"]))
+                    # identity guard: a stale observed CID silently measures
+                    # some OTHER preset — verify the loaded preset's name
+                    try:
+                        loaded_name = (h.active_preset() or {}).get("name")
+                    except HelixError:
+                        loaded_name = None
+                    if loaded_name and loaded_name != name:
+                        say(f"warning: {name!r}: SKIPPED — cid "
+                            f"{placement['cid']} on the device is named "
+                            f"{loaded_name!r} (stale observation? run "
+                            f"`device sync {setlist}` first)")
+                        results.append({
+                            "tone": name, "path": hsp_path, "ok": False,
+                            "reason": f"device name mismatch: cid "
+                                      f"{placement['cid']} is "
+                                      f"{loaded_name!r}"})
+                        continue
+                    if not loaded_name:
+                        say(f"warning: {name!r}: could not verify the "
+                            f"loaded preset's name — proceeding")
                     say(f"tone {name!r}: PLAY the same riff steadily for "
                         f"~{seconds:.0f}s ...")
                     res = _measure_window(ip, seconds, min_playing)
@@ -3161,8 +3228,20 @@ def device_normalize(preset: Path | None, setlist: str | None,
                             f"({res.playing_seconds:.1f}s playing)")
                     else:
                         say(f"  warning: SKIPPED — {res.reason}")
-                    results.append({"tone": name, "path": hsp_path,
-                                    **_measured_fields(res)})
+                    entry = {"tone": name, "path": hsp_path,
+                             **_measured_fields(res)}
+                    if res.ok:
+                        level = NZ.reference_output_level(
+                            read_hsp(Path(hsp_path)))
+                        entry["output_level_db"] = round(level, 1)
+                        entry["total_db"] = round(entry["gain_db"] + level, 2)
+                    results.append(entry)
+                # best-effort: put the player's selection back
+                if prev_cid is not None:
+                    try:
+                        h.load_preset(int(prev_cid))
+                    except HelixError:
+                        pass
 
             target, anchor = _normalize_resolve_target(results, target_db)
             _normalize_plan(results, target, tolerance_db)
@@ -3172,7 +3251,18 @@ def device_normalize(preset: Path | None, setlist: str | None,
                         tone_body = read_hsp(Path(r["path"]))
                         warnings.extend(NZ.apply_base_trim(
                             tone_body, r["trim_db"]))
-                        write_hsp(Path(r["path"]), tone_body)
+                        try:
+                            write_hsp(Path(r["path"]), tone_body)
+                        except OSError as e:
+                            already = ("; trims ALREADY written to: "
+                                       + ", ".join(written)
+                                       if written else
+                                       "; no files had been written yet")
+                            raise click.ClickException(
+                                f"failed writing {r['path']}: {e}{already}. "
+                                f"Re-running normalize is safe — trims are "
+                                f"sized from total loudness, so already-"
+                                f"written files re-measure in band.") from e
                         written.append(r["path"])
                         r["applied"] = True
             anchor_json = {"tone": anchor["tone"]} if anchor else None
@@ -3188,7 +3278,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
     skipped = [r for r in results if not r.get("ok")]
     if as_json:
         payload.update({
-            "target_gain_db": round(target, 2),
+            "target_total_db": round(target, 2),
             "anchor": anchor_json,
             "tolerance_db": tolerance_db,
             "dry_run": not yes,
@@ -3199,7 +3289,8 @@ def device_normalize(preset: Path | None, setlist: str | None,
     else:
         anchor_desc = ("--target-db" if anchor_json is None else
                        f"anchor {anchor_json.get('name', anchor_json.get('tone'))!r}")
-        click.echo(f"plan (target = {anchor_desc}, {target:+.2f} dB chain gain):")
+        click.echo(f"plan (target = {anchor_desc}, {target:+.2f} dB total "
+                   f"loudness = chain gain + output level):")
         for r in results:
             label = (f"snapshot {r['snapshot']} {r['name']!r}"
                      if scope == "snapshots" else f"tone {r['tone']!r}")
@@ -3207,12 +3298,14 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 click.echo(f"  {label}: SKIPPED ({r['reason']})")
             elif r["trim_db"]:
                 state = "applied" if r["applied"] else "would trim"
-                click.echo(f"  {label}: {r['gain_db']:+.2f} dB — {state} "
+                click.echo(f"  {label}: {r['total_db']:+.2f} dB total "
+                           f"({r['gain_db']:+.2f} gain "
+                           f"{r['output_level_db']:+.1f} level) — {state} "
                            f"{r['trim_db']:+.1f} dB")
             else:
                 mark = " (anchor)" if r is anchor else ""
-                click.echo(f"  {label}: {r['gain_db']:+.2f} dB — in band "
-                           f"(±{tolerance_db:g} dB){mark}")
+                click.echo(f"  {label}: {r['total_db']:+.2f} dB total — "
+                           f"in band (±{tolerance_db:g} dB){mark}")
         if yes:
             if written:
                 for p in written:

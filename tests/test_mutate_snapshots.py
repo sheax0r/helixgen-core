@@ -120,7 +120,42 @@ def test_set_param_snapshot_requires_existing_value(snapshots_body, library):
     with pytest.raises(mutate.MutateError) as exc:
         mutate.set_param(snapshots_body, "Brit 2204 Custom", "Bass", 0.8,
                          library, snapshot="Lead")
-    assert "no existing value" in str(exc.value)
+    assert "no existing base value" in str(exc.value)
+
+
+def test_set_param_snapshot_requires_base_value_on_controlled_wrapper(
+        snapshots_body, library):
+    # M1 (2026-07-16 review): a controller-only wrapper has no base value —
+    # densifying against None would corrupt it (value: None + a sparse
+    # array the transcoder silently drops)
+    params = snapshots_body["preset"]["flow"][0]["b02"]["slot"][0]["params"]
+    params["Bass"] = {"controller": {"type": "param", "source": 0x02000000}}
+    with pytest.raises(mutate.MutateError) as exc:
+        mutate.set_param(snapshots_body, "Brit 2204 Custom", "Bass", 0.8,
+                         library, snapshot="Lead")
+    assert "base value" in str(exc.value)
+    # the wrapper is untouched (no value: None, no sparse array)
+    assert params["Bass"] == {"controller": {"type": "param",
+                                             "source": 0x02000000}}
+
+
+def test_set_param_snapshot_requires_snapshots_meta(snapshots_body, library):
+    # M2: without `preset.snapshots` meta the transcoder drops the arrays
+    # (bridge's has_snaps gate) — error instead of writing dead state
+    del snapshots_body["preset"]["snapshots"]
+    with pytest.raises(mutate.MutateError) as exc:
+        mutate.set_param(snapshots_body, "Brit 2204 Custom", "Drive", 0.6,
+                         library, snapshot=1)
+    assert "no snapshots" in str(exc.value)
+
+
+def test_set_flow_param_snapshot_requires_snapshots_meta(
+        snapshots_body, library):
+    del snapshots_body["preset"]["snapshots"]
+    with pytest.raises(mutate.MutateError) as exc:
+        mutate.set_flow_param(snapshots_body, "output", "level", -6.0,
+                              snapshot=1)
+    assert "no snapshots" in str(exc.value)
 
 
 def test_set_param_snapshot_rejects_stereo_params(snapshots_body, library):
@@ -148,6 +183,42 @@ def test_set_param_without_snapshot_is_unchanged_behavior(
     w = _drive(snapshots_body)
     assert w["value"] == 0.42
     assert w["snapshots"] == [0.5, 0.85, 0.3, 0.5, 0.5, 0.5, 0.5, 0.5]
+
+
+def test_plain_base_edit_warns_when_snapshot_array_overrides(
+        snapshots_body, library, capsys):
+    # M5: a varying per-snapshot array overrides the base on EVERY snapshot
+    # — a plain base edit is inaudible on-device, so it warns (but still
+    # writes, the .hsp base remains meaningful for densifying)
+    mutate.set_param(snapshots_body, "Brit 2204 Custom", "Drive", 0.42,
+                     library)
+    err = capsys.readouterr().err
+    assert "overridden" in err and "--snapshot" in err
+    assert _drive(snapshots_body)["value"] == 0.42
+
+
+def test_plain_base_output_edit_warns_after_densified_trims(
+        snapshots_body, library, capsys):
+    # M5 (output pseudo-block): after normalize densifies all 8 gain slots,
+    # a plain `set-param output level` no longer changes what is heard
+    mutate.set_param(snapshots_body, "output", "level", -3.0, library,
+                     snapshot="Lead")
+    capsys.readouterr()
+    mutate.set_param(snapshots_body, "output", "level", -1.0, library)
+    err = capsys.readouterr().err
+    assert "overridden" in err and "--snapshot" in err
+    assert _out_gain(snapshots_body)["value"] == -1.0
+
+
+def test_plain_base_edit_without_varying_array_does_not_warn(
+        snapshots_body, library, capsys):
+    # no array at all (Bass, output gain) and a UNIFORM array (which the
+    # transcoder skips, so the base still wins on-device) must not warn
+    mutate.set_param(snapshots_body, "Brit 2204 Custom", "Bass", 0.6, library)
+    mutate.set_param(snapshots_body, "output", "level", -2.0, library)
+    _bass(snapshots_body)["snapshots"] = [0.6] * 8
+    mutate.set_param(snapshots_body, "Brit 2204 Custom", "Bass", 0.7, library)
+    assert capsys.readouterr().err == ""
 
 
 # --- output pseudo-block -----------------------------------------------------

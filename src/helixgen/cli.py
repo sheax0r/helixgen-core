@@ -501,8 +501,13 @@ def set_param_cmd(preset_path, block, param, value, snapshot, path_idx, lane,
     only (a per-snapshot override; the base and other snapshots keep their
     values) — e.g. `helixgen set-param t.hsp "Brit Amp" ChVol 0.6 --snapshot
     Lead`, or a per-snapshot output trim: `helixgen set-param t.hsp output
-    level --snapshot 1 -- -3`. Snapshot overrides round-trip through `view`
-    and are realized on the device by `device install`/`sync`.
+    level --snapshot 1 -- -3`. Snapshot overrides on library-block params
+    round-trip through `view`; overrides on the `output` pseudo-block do NOT
+    surface in `view` yet (backlog #76) but are preserved in the .hsp.
+    Either kind is realized on the device by `device install`/`sync`. Once a
+    param's per-snapshot array varies, the device applies it on EVERY
+    snapshot — a later plain base edit of that param is inaudible on-device
+    and warns.
 
     Besides library blocks, BLOCK may be a signal-flow pseudo-block:
     `input` / `output` / `split` / `join` (`merge` = alias), addressing the
@@ -523,14 +528,16 @@ def set_param_cmd(preset_path, block, param, value, snapshot, path_idx, lane,
 @cli.command(name="enable")
 @click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
 @click.argument("block")
-@click.option("--snapshot", default=None)
+@click.option("--snapshot", default=None, metavar="NAME_OR_INDEX",
+              help="Enable only in this snapshot (a snapshot name, or a "
+                   "0-based index — names win over a digit index).")
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--lane", type=int, default=None)
 @click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
 def enable_cmd(preset_path, block, snapshot, path_idx, lane, pos, library_path, irs_dir):
-    """Enable (un-bypass) a block."""
+    """Enable (un-bypass) a block, at base level or per-snapshot."""
     def _mutation(body, library, irs):
         mutate.set_enabled(body, block, True, library,
                             snapshot=snapshot, path=path_idx, lane=lane, pos=pos)
@@ -541,14 +548,16 @@ def enable_cmd(preset_path, block, snapshot, path_idx, lane, pos, library_path, 
 @cli.command(name="disable")
 @click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
 @click.argument("block")
-@click.option("--snapshot", default=None)
+@click.option("--snapshot", default=None, metavar="NAME_OR_INDEX",
+              help="Bypass only in this snapshot (a snapshot name, or a "
+                   "0-based index — names win over a digit index).")
 @click.option("--path", "path_idx", type=int, default=None)
 @click.option("--lane", type=int, default=None)
 @click.option("--pos", type=int, default=None)
 @_library_option
 @_irs_option
 def disable_cmd(preset_path, block, snapshot, path_idx, lane, pos, library_path, irs_dir):
-    """Disable (bypass) a block."""
+    """Disable (bypass) a block, at base level or per-snapshot."""
     def _mutation(body, library, irs):
         mutate.set_enabled(body, block, False, library,
                             snapshot=snapshot, path=path_idx, lane=lane, pos=pos)
