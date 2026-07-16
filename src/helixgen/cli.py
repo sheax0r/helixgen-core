@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from helixgen import mutate
+from helixgen import gitops, home, libinit, mutate, naming, tone_meta
 from helixgen.bootstrap import bootstrap
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.generate import GenerateError, ParamValidationError, generate_preset
@@ -139,19 +139,39 @@ def ingest_cmd(path: Path, library_path: Path | None) -> None:
 
 @cli.command(name="generate")
 @click.argument("spec_path", type=click.Path(exists=True, path_type=Path))
-@click.option("-o", "--output", "output_path", type=click.Path(path_type=Path), required=True)
+@click.option(
+    "-o", "--output", "output_path", type=click.Path(path_type=Path),
+    default=None, required=False,
+    help=("Write the .hsp exactly here (legacy behavior) and skip the library: "
+          "no metadata JSON, naming flags ignored. Omit to write into the tone "
+          "library at ~/.helixgen/library/tones/<slug>.hsp."),
+)
+@click.option("--artist", default=None, help="Song identity: artist (needs --song).")
+@click.option("--song", default=None, help="Song identity: song title (needs --artist).")
+@click.option(
+    "--descriptor", default=None,
+    help="Descriptor identity (e.g. \"Warm Jazz Clean\"); mutually exclusive with --artist/--song.",
+)
+@click.option(
+    "--guitar", "guitar", default=None,
+    help="Target guitar label; slugified and appended to the display name + filename.",
+)
 @_library_option
 @_irs_option
 def generate_cmd(
     spec_path: Path,
-    output_path: Path,
+    output_path: Path | None,
+    artist: str | None,
+    song: str | None,
+    descriptor: str | None,
+    guitar: str | None,
     library_path: Path | None,
     irs_dir: Path | None,
 ) -> None:
-    """Generate a preset from a JSON recipe: `generate recipe.json -o out.hsp`.
+    """Generate a preset from a JSON recipe.
 
     The recipe is input-only (never written back; the .hsp is the sole source
-    of truth — no sidecar). Minimal shape: {"name", optional "author",
+    of truth -- no sidecar). Minimal shape: {"name", optional "author",
     "paths": [1-2 entries, each {"blocks": [{"block", "params"?}, ...]}]}.
     Optional sections: per-path "input"/"output", "split"/"join" entries
     (parallel routing), top-level "snapshots" / "footswitches" /
@@ -161,18 +181,32 @@ def generate_cmd(
 
     "block" matches a display_name from `list-blocks` (case-sensitive; use
     the model_id if ambiguous). On an `Unknown param(s)` error, run
-    `show-block "<block>"` and correct the recipe — don't guess. Output
-    extension picks the format: .hsp = Stadium (8-byte magic + JSON),
-    .hlx = legacy Helix pretty JSON.
+    `show-block "<block>"` and correct the recipe -- don't guess.
+
+    Output modes:
+
+    \b
+      * DEFAULT (no -o): writes into the tone library at
+        ~/.helixgen/library/tones/<variant-slug>.hsp and records per-tone
+        metadata. Resolve the name from flags, else the recipe's "name" field
+        becomes the descriptor. Naming flags: exactly one identity of
+        (--artist + --song) OR --descriptor, plus an optional --guitar
+        (appended to the display name + slug). The .hsp's meta.name is set to
+        the resolved display name, the logical tone JSON gains a variant, and
+        the tone auto-registers in the library manifest. A slug collision
+        (the target .hsp already exists) is an error with a rename suggestion
+        -- the existing file is never overwritten.
+      * LEGACY (-o OUT): writes the .hsp exactly at OUT and auto-registers it,
+        but writes NO metadata JSON; naming flags are ignored. Output
+        extension picks the format: .hsp = Stadium (8-byte magic + JSON),
+        .hlx = legacy Helix pretty JSON.
 
     After generating with user IRs, the same WAVs must also be on the device
     for the cabs to resolve (`device install --auto-irs` / `device sync`
-    upload them; or import via the Stadium app). The written tone
-    auto-registers in the local tone library.
+    upload them; or import via the Stadium app).
     """
     library = _resolved_library(library_path)
     irs = _resolved_irs(irs_dir)
-    output_path = Path(output_path)
     try:
         # Parse+validate the recipe before touching the chassis, matching the
         # legacy error-ordering tests rely on (a malformed recipe reports its
@@ -181,18 +215,102 @@ def generate_cmd(
         spec = parse_spec(raw, source=str(spec_path))
         chassis = library.load_chassis()
         shape = chassis.get(CHASSIS_SHAPE_KEY, "hlx")
-        if shape == "hsp":
-            data = generate_from_recipe(
-                spec, library, irs=irs, chassis=chassis, source=str(spec_path)
+
+        if output_path is not None:
+            # LEGACY -o: exactly today's behavior. No metadata; naming flags
+            # (if any) are ignored by design.
+            output_path = Path(output_path)
+            if shape == "hsp":
+                data = generate_from_recipe(
+                    spec, library, irs=irs, chassis=chassis, source=str(spec_path)
+                )
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(data)
+                _auto_register_tone(output_path)
+            else:
+                generate_preset(spec_path, output_path, library, irs=irs)
+            click.echo(f"Wrote {output_path}")
+            return
+
+        # DEFAULT: write into the tone library with resolved naming.
+        if shape != "hsp":
+            raise click.ClickException(
+                "default library write needs a Stadium (.hsp) chassis; use -o "
+                "to write a legacy .hlx preset to an explicit path"
             )
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(data)
-            _auto_register_tone(output_path)
+
+        guitar_slug, guitar_short = (
+            _resolve_guitar(guitar) if guitar else (None, None)
+        )
+        # Flags win; otherwise the recipe's own name becomes the descriptor.
+        if artist or song or descriptor:
+            r_artist, r_song, r_descriptor = artist, song, descriptor
         else:
-            generate_preset(spec_path, output_path, library, irs=irs)
+            r_artist, r_song, r_descriptor = None, None, spec.name
+        try:
+            preset_name = naming.display_name(
+                artist=r_artist, song=r_song, descriptor=r_descriptor,
+                guitar_short=guitar_short,
+            )
+            logical = naming.logical_slug(
+                artist=r_artist, song=r_song, descriptor=r_descriptor,
+            )
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+        variant = naming.variant_slug(logical, guitar_slug)
+
+        libinit.ensure_initialized()
+        tones = home.tones_dir()
+        tones.mkdir(parents=True, exist_ok=True)
+        out = tones / f"{variant}.hsp"
+        if out.exists():
+            raise click.ClickException(
+                f"a tone already exists at {out} -- refusing to overwrite. "
+                f"Rename this one (change --descriptor/--artist/--song or "
+                f"--guitar), or edit the existing .hsp in place."
+            )
+
+        # meta.name carries the resolved display name so auto-register keys by it.
+        spec.name = preset_name
+        data = generate_from_recipe(
+            spec, library, irs=irs, chassis=chassis, source=str(spec_path)
+        )
+        out.write_bytes(data)
+
+        # Metadata JSON (creates or extends the logical tone), then manifest.
+        existing = (
+            tone_meta.load_tone_meta(logical)
+            if tone_meta.meta_path(logical).exists()
+            else None
+        )
+        meta = tone_meta.upsert_variant(
+            existing,
+            artist=r_artist, song=r_song, descriptor=r_descriptor,
+            guitar_slug=guitar_slug, guitar_short=guitar_short,
+            hsp_path=out,
+        )
+        tone_meta.save_tone_meta(meta)  # atomic write + advisory commit
+        _auto_register_tone(out)
+        # One coherent commit sweeps up the manifest write too (advisory).
+        gitops.auto_commit(
+            home.helixgen_home(), f"helixgen: generate tone {variant}"
+        )
+
+        click.echo(f"Wrote {out}")
+        click.echo(f"Preset name: {preset_name}")
+        click.echo(f"Logical tone: {logical}")
     except (KeyError, LookupError, SpecError, ParamValidationError, GenerateError, FileNotFoundError) as e:
         raise click.ClickException(str(e)) from e
-    click.echo(f"Wrote {output_path}")
+
+
+def _resolve_guitar(label: str) -> tuple[str, str]:
+    """Resolve a --guitar label into ``(slug, short_name)``.
+
+    PR 2 seam: the slug is ``naming.slugify(label)`` and the short name is the
+    literal label. PR 3 (guitar profiles) swaps the internals to look the label
+    up as a profile by slug/name/short_name; callers keep this signature.
+    """
+    return naming.slugify(label), label
 
 
 def _auto_register_tone(hsp_path: Path) -> None:
