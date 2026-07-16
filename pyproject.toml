@@ -31,11 +31,22 @@ Issues = "https://github.com/sheax0r/helixgen-core/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
+    "numpy>=1.26",
 ]
 device = [
     "pyzmq>=25",
     "msgpack>=1",
     "paramiko>=3.4",
+]
+# `helixgen analyze-audio` (backlog #62 phase 3): numpy for the LUFS /
+# crest / FFT-band metrics; `capture` adds the EXPERIMENTAL --record path
+# (sounddevice needs the PortAudio system library).
+analyze = [
+    "numpy>=1.26",
+]
+capture = [
+    "numpy>=1.26",
+    "sounddevice>=0.4.6",
 ]
 
 [project.scripts]

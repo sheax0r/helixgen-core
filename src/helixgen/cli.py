@@ -927,6 +927,146 @@ def ir_cache_cmd(stats: bool, clear_: bool, prune: bool) -> None:
     cache.save()
     click.echo(f"Pruned {dropped} missing entr{'y' if dropped == 1 else 'ies'}")
 
+
+@cli.command(name="analyze-audio")
+@click.argument("wav", required=False,
+                type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit one JSON object (the to_dict() contract: "
+                   "lufs_integrated/momentary/short_term, peak/true_peak/"
+                   "rms dBFS, crest_db, clipped, spectral_centroid_hz, "
+                   "bands[], notes[]). Undefined metrics are null, never "
+                   "NaN/-inf.")
+@click.option("--record", "record_seconds", type=float, default=None,
+              metavar="N",
+              help="EXPERIMENTAL: instead of analyzing an existing file, "
+                   "record N seconds from an audio input device (the "
+                   "Stadium is a USB audio interface — route the tone's "
+                   "output to USB and play during the window), write the "
+                   "capture to -o, then analyze it. Requires the capture "
+                   "extra (`pip install 'helixgen[capture]'`; PortAudio). "
+                   "Untested against real hardware.")
+@click.option("-o", "--output", "output_path",
+              type=click.Path(dir_okay=False, path_type=Path), default=None,
+              help="Where --record writes the capture WAV (required with "
+                   "--record; the file is kept for re-analysis).")
+@click.option("--input", "input_device", default=None,
+              help="Input device name or index for --record (default: the "
+                   "system default input). Substring match, e.g. 'Helix'.")
+@click.option("--rate", type=int, default=48000, show_default=True,
+              help="Capture sample rate for --record.")
+@click.option("--channels", type=int, default=2, show_default=True,
+              help="Capture channel count for --record.")
+def analyze_audio_cmd(wav: Path | None, as_json: bool,
+                      record_seconds: float | None, output_path: Path | None,
+                      input_device: str | None, rate: int,
+                      channels: int) -> None:
+    """Measure audio QUALITY metrics from a WAV capture — read-only, offline.
+
+    This is the full-fidelity tier of the loudness feedback loop (backlog
+    #62 phase 3): where `device measure` reads the Stadium's ~10 Hz network
+    meters (loudness only), this analyzes actual audio and reports what the
+    tone MEASURES like, in numbers an agent can compare against intent and
+    turn into `patch` moves. Metrics:
+
+    \b
+      * integrated LUFS per ITU-R BS.1770 (K-weighting, 400 ms blocks with
+        75% overlap, -70 LUFS absolute + -10 LU relative gating), plus
+        momentary (400 ms) and short-term (3 s) maxima. Reference points:
+        a 0 dBFS 1 kHz sine reads -3.01 LUFS on one channel.
+      * crest factor in dB (peak vs RMS) — how compressed/saturated the
+        signal is: a tight modern-metal rhythm sits ~6-10 dB, a clean
+        strum ~15-20 dB. Plus peak dBFS, RMS dBFS, and ~true peak (dBTP,
+        4x oversampled).
+      * FFT band energies over the 5-band guitar vocabulary — low
+        (60-200 Hz, thump), low_mid (200-500, beef/mud), mid (500-1200,
+        body/boxiness), high_mid (1200-4000, presence/harshness), high
+        (4000-10000, fizz/air) — each as a fraction of the 60 Hz-10 kHz
+        total and in relative dB; plus spectral centroid (single-number
+        brightness) and a clipping flag (>=4 consecutive samples at
+        >=0.999 full scale).
+
+    Metrics that are undefined for the input (digital silence, or a file
+    shorter than one 400 ms gating block) come back null with an
+    explanatory note instead of failing — check `notes` before trusting a
+    null; non-finite samples (NaN/Inf, e.g. from a wedged capture driver)
+    are zeroed and counted in `notes`, so --json output is always strictly
+    valid JSON. Band edges are provisional pending reconciliation with the
+    IR catalog's measured-tag pass.
+
+    Analysis needs numpy: `pip install 'helixgen[analyze]'`. Any PCM or
+    IEEE-float WAV at any sample rate is accepted (mono or stereo; stereo
+    sums channel energy per BS.1770, so a dual-mono capture reads ~+3 LU
+    over its mono half). Agents should pass --json and read the structured
+    object rather than parsing the human rendering.
+    """
+    from helixgen import audio_metrics as am
+
+    if record_seconds is not None and wav is not None:
+        raise click.UsageError(
+            "pass a WAV to analyze OR --record N to capture one, not both")
+    if record_seconds is None and wav is None:
+        raise click.UsageError(
+            "nothing to analyze: pass a WAV file, or --record N -o <out.wav> "
+            "to capture from an audio input first")
+
+    try:
+        if record_seconds is not None:
+            if output_path is None:
+                raise click.UsageError(
+                    "--record needs -o <out.wav> (the capture is kept for "
+                    "re-analysis)")
+            device: str | int | None = input_device
+            if isinstance(device, str) and device.lstrip("-").isdigit():
+                device = int(device)
+            if not as_json:
+                click.echo(f"recording {record_seconds:g}s from "
+                           f"{input_device or 'the default input'} — play "
+                           "steadily...", err=True)
+            wav = am.record_wav(output_path, record_seconds, rate=rate,
+                                channels=channels, device=device)
+        metrics = am.analyze_wav(wav)
+    except am.AudioMetricsError as e:
+        raise click.ClickException(str(e)) from e
+
+    if as_json:
+        d = metrics.to_dict()
+        for k, v in d.items():
+            if isinstance(v, float):
+                d[k] = round(v, 2)
+        for band in d["bands"] or ():
+            band["fraction"] = round(band["fraction"], 4)
+            band["db_rel"] = round(band["db_rel"], 1)
+        click.echo(json.dumps(d))
+        return
+
+    def _db(v: float | None, unit: str = "") -> str:
+        return "n/a" if v is None else f"{v:7.2f}{unit}"
+
+    kind = {1: "mono", 2: "stereo"}.get(metrics.channels,
+                                        f"{metrics.channels}ch")
+    click.echo(f"file     : {metrics.file} "
+               f"({metrics.seconds:.2f}s, {metrics.rate} Hz, {kind})")
+    click.echo(f"LUFS     : {_db(metrics.lufs_integrated)} integrated   "
+               f"(momentary max {_db(metrics.lufs_momentary_max).strip()}, "
+               f"short-term max {_db(metrics.lufs_short_term_max).strip()})")
+    click.echo(f"peak     : {_db(metrics.peak_dbfs)} dBFS   "
+               f"(true peak {_db(metrics.true_peak_dbtp).strip()} dBTP)")
+    click.echo(f"RMS      : {_db(metrics.rms_dbfs)} dBFS")
+    click.echo(f"crest    : {_db(metrics.crest_db)} dB")
+    click.echo(f"clipping : {'CLIPPED' if metrics.clipped else 'none'} "
+               f"({metrics.clipped_samples} samples >= 0.999)")
+    if metrics.spectral_centroid_hz is not None:
+        click.echo(f"centroid : {metrics.spectral_centroid_hz:7.0f} Hz")
+    if metrics.bands:
+        for b in metrics.bands:
+            click.echo(f"band     : {b['band']:<9} {b['fraction']*100:5.1f}%  "
+                       f"{b['db_rel']:6.1f} dB  "
+                       f"({b['lo_hz']:.0f}-{b['hi_hz']:.0f} Hz)")
+    for note in metrics.notes:
+        click.echo(f"note     : {note}")
+
+
 # The device verb group lives in `cli_device` (a pure extraction of this
 # module's former `# --- device` section); import it here so `helixgen
 # device ...` registers on the core `cli` group and `helixgen.cli:cli` stays
