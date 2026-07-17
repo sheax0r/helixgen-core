@@ -11,7 +11,8 @@ tagging); different checklist. Command NAMES are all known from the app binary
   select · reorder args · #31 .hss bundle · #33 MIDI CC/Note · #34 XY
 
 Prep (before running):
-  * Helix Stadium app OPEN and CONNECTED to the device (192.168.4.84).
+  * Helix Stadium app OPEN and CONNECTED to the device (find its address
+    with `helixgen device discover`).
   * Load an EXPENDABLE preset for the live-edit steps (or be ready to discard).
   * ~20 minutes.
 

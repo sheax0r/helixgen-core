@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 import click
+from click.core import ParameterSource
 
 from helixgen import gitops, home, ir_meta, libinit, mutate, naming, tone_meta
 from helixgen.bootstrap import bootstrap
@@ -1303,6 +1304,19 @@ def analyze_audio_cmd(wav: Path | None, as_json: bool,
     valid JSON. Band edges are provisional pending reconciliation with the
     IR catalog's measured-tag pass.
 
+    \b
+    Measurement caveats (backlog #84):
+      * The WAV is decoded whole-file into memory (float64) — roughly
+        2.7 GB peak for an hour of 48 kHz stereo. Keep captures to
+        minutes, not hours; there is no streaming mode.
+      * The momentary/short-term LUFS maxima are computed on a 100 ms
+        hop, so a peak straddling two hop positions can under-read by a
+        fraction of a dB. Integrated LUFS is not affected.
+
+    The capture options --input/--rate/--channels apply only to --record;
+    passing any of them without --record is a usage error (they would
+    otherwise be silently ignored).
+
     Analysis needs numpy: `pip install 'helixgen[analyze]'`. Any PCM or
     IEEE-float WAV at any sample rate is accepted (mono or stereo; stereo
     sums channel energy per BS.1770, so a dual-mono capture reads ~+3 LU
@@ -1318,6 +1332,18 @@ def analyze_audio_cmd(wav: Path | None, as_json: bool,
         raise click.UsageError(
             "nothing to analyze: pass a WAV file, or --record N -o <out.wav> "
             "to capture from an audio input first")
+    if record_seconds is None:
+        ctx = click.get_current_context()
+        stray = [flag for flag, param in (("--input", "input_device"),
+                                          ("--rate", "rate"),
+                                          ("--channels", "channels"))
+                 if ctx.get_parameter_source(param)
+                 is ParameterSource.COMMANDLINE]
+        if stray:
+            raise click.UsageError(
+                f"{'/'.join(stray)} only configure --record capture and "
+                "would be silently ignored when analyzing an existing "
+                "file — add --record N -o <out.wav>, or drop them")
 
     try:
         if record_seconds is not None:
