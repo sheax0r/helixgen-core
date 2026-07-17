@@ -38,8 +38,10 @@ written file resolves under ``home.helixgen_home()``, same guard shape as
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -53,12 +55,50 @@ if TYPE_CHECKING:  # avoid a runtime import cycle; only for type hints
 
 @dataclass
 class Variant:
-    """One guitar-targeted realization of a logical tone."""
+    """One guitar-targeted realization of a logical tone.
+
+    ``normalized`` is an OPTIONAL record written by ``device normalize
+    --yes`` when this variant's ``.hsp`` is the file it wrote trims into --
+    proof the tone has been level-matched, and the FULL per-target
+    measurement telemetry of the run::
+
+        {"at": "2026-07-16T12:00:00-07:00",   # ISO timestamp of the run
+         "scope": "snapshots",                 # or "setlist"
+         "target_total_db": 27.96,             # the run's loudness target
+         "tolerance_db": 1.0,                  # the run's dead band
+         "seconds": 20.0,                      # per-target window (--seconds)
+         "helixgen_version": "0.26.0",
+         "targets": [                          # one per measured target,
+             {"snapshot": 0, "name": "Rhythm", # exactly as normalize --json
+              "ok": True, "reason": None,      # reports them ("tone"/"path"
+              "gain_db": 27.96,                # keys in setlist scope)
+              "output_db": -6.0,               # chain-out dBFS: > 0 means
+              "playing_seconds": 5.2,          #   in-chain CLIPPING
+              "output_level_db": 0.0,          # output level in force
+              "total_db": 27.96,               # gain + level (what's matched)
+              "trim_db": 0.0,
+              "applied": False}]}
+
+    The telemetry is the valuable part, not just the trims -- ``output_db``
+    (chain-out dBFS) flags in-chain clipping, which agents use to drive
+    gain-staging fixes. ``targets`` entries are OPEN dicts: the serializers
+    deep-copy the whole record verbatim, so unknown per-target keys (future
+    per-node stats) round-trip without a schema change.
+
+    Latest run wins (overwrite, never append); in-band zero trims still
+    count -- they confirm the tone measures level-matched. The field is a
+    plain optional dict and the schema stays 1: an older reader's
+    ``_variant_from_dict`` simply drops the unknown key (and would drop it
+    on a re-save -- acceptable, the record is re-creatable by re-running
+    normalize), so no version fence is needed for a purely additive,
+    advisory field.
+    """
 
     hsp: str
     preset_name: str
     guitar_settings: Dict[str, str] = field(default_factory=dict)
     notes_md: Optional[str] = None
+    normalized: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -99,15 +139,21 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
         "preset_name": v.preset_name,
         "guitar_settings": dict(v.guitar_settings),
         "notes_md": v.notes_md,
+        # deep copy: the record's nested target entries are OPEN dicts and
+        # must serialize verbatim (unknown per-target keys included)
+        "normalized": copy.deepcopy(v.normalized) if v.normalized else None,
     }
 
 
 def _variant_from_dict(d: Dict[str, Any]) -> Variant:
+    normalized = d.get("normalized")
     return Variant(
         hsp=d["hsp"],
         preset_name=d["preset_name"],
         guitar_settings=dict(d.get("guitar_settings") or {}),
         notes_md=d.get("notes_md"),
+        normalized=(copy.deepcopy(normalized)
+                    if isinstance(normalized, dict) else None),
     )
 
 
@@ -173,7 +219,12 @@ def load_tone_meta(slug: str) -> ToneMeta:
 def load_all_tone_metas() -> List[ToneMeta]:
     """Every tone metadata JSON under ``tones_dir()``. Empty list if the
     directory doesn't exist yet, or is empty. Files that fail to parse are
-    skipped (tolerated, not fatal)."""
+    skipped silently (tolerated, not fatal -- ``library validate`` is the
+    surface that reports them); files that parse but fail to DESERIALIZE
+    (shape-invalid: a variant that isn't a dict, one missing ``hsp``/
+    ``preset_name``, a non-dict top level, ...) are skipped with a stderr
+    warning -- one corrupt file must never break a caller's whole run
+    (``library list``, ``find_variant_by_hsp``, normalize recording)."""
     d = home.tones_dir()
     if not d.is_dir():
         return []
@@ -183,8 +234,41 @@ def load_all_tone_metas() -> List[ToneMeta]:
             data = json.loads(p.read_text())
         except (OSError, ValueError):
             continue
-        metas.append(_meta_from_dict(data))
+        try:
+            metas.append(_meta_from_dict(data))
+        except Exception as e:  # shape-invalid: warn and continue
+            print(f"warning: skipping shape-invalid tone metadata "
+                  f"{p.name}: {e!r}", file=sys.stderr)
+            continue
     return metas
+
+
+def find_variant_by_hsp(hsp_path: Path | str) -> Optional[tuple[ToneMeta, str]]:
+    """The ``(meta, variant_key)`` whose variant ``.hsp`` is ``hsp_path``,
+    or ``None`` when the path is not a registered library variant.
+
+    Each stored ``Variant.hsp`` is resolved per the module's hsp-path
+    convention -- a relative string against ``home.library_dir()``, an
+    absolute string verbatim -- and compared to ``hsp_path`` with both sides
+    fully resolved (symlinks/tmp-dir aliases included). First match wins
+    (a ``.hsp`` belongs to at most one variant in a well-formed library).
+    """
+    try:
+        target = Path(hsp_path).resolve()
+    except OSError:
+        return None
+    library_root = home.library_dir()
+    for meta in load_all_tone_metas():
+        for key, variant in meta.variants.items():
+            p = Path(variant.hsp)
+            if not p.is_absolute():
+                p = library_root / p
+            try:
+                if p.resolve() == target:
+                    return meta, key
+            except OSError:
+                continue
+    return None
 
 
 def save_tone_meta(meta: ToneMeta) -> ToneMeta:

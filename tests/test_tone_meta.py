@@ -501,3 +501,111 @@ def test_guitar_settings_warnings_still_flags_genuinely_unknown_key(tmp_home):
         meta, guitar_profiles={"g1": profile})
     assert len(warnings) == 1
     assert "bogus" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# Variant.normalized (device normalize's library record) + find_variant_by_hsp
+# ---------------------------------------------------------------------------
+
+
+_NORMALIZED = {
+    "at": "2026-07-16T12:00:00-07:00",
+    "scope": "snapshots",
+    "target_total_db": 27.96,
+    "tolerance_db": 1.0,
+    "seconds": 6.0,
+    "helixgen_version": "0.25.0",
+    "targets": [
+        {"snapshot": 0, "name": "Rhythm", "ok": True, "reason": None,
+         "gain_db": 27.96, "output_db": -6.02, "playing_seconds": 5.2,
+         "output_level_db": 0.0, "total_db": 27.96, "trim_db": 0.0,
+         "applied": False,
+         # unknown per-target keys must round-trip verbatim (open dicts):
+         # future per-node stats land here without a schema change
+         "future_per_node_stat": {"b5": -1.0}},
+        {"snapshot": 1, "name": "Lead", "ok": True, "reason": None,
+         "gain_db": 33.98, "output_db": 1.2, "playing_seconds": 5.0,
+         "output_level_db": 0.0, "total_db": 33.98, "trim_db": -6.0,
+         "applied": True},
+    ],
+}
+
+
+def test_variant_normalized_round_trips_through_save_and_load(tmp_home):
+    import copy
+
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].normalized = copy.deepcopy(_NORMALIZED)
+    tone_meta.save_tone_meta(meta)
+    loaded = tone_meta.load_tone_meta(meta.logical_slug)
+    assert loaded.variants["g1"].normalized == _NORMALIZED
+    # target entries are OPEN dicts: unknown per-target keys round-trip
+    assert loaded.variants["g1"].normalized["targets"][0][
+        "future_per_node_stat"] == {"b5": -1.0}
+    # schema stays 1: the field is optional, older readers just drop it
+    assert loaded.schema == 1
+    on_disk = json.loads(tone_meta.meta_path(meta.logical_slug).read_text())
+    assert on_disk["schema"] == 1
+    assert on_disk["variants"]["g1"]["normalized"] == _NORMALIZED
+
+
+def test_variant_normalized_defaults_none_and_absent_key_loads_none(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    assert meta.variants["g1"].normalized is None
+    tone_meta.save_tone_meta(meta)
+    # a pre-existing metadata JSON without the key (older writer) loads None
+    path = tone_meta.meta_path(meta.logical_slug)
+    on_disk = json.loads(path.read_text())
+    on_disk["variants"]["g1"].pop("normalized", None)
+    path.write_text(json.dumps(on_disk))
+    loaded = tone_meta.load_tone_meta(meta.logical_slug)
+    assert loaded.variants["g1"].normalized is None
+
+
+def test_variant_normalized_none_still_validates(tmp_home):
+    meta, manifest = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].normalized = dict(_NORMALIZED)
+    assert tone_meta.validate_tone_meta(
+        meta, tones_dir=home.tones_dir(), manifest=manifest,
+        guitar_slugs=["g1"]) == []
+
+
+def test_find_variant_by_hsp_resolves_library_relative_path(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    tone_meta.save_tone_meta(meta)
+    hsp_abs = home.library_dir() / meta.variants["g1"].hsp
+    found = tone_meta.find_variant_by_hsp(hsp_abs)
+    assert found is not None
+    found_meta, key = found
+    assert key == "g1"
+    assert found_meta.logical_slug == meta.logical_slug
+
+
+def test_find_variant_by_hsp_accepts_str_and_relative_forms(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    tone_meta.save_tone_meta(meta)
+    hsp_abs = home.library_dir() / meta.variants["g1"].hsp
+    assert tone_meta.find_variant_by_hsp(str(hsp_abs)) is not None
+
+
+def test_find_variant_by_hsp_returns_none_for_unknown_path(tmp_home, tmp_path):
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    tone_meta.save_tone_meta(meta)
+    stray = tmp_path / "not-in-library.hsp"
+    stray.write_text("x")
+    assert tone_meta.find_variant_by_hsp(stray) is None
+
+
+def test_find_variant_by_hsp_matches_absolute_stored_path(tmp_home, tmp_path):
+    # a variant whose stored hsp is absolute (outside the library root) is
+    # still resolvable -- _to_library_relative stores such paths verbatim
+    outside = tmp_path / "elsewhere" / "t.hsp"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("x")
+    meta = tone_meta.upsert_variant(
+        None, descriptor="Outside Tone", guitar_slug=None, guitar_short=None,
+        hsp_path=outside)
+    tone_meta.save_tone_meta(meta)
+    found = tone_meta.find_variant_by_hsp(outside)
+    assert found is not None
+    assert found[1] == "generic"
