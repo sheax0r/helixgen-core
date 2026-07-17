@@ -41,6 +41,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -218,7 +219,12 @@ def load_tone_meta(slug: str) -> ToneMeta:
 def load_all_tone_metas() -> List[ToneMeta]:
     """Every tone metadata JSON under ``tones_dir()``. Empty list if the
     directory doesn't exist yet, or is empty. Files that fail to parse are
-    skipped (tolerated, not fatal)."""
+    skipped silently (tolerated, not fatal -- ``library validate`` is the
+    surface that reports them); files that parse but fail to DESERIALIZE
+    (shape-invalid: a variant that isn't a dict, one missing ``hsp``/
+    ``preset_name``, a non-dict top level, ...) are skipped with a stderr
+    warning -- one corrupt file must never break a caller's whole run
+    (``library list``, ``find_variant_by_hsp``, normalize recording)."""
     d = home.tones_dir()
     if not d.is_dir():
         return []
@@ -228,7 +234,12 @@ def load_all_tone_metas() -> List[ToneMeta]:
             data = json.loads(p.read_text())
         except (OSError, ValueError):
             continue
-        metas.append(_meta_from_dict(data))
+        try:
+            metas.append(_meta_from_dict(data))
+        except Exception as e:  # shape-invalid: warn and continue
+            print(f"warning: skipping shape-invalid tone metadata "
+                  f"{p.name}: {e!r}", file=sys.stderr)
+            continue
     return metas
 
 

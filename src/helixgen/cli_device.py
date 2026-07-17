@@ -3165,10 +3165,12 @@ def _normalize_record_library(entries, *, scope, target_total_db,
     per-target result dicts, stored VERBATIM (full measurement telemetry:
     the chain-out dBFS ``output_db`` flags in-chain clipping, which agents
     consume for gain-staging fixes). Non-library paths are silently ignored
-    (no warning spam), and a metadata save failure warns to stderr without
-    failing the normalize run (the trims in the .hsp are the real outcome;
-    the record is advisory and re-creatable). Records overwrite -- latest
-    run wins. Returns the recorded rows for the --json payload."""
+    (no warning spam), and ANY per-entry failure -- variant detection,
+    deserialization, or the metadata save -- warns to stderr without
+    failing the normalize run or its --json report (the trims in the .hsp
+    are the real outcome; the record is advisory and re-creatable). Records
+    overwrite -- latest run wins. Returns the recorded rows for the --json
+    payload."""
     import copy
     from datetime import datetime
 
@@ -3176,29 +3178,36 @@ def _normalize_record_library(entries, *, scope, target_total_db,
 
     recorded = []
     for hsp_path, targets in entries:
-        found = tone_meta.find_variant_by_hsp(hsp_path)
-        if found is None:
-            continue
-        meta, key = found
-        variant = meta.variants[key]
-        variant.normalized = {
-            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "scope": scope,
-            "target_total_db": round(float(target_total_db), 2),
-            "tolerance_db": float(tolerance_db),
-            "seconds": float(seconds),
-            "helixgen_version": __version__,
-            "targets": copy.deepcopy(list(targets)),
-        }
+        # the warning label is computed BEFORE anything that can raise:
+        # identity-derived attributes (meta.logical_slug) themselves raise
+        # ValueError on a hand-corrupted meta, so they must never be
+        # evaluated inside the failure path
+        label = Path(hsp_path).name
         try:
+            found = tone_meta.find_variant_by_hsp(hsp_path)
+            if found is None:
+                continue
+            meta, key = found
+            variant = meta.variants[key]
+            label = variant.preset_name or label
+            variant.normalized = {
+                "at": datetime.now().astimezone().isoformat(
+                    timespec="seconds"),
+                "scope": scope,
+                "target_total_db": round(float(target_total_db), 2),
+                "tolerance_db": float(tolerance_db),
+                "seconds": float(seconds),
+                "helixgen_version": __version__,
+                "targets": copy.deepcopy(list(targets)),
+            }
             tone_meta.save_tone_meta(meta)
-        except (OSError, ValueError) as e:
+            recorded.append({"tone": meta.logical_slug, "variant": key,
+                             "preset_name": variant.preset_name,
+                             "path": str(hsp_path)})
+        except Exception as e:
             click.echo(f"warning: could not record normalization on library "
-                       f"tone {meta.logical_slug!r}: {e}", err=True)
+                       f"tone for {label!r}: {e}", err=True)
             continue
-        recorded.append({"tone": meta.logical_slug, "variant": key,
-                         "preset_name": variant.preset_name,
-                         "path": str(hsp_path)})
     return recorded
 
 

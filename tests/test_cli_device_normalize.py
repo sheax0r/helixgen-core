@@ -624,6 +624,119 @@ def test_normalize_json_dry_run_library_recorded_empty(
     assert payload["library_recorded"] == []
 
 
+def test_normalize_save_failure_warns_and_reports_empty_recorded(
+        monkeypatch, library_preset):
+    # review pin: a save_tone_meta failure during recording is advisory --
+    # the run still exits 0, warns to stderr, and --json reports
+    # library_recorded: [] (the written trims are the real outcome)
+    from helixgen import tone_meta
+    _patch(monkeypatch, GAINS)
+
+    def boom(meta):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tone_meta, "save_tone_meta", boom)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--yes", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "could not record" in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["library_recorded"] == []
+    assert payload["written"] == [str(library_preset)]
+
+
+def test_normalize_corrupt_sibling_tone_meta_never_breaks_the_run(
+        monkeypatch, library_preset):
+    # regression (review finding 1): a corrupt-but-PARSEABLE tone JSON
+    # anywhere in library/tones/ -- valid JSON, invalid shape -- used to
+    # crash normalize --yes AFTER the trims were written, killing the
+    # --json report. Shape-invalid files must be skipped with a stderr
+    # warning; the matching tone still records.
+    from helixgen import home
+    _patch(monkeypatch, GAINS)
+    tones = home.tones_dir()
+    # variant value is a string -> AttributeError in _variant_from_dict
+    (tones / "corrupt-a.json").write_text(
+        json.dumps({"variants": {"generic": "not-a-dict"}}))
+    # variant dict missing "hsp" -> KeyError in _variant_from_dict
+    (tones / "corrupt-b.json").write_text(
+        json.dumps({"variants": {"generic": {"preset_name": "X"}}}))
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--yes", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "corrupt-a.json" in result.stderr
+    assert "corrupt-b.json" in result.stderr
+    payload = json.loads(result.stdout)          # the report stays intact
+    assert payload["written"] == [str(library_preset)]
+    assert payload["library_recorded"] == [
+        {"tone": "snapshots-corpus", "variant": "generic",
+         "preset_name": "Snapshots Corpus", "path": str(library_preset)}]
+    assert _library_normalized() is not None
+
+
+def test_normalize_invalid_identity_meta_warns_and_completes(
+        monkeypatch, library_preset):
+    # regression (review finding 2): a matching meta whose IDENTITY is
+    # broken (artist set, song null) loads fine but save_tone_meta raises
+    # ValueError from meta_path(meta.logical_slug) -- and the old warning
+    # handler evaluated meta.logical_slug!r AGAIN, so the same ValueError
+    # escaped during exception handling. The warning must use a safe label
+    # and the run must complete with its --json report intact.
+    from helixgen import home
+    _patch(monkeypatch, GAINS)
+    p = home.tones_dir() / "snapshots-corpus.json"
+    data = json.loads(p.read_text())
+    data["artist"] = "Somebody"                  # song stays null -> invalid
+    p.write_text(json.dumps(data))
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--yes", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "could not record" in result.stderr
+    assert "Snapshots Corpus" in result.stderr   # the safe label
+    payload = json.loads(result.stdout)
+    assert payload["written"] == [str(library_preset)]
+    assert payload["library_recorded"] == []
+
+
+def test_normalize_setlist_mixed_ok_and_skip_records_ok_variants(
+        monkeypatch, library_preset, tmp_path):
+    # review pin: setlist scope with MIXED ok/skipped targets still records
+    # the measured-ok tones' variants (per-tone granularity) AND still
+    # exits 1 for the partial run
+    from helixgen.device import observations
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    name = m.add_tone("LibGig", library_preset)
+    other = tmp_path / "OtherTone.hsp"
+    shutil.copy(harness.CORPUS_DIR / "goldfinger.hsp", other)
+    name_other = m.add_tone("LibGig", other)
+    m.save()
+    obs = observations.load_observations("FAKE123")
+    obs.tones[name] = {"cid": 201, "posi": 0}
+    # name_other gets NO observed placement -> SKIPPED
+    observations.save_observations(obs)
+    _patch(monkeypatch, {("cid", 201): 0.5}, names={201: name})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", "--setlist", "LibGig",
+              "--seconds", "6", "--target-db", "30", "--yes", "--json"])
+    assert result.exit_code == 1                 # partial: a target skipped
+    payload = json.loads(result.stdout)
+    by_tone = {t["tone"]: t for t in payload["targets"]}
+    assert by_tone[name]["ok"] is True
+    assert by_tone[name_other]["ok"] is False
+    assert [r["tone"] for r in payload["library_recorded"]] == [
+        "snapshots-corpus"]
+    rec = _library_normalized()
+    assert rec is not None
+    assert rec["scope"] == "setlist"
+    assert len(rec["targets"]) == 1
+    assert rec["targets"][0]["tone"] == name
+
+
 def test_normalize_setlist_records_base_trim_on_library_variant(
         monkeypatch, library_preset, _isolated_git_env):
     from helixgen.device import observations
