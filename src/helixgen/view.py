@@ -206,6 +206,24 @@ def _lift_input(path_dict: dict, device_id: Any, body: dict) -> "str | dict | No
     return {"source": mode, **lifts}
 
 
+def _output_base(wrapped: Any) -> Any:
+    """The projection-consistent BASE of a b13 gain/pan wrapper: slot 0 of a
+    per-snapshot `snapshots` array when one is present, else the plain
+    `value`. The wrapper's `value` mirrors whatever snapshot was ACTIVE when
+    the preset was saved (`mutate._write_snapshot_slot` re-syncs it; device
+    exports do the same), while regenerate always re-syncs `value` to
+    snaps[0] and `activesnapshot` to 0 — so snaps[0], not `value`, is the
+    base that makes the projection a fixed point (#76 review F1)."""
+    if not isinstance(wrapped, dict):
+        return None
+    snaps = wrapped.get("snapshots")
+    if (isinstance(snaps, list) and snaps
+            and isinstance(snaps[0], (int, float))
+            and not isinstance(snaps[0], bool)):
+        return snaps[0]
+    return _unwrap_value(wrapped)
+
+
 def _lift_output(path_dict: dict) -> dict | None:
     """The path's `output` field: `{"level", "pan"}` for whichever of the
     lane-0 output endpoint's gain/pan differ from the device defaults
@@ -218,11 +236,11 @@ def _lift_output(path_dict: dict) -> dict | None:
     params = b13["slot"][0].get("params") or {}
     out: dict[str, Any] = {}
     if "gain" in params:
-        g = _unwrap_value(params["gain"])
+        g = _output_base(params["gain"])
         if isinstance(g, (int, float)) and _flow_differs(g, 0.0):
             out["level"] = g
     if "pan" in params:
-        p = _unwrap_value(params["pan"])
+        p = _output_base(params["pan"])
         if isinstance(p, (int, float)) and _flow_differs(p, 0.5):
             out["pan"] = p
     return out or None
@@ -401,16 +419,45 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
             if not (isinstance(wrapped, dict)
                     and isinstance(wrapped.get("snapshots"), list)):
                 continue
-            base = _unwrap_value(wrapped)
+            # Base = snaps[0] (see _output_base): the wrapper's `value`
+            # mirrors the save-time ACTIVE snapshot, which regenerate resets
+            # to 0 — comparing against it would invert the lift for a preset
+            # saved on another snapshot and destabilize the projection.
+            base = _output_base(wrapped)
             if not isinstance(base, (int, float)) or isinstance(base, bool):
                 continue
             for i, ov in enumerate(wrapped["snapshots"]):
-                if i >= len(names) or ov is None:
+                if ov is None:
                     continue
                 if not isinstance(ov, (int, float)) or isinstance(ov, bool):
                     continue
                 if not _flow_differs(ov, base):
                     continue  # phantom: densify-filled base value
+                if i >= len(names):
+                    # A genuine override parked on a placeholder-named slot
+                    # has no named snapshot to attach to — same named-range
+                    # scoping as user-block params, but say so: regenerating
+                    # this projection rebuilds the array and loses the slot.
+                    print(
+                        f"warning: path {pi} output {fieldname!r} carries a "
+                        f"per-snapshot override on unnamed snapshot slot "
+                        f"{i}; not liftable (regenerating this projection "
+                        f"will drop it — name the snapshot to keep it).",
+                        file=sys.stderr,
+                    )
+                    continue
+                try:
+                    flowparams.validate_output_field(fieldname, ov)
+                except ValueError:
+                    # Out-of-device-range junk (hand-edited .hsp): lifting it
+                    # would make parse_spec reject view's own projection.
+                    print(
+                        f"warning: path {pi} output {fieldname!r} snapshot "
+                        f"slot {i} value {ov!r} is outside the device range; "
+                        f"not lifted.",
+                        file=sys.stderr,
+                    )
+                    continue
                 outputs[i].setdefault(pi, {})[fieldname] = ov
 
     snaps: list[dict[str, Any]] = []

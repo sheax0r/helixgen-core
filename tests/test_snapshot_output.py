@@ -244,13 +244,57 @@ class TestViewLift:
             {"path": 1, "level": -6.0},
         ]
 
-    def test_beyond_named_range_not_lifted(self, snapshots_body, library):
+    def test_beyond_named_range_not_lifted_and_warns(
+            self, snapshots_body, library, capsys):
         # snapshots.hsp names 3 snapshots; an override parked on slot 5
-        # (placeholder range) has no named snapshot to attach to.
+        # (placeholder range) has no named snapshot to attach to — the lift
+        # skips it LOUDLY (regeneration would drop it; review F2).
         mutate.set_flow_param(snapshots_body, "output", "level", -9.0,
                               path=0, snapshot=5)
         projection = view.view(snapshots_body, library)
         assert all("output" not in s for s in projection["snapshots"])
+        assert "unnamed snapshot slot 5" in capsys.readouterr().err
+
+    def test_out_of_range_slot_not_lifted_projection_stays_parseable(
+            self, snapshots_body, library, capsys):
+        # A hand-edited .hsp with an out-of-device-range slot: lifting it
+        # would make parse_spec reject view's own projection (review F3).
+        gain = _gain(snapshots_body)
+        gain["snapshots"] = [0.0, -130.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        projection = view.view(snapshots_body, library)
+        assert "output" not in projection["snapshots"][1]
+        assert "outside the device range" in capsys.readouterr().err
+        parse_spec(projection)  # never emit an unparseable projection
+
+    def test_export_saved_on_nonzero_active_snapshot(
+            self, snapshots_body, library):
+        # A device export saved while snapshot 1 was active: the wrapper's
+        # `value` mirrors snaps[1], not the densify fill. The lift base must
+        # be snaps[0] (what regenerate re-syncs value/activesnapshot to), or
+        # the override reads as base and the fills read as overrides,
+        # poisoning the placeholder slots on regeneration (review F1).
+        mutate.set_flow_param(snapshots_body, "output", "level", -4.5,
+                              path=0, snapshot=1)
+        snapshots_body["preset"]["params"]["activesnapshot"] = 1
+        gain = _gain(snapshots_body)
+        gain["value"] = gain["snapshots"][1]
+        projection = view.view(snapshots_body, library)
+        assert projection["snapshots"][1]["output"] == {"level": -4.5}
+        assert projection["paths"][0].get("output") is None
+        body2 = apply_recipe(projection, library,
+                             chassis=library.load_chassis(), source="test")
+        assert _gain(body2)["snapshots"] == [0.0, -4.5, 0.0, 0.0,
+                                             0.0, 0.0, 0.0, 0.0]
+        # Regeneration normalizes the save-time active-snapshot residue
+        # (wrapper `value` -> snaps[0], activesnapshot -> 0, carried in the
+        # verbatim structural b13); after that one-time normalization the
+        # projection is a fixed point.
+        assert _gain(body2)["value"] == 0.0
+        projection2 = view.view(body2, library)
+        assert projection2["snapshots"][1]["output"] == {"level": -4.5}
+        body3 = apply_recipe(projection2, library,
+                             chassis=library.load_chassis(), source="test")
+        assert view.view(body3, library) == projection2
 
 
 # --- round trips ---------------------------------------------------------------
