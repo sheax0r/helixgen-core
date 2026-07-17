@@ -386,6 +386,91 @@ def test_device_slots_restore_named_setlist_requires_pos(monkeypatch, tmp_path):
     assert "--pos" in result.output and "POOL position" in result.output
 
 
+def _seed_v2_manifest(tmp_path, monkeypatch, *, name="T", slot="3A"):
+    """A minimal v2 manifest with one .sbe-sourced tone, env-isolated."""
+    sbe = tmp_path / "t.sbe"
+    sbe.write_bytes(b"_sbepgsm-fake")
+    manifest = tmp_path / "setlists.json"
+    manifest.write_text(json.dumps({
+        "version": 2,
+        "tones": {name: {"path": str(sbe), "content_hash": None, "doc": None,
+                         "source": "push", "slot": slot, "device": None}},
+        "setlists": {},
+    }))
+    monkeypatch.setenv("HELIXGEN_SETLISTS", str(manifest))
+
+
+class OccupiedSetlistFake(SetlistFakeClient):
+    """SetlistFakeClient whose setlist position 0 is occupied (the REFS[0]
+    reference); every other position reads empty."""
+
+    def find_by_pos(self, container, pos, *, strict=False):
+        self.calls.append(("find_by_pos", container, pos, strict))
+        if container == self.SETLIST_CID and pos == 0:
+            return dict(self.REFS[0])
+        return None
+
+
+def test_device_slots_restore_force_refuses_occupied_setlist_pos(
+        monkeypatch, tmp_path):
+    """Backlog #69: --force must NOT stack a second reference at an occupied
+    named-setlist position — the outcome on the device is uncataloged. The
+    refusal happens before ANY device write (no pool push, no reference)."""
+    _seed_v2_manifest(tmp_path, monkeypatch)
+    holder = {}
+
+    class Recorder(OccupiedSetlistFake):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway",
+              "--pos", "0", "--force"])
+    assert result.exit_code != 0
+    assert "#69" in result.output
+    assert "already holds a reference" in result.output
+    assert "device delete 5001 --setlist 'Throwaway'" in result.output
+    calls = holder["client"].calls
+    assert not any(c[0] == "push_to_slot" for c in calls)
+    assert not any(c[0] == "reference_into_setlist" for c in calls)
+
+
+def test_device_slots_restore_occupied_setlist_pos_still_refused_without_force(
+        monkeypatch, tmp_path):
+    """The non-force refusal of an occupied setlist position is unchanged."""
+    _seed_v2_manifest(tmp_path, monkeypatch)
+    _patch_client(monkeypatch, OccupiedSetlistFake)
+    result = CliRunner().invoke(
+        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway",
+              "--pos", "0"])
+    assert result.exit_code != 0
+    assert "not empty" in result.output
+
+
+def test_device_slots_restore_force_into_free_setlist_pos_proceeds(
+        monkeypatch, tmp_path):
+    """--force at a FREE named-setlist position stays allowed (it is a no-op
+    there): content pools at the lowest empty posi + a reference is added."""
+    _seed_v2_manifest(tmp_path, monkeypatch)
+    holder = {}
+
+    class Recorder(OccupiedSetlistFake):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway",
+              "--pos", "3", "--force"])
+    assert result.exit_code == 0, result.output
+    calls = holder["client"].calls
+    assert ("push_to_slot", -2, 7, "T") in calls
+    assert ("reference_into_setlist", 816, 900, 3) in calls
+
+
 def test_device_write_verbs_refuse_factory(monkeypatch):
     _patch_client(monkeypatch, FakeClient)
     result = CliRunner().invoke(
