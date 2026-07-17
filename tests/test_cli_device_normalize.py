@@ -459,3 +459,172 @@ def test_normalize_setlist_unknown_setlist(monkeypatch, gig_setlist):
         cli, ["device", "normalize", "--setlist", "Nope"])
     assert result.exit_code != 0
     assert "Nope" in result.output
+
+
+# --- library metadata recording (`normalized` on the tone's variant) ---------
+
+
+@pytest.fixture
+def _isolated_git_env(tmp_path, monkeypatch):
+    """save_tone_meta advisory-commits under the tmp home -- keep git hermetic
+    (mirrors tests/test_library_group.py)."""
+    monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
+    monkeypatch.delenv("HELIXGEN_GIT_COMMIT_TONES", raising=False)
+    fake_home = tmp_path / "_fake_home_for_git"
+    fake_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL",
+                       str(fake_home / "gitconfig-does-not-exist"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture
+def library_preset(tmp_path, _isolated_git_env):
+    """The snapshots corpus preset registered as a LIBRARY variant: its .hsp
+    lives under library/tones/ and a tone metadata JSON points at it."""
+    from helixgen import home, tone_meta
+
+    tones = home.tones_dir()
+    tones.mkdir(parents=True, exist_ok=True)
+    dst = tones / "snapshots-corpus.hsp"
+    shutil.copy(harness.CORPUS_DIR / "snapshots.hsp", dst)
+    meta = tone_meta.upsert_variant(
+        None, descriptor="Snapshots Corpus", guitar_slug=None,
+        guitar_short=None, hsp_path=dst)
+    tone_meta.save_tone_meta(meta)
+    return dst
+
+
+def _library_normalized(variant_key="generic"):
+    from helixgen import tone_meta
+    meta = tone_meta.load_tone_meta("snapshots-corpus")
+    return meta.variants[variant_key].normalized
+
+
+def test_normalize_yes_records_normalized_on_library_variant(
+        monkeypatch, library_preset):
+    from helixgen import __version__
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--yes"])
+    assert result.exit_code == 0, result.output
+    rec = _library_normalized()
+    assert rec is not None
+    assert rec["scope"] == "snapshots"
+    assert rec["target_total_db"] == pytest.approx(27.96, abs=0.01)
+    assert rec["tolerance_db"] == 1.0
+    # every named snapshot is in trims_db -- in-band zero trims included
+    assert rec["trims_db"] == {"Rhythm": 0.0, "Lead": -6.0, "Clean": 0.0}
+    assert rec["helixgen_version"] == __version__
+    assert rec["at"].startswith("20")            # ISO timestamp
+    assert "recorded in library" in result.output
+
+
+def test_normalize_dry_run_never_writes_library_metadata(
+        monkeypatch, library_preset):
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert _library_normalized() is None
+
+
+def test_normalize_all_in_band_still_records_confirmation(
+        monkeypatch, library_preset):
+    # a --yes run whose trims are ALL in band writes no .hsp but still
+    # records: zero trims confirm the tone is level-matched
+    _patch(monkeypatch, {("snap", 0): 0.5, ("snap", 1): 0.5,
+                         ("snap", 2): 0.5})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "nothing to write" in result.output
+    rec = _library_normalized()
+    assert rec is not None
+    assert rec["trims_db"] == {"Rhythm": 0.0, "Lead": 0.0, "Clean": 0.0}
+
+
+def test_normalize_partial_run_records_nothing(monkeypatch, library_preset):
+    # a SKIPPED snapshot means the tone was NOT fully level-matched
+    _patch(monkeypatch, {**GAINS, ("snap", 2): "hum"})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--yes"])
+    assert result.exit_code == 1
+    assert _library_normalized() is None
+
+
+def test_normalize_rerun_overwrites_record(monkeypatch, library_preset):
+    _patch(monkeypatch, GAINS)
+    args = ["device", "normalize", str(library_preset), "--seconds", "6",
+            "--yes"]
+    assert CliRunner().invoke(cli, args).exit_code == 0
+    first = _library_normalized()
+    assert first["trims_db"]["Lead"] == -6.0
+    # second run: same telemetry, trims now in band -> record OVERWRITTEN
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    rec = _library_normalized()
+    assert rec["trims_db"] == {"Rhythm": 0.0, "Lead": 0.0, "Clean": 0.0}
+
+
+def test_normalize_non_library_hsp_records_nothing(monkeypatch, preset):
+    from helixgen import tone_meta
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert tone_meta.load_all_tone_metas() == []
+    assert "recorded in library" not in result.output
+
+
+def test_normalize_json_reports_library_recorded(monkeypatch, library_preset):
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--yes", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["library_recorded"] == [
+        {"tone": "snapshots-corpus", "variant": "generic",
+         "preset_name": "Snapshots Corpus", "path": str(library_preset)}]
+    # the pre-existing shape is intact
+    assert payload["scope"] == "snapshots"
+    assert payload["written"] == [str(library_preset)]
+
+
+def test_normalize_json_dry_run_library_recorded_empty(
+        monkeypatch, library_preset):
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["library_recorded"] == []
+
+
+def test_normalize_setlist_records_base_trim_on_library_variant(
+        monkeypatch, library_preset, _isolated_git_env):
+    from helixgen.device import observations
+    from helixgen.device.manifest import SetlistManifest
+
+    m = SetlistManifest.load()
+    name = m.add_tone("LibGig", library_preset)
+    m.save()
+    obs = observations.load_observations("FAKE123")
+    obs.tones[name] = {"cid": 201, "posi": 0}
+    observations.save_observations(obs)
+    _patch(monkeypatch, {("cid", 201): 0.5}, names={201: name})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", "--setlist", "LibGig",
+              "--seconds", "6", "--target-db", "30", "--yes"])
+    assert result.exit_code == 0, result.output
+    rec = _library_normalized()
+    assert rec is not None
+    assert rec["scope"] == "setlist"
+    assert rec["target_total_db"] == 30.0
+    # setlist scope shifts the whole preset -> one BASE trim
+    assert rec["trims_db"] == {"BASE": pytest.approx(2.0)}

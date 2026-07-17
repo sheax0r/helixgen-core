@@ -164,6 +164,10 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   are dB-exact but sit downstream of every meter tap, so the loop trusts
   the math (deliberately never re-measures to confirm). Holds `editbuffer`
   even in dry-run (it recalls snapshots / loads presets while measuring).
+  A `--yes` run whose `.hsp` is a registered library variant also records
+  a `normalized` record (timestamp, scope, target, trims) on that
+  variant's tone metadata — latest run wins, in-band zero trims still
+  record, dry-run never writes metadata; see `library show` / `describe`.
 - **Global Settings + Global EQ:** `device settings list|get|set` (161 `global.*`
   keys; enum labels validated) and `device globaleq list|set <output> <band>
   <param> <value>` (three per-output-layer 7-band EQs; **write-only** — no

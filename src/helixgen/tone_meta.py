@@ -53,12 +53,34 @@ if TYPE_CHECKING:  # avoid a runtime import cycle; only for type hints
 
 @dataclass
 class Variant:
-    """One guitar-targeted realization of a logical tone."""
+    """One guitar-targeted realization of a logical tone.
+
+    ``normalized`` is an OPTIONAL record written by ``device normalize
+    --yes`` when this variant's ``.hsp`` is the file it wrote trims into --
+    proof the tone has been level-matched, and what was done::
+
+        {"at": "2026-07-16T12:00:00-07:00",       # ISO timestamp of the run
+         "scope": "snapshots",                     # or "setlist"
+         "target_total_db": 27.96,                 # the run's loudness target
+         "tolerance_db": 1.0,                      # the run's dead band
+         "trims_db": {"Rhythm": 0.0, "Lead": -6.0},  # per-snapshot, or
+                                                      # {"BASE": x} (setlist)
+         "helixgen_version": "0.26.0"}
+
+    Latest run wins (overwrite, never append); in-band zero trims still
+    count -- they confirm the tone measures level-matched. The field is a
+    plain optional dict and the schema stays 1: an older reader's
+    ``_variant_from_dict`` simply drops the unknown key (and would drop it
+    on a re-save -- acceptable, the record is re-creatable by re-running
+    normalize), so no version fence is needed for a purely additive,
+    advisory field.
+    """
 
     hsp: str
     preset_name: str
     guitar_settings: Dict[str, str] = field(default_factory=dict)
     notes_md: Optional[str] = None
+    normalized: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -99,15 +121,18 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
         "preset_name": v.preset_name,
         "guitar_settings": dict(v.guitar_settings),
         "notes_md": v.notes_md,
+        "normalized": dict(v.normalized) if v.normalized else None,
     }
 
 
 def _variant_from_dict(d: Dict[str, Any]) -> Variant:
+    normalized = d.get("normalized")
     return Variant(
         hsp=d["hsp"],
         preset_name=d["preset_name"],
         guitar_settings=dict(d.get("guitar_settings") or {}),
         notes_md=d.get("notes_md"),
+        normalized=dict(normalized) if isinstance(normalized, dict) else None,
     )
 
 
@@ -185,6 +210,34 @@ def load_all_tone_metas() -> List[ToneMeta]:
             continue
         metas.append(_meta_from_dict(data))
     return metas
+
+
+def find_variant_by_hsp(hsp_path: Path | str) -> Optional[tuple[ToneMeta, str]]:
+    """The ``(meta, variant_key)`` whose variant ``.hsp`` is ``hsp_path``,
+    or ``None`` when the path is not a registered library variant.
+
+    Each stored ``Variant.hsp`` is resolved per the module's hsp-path
+    convention -- a relative string against ``home.library_dir()``, an
+    absolute string verbatim -- and compared to ``hsp_path`` with both sides
+    fully resolved (symlinks/tmp-dir aliases included). First match wins
+    (a ``.hsp`` belongs to at most one variant in a well-formed library).
+    """
+    try:
+        target = Path(hsp_path).resolve()
+    except OSError:
+        return None
+    library_root = home.library_dir()
+    for meta in load_all_tone_metas():
+        for key, variant in meta.variants.items():
+            p = Path(variant.hsp)
+            if not p.is_absolute():
+                p = library_root / p
+            try:
+                if p.resolve() == target:
+                    return meta, key
+            except OSError:
+                continue
+    return None
 
 
 def save_tone_meta(meta: ToneMeta) -> ToneMeta:

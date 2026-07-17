@@ -164,6 +164,20 @@ def _tone_summary(meta: tone_meta.ToneMeta) -> Dict[str, Any]:
     }
 
 
+def _normalized_brief(rec: Dict[str, Any]) -> str:
+    """One-line rendering of a variant's ``normalized`` record (written by
+    ``device normalize --yes``): date, non-zero trim count (or "in band"
+    when every trim was zero -- still a level-match confirmation), scope."""
+    at = str(rec.get("at") or "")[:10]
+    trims = rec.get("trims_db") or {}
+    n = sum(1 for v in trims.values() if v)
+    detail = f"{n} trim{'s' if n != 1 else ''}" if n else "in band"
+    scope = rec.get("scope")
+    suffix = f", {scope}" if scope else ""
+    head = f"normalized {at}" if at else "normalized"
+    return f"{head} ({detail}{suffix})"
+
+
 def _guitar_summary(p: "guitars.GuitarProfile") -> Dict[str, Any]:
     """The JSON shape for one guitar in ``library list --json``: slug, full
     name, display short_name, and type."""
@@ -302,9 +316,11 @@ def show_cmd(name: str, as_json: bool) -> None:
     NAME is resolved as a TONE first (logical slug, the metadata filename
     ``<slug>.json``, or any variant's ``preset_name``); if no tone matches it
     is then tried as a GUITAR profile (slug / name / short_name). An unknown
-    or ambiguous NAME exits 1. Human output is a compact summary; --json dumps
-    the exact bytes stored on disk (the tone or guitar JSON). See also the
-    top-level `describe` command for a longer, human-oriented write-up.
+    or ambiguous NAME exits 1. Human output is a compact summary -- each
+    variant line notes its `normalized` record (written by `device normalize
+    --yes`: date, trim count or "in band", scope) when one exists; --json
+    dumps the exact bytes stored on disk (the tone or guitar JSON). See also
+    the top-level `describe` command for a longer, human-oriented write-up.
     """
     tone_slug = None
     tone_error: click.ClickException | None = None
@@ -323,7 +339,9 @@ def show_cmd(name: str, as_json: bool) -> None:
         click.echo(f"Description: {'set' if meta.description_md else '(none)'}")
         click.echo(f"Variants ({len(meta.variants)}):")
         for key, variant in meta.variants.items():
-            click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]")
+            norm = (f"  -- {_normalized_brief(variant.normalized)}"
+                    if variant.normalized else "")
+            click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]{norm}")
         return
 
     # Not a tone -- try a guitar profile (slug / name / short_name).
@@ -885,7 +903,9 @@ def describe(tone: str) -> None:
     TONE resolves the same way as `library show` (logical slug, metadata
     filename, or any variant's preset_name; unknown/ambiguous exits 1). The
     header is "Artist - Song" or the descriptor; a variants table lists each
-    variant's guitar key, preset_name, and guitar_settings; the tone's full
+    variant's guitar key, preset_name, guitar_settings, and (when `device
+    normalize --yes` has recorded one) a brief `normalized` line -- date,
+    trim count or "in band", scope; the tone's full
     `description_md` (if set) follows verbatim below a blank line -- this is
     the human-oriented counterpart to `library show`'s compact summary /
     raw --json dump.
@@ -902,6 +922,8 @@ def describe(tone: str) -> None:
         click.echo(f"  {key}")
         click.echo(f"    preset_name: {variant.preset_name}")
         click.echo(f"    guitar_settings: {settings if settings else '(none)'}")
+        if variant.normalized:
+            click.echo(f"    {_normalized_brief(variant.normalized)}")
 
     if meta.description_md:
         click.echo("")

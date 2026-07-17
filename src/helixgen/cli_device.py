@@ -3156,6 +3156,47 @@ def _normalize_plan(results, target_total, tolerance_db):
         r["applied"] = False
 
 
+def _normalize_record_library(entries, *, scope, target_total_db,
+                              tolerance_db):
+    """Upsert a ``normalized`` record onto every fully-normalized ``.hsp``
+    that is a registered tone-library variant (resolved via the library's
+    tone metadata -- see ``tone_meta.find_variant_by_hsp``). ``entries`` is
+    ``(hsp_path, trims_db)`` pairs; non-library paths are silently ignored
+    (no warning spam), and a metadata save failure warns to stderr without
+    failing the normalize run (the trims in the .hsp are the real outcome;
+    the record is advisory and re-creatable). Records overwrite -- latest
+    run wins. Returns the recorded rows for the --json payload."""
+    from datetime import datetime
+
+    from helixgen import __version__, tone_meta
+
+    recorded = []
+    for hsp_path, trims in entries:
+        found = tone_meta.find_variant_by_hsp(hsp_path)
+        if found is None:
+            continue
+        meta, key = found
+        variant = meta.variants[key]
+        variant.normalized = {
+            "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "scope": scope,
+            "target_total_db": round(float(target_total_db), 2),
+            "tolerance_db": float(tolerance_db),
+            "trims_db": {k: float(v) for k, v in trims.items()},
+            "helixgen_version": __version__,
+        }
+        try:
+            tone_meta.save_tone_meta(meta)
+        except (OSError, ValueError) as e:
+            click.echo(f"warning: could not record normalization on library "
+                       f"tone {meta.logical_slug!r}: {e}", err=True)
+            continue
+        recorded.append({"tone": meta.logical_slug, "variant": key,
+                         "preset_name": variant.preset_name,
+                         "path": str(hsp_path)})
+    return recorded
+
+
 @device.command(name="normalize")
 @click.argument("preset", required=False,
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -3236,6 +3277,18 @@ def device_normalize(preset: Path | None, setlist: str | None,
     UPSTREAM of the output block's gain, so the trim is INVISIBLE to
     `device measure`: the loop trusts the dB math and deliberately does NOT
     re-measure to confirm (a re-measure would falsely report "no change").
+
+    When a --yes run's .hsp is a registered tone-library variant (its path
+    resolves to a variant in the library's tone metadata), the run is also
+    RECORDED on that variant as a `normalized` record — timestamp, scope,
+    target total, tolerance, and the per-target trims (in-band zero trims
+    included: a zero-trim run still confirms the tone measures
+    level-matched). Records overwrite: latest run wins. A snapshot-scope
+    run with any SKIPPED target records nothing (the tone was not fully
+    level-matched); setlist scope records each measured-ok tone.
+    Non-library .hsp files are untouched, and dry-run never writes metadata.
+    See it via `library show <name>` / `describe <tone>`; --json reports
+    the records under "library_recorded".
     """
     HelixClient, HelixError = _client()
     from helixgen.device import normalize as NZ
@@ -3448,6 +3501,27 @@ def device_normalize(preset: Path | None, setlist: str | None,
     for w in warnings:
         say(f"warning: {w}")
 
+    # library recording: a --yes run whose .hsp is a registered library
+    # variant gets a `normalized` record on that variant's tone metadata
+    # (in-band zero trims included -- they confirm level-match). Snapshot
+    # scope records only a COMPLETE run (any skipped snapshot means the
+    # tone was not fully level-matched); setlist scope records per tone.
+    # Dry-run never writes metadata.
+    library_recorded: list[dict] = []
+    if yes:
+        if scope == "snapshots":
+            if results and all(r.get("ok") for r in results):
+                trims = {r["name"]: (r["trim_db"] or 0.0) for r in results}
+                library_recorded = _normalize_record_library(
+                    [(str(preset), trims)], scope=scope,
+                    target_total_db=target, tolerance_db=tolerance_db)
+        else:
+            entries = [(r["path"], {"BASE": r["trim_db"] or 0.0})
+                       for r in results if r.get("ok")]
+            library_recorded = _normalize_record_library(
+                entries, scope=scope, target_total_db=target,
+                tolerance_db=tolerance_db)
+
     skipped = [r for r in results if not r.get("ok")]
     if as_json:
         payload.update({
@@ -3457,6 +3531,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
             "dry_run": not yes,
             "targets": results,
             "written": written,
+            "library_recorded": library_recorded,
         })
         click.echo(json.dumps(payload, indent=2))
     else:
@@ -3490,6 +3565,9 @@ def device_normalize(preset: Path | None, setlist: str | None,
                     "(deliberately NOT re-measured).")
             else:
                 click.echo("nothing to write (every target in band or skipped)")
+            for rec in library_recorded:
+                click.echo(f"recorded in library: {rec['tone']} "
+                           f"(variant {rec['variant']})")
         else:
             click.echo("dry-run: no trims written — re-run with --yes to "
                        "write them into the .hsp")

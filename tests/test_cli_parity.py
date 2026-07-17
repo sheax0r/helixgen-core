@@ -252,7 +252,12 @@ NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
       # C1/I1 (2026-07-16 review): trims equalize TOTAL loudness (gain +
       # output level -> idempotent re-runs), and the measured preset's
       # identity is verified before anything is written
-      "TOTAL loudness", "IDEMPOTENT", "verified"]),
+      "TOTAL loudness", "IDEMPOTENT", "verified",
+      # library recording: a --yes run whose .hsp is a registered library
+      # variant upserts a `normalized` record on the tone metadata (latest
+      # wins; in-band zero trims still record; dry-run never writes it)
+      "RECORDED", "`normalized` record", "latest run wins",
+      "dry-run never writes metadata"]),
     (["set-param"],
      ["--snapshot", "per-snapshot override", "base value",
       "densify", "active snapshot", "round-trip",

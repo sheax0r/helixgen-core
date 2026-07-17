@@ -604,3 +604,84 @@ def test_library_show_prefers_tone_over_guitar(tmp_home, hsp_library, tmp_path):
     assert res.exit_code == 0, res.output
     # tone output has a "Variants (" line; guitar output has "Controls ("
     assert "Variants (" in res.output
+
+
+# ---------------------------------------------------------------------------
+# normalized record surfacing (device normalize --yes writes it)
+# ---------------------------------------------------------------------------
+
+
+def _set_normalized(slug, variant_key, **overrides):
+    rec = {
+        "at": "2026-07-16T12:00:00-07:00",
+        "scope": "snapshots",
+        "target_total_db": 27.96,
+        "tolerance_db": 1.0,
+        "trims_db": {"Rhythm": 0.0, "Lead": -6.0, "Clean": 0.0},
+        "helixgen_version": "0.25.0",
+    }
+    rec.update(overrides)
+    meta = tone_meta.load_tone_meta(slug)
+    meta.variants[variant_key].normalized = rec
+    tone_meta.save_tone_meta(meta)
+    return rec
+
+
+def test_library_show_displays_normalized_record(tmp_home, hsp_library, tmp_path):
+    slug, variant_key, _ = _make_tone(
+        hsp_library, tmp_path, descriptor="Warm Jazz Clean", guitar="Les Paul Jr")
+    _set_normalized(slug, variant_key)
+    res = CliRunner().invoke(cli, ["library", "show", slug])
+    assert res.exit_code == 0, res.output
+    assert "normalized 2026-07-16" in res.output
+    assert "1 trim" in res.output          # one non-zero trim (Lead)
+
+
+def test_library_show_all_in_band_normalized_reads_in_band(
+        tmp_home, hsp_library, tmp_path):
+    slug, variant_key, _ = _make_tone(
+        hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    _set_normalized(slug, variant_key,
+                    trims_db={"Rhythm": 0.0, "Lead": 0.0})
+    res = CliRunner().invoke(cli, ["library", "show", slug])
+    assert res.exit_code == 0, res.output
+    assert "normalized 2026-07-16" in res.output
+    assert "in band" in res.output
+
+
+def test_library_show_without_normalized_says_nothing(
+        tmp_home, hsp_library, tmp_path):
+    slug, _, _ = _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "show", slug])
+    assert res.exit_code == 0, res.output
+    assert "normalized" not in res.output
+
+
+def test_library_show_json_carries_normalized_record(
+        tmp_home, hsp_library, tmp_path):
+    slug, variant_key, _ = _make_tone(
+        hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    rec = _set_normalized(slug, variant_key)
+    res = CliRunner().invoke(cli, ["library", "show", slug, "--json"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert data["variants"][variant_key]["normalized"] == rec
+
+
+def test_describe_mentions_normalized_briefly(tmp_home, hsp_library, tmp_path):
+    slug, variant_key, _ = _make_tone(
+        hsp_library, tmp_path, descriptor="Warm Jazz Clean", guitar="Les Paul Jr")
+    _set_normalized(slug, variant_key, scope="setlist",
+                    trims_db={"BASE": -1.5})
+    res = CliRunner().invoke(cli, ["describe", slug])
+    assert res.exit_code == 0, res.output
+    assert "normalized 2026-07-16" in res.output
+    assert "setlist" in res.output
+
+
+def test_describe_without_normalized_says_nothing(
+        tmp_home, hsp_library, tmp_path):
+    slug, _, _ = _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["describe", slug])
+    assert res.exit_code == 0, res.output
+    assert "normalized" not in res.output
