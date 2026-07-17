@@ -100,6 +100,41 @@ def test_cli_measure_human_output(monkeypatch):
     assert "output" in result.output and "dB" in result.output
 
 
+def test_cli_measure_source_loop_json(monkeypatch):
+    # #82: looper replay — silent jack (no pitch, no input), chain out 0.5.
+    # loop mode gates on chain-out level; gain_db is null (no input
+    # reference) and output_db is the cross-target comparison number.
+    _patch(monkeypatch, [e for _ in range(60) for e in _burst(-1.0, 0.0, 0.5)])
+    result = CliRunner().invoke(
+        cli, ["device", "measure", "--seconds", "6", "--source", "loop",
+              "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["source"] == "loop"
+    assert payload["n_playing"] == 60
+    assert payload["gain_db"] is None
+    assert payload["output_db"] == pytest.approx(-6.02, abs=0.01)
+
+
+def test_cli_measure_source_loop_human_output(monkeypatch):
+    _patch(monkeypatch, [e for _ in range(60) for e in _burst(-1.0, 0.0, 0.5)])
+    result = CliRunner().invoke(
+        cli, ["device", "measure", "--seconds", "6", "--source", "loop"])
+    assert result.exit_code == 0, result.output
+    assert "n/a" in result.output          # gain has no input reference
+
+
+def test_cli_measure_default_source_gates_out_looper_stream(monkeypatch):
+    # the same looper telemetry WITHOUT --source loop is all gated out
+    _patch(monkeypatch, [e for _ in range(60) for e in _burst(-1.0, 0.0, 0.5)])
+    result = CliRunner().invoke(
+        cli, ["device", "measure", "--seconds", "6", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False and payload["n_playing"] == 0
+
+
 def test_cli_measure_summarizes_partial_window_on_interrupt(monkeypatch):
     class InterruptingSubscriber(FakeSubscriber):
         def stream(self, duration=None, filter_addrs=None, include_noise=False):

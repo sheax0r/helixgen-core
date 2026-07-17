@@ -60,10 +60,14 @@ def _bursts(pitch, inp, out, n=60):
 
 class ScriptedSubscriber:
     """Yields a telemetry window for whatever target the fake client last
-    selected. A target scripted as "hum" yields pitchless (gated-out) data."""
+    selected. A target scripted as "hum" yields pitchless (gated-out) data;
+    "silence" yields a dead chain (stopped looper). With ``loop=True`` the
+    windows model a front-of-chain LOOPER: silent input jack (no pitch, no
+    input level) with the scripted level at the chain out (#82)."""
 
     state = {"key": None}
     script = {}
+    loop = False
 
     def __init__(self, *args, **kwargs):
         pass
@@ -80,6 +84,10 @@ class ScriptedSubscriber:
             return
         if out == "hum":
             yield from _bursts(-1.0, 0.03, 0.5)
+        elif out == "silence":
+            yield from _bursts(-1.0, 0.0, 0.0)
+        elif type(self).loop:
+            yield from _bursts(-1.0, 0.0, out)
         else:
             yield from _bursts(40.0, IN_LEVEL, out)
 
@@ -122,12 +130,14 @@ class FakeClient:
         return {"serial": "FAKE123"}
 
 
-def _patch(monkeypatch, script, active_name="Snapshots Corpus", names=None):
+def _patch(monkeypatch, script, active_name="Snapshots Corpus", names=None,
+           loop=False):
     import helixgen.device as device_mod
     from helixgen.device import subscribe as sub_mod
 
     ScriptedSubscriber.script = dict(script)
     ScriptedSubscriber.state = {"key": None}
+    ScriptedSubscriber.loop = loop
     FakeClient.calls = []
     FakeClient.names = dict(names or {})
     FakeClient.active = {"cid": 7, "name": active_name}
@@ -308,6 +318,89 @@ def test_normalize_requires_exactly_one_scope(monkeypatch, preset):
     result = CliRunner().invoke(
         cli, ["device", "normalize", str(preset), "--setlist", "Gig"])
     assert result.exit_code != 0
+
+
+# --- --source loop (workspace #82, core half) --------------------------------
+#
+# A front-of-chain looper replays a recorded signal: the input jack is
+# structurally silent (no pitch, no input level), so the default gate rejects
+# every sample; --source loop gates on chain-out level and compares raw
+# output_db across targets (the looped source is identical by construction).
+# Chain-out levels 0.5 / 1.0 / 0.52 -> -6.02 / 0.00 / -5.68 dB: the same
+# deltas as the input-mode GAINS corpus, so the expected trims match.
+
+
+def test_normalize_snapshots_source_loop_json(monkeypatch, preset):
+    _patch(monkeypatch, GAINS, loop=True)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--source", "loop", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["source"] == "loop"
+    assert payload["anchor"] == {"snapshot": 0, "name": "Rhythm"}
+    # the anchor total is its raw chain-out dB + output level (0.0)
+    assert payload["target_total_db"] == pytest.approx(-6.02, abs=0.01)
+    by_name = {t["name"]: t for t in payload["targets"]}
+    lead = by_name["Lead"]
+    assert lead["gain_db"] is None            # no input reference
+    assert lead["output_db"] == pytest.approx(0.0, abs=0.05)
+    assert lead["total_db"] == pytest.approx(0.0, abs=0.05)
+    assert lead["trim_db"] == -6.0
+    assert by_name["Clean"]["trim_db"] == 0.0  # -5.68 vs -6.02: in band
+
+
+def test_normalize_snapshots_source_loop_yes_writes_trims(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS, loop=True)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--source", "loop", "--yes"])
+    assert result.exit_code == 0, result.output
+    w = _gain(preset)
+    assert w["snapshots"] == [0.0, -6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert "chain out" in result.output       # the loop-mode metric label
+
+
+def test_normalize_source_loop_skips_stopped_looper_target(
+        monkeypatch, preset):
+    _patch(monkeypatch, {**GAINS, ("snap", 2): "silence"}, loop=True)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--source", "loop", "--yes"])
+    assert result.exit_code == 1               # partial result
+    assert "SKIPPED" in result.output
+    assert "looper" in result.output           # the loop-mode reason hint
+    assert _gain(preset)["snapshots"][1] == -6.0
+
+
+def test_normalize_default_input_gate_rejects_looper_stream(
+        monkeypatch, preset):
+    # the same looper telemetry WITHOUT --source loop gates out entirely —
+    # no anchor can be measured and nothing is written
+    _patch(monkeypatch, GAINS, loop=True)
+    before = preset.read_bytes()
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
+    assert result.exit_code != 0
+    assert preset.read_bytes() == before
+
+
+def test_normalize_setlist_source_loop_uses_output_db(
+        monkeypatch, gig_setlist):
+    _patch_gig(monkeypatch, gig_setlist)
+    ScriptedSubscriber.loop = True
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", "--setlist", "Gig",
+              "--seconds", "6", "--source", "loop", "--yes"])
+    assert result.exit_code == 0, result.output
+    a, b = gig_setlist["paths"]
+    assert _gain(a)["value"] == 0.0            # anchor untouched
+    # ToneB's chain out is +6.02 dB over the anchor but already carries a
+    # -4.5 dB base level -> total delta +1.52 dB -> uniform -1.5 dB shift
+    # (identical to the input-mode total-loudness sizing)
+    assert _gain(b)["value"] == -6.0
+    assert _gain(b, flow=1)["value"] == -1.5
 
 
 # --- setlist scope -----------------------------------------------------------
@@ -512,6 +605,7 @@ def test_normalize_yes_records_normalized_on_library_variant(
     rec = _library_normalized()
     assert rec is not None
     assert rec["scope"] == "snapshots"
+    assert rec["source"] == "input"              # #82: gating mode recorded
     assert rec["target_total_db"] == pytest.approx(27.96, abs=0.01)
     assert rec["tolerance_db"] == 1.0
     assert rec["seconds"] == 6.0                 # the --seconds used
@@ -537,6 +631,25 @@ def test_normalize_yes_records_normalized_on_library_variant(
     assert by_name["Rhythm"]["trim_db"] == 0.0   # the anchor, in band
     assert by_name["Rhythm"]["applied"] is False
     assert "recorded in library" in result.output
+
+
+def test_normalize_source_loop_records_source_and_null_gain(
+        monkeypatch, library_preset):
+    # #82: a loop-source --yes run records source="loop" and per-target
+    # telemetry whose gain_db is null (no input reference)
+    _patch(monkeypatch, GAINS, loop=True)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(library_preset),
+              "--seconds", "6", "--source", "loop", "--yes"])
+    assert result.exit_code == 0, result.output
+    rec = _library_normalized()
+    assert rec is not None
+    assert rec["source"] == "loop"
+    assert rec["target_total_db"] == pytest.approx(-6.02, abs=0.01)
+    by_name = {t["name"]: t for t in rec["targets"]}
+    assert by_name["Lead"]["gain_db"] is None
+    assert by_name["Lead"]["output_db"] == pytest.approx(0.0, abs=0.05)
+    assert by_name["Lead"]["trim_db"] == -6.0
 
 
 def test_normalize_dry_run_never_writes_library_metadata(
