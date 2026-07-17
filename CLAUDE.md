@@ -463,13 +463,16 @@ same posture as tone auto-registration).
 
 - `helixgen library list [--tones|--guitars|--irs] [--json]` — list the
   library's tones, guitar profiles, and per-IR metadata (grouped; a flag
-  narrows to one section). `--json` emits `{"tones": [...], "guitars": [...],
-  "irs": [...]}`.
+  narrows to one section, in the human view AND the `--json` shape). `--json`
+  emits `{"tones": [...], "guitars": [...], "irs": [...]}` — only the
+  requested key(s) when a narrowing flag is given.
 - `helixgen library show <name> [--json]` — one tone's — or one guitar
   profile's — metadata: compact human summary, or the exact on-disk JSON with
   `--json`. `<name>` resolves as a TONE first (logical slug, metadata
   filename, or any variant's `preset_name`); if no tone matches it is then
-  tried as a GUITAR profile (slug / name / short_name, case-insensitive).
+  tried as a GUITAR profile (slug / name / short_name, case-insensitive). A
+  name that resolves as a tone AND also matches a guitar profile shows the
+  tone with a stderr note naming the shadowed profile.
 - `helixgen describe <tone>` — the longer, human-oriented counterpart to
   `library show`: identity, tags, a variants table, and the full
   `description_md` verbatim.

@@ -221,7 +221,8 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   library's tones, guitar profiles, and per-IR metadata, grouped by section
   (or narrowed to one with a flag). Guitar rows show slug / name / short_name /
   type; IR rows show the hash prefix, library-relative wav, and character tags.
-  `--json` emits `{"tones": [...], "guitars": [...], "irs": [...]}`.
+  `--json` emits `{"tones": [...], "guitars": [...], "irs": [...]}` — narrowed
+  to only the requested key(s) when a section flag is given.
 - `helixgen library show <name> [--json]` — one tone's — or one guitar
   profile's — metadata: a compact human summary, or the exact on-disk JSON
   with `--json`. `<name>` resolves as a TONE first (logical slug, metadata
@@ -233,6 +234,9 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   matches it is
   tried as a GUITAR profile (slug / name / short_name — name, type, pickups,
   construction, genres, character presence, and the control inventory).
+  When a name resolves as a tone AND also matches a guitar profile, the tone
+  is shown (tone-first order) with a stderr note naming the shadowed profile
+  — address the guitar by a label only it matches to see the profile.
 - `helixgen describe <tone>` — human-oriented write-up: header ("Artist -
   Song" or the descriptor), a variants table (guitar key, preset_name,
   guitar_settings, and a brief `normalized` summary when `device normalize
@@ -260,7 +264,9 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   target guitar's profile (case-insensitive; skipped when that guitar has no
   profile — it may lag) and IR tags outside the controlled vocabulary. Each
   problem line is prefixed with its tone's logical slug; a `tones/*.json` that
-  isn't valid JSON is a problem prefixed with its filename. Exits 1 if any
+  isn't valid JSON — or that parses but is shape-invalid (the same
+  deserialization check the loaders warn-and-skip on) — is a problem prefixed
+  with its filename. Exits 1 if any
   problems are found, 0 if clean (warnings never change the code). `--json`
   emits `{"problems": [...], "warnings": [...]}` (both empty when clean).
 - `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]

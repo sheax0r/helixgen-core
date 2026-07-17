@@ -719,3 +719,91 @@ def test_describe_without_normalized_says_nothing(
     res = CliRunner().invoke(cli, ["describe", slug])
     assert res.exit_code == 0, res.output
     assert "normalized" not in res.output
+
+
+# ---------------------------------------------------------------------------
+# residual batches #79/#83: list --json narrowing, validate shape checks,
+# show tone/guitar shadow note
+# ---------------------------------------------------------------------------
+
+
+def test_library_list_json_honors_tones_flag(tmp_home, hsp_library, tmp_path):
+    # 79d: a narrowing flag applies to the --json shape too.
+    _save_profile()
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "list", "--tones", "--json"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert set(data) == {"tones"}
+    assert {t["slug"] for t in data["tones"]} == {"warm-jazz-clean"}
+
+
+def test_library_list_json_honors_guitars_and_irs_flags(tmp_home):
+    _save_profile()
+    res = CliRunner().invoke(cli, ["library", "list", "--guitars", "--json"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert set(data) == {"guitars"}
+    assert data["guitars"][0]["slug"] == "gibson-les-paul-junior"
+
+    res = CliRunner().invoke(cli, ["library", "list", "--irs", "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == {"irs": []}
+
+    # two flags together narrow to exactly those two sections
+    res = CliRunner().invoke(
+        cli, ["library", "list", "--tones", "--guitars", "--json"])
+    assert res.exit_code == 0, res.output
+    assert set(json.loads(res.output)) == {"tones", "guitars"}
+
+
+def test_library_list_json_no_flags_keeps_full_shape(tmp_home):
+    # the unnarrowed shape is unchanged (agent contract).
+    res = CliRunner().invoke(cli, ["library", "list", "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == {"tones": [], "guitars": [], "irs": []}
+
+
+def test_validate_flags_shape_invalid_parseable_file(tmp_home):
+    # 83d: a tones/*.json that parses but fails deserialization (the file
+    # load_all_tone_metas warns-and-skips) must be a validate PROBLEM.
+    tones = home.tones_dir()
+    tones.mkdir(parents=True, exist_ok=True)
+    (tones / "broken-shape.json").write_text(json.dumps(
+        {"descriptor": "Broken", "variants": {"g": {"preset_name": "no hsp"}}}))
+
+    res = CliRunner().invoke(cli, ["library", "validate"])
+    assert res.exit_code == 1
+    assert "broken-shape.json" in res.output
+    assert "shape-invalid" in res.output
+
+    res = CliRunner().invoke(cli, ["library", "validate", "--json"])
+    assert res.exit_code == 1
+    # res.stdout: the loaders' skip warning goes to stderr, JSON to stdout
+    data = json.loads(res.stdout)
+    assert any("shape-invalid" in p for p in data["problems"])
+
+
+def test_validate_shape_valid_files_still_pass(tmp_home, hsp_library, tmp_path):
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "validate"])
+    assert res.exit_code == 0, res.output
+
+
+def test_library_show_notes_shadowed_guitar_profile(tmp_home, hsp_library, tmp_path):
+    # 79h: NAME resolving as a tone while ALSO matching a guitar profile
+    # must not silently mask the guitar -- a stderr note names it.
+    _save_profile()  # short_name "Les Paul Jr"
+    _make_tone(hsp_library, tmp_path, descriptor="Les Paul Jr")
+    res = CliRunner().invoke(cli, ["library", "show", "Les Paul Jr"])
+    assert res.exit_code == 0, res.output
+    assert "Variants (" in res.output          # the tone is shown
+    assert "also matches" in res.stderr
+    assert "gibson-les-paul-junior" in res.stderr
+
+
+def test_library_show_no_note_without_guitar_collision(tmp_home, hsp_library, tmp_path):
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "show", "warm-jazz-clean"])
+    assert res.exit_code == 0, res.output
+    assert "also matches" not in res.stderr
