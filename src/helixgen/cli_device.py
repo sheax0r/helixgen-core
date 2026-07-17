@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import time
 from pathlib import Path
 
 import click
@@ -3119,6 +3120,8 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
     _telemetry_preflight(ip, port)
 
     collected = []
+    interrupted = False
+    t0 = time.monotonic()
     try:
         with HelixSubscriber(ip) as sub:
             events = sub.stream(duration=seconds,
@@ -3127,18 +3130,25 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
             for sample in ME.samples_from_events(events):
                 collected.append(sample)
     except KeyboardInterrupt:
-        pass  # summarize the partial window instead of discarding it
+        interrupted = True  # summarize the partial window, don't discard it
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
-    result = ME.summarize(collected, seconds=seconds, min_playing=min_playing)
+    # #64d: report the window actually sampled — a Ctrl-C'd partial window
+    # must not claim the full --seconds, and playing_seconds derives from
+    # the observed sample rate inside summarize().
+    elapsed = time.monotonic() - t0
+    result = ME.summarize(collected, seconds=elapsed, min_playing=min_playing)
 
     if as_json:
         click.echo(json.dumps({k: (round(v, 2) if isinstance(v, float) else v)
                                for k, v in result._asdict().items()}))
     else:
-        click.echo(f"window   : {result.seconds:.0f}s "
+        window = f"{result.seconds:.1f}s"
+        if interrupted:
+            window += f" (Ctrl-C at {result.seconds:.1f}s of {seconds:.0f}s)"
+        click.echo(f"window   : {window} "
                    f"({result.n_samples} samples, "
                    f"{result.playing_seconds:.1f}s playing)")
         click.echo(f"input    : {result.input_db:7.2f} dB")
@@ -3160,12 +3170,15 @@ def _measure_window(ip: str, seconds: float, min_playing: int):
     from helixgen.device import measure as ME
 
     collected = []
+    t0 = time.monotonic()
     with HelixSubscriber(ip) as sub:
         events = sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
                             include_noise=True)
         for sample in ME.samples_from_events(events):
             collected.append(sample)
-    return ME.summarize(collected, seconds=seconds, min_playing=min_playing)
+    # #64d: summarize over the window actually sampled (observed rate).
+    return ME.summarize(collected, seconds=time.monotonic() - t0,
+                        min_playing=min_playing)
 
 
 def _normalize_resolve_target(results, target_db):

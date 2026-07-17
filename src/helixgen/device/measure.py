@@ -30,8 +30,10 @@ from typing import Any, Iterable, Iterator, List, NamedTuple, Optional
 
 from . import meters, tuner
 
-# Observed per-mid event rate of the 2003 meter stream (HW 2026-07-14). Used
-# only to express gated sample counts as approximate seconds of playing.
+# Observed per-mid event rate of the 2003 meter stream (HW 2026-07-14).
+# Fallback only (#64d): ``summarize`` derives ``playing_seconds`` from the
+# window's actually-observed sample rate and uses this nominal rate only when
+# the window duration is unknown (<= 0).
 STREAM_HZ = 10.0
 
 # Input envelope below this is treated as digital silence even if the pitch
@@ -58,10 +60,12 @@ class MeasureSample(NamedTuple):
 
 
 class MeasureResult(NamedTuple):
-    seconds: float           # wall-clock window that was sampled
+    seconds: float           # ACTUAL wall-clock window sampled (a Ctrl-C'd
+                             # partial window reports its true elapsed time)
     n_samples: int           # all samples seen
     n_playing: int           # samples that passed the playing gate
-    playing_seconds: float   # n_playing / STREAM_HZ (approximate)
+    playing_seconds: float   # n_playing / the window's OBSERVED sample rate
+                             # (nominal STREAM_HZ only when seconds <= 0)
     input_db: float          # median instrument-input level while playing
     output_db: float         # median chain-out level while playing
     output_db_p75: float     # 75th-percentile chain-out level while playing
@@ -113,9 +117,19 @@ def is_playing(s: MeasureSample, input_floor: float = INPUT_FLOOR) -> bool:
 def summarize(samples: Iterable[MeasureSample], seconds: float,
               min_playing: int = MIN_PLAYING) -> MeasureResult:
     """Reduce a sample stream to a :class:`MeasureResult` of robust dB stats
-    over the playing-gated subset."""
+    over the playing-gated subset.
+
+    ``seconds`` is the ACTUAL wall-clock window the samples were collected
+    over (callers pass the measured elapsed time, so a Ctrl-C'd partial
+    window is reported honestly, #64d). ``playing_seconds`` is derived from
+    the window's OBSERVED sample rate (``n_samples / seconds``) rather than
+    assuming the nominal ~10 Hz stream; :data:`STREAM_HZ` is only the
+    fallback when the window duration is unknown (``seconds <= 0``).
+    """
     all_samples: List[MeasureSample] = list(samples)
     playing = [s for s in all_samples if is_playing(s)]
+    rate = (len(all_samples) / seconds) if seconds > 0 else STREAM_HZ
+    playing_seconds = (len(playing) / rate) if rate > 0 else 0.0
 
     def _result(ok: bool, reason: str) -> MeasureResult:
         if playing:
@@ -132,7 +146,7 @@ def summarize(samples: Iterable[MeasureSample], seconds: float,
         return MeasureResult(
             seconds=float(seconds), n_samples=len(all_samples),
             n_playing=len(playing),
-            playing_seconds=len(playing) / STREAM_HZ,
+            playing_seconds=playing_seconds,
             input_db=in_db, output_db=out_db, output_db_p75=p75_db,
             gain_db=gain_db, ok=ok, reason=reason)
 

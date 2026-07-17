@@ -526,7 +526,10 @@ def test_normalize_yes_records_normalized_on_library_variant(
     assert lead["ok"] is True
     assert lead["gain_db"] == pytest.approx(33.98, abs=0.01)
     assert lead["output_db"] == pytest.approx(0.0, abs=0.05)  # chain-out dBFS
-    assert lead["playing_seconds"] > 0
+    # #64d: playing_seconds now follows the OBSERVED sample rate; the
+    # scripted subscriber replays its window instantly, so it reports ~0.0
+    # (the ok flag above is the measurement-trust signal, not this field)
+    assert lead["playing_seconds"] >= 0.0
     assert lead["output_level_db"] == 0.0
     assert lead["total_db"] == pytest.approx(33.98, abs=0.01)
     assert lead["trim_db"] == -6.0

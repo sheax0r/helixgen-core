@@ -68,8 +68,9 @@ def test_is_playing_gates_on_pitch_and_input():
 
 
 def test_summarize_happy_path():
+    # 60 samples over 6 s = the nominal 10 Hz stream rate
     samples = [measure.MeasureSample(0.02, 0.5, 40.0)] * 60
-    r = measure.summarize(samples, seconds=10.0)
+    r = measure.summarize(samples, seconds=6.0)
     assert r.ok
     assert r.n_samples == 60 and r.n_playing == 60
     assert r.playing_seconds == pytest.approx(6.0)
@@ -78,6 +79,24 @@ def test_summarize_happy_path():
     assert r.output_db_p75 == pytest.approx(meters.to_db(0.5), abs=1e-6)
     # chain gain: 0.5 / 0.02 = 25x = +27.96 dB
     assert r.gain_db == pytest.approx(27.96, abs=0.01)
+
+
+def test_playing_seconds_uses_observed_rate_not_nominal():
+    # #64d: 120 samples over 6 s = 20 Hz OBSERVED; 60 of them playing means
+    # 3.0 s of playing — the old fixed-10 Hz assumption would report 6.0.
+    playing = [measure.MeasureSample(0.02, 0.5, 40.0)] * 60
+    hum = [measure.MeasureSample(0.03, 0.5, -1.0)] * 60
+    r = measure.summarize(playing + hum, seconds=6.0)
+    assert r.seconds == pytest.approx(6.0)
+    assert r.n_playing == 60
+    assert r.playing_seconds == pytest.approx(3.0)
+
+
+def test_playing_seconds_nominal_fallback_when_window_unknown():
+    # seconds <= 0 (unknown window) falls back to the nominal stream rate
+    samples = [measure.MeasureSample(0.02, 0.5, 40.0)] * 60
+    r = measure.summarize(samples, seconds=0.0)
+    assert r.playing_seconds == pytest.approx(60 / measure.STREAM_HZ)
 
 
 def test_summarize_rejects_too_little_playing():

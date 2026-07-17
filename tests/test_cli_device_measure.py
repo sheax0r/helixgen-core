@@ -117,3 +117,8 @@ def test_cli_measure_summarizes_partial_window_on_interrupt(monkeypatch):
     assert result.exit_code in (0, None) or result.exception is None
     payload = json.loads(result.output)
     assert payload["ok"] is True and payload["n_playing"] == 60
+    # #64d: the report carries the ACTUAL elapsed window, never the full
+    # requested --seconds; playing_seconds follows the observed rate (the
+    # fake stream replays instantly, so both are ~0, not 600/6.0)
+    assert payload["seconds"] < 600
+    assert payload["playing_seconds"] < 6.0
