@@ -13,6 +13,18 @@ from helixgen.cli import cli
 msgpack = pytest.importorskip("msgpack")
 
 
+@pytest.fixture(autouse=True)
+def _reachable_configured_device(monkeypatch):
+    """#74: no built-in default IP, and #64c: `measure` preflights
+    reachability before subscribing. Simulate a configured, reachable
+    device so the fake-subscriber tests exercise the verb logic."""
+    from helixgen.device import discovery
+
+    monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
+    monkeypatch.setattr(discovery, "probe_reachable",
+                        lambda ip, port=2002, **kw: True)
+
+
 class FakeSubscriber:
     """Context manager whose stream() yields pre-canned events."""
 

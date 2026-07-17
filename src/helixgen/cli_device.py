@@ -130,6 +130,24 @@ def _resolve_ip_or_fail(explicit=None):
         raise click.ClickException(str(e)) from e
 
 
+def _telemetry_preflight(ip: str, port: int) -> None:
+    """Fail fast when no device is reachable, BEFORE a telemetry subscribe
+    (#64c). A ZMQ SUB socket connects lazily, so to `tuner`/`meters`/
+    `measure` an unreachable or powered-off device is indistinguishable
+    from silence — the verb would sit out its whole --seconds window and
+    then report "no meter data". One cheap TCP connect to the RPC control
+    port (--port) distinguishes the two up front with an instructive
+    error instead."""
+    from helixgen.device import discovery
+
+    if not discovery.probe_reachable(ip, port):
+        raise click.ClickException(
+            f"no Helix Stadium reachable at {ip}:{port} (TCP connect "
+            f"failed) — wrong IP, device off, or a stale device record? "
+            f"Re-run `helixgen device discover`, or pass --ip / set "
+            f"$HELIXGEN_HELIX_IP.")
+
+
 def _ip_callback(ctx, param, value):
     """click callback for --ip: apply the resolution chain at parse time,
     LENIENTLY — an unresolvable IP becomes None so offline-capable modes
@@ -2955,10 +2973,18 @@ def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
     Subscribes to the 2003 telemetry stream and decodes the pitch readout (no
     Stadium app, and no need to engage the hardware tuner — the detector is
     always live). Play a note and watch the note/cents update. Ctrl-C to stop.
+
+    Reachability is preflighted (one cheap TCP probe of the --port control
+    port) so an unreachable device fails fast with a clear error instead of
+    streaming silence for the whole window (the telemetry SUB socket
+    connects lazily and cannot tell a dead host from a quiet one).
     """
     from helixgen.device.subscribe import HelixSubscriber
     _, HelixError = _client()
     from helixgen.device import tuner as T
+
+    ip = _resolve_ip_or_fail(ip)
+    _telemetry_preflight(ip, port)
 
     def _bar(cents: int) -> str:
         # 21-cell meter, centre = in tune; ◀/▶ show flat/sharp direction
@@ -3013,10 +3039,18 @@ def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
     (`/dspEvent` eid_=1, mid_=796/800 — 128-float grid level data) that ride
     the same burst as the network tuner (no Stadium app needed). Read-only.
     Ctrl-C to stop.
+
+    Reachability is preflighted (one cheap TCP probe of the --port control
+    port) so an unreachable device fails fast with a clear error instead of
+    streaming silence for the whole window (the telemetry SUB socket
+    connects lazily and cannot tell a dead host from a quiet one).
     """
     from helixgen.device.subscribe import HelixSubscriber
     _, HelixError = _client()
     from helixgen.device import meters as M
+
+    ip = _resolve_ip_or_fail(ip)
+    _telemetry_preflight(ip, port)
 
     def _bar(peak: float, scale: float = 0.08, cells: int = 24) -> str:
         n = max(0, min(cells, round((peak / scale) * cells)))
@@ -3070,10 +3104,19 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
     during the window — the result reports how much actual playing it saw
     and fails (exit code 1, JSON ok:false + reason) when there wasn't
     enough to trust; just re-run it.
+
+    Reachability is preflighted (one cheap TCP probe of the --port control
+    port) so an unreachable device fails fast with a clear error instead of
+    sitting out the whole window and reporting "no meter data" (the
+    telemetry SUB socket connects lazily and cannot tell a dead host from a
+    quiet one).
     """
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.device import HelixError
     from helixgen.device import measure as ME
+
+    ip = _resolve_ip_or_fail(ip)
+    _telemetry_preflight(ip, port)
 
     collected = []
     try:
