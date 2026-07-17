@@ -903,15 +903,78 @@ def test_create_setlist_sends_ctype_1003_under_root(monkeypatch):
     assert args[3] == ("i", 1003)    # setlist ctype
 
 
-def test_create_setlist_none_on_nonzero_code(monkeypatch):
+def test_create_setlist_nonzero_code_self_cleans_stub(monkeypatch):
+    # #66 residual: the #38 /CreateContent anomaly applies to setlists too —
+    # the device may allocate the container despite a non-zero status code.
+    # create_setlist now deletes the just-created stub (verify-before-delete
+    # by name+posi under the setlists root, never the unreliable reply cid)
+    # and raises, matching the push/save self-clean pattern.
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    # rpc 1000: list -5 for the next free posi (empty root -> posi 0)
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    # rpc 1001: /CreateContent -> non-zero code, but a cid WAS allocated
+    create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", -47)])
+    # rpc 1002: _delete_created_stub re-lists -5 -> the stub is there
+    stub = [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 0}]
+    list2 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(stub, use_bin_type=True))])
+    # rpc 1003: /RemoveContent of the stub from -5 -> ok
+    delete_ok = osc_encode("/status", [("i", 1003), ("i", 0)])
+    _wire_seq(h, [[list1], [create], [list2], [delete_ok]])
+
+    with pytest.raises(HelixError) as ei:
+        h.create_setlist("ZZC-x")
+    msg = str(ei.value)
+    assert "cleaned up the orphaned setlist stub (cid 1186)" in msg
+    assert "status code -47" in msg
+    # the delete went to the setlists root, naming the re-listed cid
+    from helixgen.device.osc import parse_osc_message
+    raw = h.sock.sent[-1]
+    addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    assert addr == "/RemoveContent"
+    assert args[1] == ("i", -5)
+    assert msgpack.unpackb(args[2][1]) == [1186]
+
+
+def test_create_setlist_nonzero_code_uncleanable_names_verify_verb(
+        monkeypatch):
+    # same anomaly, but the stub never shows in the re-list: the error must
+    # point the user at `helixgen device setlists` (not `device list`)
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     list1 = osc_encode(
         "/GetContainerContents",
         [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
-    create = osc_encode("/status", [("i", 1001), ("i", 0), ("i", -47)])
-    _wire_seq(h, [[list1], [create]])
+    create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", -47)])
+    list2 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb([], use_bin_type=True))])
+    _wire_seq(h, [[list1], [create], [list2]])
+
+    with pytest.raises(HelixError) as ei:
+        h.create_setlist("ZZC-x")
+    msg = str(ei.value)
+    assert "the device reported new cid 1186" in msg
+    assert "helixgen device setlists" in msg
+
+
+def test_create_setlist_none_when_no_status_frame(monkeypatch):
+    # no /status reply at all (dropped frame) keeps the historic None
+    # contract — the CLI reports "device refused"
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    unrelated = osc_encode("/somethingelse", [("i", 1001), ("i", 0)])
+    _wire_seq(h, [[list1], [unrelated]])
     assert h.create_setlist("ZZC-x") is None
 
 
