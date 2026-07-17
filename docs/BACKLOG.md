@@ -185,25 +185,32 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ### Deferred from the 0.24.0 discovery adversarial review (2026-07-16)
 
-- **#75 Discovery residuals** (workspace #74 shipped 0.24.0; PR #12 review):
-  (a) interface/subnet awareness — `local_ipv4()` picks the default-route
-  interface, so a VPN default route makes both mDNS and the probe miss a
-  LAN-attached Stadium, and the /24 probe has no RFC1918 guard or real
-  netmask awareness (a directly-public-addressed machine would connect-scan
-  253 public hosts on 2002); consider per-interface queries + a
-  private-address gate. (b) `mdns_discover` binds an ephemeral port and
-  never joins the 224.0.0.251 group, so multicast-only responses (RFC 6762
+- **#77 Discovery residuals** (workspace #74 shipped 0.24.0; PR #12 review;
+  renumbered 2026-07-17 from a second "#75" that collided with the loudness
+  HW-validation #75 below — the workspace BACKLOG.md numbering is
+  authoritative). **Partially addressed 2026-07-17:**
+  (a) interface/subnet awareness — the /24 probe now **refuses non-RFC 1918
+  ranges** (explicit 10/8 + 172.16/12 + 192.168/16 check — deterministic
+  across Python versions, unlike `ipaddress.is_private`; stderr warning
+  names `--ip` as the escape hatch). The default-route interface blindness
+  REMAINS (a VPN default route makes both mDNS and the probe look at the
+  tunnel and miss a LAN-attached Stadium) — now documented in
+  `device discover --help`, `discovery.py`, and `docs/CLI.md`; a real fix
+  needs per-interface address enumeration, which pure stdlib doesn't
+  expose portably. (b) `mdns_discover` binds an ephemeral port and never
+  joins the 224.0.0.251 group, so multicast-only responses (RFC 6762
   QU-ignore cases) are invisible — fine against fw 1.3.2 (unicast reply
-  verified live), other firmware may fall through to the probe.
-  (c) polish: `--timeout` values <0.5 s are silently floored (undocumented);
+  verified live), other firmware may fall through to the probe; now
+  documented in the same three surfaces, listener unchanged.
+  (c) polish — DONE: the `--timeout` <0.5 s floor is documented in help;
+  `tools/re_capture_parity.py` no longer hardcodes the old IP. REMAINING:
   `discover` neither takes nor persists a nonstandard RPC port; no
   `discover --forget`/prune for stale records (`ip-<addr>` fallback serials
   accumulate per DHCP lease and keep the multi-device warning firing); the
   "persisted under ~/.helixgen/devices/" message ignores a $HELIXGEN_HOME
-  override; `tools/re_capture_parity.py` still hardcodes the old IP (the
-  regression sweep covers src/ only); live conftest `_persisted_device_ip`
-  tie-breaks missing serials as `""` vs `devices_with_ips`'s `path.stem`;
-  `--ip ""` is treated as unset rather than rejected.
+  override; live conftest `_persisted_device_ip` tie-breaks missing serials
+  as `""` vs `devices_with_ips`'s `path.stem`; `--ip ""` is treated as
+  unset rather than rejected (a behavior change — deferred deliberately).
 
 ### Deferred from the 0.22.0 lock-system adversarial review (2026-07-16)
 
@@ -256,16 +263,18 @@ and had to be redirected. Start here so future work begins from the right model.
   `container_for_setlist_keyword`/`THROWAWAY` still map `"throwaway"` to the
   setlists root (no production caller; pinned by a unit test), preserving
   semantics 0.21.0 established never worked — remove the dead API in the next
-  breaking pass. The dated archives
+  breaking pass (NOT before). **Doc half DONE 2026-07-17:** the dated archives
   `docs/superpowers/plans/2026-07-14-loudness-measure-implementation.md` and
   `docs/superpowers/specs/2026-07-14-loudness-feedback-normalization.md`
-  still state the superseded `(key-1)/2` wire rule with no erratum pointer
-  (the three living contract docs are corrected).
+  now carry an erratum pointer at the top (the `(key-1)/2` wire rule was
+  superseded by grid-slot addressing in 0.21.0; archive bodies left as
+  historical record). The three living contract docs were already corrected.
 
 Legend: **[local]** = pure local code, no device needed. **[device-write]** =
 implementation is code, but *hardware validation* requires a device write
-(gated by the auto-mode classifier — run via `!` or grant a Bash permission
-rule). **[discovery]** = also needs an OSC command we haven't captured yet.
+(work against expendable artifacts with an upfront `device backup` and clean
+teardown; mind the #38 /CreateContent flakiness). **[discovery]** = also needs
+an OSC command we haven't captured yet.
 
 ### IR — prompt registration (FIXED, 2.7.0)
 - **★ IR-registration delay — FIXED.** External uploads now register **instantly
@@ -1324,9 +1333,12 @@ Remaining follow-ups:
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.
-- **Device-write gating:** the auto-mode classifier blocks the agent from writing
-  to the device (`no writes without telling me` — brick risk). Hardware
-  validation therefore either runs via a user-invoked `!` script or a granted
-  Bash permission rule. Reads (list/get_ref/download/watch) are unrestricted.
+- **Device-write safety:** the old "no writes without telling me" gating rule
+  was retired 2026-07-16 — device writes no longer require prior user
+  permission. The practical safety posture stays: validate against
+  expendable artifacts/slots, take an upfront `device backup`, tear down
+  test artifacts afterwards, and expect the #38 /CreateContent status-1
+  flakiness (re-run; the slot-writing verbs fail safe on an occupied slot).
+  Reads (list/get_ref/download/watch) were never restricted.
 - The device is at `192.168.4.84` (ignores ICMP ping; ports 22/2001/2002/2003
   open).

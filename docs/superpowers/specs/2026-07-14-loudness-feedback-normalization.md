@@ -1,5 +1,13 @@
 # Loudness feedback loop — measured volume normalization (2026-07-14)
 
+> **Erratum (2026-07-17, backlog #70):** this dated archive predates 0.21.0
+> and still states the `(key−1)/2` wire-addressing rule for live-ops block
+> coordinates. That rule was **superseded in 0.21.0 by grid-slot
+> addressing** (blocks are addressed by DSP grid slot, 0–27). The living
+> contract docs — `docs/CLI.md`, `docs/helix-protocol.md`, and the per-verb
+> `--help` — are correct; the body below is preserved unedited as a
+> historical record.
+
 Investigation + design spec for backlog **#62**. Question investigated: *can the
 Helix give us signals that tell us how loud a tone actually is when played, so
 normalization can be driven by measurement instead of heuristics?*

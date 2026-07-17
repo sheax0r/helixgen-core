@@ -185,7 +185,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 - `helixgen ir-scan <dir>... [--rescan] [--remove <basename>] [--no-copy] [--json]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache. By default each newly-hashed WAV is **copied** into `library/irs/<pack>/` with a scaffolded metadata sidecar and `mapping.json` points at the copy (content-addressed idempotent; a re-scan of the same content is a no-op); `--no-copy` registers in place with no metadata.
 - `helixgen list-irs [--json]` — print `<hash>  <wav-path>` for every registered IR.
 - `helixgen controllers [--json]` — the device's assignable controllers (FS/EXP) with English names + positions.
-- `helixgen analyze-audio <capture.wav> [--json]` — offline audio-quality metrics from a WAV capture (backlog #62 phase 3): integrated/momentary/short-term LUFS per ITU-R BS.1770 (K-weighting, 400 ms blocks / 75% overlap, −70 LUFS absolute + −10 LU relative gates), crest factor / peak / true-peak / RMS in dB, a clipping flag, spectral centroid, and FFT band energies over the 5-band guitar vocabulary (low 60–200 Hz, low_mid 200–500, mid 500–1200, high_mid 1200–4000, high 4000–10000 — **provisional edges**, pending reconciliation with the IR catalog's measured-tag pass). Undefined metrics (silence, sub-400 ms files) come back `null` with a `notes` entry, not an error; non-finite samples (NaN/Inf) are zeroed and counted in `notes`, so `--json` is always strictly valid JSON. Needs numpy (`pip install 'helixgen[analyze]'`); accepts any PCM / IEEE-float WAV, any sample rate, mono or stereo. EXPERIMENTAL `--record N -o <out.wav> [--input <device>] [--rate] [--channels]` records the capture first from an audio input (the Stadium's USB return) via sounddevice (`pip install 'helixgen[capture]'` + PortAudio) — untested against real hardware. Complements `device measure` (network meters, loudness only): this tier is the one that can say what a tone *sounds* like, not just how loud it is.
+- `helixgen analyze-audio <capture.wav> [--json]` — offline audio-quality metrics from a WAV capture (backlog #62 phase 3): integrated/momentary/short-term LUFS per ITU-R BS.1770 (K-weighting, 400 ms blocks / 75% overlap, −70 LUFS absolute + −10 LU relative gates), crest factor / peak / true-peak / RMS in dB, a clipping flag, spectral centroid, and FFT band energies over the 5-band guitar vocabulary (low 60–200 Hz, low_mid 200–500, mid 500–1200, high_mid 1200–4000, high 4000–10000 — **provisional edges**, pending reconciliation with the IR catalog's measured-tag pass). Undefined metrics (silence, sub-400 ms files) come back `null` with a `notes` entry, not an error; non-finite samples (NaN/Inf) are zeroed and counted in `notes`, so `--json` is always strictly valid JSON. Needs numpy (`pip install 'helixgen[analyze]'`); accepts any PCM / IEEE-float WAV, any sample rate, mono or stereo. Measurement caveats (backlog #84): the WAV is decoded whole-file into memory as float64 (~2.7 GB peak for an hour of 48 kHz stereo — keep captures to minutes; no streaming mode), and the momentary/short-term LUFS **maxima** are computed on a 100 ms hop, so a peak straddling two hop positions can under-read by a fraction of a dB (integrated LUFS is unaffected). EXPERIMENTAL `--record N -o <out.wav> [--input <device>] [--rate] [--channels]` records the capture first from an audio input (the Stadium's USB return) via sounddevice (`pip install 'helixgen[capture]'` + PortAudio) — untested against real hardware. The capture options `--input`/`--rate`/`--channels` apply only to `--record`; passing any of them without `--record` is a usage error (they used to be silently ignored). Complements `device measure` (network meters, loudness only): this tier is the one that can say what a tone *sounds* like, not just how loud it is.
 
 **Machine-readable output:** verbs whose output agents/scripts consume take `--json` (`list-blocks`, `show-block`, `list-irs`, `irhash`, `patch`, `controllers`, `analyze-audio`, and the `device` read verbs); `view` prints JSON by default. `tests/test_cli_parity.py` pins the help-as-contract phrases and `--json` shapes.
 
@@ -336,12 +336,24 @@ mechanisms, both verified on hardware (Stadium XL, fw 1.3.2, 2026-07-16):
    itself with PTR + SRV + A in a single datagram (instance `p35x1`, target
    `p35x1.local.`; the SRV port is 2001 — the change-stream port, not the
    RPC port). Pure stdlib — no zeroconf dependency. `--timeout` is the
-   listen window (default 3 s).
+   listen window (default 3 s; values below 0.5 s are floored to 0.5 s).
 2. **Local-subnet TCP probe (fallback, `--probe`, default on).** For
    networks that block multicast: a bounded concurrent TCP connect-probe of
    the machine's **own /24 only** on RPC port 2002 (the device ignores
    ICMP). Short per-connect timeouts, bounded concurrency, never probes
-   beyond the local subnet. `--no-probe` disables it.
+   beyond the local subnet — and it refuses to scan at all when the
+   machine's own address is not RFC 1918-private (10/8, 172.16/12,
+   192.168/16): connect-scanning a public /24 would be a port scan of
+   strangers, not LAN discovery (backlog #77). `--no-probe` disables it.
+
+**Known limitations (backlog #77):** both mechanisms look at the
+**default-route interface** — with a VPN up that is usually the tunnel, so a
+LAN-attached Stadium can be missed; disconnect the VPN for the one-shot
+`discover`, or bypass discovery entirely with `--ip` / `$HELIXGEN_HELIX_IP`.
+And the mDNS listener hears **unicast replies only** (it never joins the
+224.0.0.251 multicast group): the Stadium honors the query's QU bit and
+replies unicast (verified live, fw 1.3.2), but firmware that replied only
+via multicast would be invisible to mDNS and fall through to the probe.
 
 Every candidate is **confirmed** with the read-only `/ProductInfoGet`
 handshake before being trusted; confirmed devices are persisted (ip, serial,
@@ -363,8 +375,8 @@ confirmed rows (`ip`, `serial`, `model`, `firmware`, `via` = `mdns|probe`,
 `record` path, `default`).
 **Stadium-only**; these verbs **mutate the device** — prefer an empty/expendable
 slot when testing. CLAUDE.md carries the concise verb list + the mental-model
-rules (device-write gating, flaky-network, tone-library); this is the full
-per-verb reference.
+rules (read-vs-mutate verb awareness, flaky-network, tone-library); this is
+the full per-verb reference.
 
 **`--setlist` accepts real setlist names (0.21.0).** Every preset verb that
 takes `--setlist` (`list`/`backup`/`create`/`save`/`push`/`install`/`delete`/
