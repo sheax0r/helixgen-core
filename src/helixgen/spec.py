@@ -108,6 +108,18 @@ class SnapshotParamOverride:
 
 
 @dataclass
+class SnapshotOutputOverride:
+    """One path's output-endpoint state within a snapshot: ABSOLUTE level
+    (dB) and/or pan (0..1) in force on that snapshot, on the path's primary
+    (lane-0 ``b13``) output — the recipe surface for the loudness phase-2
+    per-snapshot output trims (backlog #76). Mirrors the per-path ``output``
+    field's vocabulary; ``path`` defaults to 0."""
+    path: int = 0
+    level: float | None = None
+    pan: float | None = None
+
+
+@dataclass
 class Snapshot:
     """One named snapshot (Stadium scene). Each snapshot is a delta from the
     path's base block enabled-state and param values.
@@ -115,6 +127,7 @@ class Snapshot:
     name: str
     disable: list[SnapshotBlockRef] = field(default_factory=list)
     params: list[SnapshotParamOverride] = field(default_factory=list)
+    output: list[SnapshotOutputOverride] = field(default_factory=list)
 
 
 @dataclass
@@ -258,6 +271,18 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
                                  path_index=i))
 
     snapshots = _parse_snapshots(data.get("snapshots"), source=source)
+    # Snapshot-level output overrides address paths by index; validate the
+    # index against the spec's own paths (parse-time — generate would only
+    # fail later against the chassis flow, with a worse error).
+    for i, snap in enumerate(snapshots):
+        for ov in snap.output:
+            if ov.path >= len(paths):
+                raise _err(
+                    source,
+                    f'snapshots[{i}] output targets path {ov.path}, but '
+                    f'"paths" has only {len(paths)} entr'
+                    f'{"y" if len(paths) == 1 else "ies"}.',
+                )
     footswitches = _parse_footswitches(data.get("footswitches"), source=source)
     expression = _parse_expression(data.get("expression"), source=source)
     # A (block, param) may be driven by ONE controller: reject a param that
@@ -395,7 +420,64 @@ def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
     else:
         raise _err(source, '"params" must be an object or a list.')
 
-    return Snapshot(name=name, disable=disable, params=params)
+    output = _parse_snapshot_output(data.get("output"), source=source)
+
+    return Snapshot(name=name, disable=disable, params=params, output=output)
+
+
+_SNAPSHOT_OUTPUT_KEYS = {"path", "level", "pan"}
+
+
+def _parse_snapshot_output(raw: Any, *, source: str) -> list[SnapshotOutputOverride]:
+    """Parse a snapshot's ``output`` field: a single object (path 0 unless it
+    carries an explicit ``path``) or a list of per-path objects. Values are
+    ABSOLUTE (the level/pan in force on that snapshot), validated with the
+    same ranges as the per-path ``output`` field."""
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        entries: list[Any] = [raw]
+    elif isinstance(raw, list):
+        if not raw:
+            raise _err(source, '"output" must be a non-empty object or list '
+                               'if provided.')
+        entries = raw
+    else:
+        raise _err(source, '"output" must be an object like '
+                           '{"level": -3.0, "pan": 0.5} or a list of '
+                           '{"path", "level", "pan"} objects.')
+
+    out: list[SnapshotOutputOverride] = []
+    seen_paths: set[int] = set()
+    for i, entry in enumerate(entries):
+        src = f"{source} output[{i}]" if isinstance(raw, list) else f"{source} output"
+        if not isinstance(entry, dict):
+            raise _err(src, 'must be an object like {"level": -3.0, "pan": 0.5}.')
+        unknown = sorted(set(entry) - _SNAPSHOT_OUTPUT_KEYS)
+        if unknown:
+            raise _err(src, f'unknown output key(s) {unknown}; valid keys: '
+                            f"['level', 'pan', 'path'].")
+        path = entry.get("path", 0)
+        if not isinstance(path, int) or isinstance(path, bool) or path < 0:
+            raise _err(src, '"path" must be a non-negative integer if provided.')
+        if path in seen_paths:
+            raise _err(src, f'duplicate output override for path {path}; '
+                            f'one entry per path per snapshot.')
+        seen_paths.add(path)
+        ov = SnapshotOutputOverride(path=path)
+        for fieldname in ("level", "pan"):
+            v = entry.get(fieldname)
+            if v is None:
+                continue
+            try:
+                flowparams.validate_output_field(fieldname, v)
+            except ValueError as e:
+                raise _err(src, f"output: {e}") from e
+            setattr(ov, fieldname, float(v))
+        if ov.level is None and ov.pan is None:
+            raise _err(src, 'output override needs "level" and/or "pan".')
+        out.append(ov)
+    return out
 
 
 def _refs_may_alias(a: tuple, b: tuple) -> bool:
