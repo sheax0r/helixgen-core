@@ -60,6 +60,14 @@ def _serial_of(h, ip: str) -> str:
     return f"ip-{getattr(h, 'ip', None) or ip}"
 
 
+def _echo_library_rows(rows) -> None:
+    """Emit the human-readable library listing (slot, name, on/off, setlists)."""
+    for row in rows:
+        sls = ", ".join(row["setlists"])
+        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
+                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+
+
 def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
     """`--list` output for `device setlist import-hss`: per-slot filled/empty
     state, payload format, and preset name (fully offline)."""
@@ -2487,10 +2495,7 @@ def device_library_cmd(as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
-    for row in rows:
-        sls = ", ".join(row["setlists"])
-        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
-                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+    _echo_library_rows(rows)
 
 
 @device.command(name="sync")
@@ -2715,10 +2720,7 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
-    for row in rows:
-        sls = ", ".join(row["setlists"])
-        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
-                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+    _echo_library_rows(rows)
 
 
 @device_slots.command(name="restore")

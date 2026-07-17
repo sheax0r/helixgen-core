@@ -294,21 +294,13 @@ def _build_exp_controller(
 
     Shape derived from real Stadium XL exports (type=param, behavior=continuous,
     numeric delay/goid/threshold). `curve` is a name from `controllers.CURVES`
-    (default "linear" — the only corpus-observed value).
+    (default "linear" — the only corpus-observed value). An EXP assignment is a
+    param controller with a fixed "continuous" behavior.
     """
-    return {
-        "behavior":   "continuous",
-        "bypassed":   False,
-        "curve":      curve or "linear",
-        "delay":      0,
-        "goid":       0,
-        "max":        max_val,
-        "midisource": 0,
-        "min":        min_val,
-        "source":     source_id,
-        "threshold":  threshold if threshold is not None else 0.0,
-        "type":       "param",
-    }
+    return _build_fs_param_controller(
+        source_id, "continuous", min_val, max_val,
+        curve=curve, threshold=threshold,
+    )
 
 
 def _build_fs_controller(
