@@ -263,9 +263,10 @@ NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
     (["set-param"],
      ["--snapshot", "per-snapshot override", "base value",
       "densify", "active snapshot", "round-trip",
-      # M3/M5: output pseudo-block overrides don't surface in `view` yet
-      # (#76), and a varying array makes a plain base edit inaudible
-      "do NOT surface in `view`", "inaudible"]),
+      # M3/M5 + #76: output pseudo-block overrides round-trip through `view`
+      # (the recipe's snapshot-level `output` field), and a varying array
+      # makes a plain base edit inaudible
+      "snapshot-level `output` field", "inaudible"]),
     # M4: enable/disable share set-param's snapshot resolver, so their
     # --snapshot also takes a 0-based index (names win) — help must say so
     (["enable"], ["0-based index", "names win"]),

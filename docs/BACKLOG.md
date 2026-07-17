@@ -234,15 +234,17 @@ and had to be redirected. Start here so future work begins from the right model.
   since the output trim itself is grid-invisible); (c) whether the mid-800
   output sends sit pre/post Global EQ (spec §5 open).
 - **#76 Per-snapshot output level in the recipe/view surface [local]**
-  (authoritative copy: workspace BACKLOG.md) —
-  phase 2 writes per-snapshot output-level trims into the `.hsp` (the
-  source of truth) and the transcoder realizes them, but `view` does not
-  yet LIFT them into its snapshots projection and the recipe has no
-  authoring field for them (`snapshots[*].params` is user-block-keyed;
-  the `output` pseudo-block isn't addressable there). Add a snapshot-level
-  `output` field to spec/generate + the matching `view` recovery so the
-  trims survive a view→generate round-trip; until then they're preserved
-  only by direct `.hsp` edits (the canonical flow).
+  (authoritative copy: workspace BACKLOG.md) — **✅ SHIPPED (2026-07-17).**
+  Snapshot-level `output` recipe field (`snapshots[*].output` — absolute
+  `level`/`pan`, object form for path 0 or list form with explicit `path`)
+  realized by `generate` as the b13 gain/pan dense per-snapshot arrays, and
+  the matching `view` lift (named-snapshot range, phantom-fill filtered) so
+  the phase-2 trims survive a view→generate round-trip and are authorable
+  from scratch. When a recipe declares snapshots the field is authoritative
+  (a stale structural-carry array is dropped); a recipe with no snapshots
+  keeps the pre-#76 verbatim carry. Transcoder untouched (it already
+  realized the b13 arrays). Reference: `docs/recipe-reference.md`
+  "Per-snapshot output level/pan"; tests: `tests/test_snapshot_output.py`.
 
 ### Deferred from the 0.21.0 adversarial review (2026-07-15)
 

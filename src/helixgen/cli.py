@@ -555,9 +555,9 @@ def set_param_cmd(preset_path, block, param, value, snapshot, path_idx, lane,
     values) — e.g. `helixgen set-param t.hsp "Brit Amp" ChVol 0.6 --snapshot
     Lead`, or a per-snapshot output trim: `helixgen set-param t.hsp output
     level --snapshot 1 -- -3`. Snapshot overrides on library-block params
-    round-trip through `view`; overrides on the `output` pseudo-block do NOT
-    surface in `view` yet (backlog #76) but are preserved in the .hsp.
-    Either kind is realized on the device by `device install`/`sync`. Once a
+    round-trip through `view`; overrides on the `output` pseudo-block
+    round-trip too, surfacing as the recipe's snapshot-level `output` field
+    (#76). Either kind is realized on the device by `device install`/`sync`. Once a
     param's per-snapshot array varies, the device applies it on EVERY
     snapshot — a later plain base edit of that param is inaudible on-device
     and warns.
