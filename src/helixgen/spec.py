@@ -244,7 +244,7 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
     paths_raw = data.get("paths")
     if not isinstance(paths_raw, list):
         raise _err(source, '"paths" must be an array.')
-    if len(paths_raw) == 0:
+    if not paths_raw:
         raise _err(source, '"paths" must contain at least one chain.')
     if len(paths_raw) > 2:
         raise _err(
@@ -574,7 +574,7 @@ def _parse_expression_assignment(data: Any, *, source: str) -> ExpressionAssignm
     if not isinstance(pedal, str) or not pedal:
         raise _err(source, '"pedal" is required and must be a non-empty string.')
     targets_raw = data.get("targets")
-    if not isinstance(targets_raw, list) or len(targets_raw) == 0:
+    if not isinstance(targets_raw, list) or not targets_raw:
         raise _err(source, '"targets" must be a non-empty list.')
     targets = [
         _parse_expression_target(t, source=f"{source} targets[{j}]")
@@ -669,7 +669,7 @@ def _parse_midi_assignment(data: Any, *, source: str) -> MidiAssignment:
     if not (0 <= cc <= 127):
         raise _err(source, f'"cc" must be in 0..127 (got {cc}).')
     targets_raw = data.get("targets")
-    if not isinstance(targets_raw, list) or len(targets_raw) == 0:
+    if not isinstance(targets_raw, list) or not targets_raw:
         raise _err(source, '"targets" must be a non-empty list.')
     targets = [
         _parse_midi_target(t, source=f"{source} targets[{j}]")
@@ -863,7 +863,7 @@ def _parse_channel_value(field: str, value: Any, *, stereo: bool,
         if not stereo:
             raise _err(source, f'per-channel "{field}" values require '
                                f'source "both" (the stereo input).')
-        if set(value.keys()) != {"1", "2"}:
+        if set(value) != {"1", "2"}:
             raise _err(source, f'per-channel "{field}" must have exactly '
                                f'the keys "1" and "2".')
         for ch, v in value.items():

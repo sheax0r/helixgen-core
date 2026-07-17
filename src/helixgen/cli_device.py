@@ -3413,7 +3413,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 raise click.ClickException(
                     f"setlist {setlist!r} is not in the local manifest "
                     f"(see `device setlist list`)")
-            tone_names = [t for t in (rec.get("tones") or [])]
+            tone_names = list(rec.get("tones") or [])
             if not tone_names:
                 raise click.ClickException(f"setlist {setlist!r} has no tones")
             say(f"normalize (setlist scope): {len(tone_names)} tone(s) in "

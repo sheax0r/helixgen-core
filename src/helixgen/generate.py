@@ -103,8 +103,8 @@ def resolve_blocks(spec: Spec, library: Library) -> list[ResolvedPath]:
 
 def validate_params(block: Block, user_params: dict[str, Any]) -> None:
     """Hard-fail if any user_params key isn't in the block's schema."""
-    known = set(block.params.keys())
-    unknown = sorted(set(user_params.keys()) - known)
+    known = set(block.params)
+    unknown = sorted(set(user_params) - known)
     if not unknown:
         return
     raise ParamValidationError(
