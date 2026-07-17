@@ -514,10 +514,25 @@ def test_normalize_yes_records_normalized_on_library_variant(
     assert rec["scope"] == "snapshots"
     assert rec["target_total_db"] == pytest.approx(27.96, abs=0.01)
     assert rec["tolerance_db"] == 1.0
-    # every named snapshot is in trims_db -- in-band zero trims included
-    assert rec["trims_db"] == {"Rhythm": 0.0, "Lead": -6.0, "Clean": 0.0}
+    assert rec["seconds"] == 6.0                 # the --seconds used
     assert rec["helixgen_version"] == __version__
     assert rec["at"].startswith("20")            # ISO timestamp
+    # every named snapshot is in targets, with the FULL measurement
+    # telemetry -- in-band zero trims included
+    by_name = {t["name"]: t for t in rec["targets"]}
+    assert set(by_name) == {"Rhythm", "Lead", "Clean"}
+    lead = by_name["Lead"]
+    assert lead["snapshot"] == 1
+    assert lead["ok"] is True
+    assert lead["gain_db"] == pytest.approx(33.98, abs=0.01)
+    assert lead["output_db"] == pytest.approx(0.0, abs=0.05)  # chain-out dBFS
+    assert lead["playing_seconds"] > 0
+    assert lead["output_level_db"] == 0.0
+    assert lead["total_db"] == pytest.approx(33.98, abs=0.01)
+    assert lead["trim_db"] == -6.0
+    assert lead["applied"] is True
+    assert by_name["Rhythm"]["trim_db"] == 0.0   # the anchor, in band
+    assert by_name["Rhythm"]["applied"] is False
     assert "recorded in library" in result.output
 
 
@@ -543,7 +558,9 @@ def test_normalize_all_in_band_still_records_confirmation(
     assert "nothing to write" in result.output
     rec = _library_normalized()
     assert rec is not None
-    assert rec["trims_db"] == {"Rhythm": 0.0, "Lead": 0.0, "Clean": 0.0}
+    assert {t["name"]: t["trim_db"] for t in rec["targets"]} == {
+        "Rhythm": 0.0, "Lead": 0.0, "Clean": 0.0}
+    assert all(t["applied"] is False for t in rec["targets"])
 
 
 def test_normalize_partial_run_records_nothing(monkeypatch, library_preset):
@@ -562,12 +579,13 @@ def test_normalize_rerun_overwrites_record(monkeypatch, library_preset):
             "--yes"]
     assert CliRunner().invoke(cli, args).exit_code == 0
     first = _library_normalized()
-    assert first["trims_db"]["Lead"] == -6.0
+    assert {t["name"]: t["trim_db"] for t in first["targets"]}["Lead"] == -6.0
     # second run: same telemetry, trims now in band -> record OVERWRITTEN
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
     rec = _library_normalized()
-    assert rec["trims_db"] == {"Rhythm": 0.0, "Lead": 0.0, "Clean": 0.0}
+    assert {t["name"]: t["trim_db"] for t in rec["targets"]} == {
+        "Rhythm": 0.0, "Lead": 0.0, "Clean": 0.0}
 
 
 def test_normalize_non_library_hsp_records_nothing(monkeypatch, preset):
@@ -626,5 +644,14 @@ def test_normalize_setlist_records_base_trim_on_library_variant(
     assert rec is not None
     assert rec["scope"] == "setlist"
     assert rec["target_total_db"] == 30.0
-    # setlist scope shifts the whole preset -> one BASE trim
-    assert rec["trims_db"] == {"BASE": pytest.approx(2.0)}
+    assert rec["seconds"] == 6.0
+    # setlist scope shifts the whole preset -> ONE target entry (this tone)
+    assert len(rec["targets"]) == 1
+    t = rec["targets"][0]
+    assert t["tone"] == name
+    assert t["ok"] is True
+    assert t["gain_db"] == pytest.approx(27.96, abs=0.01)
+    assert t["output_db"] == pytest.approx(-6.02, abs=0.05)  # chain-out dBFS
+    assert t["total_db"] == pytest.approx(27.96, abs=0.01)
+    assert t["trim_db"] == pytest.approx(2.0)
+    assert t["applied"] is True

@@ -38,6 +38,7 @@ written file resolves under ``home.helixgen_home()``, same guard shape as
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import dataclass, field
@@ -57,15 +58,31 @@ class Variant:
 
     ``normalized`` is an OPTIONAL record written by ``device normalize
     --yes`` when this variant's ``.hsp`` is the file it wrote trims into --
-    proof the tone has been level-matched, and what was done::
+    proof the tone has been level-matched, and the FULL per-target
+    measurement telemetry of the run::
 
-        {"at": "2026-07-16T12:00:00-07:00",       # ISO timestamp of the run
-         "scope": "snapshots",                     # or "setlist"
-         "target_total_db": 27.96,                 # the run's loudness target
-         "tolerance_db": 1.0,                      # the run's dead band
-         "trims_db": {"Rhythm": 0.0, "Lead": -6.0},  # per-snapshot, or
-                                                      # {"BASE": x} (setlist)
-         "helixgen_version": "0.26.0"}
+        {"at": "2026-07-16T12:00:00-07:00",   # ISO timestamp of the run
+         "scope": "snapshots",                 # or "setlist"
+         "target_total_db": 27.96,             # the run's loudness target
+         "tolerance_db": 1.0,                  # the run's dead band
+         "seconds": 20.0,                      # per-target window (--seconds)
+         "helixgen_version": "0.26.0",
+         "targets": [                          # one per measured target,
+             {"snapshot": 0, "name": "Rhythm", # exactly as normalize --json
+              "ok": True, "reason": None,      # reports them ("tone"/"path"
+              "gain_db": 27.96,                # keys in setlist scope)
+              "output_db": -6.0,               # chain-out dBFS: > 0 means
+              "playing_seconds": 5.2,          #   in-chain CLIPPING
+              "output_level_db": 0.0,          # output level in force
+              "total_db": 27.96,               # gain + level (what's matched)
+              "trim_db": 0.0,
+              "applied": False}]}
+
+    The telemetry is the valuable part, not just the trims -- ``output_db``
+    (chain-out dBFS) flags in-chain clipping, which agents use to drive
+    gain-staging fixes. ``targets`` entries are OPEN dicts: the serializers
+    deep-copy the whole record verbatim, so unknown per-target keys (future
+    per-node stats) round-trip without a schema change.
 
     Latest run wins (overwrite, never append); in-band zero trims still
     count -- they confirm the tone measures level-matched. The field is a
@@ -121,7 +138,9 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
         "preset_name": v.preset_name,
         "guitar_settings": dict(v.guitar_settings),
         "notes_md": v.notes_md,
-        "normalized": dict(v.normalized) if v.normalized else None,
+        # deep copy: the record's nested target entries are OPEN dicts and
+        # must serialize verbatim (unknown per-target keys included)
+        "normalized": copy.deepcopy(v.normalized) if v.normalized else None,
     }
 
 
@@ -132,7 +151,8 @@ def _variant_from_dict(d: Dict[str, Any]) -> Variant:
         preset_name=d["preset_name"],
         guitar_settings=dict(d.get("guitar_settings") or {}),
         notes_md=d.get("notes_md"),
-        normalized=dict(normalized) if isinstance(normalized, dict) else None,
+        normalized=(copy.deepcopy(normalized)
+                    if isinstance(normalized, dict) else None),
     )
 
 

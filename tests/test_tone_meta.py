@@ -513,17 +513,35 @@ _NORMALIZED = {
     "scope": "snapshots",
     "target_total_db": 27.96,
     "tolerance_db": 1.0,
-    "trims_db": {"Rhythm": 0.0, "Lead": -6.0, "Clean": 0.0},
+    "seconds": 6.0,
     "helixgen_version": "0.25.0",
+    "targets": [
+        {"snapshot": 0, "name": "Rhythm", "ok": True, "reason": None,
+         "gain_db": 27.96, "output_db": -6.02, "playing_seconds": 5.2,
+         "output_level_db": 0.0, "total_db": 27.96, "trim_db": 0.0,
+         "applied": False,
+         # unknown per-target keys must round-trip verbatim (open dicts):
+         # future per-node stats land here without a schema change
+         "future_per_node_stat": {"b5": -1.0}},
+        {"snapshot": 1, "name": "Lead", "ok": True, "reason": None,
+         "gain_db": 33.98, "output_db": 1.2, "playing_seconds": 5.0,
+         "output_level_db": 0.0, "total_db": 33.98, "trim_db": -6.0,
+         "applied": True},
+    ],
 }
 
 
 def test_variant_normalized_round_trips_through_save_and_load(tmp_home):
+    import copy
+
     meta, _ = _valid_meta_and_manifest(tmp_home)
-    meta.variants["g1"].normalized = dict(_NORMALIZED)
+    meta.variants["g1"].normalized = copy.deepcopy(_NORMALIZED)
     tone_meta.save_tone_meta(meta)
     loaded = tone_meta.load_tone_meta(meta.logical_slug)
     assert loaded.variants["g1"].normalized == _NORMALIZED
+    # target entries are OPEN dicts: unknown per-target keys round-trip
+    assert loaded.variants["g1"].normalized["targets"][0][
+        "future_per_node_stat"] == {"b5": -1.0}
     # schema stays 1: the field is optional, older readers just drop it
     assert loaded.schema == 1
     on_disk = json.loads(tone_meta.meta_path(meta.logical_slug).read_text())

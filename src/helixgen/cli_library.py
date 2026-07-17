@@ -164,18 +164,34 @@ def _tone_summary(meta: tone_meta.ToneMeta) -> Dict[str, Any]:
     }
 
 
-def _normalized_brief(rec: Dict[str, Any]) -> str:
-    """One-line rendering of a variant's ``normalized`` record (written by
-    ``device normalize --yes``): date, non-zero trim count (or "in band"
-    when every trim was zero -- still a level-match confirmation), scope."""
+def _normalized_brief(rec: Dict[str, Any], *, verbose: bool = False) -> str:
+    """One-line summary of a variant's ``normalized`` record (written by
+    ``device normalize --yes``). The record stores the run's FULL per-target
+    telemetry (open dicts -- see ``tone_meta.Variant``); the human views
+    deliberately summarize and leave the telemetry to ``library show
+    --json``: date, non-zero trim count (or "in band" when every trim was
+    zero -- still a level-match confirmation), scope; ``verbose`` (the
+    `describe` view) adds the target count and the hottest chain-out dBFS
+    (over 0 = in-chain clipping)."""
     at = str(rec.get("at") or "")[:10]
-    trims = rec.get("trims_db") or {}
-    n = sum(1 for v in trims.values() if v)
-    detail = f"{n} trim{'s' if n != 1 else ''}" if n else "in band"
+    targets = [t for t in (rec.get("targets") or []) if isinstance(t, dict)]
+    n_trims = sum(1 for t in targets if t.get("trim_db"))
+    detail = (f"{n_trims} trim{'s' if n_trims != 1 else ''}"
+              if n_trims else "in band")
     scope = rec.get("scope")
-    suffix = f", {scope}" if scope else ""
     head = f"normalized {at}" if at else "normalized"
-    return f"{head} ({detail}{suffix})"
+    if not verbose:
+        suffix = f", {scope}" if scope else ""
+        return f"{head} ({detail}{suffix})"
+    parts = [f"{len(targets)} target{'s' if len(targets) != 1 else ''}",
+             detail]
+    outs = [t["output_db"] for t in targets
+            if isinstance(t.get("output_db"), (int, float))
+            and not isinstance(t.get("output_db"), bool)]
+    if outs:
+        parts.append(f"max chain-out {max(outs):+.1f} dBFS")
+    suffix = f" ({scope})" if scope else ""
+    return f"{head}, " + ", ".join(parts) + suffix
 
 
 def _guitar_summary(p: "guitars.GuitarProfile") -> Dict[str, Any]:
@@ -318,9 +334,10 @@ def show_cmd(name: str, as_json: bool) -> None:
     is then tried as a GUITAR profile (slug / name / short_name). An unknown
     or ambiguous NAME exits 1. Human output is a compact summary -- each
     variant line notes its `normalized` record (written by `device normalize
-    --yes`: date, trim count or "in band", scope) when one exists; --json
-    dumps the exact bytes stored on disk (the tone or guitar JSON). See also
-    the top-level `describe` command for a longer, human-oriented write-up.
+    --yes`: date, trim count or "in band", scope) when one exists; the
+    record's full per-target measurement telemetry is in the --json dump,
+    which emits the exact bytes stored on disk (the tone or guitar JSON).
+    See also the top-level `describe` command for a longer write-up.
     """
     tone_slug = None
     tone_error: click.ClickException | None = None
@@ -904,8 +921,10 @@ def describe(tone: str) -> None:
     filename, or any variant's preset_name; unknown/ambiguous exits 1). The
     header is "Artist - Song" or the descriptor; a variants table lists each
     variant's guitar key, preset_name, guitar_settings, and (when `device
-    normalize --yes` has recorded one) a brief `normalized` line -- date,
-    trim count or "in band", scope; the tone's full
+    normalize --yes` has recorded one) a brief `normalized` summary -- date,
+    target count, trim count or "in band", the hottest chain-out dBFS (over
+    0 = in-chain clipping), scope; the full per-target telemetry lives in
+    `library show --json`. The tone's full
     `description_md` (if set) follows verbatim below a blank line -- this is
     the human-oriented counterpart to `library show`'s compact summary /
     raw --json dump.
@@ -923,7 +942,8 @@ def describe(tone: str) -> None:
         click.echo(f"    preset_name: {variant.preset_name}")
         click.echo(f"    guitar_settings: {settings if settings else '(none)'}")
         if variant.normalized:
-            click.echo(f"    {_normalized_brief(variant.normalized)}")
+            click.echo(
+                f"    {_normalized_brief(variant.normalized, verbose=True)}")
 
     if meta.description_md:
         click.echo("")
