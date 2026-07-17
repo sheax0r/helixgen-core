@@ -1052,21 +1052,6 @@ class HelixClient:
             [("i", path), ("i", _grid_slot(block)), ("i", 0), ("i", param_id),
              ("f", float(value)), ("i", -1)]))
 
-    def set_model(self, model_id: int) -> bool:
-        """Set the selected block's model: /ModelSet [127, 0, 1, 0, modelId].
-
-        Note: /ModelSet does not take our request id; it is a fixed-shape
-        command.  Sent without reqid correlation.
-        """
-        if self.sock is None:
-            raise HelixError("client is not connected; call connect() first")
-        self.sock.send(osc_encode(
-            "/ModelSet",
-            [("i", 127), ("i", 0), ("i", 1), ("i", 0), ("i", model_id)]))
-        # best-effort: drain any immediate reply
-        self.poller.poll(int(self.rpc_timeout * 1000))
-        return True
-
     def _find_by_pos_retry(self, container: int, pos: int,
                            tries: int = 4, delay: float = 0.25
                            ) -> Optional[Dict[str, Any]]:

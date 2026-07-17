@@ -124,12 +124,6 @@ def test_rpc_raises_when_not_connected():
         h.list_presets()
 
 
-def test_set_model_raises_when_not_connected():
-    h = HelixClient("10.0.0.99")
-    with pytest.raises(HelixError):
-        h.set_model(12345)
-
-
 def test_slot_label():
     from helixgen.device.client import slot_label
 
