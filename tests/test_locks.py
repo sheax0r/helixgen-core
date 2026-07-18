@@ -353,10 +353,10 @@ def test_acquire_meta_is_mutually_exclusive(root):
     """(a) Only one holder at a time: a second grab of a held meta-lock
     fails; once released it is grabbable again."""
     meta = locks._meta_lock_path(IP)
-    assert locks._acquire_meta(meta) is True
-    assert locks._acquire_meta(meta) is False   # already held
+    assert locks._acquire_meta(meta) is not None
+    assert locks._acquire_meta(meta) is None    # already held
     meta.unlink()
-    assert locks._acquire_meta(meta) is True     # free again
+    assert locks._acquire_meta(meta) is not None  # free again
     meta.unlink()
 
 
@@ -370,17 +370,17 @@ def test_stale_acquire_meta_is_broken_and_acquisition_proceeds(root):
     meta.write_text('{"pid": 2147483646, "t": 0}')  # some other, crashed pid
     old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
     os.utime(meta, (old, old))
-    assert locks._acquire_meta(meta) is False    # reclaims (unlinks) the stale
+    assert locks._acquire_meta(meta) is None     # reclaims (unlinks) the stale
     assert not meta.exists()
-    assert locks._acquire_meta(meta) is True     # next pass proceeds
+    assert locks._acquire_meta(meta) is not None  # next pass proceeds
     meta.unlink()
 
 
 def test_fresh_acquire_meta_is_not_broken(root):
     """A meta-lock within its TTL is a LIVE holder — never reclaimed."""
     meta = locks._meta_lock_path(IP)
-    assert locks._acquire_meta(meta) is True     # holder grabs it now
-    assert locks._acquire_meta(meta) is False    # contender must not break it
+    assert locks._acquire_meta(meta) is not None  # holder grabs it now
+    assert locks._acquire_meta(meta) is None     # contender must not break it
     assert meta.exists()
     meta.unlink()
 
@@ -416,6 +416,67 @@ def test_meta_lock_contention_serializes_without_deadlock(root):
         t.join(timeout=5)
         assert not t.is_alive(), "worker deadlocked on the meta-lock"
     assert state["max"] == 1, state  # never two holders at once
+
+
+def test_release_meta_only_unlinks_its_own_nonce(root):
+    """A holder whose critical section overran the TTL must not delete a fresh
+    reclaimer's meta-lock: `_release_meta` unlinks only when the nonce still
+    matches (#72 TOCTOU guard). Otherwise a stale holder's `finally` could
+    re-open the #88 double-commit window by deleting a live meta-lock."""
+    meta = locks._meta_lock_path(IP)
+    stale_nonce = locks._acquire_meta(meta)          # holder A grabs it
+    assert stale_nonce is not None
+    # A stalls past the TTL; reclaimer B breaks + re-creates a FRESH meta-lock:
+    meta.unlink()
+    fresh_nonce = locks._acquire_meta(meta)
+    assert fresh_nonce is not None and fresh_nonce != stale_nonce
+    # A resumes and releases with its OLD nonce — must leave B's file alone
+    locks._release_meta(meta, stale_nonce)
+    assert meta.exists(), "release deleted a fresh reclaimer's meta-lock"
+    # B's own release (current nonce) clears it
+    locks._release_meta(meta, fresh_nonce)
+    assert not meta.exists()
+
+
+def test_acquire_blocked_by_foreign_meta_lock_raises_create_race(root):
+    """A persistently-held foreign acquisition meta-lock surfaces as the
+    synthetic 'create race' holder once the timeout lapses (a transient race
+    artifact, not a real foreign lease), and no scope lease is created."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    assert locks._acquire_meta(meta) is not None     # foreign acquirer holds it
+    with pytest.raises(locks.LockHeld) as exc:
+        locks.acquire(IP, ("library",), label="me", timeout=0)
+    assert "create race" in str(exc.value)
+    assert not lease_path(root, "library").exists()
+    meta.unlink()
+
+
+def test_acquire_proceeds_once_foreign_meta_lock_released(root):
+    """Meta contention is transient: once the foreign meta-lock is released the
+    acquirer spins through and succeeds rather than erroring."""
+    import threading
+
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    assert locks._acquire_meta(meta) is not None
+    threading.Timer(0.15, lambda: meta.unlink(missing_ok=True)).start()
+    with locks.acquire(IP, ("library",), label="me", timeout=5):
+        assert lease_path(root, "library").exists()
+    assert not meta.exists()
+
+
+def test_meta_lock_released_after_acquire(root):
+    """The acquisition meta-lock is transient — never left behind after a
+    successful acquire, nor after a blocked one (both exit via the `finally`)."""
+    with locks.acquire(IP, ("library",), label="me", timeout=0):
+        pass
+    assert not locks._meta_lock_path(IP).exists()
+
+    write_lease(root, "library", pid=1, ttl=3600, age=1)  # live foreign holder
+    with pytest.raises(locks.LockHeld):
+        locks.acquire(IP, ("library",), label="me", timeout=0)
+    assert not locks._meta_lock_path(IP).exists()
 
 
 def test_two_breakers_do_not_unlink_a_fresh_live_lease(root):

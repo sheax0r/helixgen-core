@@ -520,7 +520,11 @@ non-zero naming the holder (label, pid, host, age). **Staleness:** a lease
 whose TTL expired or whose recorded pid is dead (same host) is reclaimed
 with a stderr warning (stale-breaks are serialized through a break-mutex
 file and re-verified under it, so a renewed/re-acquired lease is never
-broken); a **live lease is never broken** implicitly. Escape hatch: every
+broken); a **live lease is never broken** implicitly. Lock *acquisition*
+itself (the scan→create→verify step) is serialized per device through a
+stale-breakable `.acquire.lock` meta-lock so two racers taking conflicting
+scopes can't both commit; like the break-mutex it is reclaimed if its holder
+dies and is invisible to `device lock --status`. Escape hatch: every
 mutating verb takes `--no-lock` (dangerous — you're opting out of
 collision protection).
 

@@ -396,21 +396,41 @@ def _meta_lock_path(ip: str) -> Path:
     return lock_dir(ip) / ".acquire.lock"
 
 
-def _acquire_meta(path: Path) -> bool:
-    """Atomically grab the acquisition meta-lock; True when held. Mirrors
-    ``_break_stale``'s crashed-mutex reclaim: a meta-lock whose holder died
-    (mtime older than :data:`_ACQUIRE_META_TTL_S`) is unlinked and False is
-    returned so the caller re-assesses on the next poll — never
-    unlink-and-recreate in one breath, which could delete a fresh holder's
-    file."""
-    if _write_new(path, {"pid": os.getpid(), "t": time.time()}):
-        return True
+def _acquire_meta(path: Path) -> str | None:
+    """Atomically grab the acquisition meta-lock; returns the nonce written
+    into it when held, else None. The nonce lets the holder verify at release
+    that it still owns the file (:func:`_release_meta`): if a holder stalls
+    past :data:`_ACQUIRE_META_TTL_S` and a second acquirer reclaims and
+    re-creates the meta-lock, the first must not delete that fresh holder's
+    file — the same #72 TOCTOU guard the rest of this module uses.
+
+    Mirrors ``_break_stale``'s crashed-mutex reclaim: a meta-lock whose holder
+    died (mtime older than the TTL) is unlinked and None returned so the caller
+    re-assesses on the next poll — never unlink-and-recreate in one breath,
+    which could delete a fresh holder's file."""
+    nonce = uuid.uuid4().hex
+    if _write_new(path, {"pid": os.getpid(), "t": time.time(), "nonce": nonce}):
+        return nonce
     try:
         if time.time() - path.stat().st_mtime > _ACQUIRE_META_TTL_S:
             path.unlink(missing_ok=True)  # crashed holder — reclaim next pass
     except OSError:
         pass
-    return False
+    return None
+
+
+def _release_meta(path: Path, nonce: str) -> None:
+    """Release the acquisition meta-lock only if we still own it. If our
+    critical section overran the TTL and another acquirer reclaimed and
+    re-created the meta-lock, its nonce differs from ours: leave it alone
+    rather than delete a fresh holder's file (#72 pattern, mirrors
+    :meth:`LeaseSet.release`)."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(data, dict) and data.get("nonce") == nonce:
+        path.unlink(missing_ok=True)
 
 
 def _post_create_conflict(ip: str, scope: str, payload: dict,
@@ -561,7 +581,8 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
         #     held only for this brief section, never across the step-4 wait.
         blocker = None
         meta_contended = False
-        if _acquire_meta(meta):
+        meta_nonce = _acquire_meta(meta)
+        if meta_nonce is not None:
             try:
                 # 2. Find the blocking lease, clearing stale ones (mutex-
                 #    serialized) and our OWN expired/nearly-expired leases (a
@@ -631,7 +652,7 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
                         # lost the same-file create race — reassess after a beat
                         blocker = read_lease(path)
             finally:
-                meta.unlink(missing_ok=True)
+                _release_meta(meta, meta_nonce)
         else:
             meta_contended = True  # another acquirer holds it — retry soon
 
