@@ -268,18 +268,6 @@ def test_post_create_verification_backs_off_the_younger_lease(root):
     assert locks._post_create_conflict(IP, "library", ours, None) is None
 
 
-@pytest.mark.xfail(
-    reason="backlog #88: deterministic reproduction of the scan->create->rescan "
-           "double-commit. Two DISTINCT sessions race `all` vs `library`; the "
-           "younger creates AND rescans before the older's file is visible, so "
-           "it commits, then the older creates, rescans, computes "
-           "theirs(younger) < ours(older) == False, and ALSO commits. This "
-           "harness forces that exact interleaving with two events, so the race "
-           "reproduces deterministically (no longer xdist-timing-dependent). "
-           "xfailed until the Task-2 mutex-serialized acquisition lands; Task 3 "
-           "removes this marker and asserts it PASSES.",
-    strict=False,
-)
 def test_all_vs_scope_create_race_yields_exactly_one_winner(root, monkeypatch):
     """Review finding 2 (MAJOR) / backlog #88, end-to-end: two DISTINCT
     sessions racing `all` vs `library` through the scan->create->rescan gap

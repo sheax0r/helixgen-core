@@ -98,14 +98,23 @@ acquisition is serialized across processes. Repo rules: TDD, stdlib only.
 
 ### Task 3: remove the xfail; prove the invariant holds
 
-- [ ] Remove the `xfail` marker on
+- [x] Remove the `xfail` marker on
       `test_all_vs_scope_create_race_yields_exactly_one_winner`; it must now
       PASS deterministically, including repeatedly under `-n auto` (run it many
-      times / with high worker count to stress the timing).
-- [ ] All existing lock tests still pass. No regression in the non-contended
+      times / with high worker count to stress the timing). Marker removed;
+      test passes serial and under `-n auto`; looped 5x under `-n 4` and 20x
+      under `-n 8` — all green (event-ordered harness makes it
+      scheduler-independent). Stale `xfail`-under-xdist notes scrubbed from
+      CLAUDE.md + BACKLOG.md (#88 marked RESOLVED).
+- [x] All existing lock tests still pass. No regression in the non-contended
       fast path (single acquirer must not pay a meaningful penalty). No new
       deadlock/livelock. Confirm release/renew (the #72 nonce-guard) still
-      interoperates with the new acquisition path.
+      interoperates with the new acquisition path. Full offline suite: 2320
+      passed, 180 skipped. `tests/test_locks.py` 80 passed. Renew/release
+      nonce-guard tests (`test_renew_does_not_clobber_reacquired_lease`,
+      `test_release_does_not_delete_reacquired_lease`,
+      `test_session_lock_falls_back_to_fresh_acquire_when_renew_raced`) all
+      green against the meta-lock acquisition path.
 
 ## Validation Commands
 
