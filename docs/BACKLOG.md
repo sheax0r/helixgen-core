@@ -230,6 +230,26 @@ and had to be redirected. Start here so future work begins from the right model.
   peers — a pre-0.22.0 helixgen racing the same gap can still double-hold
   (mixed-version deployments only).
 
+- **#88 Cross-scope acquisition tiebreak: same-version double-hold under a
+  create->re-scan visibility skew** (surfaced 2026-07-18 by the #87 xdist
+  speedup, which widened the window enough to flake
+  `tests/test_locks.py::test_all_vs_scope_create_race_yields_exactly_one_winner`
+  under parallel-worker CPU contention). Distinct from #72(e) (mixed-version):
+  this bites TWO 0.22.0+ peers. `_post_create_conflict`'s tiebreak keys on
+  `(acquired_at, nonce)` stamped BEFORE `_write_new`, so the key need not match
+  actual file-creation order. Bad interleave: a younger-acquired_at lease that
+  happens to create its file AND re-scan first sees no conflict (the older
+  creator's file isn't visible yet) and commits; the older creator then
+  creates, re-scans, sees the younger foreign lease, and — being older —
+  ALSO commits. Both hold conflicting scopes (e.g. `all` vs `library`). Rare
+  in production (microsecond window, no barrier); the test forces the gap with
+  a barrier and contention exposes it. Proper fix is a shared
+  acquisition-serialization point (mutex-serialize the scan+create+verify the
+  way `_break_stale` already mutex-serializes breaking) rather than a
+  pre-stamped-timestamp tiebreak — a correctness-critical lock redesign that
+  needs its own spec + adversarial review, deliberately NOT folded into the
+  #87 speed PR. Until then the test is `xfail(strict=False)` ONLY under xdist
+  (`PYTEST_XDIST_WORKER` set); serial runs still enforce the invariant.
 - **#75 Loudness phase-2 hardware validation [device-write]** (authoritative
   copy: workspace BACKLOG.md) — everything
   #62 phase 2 shipped is offline-tested against fakes; a test-signal rig
