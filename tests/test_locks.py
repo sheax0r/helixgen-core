@@ -822,3 +822,65 @@ def test_release_removes_our_own_lease_normally(root):
         out = locks.release_scopes(IP, ["library"], token=tok)
     assert out["released"] == ["library"]
     assert not lease_path(root, "library").exists()
+
+
+def test_release_no_scope_keeps_reacquired_lease_without_error(root, monkeypatch):
+    """Bare `device unlock` (no --scope): a lease judged ours but re-acquired
+    by another owner before the unlink must be KEPT (not deleted, not an
+    error) — the non-explicit sibling of the explicit-scope guard, which is
+    the exact clobber #72 exists to prevent."""
+    tok = "mytoken"
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ours = {"pid": os.getpid(), "hostname": locks.hostname(),
+            "acquired_at": time.time(), "ttl_seconds": 900, "label": "me",
+            "kind": "session", "nonce": "OURS", "token": tok}
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    path.write_text(json.dumps(ours))
+    real_read = locks.read_lease
+    swapped = {"done": False}
+
+    def racing_read(p):
+        result = real_read(p)
+        if Path(p) == path and not swapped["done"]:
+            swapped["done"] = True  # re-acquired between judge-read and unlink
+            path.write_text(json.dumps(foreign))
+        return result
+
+    monkeypatch.setattr(locks, "read_lease", racing_read)
+    out = locks.release_scopes(IP, None, token=tok)  # no exception
+    assert "editbuffer" not in out["released"]
+    assert any(k["scope"] == "editbuffer" for k in out["kept"])
+    assert json.loads(path.read_text())["nonce"] == "THEIRS"  # foreign survives
+
+
+def test_session_lock_falls_back_to_fresh_acquire_when_renew_raced(root,
+                                                                   monkeypatch):
+    """#72: session_lock renews an owned live lease in place, but if that
+    rewrite no-ops because the lease was broken + re-acquired since we read
+    it (`_rewrite` returns False), it must fall back to a fresh `acquire` —
+    which then contends with the new owner rather than reporting success on
+    a lease it no longer holds."""
+    tok = "tok-s"
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ours = {"pid": os.getppid(), "hostname": locks.hostname(),
+            "acquired_at": time.time(), "ttl_seconds": 900, "label": "held",
+            "kind": "session", "nonce": "OURS", "token": tok}
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    path.write_text(json.dumps(ours))
+
+    def fake_rewrite(p, payload, *, expect_nonce=None):
+        # model the real no-op: the lease was re-acquired, so refuse the write
+        Path(p).write_text(json.dumps(foreign))
+        return False
+
+    monkeypatch.setattr(locks, "_rewrite", fake_rewrite)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", tok)
+    with pytest.raises(locks.LockHeld):
+        locks.session_lock(IP, ["editbuffer"], label="s", ttl=900, timeout=0)
+    assert json.loads(path.read_text())["nonce"] == "THEIRS"  # new owner's lease

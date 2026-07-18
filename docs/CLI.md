@@ -509,7 +509,10 @@ exit, even on failure):
 - `helixgen device unlock [--scope <s>]... [--force]` — release your leases
   (all of them without `--scope`). An explicit `--scope` you don't own is an
   error unless `--force` (which breaks even a live foreign lease —
-  dangerous). Foreign leases are otherwise reported and left alone.
+  dangerous). Foreign leases are otherwise reported and left alone. A scope
+  re-acquired by another owner in the instant between the ownership check and
+  the unlink is treated the same way — never clobbered (errors for an explicit
+  `--scope`, kept without error for a bare `unlock`).
 
 **Contention:** a blocked acquire waits up to `$HELIXGEN_LOCK_TIMEOUT`
 seconds (default **30**; `0` = fail fast) with polling backoff, then exits
