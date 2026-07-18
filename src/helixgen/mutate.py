@@ -26,6 +26,7 @@ from helixgen.controllers import ControllerError
 from helixgen.generate import (
     HSP_SNAPSHOT_SLOTS,
     GenerateError,
+    _apply_trails_harness,
     _build_exp_controller,
     _build_fs_controller,
     _build_fs_param_controller,
@@ -265,17 +266,7 @@ def set_param(
         _write_snapshot_slot(body, wrapped, idx, coerced)
         return
     _warn_if_base_overridden(wrapped, f"{block!r} param {param!r}")
-    if isinstance(wrapped, dict) and _is_stereo_param(wrapped):
-        for channel in ("1", "2"):
-            chan = wrapped.get(channel)
-            if isinstance(chan, dict):
-                chan["value"] = coerced
-            else:
-                wrapped[channel] = {"value": coerced}
-    elif isinstance(wrapped, dict):
-        wrapped["value"] = coerced
-    else:
-        params[param] = {"value": coerced}
+    _write_slot_param(slot, param, coerced)
 
 
 # --- set_flow_param (input/output/split/join pseudo-blocks) ------------------
@@ -987,24 +978,7 @@ def set_trails(
             f"blocks."
         )
 
-    trails = bool(trails)
-    harness = bnn.get("harness")
-    if not isinstance(harness, dict):
-        bnn["harness"] = {
-            "@enabled": {"value": True},
-            "params": {
-                "EvtIdx": {"value": -1},
-                "Trails": {"value": trails},
-                "bypass": {"value": False},
-                "upper": {"value": True},
-            },
-        }
-    else:
-        params = harness.get("params")
-        if not isinstance(params, dict):
-            params = {}
-            harness["params"] = params
-        params["Trails"] = {"value": trails}
+    _apply_trails_harness(bnn, bool(trails))
 
 
 # --- set_input ---------------------------------------------------------------

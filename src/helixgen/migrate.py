@@ -596,7 +596,7 @@ def migrate_instruments(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[
         try:
             profile = guitars.profile_from_instrument(d)
         except (KeyError, TypeError) as exc:
-            skipped.append({"instrument": (d or {}).get("name") if isinstance(d, dict) else None,
+            skipped.append({"instrument": d.get("name") if isinstance(d, dict) else None,
                             "reason": f"malformed instrument entry: {exc}"})
             continue
         built.append(profile)  # tracks the post-migration profile set (dry-run too)

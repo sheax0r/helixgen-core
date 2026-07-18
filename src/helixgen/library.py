@@ -264,7 +264,7 @@ class Library:
 
 def _schemas_match(a: dict[str, dict[str, Any]], b: dict[str, dict[str, Any]]) -> bool:
     """Two schemas match iff they have the same param keys and the same types per key."""
-    if set(a.keys()) != set(b.keys()):
+    if set(a) != set(b):
         return False
     for key in a:
         if a[key].get("type") != b[key].get("type"):
