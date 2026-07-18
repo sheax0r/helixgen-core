@@ -393,7 +393,9 @@ plugin repo).
   `preset_output_dir` (replaced by the `library/tones/` default write
   location) are deprecated. Loading a preferences file that still carries
   either key (present + non-empty) prints a one-line stderr warning pointing
-  at `library migrate`; both keys are still parsed for back-compat. `library
+  at `library migrate` — once per process per key, so a multi-load run like
+  `library migrate` doesn't repeat it; both keys are still parsed for
+  back-compat. `library
   migrate` seeds guitar profiles from `instruments` and then **removes** both
   keys from the file.
 
@@ -451,7 +453,8 @@ The label resolves to a guitar profile by slug / name / short_name
 
 Profiles are seeded from `preferences.instruments` by `helixgen library
 migrate` (which then removes the deprecated `instruments` / `preset_output_dir`
-prefs keys). Create/edit them via the `setup` skill.
+prefs keys). Scaffold a new one with `helixgen library add-guitar` (which
+also auto-commits it); create/edit the details via the `setup` skill.
 
 ## The `helixgen library` verb group
 
@@ -463,13 +466,16 @@ same posture as tone auto-registration).
 
 - `helixgen library list [--tones|--guitars|--irs] [--json]` — list the
   library's tones, guitar profiles, and per-IR metadata (grouped; a flag
-  narrows to one section). `--json` emits `{"tones": [...], "guitars": [...],
-  "irs": [...]}`.
+  narrows to one section, in the human view AND the `--json` shape). `--json`
+  emits `{"tones": [...], "guitars": [...], "irs": [...]}` — only the
+  requested key(s) when a narrowing flag is given.
 - `helixgen library show <name> [--json]` — one tone's — or one guitar
   profile's — metadata: compact human summary, or the exact on-disk JSON with
   `--json`. `<name>` resolves as a TONE first (logical slug, metadata
   filename, or any variant's `preset_name`); if no tone matches it is then
-  tried as a GUITAR profile (slug / name / short_name, case-insensitive).
+  tried as a GUITAR profile (slug / name / short_name, case-insensitive). A
+  name that resolves as a tone AND also matches a guitar profile shows the
+  tone with a stderr note naming the shadowed profile.
 - `helixgen describe <tone>` — the longer, human-oriented counterpart to
   `library show`: identity, tags, a variants table, and the full
   `description_md` verbatim.
@@ -489,6 +495,12 @@ same posture as tone auto-registration).
   profile (case-insensitive match; skipped when that guitar has no profile)
   and IR tags outside the controlled vocabulary. `--json` emits
   `{"problems": [...], "warnings": [...]}`.
+- `helixgen library add-guitar <name> [--short-name SHORT] [--type
+  guitar|bass]` — scaffold a new guitar profile JSON (identity fields set,
+  everything else null/empty for the setup skill or a hand edit to enrich)
+  and auto-commit it — the core write path for new profiles, so a
+  skill-authored profile doesn't wait for core's next library write to get
+  committed. Refuses an existing slug.
 - `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]
   [--guitar] [--keep-source]` — bring an external `.hsp` into the library
   under the naming schema (moves by default; `--keep-source` copies), folding

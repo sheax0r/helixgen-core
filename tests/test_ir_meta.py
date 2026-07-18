@@ -409,3 +409,18 @@ def test_explicit_irs_dir_arg_no_bridge(tmp_path):
     assert m.irs_dir == explicit
     assert m.entries == {}
     assert (legacy_dir / "mapping.json").exists()  # untouched
+
+
+def test_choose_dest_full_hash_fallback_on_prefix_alias(tmp_path):
+    # 79f: if both the natural dest AND the 8-hex-prefixed dest exist with
+    # DIFFERENT content (a ~2^-32 basename+prefix accident), fall back to the
+    # full irhash so the chosen dest is never a silent alias.
+    lib = home.library_irs_dir()
+    h = "9" * 32
+    src = _wav(tmp_path / "pk" / "cab.wav", b"RIFFnew")
+    _wav(lib / "pk" / "cab.wav", b"RIFFother1")
+    _wav(lib / "pk" / f"cab-{'9' * 8}.wav", b"RIFFother2")
+
+    dest, _ = ir_meta.import_wav(src, h)
+    assert dest == lib / "pk" / f"cab-{h}.wav"
+    assert dest.read_bytes() == b"RIFFnew"

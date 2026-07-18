@@ -586,3 +586,35 @@ def test_no_deprecation_warning_when_keys_absent_or_empty(tmp_path, capsys):
     load_preferences(prefs)
     err = capsys.readouterr().err
     assert "deprecated" not in err
+
+
+def test_deprecation_warning_fires_once_per_process_per_file(tmp_path, capsys):
+    # 79g: one command run (e.g. `library migrate`) loads preferences several
+    # times; the identical notice must not repeat for the same file.
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({
+        "schema_version": 1,
+        "instruments": [{"name": "Les Paul Jr", "type": "guitar"}],
+    }))
+    load_preferences(prefs)
+    first = capsys.readouterr().err
+    assert first.count("deprecated") == 1
+
+    load_preferences(prefs)
+    load_preferences(prefs)
+    assert "deprecated" not in capsys.readouterr().err
+
+
+def test_deprecation_warning_still_fires_for_a_different_file(tmp_path, capsys):
+    # the once-per-process dedupe is keyed by (file, key): a DIFFERENT prefs
+    # file still gets its own notice.
+    a = tmp_path / "a" / "preferences.json"
+    b = tmp_path / "b" / "preferences.json"
+    for p in (a, b):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "schema_version": 1, "preset_output_dir": "~/presets"}))
+    load_preferences(a)
+    assert "deprecated" in capsys.readouterr().err
+    load_preferences(b)
+    assert "deprecated" in capsys.readouterr().err

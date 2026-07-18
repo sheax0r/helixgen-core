@@ -288,14 +288,24 @@ def _choose_dest(lib: Path, pack_dir: str, src: Path, irhash: str) -> Path:
 
     Normally ``<pack_dir>/<basename>``. If that natural dest already exists and
     is NOT byte-identical to ``src`` (two packs slugging to the same dir with a
-    shared basename but different content), disambiguate with an irhash prefix
-    so two distinct IRs never collapse onto one file (mirrors
-    ``migrate._choose_ir_dest``)."""
+    shared basename but different content), disambiguate with an 8-hex irhash
+    prefix so two distinct IRs never collapse onto one file (mirrors
+    ``migrate._choose_ir_dest``). Two distinct IRs sharing a basename AND the
+    8-hex prefix is a ~2^-32 accident (backlog #79f); if even the prefixed
+    dest exists with different content, fall back to the FULL irhash in the
+    filename -- unique per content by construction -- so, given a real
+    (non-empty) ``irhash`` as every register path supplies, the chosen dest
+    is always either absent or byte-identical to ``src``, never silently
+    aliased. (A falsy ``irhash`` degrades to the shared ``-ir`` suffix and
+    keeps only the natural-dest guarantee.)"""
     natural = lib / pack_dir / src.name
     if not natural.exists() or _content_matches(natural, src):
         return natural
     prefix = (irhash or "")[:8] or "ir"
-    return lib / pack_dir / f"{src.stem}-{prefix}{src.suffix}"
+    dis = lib / pack_dir / f"{src.stem}-{prefix}{src.suffix}"
+    if not dis.exists() or _content_matches(dis, src):
+        return dis
+    return lib / pack_dir / f"{src.stem}-{irhash or 'ir'}{src.suffix}"
 
 
 def import_wav(src: Path, irhash: str, *,

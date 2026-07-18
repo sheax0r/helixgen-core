@@ -246,7 +246,9 @@ def save_profile(p: GuitarProfile) -> GuitarProfile:
     """Persist ``p`` atomically under ``guitars_dir()``, then advisory-commit.
 
     - ``libinit.ensure_initialized()`` first (mkdir + git-init the home).
-    - Written via temp file + ``os.replace`` (atomic).
+    - Written via a per-process-unique temp file + ``os.replace`` (atomic;
+      any failure before the replace removes the temp file -- same pattern
+      as ``tone_meta.save_tone_meta``).
     - ``gitops.auto_commit`` afterward -- but ONLY when the written path
       resolves under ``home.helixgen_home()`` (mirrors
       ``tone_meta.save_tone_meta``); advisory, never raises.
@@ -257,9 +259,16 @@ def save_profile(p: GuitarProfile) -> GuitarProfile:
 
     path = profile_path(p.slug)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(_profile_to_dict(p), indent=2))
-    os.replace(tmp, path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(_profile_to_dict(p), indent=2))
+        os.replace(tmp, path)
+    except BaseException:  # KeyboardInterrupt/SIGTERM must also clean up
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
     home_dir = home.helixgen_home()
     try:

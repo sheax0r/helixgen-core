@@ -719,3 +719,163 @@ def test_describe_without_normalized_says_nothing(
     res = CliRunner().invoke(cli, ["describe", slug])
     assert res.exit_code == 0, res.output
     assert "normalized" not in res.output
+
+
+# ---------------------------------------------------------------------------
+# residual batches #79/#83: list --json narrowing, validate shape checks,
+# show tone/guitar shadow note
+# ---------------------------------------------------------------------------
+
+
+def test_library_list_json_honors_tones_flag(tmp_home, hsp_library, tmp_path):
+    # 79d: a narrowing flag applies to the --json shape too.
+    _save_profile()
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "list", "--tones", "--json"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert set(data) == {"tones"}
+    assert {t["slug"] for t in data["tones"]} == {"warm-jazz-clean"}
+
+
+def test_library_list_json_honors_guitars_and_irs_flags(tmp_home):
+    _save_profile()
+    res = CliRunner().invoke(cli, ["library", "list", "--guitars", "--json"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(res.output)
+    assert set(data) == {"guitars"}
+    assert data["guitars"][0]["slug"] == "gibson-les-paul-junior"
+
+    res = CliRunner().invoke(cli, ["library", "list", "--irs", "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == {"irs": []}
+
+    # two flags together narrow to exactly those two sections
+    res = CliRunner().invoke(
+        cli, ["library", "list", "--tones", "--guitars", "--json"])
+    assert res.exit_code == 0, res.output
+    assert set(json.loads(res.output)) == {"tones", "guitars"}
+
+
+def test_library_list_json_no_flags_keeps_full_shape(tmp_home):
+    # the unnarrowed shape is unchanged (agent contract).
+    res = CliRunner().invoke(cli, ["library", "list", "--json"])
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.output) == {"tones": [], "guitars": [], "irs": []}
+
+
+def test_validate_flags_shape_invalid_parseable_file(tmp_home):
+    # 83d: a tones/*.json that parses but fails deserialization (the file
+    # load_all_tone_metas warns-and-skips) must be a validate PROBLEM.
+    tones = home.tones_dir()
+    tones.mkdir(parents=True, exist_ok=True)
+    (tones / "broken-shape.json").write_text(json.dumps(
+        {"descriptor": "Broken", "variants": {"g": {"preset_name": "no hsp"}}}))
+
+    res = CliRunner().invoke(cli, ["library", "validate"])
+    assert res.exit_code == 1
+    assert "broken-shape.json" in res.output
+    assert "shape-invalid" in res.output
+
+    res = CliRunner().invoke(cli, ["library", "validate", "--json"])
+    assert res.exit_code == 1
+    # res.stdout: the loaders' skip warning goes to stderr, JSON to stdout
+    data = json.loads(res.stdout)
+    assert any("shape-invalid" in p for p in data["problems"])
+
+
+def test_validate_shape_valid_files_still_pass(tmp_home, hsp_library, tmp_path):
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "validate"])
+    assert res.exit_code == 0, res.output
+
+
+def test_library_show_notes_shadowed_guitar_profile(tmp_home, hsp_library, tmp_path):
+    # 79h: NAME resolving as a tone while ALSO matching a guitar profile
+    # must not silently mask the guitar -- a stderr note names it.
+    _save_profile()  # short_name "Les Paul Jr"
+    _make_tone(hsp_library, tmp_path, descriptor="Les Paul Jr")
+    res = CliRunner().invoke(cli, ["library", "show", "Les Paul Jr"])
+    assert res.exit_code == 0, res.output
+    assert "Variants (" in res.output          # the tone is shown
+    assert "also matches" in res.stderr
+    assert "gibson-les-paul-junior" in res.stderr
+
+
+def test_library_show_no_note_without_guitar_collision(tmp_home, hsp_library, tmp_path):
+    _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
+    res = CliRunner().invoke(cli, ["library", "show", "warm-jazz-clean"])
+    assert res.exit_code == 0, res.output
+    assert "also matches" not in res.stderr
+
+
+# ---------------------------------------------------------------------------
+# 79j: library add-guitar
+# ---------------------------------------------------------------------------
+
+
+def test_add_guitar_scaffolds_full_schema(tmp_home):
+    res = CliRunner().invoke(
+        cli, ["library", "add-guitar", "Gibson Les Paul Junior",
+              "--short-name", "Les Paul Jr"])
+    assert res.exit_code == 0, res.output
+    path = guitars.profile_path("gibson-les-paul-junior")
+    assert path.exists()
+    data = json.loads(path.read_text())
+    assert data == {
+        "schema": 1,
+        "name": "Gibson Les Paul Junior",
+        "short_name": "Les Paul Jr",
+        "type": "guitar",
+        "active": None,
+        "pickups": None,
+        "construction": None,
+        "character_md": None,
+        "genres": [],
+        "controls": [],
+    }
+    assert str(path) in res.output
+
+
+def test_add_guitar_defaults_short_name_and_type(tmp_home):
+    res = CliRunner().invoke(cli, ["library", "add-guitar", "P Bass",
+                                   "--type", "bass"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(guitars.profile_path("p-bass").read_text())
+    assert data["short_name"] == "P Bass"
+    assert data["type"] == "bass"
+
+
+def test_add_guitar_refuses_existing_slug(tmp_home):
+    r1 = CliRunner().invoke(cli, ["library", "add-guitar", "Jazzmaster"])
+    assert r1.exit_code == 0, r1.output
+    r2 = CliRunner().invoke(cli, ["library", "add-guitar", "Jazzmaster"])
+    assert r2.exit_code != 0
+    assert "already exists" in (r2.output + r2.stderr)
+
+
+def test_add_guitar_rejects_unsluggable_name(tmp_home):
+    res = CliRunner().invoke(cli, ["library", "add-guitar", "--", "---"])
+    assert res.exit_code != 0
+    assert "slug-able" in (res.output + res.stderr)
+
+
+def test_add_guitar_profile_resolves_in_show_and_generate(tmp_home):
+    CliRunner().invoke(cli, ["library", "add-guitar", "Ibanez Prestige",
+                             "--short-name", "Prestige"])
+    res = CliRunner().invoke(cli, ["library", "show", "Prestige"])
+    assert res.exit_code == 0, res.output
+    assert "ibanez-prestige" in res.output
+
+
+def test_add_guitar_auto_commits_home(tmp_home):
+    import shutil as _shutil
+    import subprocess
+    if _shutil.which("git") is None:
+        pytest.skip("git not available on PATH")
+    res = CliRunner().invoke(cli, ["library", "add-guitar", "SG Special"])
+    assert res.exit_code == 0, res.output
+    log = subprocess.run(
+        ["git", "-C", str(tmp_home), "log", "--oneline"],
+        capture_output=True, text=True).stdout
+    assert "guitar profile (sg-special)" in log
