@@ -357,6 +357,79 @@ def test_all_vs_scope_create_race_yields_exactly_one_winner(root, monkeypatch):
     assert len(live) == 1, live
 
 
+# --------------------------------------------------------------------------
+# acquisition meta-lock (backlog #88, Task 2): serializes scan->create->verify
+# --------------------------------------------------------------------------
+
+def test_acquire_meta_is_mutually_exclusive(root):
+    """(a) Only one holder at a time: a second grab of a held meta-lock
+    fails; once released it is grabbable again."""
+    meta = locks._meta_lock_path(IP)
+    assert locks._acquire_meta(meta) is True
+    assert locks._acquire_meta(meta) is False   # already held
+    meta.unlink()
+    assert locks._acquire_meta(meta) is True     # free again
+    meta.unlink()
+
+
+def test_stale_acquire_meta_is_broken_and_acquisition_proceeds(root):
+    """(b) A crashed acquirer's abandoned meta-lock (mtime past the TTL) is
+    reclaimed — the first pass unlinks it, the next pass grabs it — so it can
+    never wedge other acquirers. Mirrors `_break_stale`'s crashed-mutex
+    reclaim (unlink, re-assess next poll)."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text('{"pid": 2147483646, "t": 0}')  # some other, crashed pid
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    assert locks._acquire_meta(meta) is False    # reclaims (unlinks) the stale
+    assert not meta.exists()
+    assert locks._acquire_meta(meta) is True     # next pass proceeds
+    meta.unlink()
+
+
+def test_fresh_acquire_meta_is_not_broken(root):
+    """A meta-lock within its TTL is a LIVE holder — never reclaimed."""
+    meta = locks._meta_lock_path(IP)
+    assert locks._acquire_meta(meta) is True     # holder grabs it now
+    assert locks._acquire_meta(meta) is False    # contender must not break it
+    assert meta.exists()
+    meta.unlink()
+
+
+def test_meta_lock_contention_serializes_without_deadlock(root):
+    """(c) Many threads hammering the meta-lock never deadlock and never both
+    hold it — observed peak concurrency stays 1, and every worker returns."""
+    import threading
+
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    state = {"now": 0, "max": 0}
+    guard = threading.Lock()
+    stop = threading.Event()
+
+    def worker():
+        while not stop.is_set():
+            if locks._acquire_meta(meta):
+                with guard:
+                    state["now"] += 1
+                    state["max"] = max(state["max"], state["now"])
+                time.sleep(0.001)  # widen the critical section
+                with guard:
+                    state["now"] -= 1
+                meta.unlink(missing_ok=True)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    time.sleep(1.0)
+    stop.set()
+    for t in threads:
+        t.join(timeout=5)
+        assert not t.is_alive(), "worker deadlocked on the meta-lock"
+    assert state["max"] == 1, state  # never two holders at once
+
+
 def test_two_breakers_do_not_unlink_a_fresh_live_lease(root):
     """Review finding 3 (MAJOR): a breaker that decided 'stale' from an old
     read must re-verify under the break mutex — after a faster breaker has

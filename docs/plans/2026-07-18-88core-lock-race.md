@@ -74,16 +74,27 @@ acquisition is serialized across processes. Repo rules: TDD, stdlib only.
 
 ### Task 2: serialize acquisition with a stale-breakable meta-lock
 
-- [ ] Introduce a filesystem acquisition meta-lock (atomic `mkdir` or `O_EXCL`
+- [x] Introduce a filesystem acquisition meta-lock (atomic `mkdir` or `O_EXCL`
       create) that a process must hold while it does scan → create → verify for
       a given device/scope space. Model its stale-breaking on `_break_stale`
       (a process that dies holding the meta-lock must not wedge others: TTL +
       break). Keep the critical section MINIMAL (acquisition is brief).
-- [ ] The meta-lock itself must be correct: atomic acquire, no deadlock, a
-      bounded wait/retry, and stale-break identical in spirit to leases. Add
-      tests for: (a) meta-lock is mutually exclusive; (b) a stale/abandoned
-      meta-lock is broken and acquisition proceeds; (c) no deadlock when two
-      processes contend.
+      Implemented as a per-DEVICE `.acquire.lock` (`_meta_lock_path` /
+      `_acquire_meta`, `locks.py`) held across steps 2+3 of `_acquire_one`
+      only — never across the step-4 wait. Per-device (not per-scope) because
+      `all` conflicts with every granular scope. Stale-break mirrors
+      `_break_stale`'s crashed-mutex reclaim exactly: mtime past
+      `_ACQUIRE_META_TTL_S` (10s) → unlink and re-assess next poll (never
+      unlink-and-recreate in one breath).
+- [x] The meta-lock itself must be correct: atomic acquire, no deadlock, a
+      bounded wait/retry, and stale-break identical in spirit to leases. Added
+      `test_acquire_meta_is_mutually_exclusive` (a),
+      `test_stale_acquire_meta_is_broken_and_acquisition_proceeds` +
+      `test_fresh_acquire_meta_is_not_broken` (b), and
+      `test_meta_lock_contention_serializes_without_deadlock` (c: 8 threads,
+      observed peak concurrency stays 1, all workers return). The step-4 wait
+      loop treats a contended meta-lock as a transient race artifact
+      (`meta_contended`) — bounded backoff, never a bogus `LockHeld`.
 
 ### Task 3: remove the xfail; prove the invariant holds
 
