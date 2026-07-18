@@ -91,7 +91,7 @@ def test_ensure_idempotent_appends_missing_lines_to_custom_gitignore(tmp_path):
     text = (home / ".gitignore").read_text()
     lines = text.splitlines()
     assert lines[0] == "custom"
-    for required in ("devices/", "cache/", "tone3000/", "*.bak*", "*.wav", "*.migrated-*"):
+    for required in ("devices/", "cache/", "tone3000/", "*.bak*", "*.wav", "*.migrated-*", "*.tmp"):
         assert required in lines
 
 
@@ -287,7 +287,7 @@ def test_ensure_home_repo_existing_toplevel_without_gitignore_gets_rules(tmp_pat
     assert gitops.ensure_home_repo(home) is True
     text = (home / ".gitignore").read_text()
     lines = text.splitlines()
-    for required in ("devices/", "cache/", "tone3000/", "*.bak*", "*.wav", "*.migrated-*"):
+    for required in ("devices/", "cache/", "tone3000/", "*.bak*", "*.wav", "*.migrated-*", "*.tmp"):
         assert required in lines
 
 
@@ -302,7 +302,7 @@ def test_ensure_home_repo_existing_toplevel_with_custom_gitignore_appends_missin
     # user's own lines preserved, in order, untouched
     assert lines[0] == "mystuff/"
     assert "*.secret" in lines
-    for required in ("devices/", "cache/", "tone3000/", "*.bak*", "*.wav", "*.migrated-*"):
+    for required in ("devices/", "cache/", "tone3000/", "*.bak*", "*.wav", "*.migrated-*", "*.tmp"):
         assert required in lines
 
 

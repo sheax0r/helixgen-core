@@ -176,7 +176,19 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 - `helixgen show-block "<name>"` — print a block's exact param names, types, defaults, and observed ranges. **Run this before writing a spec** — param names are case-sensitive and the generator rejects unknown ones.
 - `helixgen generate <spec.json> [-o <out.hsp>]` — generate a preset. `-o` is now **optional**. Default (no `-o`): writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON — name the tone with `--artist`/`--song` (paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (resolved to a guitar **profile** — see "Guitar profiles / resolution" under Library commands — and its `short_name` appended to the display name + slug); with no naming flag, the recipe's bare `name` becomes the descriptor. A slug collision (target `.hsp` already exists) errors with a rename suggestion — never overwrites. Explicit `-o <out.hsp>` preserves the legacy behavior exactly: writes there, auto-registers, naming flags ignored, **no metadata JSON written**. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix.
 - `helixgen patch <preset.hsp> <ops.json|-> [--json]` — apply a JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`) to the `.hsp` in one atomic invocation: all ops are applied in memory and the file is written once at the end, so an invalid op anywhere in the list leaves the file untouched. `-` reads the ops from stdin. Preferred over repeated single-op verbs for multi-edit sessions.
-- `helixgen set-param <preset> <block> <param> <value> [--snapshot NAME_OR_INDEX] [--path/--lane/--pos]` — surgical edit of one param, in place. Besides library blocks, accepts the signal-flow pseudo-blocks `input` / `output` / `split` / `join` (`merge` alias) — e.g. `helixgen set-param t.hsp input impedance 1M`, `helixgen set-param t.hsp output level -- -3`, `helixgen set-param t.hsp join "A Level" -- -2`. **Negative values need the `--` sentinel** (else the shell-style parser reads `-3` as an option); put any `--path`/`--lane`/`--pos` flags *before* the `--`. **`--snapshot <name-or-0-based-index>`** (names win over a digit index; the same resolver backs `enable`/`disable --snapshot`, which therefore also take an index) writes the value into that ONE snapshot's slot of the param's 8-slot per-snapshot overrides array instead of the base — the param must already carry a base value (untouched slots densify to it; the base re-syncs to the active snapshot), and the preset must define snapshots (`preset.snapshots` meta — otherwise the transcoder would silently drop the array, so `set-param` errors instead). Snapshot overrides on library-block params round-trip through `view`; overrides on the `output` pseudo-block round-trip too, surfacing as the recipe's snapshot-level `output` field (#76 — see `docs/recipe-reference.md`); both kinds are realized on the device by `device install`/`sync`. Once a param's per-snapshot array varies, the device applies it on every snapshot — a later plain base edit of that param is inaudible on-device, and `set-param` warns when this happens (use `--snapshot`, or edit all 8 slots). On pseudo-blocks only `output` supports `--snapshot` (per-snapshot level/pan — the `device normalize` actuator). See CLAUDE.md "Surgical edits" for the full verb set (`enable`/`disable`/`add-block`/`remove-block`/`swap-model`/`view`).
+- `helixgen set-param <preset> <block> <param> <value> [--snapshot NAME_OR_INDEX] [--path/--lane/--pos]` — surgical edit of one param, in place. Besides library blocks, accepts the signal-flow pseudo-blocks `input` / `output` / `split` / `join` (`merge` alias) — e.g. `helixgen set-param t.hsp input impedance 1M`, `helixgen set-param t.hsp output level -- -3`, `helixgen set-param t.hsp join "A Level" -- -2`. **Negative values need the `--` sentinel** (else the shell-style parser reads `-3` as an option); put any `--path`/`--lane`/`--pos` flags *before* the `--`. **`--snapshot <name-or-0-based-index>`** (names win over a digit index; the same resolver backs `enable`/`disable --snapshot`, which therefore also take an index) writes the value into that ONE snapshot's slot of the param's 8-slot per-snapshot overrides array instead of the base — the param must already carry a base value (untouched slots densify to it; the base re-syncs to the active snapshot), and the preset must define snapshots (`preset.snapshots` meta — otherwise the transcoder would silently drop the array, so `set-param` errors instead). Snapshot overrides on library-block params round-trip through `view`; overrides on the `output` pseudo-block round-trip too, surfacing as the recipe's snapshot-level `output` field (#76 — see `docs/recipe-reference.md`); both kinds are realized on the device by `device install`/`sync`. Once a param's per-snapshot array varies, the device applies it on every snapshot — a later plain base edit of that param is inaudible on-device, and `set-param` warns when this happens (use `--snapshot`, or edit all 8 slots). On pseudo-blocks only `output` supports `--snapshot` (per-snapshot level/pan — the `device normalize` actuator). The companion surgical verbs are listed below; CLAUDE.md "Surgical edits" carries the mental model.
+- `helixgen enable <preset> <block> [--snapshot NAME-or-INDEX] [--path/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) enable it in that one snapshot (name or 0-based index; names win — the same resolver as `set-param --snapshot`).
+- `helixgen disable <preset> <block> [--snapshot NAME-or-INDEX] [--path/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) bypass it in that one snapshot.
+- `helixgen add-block <preset> <block> [--path N] [--after NAME]` — insert a block (append to `--path`, default 0, or after a named block).
+- `helixgen remove-block <preset> <block> [--path/--lane/--pos]` — delete a block.
+- `helixgen swap-model <preset> <old> <new> [--path/--lane/--pos]` — replace a block with another of the **same category**; carries over params the target shares, warns on any it has to drop (surface those warnings to the user).
+- `helixgen view <preset.hsp> [-o recipe.json]` — read-only projection of a `.hsp` back into the recipe shape (replaces the old `decompile`; the `-o` dump is non-authoritative). Prints JSON by default.
+
+`--path`/`--lane`/`--pos` disambiguate when a block name appears more than
+once in the preset (e.g. dual-cab, both lanes of a split); block addressing
+is `(path, lane, pos)` — there is no `--index`. On a `patch` op the same
+fields are `"path"`/`"lane"`/`"pos"` (plus `"snapshot"` and the signal-flow
+pseudo-blocks).
 - `helixgen ingest <path>` — ingest a `.hsp`/`.hlx`/`.json` file or recurse a directory; first encountered file sets the chassis.
 - `helixgen bootstrap` — clone sensorium/phelix and ingest its `blocks/` folder.
 - `helixgen register-irs <wav1> <wav2> ...` — compute each WAV's Stadium hash and register. Use `--force` to overwrite existing mappings. By default each WAV is **copied** into `library/irs/<pack>/` with a scaffolded metadata sidecar and `mapping.json` points at the copy; `--no-copy` registers in place with no metadata.
@@ -184,6 +196,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 - `helixgen irhash <wav-or-dir>... [--json]` — compute Stadium hashes statelessly (nothing written to `mapping.json`); directories are recursed for `*.wav`.
 - `helixgen ir-scan <dir>... [--rescan] [--remove <basename>] [--no-copy] [--json]` — recursively walk one or more directories for `*.wav`, compute each Stadium hash, and cache. By default each newly-hashed WAV is **copied** into `library/irs/<pack>/` with a scaffolded metadata sidecar and `mapping.json` points at the copy (content-addressed idempotent; a re-scan of the same content is a no-op); `--no-copy` registers in place with no metadata.
 - `helixgen list-irs [--json]` — print `<hash>  <wav-path>` for every registered IR.
+- `helixgen ir-cache --stats | --clear | --prune` — inspect/maintain the IR-hash **cache** (a pure-local perf layer that memoizes expensive Stadium-hash computes, keyed by absolute path + mtime + size; **not** `mapping.json`). `--stats` prints entry count, path, and size; `--clear` deletes the cache file; `--prune` drops entries whose backing WAV is gone. Default location `~/.helixgen/cache/irhash.json` (override with `$HELIXGEN_IRHASH_CACHE`, or `$HELIXGEN_CACHE` for the cache dir). All IR-hashing paths (`register-irs`, `ir-scan`, `irhash`) share it transparently.
 - `helixgen controllers [--json]` — the device's assignable controllers (FS/EXP) with English names + positions.
 - `helixgen analyze-audio <capture.wav> [--json]` — offline audio-quality metrics from a WAV capture (backlog #62 phase 3): integrated/momentary/short-term LUFS per ITU-R BS.1770 (K-weighting, 400 ms blocks / 75% overlap, −70 LUFS absolute + −10 LU relative gates), crest factor / peak / true-peak / RMS in dB, a clipping flag, spectral centroid, and FFT band energies over the 5-band guitar vocabulary (low 60–200 Hz, low_mid 200–500, mid 500–1200, high_mid 1200–4000, high 4000–10000 — **provisional edges**, pending reconciliation with the IR catalog's measured-tag pass). Undefined metrics (silence, sub-400 ms files) come back `null` with a `notes` entry, not an error; non-finite samples (NaN/Inf) are zeroed and counted in `notes`, so `--json` is always strictly valid JSON. Needs numpy (`pip install 'helixgen[analyze]'`); accepts any PCM / IEEE-float WAV, any sample rate, mono or stereo. Measurement caveats (backlog #84): the WAV is decoded whole-file into memory as float64 (~2.7 GB peak for an hour of 48 kHz stereo — keep captures to minutes; no streaming mode), and the momentary/short-term LUFS **maxima** are computed on a 100 ms hop, so a peak straddling two hop positions can under-read by a fraction of a dB (integrated LUFS is unaffected). EXPERIMENTAL `--record N -o <out.wav> [--input <device>] [--rate] [--channels]` records the capture first from an audio input (the Stadium's USB return) via sounddevice (`pip install 'helixgen[capture]'` + PortAudio) — untested against real hardware. The capture options `--input`/`--rate`/`--channels` apply only to `--record`; passing any of them without `--record` is a usage error (they used to be silently ignored). Complements `device measure` (network meters, loudness only): this tier is the one that can say what a tone *sounds* like, not just how loud it is.
 
@@ -221,7 +234,8 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   library's tones, guitar profiles, and per-IR metadata, grouped by section
   (or narrowed to one with a flag). Guitar rows show slug / name / short_name /
   type; IR rows show the hash prefix, library-relative wav, and character tags.
-  `--json` emits `{"tones": [...], "guitars": [...], "irs": [...]}`.
+  `--json` emits `{"tones": [...], "guitars": [...], "irs": [...]}` — narrowed
+  to only the requested key(s) when a section flag is given.
 - `helixgen library show <name> [--json]` — one tone's — or one guitar
   profile's — metadata: a compact human summary, or the exact on-disk JSON
   with `--json`. `<name>` resolves as a TONE first (logical slug, metadata
@@ -233,6 +247,9 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   matches it is
   tried as a GUITAR profile (slug / name / short_name — name, type, pickups,
   construction, genres, character presence, and the control inventory).
+  When a name resolves as a tone AND also matches a guitar profile, the tone
+  is shown (tone-first order) with a stderr note naming the shadowed profile
+  — address the guitar by a label only it matches to see the profile.
 - `helixgen describe <tone>` — human-oriented write-up: header ("Artist -
   Song" or the descriptor), a variants table (guitar key, preset_name,
   guitar_settings, and a brief `normalized` summary when `device normalize
@@ -260,9 +277,20 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   target guitar's profile (case-insensitive; skipped when that guitar has no
   profile — it may lag) and IR tags outside the controlled vocabulary. Each
   problem line is prefixed with its tone's logical slug; a `tones/*.json` that
-  isn't valid JSON is a problem prefixed with its filename. Exits 1 if any
+  isn't valid JSON — or that parses but is shape-invalid (the same
+  deserialization check the loaders warn-and-skip on) — is a problem prefixed
+  with its filename. Exits 1 if any
   problems are found, 0 if clean (warnings never change the code). `--json`
   emits `{"problems": [...], "warnings": [...]}` (both empty when clean).
+- `helixgen library add-guitar <name> [--short-name SHORT] [--type
+  guitar|bass]` — scaffold a new guitar profile at
+  `library/guitars/<slug>.json` (schema 1: name, short_name, type; every
+  other field null/empty for the setup skill — or a hand edit — to enrich)
+  and auto-commit the home repo like every other library write. This is the
+  core write path for new profiles — a profile JSON written directly by a
+  skill would otherwise only get committed on core's next library write. A
+  profile already at `slugify(name)` is refused (exit 1); edit the existing
+  JSON instead (`library validate` checks it).
 - `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]
   [--guitar] [--keep-source]` — import an external `.hsp` (or every `*.hsp`
   in a directory) into the library. By default the source is **moved** into
@@ -279,7 +307,9 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   whole batch is pre-validated and refused, moving nothing, on any collision)
   but **not** atomic on per-file errors during the move pass — an
   unexpected per-file error is recorded and the run continues, the manifest
-  is always saved, and the command exits nonzero if any file failed.
+  is always saved, and the command exits nonzero if any file failed; a
+  failure after a file was placed (manifest registration) names the exact
+  recovery command (`helixgen register <placed .hsp>`).
 - `helixgen library migrate [--dry-run | --plan <plan.json>]` — one-shot,
   idempotent migration of a pre-library `~/.helixgen` into the tone library:
   moves each manifest tone's `.hsp` into `library/tones/<slug>.hsp` under the
@@ -295,7 +325,10 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   prints the inferred plan as JSON and mutates nothing; `--plan FILE` executes
   a (possibly agent- or user-edited) plan instead of re-inferring one; with
   neither flag, plans and runs in one go. A per-tone/IR error is recorded and
-  the run continues; a slug collision (two tones mapping to one destination) is
+  the run continues; a tone whose `.hsp` already sits at its destination but
+  whose metadata/manifest bookkeeping is incomplete (a prior run died mid-tone)
+  is self-healed on re-run — file untouched, bookkeeping recreated; a slug
+  collision (two tones mapping to one destination) is
   recorded with a rename suggestion and neither tone is moved. Output is a JSON
   summary of moves/skips/errors/collisions (including an `instruments` section).
 - `helixgen library ir-backfill [--json]` — for every `mapping.json` entry

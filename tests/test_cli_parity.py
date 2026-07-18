@@ -202,6 +202,9 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["ir-scan"],
      ["COPIED", "--no-copy", "content-addressed", "one-time bridged"]),
     (["library", "ir-backfill"], ["IDEMPOTENT", "sidecar", "gitignored"]),
+    # --- add-guitar (#79j) ---
+    (["library", "add-guitar"],
+     ["Scaffold", "auto-commits", "enrich", "refused"]),
 ]
 
 

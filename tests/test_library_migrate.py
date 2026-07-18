@@ -663,3 +663,145 @@ def test_data_safe_place_preserves_source_on_verify_failure(tmp_home, monkeypatc
     dest = home.tones_dir() / "verify-fail-tone.hsp"
     assert not dest.exists()  # partial dest cleaned up
     assert any(e["name"] == "Verify Fail Tone" for e in summary["tones"]["errors"])
+
+
+# ---------------------------------------------------------------------------
+# 79e: self-heal a tone placed by a prior run that died before the re-key
+# ---------------------------------------------------------------------------
+
+
+def test_run_migration_self_heals_after_post_move_failure(tmp_home, monkeypatch):
+    h1, _h2 = _build_two_tone_home(tmp_home, monkeypatch)
+    plan = migrate.plan_migration()
+
+    # First run: die AFTER the move (during the manifest re-key) for every
+    # tone -- recorded as errors, files placed, manifest not re-keyed.
+    def _boom(*a, **k):
+        raise RuntimeError("simulated crash during re-key")
+
+    # scoped context: NEVER monkeypatch.undo() here -- that would also undo
+    # the tmp_home env isolation and point run 2 at the REAL ~/.helixgen
+    with monkeypatch.context() as mp:
+        mp.setattr(migrate, "_rekey_manifest_tone", _boom)
+        summary1 = migrate.run_migration(plan)
+    assert len(summary1["tones"]["errors"]) == 2
+    dest1 = home.tones_dir() / "white-limo-lead-les-paul-jr.hsp"
+    assert dest1.exists() and not h1.exists()  # placed, source gone
+    # not re-keyed: the manifest record still points at the OLD (moved-away)
+    # location (old display name == new display name here, so key by path)
+    m = SetlistManifest.load()
+    rec = m.tones["White Limo Lead - Les Paul Jr"]
+    assert Path(rec["path"]).resolve() != dest1.resolve()
+
+    # Second run (healthy): heals the bookkeeping without touching the file.
+    bytes_before = dest1.read_bytes()
+    summary2 = migrate.run_migration(plan)
+    assert not summary2["tones"]["errors"]
+    healed = [t for t in summary2["tones"]["moved"] if t.get("healed")]
+    assert len(healed) == 2
+    assert dest1.read_bytes() == bytes_before
+
+    m = SetlistManifest.load()
+    rec = m.tones["White Limo Lead - Les Paul Jr"]
+    assert Path(rec["path"]).resolve() == dest1.resolve()
+    assert rec["slot"] == "1A"  # preserved through the heal
+    # metadata (written by the first run's place_tone) still intact + folded md
+    meta1 = tone_meta.load_tone_meta("white-limo-lead")
+    assert "les-paul-jr" in meta1.variants
+    assert meta1.description_md and "full write-up" in meta1.description_md
+
+    # Third run: pure idempotence -- all skips now.
+    summary3 = migrate.run_migration(plan)
+    assert not summary3["tones"]["errors"]
+    assert not summary3["tones"]["moved"]
+    assert len(summary3["tones"]["skipped"]) == 2
+
+
+def test_heal_preserves_hand_edited_variant_metadata(tmp_home, monkeypatch):
+    _build_two_tone_home(tmp_home, monkeypatch)
+    plan = migrate.plan_migration()
+    migrate.run_migration(plan)
+
+    # hand-enrich the variant, then simulate a lost manifest registration
+    meta = tone_meta.load_tone_meta("white-limo-lead")
+    meta.variants["les-paul-jr"].guitar_settings = {"tone": "7"}
+    tone_meta.save_tone_meta(meta)
+    m = SetlistManifest.load()
+    del m.tones["White Limo Lead - Les Paul Jr"]
+    m.save()
+
+    summary = migrate.run_migration(plan)
+    healed = [t for t in summary["tones"]["moved"] if t.get("healed")]
+    assert [t["new_name"] for t in healed] == ["White Limo Lead - Les Paul Jr"]
+    # the heal re-registered the tone WITHOUT clobbering the hand edit
+    m = SetlistManifest.load()
+    assert "White Limo Lead - Les Paul Jr" in m.tones
+    meta = tone_meta.load_tone_meta("white-limo-lead")
+    assert meta.variants["les-paul-jr"].guitar_settings == {"tone": "7"}
+
+
+def test_choose_ir_dest_full_hash_fallback_on_prefix_alias(tmp_home):
+    # 79f: natural AND 8-hex-prefixed dests both occupied by different
+    # content -> the full hash names the file (never a silent alias).
+    lib = home.library_irs_dir()
+    h = "c" * 32
+    src = tmp_home / "src" / "cab.wav"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"RIFFnew")
+    (lib / "pack").mkdir(parents=True)
+    (lib / "pack" / "cab.wav").write_bytes(b"RIFFother1")
+    (lib / "pack" / f"cab-{'c' * 8}.wav").write_bytes(b"RIFFother2")
+
+    dest, stub = migrate._choose_ir_dest(lib, "pack", src, h)
+    assert dest == lib / "pack" / f"cab-{h}.wav"
+    assert stub == lib / "pack" / f"cab-{h}.json"
+
+
+def test_heal_refuses_to_adopt_foreign_file_at_destination(tmp_home, monkeypatch):
+    # adversarial-review hardening of the #79e heal: source missing + a file
+    # at the destination slug that does NOT identify as this tone (different
+    # meta.name) must error, never be silently relabeled/adopted.
+    _write_prefs(tmp_home, monkeypatch, [])
+    exports = tmp_home / "exports"
+    exports.mkdir()
+    hsp = exports / "gone.hsp"
+    _write_hsp(hsp, "Vanishing Tone")
+    _register(hsp)
+    plan = migrate.plan_migration()
+
+    hsp.unlink()  # source vanishes out-of-band
+    dest = home.tones_dir() / "vanishing-tone.hsp"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _write_hsp(dest, "A Completely Different Tone")  # foreign squatter
+    foreign_bytes = dest.read_bytes()
+
+    summary = migrate.run_migration(plan)
+    assert [e["name"] for e in summary["tones"]["errors"]] == ["Vanishing Tone"]
+    assert not summary["tones"]["moved"]
+    assert dest.read_bytes() == foreign_bytes  # untouched
+    assert not tone_meta.meta_path("vanishing-tone").exists()  # no fabricated meta
+
+
+def test_guitars_save_profile_cleans_tmp_on_failure(tmp_home, monkeypatch):
+    # save_profile (add-guitar's writer) gets the same tmp-cleanup guarantee
+    # as save_tone_meta / SetlistManifest.save.
+    import helixgen.guitars as guitars_mod
+
+    p = guitars.GuitarProfile(
+        name="Test Guitar", short_name="TG", type="guitar", active=None,
+        pickups=None, construction=None, character_md=None,
+        genres=[], controls=[])
+    guitars.save_profile(p)
+    path = guitars.profile_path("test-guitar")
+    before = path.read_text()
+
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(guitars_mod.os, "replace", _boom)
+        p.short_name = "Changed"
+        with pytest.raises(OSError):
+            guitars.save_profile(p)
+    assert path.read_text() == before
+    assert list(path.parent.glob("*.tmp")) == []

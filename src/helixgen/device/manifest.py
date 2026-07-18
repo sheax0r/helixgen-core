@@ -631,9 +631,11 @@ class SetlistManifest:
         }
 
     def save(self) -> None:
-        """Atomically write the manifest as pretty JSON (temp file + ``os.replace``),
-        then make sure the helixgen home is git-initialized and advisory-commit
-        the change.
+        """Atomically write the manifest as pretty JSON (per-process-unique
+        temp file + ``os.replace``; any failure before the replace removes
+        the temp file and leaves the existing manifest untouched), then make
+        sure the helixgen home is git-initialized and advisory-commit the
+        change.
 
         The home is git-init'd unconditionally (whenever git is present);
         the commit itself is gated by the ``git_commit_tones`` preference
@@ -643,9 +645,16 @@ class SetlistManifest:
         a directory outside the repo makes no sense.
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(self.to_dict(), indent=2))
-        os.replace(tmp, self.path)
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(self.to_dict(), indent=2))
+            os.replace(tmp, self.path)
+        except BaseException:  # KeyboardInterrupt/SIGTERM must also clean up
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
 
         home_dir = home.helixgen_home()
         libinit.ensure_initialized(home_dir)

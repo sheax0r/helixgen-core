@@ -609,3 +609,192 @@ def test_find_variant_by_hsp_matches_absolute_stored_path(tmp_home, tmp_path):
     found = tone_meta.find_variant_by_hsp(outside)
     assert found is not None
     assert found[1] == "generic"
+
+
+# ---------------------------------------------------------------------------
+# residual batch #79/#83 (library-metadata + normalized-record reviews)
+# ---------------------------------------------------------------------------
+
+
+def test_save_tone_meta_cleans_tmp_file_on_write_failure(tmp_home, monkeypatch):
+    # 79a: a failure before the atomic replace must remove the temp file and
+    # leave the existing metadata untouched.
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    tone_meta.save_tone_meta(meta)
+    path = tone_meta.meta_path(meta.logical_slug)
+    before = path.read_text()
+
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tone_meta.os, "replace", _boom)
+    meta.tags.append("new-tag")
+    with pytest.raises(OSError):
+        tone_meta.save_tone_meta(meta)
+    assert path.read_text() == before
+    assert list(path.parent.glob("*.tmp")) == []
+
+
+def test_save_tone_meta_tmp_name_is_process_unique(tmp_home, monkeypatch):
+    # 83c: the temp name carries the pid so two processes writing the same
+    # meta path can never race on one fixed ".tmp" name.
+    import os as _os
+
+    seen = {}
+    real_replace = tone_meta.os.replace
+
+    def _spy(src, dst):
+        seen["src"] = str(src)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(tone_meta.os, "replace", _spy)
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    tone_meta.save_tone_meta(meta)
+    assert f".{_os.getpid()}.tmp" in seen["src"]
+
+
+def test_manifest_save_cleans_tmp_file_on_write_failure(tmp_home, monkeypatch):
+    # 79a (shared weakness): SetlistManifest.save gets the same guarantee.
+    from helixgen.device import manifest as manifest_mod
+
+    m = SetlistManifest(home.manifest_path())
+    m.tones["T"] = {"path": None, "content_hash": None,
+                    "source": "authored", "slot": None}
+    m.save()
+    before = m.path.read_text()
+
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(manifest_mod.os, "replace", _boom)
+    m.tones["U"] = {"path": None, "content_hash": None,
+                    "source": "authored", "slot": None}
+    with pytest.raises(OSError):
+        m.save()
+    assert m.path.read_text() == before
+    assert list(m.path.parent.glob("*.tmp")) == []
+
+
+def test_find_variant_by_hsp_matches_differently_cased_path(tmp_home):
+    # 83a: on a case-insensitive filesystem (APFS), a differently-cased
+    # spelling of a registered variant's path must still match (samestat).
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    tone_meta.save_tone_meta(meta)
+    hsp_abs = home.library_dir() / meta.variants["g1"].hsp
+    alias = hsp_abs.with_name(hsp_abs.name.upper())
+    if not alias.exists():
+        pytest.skip("filesystem is case-sensitive; alias spelling not reachable")
+    found = tone_meta.find_variant_by_hsp(alias)
+    assert found is not None
+    assert found[1] == "g1"
+
+
+def test_find_variant_by_hsp_tolerates_blank_hsp_value(tmp_home, tmp_path):
+    # 79b: a hand-edited blank hsp value must never match (Path("") would
+    # otherwise resolve to the library root) nor crash the walk.
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].hsp = ""
+    tone_meta.save_tone_meta(meta)
+    probe = tmp_path / "probe.hsp"
+    probe.write_text("x")
+    assert tone_meta.find_variant_by_hsp(probe) is None
+    assert tone_meta.find_variant_by_hsp(home.library_dir()) is None
+
+
+def test_validate_flags_blank_hsp_value(tmp_home):
+    # 79b: a blank hsp is a clear problem, not a silent pass against the
+    # library root directory.
+    meta, manifest = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].hsp = ""
+    problems = tone_meta.validate_tone_meta(
+        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=["g1"])
+    assert any("blank" in p for p in problems)
+
+
+def test_validate_flags_hsp_pointing_at_directory(tmp_home):
+    # 79b: `.exists()` would pass for a directory; the check requires a file.
+    meta, manifest = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].hsp = "tones"  # the tones/ dir itself
+    problems = tone_meta.validate_tone_meta(
+        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=["g1"])
+    assert any("not found" in p for p in problems)
+
+
+def test_validate_accepts_absolute_stored_hsp(tmp_home, tmp_path):
+    # 79b: an absolute stored path (outside the library) resolves verbatim.
+    outside = tmp_path / "elsewhere" / "t.hsp"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("x")
+    meta, manifest = _valid_meta_and_manifest(tmp_home)
+    meta.variants["g1"].hsp = str(outside)
+    problems = tone_meta.validate_tone_meta(
+        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=["g1"])
+    assert problems == []
+
+
+def test_upsert_variant_rejects_identity_mismatch(tmp_home):
+    # 79c: appending a variant under a different identity than the existing
+    # meta's is refused (one metadata file must describe one tone).
+    meta, _ = _valid_meta_and_manifest(tmp_home)  # artist=A song=B
+    with pytest.raises(ValueError, match="identity mismatch"):
+        tone_meta.upsert_variant(
+            meta, descriptor="Something Else",
+            guitar_slug=None, guitar_short=None, hsp_path="tones/x.hsp")
+    with pytest.raises(ValueError, match="identity mismatch"):
+        tone_meta.upsert_variant(
+            meta, artist="A", song="Different Song",
+            guitar_slug=None, guitar_short=None, hsp_path="tones/x.hsp")
+
+
+def test_upsert_variant_accepts_matching_identity(tmp_home):
+    meta, _ = _valid_meta_and_manifest(tmp_home)  # artist=A song=B
+    out = tone_meta.upsert_variant(
+        meta, artist="A", song="B",
+        guitar_slug="g2", guitar_short="G2", hsp_path="tones/a-b-g2.hsp")
+    assert "g2" in out.variants
+
+
+def test_unknown_keys_round_trip_through_save_and_load(tmp_home):
+    # 83b: hand-edited unknown top-level AND per-variant keys survive a
+    # load -> save round-trip (the closed serializer must not strip them).
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    tone_meta.save_tone_meta(meta)
+    path = tone_meta.meta_path(meta.logical_slug)
+    data = json.loads(path.read_text())
+    data["x_custom_note"] = {"nested": [1, 2, 3]}
+    data["variants"]["g1"]["x_variant_flag"] = "hand-edited"
+    path.write_text(json.dumps(data))
+
+    loaded = tone_meta.load_tone_meta(meta.logical_slug)
+    assert loaded.extra["x_custom_note"] == {"nested": [1, 2, 3]}
+    assert loaded.variants["g1"].extra["x_variant_flag"] == "hand-edited"
+
+    loaded.description_md = "an ordinary edit"
+    tone_meta.save_tone_meta(loaded)
+    after = json.loads(path.read_text())
+    assert after["x_custom_note"] == {"nested": [1, 2, 3]}
+    assert after["variants"]["g1"]["x_variant_flag"] == "hand-edited"
+    assert after["description_md"] == "an ordinary edit"
+
+
+def test_unknown_keys_never_shadow_known_fields(tmp_home):
+    # a hand-added extra key colliding with a real field must not overwrite
+    # the real value on save (known fields win).
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    meta.extra["artist"] = "Imposter"
+    tone_meta.save_tone_meta(meta)
+    after = json.loads(tone_meta.meta_path(meta.logical_slug).read_text())
+    assert after["artist"] == "A"
+
+
+def test_parse_tone_meta_raises_on_shape_invalid_data():
+    # 83d seam: the public parser applies the same shape rules that
+    # load_all_tone_metas warns-and-skips on.
+    with pytest.raises(Exception):
+        tone_meta.parse_tone_meta({"variants": {"g": {"preset_name": "no hsp"}}})
+    with pytest.raises(Exception):
+        tone_meta.parse_tone_meta({"variants": ["not", "a", "dict"]})
+    ok = tone_meta.parse_tone_meta(
+        {"artist": "A", "song": "B",
+         "variants": {"g": {"hsp": "tones/x.hsp", "preset_name": "P"}}})
+    assert ok.variants["g"].hsp == "tones/x.hsp"

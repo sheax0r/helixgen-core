@@ -30,11 +30,29 @@ library_dir() / variant.hsp``.
 
 Every write goes through :func:`save_tone_meta`, which -- like
 ``device/manifest.py``'s ``SetlistManifest.save`` -- calls
-``libinit.ensure_initialized()`` first, writes atomically (temp file +
-``os.replace``), and then advisory-commits via ``gitops.auto_commit`` (never
+``libinit.ensure_initialized()`` first, writes atomically (per-process-unique
+temp file + ``os.replace``; the temp file is removed on any failure before
+the replace), and then advisory-commits via ``gitops.auto_commit`` (never
 raises; gated by the ``git_commit_tones`` preference) -- but only when the
 written file resolves under ``home.helixgen_home()``, same guard shape as
 ``SetlistManifest.save``.
+
+**Concurrency (advisory only).** Tone JSON writes are load -> mutate ->
+``save_tone_meta``: the atomic replace guarantees a reader never sees a
+half-written file, and the pid-unique temp name means two concurrent
+processes can never race on one temp path -- but there is NO file lock, so
+two processes that load the same meta and save "simultaneously" still
+last-write-wins (one process's mutation is lost, never corrupted). The
+repo's existing lock layer (``locks.py``) is scoped to DEVICE access, not
+library files, so no library-file lock exists to reuse; the window is
+milliseconds and the record is re-creatable, accepted as-is (backlog #83c).
+
+**Unknown-key preservation.** Hand-edited metadata may carry keys this
+serializer doesn't model. Both ``ToneMeta`` and ``Variant`` collect unknown
+top-level keys into an ``extra`` dict on load and write them back verbatim
+on save (known fields always win on a name collision), so a load -> save
+round-trip (``library doc``, ``device normalize --yes`` recording, variant
+upserts on an existing tone) never silently strips a hand-edit.
 """
 from __future__ import annotations
 
@@ -87,11 +105,13 @@ class Variant:
 
     Latest run wins (overwrite, never append); in-band zero trims still
     count -- they confirm the tone measures level-matched. The field is a
-    plain optional dict and the schema stays 1: an older reader's
-    ``_variant_from_dict`` simply drops the unknown key (and would drop it
-    on a re-save -- acceptable, the record is re-creatable by re-running
-    normalize), so no version fence is needed for a purely additive,
-    advisory field.
+    plain optional dict and the schema stays 1: a pre-``normalized`` reader
+    carries the key through its ``extra`` dict (unknown keys round-trip --
+    see the module docstring), so no version fence is needed for a purely
+    additive, advisory field.
+
+    ``extra`` holds any on-disk keys this dataclass doesn't model
+    (hand-edits, future fields); they are written back verbatim on save.
     """
 
     hsp: str
@@ -99,11 +119,16 @@ class Variant:
     guitar_settings: Dict[str, str] = field(default_factory=dict)
     notes_md: Optional[str] = None
     normalized: Optional[Dict[str, Any]] = None
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class ToneMeta:
-    """A logical tone's metadata: identity, tags, description, and variants."""
+    """A logical tone's metadata: identity, tags, description, and variants.
+
+    ``extra`` holds any on-disk top-level keys this dataclass doesn't model
+    (hand-edits, future fields); they are written back verbatim on save.
+    """
 
     artist: Optional[str]
     song: Optional[str]
@@ -114,6 +139,7 @@ class ToneMeta:
     created: str
     updated: str
     schema: int = 1
+    extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def logical_slug(self) -> str:
@@ -133,8 +159,21 @@ class ToneMeta:
 # ---------------------------------------------------------------------------
 
 
+# The keys each serializer models. Anything else found on disk is an
+# "unknown key": collected into ``.extra`` on load and written back verbatim
+# on save (known fields win a name collision), so a load -> save round-trip
+# never strips a hand-edit (backlog #83b).
+_VARIANT_KEYS = frozenset({
+    "hsp", "preset_name", "guitar_settings", "notes_md", "normalized",
+})
+_META_KEYS = frozenset({
+    "schema", "artist", "song", "descriptor", "tags", "description_md",
+    "variants", "created", "updated",
+})
+
+
 def _variant_to_dict(v: Variant) -> Dict[str, Any]:
-    return {
+    d = {
         "hsp": v.hsp,
         "preset_name": v.preset_name,
         "guitar_settings": dict(v.guitar_settings),
@@ -143,6 +182,9 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
         # must serialize verbatim (unknown per-target keys included)
         "normalized": copy.deepcopy(v.normalized) if v.normalized else None,
     }
+    for k, val in v.extra.items():
+        d.setdefault(k, copy.deepcopy(val))
+    return d
 
 
 def _variant_from_dict(d: Dict[str, Any]) -> Variant:
@@ -154,11 +196,13 @@ def _variant_from_dict(d: Dict[str, Any]) -> Variant:
         notes_md=d.get("notes_md"),
         normalized=(copy.deepcopy(normalized)
                     if isinstance(normalized, dict) else None),
+        extra={k: copy.deepcopy(v) for k, v in d.items()
+               if k not in _VARIANT_KEYS},
     )
 
 
 def _meta_to_dict(meta: ToneMeta) -> Dict[str, Any]:
-    return {
+    d = {
         "schema": meta.schema,
         "artist": meta.artist,
         "song": meta.song,
@@ -169,6 +213,9 @@ def _meta_to_dict(meta: ToneMeta) -> Dict[str, Any]:
         "created": meta.created,
         "updated": meta.updated,
     }
+    for k, val in meta.extra.items():
+        d.setdefault(k, copy.deepcopy(val))
+    return d
 
 
 def _meta_from_dict(d: Dict[str, Any]) -> ToneMeta:
@@ -182,7 +229,40 @@ def _meta_from_dict(d: Dict[str, Any]) -> ToneMeta:
         created=d.get("created"),
         updated=d.get("updated"),
         schema=d.get("schema", 1),
+        extra={k: copy.deepcopy(v) for k, v in d.items()
+               if k not in _META_KEYS},
     )
+
+
+def parse_tone_meta(d: Dict[str, Any]) -> ToneMeta:
+    """Public deserialization seam: build a :class:`ToneMeta` from a parsed
+    JSON dict, raising on shape-invalid data (a non-dict top level, a variant
+    that isn't a dict / is missing ``hsp``/``preset_name``, ...).
+
+    This is exactly the check :func:`load_all_tone_metas` applies when it
+    warns-and-skips a shape-invalid file -- exposed so ``library validate``
+    can flag the same files as problems instead of letting them silently
+    vanish from its report (backlog #83d)."""
+    return _meta_from_dict(d)
+
+
+def _resolve_variant_hsp(variant_hsp: Any, library_root: Path) -> Optional[Path]:
+    """Resolve a stored ``Variant.hsp`` value to an absolute path per the
+    module's hsp-path convention: a relative string is joined onto
+    ``library_root``; an absolute string is taken verbatim.
+
+    Hand-edited metadata can carry values the convention never produces;
+    this helper makes both resolution surfaces (``find_variant_by_hsp`` and
+    ``validate_tone_meta``) robust to them (backlog #79b): a blank / non-str
+    value returns ``None`` (a bare ``Path("")`` would otherwise resolve to
+    ``library_root`` itself -- a directory that exists, silently passing
+    validation)."""
+    if not isinstance(variant_hsp, str) or not variant_hsp.strip():
+        return None
+    p = Path(variant_hsp)
+    if not p.is_absolute():
+        p = library_root / p
+    return p
 
 
 def _to_library_relative(hsp_path: Path | str) -> str:
@@ -250,24 +330,40 @@ def find_variant_by_hsp(hsp_path: Path | str) -> Optional[tuple[ToneMeta, str]]:
     Each stored ``Variant.hsp`` is resolved per the module's hsp-path
     convention -- a relative string against ``home.library_dir()``, an
     absolute string verbatim -- and compared to ``hsp_path`` with both sides
-    fully resolved (symlinks/tmp-dir aliases included). First match wins
-    (a ``.hsp`` belongs to at most one variant in a well-formed library).
+    fully resolved (symlinks/tmp-dir aliases included). ``Path.resolve()``
+    does NOT case-canonicalize on case-insensitive filesystems (APFS), so a
+    differently-cased spelling of the same file is additionally matched by
+    ``os.path.samestat`` identity (device+inode) when both paths exist
+    (backlog #83a -- without this, e.g. ``device normalize --yes`` on a
+    differently-cased ``.hsp`` path writes trims but silently records no
+    metadata). First match wins (a ``.hsp`` belongs to at most one variant
+    in a well-formed library).
     """
     try:
         target = Path(hsp_path).resolve()
     except OSError:
         return None
+    try:
+        target_stat = os.stat(target)
+    except OSError:
+        target_stat = None
     library_root = home.library_dir()
     for meta in load_all_tone_metas():
         for key, variant in meta.variants.items():
-            p = Path(variant.hsp)
-            if not p.is_absolute():
-                p = library_root / p
+            p = _resolve_variant_hsp(variant.hsp, library_root)
+            if p is None:
+                continue
             try:
                 if p.resolve() == target:
                     return meta, key
             except OSError:
                 continue
+            if target_stat is not None:
+                try:
+                    if os.path.samestat(os.stat(p), target_stat):
+                        return meta, key
+                except OSError:
+                    continue
     return None
 
 
@@ -280,7 +376,10 @@ def save_tone_meta(meta: ToneMeta) -> ToneMeta:
       what the in-memory object carries; otherwise ``meta.created`` (or
       today, if falsy) is used.
     - ``updated`` is always bumped to today.
-    - Written via temp file + ``os.replace`` (atomic).
+    - Written via a per-process-unique temp file + ``os.replace`` (atomic;
+      the pid in the temp name means concurrent processes never race on one
+      temp path, and any failure before the replace removes the temp file
+      and leaves the existing metadata untouched).
     - ``gitops.auto_commit`` afterward -- but ONLY when the written path
       resolves under ``home.helixgen_home()`` (mirrors
       ``device/manifest.py``'s ``SetlistManifest.save`` guard); when
@@ -308,9 +407,16 @@ def save_tone_meta(meta: ToneMeta) -> ToneMeta:
     meta.updated = today
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(_meta_to_dict(meta), indent=2))
-    os.replace(tmp, path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(_meta_to_dict(meta), indent=2))
+        os.replace(tmp, path)
+    except BaseException:  # KeyboardInterrupt/SIGTERM must also clean up
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
     home_dir = home.helixgen_home()
     try:
@@ -356,6 +462,12 @@ def upsert_variant(
       ``tags`` = the given tags; an existing ``meta`` has any new tags
       merged in (order-preserving, de-duplicated) and is otherwise left
       alone (mutated in place and returned).
+    - An existing ``meta`` whose identity (artist/song/descriptor, blank ==
+      absent) differs from the one given raises ``ValueError`` -- appending
+      a variant under a mismatched identity would leave one metadata file
+      describing two different tones. The CLI callers pre-check this with
+      their own friendlier errors; this is the cheap invariant backstop
+      (backlog #79c).
     """
     has_slug = not naming._is_blank(guitar_slug)
     has_short = not naming._is_blank(guitar_short)
@@ -364,6 +476,20 @@ def upsert_variant(
             "guitar_slug and guitar_short must be provided together "
             "(both set or both absent)"
         )
+
+    if meta is not None:
+        def _norm(v: Optional[str]) -> Optional[str]:
+            return None if naming._is_blank(v) else v.strip()
+        requested = (_norm(artist), _norm(song), _norm(descriptor))
+        current = (_norm(meta.artist), _norm(meta.song), _norm(meta.descriptor))
+        if requested != current:
+            raise ValueError(
+                "upsert_variant identity mismatch: the given identity "
+                f"(artist={requested[0]!r}, song={requested[1]!r}, "
+                f"descriptor={requested[2]!r}) does not match the existing "
+                f"metadata's (artist={current[0]!r}, song={current[1]!r}, "
+                f"descriptor={current[2]!r})"
+            )
 
     today = date.today().isoformat()
     key = guitar_slug if guitar_slug is not None else "generic"
@@ -423,9 +549,12 @@ def validate_tone_meta(
       a blank/whitespace-only string counts as absent, matching ``naming``'s
       blank rule.
     - ``meta.schema`` must be ``1`` (the only supported schema version).
-    - Each variant's ``hsp`` must exist on disk, resolved as
-      ``tones_dir.parent / variant.hsp`` (== ``library_dir() / variant.hsp``
-      -- see the module docstring's hsp-path convention).
+    - Each variant's ``hsp`` must exist on disk as a regular file, resolved
+      per the module docstring's hsp-path convention against
+      ``tones_dir.parent`` (== ``library_dir()``); an absolute stored path
+      is taken verbatim. A blank/non-string ``hsp`` (hand-edited metadata)
+      is flagged explicitly rather than resolving to the library root
+      (backlog #79b), and a path naming a directory fails the check.
     - Each variant key must be in ``guitar_slugs`` or the special
       ``"generic"`` key.
     - Each variant's ``preset_name`` must be registered in ``manifest.tones``
@@ -445,8 +574,13 @@ def validate_tone_meta(
             problems.append(
                 f"variant {key!r}: not a known guitar slug (or 'generic')"
             )
-        resolved = library_root / variant.hsp
-        if not resolved.exists():
+        resolved = _resolve_variant_hsp(variant.hsp, library_root)
+        if resolved is None:
+            problems.append(
+                f"variant {key!r}: hsp path is blank or not a string "
+                f"({variant.hsp!r})"
+            )
+        elif not resolved.is_file():
             problems.append(f"variant {key!r}: hsp file not found: {resolved}")
         if variant.preset_name not in manifest.tones:
             problems.append(
