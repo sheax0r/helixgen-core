@@ -247,11 +247,22 @@ and had to be redirected. Start here so future work begins from the right model.
 ### Deferred from the 0.21.0 adversarial review (2026-07-15)
 
 - **#69 `slots restore --force` into a named setlist may stack a duplicate
-  reference [device-write]** — `_install_via_dest` skips the setlist-position
-  occupancy check under `--force` and `reference_into_setlist` never removes
-  an incumbent; what the device does with two references at one posi is
-  uncataloged. Either refuse `--force` on the setlist branch or characterize
-  + document the outcome on hardware.
+  reference [device-write]** — **✅ RESOLVED (refusal path).**
+  `_install_via_dest` used to skip the setlist-position occupancy check under
+  `--force`, and `reference_into_setlist` never removes an incumbent — so a
+  forced restore could stack a second reference at one posi, with uncataloged
+  device behavior. Of the entry's two sanctioned outcomes, the **refuse**
+  branch shipped: the setlist-position occupancy check now always runs
+  (strict, #40 posture) and an occupied position is refused even with
+  `--force`, with an error naming the incumbent's cid and the
+  `device delete <cid> --setlist <name>` removal step. `--force` keeps its
+  pool-slot semantics unchanged (and stays a no-op at a free setlist
+  position). *Hardware characterization of an actually-stacked duplicate
+  remains uncaptured*: the 2026-07-17 overnight attempt was blocked by a
+  persistent backlog-#38 `/CreateContent` status-1 episode (every preset
+  create failed at every posi; setlist create ghost-allocated) — if a future
+  session wants the catalog entry, stack two references via raw
+  `reference_into_setlist` on an HGTEST setlist after a reboot-fresh device.
 - **#70 Deprecated `throwaway`→`-5` remnants + stale dated docs [local]** —
   `container_for_setlist_keyword`/`THROWAWAY` still map `"throwaway"` to the
   setlists root (no production caller; pinned by a unit test), preserving
