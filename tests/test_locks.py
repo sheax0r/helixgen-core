@@ -756,3 +756,69 @@ def test_import_hss_list_mode_takes_no_lock(root, tmp_path, monkeypatch):
                   "--ip", IP)
     # fails on the bogus file format, never on the lock
     assert "other-agent" not in res.output
+
+
+# --------------------------------------------------------------------------
+# release / renew TOCTOU micro-windows (#72, Task 2)
+# --------------------------------------------------------------------------
+
+def test_renew_does_not_clobber_reacquired_lease(root):
+    """A renewal that raced a break + re-acquire must no-op, not resurrect
+    our lease on top of the new owner's."""
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # our (now stale) view of the lease we intend to renew
+    our_view = {"pid": os.getpid(), "hostname": locks.hostname(),
+                "acquired_at": time.time() - 1000, "ttl_seconds": 900,
+                "label": "me", "kind": "session", "nonce": "OURS"}
+    # meanwhile the file was broken + re-acquired by another owner
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    path.write_text(json.dumps(foreign))
+    locks._renew(path, our_view)
+    on_disk = json.loads(path.read_text())
+    assert on_disk["nonce"] == "THEIRS"      # new owner's lease survives
+    assert on_disk["label"] == "other-agent"
+
+
+def test_release_does_not_delete_reacquired_lease(root, monkeypatch):
+    """`device unlock` judges a lease stale/ours, but it gets re-acquired
+    before the unlink — release must not delete the new owner's lease."""
+    tok = "mytoken"
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stale_ours = {"pid": os.getpid(), "hostname": locks.hostname(),
+                  "acquired_at": time.time() - 10_000, "ttl_seconds": 900,
+                  "label": "me", "kind": "session", "nonce": "OURS",
+                  "token": tok}
+    path.write_text(json.dumps(stale_ours))
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    real_read = locks.read_lease
+    state = {"n": 0}
+
+    def racing_read(p):
+        state["n"] += 1
+        result = real_read(p)
+        if state["n"] == 1 and Path(p) == path:
+            # between the judge-read and the unlink, another owner re-acquires
+            path.write_text(json.dumps(foreign))
+        return result
+
+    monkeypatch.setattr(locks, "read_lease", racing_read)
+    with pytest.raises(locks.LockError):
+        locks.release_scopes(IP, ["editbuffer"], token=tok)
+    on_disk = json.loads(path.read_text())
+    assert on_disk["nonce"] == "THEIRS"      # the new owner's lease survives
+
+
+def test_release_removes_our_own_lease_normally(root):
+    """Guard is race-only: an uncontended owned lease still releases."""
+    tok = "mytoken"
+    with locks.acquire(IP, ("library",), label="me", token=tok, timeout=0):
+        assert lease_path(root, "library").exists()
+        out = locks.release_scopes(IP, ["library"], token=tok)
+    assert out["released"] == ["library"]
+    assert not lease_path(root, "library").exists()

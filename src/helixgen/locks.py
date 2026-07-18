@@ -310,28 +310,43 @@ def _write_new(path: Path, payload: dict) -> bool:
         tmp.unlink(missing_ok=True)
 
 
-def _rewrite(path: Path, payload: dict) -> None:
+def _rewrite(path: Path, payload: dict, *,
+             expect_nonce: str | None = None) -> bool:
     """Atomically replace an existing lease (renewal / re-label). The lease
     carries the private token, so the file stays 0600. Best-effort — a
-    renewal never fails the verb."""
+    renewal never fails the verb; returns True on success, False on a no-op.
+
+    When ``expect_nonce`` is given, the on-disk lease is re-read immediately
+    before the replace and the write is SKIPPED unless its ``nonce`` still
+    matches — so a renewal that raced a concurrent break+re-acquire can never
+    clobber the lease now owned by someone else (#72 TOCTOU)."""
     tmp = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     try:
         fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        if expect_nonce is not None:
+            current = read_lease(path)
+            if current is None or current.get("nonce") != expect_nonce:
+                tmp.unlink(missing_ok=True)
+                return False  # lease vanished or was re-acquired — do not clobber
         os.replace(tmp, path)
+        return True
     except OSError:
         tmp.unlink(missing_ok=True)
+        return False
 
 
 def _renew(path: Path, lease: dict) -> None:
     """Refresh a lease's acquired_at (TTL renewal). Callers only renew
     leases with a comfortable TTL margin (:data:`RENEW_MARGIN_S`), so this
     replace cannot land on top of a waiter's legitimately re-acquired
-    lease (waiters only act after expiry)."""
+    lease (waiters only act after expiry). Nonce-guarded regardless: if the
+    file was broken + re-acquired since we read it, the renewal no-ops rather
+    than resurrecting our lease on top of the new owner's (#72 TOCTOU)."""
     fresh = dict(lease)
     fresh["acquired_at"] = time.time()
-    _rewrite(path, fresh)
+    _rewrite(path, fresh, expect_nonce=lease.get("nonce"))
 
 
 def _break_stale(path: Path, lease: dict) -> bool:
@@ -655,6 +670,21 @@ def release_scopes(ip: str, scopes=None, *, token: str | None = None,
             if not ours and not stale and force:
                 print(f"warning: force-releasing live foreign lock "
                       f"'{scope}' held by {describe(lease)}", file=sys.stderr)
+            if not force:
+                # TOCTOU guard: a concurrent breaker may have re-acquired this
+                # lease since we judged it. Never unlink a live lease now owned
+                # by someone else (#72); only remove the one we actually saw.
+                current = read_lease(path)
+                if (current is not None
+                        and current.get("nonce") != lease.get("nonce")
+                        and not owned(current, token) and not is_stale(current)):
+                    if explicit:
+                        raise LockError(
+                            f"device {ip} scope '{scope}' is held by "
+                            f"{describe(current)} — not yours (re-acquired "
+                            f"since; use --force to break it deliberately)")
+                    kept.append({"scope": scope, "holder": describe(current)})
+                    continue
             try:
                 path.unlink()
             except FileNotFoundError:
@@ -714,7 +744,13 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
                 renewed.update(label=label, ttl_seconds=ttl, token=tok,
                                acquired_at=time.time(), kind="session",
                                pid=os.getppid() if pid is None else int(pid))
-                _rewrite(path, renewed)
+                if not _rewrite(path, renewed, expect_nonce=lease.get("nonce")):
+                    # broken + re-acquired since we read it — acquire fresh
+                    fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
+                                         token=tok, pid=pid, kind="session",
+                                         timeout=timeout))
+                    outcomes.append((scope, "locked"))
+                    continue
                 outcomes.append((scope, "renewed"))
             else:
                 fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,

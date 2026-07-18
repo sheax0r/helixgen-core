@@ -22,13 +22,13 @@ stdlib + click only.
 
 ### Task 2: release/renew micro-windows
 
-- [ ] Examine the release and renew paths for TOCTOU micro-windows (e.g.
+- [x] Examine the release and renew paths for TOCTOU micro-windows (e.g.
       renew after expiry, release of a lease already broken/re-acquired by
       another owner). Identify the concrete window(s).
-- [ ] Write failing test(s) for the misbehavior (renew must fail/no-op if the
+- [x] Write failing test(s) for the misbehavior (renew must fail/no-op if the
       lease is no longer ours; release must not delete a lease now owned by
       someone else).
-- [ ] Fix minimally (compare-and-act on owner token/nonce); make tests pass.
+- [x] Fix minimally (compare-and-act on owner token/nonce); make tests pass.
       Do NOT redesign acquisition (that's #88).
 
 ### Task 3: document the mixed-version caveat
