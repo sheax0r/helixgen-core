@@ -184,6 +184,32 @@ def test_locks_are_per_device_ip(root):
         pass  # a lease on another device never conflicts
 
 
+def test_distinct_ips_get_distinct_lock_dirs(root):
+    """#72: the IP sanitizer must not collide distinct device identities.
+
+    The old ``re.sub([^A-Za-z0-9._-], "_")`` mapped every disallowed char
+    (``:``, ``%``, brackets, ...) to ``_`` — and ``_`` is itself allowed — so
+    it was many-to-one. Distinct identities that differ only in disallowed
+    characters collapsed onto the same lock directory and wrongly shared
+    advisory locks. Here ``fe80::1`` and the lookalike ``fe80:_1`` both used
+    to sanitize to ``fe80__1``; they must now get distinct lock dirs.
+    """
+    a = locks.lock_dir("fe80::1")
+    b = locks.lock_dir("fe80:_1")
+    assert a != b
+    # and a plain IPv4 (no disallowed chars) is unchanged / readable
+    assert locks.lock_dir("192.0.2.7").name == "192.0.2.7"
+
+
+def test_lock_dir_is_injective_across_disallowed_chars(root):
+    """A spread of identities — including ones colliding under the old rule —
+    must all map to distinct lock directories."""
+    ids = ["fe80::1", "fe80:_1", "fe80::1%en0", "fe80::1%en1",
+           "[fe80::1]", "10.0.0.1", "10:0:0:1", "2001:db8::1"]
+    names = [locks.lock_dir(x).name for x in ids]
+    assert len(set(names)) == len(ids)
+
+
 def test_locks_root_follows_helixgen_home(monkeypatch, tmp_path):
     """$HELIXGEN_LOCKS wins; else the root derives from $HELIXGEN_HOME
     (like every other home subarea); else ~/.helixgen/locks."""
@@ -730,3 +756,131 @@ def test_import_hss_list_mode_takes_no_lock(root, tmp_path, monkeypatch):
                   "--ip", IP)
     # fails on the bogus file format, never on the lock
     assert "other-agent" not in res.output
+
+
+# --------------------------------------------------------------------------
+# release / renew TOCTOU micro-windows (#72, Task 2)
+# --------------------------------------------------------------------------
+
+def test_renew_does_not_clobber_reacquired_lease(root):
+    """A renewal that raced a break + re-acquire must no-op, not resurrect
+    our lease on top of the new owner's."""
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # our (now stale) view of the lease we intend to renew
+    our_view = {"pid": os.getpid(), "hostname": locks.hostname(),
+                "acquired_at": time.time() - 1000, "ttl_seconds": 900,
+                "label": "me", "kind": "session", "nonce": "OURS"}
+    # meanwhile the file was broken + re-acquired by another owner
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    path.write_text(json.dumps(foreign))
+    locks._renew(path, our_view)
+    on_disk = json.loads(path.read_text())
+    assert on_disk["nonce"] == "THEIRS"      # new owner's lease survives
+    assert on_disk["label"] == "other-agent"
+
+
+def test_release_does_not_delete_reacquired_lease(root, monkeypatch):
+    """`device unlock` judges a lease stale/ours, but it gets re-acquired
+    before the unlink — release must not delete the new owner's lease."""
+    tok = "mytoken"
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stale_ours = {"pid": os.getpid(), "hostname": locks.hostname(),
+                  "acquired_at": time.time() - 10_000, "ttl_seconds": 900,
+                  "label": "me", "kind": "session", "nonce": "OURS",
+                  "token": tok}
+    path.write_text(json.dumps(stale_ours))
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    real_read = locks.read_lease
+    state = {"n": 0}
+
+    def racing_read(p):
+        state["n"] += 1
+        result = real_read(p)
+        if state["n"] == 1 and Path(p) == path:
+            # between the judge-read and the unlink, another owner re-acquires
+            path.write_text(json.dumps(foreign))
+        return result
+
+    monkeypatch.setattr(locks, "read_lease", racing_read)
+    with pytest.raises(locks.LockError):
+        locks.release_scopes(IP, ["editbuffer"], token=tok)
+    on_disk = json.loads(path.read_text())
+    assert on_disk["nonce"] == "THEIRS"      # the new owner's lease survives
+
+
+def test_release_removes_our_own_lease_normally(root):
+    """Guard is race-only: an uncontended owned lease still releases."""
+    tok = "mytoken"
+    with locks.acquire(IP, ("library",), label="me", token=tok, timeout=0):
+        assert lease_path(root, "library").exists()
+        out = locks.release_scopes(IP, ["library"], token=tok)
+    assert out["released"] == ["library"]
+    assert not lease_path(root, "library").exists()
+
+
+def test_release_no_scope_keeps_reacquired_lease_without_error(root, monkeypatch):
+    """Bare `device unlock` (no --scope): a lease judged ours but re-acquired
+    by another owner before the unlink must be KEPT (not deleted, not an
+    error) — the non-explicit sibling of the explicit-scope guard, which is
+    the exact clobber #72 exists to prevent."""
+    tok = "mytoken"
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ours = {"pid": os.getpid(), "hostname": locks.hostname(),
+            "acquired_at": time.time(), "ttl_seconds": 900, "label": "me",
+            "kind": "session", "nonce": "OURS", "token": tok}
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    path.write_text(json.dumps(ours))
+    real_read = locks.read_lease
+    swapped = {"done": False}
+
+    def racing_read(p):
+        result = real_read(p)
+        if Path(p) == path and not swapped["done"]:
+            swapped["done"] = True  # re-acquired between judge-read and unlink
+            path.write_text(json.dumps(foreign))
+        return result
+
+    monkeypatch.setattr(locks, "read_lease", racing_read)
+    out = locks.release_scopes(IP, None, token=tok)  # no exception
+    assert "editbuffer" not in out["released"]
+    assert any(k["scope"] == "editbuffer" for k in out["kept"])
+    assert json.loads(path.read_text())["nonce"] == "THEIRS"  # foreign survives
+
+
+def test_session_lock_falls_back_to_fresh_acquire_when_renew_raced(root,
+                                                                   monkeypatch):
+    """#72: session_lock renews an owned live lease in place, but if that
+    rewrite no-ops because the lease was broken + re-acquired since we read
+    it (`_rewrite` returns False), it must fall back to a fresh `acquire` —
+    which then contends with the new owner rather than reporting success on
+    a lease it no longer holds."""
+    tok = "tok-s"
+    path = lease_path(root, "editbuffer")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ours = {"pid": os.getppid(), "hostname": locks.hostname(),
+            "acquired_at": time.time(), "ttl_seconds": 900, "label": "held",
+            "kind": "session", "nonce": "OURS", "token": tok}
+    foreign = {"pid": 1, "hostname": locks.hostname(),
+               "acquired_at": time.time(), "ttl_seconds": 900,
+               "label": "other-agent", "kind": "session", "nonce": "THEIRS"}
+    path.write_text(json.dumps(ours))
+
+    def fake_rewrite(p, payload, *, expect_nonce=None):
+        # model the real no-op: the lease was re-acquired, so refuse the write
+        Path(p).write_text(json.dumps(foreign))
+        return False
+
+    monkeypatch.setattr(locks, "_rewrite", fake_rewrite)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", tok)
+    with pytest.raises(locks.LockHeld):
+        locks.session_lock(IP, ["editbuffer"], label="s", ttl=900, timeout=0)
+    assert json.loads(path.read_text())["nonce"] == "THEIRS"  # new owner's lease
