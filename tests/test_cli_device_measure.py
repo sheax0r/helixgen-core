@@ -13,6 +13,18 @@ from helixgen.cli import cli
 msgpack = pytest.importorskip("msgpack")
 
 
+@pytest.fixture(autouse=True)
+def _reachable_configured_device(monkeypatch):
+    """#74: no built-in default IP, and #64c: `measure` preflights
+    reachability before subscribing. Simulate a configured, reachable
+    device so the fake-subscriber tests exercise the verb logic."""
+    from helixgen.device import discovery
+
+    monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
+    monkeypatch.setattr(discovery, "probe_reachable",
+                        lambda ip, port=2002, **kw: True)
+
+
 class FakeSubscriber:
     """Context manager whose stream() yields pre-canned events."""
 
@@ -88,6 +100,41 @@ def test_cli_measure_human_output(monkeypatch):
     assert "output" in result.output and "dB" in result.output
 
 
+def test_cli_measure_source_loop_json(monkeypatch):
+    # #82: looper replay — silent jack (no pitch, no input), chain out 0.5.
+    # loop mode gates on chain-out level; gain_db is null (no input
+    # reference) and output_db is the cross-target comparison number.
+    _patch(monkeypatch, [e for _ in range(60) for e in _burst(-1.0, 0.0, 0.5)])
+    result = CliRunner().invoke(
+        cli, ["device", "measure", "--seconds", "6", "--source", "loop",
+              "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["source"] == "loop"
+    assert payload["n_playing"] == 60
+    assert payload["gain_db"] is None
+    assert payload["output_db"] == pytest.approx(-6.02, abs=0.01)
+
+
+def test_cli_measure_source_loop_human_output(monkeypatch):
+    _patch(monkeypatch, [e for _ in range(60) for e in _burst(-1.0, 0.0, 0.5)])
+    result = CliRunner().invoke(
+        cli, ["device", "measure", "--seconds", "6", "--source", "loop"])
+    assert result.exit_code == 0, result.output
+    assert "n/a" in result.output          # gain has no input reference
+
+
+def test_cli_measure_default_source_gates_out_looper_stream(monkeypatch):
+    # the same looper telemetry WITHOUT --source loop is all gated out
+    _patch(monkeypatch, [e for _ in range(60) for e in _burst(-1.0, 0.0, 0.5)])
+    result = CliRunner().invoke(
+        cli, ["device", "measure", "--seconds", "6", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False and payload["n_playing"] == 0
+
+
 def test_cli_measure_summarizes_partial_window_on_interrupt(monkeypatch):
     class InterruptingSubscriber(FakeSubscriber):
         def stream(self, duration=None, filter_addrs=None, include_noise=False):
@@ -105,3 +152,8 @@ def test_cli_measure_summarizes_partial_window_on_interrupt(monkeypatch):
     assert result.exit_code in (0, None) or result.exception is None
     payload = json.loads(result.output)
     assert payload["ok"] is True and payload["n_playing"] == 60
+    # #64d: the report carries the ACTUAL elapsed window, never the full
+    # requested --seconds; playing_seconds follows the observed rate (the
+    # fake stream replays instantly, so both are ~0, not 600/6.0)
+    assert payload["seconds"] < 600
+    assert payload["playing_seconds"] < 6.0

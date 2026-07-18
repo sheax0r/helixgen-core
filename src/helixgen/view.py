@@ -41,6 +41,14 @@ from helixgen.library import Block, Library
 from helixgen.spec import StructuralEntry
 
 
+def _lane_pos(key: str) -> tuple[int, int]:
+    """Decode a `bNN` key into (lane, pos): num >= 14 is lane 1 (pos = num - 14),
+    num < 14 is lane 0. Mirrors `mutate._lane_pos`."""
+    num = int(key[1:])
+    lane = 1 if num >= 14 else 0
+    return lane, num - 14 * lane
+
+
 def _try_load_block(library: Library, model_id: str) -> Block | None:
     """Load a block by (already-translated) model id, or return None if the
     library can't resolve it.
@@ -206,6 +214,24 @@ def _lift_input(path_dict: dict, device_id: Any, body: dict) -> "str | dict | No
     return {"source": mode, **lifts}
 
 
+def _output_base(wrapped: Any) -> Any:
+    """The projection-consistent BASE of a b13 gain/pan wrapper: slot 0 of a
+    per-snapshot `snapshots` array when one is present, else the plain
+    `value`. The wrapper's `value` mirrors whatever snapshot was ACTIVE when
+    the preset was saved (`mutate._write_snapshot_slot` re-syncs it; device
+    exports do the same), while regenerate always re-syncs `value` to
+    snaps[0] and `activesnapshot` to 0 — so snaps[0], not `value`, is the
+    base that makes the projection a fixed point (#76 review F1)."""
+    if not isinstance(wrapped, dict):
+        return None
+    snaps = wrapped.get("snapshots")
+    if (isinstance(snaps, list) and snaps
+            and isinstance(snaps[0], (int, float))
+            and not isinstance(snaps[0], bool)):
+        return snaps[0]
+    return _unwrap_value(wrapped)
+
+
 def _lift_output(path_dict: dict) -> dict | None:
     """The path's `output` field: `{"level", "pan"}` for whichever of the
     lane-0 output endpoint's gain/pan differ from the device defaults
@@ -218,11 +244,11 @@ def _lift_output(path_dict: dict) -> dict | None:
     params = b13["slot"][0].get("params") or {}
     out: dict[str, Any] = {}
     if "gain" in params:
-        g = _unwrap_value(params["gain"])
+        g = _output_base(params["gain"])
         if isinstance(g, (int, float)) and _flow_differs(g, 0.0):
             out["level"] = g
     if "pan" in params:
-        p = _unwrap_value(params["pan"])
+        p = _output_base(params["pan"])
         if isinstance(p, (int, float)) and _flow_differs(p, 0.5):
             out["pan"] = p
     return out or None
@@ -264,7 +290,7 @@ def _name_index(flow: list, library: Library) -> dict:
             bnn = path[key]
             if not isinstance(bnn, dict) or bnn.get("type") in ("split", "join", "input", "output") or not bnn.get("slot"):
                 continue
-            num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+            lane, pos = _lane_pos(key)
             block = _try_load_block(library, _translate_model_id(bnn["slot"][0].get("model", "")))
             if block is None:
                 continue
@@ -357,7 +383,7 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         if block is None:
             continue
         name = _ref_name(block)
-        num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        lane, pos = _lane_pos(key)
         coord = (pi, lane, pos, name)
         # @enabled snapshot overrides (False => disable in that snapshot). The
         # bNN base @enabled.value may now be False (base-bypassed block), but
@@ -381,6 +407,67 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
                     continue  # phantom: densify-filled base value, not a real override
                 params[i].setdefault(coord, {})[pname] = coerced
 
+    # Per-snapshot OUTPUT-endpoint overrides (#76): the b13 gain/pan wrappers'
+    # `snapshots` arrays — written by `set-param output level --snapshot` /
+    # `device normalize` — lift into the snapshot-level `output` field.
+    # Same named-range scoping and phantom-fill filtering as user-block
+    # params above (a slot equal to the wrapper's base is a densify fill,
+    # not an override); `_flow_differs` tolerates float32 storage wobble.
+    outputs: list[dict[int, dict[str, Any]]] = [{} for _ in names]
+    for pi, path_dict in enumerate(flow):
+        if not isinstance(path_dict, dict):
+            continue
+        b13 = path_dict.get("b13")
+        if not (isinstance(b13, dict) and b13.get("type") == "output"
+                and b13.get("slot")):
+            continue
+        b13_params = b13["slot"][0].get("params") or {}
+        for fieldname, hsp_name in flowparams.OUTPUT_FIELD_TO_HSP.items():
+            wrapped = b13_params.get(hsp_name)
+            if not (isinstance(wrapped, dict)
+                    and isinstance(wrapped.get("snapshots"), list)):
+                continue
+            # Base = snaps[0] (see _output_base): the wrapper's `value`
+            # mirrors the save-time ACTIVE snapshot, which regenerate resets
+            # to 0 — comparing against it would invert the lift for a preset
+            # saved on another snapshot and destabilize the projection.
+            base = _output_base(wrapped)
+            if not isinstance(base, (int, float)) or isinstance(base, bool):
+                continue
+            for i, ov in enumerate(wrapped["snapshots"]):
+                if ov is None:
+                    continue
+                if not isinstance(ov, (int, float)) or isinstance(ov, bool):
+                    continue
+                if not _flow_differs(ov, base):
+                    continue  # phantom: densify-filled base value
+                if i >= len(names):
+                    # A genuine override parked on a placeholder-named slot
+                    # has no named snapshot to attach to — same named-range
+                    # scoping as user-block params, but say so: regenerating
+                    # this projection rebuilds the array and loses the slot.
+                    print(
+                        f"warning: path {pi} output {fieldname!r} carries a "
+                        f"per-snapshot override on unnamed snapshot slot "
+                        f"{i}; not liftable (regenerating this projection "
+                        f"will drop it — name the snapshot to keep it).",
+                        file=sys.stderr,
+                    )
+                    continue
+                try:
+                    flowparams.validate_output_field(fieldname, ov)
+                except ValueError:
+                    # Out-of-device-range junk (hand-edited .hsp): lifting it
+                    # would make parse_spec reject view's own projection.
+                    print(
+                        f"warning: path {pi} output {fieldname!r} snapshot "
+                        f"slot {i} value {ov!r} is outside the device range; "
+                        f"not lifted.",
+                        file=sys.stderr,
+                    )
+                    continue
+                outputs[i].setdefault(pi, {})[fieldname] = ov
+
     snaps: list[dict[str, Any]] = []
     for i, nm in enumerate(names):
         s: dict[str, Any] = {"name": nm}
@@ -402,6 +489,14 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
                 ]
             else:
                 s["params"] = {pname: pv for (_, _, _, pname), pv in params[i].items()}
+        # output: the bare object form when only path 0 is overridden (the
+        # common case), else the list form with explicit "path" keys.
+        if outputs[i]:
+            if set(outputs[i]) == {0}:
+                s["output"] = outputs[i][0]
+            else:
+                s["output"] = [{"path": p, **fields}
+                               for p, fields in sorted(outputs[i].items())]
         snaps.append(s)
     return snaps
 
@@ -465,7 +560,7 @@ def _recover_footswitches(
         block = _try_load_block(library, _translate_model_id(slot.get("model", "")))
         if block is None:
             continue
-        num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        lane, pos = _lane_pos(key)
         name = controllers.controller_name_for_source(device_id, ctrl.get("source"))
         behavior = ctrl.get("behavior", "latching")
         if name is None or behavior not in ("latching", "momentary"):
@@ -504,7 +599,7 @@ def _recover_expression(
         block = _try_load_block(library, _translate_model_id(slot.get("model", "")))
         if block is None:
             continue
-        num = int(key[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        lane, pos = _lane_pos(key)
         for pname, wrapped in (slot.get("params") or {}).items():
             ctrl = wrapped.get("controller") if isinstance(wrapped, dict) else None
             if not (isinstance(ctrl, dict) and ctrl.get("type") == "param"):
@@ -765,9 +860,7 @@ def _recover_one_command(rec: dict, switch: str,
 
 def _entry_for(key, bnn, library, irs):
     """Build a spec entry dict (block/split/join) with explicit lane/pos."""
-    num = int(key[1:])
-    lane = 1 if num >= 14 else 0
-    pos = num - 14 * lane
+    lane, pos = _lane_pos(key)
     typ = bnn.get("type")
     slot = bnn["slot"][0]
     if typ == "split":
@@ -807,7 +900,7 @@ def _reconstruct_path_blocks(path_dict, library, irs):
 
     def structural_entry(k):
         bnn = path_dict[k]
-        num = int(k[1:]); lane = 1 if num >= 14 else 0; pos = num - 14 * lane
+        lane, pos = _lane_pos(k)
         return StructuralEntry(raw=copy.deepcopy(bnn), lane=lane, pos=pos)
 
     keys = all_bnn()

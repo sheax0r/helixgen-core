@@ -52,6 +52,11 @@ COLOR_LABELS = {"oranged": "Dark Orange", "orangel": "Light Orange",
 NOTES_KEY = "preset.meta.info"
 
 
+def _is_hex_hash(s: str) -> bool:
+    """True if ``s`` (already casefolded) is a 32-char lowercase-hex IR hash."""
+    return len(s) == 32 and all(c in "0123456789abcdef" for c in s)
+
+
 def color_index(color: Any) -> int:
     """Normalize a color (name, display label, or index) to the ``colr`` int.
 
@@ -272,7 +277,7 @@ def resolve_device_ir(irs: Sequence[dict], name_or_hash: str) -> dict:
     """
     q = str(name_or_hash).strip()
     qh = q.casefold()
-    if len(qh) == 32 and all(c in "0123456789abcdef" for c in qh):
+    if _is_hex_hash(qh):
         for m in irs:
             if str(m.get("hash", "")).casefold() == qh:
                 return m
@@ -410,7 +415,7 @@ def delete_device_ir(client, name_or_hash: str, *, ip: str,
         # No registry entry — possibly the wedged file-only state, which is
         # addressable by hash via the path index (no registry cid to delete).
         q = str(name_or_hash).strip().casefold()
-        is_hash = len(q) == 32 and all(c in "0123456789abcdef" for c in q)
+        is_hash = _is_hex_hash(q)
         path = None
         if remove_file and is_hash:
             try:

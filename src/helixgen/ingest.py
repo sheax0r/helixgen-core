@@ -234,11 +234,11 @@ def extract_blocks_from_preset(preset: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(dsp, dict):
             continue
         block_keys = sorted(
-            (k for k in dsp.keys() if _is_user_block_key(k)),
+            (k for k in dsp if _is_user_block_key(k)),
             key=lambda k: _slot_index(k, DSP_BLOCK_KEY_PREFIX),
         )
         cab_keys = sorted(
-            (k for k in dsp.keys() if _is_cab_key(k)),
+            (k for k in dsp if _is_cab_key(k)),
             key=lambda k: _slot_index(k, DSP_CAB_KEY_PREFIX),
         )
         for k in block_keys:

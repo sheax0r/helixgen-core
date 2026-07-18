@@ -148,7 +148,12 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   bypass), `device model <path> <block> <model>` (live model swap), `device
   reorder <setlist> <target> --to <N>` (direct DEVICE-side preset reorder —
   distinct from the local-manifest `device slots reorder`; numeric args are
-  **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #62).
+  **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #62;
+  the three preflight reachability with one TCP probe of the `--port`
+  control port — fail-fast instead of a silent window; `measure
+  --source loop` gates on chain-out level for a front-of-chain looper
+  feeding the chain — the input jack is structurally silent there, and the
+  cross-target metric becomes raw `output_db`, `gain_db` = null).
   Decoded + HW-validated 2026-07-14. `device normalize` (#62 phase 2) is the
   closed loop over `measure`: level-match a preset's NAMED snapshots or a
   manifest setlist while the player plays — DRY-RUN by default; `--yes`
@@ -164,6 +169,10 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   are dB-exact but sit downstream of every meter tap, so the loop trusts
   the math (deliberately never re-measures to confirm). Holds `editbuffer`
   even in dry-run (it recalls snapshots / loads presets while measuring).
+  `--source loop` (workspace #82 core) runs the same loop over a
+  front-of-chain looper's replayed signal: chain-out gating, totals sized
+  from raw `output_db` instead of `gain_db` (the looped source is
+  identical across targets by construction).
   A `--yes` run whose `.hsp` is a registered library variant also records
   a `normalized` record on that variant's tone metadata — run parameters
   plus the FULL per-target telemetry (open dicts; `output_db` = chain-out
@@ -331,7 +340,7 @@ schema, defaults, ranges, and examples — lives in
 - **`input`** (per path) — jack routing (`inst1`/`inst2`/`both`/`none`) plus the Input-block params (impedance ladder, pad, trim, gate, StereoLink).
 - **`output`** (per path) — output block `level` (dB) + `pan`.
 - **`split`/`join`** (in `blocks`) — parallel splits: split `type` (`y`/`ab`/`crossover`/`dynamic`) + merge-mixer wire params (`"A Level"`, `"B Pan"`, master `"Level"` — default **+3 dB**, write `0.0` for unity).
-- **`snapshots`** (top-level, ≤8) — named scenes: per-scene `disable` + `params` deltas; snapshot 0 active on load.
+- **`snapshots`** (top-level, ≤8) — named scenes: per-scene `disable` + `params` deltas + per-snapshot `output` level/pan (the `device normalize` trims); snapshot 0 active on load.
 - **`footswitches`** (top-level) — assign blocks/params to `FS1`–`FS5`/`FS7`–`FS11`/`EXP1Toe` (FS6/FS12 reserved); merge switches, param toggles, scribble `label`/`color`, response `curve`.
 - **`expression`** (top-level) — sweep params with `EXP1`/`EXP2`; per-target `min`/`max` (reverse sweep supported).
 - **`midi`** (top-level, EXPERIMENTAL #33) — bind MIDI CC# to param sweeps / bypass toggles. CC-only; realized on `device install`/`sync`.
@@ -512,7 +521,7 @@ untouched by construction.
 **Run `helixgen show-block "<block>"` first** to confirm the exact,
 case-sensitive param name — the same guardrail `generate` already enforces.
 
-- `helixgen set-param <preset> <block> <param> <value> [--snapshot NAME_OR_INDEX] [--path/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string). A **negative** value needs the `--` sentinel after any flags (`helixgen set-param t.hsp output level -- -3`). `--snapshot <name-or-0-based-index>` writes the value into that ONE snapshot's slot of the param's per-snapshot overrides array instead of the base (requires an existing base value; untouched slots densify to it) — library-block overrides round-trip through `view`; `output` pseudo-block overrides do NOT surface in `view` yet (#76) but are preserved in the `.hsp`; both are realized on-device by `install`/`sync`. Once a param's array varies, the device applies it on every snapshot — a later plain base edit of that param is inaudible on-device and warns. The block names `input` / `output` / `split` / `join` (`merge` = alias) are **signal-flow pseudo-blocks** addressing the path's endpoints / split / merge mixer (`--path` picks the DSP; `--pos` disambiguates two splits; `--lane` does not apply): input params use the recipe vocabulary (`impedance`, `pad`, `trim`, `gate`, `threshold`, `decay`, `link`), output params are `level`/`pan` (the only pseudo-block supporting `--snapshot`), split/join params are the wire names (`BalanceA`, `Frequency`, `"A Level"`, …).
+- `helixgen set-param <preset> <block> <param> <value> [--snapshot NAME_OR_INDEX] [--path/--lane/--pos]` — set one param on one block; `<value>` is auto-coerced (bool → int → float → string). A **negative** value needs the `--` sentinel after any flags (`helixgen set-param t.hsp output level -- -3`). `--snapshot <name-or-0-based-index>` writes the value into that ONE snapshot's slot of the param's per-snapshot overrides array instead of the base (requires an existing base value; untouched slots densify to it) — library-block overrides round-trip through `view`; `output` pseudo-block overrides round-trip too, surfacing as the recipe's snapshot-level `output` field (#76); both are realized on-device by `install`/`sync`. Once a param's array varies, the device applies it on every snapshot — a later plain base edit of that param is inaudible on-device and warns. The block names `input` / `output` / `split` / `join` (`merge` = alias) are **signal-flow pseudo-blocks** addressing the path's endpoints / split / merge mixer (`--path` picks the DSP; `--pos` disambiguates two splits; `--lane` does not apply): input params use the recipe vocabulary (`impedance`, `pad`, `trim`, `gate`, `threshold`, `decay`, `link`), output params are `level`/`pan` (the only pseudo-block supporting `--snapshot`), split/join params are the wire names (`BalanceA`, `Frequency`, `"A Level"`, …).
 - `helixgen enable <preset> <block> [--snapshot NAME-or-INDEX] [--path/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) enable it in that snapshot (name or 0-based index; names win).
 - `helixgen disable <preset> <block> [--snapshot NAME-or-INDEX] [--path/--lane/--pos]` — bypass a block at base level, or (with `--snapshot`) bypass it in that snapshot (name or 0-based index; names win).
 - `helixgen add-block <preset> <block> [--path N] [--after NAME]` — insert a block (append to `--path`, default 0, or after a named block).

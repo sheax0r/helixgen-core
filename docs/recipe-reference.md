@@ -145,6 +145,8 @@ Add a top-level `snapshots` array (up to 8 entries) to define named scenes that 
 - Each snapshot is a delta from path-level base values. Snapshot 0 (the first) is active on load.
 - `disable: [...]` bypasses those blocks in that snapshot; `params` overrides values.
 - Block references must resolve to a block already placed in `paths`.
+- A per-snapshot `output` entry overrides the output block's level/pan for
+  that snapshot — see "Per-snapshot output level/pan" below.
 - Omit `snapshots` entirely to use the device's defaults (8 unnamed slots, no variation).
 
 When a snapshot references a block whose display name is ambiguous (multiple
@@ -159,6 +161,40 @@ split), carry a `(lane, pos)` coordinate:
 Coordinates are only needed to disambiguate; the bare string / name-keyed object
 forms remain valid for uniquely-named blocks. `path` (0 or 1) is added only when
 the same name is ambiguous across both DSP paths.
+
+### Per-snapshot output level/pan (snapshot `output`)
+
+A snapshot may carry an `output` field setting the output block's level (dB)
+and/or pan **in force on that snapshot** — the authoring surface for the
+`device normalize` per-snapshot loudness trims (backlog #76). Values are
+ABSOLUTE (like `params` overrides), not deltas:
+
+```json
+"snapshots": [
+  {"name": "Rhythm"},
+  {"name": "Lead", "output": {"level": -4.5}},
+  {"name": "Clean", "output": [{"level": -2.0}, {"path": 1, "level": -6.0}]}
+]
+```
+
+- The object form targets path 0; the list form addresses each DSP path
+  explicitly (`path` defaults to 0; at most one entry per path per snapshot).
+- `level` (float dB, −120..20) / `pan` (float 0..1) — same vocabulary and
+  ranges as the per-path `output` field; each entry needs at least one.
+- Snapshots without an `output` entry stay at the path's base output
+  (`paths[*].output`, default 0 dB / 0.5 — the untouched slots densify to it).
+- On the wire this is the output endpoint's dense 8-slot per-snapshot
+  overrides arrays — the same encoding `helixgen set-param <p> output level
+  --snapshot N` and `device normalize --yes` write, realized on-device by
+  `device install`/`sync`. `view` lifts those arrays back into this field
+  (named snapshots only, like `params`), so the trims survive a
+  view→generate round-trip.
+- When a recipe declares `snapshots`, this field is **authoritative** for the
+  per-snapshot output state: omitting it (or deleting an entry) clears any
+  stale per-snapshot output arrays carried in verbatim `structural` entries —
+  the same "explicit recipe wins over a stale structural copy" rule the
+  per-path `output` field follows. A recipe with **no** `snapshots` leaves
+  such arrays untouched (verbatim carry).
 
 ## Optional: footswitches
 

@@ -27,6 +27,7 @@ from helixgen import __version__  # noqa: F401  (re-exported provenance version 
 from helixgen import flowparams, mutate
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.generate import (
+    HSP_SNAPSHOT_SLOTS,
     GenerateError,
     _assign_positions,
     _build_snapshot_metadata,
@@ -150,16 +151,48 @@ def _resolve_jack_impedances(spec: Spec) -> dict[str, str]:
     return jack_z
 
 
-def _apply_output(path_dict: dict[str, Any], output_spec) -> None:
+def _output_snapshot_overrides(spec: Spec) -> dict[int, dict[str, list[Any]]]:
+    """Per-path ``{hsp param name: 8-slot override list}`` from the spec's
+    snapshot-level ``output`` entries (backlog #76). Values are ABSOLUTE
+    (the level/pan in force on that snapshot); a ``None`` slot means "use
+    the path's base value" and is densified by `_apply_output`."""
+    out: dict[int, dict[str, list[Any]]] = {}
+    for snap_idx, snap in enumerate(spec.snapshots):
+        for ov in snap.output:
+            fields = out.setdefault(ov.path, {})
+            for fieldname, hsp_name in flowparams.OUTPUT_FIELD_TO_HSP.items():
+                v = getattr(ov, fieldname)
+                if v is None:
+                    continue
+                arr = fields.setdefault(hsp_name, [None] * HSP_SNAPSHOT_SLOTS)
+                arr[snap_idx] = float(v)
+    return out
+
+
+def _apply_output(path_dict: dict[str, Any], output_spec,
+                  snap_overrides: dict[str, list[Any]] | None = None,
+                  *, has_snapshots: bool = False) -> None:
     """Normalize the path's primary (lane-0 `b13`) output endpoint level/pan:
     schema defaults overlaid with the recipe `output` object. Runs AFTER
     `_emit_structural`, so an explicit `output` wins over a stale structural
-    copy; wrapper shape is preserved (only `value` is updated)."""
+    copy; wrapper shape is preserved (only `value` is updated).
+
+    `snap_overrides` (from `_output_snapshot_overrides`) realizes the
+    snapshot-level `output` field (#76): each overridden param gets a DENSE
+    8-slot `snapshots` array (unset slots densify to the base value, matching
+    `generate._wrap_value_with_snapshots`) and its `value` re-syncs to slot 0
+    (activesnapshot is always 0 on authored output). When the spec declares
+    snapshots (`has_snapshots`), the recipe is authoritative for the
+    per-snapshot output state: a param WITHOUT an authored override gets any
+    stale `snapshots` array (a verbatim structural carry from `view`, or a
+    chassis leak) dropped — the same "explicit recipe wins" rule the base
+    value already follows. Without declared snapshots the arrays are left
+    verbatim (today's carry behavior for placeholder-named presets)."""
     b13 = path_dict.get("b13")
     is_output = (isinstance(b13, dict) and b13.get("type") == "output"
                  and b13.get("slot"))
     if not is_output:
-        if output_spec is not None:
+        if output_spec is not None or snap_overrides:
             raise GenerateError(
                 "path has no lane-0 output endpoint (b13); cannot apply "
                 "output level/pan."
@@ -179,7 +212,15 @@ def _apply_output(path_dict: dict[str, Any], output_spec) -> None:
         ):
             wrapped["value"] = v
         else:
-            params[name] = {"value": v}
+            wrapped = {"value": v}
+            params[name] = wrapped
+        overrides = (snap_overrides or {}).get(name)
+        if overrides and any(o is not None for o in overrides):
+            snaps = [v if o is None else o for o in overrides]
+            wrapped["snapshots"] = snaps
+            wrapped["value"] = snaps[0]
+        elif has_snapshots:
+            wrapped.pop("snapshots", None)
 
 
 def apply_recipe(
@@ -237,6 +278,8 @@ def apply_recipe(
                 )
 
     enabled_map, param_map = _build_snapshot_overrides(spec, resolved)
+    output_snap_map = _output_snapshot_overrides(spec)
+    has_snapshots = bool(spec.snapshots)
 
     body = copy.deepcopy(chassis)
     # Strip private library annotations — not part of the wire format.
@@ -268,7 +311,7 @@ def apply_recipe(
         mode = _controllers.input_mode_for_model(device_id, model)
         if mode is not None:
             _normalize_input_endpoint(path_dict, mode, None)
-        _apply_output(path_dict, None)
+        _apply_output(path_dict, None, has_snapshots=has_snapshots)
 
     # --- preset-level input impedance (used jacks only) ---------------------
     for jack, z in _resolve_jack_impedances(spec).items():
@@ -325,9 +368,12 @@ def apply_recipe(
             )
         _emit_splits(path_dict, path_entry, eff)
         _emit_structural(path_dict, path_entry)
-        # Output level/pan LAST, so an explicit recipe `output` wins over a
-        # verbatim structural endpoint carried from `view`.
-        _apply_output(path_dict, path_entry.output)
+        # Output level/pan LAST, so an explicit recipe `output` (and any
+        # snapshot-level `output` overrides, #76) wins over a verbatim
+        # structural endpoint carried from `view`.
+        _apply_output(path_dict, path_entry.output,
+                      output_snap_map.get(path_index),
+                      has_snapshots=has_snapshots)
 
     # --- controller wiring (mutate verbs) ----------------------------------
     # Reset chassis-carryover scribble strips: the cloned chassis carries the

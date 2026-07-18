@@ -123,7 +123,11 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
      ["DEVICE-side", "cid-first", "slots reorder"]),
     ("device_meters", ["device", "meters"], ["telemetry", "Read-only"]),
     ("device_measure", ["device", "measure"],
-     ["level-matching", "read-only", "PLAY STEADILY"]),
+     ["level-matching", "read-only", "PLAY STEADILY",
+      # #82 core: the loop-source gating mode's contract — chain-out gate,
+      # gain_db undefined without an input reference, compare output_db
+      "--source loop", "front-of-chain", "chain-out level",
+      "gain_db is null"]),
 ]
 
 
@@ -259,13 +263,17 @@ NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
       # latest wins; in-band zero trims still record; dry-run never writes
       "RECORDED", "`normalized` record", "latest run wins",
       "dry-run never writes metadata",
-      "FULL per-target measurements", "chain-out", "in-chain clipping"]),
+      "FULL per-target measurements", "chain-out", "in-chain clipping",
+      # #82 core: loop-source runs gate on chain-out and equalize raw
+      # output_db totals (the looped source is identical by construction)
+      "--source loop", "LOOPER", "identical across targets"]),
     (["set-param"],
      ["--snapshot", "per-snapshot override", "base value",
       "densify", "active snapshot", "round-trip",
-      # M3/M5: output pseudo-block overrides don't surface in `view` yet
-      # (#76), and a varying array makes a plain base edit inaudible
-      "do NOT surface in `view`", "inaudible"]),
+      # M3/M5 + #76: output pseudo-block overrides round-trip through `view`
+      # (the recipe's snapshot-level `output` field), and a varying array
+      # makes a plain base edit inaudible
+      "snapshot-level `output` field", "inaudible"]),
     # M4: enable/disable share set-param's snapshot resolver, so their
     # --snapshot also takes a 0-based index (names win) — help must say so
     (["enable"], ["0-based index", "names win"]),

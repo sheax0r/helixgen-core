@@ -108,6 +108,18 @@ class SnapshotParamOverride:
 
 
 @dataclass
+class SnapshotOutputOverride:
+    """One path's output-endpoint state within a snapshot: ABSOLUTE level
+    (dB) and/or pan (0..1) in force on that snapshot, on the path's primary
+    (lane-0 ``b13``) output — the recipe surface for the loudness phase-2
+    per-snapshot output trims (backlog #76). Mirrors the per-path ``output``
+    field's vocabulary; ``path`` defaults to 0."""
+    path: int = 0
+    level: float | None = None
+    pan: float | None = None
+
+
+@dataclass
 class Snapshot:
     """One named snapshot (Stadium scene). Each snapshot is a delta from the
     path's base block enabled-state and param values.
@@ -115,6 +127,7 @@ class Snapshot:
     name: str
     disable: list[SnapshotBlockRef] = field(default_factory=list)
     params: list[SnapshotParamOverride] = field(default_factory=list)
+    output: list[SnapshotOutputOverride] = field(default_factory=list)
 
 
 @dataclass
@@ -244,7 +257,7 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
     paths_raw = data.get("paths")
     if not isinstance(paths_raw, list):
         raise _err(source, '"paths" must be an array.')
-    if len(paths_raw) == 0:
+    if not paths_raw:
         raise _err(source, '"paths" must contain at least one chain.')
     if len(paths_raw) > 2:
         raise _err(
@@ -258,6 +271,18 @@ def parse_spec(data: Any, *, source: str = "<input>") -> Spec:
                                  path_index=i))
 
     snapshots = _parse_snapshots(data.get("snapshots"), source=source)
+    # Snapshot-level output overrides address paths by index; validate the
+    # index against the spec's own paths (parse-time — generate would only
+    # fail later against the chassis flow, with a worse error).
+    for i, snap in enumerate(snapshots):
+        for ov in snap.output:
+            if ov.path >= len(paths):
+                raise _err(
+                    source,
+                    f'snapshots[{i}] output targets path {ov.path}, but '
+                    f'"paths" has only {len(paths)} entr'
+                    f'{"y" if len(paths) == 1 else "ies"}.',
+                )
     footswitches = _parse_footswitches(data.get("footswitches"), source=source)
     expression = _parse_expression(data.get("expression"), source=source)
     # A (block, param) may be driven by ONE controller: reject a param that
@@ -395,7 +420,64 @@ def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
     else:
         raise _err(source, '"params" must be an object or a list.')
 
-    return Snapshot(name=name, disable=disable, params=params)
+    output = _parse_snapshot_output(data.get("output"), source=source)
+
+    return Snapshot(name=name, disable=disable, params=params, output=output)
+
+
+_SNAPSHOT_OUTPUT_KEYS = {"path", "level", "pan"}
+
+
+def _parse_snapshot_output(raw: Any, *, source: str) -> list[SnapshotOutputOverride]:
+    """Parse a snapshot's ``output`` field: a single object (path 0 unless it
+    carries an explicit ``path``) or a list of per-path objects. Values are
+    ABSOLUTE (the level/pan in force on that snapshot), validated with the
+    same ranges as the per-path ``output`` field."""
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        entries: list[Any] = [raw]
+    elif isinstance(raw, list):
+        if not raw:
+            raise _err(source, '"output" must be a non-empty object or list '
+                               'if provided.')
+        entries = raw
+    else:
+        raise _err(source, '"output" must be an object like '
+                           '{"level": -3.0, "pan": 0.5} or a list of '
+                           '{"path", "level", "pan"} objects.')
+
+    out: list[SnapshotOutputOverride] = []
+    seen_paths: set[int] = set()
+    for i, entry in enumerate(entries):
+        src = f"{source} output[{i}]" if isinstance(raw, list) else f"{source} output"
+        if not isinstance(entry, dict):
+            raise _err(src, 'must be an object like {"level": -3.0, "pan": 0.5}.')
+        unknown = sorted(set(entry) - _SNAPSHOT_OUTPUT_KEYS)
+        if unknown:
+            raise _err(src, f'unknown output key(s) {unknown}; valid keys: '
+                            f"['level', 'pan', 'path'].")
+        path = entry.get("path", 0)
+        if not isinstance(path, int) or isinstance(path, bool) or path < 0:
+            raise _err(src, '"path" must be a non-negative integer if provided.')
+        if path in seen_paths:
+            raise _err(src, f'duplicate output override for path {path}; '
+                            f'one entry per path per snapshot.')
+        seen_paths.add(path)
+        ov = SnapshotOutputOverride(path=path)
+        for fieldname in ("level", "pan"):
+            v = entry.get(fieldname)
+            if v is None:
+                continue
+            try:
+                flowparams.validate_output_field(fieldname, v)
+            except ValueError as e:
+                raise _err(src, f"output: {e}") from e
+            setattr(ov, fieldname, float(v))
+        if ov.level is None and ov.pan is None:
+            raise _err(src, 'output override needs "level" and/or "pan".')
+        out.append(ov)
+    return out
 
 
 def _refs_may_alias(a: tuple, b: tuple) -> bool:
@@ -448,6 +530,25 @@ def _parse_footswitches(raw: Any, *, source: str) -> list[FootswitchAssignment]:
     return out
 
 
+def _parse_ctrl_coords(
+    data: dict, *, source: str
+) -> tuple[int | None, int | None, int | None]:
+    """Parse+validate the optional ``path``/``lane``/``pos`` disambiguators
+    shared by footswitch, expression, and MIDI targets. Any absent field
+    stays ``None``; distinct from :func:`_parse_lane_pos`, which defaults lane
+    to 0 for structural entries."""
+    path = data.get("path")
+    if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
+        raise _err(source, '"path" must be a non-negative integer if provided.')
+    lane = data.get("lane")
+    if lane is not None and lane not in (0, 1):
+        raise _err(source, '"lane" must be 0 or 1 if provided.')
+    pos = data.get("pos")
+    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
+        raise _err(source, '"pos" must be a non-negative integer if provided.')
+    return path, lane, pos
+
+
 def _parse_footswitch(data: Any, *, source: str) -> FootswitchAssignment:
     if not isinstance(data, dict):
         raise _err(source, "must be an object.")
@@ -463,15 +564,7 @@ def _parse_footswitch(data: Any, *, source: str) -> FootswitchAssignment:
             source,
             f'"behavior" must be one of {list(VALID_FS_BEHAVIORS)} (got {behavior!r}).',
         )
-    path = data.get("path")
-    if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
-        raise _err(source, '"path" must be a non-negative integer if provided.')
-    lane = data.get("lane")
-    if lane is not None and lane not in (0, 1):
-        raise _err(source, '"lane" must be 0 or 1 if provided.')
-    pos = data.get("pos")
-    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
-        raise _err(source, '"pos" must be a non-negative integer if provided.')
+    path, lane, pos = _parse_ctrl_coords(data, source=source)
 
     def _num(v: Any) -> bool:
         return isinstance(v, (int, float)) and not isinstance(v, bool)
@@ -574,7 +667,7 @@ def _parse_expression_assignment(data: Any, *, source: str) -> ExpressionAssignm
     if not isinstance(pedal, str) or not pedal:
         raise _err(source, '"pedal" is required and must be a non-empty string.')
     targets_raw = data.get("targets")
-    if not isinstance(targets_raw, list) or len(targets_raw) == 0:
+    if not isinstance(targets_raw, list) or not targets_raw:
         raise _err(source, '"targets" must be a non-empty list.')
     targets = [
         _parse_expression_target(t, source=f"{source} targets[{j}]")
@@ -599,15 +692,7 @@ def _parse_expression_target(data: Any, *, source: str) -> ExpressionTarget:
             raise _err(source, f'"{label}" must be a number.')
     # Inverted ranges (min > max) are valid: real presets use them for reverse
     # heel-to-toe sweeps (e.g. min=0.85, max=0.67).
-    path = data.get("path")
-    if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
-        raise _err(source, '"path" must be a non-negative integer if provided.')
-    lane = data.get("lane")
-    if lane is not None and lane not in (0, 1):
-        raise _err(source, '"lane" must be 0 or 1 if provided.')
-    pos = data.get("pos")
-    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
-        raise _err(source, '"pos" must be a non-negative integer if provided.')
+    path, lane, pos = _parse_ctrl_coords(data, source=source)
     curve = data.get("curve")
     if curve is not None:
         from helixgen.controllers import CURVES
@@ -669,7 +754,7 @@ def _parse_midi_assignment(data: Any, *, source: str) -> MidiAssignment:
     if not (0 <= cc <= 127):
         raise _err(source, f'"cc" must be in 0..127 (got {cc}).')
     targets_raw = data.get("targets")
-    if not isinstance(targets_raw, list) or len(targets_raw) == 0:
+    if not isinstance(targets_raw, list) or not targets_raw:
         raise _err(source, '"targets" must be a non-empty list.')
     targets = [
         _parse_midi_target(t, source=f"{source} targets[{j}]")
@@ -700,15 +785,7 @@ def _parse_midi_target(data: Any, *, source: str) -> MidiTarget:
     for label, val in (("min", mn), ("max", mx)):
         if not isinstance(val, (int, float)) or isinstance(val, bool):
             raise _err(source, f'"{label}" must be a number.')
-    path = data.get("path")
-    if path is not None and (not isinstance(path, int) or isinstance(path, bool) or path < 0):
-        raise _err(source, '"path" must be a non-negative integer if provided.')
-    lane = data.get("lane")
-    if lane is not None and lane not in (0, 1):
-        raise _err(source, '"lane" must be 0 or 1 if provided.')
-    pos = data.get("pos")
-    if pos is not None and (not isinstance(pos, int) or isinstance(pos, bool) or pos < 0):
-        raise _err(source, '"pos" must be a non-negative integer if provided.')
+    path, lane, pos = _parse_ctrl_coords(data, source=source)
     return MidiTarget(block=block, param=(param if not bypass else None),
                       bypass=bypass, min=float(mn), max=float(mx),
                       path=path, lane=lane, pos=pos)
@@ -863,7 +940,7 @@ def _parse_channel_value(field: str, value: Any, *, stereo: bool,
         if not stereo:
             raise _err(source, f'per-channel "{field}" values require '
                                f'source "both" (the stereo input).')
-        if set(value.keys()) != {"1", "2"}:
+        if set(value) != {"1", "2"}:
             raise _err(source, f'per-channel "{field}" must have exactly '
                                f'the keys "1" and "2".')
         for ch, v in value.items():
