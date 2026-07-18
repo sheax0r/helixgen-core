@@ -2,12 +2,83 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+# The real helixgen home as resolved from the *launching* environment,
+# captured at import — before any per-test autouse fixture redirects
+# $HELIXGEN_HOME at a tmp dir. This is the one dir the offline suite must
+# never mutate; the guard below snapshots it. Mirrors helixgen.home
+# .helixgen_home() so a shell that sets $HELIXGEN_HOME is honored too.
+_REAL_HOME = (
+    Path(os.environ["HELIXGEN_HOME"]).expanduser()
+    if os.environ.get("HELIXGEN_HOME")
+    else Path.home() / ".helixgen"
+)
+
+
+def _snapshot_tree(root: Path) -> dict[str, tuple[int, int]]:
+    """Map each file under ``root`` to ``(size, mtime_ns)``.
+
+    Stat-only walk (no byte reads) so it stays cheap even over a large real
+    home (IR audio, git objects, device backups) and across every xdist
+    worker. Any creation, deletion, or in-place write shifts a file's path,
+    size, or mtime_ns and so is caught. Missing ``root`` snapshots empty (a
+    test that creates the real home from scratch is itself the regression).
+    """
+    snap: dict[str, tuple[int, int]] = {}
+    if not root.exists():
+        return snap
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            p = Path(dirpath) / fn
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            snap[str(p)] = (st.st_size, st.st_mtime_ns)
+    return snap
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_home_untouched_guard():
+    """FAIL the run if any offline test mutated the real ``~/.helixgen``.
+
+    Defense-in-depth for backlog #79(k): the per-test autouse fixtures below
+    already redirect every home-derived path (manifest, slots, IR-hash cache,
+    locks, and — via ``$HELIXGEN_HOME`` — the library/prefs/cache defaults) at
+    a tmp dir, so nothing should reach the real home. This snapshots the real
+    home at session start and asserts it byte-count/mtime-identical at session
+    end, so a future isolation regression fails the run immediately instead of
+    silently polluting real state. Ports the live suite's real-home guard
+    (``tests/live/conftest.py`` ``_real_dotfiles_guard``) to the offline suite.
+
+    xdist-safe: session fixtures are per-worker, so each worker snapshots and
+    asserts its own view of the (global) real home — no cross-worker state.
+    """
+    before = _snapshot_tree(_REAL_HOME)
+    yield
+    after = _snapshot_tree(_REAL_HOME)
+    if before != after:
+        added = sorted(set(after) - set(before))
+        removed = sorted(set(before) - set(after))
+        changed = sorted(k for k in before.keys() & after.keys()
+                         if before[k] != after[k])
+        raise AssertionError(
+            "ISOLATION REGRESSION: the offline suite mutated the user's real "
+            f"helixgen home at {_REAL_HOME}.\n"
+            f"  added:   {added}\n"
+            f"  removed: {removed}\n"
+            f"  changed: {changed}\n"
+            "Every offline test must operate on tmp state only — check for a "
+            "helixgen path resolved without honoring the autouse env redirects "
+            "(or a stray per-area $HELIXGEN_* override in the launching shell).")
 
 
 @pytest.fixture(autouse=True)
