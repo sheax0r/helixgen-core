@@ -473,3 +473,15 @@ Plugin releases (the `stable` branch + `helixgen--vX.Y.Z` tags) live in the
 nothing in this repo moves those refs. When a core release changes behavior a
 skill depends on, cut the core release first, then bump the plugin's pinned
 `helixgen` version in its own PR.
+
+## ralphex
+
+Implementation tasks driven from the helix coordination workspace run via
+[ralphex](https://github.com/umputun/ralphex) plan files in `docs/plans/`
+(scaffold: `docs/plans/TEMPLATE.md`); completed plans move to
+`docs/plans/completed/`. Config is the tracked `.ralphex/config`
+(`default_branch` pinned to `main` because the remote is named `github`, so
+ralphex can't auto-detect from `origin/HEAD`); runtime dirs
+`.ralphex/worktrees/` + `.ralphex/progress/` are gitignored. The launcher
+syncs local `main` from `github/main` before running. Review = ralphex's
+built-in review pipeline (`external_review_tool = none`).
