@@ -970,8 +970,9 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
                    "address just discovered; unset it (or update it) to use "
                    "the record", err=True)
 
+    from helixgen import home
     click.echo(f"persisted {len(confirmed)} device record(s) under "
-               f"~/.helixgen/devices/ — device verbs now resolve the IP "
+               f"{home.devices_dir()} — device verbs now resolve the IP "
                f"automatically", err=True)
     if len(confirmed) > 1:
         click.echo("multiple devices found: the most recently discovered is "

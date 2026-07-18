@@ -329,6 +329,22 @@ class TestCli:
         # persisted — and the resolver now finds it
         assert discovery.resolve_ip() == "192.168.7.42"
 
+    def test_discover_report_names_effective_home(self, monkeypatch):
+        # $HELIXGEN_HOME is redirected to tmp_path by the autouse fixture, so
+        # the persisted-record report must name that effective devices/ dir,
+        # not a hardcoded ``~/.helixgen/devices/`` (#77 / #73).
+        cand = discovery.Candidate(ip="192.168.7.42", hostname="p35x1.local.",
+                                   instance="p35x1", via="mdns")
+        monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [cand])
+        _FakeClient.infos = {"192.168.7.42": {
+            "serial": "SER42", "model": "stadium", "firmware": "1.3.2"}}
+        monkeypatch.setattr("helixgen.cli_device._client",
+                            lambda: (_FakeClient, discovery.IPResolutionError))
+        r = CliRunner().invoke(cli, ["device", "discover"])
+        assert r.exit_code == 0, r.output
+        assert str(home.devices_dir()) in r.output
+        assert "~/.helixgen/devices/" not in r.output
+
     def test_discover_persists_nonstandard_rpc_port(self, monkeypatch):
         cand = discovery.Candidate(ip="192.168.7.42", hostname="p35x1.local.",
                                    instance="p35x1", via="mdns", rpc_port=9002)

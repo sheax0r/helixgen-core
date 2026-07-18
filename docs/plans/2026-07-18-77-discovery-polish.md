@@ -26,8 +26,8 @@ change (`--ip ""` rejection); the rest are additive.
 
 ### Task 3: Failure message respects `$HELIXGEN_HOME`
 
-- [ ] Write failing test: with `HELIXGEN_HOME` set, the discovery failure message that today hardcodes `~/.helixgen/devices/` shows the effective path instead
-- [ ] Implement the minimal change (use the effective home resolution, do not fix unrelated `HELIXGEN_HOME` gaps — that's backlog #73)
+- [x] Write failing test: with `HELIXGEN_HOME` set, the discovery failure message that today hardcodes `~/.helixgen/devices/` shows the effective path instead
+- [x] Implement the minimal change (use the effective home resolution, do not fix unrelated `HELIXGEN_HOME` gaps — that's backlog #73)
 
 ### Task 4: Live-conftest serial tie-break
 
