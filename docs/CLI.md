@@ -563,10 +563,15 @@ plumbing" in `CLAUDE.md`) — only intent is.
   `--setlist` takes `user`/`factory`/a device setlist name like the other
   preset verbs (named setlist: pooled + referenced at the destination position).
   Pathless `save`/`create` tones have no local source and can't be restored.
-  `--force` pushes into an occupied destination slot (for **both** `.hsp` and
-  `.sbe` sources) — it skips the emptiness check; the occupant is **not
-  deleted**. Without `--force`, the emptiness check is strict (backlog #40) —
-  a listing timeout aborts the restore rather than reading the slot as empty.
+  `--force` pushes into an occupied **pool** slot (for **both** `.hsp` and
+  `.sbe` sources) — it skips the pool emptiness check; the occupant is **not
+  deleted**. An occupied **named-setlist** position is refused even with
+  `--force` (backlog #69): `reference_into_setlist` never removes an
+  incumbent, so proceeding would stack a second reference at one position —
+  uncataloged device behavior. Remove the incumbent reference first
+  (`device delete <cid> --setlist <name>`), then re-run. The emptiness
+  checks are strict either way (backlog #40) — a listing timeout aborts the
+  restore rather than reading the slot as empty.
   The destination is an explicit `--pos`, else the recorded slot
   label, else the last observed `device.posi`. That observed posi can be
   stale (the device may have been reorganized since) — when in doubt,

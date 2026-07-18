@@ -262,8 +262,6 @@ def _biquad_coeffs(rate: int) -> tuple[tuple, tuple]:
     analog prototype (the De Man derivation, as used by every serious
     BS.1770 implementation for non-48 kHz rates); at 48 kHz it reproduces
     the standard's printed coefficient table to ~1e-6."""
-    import math
-
     # stage 1: high shelf
     K = math.tan(math.pi * _SHELF_FC / rate)
     Vh = 10.0 ** (_SHELF_GAIN_DB / 20.0)

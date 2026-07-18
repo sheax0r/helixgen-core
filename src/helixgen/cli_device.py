@@ -61,6 +61,14 @@ def _serial_of(h, ip: str) -> str:
     return f"ip-{getattr(h, 'ip', None) or ip}"
 
 
+def _echo_library_rows(rows) -> None:
+    """Emit the human-readable library listing (slot, name, on/off, setlists)."""
+    for row in rows:
+        sls = ", ".join(row["setlists"])
+        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
+                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+
+
 def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
     """`--list` output for `device setlist import-hss`: per-slot filled/empty
     state, payload format, and preset name (fully offline)."""
@@ -312,9 +320,21 @@ def _install_via_dest(h, kind: str, dest_cid: int, label: str, pos: int,
     save / transcode-install) and returns the new pool cid. For
     kind=="pool" it writes straight at ``pos``. For kind=="setlist" the
     preset content always lives in the POOL: the setlist position ``pos``
-    is checked empty (strict; skipped with ``force``), the content is
-    written at the lowest empty pool posi, and a REFERENCE is added to the
-    setlist at ``pos``. The factory container is read-only.
+    is checked empty (strict — always, even under ``force``; backlog #69),
+    the content is written at the lowest empty pool posi, and a REFERENCE
+    is added to the setlist at ``pos``. The factory container is read-only.
+
+    ``force`` (the ``slots restore --force`` escape hatch) only ever
+    applies to a POOL destination's slot check (inside ``writer``); an
+    occupied NAMED-SETLIST position is refused even with ``force``:
+    ``reference_into_setlist`` never removes an incumbent, so proceeding
+    would stack a second reference at one position — device behavior that
+    is uncataloged (backlog #69; a 2026-07-17 hardware-characterization
+    attempt was blocked by a persistent backlog-#38 /CreateContent
+    status-1 episode). Fail-safe: refuse, and point at removing the
+    incumbent reference first. The occupancy listing is strict (#40) —
+    with or without ``force``, a listing timeout aborts rather than
+    reading the position as empty.
 
     Returns ``(new_cid, pool_posi, ref_cid_or_None)``.
     """
@@ -324,7 +344,16 @@ def _install_via_dest(h, kind: str, dest_cid: int, label: str, pos: int,
         raise click.ClickException("the factory container is read-only")
     if kind == "pool":
         return writer(dest_cid, pos), pos, None
-    if not force and h.find_by_pos(dest_cid, pos, strict=True) is not None:
+    occupant = h.find_by_pos(dest_cid, pos, strict=True)
+    if occupant is not None:
+        if force:
+            raise click.ClickException(
+                f"setlist {label!r} position {pos} already holds a reference "
+                f"(cid {occupant.get('cid_')}); --force cannot replace it: "
+                "the device's behavior with two references stacked at one "
+                "position is uncataloged (backlog #69). Remove the incumbent "
+                f"first (`helixgen device delete {occupant.get('cid_')} "
+                f"--setlist {label!r}`), then re-run.")
         raise click.ClickException(
             f"setlist {label!r} position {pos} is not empty")
     pool_pos = h._lowest_empty_posi(Container.POOL)
@@ -2506,10 +2535,7 @@ def device_library_cmd(as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
-    for row in rows:
-        sls = ", ".join(row["setlists"])
-        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
-                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+    _echo_library_rows(rows)
 
 
 @device.command(name="sync")
@@ -2734,10 +2760,7 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
-    for row in rows:
-        sls = ", ".join(row["setlists"])
-        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
-                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+    _echo_library_rows(rows)
 
 
 @device_slots.command(name="restore")
@@ -2747,7 +2770,9 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
 @click.option("--setlist", default=None,
               help="Override the destination: " + _SETLIST_HELP)
 @click.option("--force", is_flag=True, default=False,
-              help="Push even if the destination slot is occupied.")
+              help="Push even if the destination POOL slot is occupied "
+                   "(pool destinations only; an occupied named-setlist "
+                   "position is always refused — backlog #69).")
 @_device_option
 @_locked("library", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,
@@ -2758,7 +2783,11 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     .sbe (from `push`) is re-pushed. Tones saved from the live edit buffer or
     copied on-device have no local source and can't be restored this way.
     With a NAMED --setlist the content is restored into the POOL and a
-    REFERENCE is added to the setlist at the destination position.
+    REFERENCE is added to the setlist at the destination position; if that
+    position already holds a reference the restore is refused even with
+    --force (a second reference would stack at one position — uncataloged
+    device behavior, backlog #69) — remove the incumbent reference first
+    (`device delete <cid> --setlist <name>`).
     """
     SetlistManifest, _ = _manifest()
 
@@ -3518,7 +3547,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 raise click.ClickException(
                     f"setlist {setlist!r} is not in the local manifest "
                     f"(see `device setlist list`)")
-            tone_names = [t for t in (rec.get("tones") or [])]
+            tone_names = list(rec.get("tones") or [])
             if not tone_names:
                 raise click.ClickException(f"setlist {setlist!r} has no tones")
             say(f"normalize (setlist scope): {len(tone_names)} tone(s) in "
