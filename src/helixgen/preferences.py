@@ -216,12 +216,25 @@ _DEPRECATED_KEYS = {
 }
 
 
-def _warn_deprecated_keys(data: dict[str, Any]) -> None:
+# (file path, key) pairs already warned about this process: one command run
+# (e.g. `library migrate`) loads preferences several times, and repeating the
+# identical notice per load is spam, not signal (backlog #79g). Keyed by path
+# so tests -- and real multi-file setups -- with distinct prefs files still
+# each get their notice.
+_warned_deprecated: set[tuple[str, str]] = set()
+
+
+def _warn_deprecated_keys(data: dict[str, Any], path: Path) -> None:
     """Emit a one-line stderr deprecation notice for each retired key that is
     actually PRESENT and non-empty in the on-disk ``data`` (never on a default
-    / absent / empty value; never to stdout, which ``--json`` reads)."""
+    / absent / empty value; never to stdout, which ``--json`` reads). Each
+    (file, key) pair warns at most ONCE per process."""
     for key, why in _DEPRECATED_KEYS.items():
         if data.get(key):
+            marker = (str(path), key)
+            if marker in _warned_deprecated:
+                continue
+            _warned_deprecated.add(marker)
             print(
                 f"helixgen: preferences key {why} is deprecated; run "
                 "`helixgen library migrate` to convert it.",
@@ -257,7 +270,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         )
     # else: missing default-path file -> data stays {} -> all defaults
 
-    _warn_deprecated_keys(data)
+    _warn_deprecated_keys(data, resolved_path)
 
     device_block = data.get("device") or {}
     if not isinstance(device_block, dict):

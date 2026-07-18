@@ -260,3 +260,34 @@ def test_import_directory_midbatch_failure_saves_progress_and_reconciles(
     m2 = SetlistManifest.load()
     assert "Beta Tone" in m2.tones
     assert (home.tones_dir() / "beta-tone.hsp").exists()
+
+
+# ---------------------------------------------------------------------------
+# 79e: a post-place registration failure names the exact recovery command
+# ---------------------------------------------------------------------------
+
+
+def test_import_register_failure_names_recovery_command(tmp_home, monkeypatch):
+    ext = tmp_home / "ext"
+    ext.mkdir()
+    src = ext / "t.hsp"
+    _write_hsp(src, "Solo Tone")
+
+    def _boom(self, hsp_path, **kw):
+        raise RuntimeError("simulated register failure")
+
+    # scoped context: NEVER monkeypatch.undo() here -- that would also undo
+    # the tmp_home env isolation and point the recovery run at the REAL home
+    with monkeypatch.context() as mp:
+        mp.setattr(SetlistManifest, "register_tone", _boom)
+        res = CliRunner().invoke(cli, ["library", "import", str(src)])
+    assert res.exit_code != 0
+    dest = home.tones_dir() / "solo-tone.hsp"
+    assert dest.exists()  # the file WAS placed
+    combined = res.output + res.stderr
+    assert "helixgen register" in combined
+    assert str(dest) in combined
+    # the named recovery command actually completes the import
+    res2 = CliRunner().invoke(cli, ["register", str(dest)])
+    assert res2.exit_code == 0, res2.output
+    assert "Solo Tone" in SetlistManifest.load().tones

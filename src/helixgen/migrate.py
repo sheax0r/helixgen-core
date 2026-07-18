@@ -22,7 +22,10 @@ Design guarantees:
   whose plan path already resolves to its destination is skipped; an IR WAV
   already living under ``library_irs_dir()`` is skipped. No duplicate files, no
   manifest/mapping churn (the manifest and mapping are re-saved only when this
-  run actually changed them).
+  run actually changed them). A tone whose ``.hsp`` already sits at its
+  destination but whose bookkeeping is incomplete -- a prior run died between
+  the move and the manifest re-key -- is SELF-HEALED on re-run
+  (metadata/manifest recreated, file untouched; backlog #79e).
 - **Data safety.** A tone move is copy → byte-verify → remove-source (never a
   lossy move); a per-tone or per-IR failure is recorded in the summary and the
   run CONTINUES (it never aborts into an unreconcilable half-migrated state).
@@ -413,6 +416,48 @@ def _migrate_tones(entries: List[Dict[str, Any]], manifest: SetlistManifest,
     return dirty
 
 
+def _is_registered_at(manifest: SetlistManifest, name: str, dest: Path) -> bool:
+    rec = manifest.tones.get(name)
+    return rec is not None and rec.get("path") == str(dest)
+
+
+def _heal_placed_tone(e: Dict[str, Any], manifest: SetlistManifest,
+                      dest: Path) -> None:
+    """Finish the bookkeeping for a tone whose ``.hsp`` already sits at its
+    migration destination but that the manifest doesn't register there -- a
+    prior run moved the file and then died before re-keying (backlog #79e).
+    Never moves a file; recreates only what is missing:
+
+    - ``meta.name`` in the ``.hsp`` is rewritten if it isn't the new name yet;
+    - the tone-metadata variant is (re)created ONLY when absent -- an
+      existing variant (possibly carrying hand-added ``guitar_settings``/
+      ``notes_md``) is left untouched;
+    - the manifest is re-keyed exactly as a fresh move would have.
+    """
+    body = read_hsp(dest)
+    if (body.get("meta") or {}).get("name") != e["new_name"]:
+        body.setdefault("meta", {})["name"] = e["new_name"]
+        write_hsp(dest, body)
+
+    guitar_short = e.get("guitar")
+    guitar_slug = naming.slugify(guitar_short) if guitar_short else None
+    key = guitar_slug or "generic"
+    existing = (tone_meta.load_tone_meta(e["logical"])
+                if tone_meta.meta_path(e["logical"]).exists() else None)
+    if existing is None or key not in existing.variants:
+        meta = tone_meta.upsert_variant(
+            existing, artist=e.get("artist"), song=e.get("song"),
+            descriptor=e.get("descriptor"), guitar_slug=guitar_slug,
+            guitar_short=guitar_short, hsp_path=dest)
+        # the sibling .md still sits next to the (now-moved-away) source
+        md_path = Path(e["path"]).with_suffix(".md")
+        if meta.description_md is None and md_path.exists():
+            meta.description_md = md_path.read_text()
+        tone_meta.save_tone_meta(meta)
+
+    _rekey_manifest_tone(manifest, e["name"], e["new_name"], dest)
+
+
 def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
                       summary: Dict[str, Any], dry_run: bool,
                       tones_dir: Path) -> bool:
@@ -420,10 +465,23 @@ def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
     src = Path(e["path"]).resolve()
     dest = (tones_dir / f"{e['new_slug']}.hsp").resolve()
 
-    if src == dest and dest.exists():
-        summary["tones"]["skipped"].append({"name": old_name, "reason": "already in place"})
-        return False
     if dest.exists():
+        if _is_registered_at(manifest, e["new_name"], dest):
+            summary["tones"]["skipped"].append(
+                {"name": old_name, "reason": "already in place"})
+            return False
+        if src == dest or not src.exists():
+            # The .hsp already sits at its destination (a prior run moved it)
+            # but the manifest doesn't register it there -- that run died
+            # after the move. SELF-HEAL the bookkeeping instead of erroring
+            # (#79e); a re-run after any post-move failure completes the
+            # migration.
+            if not dry_run:
+                _heal_placed_tone(e, manifest, dest)
+            summary["tones"]["moved"].append(
+                {"old": old_name, "new_name": e["new_name"], "to": str(dest),
+                 "healed": True})
+            return True
         summary["tones"]["errors"].append(
             {"name": old_name, "error": f"destination already exists: {dest}"})
         return False
@@ -483,13 +541,20 @@ def _choose_ir_dest(lib_irs: Path, pack: str, src: Path, h: str) -> tuple[Path, 
     Normally ``<pack>/<basename>`` (+ ``<stem>.json``). But two source packs
     that slugify to the SAME ``<pack>`` dir can share a WAV basename while
     holding DIFFERENT content; if the natural dest already exists and is NOT
-    byte-identical to ``src``, disambiguate by prefixing the irhash so two
-    distinct IRs never collapse onto one file (silent wrong-content mapping)."""
+    byte-identical to ``src``, disambiguate by prefixing the 8-hex irhash so
+    two distinct IRs never collapse onto one file (silent wrong-content
+    mapping). Two distinct IRs sharing basename AND 8-hex prefix is a ~2^-32
+    accident (backlog #79f); if even the prefixed dest exists with different
+    content, fall back to the FULL irhash -- unique per content by
+    construction -- so the chosen dest is always either absent or
+    byte-identical to ``src`` (mirrors ``ir_meta._choose_dest``)."""
     natural = lib_irs / pack / src.name
     if not natural.exists() or _ir_content_matches(natural, src):
         return natural, lib_irs / pack / (src.stem + ".json")
     prefix = (h or "")[:8] or "ir"
     dis = lib_irs / pack / f"{src.stem}-{prefix}{src.suffix}"
+    if dis.exists() and not _ir_content_matches(dis, src):
+        dis = lib_irs / pack / f"{src.stem}-{h or 'ir'}{src.suffix}"
     return dis, lib_irs / pack / f"{dis.stem}.json"
 
 

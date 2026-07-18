@@ -285,7 +285,9 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   whole batch is pre-validated and refused, moving nothing, on any collision)
   but **not** atomic on per-file errors during the move pass — an
   unexpected per-file error is recorded and the run continues, the manifest
-  is always saved, and the command exits nonzero if any file failed.
+  is always saved, and the command exits nonzero if any file failed; a
+  failure after a file was placed (manifest registration) names the exact
+  recovery command (`helixgen register <placed .hsp>`).
 - `helixgen library migrate [--dry-run | --plan <plan.json>]` — one-shot,
   idempotent migration of a pre-library `~/.helixgen` into the tone library:
   moves each manifest tone's `.hsp` into `library/tones/<slug>.hsp` under the
@@ -301,7 +303,10 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   prints the inferred plan as JSON and mutates nothing; `--plan FILE` executes
   a (possibly agent- or user-edited) plan instead of re-inferring one; with
   neither flag, plans and runs in one go. A per-tone/IR error is recorded and
-  the run continues; a slug collision (two tones mapping to one destination) is
+  the run continues; a tone whose `.hsp` already sits at its destination but
+  whose metadata/manifest bookkeeping is incomplete (a prior run died mid-tone)
+  is self-healed on re-run — file untouched, bookkeeping recreated; a slug
+  collision (two tones mapping to one destination) is
   recorded with a rename suggestion and neither tone is moved. Output is a JSON
   summary of moves/skips/errors/collisions (including an `instruments` section).
 - `helixgen library ir-backfill [--json]` — for every `mapping.json` entry

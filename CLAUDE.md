@@ -393,7 +393,9 @@ plugin repo).
   `preset_output_dir` (replaced by the `library/tones/` default write
   location) are deprecated. Loading a preferences file that still carries
   either key (present + non-empty) prints a one-line stderr warning pointing
-  at `library migrate`; both keys are still parsed for back-compat. `library
+  at `library migrate` — once per process per key, so a multi-load run like
+  `library migrate` doesn't repeat it; both keys are still parsed for
+  back-compat. `library
   migrate` seeds guitar profiles from `instruments` and then **removes** both
   keys from the file.
 

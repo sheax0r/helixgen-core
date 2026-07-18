@@ -35,7 +35,7 @@ from typing import Any, Dict, List
 import click
 
 from helixgen import gitops, guitars, home, ir_meta, migrate, naming, tone_meta
-from helixgen.device.manifest import ManifestError, SetlistManifest
+from helixgen.device.manifest import SetlistManifest
 from helixgen.ir import IrMapping
 from helixgen.hsp import read_hsp
 
@@ -616,7 +616,10 @@ def migrate_cmd(dry_run: bool, plan_file: Path | None) -> None:
 
     IDEMPOTENT + data-safe: re-running is all skips (no duplicate files, no
     manifest/mapping churn); a tone move is copy -> byte-verify -> remove-source;
-    a per-tone/IR error is recorded and the run CONTINUES. A slug collision (two
+    a per-tone/IR error is recorded and the run CONTINUES. A tone whose .hsp
+    already sits at its destination but whose metadata/manifest bookkeeping
+    is incomplete (a prior run died mid-tone) is SELF-HEALED on re-run --
+    file untouched, bookkeeping recreated. A slug collision (two
     tones -> one destination) is recorded with a rename suggestion and NEITHER
     is moved. Each prefs ``instruments`` entry is SEEDED into a guitar profile
     (library/guitars/<slug>.json); the retired ``instruments`` and
@@ -698,7 +701,9 @@ def import_cmd(source: Path, artist: str | None, song: str | None,
     move pass, an unexpected per-file error is recorded and the run CONTINUES,
     and the manifest is always saved, so tones that already succeeded are
     registered on disk (never left in an unreconcilable half-imported state);
-    the command exits nonzero when any file failed.
+    the command exits nonzero when any file failed. A failure AFTER a file
+    was placed (manifest registration) names the exact recovery command
+    (`helixgen register <placed .hsp>`).
     """
     source = Path(source)
     if source.is_dir():
@@ -905,8 +910,17 @@ def _place_and_register(r: Dict[str, Any], keep_source: bool,
 
     try:
         manifest.register_tone(dest, source="import-local")
-    except ManifestError as err:
-        raise click.ClickException(str(err)) from err
+    except Exception as err:  # noqa: BLE001 -- the file is already placed
+        # The .hsp + metadata are already placed; only the manifest
+        # registration failed. A plain re-import would refuse (the
+        # destination now exists), so name the exact recovery command
+        # (backlog #79e).
+        raise click.ClickException(
+            f"{err}\nThe tone was already placed at {dest} (metadata "
+            "written) but could NOT be registered in the manifest. After "
+            "fixing the conflict, run `helixgen register "
+            f"{dest}` to complete the import."
+        ) from err
 
     click.echo(f"Imported {r['src'].name} -> {dest}")
     click.echo(f"Preset name: {r['preset_name']}")
