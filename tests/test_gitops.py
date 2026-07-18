@@ -343,6 +343,88 @@ def test_ensure_home_repo_no_initial_content_commit_when_pref_false(tmp_path, mo
 
 
 # ---------------------------------------------------------------------------
+# #79(i): auto-commit honors the user's configured git identity, falling back
+# to helixgen <helixgen@localhost> ONLY when no identity is configured.
+# ---------------------------------------------------------------------------
+
+
+def _configure_identity(monkeypatch, tmp_path, name, email):
+    """Point GIT_CONFIG_GLOBAL at a config file carrying the given identity."""
+    cfg = tmp_path / "user-gitconfig"
+    cfg.write_text(f"[user]\n\tname = {name}\n\temail = {email}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+
+
+def _log_author(home):
+    return subprocess.run(
+        ["git", "-C", str(home), "log", "-1", "--format=%an <%ae>"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _log_committer(home):
+    return subprocess.run(
+        ["git", "-C", str(home), "log", "-1", "--format=%cn <%ce>"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_configured_identity_used_for_initial_commit(tmp_path, monkeypatch):
+    _configure_identity(monkeypatch, tmp_path, "Ada Lovelace", "ada@example.com")
+    monkeypatch.setenv("HELIXGEN_PREFS", str(tmp_path / "prefs.json"))
+    home = tmp_path / "home"
+    home.mkdir()
+    gitops.ensure_home_repo(home)
+    assert _log_author(home) == "Ada Lovelace <ada@example.com>"
+    assert _log_committer(home) == "Ada Lovelace <ada@example.com>"
+
+
+def test_configured_identity_used_for_auto_commit(tmp_path, monkeypatch):
+    _configure_identity(monkeypatch, tmp_path, "Grace Hopper", "grace@example.com")
+    monkeypatch.setenv("HELIXGEN_PREFS", str(tmp_path / "prefs.json"))
+    home = tmp_path / "home"
+    home.mkdir()
+    gitops.ensure_home_repo(home)
+    (home / "f.txt").write_text("x")
+    gitops.auto_commit(home, "test: change")
+    assert _log_author(home) == "Grace Hopper <grace@example.com>"
+    assert _log_committer(home) == "Grace Hopper <grace@example.com>"
+
+
+def test_fallback_identity_when_none_configured_initial_commit(tmp_path, monkeypatch):
+    # The autouse fixture already unsets any global/system identity.
+    monkeypatch.setenv("HELIXGEN_PREFS", str(tmp_path / "prefs.json"))
+    home = tmp_path / "home"
+    home.mkdir()
+    assert gitops.ensure_home_repo(home) is True
+    assert _log_author(home) == "helixgen <helixgen@localhost>"
+    assert _log_committer(home) == "helixgen <helixgen@localhost>"
+
+
+def test_fallback_identity_when_none_configured_auto_commit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_PREFS", str(tmp_path / "prefs.json"))
+    home = tmp_path / "home"
+    home.mkdir()
+    gitops.ensure_home_repo(home)
+    (home / "f.txt").write_text("x")
+    gitops.auto_commit(home, "test: change")
+    assert _log_author(home) == "helixgen <helixgen@localhost>"
+    assert _log_committer(home) == "helixgen <helixgen@localhost>"
+
+
+def test_partial_identity_falls_back(tmp_path, monkeypatch):
+    """Only user.name set (no email) is NOT a usable identity -> fall back."""
+    cfg = tmp_path / "partial-gitconfig"
+    cfg.write_text("[user]\n\tname = Only Name\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(tmp_path / "prefs.json"))
+    home = tmp_path / "home"
+    home.mkdir()
+    assert gitops.ensure_home_repo(home) is True
+    assert _log_author(home) == "helixgen <helixgen@localhost>"
+
+
+# ---------------------------------------------------------------------------
 # Minor 7: leak-surface regression tests
 # ---------------------------------------------------------------------------
 

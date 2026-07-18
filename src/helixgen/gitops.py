@@ -23,14 +23,44 @@ _REQUIRED_LINES = ["devices/", "cache/", "locks/", "tone3000/", "*.bak*",
                    "*.wav", "*.migrated-*", "*.tmp"]
 GITIGNORE = "".join(f"{line}\n" for line in _REQUIRED_LINES)
 
-# Fallback commit identity so `git commit` works even on a machine with no
-# git user.name/user.email configured (e.g. a fresh CI box or sandbox).
+# Fallback commit identity, injected ONLY when the home repo has no usable git
+# identity configured (e.g. a fresh CI box or sandbox with no
+# user.name/user.email). When the user HAS configured an identity — via
+# local/global/system git config — it is left untouched so their identity is
+# used for both author and committer (#79(i)). Because GIT_AUTHOR_*/GIT_COMMITTER_*
+# env vars OVERRIDE git config, injecting these unconditionally would defeat
+# that, so `_commit_env` gates the injection on `_has_git_identity`.
 _GIT_IDENTITY_ENV = {
     "GIT_AUTHOR_NAME": "helixgen",
     "GIT_AUTHOR_EMAIL": "helixgen@localhost",
     "GIT_COMMITTER_NAME": "helixgen",
     "GIT_COMMITTER_EMAIL": "helixgen@localhost",
 }
+
+
+def _has_git_identity(home: Path) -> bool:
+    """True iff git resolves BOTH a non-empty ``user.name`` and ``user.email``
+    for ``home`` — respecting local, global and system config. Advisory: any
+    failure (git missing, OSError) reports "no identity" so the fallback wins."""
+    try:
+        name = _run_git(["config", "user.name"], cwd=home)
+        email = _run_git(["config", "user.email"], cwd=home)
+    except OSError:
+        return False
+    return (
+        name.returncode == 0 and name.stdout.strip() != ""
+        and email.returncode == 0 and email.stdout.strip() != ""
+    )
+
+
+def _commit_env(home: Path) -> dict:
+    """Environment for git add/commit against ``home``. Passes ``os.environ``
+    through unchanged when the user has a usable git identity; otherwise layers
+    the :data:`_GIT_IDENTITY_ENV` fallback on top so the commit still succeeds."""
+    env = dict(os.environ)
+    if not _has_git_identity(home):
+        env.update(_GIT_IDENTITY_ENV)
+    return env
 
 
 def _warn(message: str) -> None:
@@ -82,8 +112,6 @@ def ensure_home_repo(home: Path) -> bool:
             _ensure_gitignore(home)
         return True
 
-    commit_env = {**os.environ, **_GIT_IDENTITY_ENV}
-
     try:
         init = _run_git(["init"], cwd=home)
         if init.returncode != 0:
@@ -93,6 +121,7 @@ def ensure_home_repo(home: Path) -> bool:
         (home / ".gitignore").write_text(GITIGNORE)
 
         if _should_auto_commit():
+            commit_env = _commit_env(home)
             add = _run_git(["add", "-A"], cwd=home, env=commit_env)
             if add.returncode != 0:
                 _warn(f"git add failed: {add.stderr.strip()}")
@@ -220,7 +249,7 @@ def auto_commit(home: Path, message: str) -> None:
             _warn("not committing: HELIXGEN_HOME is inside another repo")
             return
 
-        commit_env = {**os.environ, **_GIT_IDENTITY_ENV}
+        commit_env = _commit_env(home)
 
         add = _run_git(["add", "-A"], cwd=home, env=commit_env)
         if add.returncode != 0:
