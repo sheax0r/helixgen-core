@@ -1318,6 +1318,7 @@ def test_device_delete_ir_wedged_hash_reachable_from_cli(monkeypatch):
     """The advertised wedge cleanup must work via the CLI (finding 2): a hash
     absent from the -11 listing but resolving in the path index is cleaned
     when --force-wedge is given."""
+    IrClient.deleted = []  # class attr is process-global; reset for xdist safety
     removed = []
     _patch_sftp_noop(monkeypatch, removed)
     wedged = "dd" * 16
