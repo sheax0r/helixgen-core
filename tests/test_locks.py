@@ -269,61 +269,92 @@ def test_post_create_verification_backs_off_the_younger_lease(root):
 
 
 @pytest.mark.xfail(
-    "PYTEST_XDIST_WORKER" in os.environ,
-    reason="residual finding-2 scan->create tiebreak race (backlog #88): a "
-           "younger-acquired lease that creates AND re-scans before an older "
-           "creator's file is visible commits, then the older commits too. "
-           "The barrier here forces the gap; parallel-worker CPU contention "
-           "then widens the create->re-scan window enough to expose it. "
-           "Deterministic and green in serial runs, which still enforce the "
-           "invariant; only xfailed under xdist until the mutex-serialized "
-           "acquisition fix lands.",
+    reason="backlog #88: deterministic reproduction of the scan->create->rescan "
+           "double-commit. Two DISTINCT sessions race `all` vs `library`; the "
+           "younger creates AND rescans before the older's file is visible, so "
+           "it commits, then the older creates, rescans, computes "
+           "theirs(younger) < ours(older) == False, and ALSO commits. This "
+           "harness forces that exact interleaving with two events, so the race "
+           "reproduces deterministically (no longer xdist-timing-dependent). "
+           "xfailed until the Task-2 mutex-serialized acquisition lands; Task 3 "
+           "removes this marker and asserts it PASSES.",
     strict=False,
 )
 def test_all_vs_scope_create_race_yields_exactly_one_winner(root, monkeypatch):
-    """Review finding 2 (MAJOR), end-to-end: two DISTINCT sessions racing
-    `all` vs `library` through the scan->create gap (forced with a barrier
-    inside _write_new) must never both acquire. Distinct live foreign pids
-    + tokens model two separate processes (threads of one pid would own
-    each other's leases by design)."""
+    """Review finding 2 (MAJOR) / backlog #88, end-to-end: two DISTINCT
+    sessions racing `all` vs `library` through the scan->create->rescan gap
+    must never both acquire. Distinct live foreign pids + tokens model two
+    separate processes (threads of one pid would own each other's leases by
+    design).
+
+    Deterministic reproduction. `_post_create_conflict`'s tiebreak is only
+    sound if BOTH creates land before EITHER rescans; this harness forces the
+    double-commit order with two ordering events, independent of the
+    scheduler (see the plan's "exact double-commit interleaving" note):
+
+        1. p-old  (`all`,     OLDER acquired_at) scans -> nothing -> reaches
+           `_write_new`, signals `old_scanned`, then WAITS for the younger
+           session to commit.
+        2. p-young (`library`, YOUNGER acquired_at) scans -> nothing -> waits
+           for `old_scanned`, then creates its lease and RESCANS `all` ->
+           still ABSENT -> commits, then signals `young_committed`.
+        3. p-old wakes, creates `all`, RESCANS -> sees the younger `library`
+           lease -> theirs(younger) < ours(older) == False -> does NOT back
+           off -> ALSO commits.
+
+    A correct (serialized) acquisition makes p-old's SCAN observe the
+    already-committed `library` lease, so it blocks -> exactly one winner. The
+    event waits are BOUNDED so the fixed code (where the loser is serialized
+    out and never reaches `_write_new`) falls through gracefully rather than
+    deadlocking.
+    """
     import threading
 
-    sleeper = subprocess.Popen([sys.executable, "-c",
-                                "import time; time.sleep(60)"])
-    try:
-        barrier = threading.Barrier(2, timeout=10)
-        real_write_new = locks._write_new
+    base = time.time()
+    old_scanned = threading.Event()
+    young_committed = threading.Event()
+    # Force the ages deterministically: `all` older (smaller ts) than
+    # `library`, both comfortably inside their TTL so neither reads as stale.
+    forced_at = {"all.lock": base - 10.0, "library.lock": base}
+    real_write_new = locks._write_new
+    real_pcc = locks._post_create_conflict
 
-        def gated(path, payload):
-            if path.name.endswith(".lock") and ".break" not in path.name:
-                try:
-                    barrier.wait()
-                except threading.BrokenBarrierError:
-                    pass  # second passes / loser retries: no more gating
-            return real_write_new(path, payload)
+    def gated_write_new(path, payload):
+        if path.name in forced_at:
+            payload["acquired_at"] = forced_at[path.name]
+            if path.name == "library.lock":      # the younger session
+                old_scanned.wait(timeout=2.0)    # let p-old scan first
+            else:                                 # the older `all` session
+                old_scanned.set()
+                young_committed.wait(timeout=2.0)  # let p-young commit first
+        return real_write_new(path, payload)
 
-        monkeypatch.setattr(locks, "_write_new", gated)
-        results = {}
+    def gated_pcc(ip, scope, payload, token):
+        result = real_pcc(ip, scope, payload, token)
+        if scope == "library":
+            young_committed.set()  # p-young has finished its create + rescan
+        return result
 
-        def go(name, scope, pid, token):
-            try:
-                ls = locks.acquire(IP, (scope,), label=name, timeout=3,
-                                   pid=pid, token=token)
-                results[name] = ("ACQUIRED", ls)
-            except locks.LockHeld as e:
-                results[name] = ("BLOCKED", str(e))
+    monkeypatch.setattr(locks, "_write_new", gated_write_new)
+    monkeypatch.setattr(locks, "_post_create_conflict", gated_pcc)
+    results = {}
 
-        t1 = threading.Thread(target=go, args=("p-all", "all", 1, "t1"))
-        t2 = threading.Thread(target=go,
-                              args=("p-lib", "library", sleeper.pid, "t2"))
-        t1.start(); t2.start(); t1.join(); t2.join()
-        acquired = [n for n, (st, _) in results.items() if st == "ACQUIRED"]
-        assert len(acquired) == 1, results
-        # ...and on disk there is exactly one live lease
-        live = [r for r in locks.status(IP) if r["state"] == "live"]
-        assert len(live) == 1, live
-    finally:
-        sleeper.kill()
+    def go(name, scope, token):
+        try:
+            ls = locks.acquire(IP, (scope,), label=name, timeout=5,
+                               pid=1, token=token)  # pid 1 = live, never ours
+            results[name] = ("ACQUIRED", ls)
+        except locks.LockHeld as e:
+            results[name] = ("BLOCKED", str(e))
+
+    t1 = threading.Thread(target=go, args=("p-old", "all", "t-old"))
+    t2 = threading.Thread(target=go, args=("p-young", "library", "t-young"))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    acquired = [n for n, (st, _) in results.items() if st == "ACQUIRED"]
+    assert len(acquired) == 1, results
+    # ...and on disk there is exactly one live lease
+    live = [r for r in locks.status(IP) if r["state"] == "live"]
+    assert len(live) == 1, live
 
 
 def test_two_breakers_do_not_unlink_a_fresh_live_lease(root):
