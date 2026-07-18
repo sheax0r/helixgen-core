@@ -837,7 +837,13 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
                    "address is not in a private RFC 1918 range).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the discovered device records as JSON.")
-def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
+@click.option("--forget", "forget", metavar="SERIAL-OR-IP", default=None,
+              help="Instead of discovering, PRUNE the persisted record whose "
+                   "serial or IP matches SERIAL-OR-IP (a stale DHCP lease you "
+                   "no longer want resolved). Exits nonzero with a clear "
+                   "message if nothing matches or no records exist yet.")
+def device_discover(timeout: float, probe: bool, as_json: bool,
+                    forget: "str | None" = None) -> None:
     """Find Helix Stadium devices on the LAN and PERSIST their addresses.
 
     Discovery is mDNS/Bonjour first — the Stadium advertises
@@ -859,6 +865,10 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     default (deterministic: ip_updated_at desc, then serial desc) — pass
     --ip on any verb to target another.
 
+    Use --forget SERIAL-OR-IP to PRUNE a stale persisted record instead of
+    discovering (matches a record's serial or IP; exits nonzero with a
+    clear message when nothing matches or no records exist yet).
+
     \b
     Known limitations (backlog #77):
       * Both mechanisms look at the DEFAULT-ROUTE interface. With a VPN
@@ -872,8 +882,27 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
       * The subnet probe stays inside the machine's own /24 and refuses
         public (non-RFC 1918) ranges outright.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import discovery, observations
+
+    if forget is not None:
+        try:
+            removed = observations.forget_device(forget)
+        except FileNotFoundError as e:
+            raise click.ClickException(
+                f"no persisted device records yet ({e} does not exist) — "
+                "nothing to forget; run `helixgen device discover` first")
+        if not removed:
+            raise click.ClickException(
+                f"no persisted record matches {forget!r} — run "
+                "`helixgen device discover --json` to see the recorded "
+                "serial/IP of each device")
+        for path in removed:
+            click.echo(f"forgot {path.stem} ({path})", err=True)
+        if as_json:
+            click.echo(json.dumps([str(p) for p in removed], indent=2))
+        return
+
+    HelixClient, HelixError = _client()
 
     candidates = discovery.mdns_discover(timeout=timeout)
     if not candidates and probe:

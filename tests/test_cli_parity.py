@@ -304,7 +304,7 @@ DISCOVER_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "discover"],
      ["mDNS", "_stadiumserver._tcp", "PERSIST", "/ProductInfoGet",
       "direct-to-IP", "most recently discovered",
-      "never probes beyond the local subnet", "Read-only"]),
+      "never probes beyond the local subnet", "Read-only", "--forget"]),
     # the shared --ip help (any verb carrying it) pins the resolution chain
     (["device", "info"],
      ["helixgen device discover", "$HELIXGEN_HELIX_IP",

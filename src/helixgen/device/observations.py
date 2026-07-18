@@ -206,6 +206,33 @@ def record_device_ip(serial: str, ip: str, *,
     return _path_for(serial)
 
 
+def forget_device(target: str) -> List[Path]:
+    """Delete persisted discovery record(s) whose serial or ``ip`` matches
+    ``target`` exactly (a stale DHCP lease you no longer want resolved).
+    Returns the removed record paths (empty when nothing matched).
+
+    Raises :class:`FileNotFoundError` when the ``devices/`` directory does
+    not exist, so the caller can report that distinctly from an unknown
+    target rather than surface a traceback."""
+    d = home.devices_dir()
+    if not d.is_dir():
+        raise FileNotFoundError(str(d))
+    removed: List[Path] = []
+    for path in _device_files():
+        data = _read(path)
+        if data is None:
+            continue
+        serial = str(data.get("serial") or path.stem)
+        ip = data.get("ip")
+        if target == serial or (ip is not None and target == str(ip)):
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            removed.append(path)
+    return removed
+
+
 def devices_with_ips() -> List[Dict[str, Any]]:
     """Every persisted device record carrying a discovered ``ip``, sorted
     most-recently-discovered first (``ip_updated_at`` desc, serial desc as

@@ -20,9 +20,9 @@ change (`--ip ""` rejection); the rest are additive.
 
 ### Task 2: `discover --forget` (record pruning)
 
-- [ ] Write failing test(s): `helixgen device discover --forget <serial-or-name>` removes the matching persisted record; unknown target = clear error, exit nonzero; record dir absent = clear error, not a traceback
-- [ ] Implement the minimal change
-- [ ] Update `--help`, `CLAUDE.md`, `docs/CLI.md` (new flag is an agent-facing surface)
+- [x] Write failing test(s): `helixgen device discover --forget <serial-or-name>` removes the matching persisted record; unknown target = clear error, exit nonzero; record dir absent = clear error, not a traceback
+- [x] Implement the minimal change
+- [x] Update `--help`, `CLAUDE.md`, `docs/CLI.md` (new flag is an agent-facing surface)
 
 ### Task 3: Failure message respects `$HELIXGEN_HOME`
 

@@ -463,6 +463,68 @@ class TestFailFastCoverage:
             assert r.exit_code == 1, (args, r.exit_code, r.output)
             assert "helixgen device discover" in r.output, args
 
+    def test_forget_removes_record_by_serial(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        observations.record_device_ip("S2", "10.0.0.4")
+        r = CliRunner().invoke(cli, ["device", "discover", "--forget", "S1"])
+        assert r.exit_code == 0, r.output
+        assert "forgot S1" in r.output
+        # S1 gone, S2 kept
+        assert [row["serial"] for row in observations.devices_with_ips()] == ["S2"]
+
+    def test_forget_removes_record_by_ip(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "10.0.0.3"])
+        assert r.exit_code == 0, r.output
+        assert observations.devices_with_ips() == []
+
+    def test_forget_json_lists_removed_paths(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "S1", "--json"])
+        assert r.exit_code == 0, r.output
+        removed = json.loads(r.stdout)
+        assert len(removed) == 1 and removed[0].endswith("S1.json")
+
+    def test_forget_unknown_target_errors_no_traceback(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "NOPE"])
+        assert r.exit_code != 0
+        assert "no persisted record matches" in r.output
+        assert "Traceback" not in r.output
+        # nothing removed
+        assert [row["serial"] for row in observations.devices_with_ips()] == ["S1"]
+
+    def test_forget_absent_records_dir_errors_no_traceback(self, monkeypatch):
+        # devices/ never created (no discovery has run yet)
+        assert not home.devices_dir().exists()
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "S1"])
+        assert r.exit_code != 0
+        assert "no persisted device records yet" in r.output
+        assert "Traceback" not in r.output
+
+    def test_forget_does_not_hit_the_network(self, monkeypatch):
+        def boom(**kw):
+            raise AssertionError("--forget must not run discovery")
+        monkeypatch.setattr(discovery, "mdns_discover", boom)
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(cli, ["device", "discover", "--forget", "S1"])
+        assert r.exit_code == 0, r.output
+
+    def test_forget_device_returns_removed_paths(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        removed = observations.forget_device("S1")
+        assert len(removed) == 1
+        assert removed[0].name == "S1.json"
+        assert not removed[0].exists()
+
+    def test_forget_device_absent_dir_raises(self):
+        with pytest.raises(FileNotFoundError):
+            observations.forget_device("S1")
+
     def test_discover_warns_when_env_overrides_record(self, monkeypatch):
         monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.1.1.1")
         cand = discovery.Candidate(ip="10.0.0.5", via="mdns")

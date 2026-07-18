@@ -366,6 +366,7 @@ Protocol reference:
 
 ```
 helixgen device discover [--timeout N] [--probe/--no-probe] [--json]
+helixgen device discover --forget SERIAL-OR-IP [--json]
 ```
 
 Run **once** (and again whenever the device's DHCP lease changes). Two
@@ -417,6 +418,14 @@ resolver deterministically picks the most recently discovered
 disagree — pass `--ip` on any verb to target another. `--json` emits the
 confirmed rows (`ip`, `serial`, `model`, `firmware`, `via` = `mdns|probe`,
 `record` path, `default`).
+
+**Pruning a stale record (`--forget SERIAL-OR-IP`):** removes the persisted
+`~/.helixgen/devices/<serial>.json` record whose serial or `ip` matches the
+argument, instead of discovering — use it when a device left the network for
+good and you no longer want its address resolved. Matches serial or IP
+exactly, never touches the network, and exits nonzero with a clear message
+(not a traceback) when nothing matches or no records exist yet; `--json`
+emits the list of removed record paths. backlog #77.
 **Stadium-only**; these verbs **mutate the device** — prefer an empty/expendable
 slot when testing. CLAUDE.md carries the concise verb list + the mental-model
 rules (read-vs-mutate verb awareness, flaky-network, tone-library); this is
