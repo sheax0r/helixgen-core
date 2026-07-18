@@ -186,16 +186,29 @@ def _ip_option(f):
     )(f)
 
 
+def _port_callback(ctx, param, value):
+    """click callback for --port: an explicit value wins; otherwise reuse the
+    nonstandard RPC port persisted by `device discover` for the resolved
+    device, falling back to the standard 2002 (#77). Resolved leniently — a
+    None ip (offline modes) still yields the default."""
+    from helixgen.device import discovery
+
+    return discovery.resolve_port(ctx.params.get("ip"), explicit=value)
+
+
 def _device_option(f):
     """Add shared --ip / --port options for the networked device commands."""
-    f = _ip_option(f)
     f = click.option(
         "--port",
-        default=2002,
-        show_default=True,
+        default=None,
+        show_default="from `helixgen device discover` record, else 2002",
         type=int,
-        help="Helix device control port.",
+        callback=_port_callback,
+        help="Helix device control port. Defaults to the port persisted by "
+             "`helixgen device discover` (2002 unless the device advertised "
+             "a nonstandard one).",
     )(f)
+    f = _ip_option(f)
     return f
 
 
@@ -877,8 +890,11 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
 
     confirmed = []
     for cand in sorted(candidates, key=lambda c: c.ip):
+        # Confirm (and later persist) on the candidate's own RPC port — a
+        # nonstandard SRV advertisement carries a nonstandard port (#77).
+        cand_port = cand.rpc_port or discovery.RPC_PORT
         try:
-            with HelixClient(cand.ip) as h:
+            with HelixClient(cand.ip, cand_port) as h:
                 info = h.product_info()
         except (HelixError, OSError) as e:
             click.echo(f"warning: {cand.ip} (via {cand.via}) did not pass "
@@ -893,6 +909,8 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
             "firmware": info.get("firmware"),
             "hostname": cand.hostname,
             "via": cand.via,
+            # only the nonstandard port is recorded; None = default 2002.
+            "port": cand.rpc_port,
         })
     if not confirmed:
         raise click.ClickException(
@@ -906,7 +924,8 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     for row in confirmed:
         path = observations.record_device_ip(
             row["serial"], row["ip"],
-            model=row.get("model"), firmware=row.get("firmware"))
+            model=row.get("model"), firmware=row.get("firmware"),
+            port=row.get("port"))
         row["record"] = str(path)
     recorded = observations.devices_with_ips()
     default_serial = recorded[0]["serial"] if recorded else None
@@ -934,9 +953,10 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     for row in confirmed:
         model = row.get("helixgen_model") or row.get("model") or "?"
         star = "  <- default" if row.get("default") else ""
+        port = f"  port {row['port']}" if row.get("port") else ""
         click.echo(f"{row['ip']:<15}  serial {row['serial']}  {model}  "
                    f"fw {row.get('firmware') or '?'}  (via {row['via']})"
-                   f"{star}")
+                   f"{port}{star}")
 
 
 @device.command(name="info")

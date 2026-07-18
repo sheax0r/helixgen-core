@@ -11,16 +11,18 @@ rebuilds it — so this state is **not** committed to the ``~/.helixgen`` git re
 On-disk shape (``version`` 1)::
 
     {"version": 1, "serial": "<serial>",
-     "ip"?: "192.168.x.x", "ip_updated_at"?: float,
+     "ip"?: "192.168.x.x", "ip_updated_at"?: float, "port"?: int,
      "model"?: "stadium", "firmware"?: "1.3.2",
      "tones":    {"<name>": {"cid": int, "posi": int}},
      "pool":     {"<name>": {"cid": int, "posi": int, "synced_hash"?: "sha256:…"}},
      "setlists": {"<name>": {"cid": int, "refs": {"<name>": {...}}}}}
 
-The optional ``ip``/``ip_updated_at``/``model``/``firmware`` fields are the
-device's **discovered address record** (workspace #74, written by
-``helixgen device discover``); they round-trip through every load/save so a
-sync rebuild never drops them. Losing a devices file now costs one
+The optional ``ip``/``ip_updated_at``/``model``/``firmware``/``port`` fields
+are the device's **discovered address record** (workspace #74; ``port`` added
+for backlog #77, written by ``helixgen device discover``); they round-trip
+through every load/save so a sync rebuild never drops them. ``port`` is
+present only when the device advertised a nonstandard RPC control port (the
+default 2002 stays implicit). Losing a devices file now costs one
 re-``discover`` (plus the free sync rebuild).
 
 ``tones`` is the per-tone observed placement (the old per-tone ``device``
@@ -76,6 +78,9 @@ class DeviceObservations:
     ip_updated_at: Optional[float] = None
     model: Optional[str] = None
     firmware: Optional[str] = None
+    # nonstandard RPC port (backlog #77) — only set when the device advertised
+    # a control port other than the default 2002; absent = the default.
+    port: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -85,7 +90,7 @@ class DeviceObservations:
             "pool": self.pool,
             "setlists": self.setlists,
         }
-        for k in ("ip", "ip_updated_at", "model", "firmware"):
+        for k in ("ip", "ip_updated_at", "model", "firmware", "port"):
             v = getattr(self, k)
             if v is not None:
                 d[k] = v
@@ -155,6 +160,8 @@ def _ip_fields(data: Dict[str, Any]) -> Dict[str, Any]:
         out["model"] = str(data["model"])
     if data.get("firmware") is not None:
         out["firmware"] = str(data["firmware"])
+    if isinstance(data.get("port"), int) and not isinstance(data.get("port"), bool):
+        out["port"] = int(data["port"])
     return out
 
 
@@ -174,9 +181,15 @@ def save_observations(obs: DeviceObservations) -> None:
 def record_device_ip(serial: str, ip: str, *,
                      model: Optional[str] = None,
                      firmware: Optional[str] = None,
+                     port: Optional[int] = None,
                      updated_at: Optional[float] = None) -> Path:
     """Persist a discovered device address into ``devices/<serial>.json``,
-    preserving any existing observed placement state. Returns the path."""
+    preserving any existing observed placement state. Returns the path.
+
+    ``port`` is the device's RPC control port; pass it only when the device
+    advertised a *nonstandard* port (the default 2002 is left implicit so
+    portless records stay portless). It round-trips like ``ip``, so a later
+    verb resolves the same nonstandard port automatically."""
     import time as _time
 
     obs = load_observations(serial)
@@ -187,6 +200,8 @@ def record_device_ip(serial: str, ip: str, *,
         obs.model = str(model)
     if firmware is not None:
         obs.firmware = str(firmware)
+    if port is not None:
+        obs.port = int(port)
     save_observations(obs)
     return _path_for(serial)
 
@@ -195,7 +210,8 @@ def devices_with_ips() -> List[Dict[str, Any]]:
     """Every persisted device record carrying a discovered ``ip``, sorted
     most-recently-discovered first (``ip_updated_at`` desc, serial desc as
     the deterministic tie-break). Each row:
-    ``{serial, ip, ip_updated_at, model?, firmware?}``."""
+    ``{serial, ip, ip_updated_at, model?, firmware?, port}`` (``port`` is
+    ``None`` unless the record carries a nonstandard RPC port)."""
     rows: List[Dict[str, Any]] = []
     for path in _device_files():
         data = _read(path)
@@ -208,6 +224,7 @@ def devices_with_ips() -> List[Dict[str, Any]]:
             "ip_updated_at": fields.get("ip_updated_at", 0.0),
             "model": fields.get("model"),
             "firmware": fields.get("firmware"),
+            "port": fields.get("port"),
         })
     rows.sort(key=lambda r: (r.get("ip_updated_at") or 0.0, r["serial"]),
               reverse=True)

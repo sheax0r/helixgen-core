@@ -352,10 +352,14 @@ else `$HELIXGEN_HELIX_IP`, else the device record persisted by
 anymore (the old baked-in `192.168.x.x` literal was the maintainer's own
 DHCP lease: a guaranteed-wrong default for anyone else that failed as a
 long connect stall). With none of the three available, verbs **fail fast**
-with an instructive error naming `device discover`; `--port` defaults to
-2002 (the RPC control port; the telemetry verbs `tuner`/`meters`/`measure`
-stream on the fixed PUB port 2003 and use `--port` for their reachability
-preflight — see those verbs). Protocol reference:
+with an instructive error naming `device discover`. `--port` defaults to
+the RPC control port **persisted by `device discover`** for the resolved
+device — 2002 unless discovery saw the device advertise a nonstandard port
+(backlog #77) — so a nonstandard-port device is reached automatically
+without re-passing `--port` every verb; an explicit `--port` always wins.
+(The telemetry verbs `tuner`/`meters`/`measure` stream on the fixed PUB port
+2003 and use `--port` for their reachability preflight — see those verbs.)
+Protocol reference:
 [`helix-protocol.md`](helix-protocol.md).
 
 #### `device discover` — find + persist the Stadium's address (0.24.0)
@@ -396,7 +400,11 @@ handshake before being trusted; confirmed devices are persisted (ip, serial,
 model, firmware) into the library-foundations per-device records
 `~/.helixgen/devices/<serial>.json` — the same files sync observations live
 in; discovery fields round-trip through sync rebuilds. Discovery is
-read-only on the device: no lock scope is taken.
+read-only on the device: no lock scope is taken. When the mDNS SRV record
+advertises a **nonstandard** stream port, the derived RPC port (one above
+the advertised stream port — the observed 2001→2002 offset) is persisted too
+(`port`) and every later verb reuses it as the `--port` default; a standard
+device leaves the record portless (2002 implied). backlog #77.
 
 **Why discover-once + direct-IP:** community prior art on the Stadium
 desktop app is that its *discovery* layer is flaky while *direct-to-IP*

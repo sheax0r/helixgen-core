@@ -16,7 +16,7 @@ wav-path` registry). Design: `docs/superpowers/specs/2026-07-15-library-metadata
 - **`$HELIXGEN_HOME`** (`src/helixgen/home.py`) = root of everything helixgen persists — default `~/.helixgen`. Per-area overrides (`$HELIXGEN_LIBRARY`, `$HELIXGEN_IRS`, `$HELIXGEN_SETLISTS`, `$HELIXGEN_PREFS`, `$HELIXGEN_CACHE`, `$HELIXGEN_LOCKS`) keep working, always win over `$HELIXGEN_HOME`-derived default.
 - **Home auto-`git init`s on first write** (`src/helixgen/libinit.py` + `gitops.py`) whenever `git` on PATH — unconditional, not preference-gated (its `.gitignore` excludes `devices/`, `cache/`, `tone3000/`, `*.bak*`, IR audio). Library-mutating operations **auto-commit** after, gated by `git_commit_tones` preference (default `"auto"`). All advisory: missing git binary or failed commit warns to stderr, never fails triggering operation.
 - **Manifest lives at `~/.helixgen/setlists/manifest.json`** (override `$HELIXGEN_SETLISTS`) — manifest v3, **intent-only** (see "The tone library" below). Legacy `~/.helixgen/setlists.json` (v1/v2) auto-migrates up on first load (backup written first, legacy file renamed so re-runs never re-migrate). First `device sync` after v2-to-v3 migration re-pushes every managed tone once — harmless, idempotent (device serial observed nothing under own file yet).
-- **Per-device observed state in `~/.helixgen/devices/<serial>.json`** (`src/helixgen/device/observations.py`) — observed placement (`cid`/`posi`) plus, since 0.24.0, device's **discovered address record** (`ip`, `model`, `firmware`). NOT manifest, NOT committed (`devices/` gitignored): placement rebuilt wholesale by every `device sync`, so losing file costs one re-`discover`.
+- **Per-device observed state in `~/.helixgen/devices/<serial>.json`** (`src/helixgen/device/observations.py`) — observed placement (`cid`/`posi`) plus, since 0.24.0, device's **discovered address record** (`ip`, `model`, `firmware`, and — #77 — `port` when nonstandard). NOT manifest, NOT committed (`devices/` gitignored): placement rebuilt wholesale by every `device sync`, so losing file costs one re-`discover`.
 
 ## CLI (core verbs)
 
@@ -32,7 +32,7 @@ Rules that must stay in front of you:
 ### `helixgen device` — network control of a Helix Stadium
 
 Talks to **Stadium** over LAN directly (OSC-over-ZeroMQ; no editor app; needs `pip install 'helixgen[device]'`). Run **`helixgen device
-discover`** once to find + persist Stadium address; every verb then resolves IP as `--ip` > `$HELIXGEN_HELIX_IP` > persisted record — **no built-in default**; none set, verbs fail fast pointing at `device discover`. Discovery used once; sessions stay direct-to-IP. **Stadium-only.**
+discover`** once to find + persist Stadium address; every verb then resolves IP as `--ip` > `$HELIXGEN_HELIX_IP` > persisted record — **no built-in default**; none set, verbs fail fast pointing at `device discover`. `--port` likewise defaults to the record's persisted RPC port (2002 unless discovery saw a nonstandard advertised port, #77) — explicit `--port` wins. Discovery used once; sessions stay direct-to-IP. **Stadium-only.**
 
 **Full per-verb reference — every flag + gotcha — lives in [`docs/CLI.md`](docs/CLI.md) "Device commands".** Verb index:
 

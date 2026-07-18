@@ -76,6 +76,14 @@ class TestMdnsParsing:
         recs = discovery.parse_mdns_response(_mdns_response(compressed=False))
         assert discovery.candidates_from_records(recs)[0].ip == "192.168.7.42"
 
+    def test_standard_srv_port_yields_no_rpc_override(self):
+        recs = discovery.parse_mdns_response(_mdns_response(port=2001))
+        assert discovery.candidates_from_records(recs)[0].rpc_port is None
+
+    def test_nonstandard_srv_port_derives_rpc_port(self):
+        recs = discovery.parse_mdns_response(_mdns_response(port=3001))
+        assert discovery.candidates_from_records(recs)[0].rpc_port == 3002
+
     def test_unrelated_service_yields_nothing(self):
         recs = discovery.parse_mdns_response(_mdns_response())
         assert discovery.candidates_from_records(
@@ -146,6 +154,31 @@ class TestResolveIp:
         assert capsys.readouterr().err == ""
 
 
+class TestResolvePort:
+    def test_explicit_port_wins(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port("10.0.0.3", explicit=2002) == 2002
+
+    def test_persisted_port_reused_for_matching_ip(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port("10.0.0.3") == 9002
+
+    def test_default_when_record_has_no_port(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        assert discovery.resolve_port("10.0.0.3") == discovery.RPC_PORT
+
+    def test_default_when_ip_not_recorded(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port("10.0.0.99") == discovery.RPC_PORT
+
+    def test_resolves_ip_itself_when_none_given(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port() == 9002
+
+    def test_default_when_nothing_configured(self):
+        assert discovery.resolve_port() == discovery.RPC_PORT
+
+
 # ---------------------------------------------------------------------------
 # persisted-record round-trips
 # ---------------------------------------------------------------------------
@@ -201,6 +234,28 @@ class TestRecordPersistence:
         observations.save_observations(obs)
         rows = observations.devices_with_ips()
         assert [r["serial"] for r in rows] == ["B", "A"]
+
+    def test_nonstandard_rpc_port_round_trips(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        obs = observations.load_observations("S1")
+        assert obs.port == 9002
+        rows = observations.devices_with_ips()
+        assert rows[0]["port"] == 9002
+
+    def test_standard_port_not_written(self):
+        """A record with no discovered port stays portless (the default 2002
+        is implied, not stored) and reports port None."""
+        observations.record_device_ip("S1", "10.0.0.3")
+        data = json.loads((home.devices_dir() / "S1.json").read_text())
+        assert "port" not in data
+        assert observations.devices_with_ips()[0]["port"] is None
+
+    def test_port_survives_sync_rebuild(self):
+        observations.record_device_ip("S1", "10.0.0.9", port=9002)
+        obs = observations.load_observations("S1")
+        obs.record_pool("Tone", cid=1, posi=2)
+        observations.save_observations(obs)
+        assert observations.load_observations("S1").port == 9002
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +328,40 @@ class TestCli:
         assert rows[0]["default"] is True
         # persisted — and the resolver now finds it
         assert discovery.resolve_ip() == "192.168.7.42"
+
+    def test_discover_persists_nonstandard_rpc_port(self, monkeypatch):
+        cand = discovery.Candidate(ip="192.168.7.42", hostname="p35x1.local.",
+                                   instance="p35x1", via="mdns", rpc_port=9002)
+        monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [cand])
+        _FakeClient.infos = {"192.168.7.42": {
+            "serial": "SER42", "model": "stadium", "firmware": "1.3.2"}}
+        monkeypatch.setattr("helixgen.cli_device._client",
+                            lambda: (_FakeClient, discovery.IPResolutionError))
+        r = CliRunner().invoke(cli, ["device", "discover", "--json"])
+        assert r.exit_code == 0, r.output
+        rows = json.loads(r.stdout)
+        assert rows[0]["port"] == 9002
+        # a later verb resolves the persisted nonstandard port
+        assert discovery.resolve_port() == 9002
+
+    def test_verb_connects_on_persisted_nonstandard_port(self, monkeypatch):
+        observations.record_device_ip("S1", "10.9.9.9", port=9002)
+        seen = {}
+
+        def fake_client():
+            class C(_FakeClient):
+                infos = {"10.9.9.9": {"serial": "S1", "model": "stadium",
+                                      "firmware": "1.3.2"}}
+
+                def __init__(self, ip, port=2002, **kw):
+                    seen["ip"] = ip
+                    seen["port"] = port
+                    super().__init__(ip, port, **kw)
+            return C, discovery.IPResolutionError
+        monkeypatch.setattr("helixgen.cli_device._client", fake_client)
+        r = CliRunner().invoke(cli, ["device", "info"])
+        assert r.exit_code == 0, r.output
+        assert seen == {"ip": "10.9.9.9", "port": 9002}
 
     def test_discover_multi_device_default_is_deterministic(self, monkeypatch):
         cands = [discovery.Candidate(ip="10.0.0.5", via="mdns"),
