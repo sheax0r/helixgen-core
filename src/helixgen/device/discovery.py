@@ -110,6 +110,13 @@ def _is_rfc1918(ip: str) -> bool:
         addr in net for net in _RFC1918_NETS)
 
 
+#: The change-stream port the Stadium advertises in its mDNS SRV record
+#: (observed live: SRV 2001, RPC 2002 — the RPC port sits one above the
+#: advertised stream port). A device on a nonstandard SRV port is assumed
+#: to keep that +1 offset for its RPC port. (backlog #77)
+SRV_PORT = 2001
+
+
 @dataclass
 class Candidate:
     """A discovery hit — an address that *looks like* a Stadium (mDNS
@@ -119,6 +126,9 @@ class Candidate:
     hostname: Optional[str] = None   # e.g. "p35x1.local." (mDNS only)
     instance: Optional[str] = None   # e.g. "p35x1" (mDNS only)
     via: str = "mdns"                # "mdns" | "probe"
+    # Nonstandard RPC port derived from the mDNS SRV record (None = the
+    # standard 2002; probe hits are always standard). backlog #77.
+    rpc_port: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -236,13 +246,17 @@ def candidates_from_records(
         entry = srv.get(inst.lower())
         if not entry:
             continue
-        _port, host = entry
+        srv_port, host = entry
         ip = addrs.get(host.lower())
         if not ip:
             continue
         label = inst[:-len("." + service)] if inst.lower().endswith(
             "." + svc) else inst.rstrip(".")
-        out.append(Candidate(ip=ip, hostname=host, instance=label, via="mdns"))
+        # A nonstandard advertised stream port implies a nonstandard RPC port
+        # one above it; the standard 2001 leaves rpc_port None (default 2002).
+        rpc_port = srv_port + 1 if srv_port and srv_port != SRV_PORT else None
+        out.append(Candidate(ip=ip, hostname=host, instance=label,
+                             via="mdns", rpc_port=rpc_port))
     return out
 
 
@@ -405,3 +419,29 @@ def resolve_ip(explicit: Optional[str] = None, *, warn: bool = True) -> str:
             f"serial {chosen['serial']} at {chosen['ip']} (most recently "
             "discovered) — pass --ip to target another\n")
     return str(chosen["ip"])
+
+
+def resolve_port(ip: Optional[str] = None, *,
+                 explicit: Optional[int] = None) -> int:
+    """The RPC control port for the resolved device: an ``explicit`` ``--port``
+    wins; else the nonstandard port persisted in the record for ``ip`` (or,
+    when ``ip`` is None, the record :func:`resolve_ip` would pick); else the
+    standard :data:`RPC_PORT`.
+
+    Keeps the port half of the resolution chain aligned with the IP half so a
+    device discovered on a nonstandard port is reached automatically, without
+    the user re-passing ``--port`` every verb (backlog #77)."""
+    if explicit is not None:
+        return int(explicit)
+    from helixgen.device import observations
+
+    target_ip = ip
+    if not target_ip:
+        try:
+            target_ip = resolve_ip(None, warn=False)
+        except IPResolutionError:
+            return RPC_PORT
+    for rec in observations.devices_with_ips():
+        if rec.get("ip") == target_ip and rec.get("port"):
+            return int(rec["port"])
+    return RPC_PORT

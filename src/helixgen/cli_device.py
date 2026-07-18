@@ -116,7 +116,8 @@ _IP_HELP = ("Helix device IP. Resolution: --ip wins, else $HELIXGEN_HELIX_IP, "
             "else the device record persisted by `helixgen device discover`. "
             "There is NO built-in default — with none of the three set, the "
             "verb fails fast (no network stall) telling you to run "
-            "`helixgen device discover`.")
+            "`helixgen device discover`. An empty or whitespace-only --ip is "
+            "rejected (pass a real address, or omit the flag to fall back).")
 
 #: Shared --setlist help for the preset verbs (#68b): the closed
 #: user/factory/throwaway token set is gone — real device setlist names work.
@@ -164,9 +165,19 @@ def _ip_callback(ctx, param, value):
     (--list/--dry-run/local verbs) still parse and run. Anything that
     actually needs the device resolves-or-fails at use time (HelixClient /
     HelixSubscriber constructors, the _locked wrapper, the sftp verbs) —
-    immediately and instructively, never as a connect stall."""
+    immediately and instructively, never as a connect stall.
+
+    An *empty* or whitespace-only --ip (typically an unset shell variable
+    expanded to nothing) is a mistake, not a request to fall back to the
+    record — reject it loudly at parse time rather than resolving silently
+    on to the next step (#77)."""
     from helixgen.device import discovery
 
+    if value is not None and not value.strip():
+        raise click.BadParameter(
+            "--ip may not be empty or whitespace — omit it entirely to use "
+            "$HELIXGEN_HELIX_IP or the `helixgen device discover` record, or "
+            "pass a real address.")
     try:
         return discovery.resolve_ip(value)
     except discovery.IPResolutionError:
@@ -186,16 +197,29 @@ def _ip_option(f):
     )(f)
 
 
+def _port_callback(ctx, param, value):
+    """click callback for --port: an explicit value wins; otherwise reuse the
+    nonstandard RPC port persisted by `device discover` for the resolved
+    device, falling back to the standard 2002 (#77). Resolved leniently — a
+    None ip (offline modes) still yields the default."""
+    from helixgen.device import discovery
+
+    return discovery.resolve_port(ctx.params.get("ip"), explicit=value)
+
+
 def _device_option(f):
     """Add shared --ip / --port options for the networked device commands."""
-    f = _ip_option(f)
     f = click.option(
         "--port",
-        default=2002,
-        show_default=True,
+        default=None,
+        show_default="from `helixgen device discover` record, else 2002",
         type=int,
-        help="Helix device control port.",
+        callback=_port_callback,
+        help="Helix device control port. Defaults to the port persisted by "
+             "`helixgen device discover` (2002 unless the device advertised "
+             "a nonstandard one).",
     )(f)
+    f = _ip_option(f)
     return f
 
 
@@ -824,7 +848,13 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
                    "address is not in a private RFC 1918 range).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the discovered device records as JSON.")
-def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
+@click.option("--forget", "forget", metavar="SERIAL-OR-IP", default=None,
+              help="Instead of discovering, PRUNE the persisted record whose "
+                   "serial or IP matches SERIAL-OR-IP (a stale DHCP lease you "
+                   "no longer want resolved). Exits nonzero with a clear "
+                   "message if nothing matches or no records exist yet.")
+def device_discover(timeout: float, probe: bool, as_json: bool,
+                    forget: "str | None" = None) -> None:
     """Find Helix Stadium devices on the LAN and PERSIST their addresses.
 
     Discovery is mDNS/Bonjour first — the Stadium advertises
@@ -846,6 +876,10 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     default (deterministic: ip_updated_at desc, then serial desc) — pass
     --ip on any verb to target another.
 
+    Use --forget SERIAL-OR-IP to PRUNE a stale persisted record instead of
+    discovering (matches a record's serial or IP; exits nonzero with a
+    clear message when nothing matches or no records exist yet).
+
     \b
     Known limitations (backlog #77):
       * Both mechanisms look at the DEFAULT-ROUTE interface. With a VPN
@@ -859,8 +893,27 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
       * The subnet probe stays inside the machine's own /24 and refuses
         public (non-RFC 1918) ranges outright.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import discovery, observations
+
+    if forget is not None:
+        try:
+            removed = observations.forget_device(forget)
+        except FileNotFoundError as e:
+            raise click.ClickException(
+                f"no persisted device records yet ({e} does not exist) — "
+                "nothing to forget; run `helixgen device discover` first")
+        if not removed:
+            raise click.ClickException(
+                f"no persisted record matches {forget!r} — run "
+                "`helixgen device discover --json` to see the recorded "
+                "serial/IP of each device")
+        for path in removed:
+            click.echo(f"forgot {path.stem} ({path})", err=True)
+        if as_json:
+            click.echo(json.dumps([str(p) for p in removed], indent=2))
+        return
+
+    HelixClient, HelixError = _client()
 
     candidates = discovery.mdns_discover(timeout=timeout)
     if not candidates and probe:
@@ -877,8 +930,11 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
 
     confirmed = []
     for cand in sorted(candidates, key=lambda c: c.ip):
+        # Confirm (and later persist) on the candidate's own RPC port — a
+        # nonstandard SRV advertisement carries a nonstandard port (#77).
+        cand_port = cand.rpc_port or discovery.RPC_PORT
         try:
-            with HelixClient(cand.ip) as h:
+            with HelixClient(cand.ip, cand_port) as h:
                 info = h.product_info()
         except (HelixError, OSError) as e:
             click.echo(f"warning: {cand.ip} (via {cand.via}) did not pass "
@@ -893,6 +949,8 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
             "firmware": info.get("firmware"),
             "hostname": cand.hostname,
             "via": cand.via,
+            # only the nonstandard port is recorded; None = default 2002.
+            "port": cand.rpc_port,
         })
     if not confirmed:
         raise click.ClickException(
@@ -906,7 +964,8 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     for row in confirmed:
         path = observations.record_device_ip(
             row["serial"], row["ip"],
-            model=row.get("model"), firmware=row.get("firmware"))
+            model=row.get("model"), firmware=row.get("firmware"),
+            port=row.get("port"))
         row["record"] = str(path)
     recorded = observations.devices_with_ips()
     default_serial = recorded[0]["serial"] if recorded else None
@@ -922,8 +981,9 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
                    "address just discovered; unset it (or update it) to use "
                    "the record", err=True)
 
+    from helixgen import home
     click.echo(f"persisted {len(confirmed)} device record(s) under "
-               f"~/.helixgen/devices/ — device verbs now resolve the IP "
+               f"{home.devices_dir()} — device verbs now resolve the IP "
                f"automatically", err=True)
     if len(confirmed) > 1:
         click.echo("multiple devices found: the most recently discovered is "
@@ -934,9 +994,10 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     for row in confirmed:
         model = row.get("helixgen_model") or row.get("model") or "?"
         star = "  <- default" if row.get("default") else ""
+        port = f"  port {row['port']}" if row.get("port") else ""
         click.echo(f"{row['ip']:<15}  serial {row['serial']}  {model}  "
                    f"fw {row.get('firmware') or '?'}  (via {row['via']})"
-                   f"{star}")
+                   f"{port}{star}")
 
 
 @device.command(name="info")

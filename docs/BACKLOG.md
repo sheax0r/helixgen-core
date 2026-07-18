@@ -203,14 +203,16 @@ and had to be redirected. Start here so future work begins from the right model.
   verified live), other firmware may fall through to the probe; now
   documented in the same three surfaces, listener unchanged.
   (c) polish — DONE: the `--timeout` <0.5 s floor is documented in help;
-  `tools/re_capture_parity.py` no longer hardcodes the old IP. REMAINING:
-  `discover` neither takes nor persists a nonstandard RPC port; no
-  `discover --forget`/prune for stale records (`ip-<addr>` fallback serials
-  accumulate per DHCP lease and keep the multi-device warning firing); the
-  "persisted under ~/.helixgen/devices/" message ignores a $HELIXGEN_HOME
-  override; live conftest `_persisted_device_ip` tie-breaks missing serials
-  as `""` vs `devices_with_ips`'s `path.stem`; `--ip ""` is treated as
-  unset rather than rejected (a behavior change — deferred deliberately).
+  `tools/re_capture_parity.py` no longer hardcodes the old IP. The
+  2026-07-18 discovery-polish branch closed the rest: `discover` now
+  persists+reuses a nonstandard RPC port (re-discovery on the standard port
+  heals a stale record); `discover --forget SERIAL-OR-IP` prunes a stale
+  record; the "persisted under …/devices/" message names the effective
+  `$HELIXGEN_HOME` dir; live conftest `_persisted_device_ip` tie-breaks
+  missing serials by `path.stem` like `devices_with_ips`; `--ip ""` (and
+  whitespace-only) is now rejected loudly rather than treated as unset.
+  REMAINING: only (a) default-route interface blindness and (b) the
+  multicast-group-join gap above — both need non-stdlib/per-interface work.
 
 ### Deferred from the 0.22.0 lock-system adversarial review (2026-07-16)
 

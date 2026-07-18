@@ -352,16 +352,26 @@ else `$HELIXGEN_HELIX_IP`, else the device record persisted by
 anymore (the old baked-in `192.168.x.x` literal was the maintainer's own
 DHCP lease: a guaranteed-wrong default for anyone else that failed as a
 long connect stall). With none of the three available, verbs **fail fast**
-with an instructive error naming `device discover`; `--port` defaults to
-2002 (the RPC control port; the telemetry verbs `tuner`/`meters`/`measure`
-stream on the fixed PUB port 2003 and use `--port` for their reachability
-preflight — see those verbs). Protocol reference:
+with an instructive error naming `device discover`. An **empty or
+whitespace-only `--ip`** (typically an unset shell variable that expanded to
+nothing) is **rejected at parse time** with a clear message and a nonzero
+exit — it is a mistake, not a request to fall back to the record; omit the
+flag to fall back, or pass a real address (behavior change, backlog #77).
+`--port` defaults to
+the RPC control port **persisted by `device discover`** for the resolved
+device — 2002 unless discovery saw the device advertise a nonstandard port
+(backlog #77) — so a nonstandard-port device is reached automatically
+without re-passing `--port` every verb; an explicit `--port` always wins.
+(The telemetry verbs `tuner`/`meters`/`measure` stream on the fixed PUB port
+2003 and use `--port` for their reachability preflight — see those verbs.)
+Protocol reference:
 [`helix-protocol.md`](helix-protocol.md).
 
 #### `device discover` — find + persist the Stadium's address (0.24.0)
 
 ```
 helixgen device discover [--timeout N] [--probe/--no-probe] [--json]
+helixgen device discover --forget SERIAL-OR-IP [--json]
 ```
 
 Run **once** (and again whenever the device's DHCP lease changes). Two
@@ -396,7 +406,11 @@ handshake before being trusted; confirmed devices are persisted (ip, serial,
 model, firmware) into the library-foundations per-device records
 `~/.helixgen/devices/<serial>.json` — the same files sync observations live
 in; discovery fields round-trip through sync rebuilds. Discovery is
-read-only on the device: no lock scope is taken.
+read-only on the device: no lock scope is taken. When the mDNS SRV record
+advertises a **nonstandard** stream port, the derived RPC port (one above
+the advertised stream port — the observed 2001→2002 offset) is persisted too
+(`port`) and every later verb reuses it as the `--port` default; a standard
+device leaves the record portless (2002 implied). backlog #77.
 
 **Why discover-once + direct-IP:** community prior art on the Stadium
 desktop app is that its *discovery* layer is flaky while *direct-to-IP*
@@ -409,6 +423,14 @@ resolver deterministically picks the most recently discovered
 disagree — pass `--ip` on any verb to target another. `--json` emits the
 confirmed rows (`ip`, `serial`, `model`, `firmware`, `via` = `mdns|probe`,
 `record` path, `default`).
+
+**Pruning a stale record (`--forget SERIAL-OR-IP`):** removes the persisted
+`~/.helixgen/devices/<serial>.json` record whose serial or `ip` matches the
+argument, instead of discovering — use it when a device left the network for
+good and you no longer want its address resolved. Matches serial or IP
+exactly, never touches the network, and exits nonzero with a clear message
+(not a traceback) when nothing matches or no records exist yet; `--json`
+emits the list of removed record paths. backlog #77.
 **Stadium-only**; these verbs **mutate the device** — prefer an empty/expendable
 slot when testing. CLAUDE.md carries the concise verb list + the mental-model
 rules (read-vs-mutate verb awareness, flaky-network, tone-library); this is

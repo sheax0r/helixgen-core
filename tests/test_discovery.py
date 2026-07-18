@@ -76,6 +76,14 @@ class TestMdnsParsing:
         recs = discovery.parse_mdns_response(_mdns_response(compressed=False))
         assert discovery.candidates_from_records(recs)[0].ip == "192.168.7.42"
 
+    def test_standard_srv_port_yields_no_rpc_override(self):
+        recs = discovery.parse_mdns_response(_mdns_response(port=2001))
+        assert discovery.candidates_from_records(recs)[0].rpc_port is None
+
+    def test_nonstandard_srv_port_derives_rpc_port(self):
+        recs = discovery.parse_mdns_response(_mdns_response(port=3001))
+        assert discovery.candidates_from_records(recs)[0].rpc_port == 3002
+
     def test_unrelated_service_yields_nothing(self):
         recs = discovery.parse_mdns_response(_mdns_response())
         assert discovery.candidates_from_records(
@@ -146,6 +154,31 @@ class TestResolveIp:
         assert capsys.readouterr().err == ""
 
 
+class TestResolvePort:
+    def test_explicit_port_wins(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port("10.0.0.3", explicit=2002) == 2002
+
+    def test_persisted_port_reused_for_matching_ip(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port("10.0.0.3") == 9002
+
+    def test_default_when_record_has_no_port(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        assert discovery.resolve_port("10.0.0.3") == discovery.RPC_PORT
+
+    def test_default_when_ip_not_recorded(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port("10.0.0.99") == discovery.RPC_PORT
+
+    def test_resolves_ip_itself_when_none_given(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert discovery.resolve_port() == 9002
+
+    def test_default_when_nothing_configured(self):
+        assert discovery.resolve_port() == discovery.RPC_PORT
+
+
 # ---------------------------------------------------------------------------
 # persisted-record round-trips
 # ---------------------------------------------------------------------------
@@ -202,6 +235,39 @@ class TestRecordPersistence:
         rows = observations.devices_with_ips()
         assert [r["serial"] for r in rows] == ["B", "A"]
 
+    def test_nonstandard_rpc_port_round_trips(self):
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        obs = observations.load_observations("S1")
+        assert obs.port == 9002
+        rows = observations.devices_with_ips()
+        assert rows[0]["port"] == 9002
+
+    def test_standard_port_not_written(self):
+        """A record with no discovered port stays portless (the default 2002
+        is implied, not stored) and reports port None."""
+        observations.record_device_ip("S1", "10.0.0.3")
+        data = json.loads((home.devices_dir() / "S1.json").read_text())
+        assert "port" not in data
+        assert observations.devices_with_ips()[0]["port"] is None
+
+    def test_port_survives_sync_rebuild(self):
+        observations.record_device_ip("S1", "10.0.0.9", port=9002)
+        obs = observations.load_observations("S1")
+        obs.record_pool("Tone", cid=1, posi=2)
+        observations.save_observations(obs)
+        assert observations.load_observations("S1").port == 9002
+
+    def test_rediscover_on_standard_port_clears_stale_port(self):
+        """Discovery is authoritative for the port: re-recording a device that
+        reverted to the standard 2002 (port=None) heals a stale nonstandard
+        record rather than keeping the old port (#77)."""
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert observations.load_observations("S1").port == 9002
+        observations.record_device_ip("S1", "10.0.0.3")  # re-discover, standard
+        assert observations.load_observations("S1").port is None
+        assert observations.devices_with_ips()[0]["port"] is None
+        assert discovery.resolve_port("10.0.0.3") == discovery.RPC_PORT
+
 
 # ---------------------------------------------------------------------------
 # CLI: fail-fast + `device discover`
@@ -256,6 +322,20 @@ class TestCli:
         assert r.exit_code == 0, r.output
         assert seen["ip"] == "10.9.9.9"
 
+    def test_empty_ip_rejected(self):
+        """--ip "" is a mistake (usually an unset shell var expanded to
+        nothing), not a request to fall back to the record — reject it
+        loudly with a nonzero exit instead of silently resolving on (#77)."""
+        r = CliRunner().invoke(cli, ["device", "info", "--ip", ""])
+        assert r.exit_code != 0
+        assert "--ip" in r.output
+        assert "empty" in r.output.lower()
+
+    def test_whitespace_ip_rejected(self):
+        r = CliRunner().invoke(cli, ["device", "info", "--ip", "   "])
+        assert r.exit_code != 0
+        assert "--ip" in r.output
+
     def test_discover_persists_and_reports(self, monkeypatch):
         cand = discovery.Candidate(ip="192.168.7.42", hostname="p35x1.local.",
                                    instance="p35x1", via="mdns")
@@ -273,6 +353,82 @@ class TestCli:
         assert rows[0]["default"] is True
         # persisted — and the resolver now finds it
         assert discovery.resolve_ip() == "192.168.7.42"
+
+    def test_discover_report_names_effective_home(self, monkeypatch):
+        # $HELIXGEN_HOME is redirected to tmp_path by the autouse fixture, so
+        # the persisted-record report must name that effective devices/ dir,
+        # not a hardcoded ``~/.helixgen/devices/`` (#77 / #73).
+        cand = discovery.Candidate(ip="192.168.7.42", hostname="p35x1.local.",
+                                   instance="p35x1", via="mdns")
+        monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [cand])
+        _FakeClient.infos = {"192.168.7.42": {
+            "serial": "SER42", "model": "stadium", "firmware": "1.3.2"}}
+        monkeypatch.setattr("helixgen.cli_device._client",
+                            lambda: (_FakeClient, discovery.IPResolutionError))
+        r = CliRunner().invoke(cli, ["device", "discover"])
+        assert r.exit_code == 0, r.output
+        assert str(home.devices_dir()) in r.output
+        assert "~/.helixgen/devices/" not in r.output
+
+    def test_discover_persists_nonstandard_rpc_port(self, monkeypatch):
+        cand = discovery.Candidate(ip="192.168.7.42", hostname="p35x1.local.",
+                                   instance="p35x1", via="mdns", rpc_port=9002)
+        monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [cand])
+        _FakeClient.infos = {"192.168.7.42": {
+            "serial": "SER42", "model": "stadium", "firmware": "1.3.2"}}
+        monkeypatch.setattr("helixgen.cli_device._client",
+                            lambda: (_FakeClient, discovery.IPResolutionError))
+        r = CliRunner().invoke(cli, ["device", "discover", "--json"])
+        assert r.exit_code == 0, r.output
+        rows = json.loads(r.stdout)
+        assert rows[0]["port"] == 9002
+        # a later verb resolves the persisted nonstandard port
+        assert discovery.resolve_port() == 9002
+
+    def test_verb_connects_on_persisted_nonstandard_port(self, monkeypatch):
+        observations.record_device_ip("S1", "10.9.9.9", port=9002)
+        seen = {}
+
+        def fake_client():
+            class C(_FakeClient):
+                infos = {"10.9.9.9": {"serial": "S1", "model": "stadium",
+                                      "firmware": "1.3.2"}}
+
+                def __init__(self, ip, port=2002, **kw):
+                    seen["ip"] = ip
+                    seen["port"] = port
+                    super().__init__(ip, port, **kw)
+            return C, discovery.IPResolutionError
+        monkeypatch.setattr("helixgen.cli_device._client", fake_client)
+        r = CliRunner().invoke(cli, ["device", "info"])
+        assert r.exit_code == 0, r.output
+        assert seen == {"ip": "10.9.9.9", "port": 9002}
+
+    def test_explicit_ip_picks_that_records_port_not_the_default(self, monkeypatch):
+        """Pins the --ip/--port callback ordering: an explicit --ip to a
+        NON-default device on a nonstandard port must resolve THAT record's
+        port, not the newest (default) record's. Would fail if _device_option
+        stopped processing --ip before --port (ctx.params.get("ip") is None)."""
+        # older target on a nonstandard port; newer default on the standard one
+        observations.record_device_ip("TARGET", "10.0.0.3", port=9002,
+                                      updated_at=100.0)
+        observations.record_device_ip("DEFAULT", "10.0.0.4", updated_at=200.0)
+        seen = {}
+
+        def fake_client():
+            class C(_FakeClient):
+                infos = {"10.0.0.3": {"serial": "TARGET", "model": "stadium",
+                                      "firmware": "1.3.2"}}
+
+                def __init__(self, ip, port=2002, **kw):
+                    seen["ip"] = ip
+                    seen["port"] = port
+                    super().__init__(ip, port, **kw)
+            return C, discovery.IPResolutionError
+        monkeypatch.setattr("helixgen.cli_device._client", fake_client)
+        r = CliRunner().invoke(cli, ["device", "info", "--ip", "10.0.0.3"])
+        assert r.exit_code == 0, r.output
+        assert seen == {"ip": "10.0.0.3", "port": 9002}
 
     def test_discover_multi_device_default_is_deterministic(self, monkeypatch):
         cands = [discovery.Candidate(ip="10.0.0.5", via="mdns"),
@@ -373,6 +529,105 @@ class TestFailFastCoverage:
             r = CliRunner().invoke(cli, args)
             assert r.exit_code == 1, (args, r.exit_code, r.output)
             assert "helixgen device discover" in r.output, args
+
+    def test_forget_removes_record_by_serial(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        observations.record_device_ip("S2", "10.0.0.4")
+        r = CliRunner().invoke(cli, ["device", "discover", "--forget", "S1"])
+        assert r.exit_code == 0, r.output
+        assert "forgot S1" in r.output
+        # S1 gone, S2 kept
+        assert [row["serial"] for row in observations.devices_with_ips()] == ["S2"]
+
+    def test_forget_removes_record_by_ip(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "10.0.0.3"])
+        assert r.exit_code == 0, r.output
+        assert observations.devices_with_ips() == []
+
+    def test_forget_json_lists_removed_paths(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "S1", "--json"])
+        assert r.exit_code == 0, r.output
+        removed = json.loads(r.stdout)
+        assert len(removed) == 1 and removed[0].endswith("S1.json")
+
+    def test_forget_unknown_target_errors_no_traceback(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "NOPE"])
+        assert r.exit_code != 0
+        assert "no persisted record matches" in r.output
+        assert "Traceback" not in r.output
+        # nothing removed
+        assert [row["serial"] for row in observations.devices_with_ips()] == ["S1"]
+
+    def test_forget_absent_records_dir_errors_no_traceback(self, monkeypatch):
+        # devices/ never created (no discovery has run yet)
+        assert not home.devices_dir().exists()
+        r = CliRunner().invoke(
+            cli, ["device", "discover", "--forget", "S1"])
+        assert r.exit_code != 0
+        assert "no persisted device records yet" in r.output
+        assert "Traceback" not in r.output
+
+    def test_forget_does_not_hit_the_network(self, monkeypatch):
+        def boom(**kw):
+            raise AssertionError("--forget must not run discovery")
+        monkeypatch.setattr(discovery, "mdns_discover", boom)
+        observations.record_device_ip("S1", "10.0.0.3")
+        r = CliRunner().invoke(cli, ["device", "discover", "--forget", "S1"])
+        assert r.exit_code == 0, r.output
+
+    def test_forget_device_returns_removed_paths(self):
+        observations.record_device_ip("S1", "10.0.0.3")
+        removed = observations.forget_device("S1")
+        assert len(removed) == 1
+        assert removed[0].name == "S1.json"
+        assert not removed[0].exists()
+
+    def test_forget_device_absent_dir_raises(self):
+        with pytest.raises(FileNotFoundError):
+            observations.forget_device("S1")
+
+    def test_forget_device_permission_error_propagates(self, monkeypatch):
+        """A non-benign OS error on unlink (e.g. PermissionError) must
+        propagate, not be swallowed and reported as "no match" — only the
+        benign FileNotFoundError race (file vanished between listing and
+        unlink) is caught. (PR #30 review, Finding 1.)"""
+        observations.record_device_ip("S1", "10.0.0.3")
+
+        from pathlib import Path as _Path
+        real_unlink = _Path.unlink
+
+        def boom(self, *a, **kw):
+            if self.name == "S1.json":
+                raise PermissionError("read-only filesystem")
+            return real_unlink(self, *a, **kw)
+
+        monkeypatch.setattr(_Path, "unlink", boom)
+        with pytest.raises(PermissionError):
+            observations.forget_device("S1")
+
+    def test_forget_device_swallows_vanished_file_race(self, monkeypatch):
+        """The benign race — the file disappeared between listing and unlink —
+        stays a no-op: FileNotFoundError is caught, that record just isn't
+        reported as removed."""
+        observations.record_device_ip("S1", "10.0.0.3")
+
+        from pathlib import Path as _Path
+        real_unlink = _Path.unlink
+
+        def vanished(self, *a, **kw):
+            if self.name == "S1.json":
+                raise FileNotFoundError(str(self))
+            return real_unlink(self, *a, **kw)
+
+        monkeypatch.setattr(_Path, "unlink", vanished)
+        removed = observations.forget_device("S1")
+        assert removed == []
 
     def test_discover_warns_when_env_overrides_record(self, monkeypatch):
         monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.1.1.1")
