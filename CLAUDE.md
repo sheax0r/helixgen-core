@@ -193,3 +193,7 @@ echo '[{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value":
 This repo releases **`helixgen` PyPI package** (version in `pyproject.toml` + `src/helixgen/__init__.py` — bump both together; version feeds generated presets' `meta`). Publishing via OIDC trusted-publisher workflow (`.github/workflows/publish.yml`) on `vX.Y.Z` tags pushed to `main` (first publish 0.19.1).
 
 Plugin releases (`stable` branch + `helixgen--vX.Y.Z` tags) live in **plugin repo** (`sheax0r/helixgen`), owned by its release workflow — nothing in this repo moves those refs. Core release changes behavior skill depends on: cut core release first, then bump plugin's pinned `helixgen` version in its own PR.
+
+## ralphex
+
+Implementation tasks driven from helix coordination workspace run via [ralphex](https://github.com/umputun/ralphex) plan files in `docs/plans/` (scaffold: `docs/plans/TEMPLATE.md`); completed plans move to `docs/plans/completed/`. Config = tracked `.ralphex/config` (`default_branch` pinned `main` — remote named `github`, ralphex can't auto-detect from `origin/HEAD`); runtime dirs `.ralphex/worktrees/` + `.ralphex/progress/` gitignored. Launcher syncs local `main` from `github/main` before run. Review = ralphex built-in pipeline (`external_review_tool = none`).

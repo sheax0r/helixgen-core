@@ -23,3 +23,7 @@ irs/
 # stale packaging artifacts — never commit
 build/
 *.egg-info/
+
+# ralphex runtime state (`.ralphex/config` stays tracked)
+.ralphex/worktrees/
+.ralphex/progress/
