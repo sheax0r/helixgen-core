@@ -189,7 +189,10 @@ def record_device_ip(serial: str, ip: str, *,
     ``port`` is the device's RPC control port; pass it only when the device
     advertised a *nonstandard* port (the default 2002 is left implicit so
     portless records stay portless). It round-trips like ``ip``, so a later
-    verb resolves the same nonstandard port automatically."""
+    verb resolves the same nonstandard port automatically. Discovery is
+    authoritative for the port, so ``port=None`` *clears* any previously
+    persisted nonstandard port — re-discovering a device that reverted to the
+    standard 2002 heals the stale record rather than keeping the old port."""
     import time as _time
 
     obs = load_observations(serial)
@@ -200,8 +203,7 @@ def record_device_ip(serial: str, ip: str, *,
         obs.model = str(model)
     if firmware is not None:
         obs.firmware = str(firmware)
-    if port is not None:
-        obs.port = int(port)
+    obs.port = int(port) if port is not None else None
     save_observations(obs)
     return _path_for(serial)
 

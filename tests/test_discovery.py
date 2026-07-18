@@ -257,6 +257,17 @@ class TestRecordPersistence:
         observations.save_observations(obs)
         assert observations.load_observations("S1").port == 9002
 
+    def test_rediscover_on_standard_port_clears_stale_port(self):
+        """Discovery is authoritative for the port: re-recording a device that
+        reverted to the standard 2002 (port=None) heals a stale nonstandard
+        record rather than keeping the old port (#77)."""
+        observations.record_device_ip("S1", "10.0.0.3", port=9002)
+        assert observations.load_observations("S1").port == 9002
+        observations.record_device_ip("S1", "10.0.0.3")  # re-discover, standard
+        assert observations.load_observations("S1").port is None
+        assert observations.devices_with_ips()[0]["port"] is None
+        assert discovery.resolve_port("10.0.0.3") == discovery.RPC_PORT
+
 
 # ---------------------------------------------------------------------------
 # CLI: fail-fast + `device discover`
@@ -392,6 +403,32 @@ class TestCli:
         r = CliRunner().invoke(cli, ["device", "info"])
         assert r.exit_code == 0, r.output
         assert seen == {"ip": "10.9.9.9", "port": 9002}
+
+    def test_explicit_ip_picks_that_records_port_not_the_default(self, monkeypatch):
+        """Pins the --ip/--port callback ordering: an explicit --ip to a
+        NON-default device on a nonstandard port must resolve THAT record's
+        port, not the newest (default) record's. Would fail if _device_option
+        stopped processing --ip before --port (ctx.params.get("ip") is None)."""
+        # older target on a nonstandard port; newer default on the standard one
+        observations.record_device_ip("TARGET", "10.0.0.3", port=9002,
+                                      updated_at=100.0)
+        observations.record_device_ip("DEFAULT", "10.0.0.4", updated_at=200.0)
+        seen = {}
+
+        def fake_client():
+            class C(_FakeClient):
+                infos = {"10.0.0.3": {"serial": "TARGET", "model": "stadium",
+                                      "firmware": "1.3.2"}}
+
+                def __init__(self, ip, port=2002, **kw):
+                    seen["ip"] = ip
+                    seen["port"] = port
+                    super().__init__(ip, port, **kw)
+            return C, discovery.IPResolutionError
+        monkeypatch.setattr("helixgen.cli_device._client", fake_client)
+        r = CliRunner().invoke(cli, ["device", "info", "--ip", "10.0.0.3"])
+        assert r.exit_code == 0, r.output
+        assert seen == {"ip": "10.0.0.3", "port": 9002}
 
     def test_discover_multi_device_default_is_deterministic(self, monkeypatch):
         cands = [discovery.Candidate(ip="10.0.0.5", via="mdns"),
