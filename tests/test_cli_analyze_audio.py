@@ -100,6 +100,29 @@ class TestAnalyzeFile:
         assert result.exit_code != 0
         assert "--record" in result.output
 
+    @pytest.mark.parametrize("flags", [
+        ["--input", "Helix"],
+        ["--rate", "44100"],
+        ["--channels", "1"],
+        ["--input", "Helix", "--rate", "44100", "--channels", "1"],
+    ])
+    def test_capture_flags_without_record_are_usage_error(
+            self, tmp_path: Path, flags: list):
+        # backlog #84(c): --input/--rate/--channels used to be silently
+        # ignored when analyzing an existing file — now a usage error.
+        wav = _write_sine(tmp_path / "tone.wav")
+        result = CliRunner().invoke(cli, ["analyze-audio", str(wav)] + flags)
+        assert result.exit_code != 0
+        assert "--record" in result.output
+        assert flags[0] in result.output
+
+    def test_capture_flag_defaults_do_not_trip_the_guard(
+            self, tmp_path: Path):
+        # --rate/--channels have defaults; only EXPLICIT flags error.
+        wav = _write_sine(tmp_path / "tone.wav")
+        result = CliRunner().invoke(cli, ["analyze-audio", str(wav)])
+        assert result.exit_code == 0, result.output
+
     def test_json_is_strictly_valid_on_nonfinite_samples(
             self, tmp_path: Path):
         # A wedged capture can hand back NaN/Inf samples; --json must still

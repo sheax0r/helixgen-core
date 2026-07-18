@@ -204,15 +204,18 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   `library` / `slots [list|restore|reorder] [--verify]`, `device setlist
   sync-on|sync-off`.
 
-**Device-write gating.** Verbs that only read or list device state are safe —
+**Device-write awareness.** Verbs that only read or list device state are safe —
 e.g. `info`, `active`, `read`, `list`, `list-irs`, `blocks`, `params`,
 `settings list`/`get`,
 `tuner`, `meters`, `measure`, `watch`, `backup`, `pull`/`pull-ir`, plus the offline verbs
 (`local-list`, `library`, `slots list`, `globaleq list`, `--list`/`--dry-run`
 variants). Anything that writes content, properties, or files **mutates the
 device** — the live-ops verbs change the ACTIVE tone immediately. When unsure,
-check the verb's entry in [`docs/CLI.md`](docs/CLI.md). Prefer an
-empty/expendable slot when testing.
+check the verb's entry in [`docs/CLI.md`](docs/CLI.md). Practical posture for
+device writes: prefer an empty/expendable slot when testing, take an upfront
+`device backup`, tear down test artifacts afterwards, and expect the #38
+/CreateContent flakiness (re-run; slot-writing verbs fail safe on an occupied
+slot).
 
 **Machine-local advisory device locks (0.22.0).** Every device-mutating verb
 auto-acquires a lease file (`~/.helixgen/locks/<ip>/<scope>.lock`, override

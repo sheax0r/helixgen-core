@@ -1,5 +1,13 @@
 # Loudness Measure (phases 0–1) Implementation Plan
 
+> **Erratum (2026-07-17, backlog #70):** this dated archive predates 0.21.0
+> and still states the `(key−1)/2` wire-addressing rule for live-ops block
+> coordinates (including in the "Hardware facts" and task sections below).
+> That rule was **superseded in 0.21.0 by grid-slot addressing** (blocks are
+> addressed by DSP grid slot, 0–27). The living contract docs —
+> `docs/CLI.md`, `docs/helix-protocol.md`, and the per-verb `--help` — are
+> correct; the body below is preserved unedited as a historical record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the loudness spec's phase 0 findings + phase 1 `device measure` verb, including the live-ops wire-index bugfix the characterization uncovered.

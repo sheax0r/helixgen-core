@@ -812,12 +812,15 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
 
 @device.command(name="discover")
 @click.option("--timeout", type=float, default=3.0, show_default=True,
-              help="mDNS listen window in seconds.")
+              help="mDNS listen window in seconds (values below 0.5 are "
+                   "floored to 0.5).")
 @click.option("--probe/--no-probe", default=True, show_default=True,
               help="If mDNS finds nothing, fall back to a bounded TCP "
                    "connect-probe of the LOCAL /24 subnet only, on the "
                    "Stadium's RPC port 2002 (short timeouts, bounded "
-                   "concurrency; never probes beyond the local subnet).")
+                   "concurrency; never probes beyond the local subnet, "
+                   "and refuses to scan at all when this machine's own "
+                   "address is not in a private RFC 1918 range).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the discovered device records as JSON.")
 def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
@@ -841,6 +844,19 @@ def device_discover(timeout: float, probe: bool, as_json: bool) -> None:
     all are listed and persisted; the most recently discovered becomes the
     default (deterministic: ip_updated_at desc, then serial desc) — pass
     --ip on any verb to target another.
+
+    \b
+    Known limitations (backlog #77):
+      * Both mechanisms look at the DEFAULT-ROUTE interface. With a VPN
+        up, that is usually the tunnel — a LAN-attached Stadium can be
+        missed. Disconnect the VPN for the one-shot discover, or bypass
+        discovery with --ip / $HELIXGEN_HELIX_IP.
+      * The mDNS listener hears unicast replies only (no multicast group
+        join). The Stadium answers unicast (verified live, fw 1.3.2);
+        firmware that replied only via multicast would fall through to
+        the subnet probe.
+      * The subnet probe stays inside the machine's own /24 and refuses
+        public (non-RFC 1918) ranges outright.
     """
     HelixClient, HelixError = _client()
     from helixgen.device import discovery, observations

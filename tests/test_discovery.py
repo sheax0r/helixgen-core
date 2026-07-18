@@ -414,6 +414,32 @@ class TestProbeSafety:
         monkeypatch.setattr(discovery.socket, "create_connection", boom)
         assert discovery.probe_subnet() == []
 
+    @pytest.mark.parametrize("public_ip", [
+        "203.0.113.5",    # TEST-NET-3 (stands in for any public address)
+        "100.64.0.7",     # CGNAT/tailnet — not RFC 1918, refused too
+        "not-an-ip",      # unparseable — fail closed
+    ])
+    def test_public_range_is_refused_without_sockets(
+            self, monkeypatch, capsys, public_ip):
+        # backlog #77: never connect-scan a /24 that is not RFC 1918
+        # private — that is a port scan of strangers, not LAN discovery.
+        def boom(*a, **kw):
+            raise AssertionError("must not open sockets on a public range")
+        monkeypatch.setattr(discovery.socket, "create_connection", boom)
+        assert discovery.probe_subnet(subnet_ip=public_ip) == []
+        err = capsys.readouterr().err
+        assert "private" in err and "refusing" in err
+
+    def test_private_range_still_probes(self, monkeypatch):
+        probed = []
+
+        def fake_connect(addr, timeout=None):
+            probed.append(addr)
+            raise OSError("closed")
+        monkeypatch.setattr(discovery.socket, "create_connection", fake_connect)
+        assert discovery.probe_subnet(subnet_ip="10.1.2.3") == []
+        assert len({a[0] for a in probed}) == 253
+
 
 # ---------------------------------------------------------------------------
 # regression: the fossilized default is gone

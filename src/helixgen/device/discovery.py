@@ -17,6 +17,26 @@ Pure stdlib — no pyzmq/msgpack/zeroconf. Two mechanisms, used by
    Stadium's RPC port 2002 (the device ignores ICMP, so ping is useless).
    Strictly limited to the machine's own /24 — never probes beyond the
    local subnet — with short per-connect timeouts and bounded concurrency.
+   The probe additionally refuses to run when the machine's own address is
+   not in a private (RFC 1918) range: connect-scanning 253 hosts of a
+   PUBLIC /24 is a port scan of strangers, not LAN discovery (backlog #77).
+
+Known limitations (backlog #77):
+
+* **Default-route interface blindness.** :func:`local_ipv4` picks the
+  interface that carries the default route. With a VPN up, that is usually
+  the tunnel — so both the mDNS query and the /24 probe can look at the
+  wrong network and miss a LAN-attached Stadium. Workaround: disconnect
+  the VPN for the one-shot ``device discover``, or skip discovery entirely
+  and pass ``--ip`` / set ``$HELIXGEN_HELIX_IP``. (Enumerating candidate
+  interfaces needs per-interface addresses, which pure stdlib does not
+  expose portably.)
+* **The mDNS listener is unicast-reply-only.** :func:`mdns_discover` sends
+  a QU (unicast-response) query from an ephemeral port and never joins the
+  224.0.0.251 multicast group, so responders that ignore the QU bit and
+  reply only via multicast (an RFC 6762 §5.4 allowance) are invisible.
+  The Stadium (fw 1.3.2, verified live) replies unicast, so this works
+  against real hardware; other firmware would fall through to the probe.
 
 Both mechanisms only *find candidates*; the CLI confirms each candidate
 with the cheap read-only ``/ProductInfoGet`` handshake before trusting or
@@ -37,6 +57,7 @@ guaranteed-wrong default for anyone else that failed as a long stall).
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 import socket
 import struct
@@ -64,6 +85,29 @@ _TYPE_SRV = 33
 
 class IPResolutionError(RuntimeError):
     """No device IP could be resolved (no flag, no env, no persisted record)."""
+
+
+#: The RFC 1918 private ranges — the only address space the /24 probe will
+#: scan (backlog #77). Checked explicitly rather than via
+#: ``ipaddress.is_private`` because is_private's answer changed across
+#: Python versions (3.12.4+ counts documentation/CGNAT special-purpose
+#: ranges too); the probe's etiquette gate must be deterministic.
+_RFC1918_NETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+
+
+def _is_rfc1918(ip: str) -> bool:
+    """True when ``ip`` parses as IPv4 inside an RFC 1918 private range.
+    Unparseable input is False (fail closed)."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return isinstance(addr, ipaddress.IPv4Address) and any(
+        addr in net for net in _RFC1918_NETS)
 
 
 @dataclass
@@ -284,9 +328,22 @@ def probe_subnet(port: int = RPC_PORT, *, connect_timeout: float = 0.35,
     port. Etiquette: never probes beyond the machine's own /24 (254 hosts),
     short per-connect timeouts, bounded thread pool, skips our own address.
     Returns the responding IPs (unconfirmed candidates).
+
+    Private ranges only (backlog #77): when the machine's own address is
+    not RFC 1918-private, the probe refuses to run (stderr warning, empty
+    result) — connect-scanning a public /24 would be a port scan of 253
+    strangers' hosts, not LAN discovery. Use ``--ip`` /
+    ``$HELIXGEN_HELIX_IP`` to reach a device on an exotic network.
     """
     me = subnet_ip or local_ipv4()
     if not me:
+        return []
+    if not _is_rfc1918(me):
+        sys.stderr.write(
+            f"warning: this machine's address {me} is not in a private "
+            "(RFC 1918) range — refusing to connect-scan a non-private "
+            "/24. Pass --ip (or set $HELIXGEN_HELIX_IP) to target the "
+            "device directly instead.\n")
         return []
     base = me.rsplit(".", 1)[0]
     targets = [f"{base}.{i}" for i in range(1, 255) if f"{base}.{i}" != me]
