@@ -1212,7 +1212,8 @@ def ir_cache_cmd(stats: bool, clear_: bool, prune: bool) -> None:
     """Inspect or maintain the IR-hash cache (perf layer, not mapping.json).
 
     The cache lives at $HELIXGEN_IRHASH_CACHE, else $HELIXGEN_CACHE/irhash.json,
-    else ~/.helixgen/cache/irhash.json. Exactly one action is required.
+    else <helixgen home>/cache/irhash.json (home defaults to ~/.helixgen;
+    $HELIXGEN_HOME relocates it). Exactly one action is required.
     """
     if sum((stats, clear_, prune)) != 1:
         raise click.ClickException("choose exactly one of --stats, --clear, --prune")
