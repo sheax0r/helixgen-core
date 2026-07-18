@@ -249,11 +249,22 @@ and had to be redirected. Start here so future work begins from the right model.
 ### Deferred from the 0.21.0 adversarial review (2026-07-15)
 
 - **#69 `slots restore --force` into a named setlist may stack a duplicate
-  reference [device-write]** — `_install_via_dest` skips the setlist-position
-  occupancy check under `--force` and `reference_into_setlist` never removes
-  an incumbent; what the device does with two references at one posi is
-  uncataloged. Either refuse `--force` on the setlist branch or characterize
-  + document the outcome on hardware.
+  reference [device-write]** — **✅ RESOLVED (refusal path).**
+  `_install_via_dest` used to skip the setlist-position occupancy check under
+  `--force`, and `reference_into_setlist` never removes an incumbent — so a
+  forced restore could stack a second reference at one posi, with uncataloged
+  device behavior. Of the entry's two sanctioned outcomes, the **refuse**
+  branch shipped: the setlist-position occupancy check now always runs
+  (strict, #40 posture) and an occupied position is refused even with
+  `--force`, with an error naming the incumbent's cid and the
+  `device delete <cid> --setlist <name>` removal step. `--force` keeps its
+  pool-slot semantics unchanged (and stays a no-op at a free setlist
+  position). *Hardware characterization of an actually-stacked duplicate
+  remains uncaptured*: the 2026-07-17 overnight attempt was blocked by a
+  persistent backlog-#38 `/CreateContent` status-1 episode (every preset
+  create failed at every posi; setlist create ghost-allocated) — if a future
+  session wants the catalog entry, stack two references via raw
+  `reference_into_setlist` on an HGTEST setlist after a reboot-fresh device.
 - **#70 Deprecated `throwaway`→`-5` remnants + stale dated docs [local]** —
   `container_for_setlist_keyword`/`THROWAWAY` still map `"throwaway"` to the
   setlists root (no production caller; pinned by a unit test), preserving
@@ -1307,7 +1318,18 @@ Remaining follow-ups:
   tone-skill refinement loop at creation time when the device is online, and
   later iteration via the device skill; (d) skills integration lives in the
   plugin repo (cross-repo, after #56); (e) #75/#76 below (phase-2
-  residuals).
+  residuals); (f) **looper-source mode, core half SHIPPED 2026-07-17**
+  (mirrors workspace #82): `device measure`/`device normalize --source
+  loop` gate on chain-out level (the input-jack pitch+level gate is
+  structurally silent when a front-of-chain looper replays a recorded
+  signal) and compare raw `output_db` across targets instead of the
+  input-normalized `gain_db` (the looped source is identical by
+  construction; `gain_db` reports null). Offline-tested (fake meter
+  streams). **Deferred to the workspace #82 hardware halves:** the
+  setlist-scope looper-injection harness and live characterization of
+  `LOOP_OUTPUT_FLOOR` against a real looper block on hardware (whether a
+  high-gain chain's idle floor at the chain-out taps clears 1e-4 with the
+  jack silent).
 - **#63 MCP server removal — CLI is the only engine surface** — **✅ SHIPPED
   0.20.0** (mirrored in the coordination-workspace backlog, which is now the
   authoritative one). `mcp_server/` + `tests/mcp_server/` + the `[mcp]` extra

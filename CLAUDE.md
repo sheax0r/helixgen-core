@@ -148,7 +148,12 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   bypass), `device model <path> <block> <model>` (live model swap), `device
   reorder <setlist> <target> --to <N>` (direct DEVICE-side preset reorder —
   distinct from the local-manifest `device slots reorder`; numeric args are
-  **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #62).
+  **cid-first**), `device tuner` / `device meters` / `device measure` (read-only 2003 telemetry; `measure` = playing-gated loudness stats, backlog #62;
+  the three preflight reachability with one TCP probe of the `--port`
+  control port — fail-fast instead of a silent window; `measure
+  --source loop` gates on chain-out level for a front-of-chain looper
+  feeding the chain — the input jack is structurally silent there, and the
+  cross-target metric becomes raw `output_db`, `gain_db` = null).
   Decoded + HW-validated 2026-07-14. `device normalize` (#62 phase 2) is the
   closed loop over `measure`: level-match a preset's NAMED snapshots or a
   manifest setlist while the player plays — DRY-RUN by default; `--yes`
@@ -164,6 +169,10 @@ the verb index plus the mental-model rules that must stay in front of an agent.
   are dB-exact but sit downstream of every meter tap, so the loop trusts
   the math (deliberately never re-measures to confirm). Holds `editbuffer`
   even in dry-run (it recalls snapshots / loads presets while measuring).
+  `--source loop` (workspace #82 core) runs the same loop over a
+  front-of-chain looper's replayed signal: chain-out gating, totals sized
+  from raw `output_db` instead of `gain_db` (the looped source is
+  identical across targets by construction).
   A `--yes` run whose `.hsp` is a registered library variant also records
   a `normalized` record on that variant's tone metadata — run parameters
   plus the FULL per-target telemetry (open dicts; `output_db` = chain-out

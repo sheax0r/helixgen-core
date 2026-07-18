@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import time
 from pathlib import Path
 
 import click
@@ -58,6 +59,14 @@ def _serial_of(h, ip: str) -> str:
     except Exception:  # noqa: BLE001 — advisory identity, never fatal
         pass
     return f"ip-{getattr(h, 'ip', None) or ip}"
+
+
+def _echo_library_rows(rows) -> None:
+    """Emit the human-readable library listing (slot, name, on/off, setlists)."""
+    for row in rows:
+        sls = ", ".join(row["setlists"])
+        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
+                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
 
 
 def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
@@ -128,6 +137,24 @@ def _resolve_ip_or_fail(explicit=None):
         return discovery.resolve_ip(explicit)
     except discovery.IPResolutionError as e:
         raise click.ClickException(str(e)) from e
+
+
+def _telemetry_preflight(ip: str, port: int) -> None:
+    """Fail fast when no device is reachable, BEFORE a telemetry subscribe
+    (#64c). A ZMQ SUB socket connects lazily, so to `tuner`/`meters`/
+    `measure` an unreachable or powered-off device is indistinguishable
+    from silence — the verb would sit out its whole --seconds window and
+    then report "no meter data". One cheap TCP connect to the RPC control
+    port (--port) distinguishes the two up front with an instructive
+    error instead."""
+    from helixgen.device import discovery
+
+    if not discovery.probe_reachable(ip, port):
+        raise click.ClickException(
+            f"no Helix Stadium reachable at {ip}:{port} (TCP connect "
+            f"failed) — wrong IP, device off, or a stale device record? "
+            f"Re-run `helixgen device discover`, or pass --ip / set "
+            f"$HELIXGEN_HELIX_IP.")
 
 
 def _ip_callback(ctx, param, value):
@@ -293,9 +320,21 @@ def _install_via_dest(h, kind: str, dest_cid: int, label: str, pos: int,
     save / transcode-install) and returns the new pool cid. For
     kind=="pool" it writes straight at ``pos``. For kind=="setlist" the
     preset content always lives in the POOL: the setlist position ``pos``
-    is checked empty (strict; skipped with ``force``), the content is
-    written at the lowest empty pool posi, and a REFERENCE is added to the
-    setlist at ``pos``. The factory container is read-only.
+    is checked empty (strict — always, even under ``force``; backlog #69),
+    the content is written at the lowest empty pool posi, and a REFERENCE
+    is added to the setlist at ``pos``. The factory container is read-only.
+
+    ``force`` (the ``slots restore --force`` escape hatch) only ever
+    applies to a POOL destination's slot check (inside ``writer``); an
+    occupied NAMED-SETLIST position is refused even with ``force``:
+    ``reference_into_setlist`` never removes an incumbent, so proceeding
+    would stack a second reference at one position — device behavior that
+    is uncataloged (backlog #69; a 2026-07-17 hardware-characterization
+    attempt was blocked by a persistent backlog-#38 /CreateContent
+    status-1 episode). Fail-safe: refuse, and point at removing the
+    incumbent reference first. The occupancy listing is strict (#40) —
+    with or without ``force``, a listing timeout aborts rather than
+    reading the position as empty.
 
     Returns ``(new_cid, pool_posi, ref_cid_or_None)``.
     """
@@ -305,7 +344,16 @@ def _install_via_dest(h, kind: str, dest_cid: int, label: str, pos: int,
         raise click.ClickException("the factory container is read-only")
     if kind == "pool":
         return writer(dest_cid, pos), pos, None
-    if not force and h.find_by_pos(dest_cid, pos, strict=True) is not None:
+    occupant = h.find_by_pos(dest_cid, pos, strict=True)
+    if occupant is not None:
+        if force:
+            raise click.ClickException(
+                f"setlist {label!r} position {pos} already holds a reference "
+                f"(cid {occupant.get('cid_')}); --force cannot replace it: "
+                "the device's behavior with two references stacked at one "
+                "position is uncataloged (backlog #69). Remove the incumbent "
+                f"first (`helixgen device delete {occupant.get('cid_')} "
+                f"--setlist {label!r}`), then re-run.")
         raise click.ClickException(
             f"setlist {label!r} position {pos} is not empty")
     pool_pos = h._lowest_empty_posi(Container.POOL)
@@ -2487,10 +2535,7 @@ def device_library_cmd(as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
-    for row in rows:
-        sls = ", ".join(row["setlists"])
-        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
-                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+    _echo_library_rows(rows)
 
 
 @device.command(name="sync")
@@ -2715,10 +2760,7 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
     if as_json:
         click.echo(json.dumps(rows, indent=2))
         return
-    for row in rows:
-        sls = ", ".join(row["setlists"])
-        click.echo(f"{(row['slot'] or '-'):<4} {row['name']:<28} "
-                   f"{'on' if row['on_device'] else 'off':<3}  [{sls}]")
+    _echo_library_rows(rows)
 
 
 @device_slots.command(name="restore")
@@ -2728,7 +2770,9 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
 @click.option("--setlist", default=None,
               help="Override the destination: " + _SETLIST_HELP)
 @click.option("--force", is_flag=True, default=False,
-              help="Push even if the destination slot is occupied.")
+              help="Push even if the destination POOL slot is occupied "
+                   "(pool destinations only; an occupied named-setlist "
+                   "position is always refused — backlog #69).")
 @_device_option
 @_locked("library", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,
@@ -2739,7 +2783,11 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     .sbe (from `push`) is re-pushed. Tones saved from the live edit buffer or
     copied on-device have no local source and can't be restored this way.
     With a NAMED --setlist the content is restored into the POOL and a
-    REFERENCE is added to the setlist at the destination position.
+    REFERENCE is added to the setlist at the destination position; if that
+    position already holds a reference the restore is refused even with
+    --force (a second reference would stack at one position — uncataloged
+    device behavior, backlog #69) — remove the incumbent reference first
+    (`device delete <cid> --setlist <name>`).
     """
     SetlistManifest, _ = _manifest()
 
@@ -2955,10 +3003,18 @@ def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
     Subscribes to the 2003 telemetry stream and decodes the pitch readout (no
     Stadium app, and no need to engage the hardware tuner — the detector is
     always live). Play a note and watch the note/cents update. Ctrl-C to stop.
+
+    Reachability is preflighted (one cheap TCP probe of the --port control
+    port) so an unreachable device fails fast with a clear error instead of
+    streaming silence for the whole window (the telemetry SUB socket
+    connects lazily and cannot tell a dead host from a quiet one).
     """
     from helixgen.device.subscribe import HelixSubscriber
     _, HelixError = _client()
     from helixgen.device import tuner as T
+
+    ip = _resolve_ip_or_fail(ip)
+    _telemetry_preflight(ip, port)
 
     def _bar(cents: int) -> str:
         # 21-cell meter, centre = in tune; ◀/▶ show flat/sharp direction
@@ -3013,10 +3069,18 @@ def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
     (`/dspEvent` eid_=1, mid_=796/800 — 128-float grid level data) that ride
     the same burst as the network tuner (no Stadium app needed). Read-only.
     Ctrl-C to stop.
+
+    Reachability is preflighted (one cheap TCP probe of the --port control
+    port) so an unreachable device fails fast with a clear error instead of
+    streaming silence for the whole window (the telemetry SUB socket
+    connects lazily and cannot tell a dead host from a quiet one).
     """
     from helixgen.device.subscribe import HelixSubscriber
     _, HelixError = _client()
     from helixgen.device import meters as M
+
+    ip = _resolve_ip_or_fail(ip)
+    _telemetry_preflight(ip, port)
 
     def _bar(peak: float, scale: float = 0.08, cells: int = 24) -> str:
         n = max(0, min(cells, round((peak / scale) * cells)))
@@ -3049,17 +3113,32 @@ def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
         raise click.ClickException(str(e)) from e
 
 
+#: Shared --source help for measure/normalize (workspace #82, core half).
+_SOURCE_HELP = ("Signal source feeding the chain. 'input' (default): a "
+                "player on the instrument jack — samples are gated on a "
+                "real pitch reading plus input level (hum/silence ignored). "
+                "'loop': a front-of-chain LOOPER replays a recorded signal "
+                "— the input jack is structurally silent (no pitch, no "
+                "input level), so samples are gated on CHAIN-OUT level "
+                "instead, and the number to compare across targets is the "
+                "raw output_db (gain_db is null: no input reference; the "
+                "looped source is identical across targets by "
+                "construction).")
+
+
 @device.command(name="measure")
 @click.option("--seconds", type=float, default=20.0, show_default=True,
               help="How long to sample the telemetry window.")
 @click.option("--min-playing", type=int, default=40, show_default=True,
               help="Minimum playing-gated samples for a trustworthy result "
                    "(~10 samples/sec of actual playing).")
+@click.option("--source", type=click.Choice(["input", "loop"]),
+              default="input", show_default=True, help=_SOURCE_HELP)
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result as one JSON object.")
 @_device_option
-def device_measure(seconds: float, min_playing: int, as_json: bool,
-                   ip: str, port: int) -> None:
+def device_measure(seconds: float, min_playing: int, source: str,
+                   as_json: bool, ip: str, port: int) -> None:
     """Measure how loud the ACTIVE tone is while you play — read-only.
 
     Samples the 2003 telemetry for --seconds and reduces the playing-gated
@@ -3070,12 +3149,28 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
     during the window — the result reports how much actual playing it saw
     and fails (exit code 1, JSON ok:false + reason) when there wasn't
     enough to trust; just re-run it.
+
+    With --source loop (a front-of-chain looper replaying a recorded
+    signal), the input-jack gate above would read pure silence — samples
+    are gated on chain-out level instead, gain_db is null (no input
+    reference), and output_db is the number to compare across targets.
+
+    Reachability is preflighted (one cheap TCP probe of the --port control
+    port) so an unreachable device fails fast with a clear error instead of
+    sitting out the whole window and reporting "no meter data" (the
+    telemetry SUB socket connects lazily and cannot tell a dead host from a
+    quiet one).
     """
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.device import HelixError
     from helixgen.device import measure as ME
 
+    ip = _resolve_ip_or_fail(ip)
+    _telemetry_preflight(ip, port)
+
     collected = []
+    interrupted = False
+    t0 = time.monotonic()
     try:
         with HelixSubscriber(ip) as sub:
             events = sub.stream(duration=seconds,
@@ -3084,24 +3179,36 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
             for sample in ME.samples_from_events(events):
                 collected.append(sample)
     except KeyboardInterrupt:
-        pass  # summarize the partial window instead of discarding it
+        interrupted = True  # summarize the partial window, don't discard it
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
-    result = ME.summarize(collected, seconds=seconds, min_playing=min_playing)
+    # #64d: report the window actually sampled — a Ctrl-C'd partial window
+    # must not claim the full --seconds, and playing_seconds derives from
+    # the observed sample rate inside summarize().
+    elapsed = time.monotonic() - t0
+    result = ME.summarize(collected, seconds=elapsed,
+                          min_playing=min_playing, source=source)
 
     if as_json:
         click.echo(json.dumps({k: (round(v, 2) if isinstance(v, float) else v)
                                for k, v in result._asdict().items()}))
     else:
-        click.echo(f"window   : {result.seconds:.0f}s "
+        window = f"{result.seconds:.1f}s"
+        if interrupted:
+            window += f" (Ctrl-C at {result.seconds:.1f}s of {seconds:.0f}s)"
+        click.echo(f"window   : {window} "
                    f"({result.n_samples} samples, "
                    f"{result.playing_seconds:.1f}s playing)")
         click.echo(f"input    : {result.input_db:7.2f} dB")
         click.echo(f"output   : {result.output_db:7.2f} dB "
                    f"(p75 {result.output_db_p75:.2f} dB)")
-        click.echo(f"gain     : {result.gain_db:7.2f} dB (chain out/in)")
+        if result.gain_db is None:
+            click.echo("gain     :     n/a (loop source — compare output_db "
+                       "across targets)")
+        else:
+            click.echo(f"gain     : {result.gain_db:7.2f} dB (chain out/in)")
         if not result.ok:
             click.echo(f"NOT OK   : {result.reason}")
     if not result.ok:
@@ -3110,19 +3217,25 @@ def device_measure(seconds: float, min_playing: int, as_json: bool,
 
 # --- device normalize (loudness phase 2, backlog #62) -----------------------
 
-def _measure_window(ip: str, seconds: float, min_playing: int):
+def _measure_window(ip: str, seconds: float, min_playing: int,
+                    source: str = "input"):
     """One playing-gated telemetry window -> ``measure.MeasureResult``
-    (the same reduction `device measure` performs)."""
+    (the same reduction `device measure` performs). ``source`` selects the
+    gate: ``"input"`` (jack pitch+level) or ``"loop"`` (chain-out level,
+    workspace #82)."""
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.device import measure as ME
 
     collected = []
+    t0 = time.monotonic()
     with HelixSubscriber(ip) as sub:
         events = sub.stream(duration=seconds, filter_addrs={"/dspEvent"},
                             include_noise=True)
         for sample in ME.samples_from_events(events):
             collected.append(sample)
-    return ME.summarize(collected, seconds=seconds, min_playing=min_playing)
+    # #64d: summarize over the window actually sampled (observed rate).
+    return ME.summarize(collected, seconds=time.monotonic() - t0,
+                        min_playing=min_playing, source=source)
 
 
 def _normalize_resolve_target(results, target_db):
@@ -3157,7 +3270,7 @@ def _normalize_plan(results, target_total, tolerance_db):
 
 
 def _normalize_record_library(entries, *, scope, target_total_db,
-                              tolerance_db, seconds):
+                              tolerance_db, seconds, source):
     """Upsert a ``normalized`` record onto every fully-normalized ``.hsp``
     that is a registered tone-library variant (resolved via the library's
     tone metadata -- see ``tone_meta.find_variant_by_hsp``). ``entries`` is
@@ -3194,6 +3307,7 @@ def _normalize_record_library(entries, *, scope, target_total_db,
                 "at": datetime.now().astimezone().isoformat(
                     timespec="seconds"),
                 "scope": scope,
+                "source": source,
                 "target_total_db": round(float(target_total_db), 2),
                 "tolerance_db": float(tolerance_db),
                 "seconds": float(seconds),
@@ -3233,6 +3347,8 @@ def _normalize_record_library(entries, *, scope, target_total_db,
 @click.option("--tolerance-db", type=float, default=1.0, show_default=True,
               help="Deltas at or below this magnitude are in band and NOT "
                    "trimmed (don't chase meter noise).")
+@click.option("--source", type=click.Choice(["input", "loop"]),
+              default="input", show_default=True, help=_SOURCE_HELP)
 @click.option("--yes", is_flag=True, default=False,
               help="Actually write the trims into the local .hsp file(s) "
                    "(default is a measure-and-report dry-run).")
@@ -3243,8 +3359,8 @@ def _normalize_record_library(entries, *, scope, target_total_db,
 @_locked("editbuffer", verb="normalize")
 def device_normalize(preset: Path | None, setlist: str | None,
                      target_db: float | None, seconds: float,
-                     min_playing: int, tolerance_db: float, yes: bool,
-                     as_json: bool, ip: str, port: int) -> None:
+                     min_playing: int, tolerance_db: float, source: str,
+                     yes: bool, as_json: bool, ip: str, port: int) -> None:
     """Level-match snapshots or a setlist by MEASURING while you play (DRY-RUN
     by default).
 
@@ -3292,6 +3408,14 @@ def device_normalize(preset: Path | None, setlist: str | None,
     `device measure`: the loop trusts the dB math and deliberately does NOT
     re-measure to confirm (a re-measure would falsely report "no change").
 
+    With --source loop (a front-of-chain LOOPER replays a recorded signal;
+    workspace #82), the input-jack gate reads pure silence — measuring
+    gates on chain-out level instead, and each target's total loudness is
+    its raw measured chain-out output_db PLUS the output level in force
+    (the looped source is identical across targets by construction, so
+    output_db differences ARE the chain differences; gain_db is null).
+    Keep the SAME loop replaying across every target of a run.
+
     When a --yes run's .hsp is a registered tone-library variant (its path
     resolves to a variant in the library's tone metadata), the run is also
     RECORDED on that variant as a `normalized` record — timestamp, scope,
@@ -3321,10 +3445,19 @@ def device_normalize(preset: Path | None, setlist: str | None,
     results: list[dict] = []
     written: list[str] = []
     warnings: list[str] = []
+    # #82: the per-target prompt and comparison metric depend on the source
+    # — a human on the jack plays; a looper replays; input mode compares the
+    # input-invariant chain gain, loop mode the raw chain-out output_db.
+    play_prompt = ("PLAY the same riff steadily"
+                   if source == "input"
+                   else "keep the LOOPER replaying the same recorded riff")
+    measured_key = "gain_db" if source == "input" else "output_db"
+    measured_label = "chain gain" if source == "input" else "chain out"
 
     def _measured_fields(res) -> dict:
         return {"ok": res.ok, "reason": res.reason,
-                "gain_db": round(res.gain_db, 2),
+                "gain_db": (None if res.gain_db is None
+                            else round(res.gain_db, 2)),
                 "output_db": round(res.output_db, 2),
                 "playing_seconds": round(res.playing_seconds, 1)}
 
@@ -3364,20 +3497,21 @@ def device_normalize(preset: Path | None, setlist: str | None,
                         f"first, then re-run")
                 for idx, name in targets:
                     h.activate_snapshot(idx)
-                    say(f"snapshot {idx} {name!r}: PLAY the same riff "
-                        f"steadily for ~{seconds:.0f}s ...")
-                    res = _measure_window(ip, seconds, min_playing)
-                    if res.ok:
-                        say(f"  measured chain gain {res.gain_db:+.2f} dB "
-                            f"({res.playing_seconds:.1f}s playing)")
-                    else:
-                        say(f"  warning: SKIPPED — {res.reason}")
+                    say(f"snapshot {idx} {name!r}: {play_prompt} for "
+                        f"~{seconds:.0f}s ...")
+                    res = _measure_window(ip, seconds, min_playing, source)
                     entry = {"snapshot": idx, "name": name,
                              **_measured_fields(res)}
                     if res.ok:
+                        say(f"  measured {measured_label} "
+                            f"{entry[measured_key]:+.2f} dB "
+                            f"({res.playing_seconds:.1f}s playing)")
                         level = NZ.reference_output_level(body, idx)
                         entry["output_level_db"] = round(level, 1)
-                        entry["total_db"] = round(entry["gain_db"] + level, 2)
+                        entry["total_db"] = round(
+                            entry[measured_key] + level, 2)
+                    else:
+                        say(f"  warning: SKIPPED — {res.reason}")
                     results.append(entry)
                 # leave the device on the preset's on-load snapshot
                 active = ((body.get("preset") or {}).get("params")
@@ -3413,7 +3547,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 raise click.ClickException(
                     f"setlist {setlist!r} is not in the local manifest "
                     f"(see `device setlist list`)")
-            tone_names = [t for t in (rec.get("tones") or [])]
+            tone_names = list(rec.get("tones") or [])
             if not tone_names:
                 raise click.ClickException(f"setlist {setlist!r} has no tones")
             say(f"normalize (setlist scope): {len(tone_names)} tone(s) in "
@@ -3464,21 +3598,22 @@ def device_normalize(preset: Path | None, setlist: str | None,
                     if not loaded_name:
                         say(f"warning: {name!r}: could not verify the "
                             f"loaded preset's name — proceeding")
-                    say(f"tone {name!r}: PLAY the same riff steadily for "
+                    say(f"tone {name!r}: {play_prompt} for "
                         f"~{seconds:.0f}s ...")
-                    res = _measure_window(ip, seconds, min_playing)
-                    if res.ok:
-                        say(f"  measured chain gain {res.gain_db:+.2f} dB "
-                            f"({res.playing_seconds:.1f}s playing)")
-                    else:
-                        say(f"  warning: SKIPPED — {res.reason}")
+                    res = _measure_window(ip, seconds, min_playing, source)
                     entry = {"tone": name, "path": hsp_path,
                              **_measured_fields(res)}
                     if res.ok:
+                        say(f"  measured {measured_label} "
+                            f"{entry[measured_key]:+.2f} dB "
+                            f"({res.playing_seconds:.1f}s playing)")
                         level = NZ.reference_output_level(
                             read_hsp(Path(hsp_path)))
                         entry["output_level_db"] = round(level, 1)
-                        entry["total_db"] = round(entry["gain_db"] + level, 2)
+                        entry["total_db"] = round(
+                            entry[measured_key] + level, 2)
+                    else:
+                        say(f"  warning: SKIPPED — {res.reason}")
                     results.append(entry)
                 # best-effort: put the player's selection back
                 if prev_cid is not None:
@@ -3533,16 +3668,17 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 library_recorded = _normalize_record_library(
                     [(str(preset), results)], scope=scope,
                     target_total_db=target, tolerance_db=tolerance_db,
-                    seconds=seconds)
+                    seconds=seconds, source=source)
         else:
             entries = [(r["path"], [r]) for r in results if r.get("ok")]
             library_recorded = _normalize_record_library(
                 entries, scope=scope, target_total_db=target,
-                tolerance_db=tolerance_db, seconds=seconds)
+                tolerance_db=tolerance_db, seconds=seconds, source=source)
 
     skipped = [r for r in results if not r.get("ok")]
     if as_json:
         payload.update({
+            "source": source,
             "target_total_db": round(target, 2),
             "anchor": anchor_json,
             "tolerance_db": tolerance_db,
@@ -3556,7 +3692,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
         anchor_desc = ("--target-db" if anchor_json is None else
                        f"anchor {anchor_json.get('name', anchor_json.get('tone'))!r}")
         click.echo(f"plan (target = {anchor_desc}, {target:+.2f} dB total "
-                   f"loudness = chain gain + output level):")
+                   f"loudness = {measured_label} + output level):")
         for r in results:
             label = (f"snapshot {r['snapshot']} {r['name']!r}"
                      if scope == "snapshots" else f"tone {r['tone']!r}")
@@ -3564,8 +3700,9 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 click.echo(f"  {label}: SKIPPED ({r['reason']})")
             elif r["trim_db"]:
                 state = "applied" if r["applied"] else "would trim"
+                measured_word = "gain" if source == "input" else "out"
                 click.echo(f"  {label}: {r['total_db']:+.2f} dB total "
-                           f"({r['gain_db']:+.2f} gain "
+                           f"({r[measured_key]:+.2f} {measured_word} "
                            f"{r['output_level_db']:+.1f} level) — {state} "
                            f"{r['trim_db']:+.1f} dB")
             else:

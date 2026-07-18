@@ -254,7 +254,7 @@ def resolve_input_model(device_id: str, mode: str) -> str:
     table = INPUT_MODELS[_resolve_device(device_id)]
     if mode not in table:
         raise ControllerError(
-            f"Unknown input mode {mode!r}. Valid modes: {sorted(table.keys())}."
+            f"Unknown input mode {mode!r}. Valid modes: {sorted(table)}."
         )
     return table[mode]
 
@@ -271,14 +271,14 @@ def resolve_controller_source(device_id: str, logical_name: str) -> int:
     if logical_name not in table:
         reserved = RESERVED.get(device, {})
         if logical_name in reserved:
-            _sid, label = reserved[logical_name]
+            _, label = reserved[logical_name]
             raise ControllerError(
                 f"{logical_name} is the {label} switch and is not assignable; "
                 f"assignable switches are FS1–FS5, FS7–FS11 (plus EXP1, EXP2, EXP1Toe)."
             )
         raise ControllerError(
             f"Unknown controller name {logical_name!r}. "
-            f"Valid names: {sorted(table.keys())}."
+            f"Valid names: {sorted(table)}."
         )
     return table[logical_name]
 

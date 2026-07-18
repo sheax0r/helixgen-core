@@ -344,3 +344,33 @@ gated samples per window — and makes runs repeatable in a way human picking
 is not. The "play the same riff" prompt remains the human-facing contract;
 the rig is the validation substitute. No rig was connected for the phase-2
 implementation session, hence #75.
+
+## 8. Loop-source mode (2026-07-17 — workspace #82, core half)
+
+§7's erratum rig loops a signal **into the instrument jack**, so the normal
+input gate works. A **front-of-chain looper** (a looper block at the head of
+the chain replaying a recorded phrase) is different: the input-jack meter
+cells read ~0 and the pitch detector — which listens to the jack — reports
+`-1.0`, so the pitch+level gate is **structurally silent** and every sample
+gates out no matter how loud the chain is.
+
+`--source loop` on `device measure` / `device normalize` (shipped
+2026-07-17, offline-tested):
+
+- **Gate:** chain-out envelope above `measure.LOOP_OUTPUT_FLOOR` (1e-4, the
+  `INPUT_FLOOR` order) — `is_playing_loop`. A stopped looper reads digital
+  silence at the chain out; a replaying one carries program level.
+- **Metric:** raw `output_db` replaces the input-normalized `gain_db`
+  (`gain_db` reports `null` — no input reference). Because the looped
+  source is **identical across targets by construction**, `output_db`
+  differences are exactly the chain differences, which restores the
+  cross-target comparability that the gain ratio provides for human
+  playing. `normalize` sizes totals as `output_db + output level in force`
+  (same idempotency argument as §7 — the taps sit upstream of the trims
+  either way), and its `normalized` library record carries a `source`
+  field.
+
+**Hardware halves stay with workspace #82** (not this repo's core change):
+the setlist-scope looper-injection harness, and live characterization of
+`LOOP_OUTPUT_FLOOR` against a real looper block (does a high-gain chain's
+idle floor at the chain-out taps stay under 1e-4 with the jack silent?).
