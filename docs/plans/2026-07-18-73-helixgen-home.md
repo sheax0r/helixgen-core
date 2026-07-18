@@ -43,10 +43,14 @@ in-flight library-foundations work collides (2026-07-18).
 
 ### Task 3: reconcile the docs
 
-- [ ] Update any doc (CLAUDE.md, docs/CLI.md, or wherever HELIXGEN_HOME is
+- [x] Update any doc (CLAUDE.md, docs/CLI.md, or wherever HELIXGEN_HOME is
       described) so the described behavior matches: HOME now covers
       preferences + IR-hash cache, with per-file env overrides taking
-      precedence. No overclaim, no underclaim.
+      precedence. No overclaim, no underclaim. (CLAUDE.md `$HELIXGEN_HOME`
+      bullet now states it covers `preferences.json` + `cache/irhash.json`
+      and lists `$HELIXGEN_IRHASH_CACHE` among per-area overrides; docs/CLI.md
+      `ir-cache` entry notes the default anchors under `$HELIXGEN_HOME` with
+      `$HELIXGEN_IRHASH_CACHE`/`$HELIXGEN_CACHE` winning.)
 
 ## Validation Commands
 
