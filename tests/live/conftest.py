@@ -175,6 +175,27 @@ _GUARDED_FILES = (
 )
 
 
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Force the live suite serial.
+
+    The repo default `addopts = -ra -n auto` (pytest-xdist) is right for the
+    offline suite but wrong here: this suite drives a SINGLE physical device
+    and serializes on one session-scoped machine-local `all` device lock
+    (see the `cli` fixture). Under xdist, session fixtures are per-worker, so
+    every extra worker would contend on that lock — each with its own token —
+    wait out `$HELIXGEN_LOCK_TIMEOUT`, then fail; worse, concurrent workers
+    would mutate the one device in parallel. Disable workers whenever the live
+    suite is enabled so the documented `HELIXGEN_LIVE=1 ... pytest tests/live`
+    command self-serializes regardless of inherited addopts. tryfirst so this
+    runs before xdist's own configure (conftest hooks register last / run
+    first under pluggy's LIFO ordering).
+    """
+    if LIVE_ENABLED:
+        config.option.numprocesses = 0
+        config.option.dist = "no"
+
+
 def pytest_collection_modifyitems(config, items):
     """Gate the whole live suite on HELIXGEN_LIVE=1 (fast collection-time skip)."""
     if not LIVE_ENABLED:

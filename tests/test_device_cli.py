@@ -983,11 +983,18 @@ class IrClient(FakeClient):
 def test_device_delete_ir_by_name_with_yes(monkeypatch):
     IrClient.deleted = []
     _patch_client(monkeypatch, IrClient)
+    # The successful delete path does a best-effort `.wav` removal over SFTP
+    # (maintenance._remove_ir_backing_file). Stub HelixSFTP so the test makes
+    # NO real network connect (else it hangs ~75s on TCP-connect timeout).
+    removed = []
+    _patch_sftp_noop(monkeypatch, removed)
     result = CliRunner().invoke(
         cli, ["device", "delete-ir", "zzc-test", "--yes"])
     assert result.exit_code == 0, result.output
     assert IrClient.deleted == [[1160]]
     assert "ZZC-test" in result.output
+    # best-effort wav removal still exercised against the mock
+    assert removed == ["ZZC-test.wav"]
 
 
 def test_device_delete_ir_requires_confirmation(monkeypatch):
@@ -1311,6 +1318,7 @@ def test_device_delete_ir_wedged_hash_reachable_from_cli(monkeypatch):
     """The advertised wedge cleanup must work via the CLI (finding 2): a hash
     absent from the -11 listing but resolving in the path index is cleaned
     when --force-wedge is given."""
+    IrClient.deleted = []  # class attr is process-global; reset for xdist safety
     removed = []
     _patch_sftp_noop(monkeypatch, removed)
     wedged = "dd" * 16

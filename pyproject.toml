@@ -31,6 +31,7 @@ Issues = "https://github.com/sheax0r/helixgen-core/issues"
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
+    "pytest-xdist>=3.5",
     "numpy>=1.26",
 ]
 device = [
@@ -65,7 +66,7 @@ include = ["helixgen*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -n auto"
 markers = [
     "live: opt-in live integration test (tests/live/); skipped unless HELIXGEN_LIVE=1",
     "authoring: live group — generate/patch/view/set-param/enable/disable/add-block/remove-block/swap-model/ingest/register",
