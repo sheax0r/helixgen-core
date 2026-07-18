@@ -13,6 +13,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -2554,6 +2555,129 @@ def device_library_cmd(as_json: bool) -> None:
     _echo_library_rows(rows)
 
 
+class _SyncProgressRenderer:
+    """Renders a `sync_setlists` `ProgressEvent` stream to STDERR ONLY, never
+    touching stdout (the summary lines + `--json` output stay byte-for-byte
+    unchanged regardless of whether this renderer is active).
+
+    Two modes, chosen once at construction:
+
+    * **rich** — stderr is a live TTY and `--no-progress` wasn't given: each
+      phase with a stable per-phase total (`install`/`update`/`references`/
+      `delete`/`gc`) gets its own `click.progressbar` (manually driven —
+      events are push-based, so `render_progress()`/`update()`/
+      `render_finish()` are called by hand as events arrive and the phase
+      changes).
+    * **plain** — stderr isn't a TTY, or `--no-progress` was given: no bar,
+      just one short line per phase start and one per item, with no
+      carriage-return redraw — safe for redirected/non-TTY stderr (CI logs,
+      `--json` piped to a file, etc).
+
+    The `irs` phase is special-cased in both modes: its `index`/`total` are
+    scoped PER authored tone (they reset for every tone with missing IRs), so
+    it is always rendered as a running line rather than a bar that would
+    visibly reset mid-sync. Critically, `irs` events are NOT a phase
+    transition — the engine emits them INSIDE authoring, interleaved between
+    install/update events for different tones (IR upload happens before that
+    tone's install/update event). Rendering an `irs` line never closes or
+    reopens the enclosing install/update bar/banner, which stays open and
+    current across it.
+
+    Error/skip statuses always get a visible note line, in both modes.
+    """
+
+    def __init__(self, no_progress: bool):
+        self._stream = sys.stderr
+        self.rich = (not no_progress) and self._stream_is_tty()
+        self._phase = None
+        self._bar = None
+
+    def _stream_is_tty(self) -> bool:
+        """Whether stderr is an interactive TTY, degrading to plain (False) for
+        any stream that lacks ``isatty`` or whose ``isatty()`` raises (a closed
+        / broken stderr must never crash the sync -- progress is advisory)."""
+        try:
+            isatty = getattr(self._stream, "isatty", None)
+            return bool(isatty and isatty())
+        except Exception:  # noqa: BLE001 -- broken/closed stderr -> plain mode
+            return False
+
+    def _echo(self, line: str) -> None:
+        click.echo(line, err=True)
+
+    def _close_bar(self) -> None:
+        if self._bar is not None:
+            try:
+                self._bar.render_finish()
+            except Exception:  # noqa: BLE001 — progress is advisory only
+                pass
+            self._bar = None
+
+    def _note(self, phase: str, ev) -> None:
+        if ev.status == "error":
+            self._echo(f"  ! {phase} error: {ev.label}: {ev.detail or 'failed'}")
+        elif ev.status == "skip":
+            detail = f": {ev.detail}" if ev.detail else ""
+            self._echo(f"  - {phase} skip: {ev.label}{detail}")
+
+    def __call__(self, ev) -> None:
+        phase = ev.phase
+
+        if phase == "plan":
+            self._close_bar()
+            self._phase = None
+            self._echo(f"sync: {ev.label}")
+            return
+
+        if phase == "irs":
+            # A lightweight side-channel line, NOT a phase transition: IR
+            # uploads happen INSIDE authoring, interleaved between install/
+            # update events for different tones (see setlist_sync._author).
+            # Do NOT touch self._phase or self._bar here -- closing/reopening
+            # the enclosing install/update bar on every irs event would
+            # finish it early and open a second, duplicate bar for the next
+            # item in that same phase. Its index/total are scoped PER
+            # authored tone (they reset for every tone with missing IRs), so
+            # it is always rendered as a running line rather than a bar.
+            status = f" {ev.status}" if ev.status and ev.status != "ok" else ""
+            self._echo(f"  uploading IR {ev.index}/{ev.total}: {ev.label}{status}")
+            self._note(phase, ev)
+            return
+
+        if phase != self._phase:
+            self._close_bar()
+            self._phase = phase
+            if self.rich and ev.total:
+                bar = click.progressbar(length=ev.total, label=phase,
+                                         file=self._stream)
+                bar.render_progress()
+                self._bar = bar
+            else:
+                self._echo(f"sync: {phase} ({ev.total or 0})")
+
+        if self.rich and self._bar is not None:
+            self._bar.current_item = ev.label
+            self._bar.update(1)
+        else:
+            status = f" {ev.status}" if ev.status and ev.status != "ok" else ""
+            self._echo(f"  {phase} {ev.index}/{ev.total}: {ev.label}{status}")
+
+        self._note(phase, ev)
+
+    def close(self) -> None:
+        """Finish any still-open bar. No terminal event marks the end of the
+        stream, so the CLI calls this once after `sync_setlists` returns."""
+        self._close_bar()
+
+
+def _make_sync_progress_renderer(no_progress: bool) -> _SyncProgressRenderer:
+    """Build the `progress=` callback for `sync_setlists` used by `device
+    sync`. See `_SyncProgressRenderer` for the rich/plain rendering rules;
+    the returned object is callable (`renderer(event)`) and also exposes
+    `.close()` to finish any still-open progress bar once the sync ends."""
+    return _SyncProgressRenderer(no_progress)
+
+
 @device.command(name="sync")
 @click.argument("setlist_name", metavar="SETLIST", required=False)
 @click.option("--all", "all_setlists", is_flag=True, default=False,
@@ -2569,11 +2693,14 @@ def device_library_cmd(as_json: bool) -> None:
                    "tones).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw engine result dict as JSON.")
+@click.option("--no-progress", is_flag=True, default=False,
+              help="Disable the live progress display (plain one-line-per-phase "
+                   "output instead).")
 @_device_option
 @_locked(verb="sync", when=lambda kw: ("library",) if kw.get("exclude_irs") else ("library", "irs"))
 def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
                 exclude_irs: bool, repush: bool, as_json: bool,
-                ip: str, port: int) -> None:
+                no_progress: bool, ip: str, port: int) -> None:
     """Sync the manifest's setlists onto the device (pool + references).
 
     Give a single SETLIST name, or --all for every manifest setlist. The engine
@@ -2589,7 +2716,11 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     it first with `helixgen device setlist create <name>`). Sync is a
     managed-set mirror: it never touches untracked device presets and never
     orphans a pool preset another setlist still references. Idempotent — if
-    the flaky network drops a run, just re-run it. EXPERIMENTAL.
+    the flaky network drops a run, just re-run it. Shows a live per-phase
+    progress display on stderr (a progress bar when stderr is a TTY, plain
+    one-line-per-phase text otherwise); pass --no-progress to force the
+    plain text form. stdout (this summary, and --json) is never affected by
+    the progress display. EXPERIMENTAL.
     """
     SetlistManifest, _ = _manifest()
     from helixgen.device.setlist_sync import sync_setlists
@@ -2604,12 +2735,15 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
         gc = False
 
     setlists = None if all_setlists else [setlist_name]
+    renderer = _make_sync_progress_renderer(no_progress)
     try:
         res = sync_setlists(SetlistManifest.load(), ip=ip, port=port,
                             setlists=setlists, gc=gc, exclude_irs=exclude_irs,
-                            repush=repush)
+                            repush=repush, progress=renderer)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
+    finally:
+        renderer.close()
 
     if as_json:
         click.echo(json.dumps(res, indent=2))
