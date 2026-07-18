@@ -347,3 +347,26 @@ def test_plain_mode_install_banner_not_duplicated_by_interleaved_irs(monkeypatch
     assert "  install 1/2: Tone 1" in result.stderr
     assert "  install 2/2: Tone 2" in result.stderr
 
+
+
+def test_renderer_degrades_to_plain_when_stderr_isatty_raises(monkeypatch):
+    """A closed/broken stderr whose `isatty()` raises must NOT crash renderer
+    construction (progress is advisory) — it degrades to plain mode. Regression
+    for the whole-branch review finding."""
+    import sys as _sys
+    from helixgen.cli_device import _make_sync_progress_renderer
+
+    class _BrokenStderr:
+        def isatty(self):
+            raise ValueError("I/O operation on closed file")
+
+        def write(self, *a, **k):  # pragma: no cover - not exercised here
+            pass
+
+        def flush(self):  # pragma: no cover
+            pass
+
+    monkeypatch.setattr(_sys, "stderr", _BrokenStderr())
+    # Construction must succeed and pick plain mode, not raise.
+    renderer = _make_sync_progress_renderer(no_progress=False)
+    assert renderer.rich is False

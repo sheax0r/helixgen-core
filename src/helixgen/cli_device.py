@@ -2588,10 +2588,19 @@ class _SyncProgressRenderer:
 
     def __init__(self, no_progress: bool):
         self._stream = sys.stderr
-        isatty = getattr(self._stream, "isatty", None)
-        self.rich = (not no_progress) and bool(isatty and isatty())
+        self.rich = (not no_progress) and self._stream_is_tty()
         self._phase = None
         self._bar = None
+
+    def _stream_is_tty(self) -> bool:
+        """Whether stderr is an interactive TTY, degrading to plain (False) for
+        any stream that lacks ``isatty`` or whose ``isatty()`` raises (a closed
+        / broken stderr must never crash the sync -- progress is advisory)."""
+        try:
+            isatty = getattr(self._stream, "isatty", None)
+            return bool(isatty and isatty())
+        except Exception:  # noqa: BLE001 -- broken/closed stderr -> plain mode
+            return False
 
     def _echo(self, line: str) -> None:
         click.echo(line, err=True)
