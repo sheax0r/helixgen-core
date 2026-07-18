@@ -8,9 +8,10 @@ None of these functions create directories — pure path resolution; callers
 ``mkdir(parents=True, exist_ok=True)`` as needed.
 
 Existing per-area env vars (``$HELIXGEN_LIBRARY``, ``$HELIXGEN_IRS``,
-``$HELIXGEN_SETLISTS``, ``$HELIXGEN_PREFS``, ``$HELIXGEN_CACHE``) keep
-working and always win over a ``$HELIXGEN_HOME``-derived default — this
-module never overrides that precedence, only what a bare default computes to.
+``$HELIXGEN_SETLISTS``, ``$HELIXGEN_PREFS``, ``$HELIXGEN_CACHE``,
+``$HELIXGEN_IRHASH_CACHE``, ``$HELIXGEN_LOCKS``) keep working and always win
+over a ``$HELIXGEN_HOME``-derived default — this module never overrides that
+precedence, only what a bare default computes to.
 
 Note: ``manifest_path()`` is the current default manifest location
 (``setlists/manifest.json``) and IS what ``SetlistManifest.load`` uses; a v2

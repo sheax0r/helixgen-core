@@ -213,6 +213,20 @@ and had to be redirected. Start here so future work begins from the right model.
   whitespace-only) is now rejected loudly rather than treated as unset.
   REMAINING: only (a) default-route interface blindness and (b) the
   multicast-group-join gap above — both need non-stdlib/per-interface work.
+  Plus these low-severity nits surfaced by the 2026-07-18 #73-branch review
+  (all in already-merged #77 code, deferred not fixed): (i) `_ip_callback`
+  (`cli_device.py`) rejects empty/whitespace-only `--ip` but forwards a real
+  IP with surrounding whitespace un-stripped (`--ip " 1.2.3.4 "` → confusing
+  connect failure instead of clean parse); (ii) `forget_device`
+  (`observations.py`) can't prune a record whose JSON is corrupt — `_read`
+  returns `None` so the stem never matches; could fall back to `path.stem`;
+  (iii) test hygiene — `_FakeClient.infos` in `tests/test_discovery.py` is a
+  process-global class attr never reset (benign now; sibling `IrClient.deleted`
+  WAS reset for xdist in the same PR — inconsistent), and the `port`-field
+  bool-guard / invalid explicit `--port` paths lack coverage; (iv)
+  `resolve_port` re-scans `devices_with_ips()` a second time to recover a
+  record `resolve_ip` already resolved — a shared record-resolver would remove
+  the double scan.
 
 ### Deferred from the 0.22.0 lock-system adversarial review (2026-07-16)
 
