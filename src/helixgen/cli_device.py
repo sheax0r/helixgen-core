@@ -2576,7 +2576,12 @@ class _SyncProgressRenderer:
     The `irs` phase is special-cased in both modes: its `index`/`total` are
     scoped PER authored tone (they reset for every tone with missing IRs), so
     it is always rendered as a running line rather than a bar that would
-    visibly reset mid-sync.
+    visibly reset mid-sync. Critically, `irs` events are NOT a phase
+    transition — the engine emits them INSIDE authoring, interleaved between
+    install/update events for different tones (IR upload happens before that
+    tone's install/update event). Rendering an `irs` line never closes or
+    reopens the enclosing install/update bar/banner, which stays open and
+    current across it.
 
     Error/skip statuses always get a visible note line, in both modes.
     """
@@ -2616,10 +2621,15 @@ class _SyncProgressRenderer:
             return
 
         if phase == "irs":
-            # Per-tone-scoped total (resets for every authored tone) — a
-            # running line reads cleaner than a bar that visibly resets.
-            self._close_bar()
-            self._phase = "irs"
+            # A lightweight side-channel line, NOT a phase transition: IR
+            # uploads happen INSIDE authoring, interleaved between install/
+            # update events for different tones (see setlist_sync._author).
+            # Do NOT touch self._phase or self._bar here -- closing/reopening
+            # the enclosing install/update bar on every irs event would
+            # finish it early and open a second, duplicate bar for the next
+            # item in that same phase. Its index/total are scoped PER
+            # authored tone (they reset for every tone with missing IRs), so
+            # it is always rendered as a running line rather than a bar.
             status = f" {ev.status}" if ev.status and ev.status != "ok" else ""
             self._echo(f"  uploading IR {ev.index}/{ev.total}: {ev.label}{status}")
             self._note(phase, ev)

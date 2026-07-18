@@ -65,6 +65,24 @@ def _scripted_events():
     ]
 
 
+def _interleaved_scripted_events():
+    """Mirrors the REAL engine order for a sync authoring 2 tones where a
+    non-final tone uploads an IR: `irs` events happen INSIDE authoring,
+    BEFORE that tone's install/update event (see setlist_sync._author and
+    the install/update loops) -- NOT as a separate phase between install
+    events. Regression coverage for the bug where the renderer treated
+    `irs` as a phase transition, prematurely closing the still-incomplete
+    install bar and opening a second, duplicate one for the next install."""
+    return [
+        ProgressEvent("plan", total=2, label="2 install, 0 update, 0 skip"),
+        ProgressEvent("irs", label="tone1-ir" * 4, index=1, total=1, status="ok"),
+        ProgressEvent("install", label="Tone 1", index=1, total=2, status="ok"),
+        ProgressEvent("irs", label="tone2-ir" * 4, index=1, total=1, status="ok"),
+        ProgressEvent("install", label="Tone 2", index=2, total=2, status="ok"),
+        ProgressEvent("references", label="Main", index=1, total=1, status="ok"),
+    ]
+
+
 def _make_fake_sync_setlists(recorder: dict):
     """A drop-in replacement for `sync_setlists` that records the `progress`
     kwarg it received, drives the scripted events through it, then returns
@@ -233,3 +251,99 @@ def test_rich_mode_uses_progressbar_when_stderr_is_a_tty(monkeypatch):
     # install/update/references/delete each get their own bar; all finished.
     assert all(b.finished for b in bars_created)
     assert any(b.updates >= 1 for b in bars_created)
+
+
+def test_rich_mode_keeps_install_bar_open_across_interleaved_irs_events(monkeypatch):
+    """Regression for the CRITICAL bug: the engine emits `irs` events INSIDE
+    authoring, interleaved between install events for different tones
+    (`irs(tone1)`, `install(tone1)`, `irs(tone2)`, `install(tone2)` -- see
+    setlist_sync._author and the install loop). The renderer's `irs` branch
+    must NOT treat `irs` as a phase transition: it must not close the
+    still-open install bar or reset `self._phase`, so a single install bar
+    is created and reaches 100% (2/2), not two duplicate half-finished bars.
+    """
+    from helixgen.cli_device import _make_sync_progress_renderer
+
+    renderer = _make_sync_progress_renderer(no_progress=False)
+    renderer._stream.isatty = lambda: True
+    renderer.rich = True
+
+    bars_created = []
+    irs_lines = []
+    import click as click_mod
+
+    class _FakeBar:
+        def __init__(self, length, label, file):
+            self.length = length
+            self.label = label
+            self.updates = 0
+            self.finished = False
+            bars_created.append(self)
+
+        def render_progress(self):
+            pass
+
+        def update(self, n):
+            self.updates += n
+
+        def render_finish(self):
+            self.finished = True
+
+    monkeypatch.setattr(click_mod, "progressbar",
+                        lambda length, label, file: _FakeBar(length, label, file))
+
+    orig_echo = renderer._echo
+
+    def _capture_echo(line):
+        if "uploading IR" in line:
+            irs_lines.append(line)
+        orig_echo(line)
+
+    renderer._echo = _capture_echo
+
+    for ev in _interleaved_scripted_events():
+        renderer(ev)
+    renderer.close()
+
+    install_bars = [b for b in bars_created if b.label == "install"]
+    assert len(install_bars) == 1, (
+        f"expected exactly ONE install bar, got {len(install_bars)} "
+        f"(irs events must not open a second bar mid-phase)")
+    install_bar = install_bars[0]
+    assert install_bar.updates == install_bar.length == 2
+    assert install_bar.finished
+
+    # The IR side-channel lines still appear on stderr.
+    assert len(irs_lines) == 2
+    assert any("tone1-ir" in line for line in irs_lines)
+    assert any("tone2-ir" in line for line in irs_lines)
+
+
+def test_plain_mode_install_banner_not_duplicated_by_interleaved_irs(monkeypatch):
+    """Plain-mode counterpart of the rich-mode regression above: an `irs`
+    event arriving between two `install` events must not reprint the
+    `sync: install (...)` phase banner a second time, and the IR line must
+    still show up as its own one-liner."""
+    recorder = {}
+
+    def _fake(manifest, *, ip=None, port=None, setlists=None, gc=False,
+              exclude_irs=False, repush=False, progress=None):
+        recorder["called"] = True
+        if progress is not None:
+            for ev in _interleaved_scripted_events():
+                progress(ev)
+        return CANNED_RESULT
+
+    import helixgen.device.setlist_sync as setlist_sync_mod
+    monkeypatch.setattr(setlist_sync_mod, "sync_setlists", _fake)
+
+    result = _invoke(["Main", "--no-progress"])
+
+    assert result.exit_code == 0, result.stderr
+    assert result.stderr.count("sync: install") == 1
+    assert "uploading IR 1/1: tone1-ir" in result.stderr
+    assert "uploading IR 1/1: tone2-ir" in result.stderr
+    # Both install items rendered as one-liners under the single banner.
+    assert "  install 1/2: Tone 1" in result.stderr
+    assert "  install 2/2: Tone 2" in result.stderr
+
