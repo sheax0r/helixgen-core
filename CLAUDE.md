@@ -453,7 +453,8 @@ The label resolves to a guitar profile by slug / name / short_name
 
 Profiles are seeded from `preferences.instruments` by `helixgen library
 migrate` (which then removes the deprecated `instruments` / `preset_output_dir`
-prefs keys). Create/edit them via the `setup` skill.
+prefs keys). Scaffold a new one with `helixgen library add-guitar` (which
+also auto-commits it); create/edit the details via the `setup` skill.
 
 ## The `helixgen library` verb group
 
@@ -494,6 +495,12 @@ same posture as tone auto-registration).
   profile (case-insensitive match; skipped when that guitar has no profile)
   and IR tags outside the controlled vocabulary. `--json` emits
   `{"problems": [...], "warnings": [...]}`.
+- `helixgen library add-guitar <name> [--short-name SHORT] [--type
+  guitar|bass]` — scaffold a new guitar profile JSON (identity fields set,
+  everything else null/empty for the setup skill or a hand edit to enrich)
+  and auto-commit it — the core write path for new profiles, so a
+  skill-authored profile doesn't wait for core's next library write to get
+  committed. Refuses an existing slug.
 - `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]
   [--guitar] [--keep-source]` — bring an external `.hsp` into the library
   under the naming schema (moves by default; `--keep-source` copies), folding

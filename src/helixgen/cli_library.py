@@ -274,10 +274,11 @@ def library() -> None:
     Subcommands:
 
     \b
-      list      enumerate tones, guitar profiles, and IRs (all populated)
-      show      one tone's metadata, human summary or raw --json
-      doc       set a tone's description_md, or one variant's notes_md
-      validate  shape + cross-link checks across every tone's metadata
+      list        enumerate tones, guitar profiles, and IRs (all populated)
+      show        one tone's metadata, human summary or raw --json
+      doc         set a tone's description_md, or one variant's notes_md
+      validate    shape + cross-link checks across every tone's metadata
+      add-guitar  scaffold + commit a new guitar profile JSON
 
     Every tone lives at ``library/tones/<logical-slug>.json`` and can be
     addressed by its logical slug, any variant's ``preset_name``, or the
@@ -974,6 +975,57 @@ def ir_backfill_cmd(as_json: bool) -> None:
         f"{len(result['errors'])} error(s).")
     for e in result["errors"]:
         click.echo(f"  error {e.get('hash')}: {e.get('error')}", err=True)
+
+
+# ---------------------------------------------------------------------------
+# add-guitar (#79j -- a core write path for new guitar profiles)
+# ---------------------------------------------------------------------------
+
+
+@library.command(name="add-guitar")
+@click.argument("name")
+@click.option("--short-name", "short_name", default=None, metavar="SHORT",
+              help="Display short name used in preset names/slugs "
+                   "(default: NAME).")
+@click.option("--type", "type_", type=click.Choice(["guitar", "bass"]),
+              default="guitar", show_default=True,
+              help="Instrument type.")
+def add_guitar_cmd(name: str, short_name: str | None, type_: str) -> None:
+    """Scaffold a new guitar profile at ``library/guitars/<slug>.json``.
+
+    Writes a minimal schema-1 profile (name, short_name, type; every other
+    field null/empty for the `setup` skill -- or a hand edit -- to enrich:
+    pickups, construction, character_md, genres, and the control inventory)
+    and auto-commits the home repo like every other library write. This is
+    the core write path for new profiles: a profile JSON written directly by
+    a skill would otherwise only get committed on core's NEXT library write.
+
+    The slug is ``slugify(NAME)``; a profile already at that slug is refused
+    (exit 1) -- edit the existing JSON instead, `library validate` checks it.
+    """
+    slug = naming.slugify(name)
+    if not slug:
+        raise click.ClickException(
+            f"guitar name {name!r} has no slug-able characters (needs "
+            "letters or digits) -- pick a different name.")
+    path = guitars.profile_path(slug)
+    if path.exists():
+        raise click.ClickException(
+            f"a guitar profile already exists at {path} -- edit that JSON "
+            "instead (or pick a different name); `library validate` checks "
+            "the result.")
+
+    profile = guitars.GuitarProfile(
+        name=name, short_name=(short_name or name), type=type_,
+        active=None, pickups=None, construction=None, character_md=None,
+        genres=[], controls=[],
+    )
+    guitars.save_profile(profile)  # atomic write + advisory auto-commit
+    click.echo(f"Wrote {path}")
+    click.echo(f"Slug: {slug}  (short name: {profile.short_name})")
+    click.echo(
+        "Enrich it (pickups, character_md, genres, controls) by editing the "
+        "JSON or via the setup skill; `helixgen library validate` checks it.")
 
 
 # ---------------------------------------------------------------------------

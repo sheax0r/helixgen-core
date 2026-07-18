@@ -807,3 +807,75 @@ def test_library_show_no_note_without_guitar_collision(tmp_home, hsp_library, tm
     res = CliRunner().invoke(cli, ["library", "show", "warm-jazz-clean"])
     assert res.exit_code == 0, res.output
     assert "also matches" not in res.stderr
+
+
+# ---------------------------------------------------------------------------
+# 79j: library add-guitar
+# ---------------------------------------------------------------------------
+
+
+def test_add_guitar_scaffolds_full_schema(tmp_home):
+    res = CliRunner().invoke(
+        cli, ["library", "add-guitar", "Gibson Les Paul Junior",
+              "--short-name", "Les Paul Jr"])
+    assert res.exit_code == 0, res.output
+    path = guitars.profile_path("gibson-les-paul-junior")
+    assert path.exists()
+    data = json.loads(path.read_text())
+    assert data == {
+        "schema": 1,
+        "name": "Gibson Les Paul Junior",
+        "short_name": "Les Paul Jr",
+        "type": "guitar",
+        "active": None,
+        "pickups": None,
+        "construction": None,
+        "character_md": None,
+        "genres": [],
+        "controls": [],
+    }
+    assert str(path) in res.output
+
+
+def test_add_guitar_defaults_short_name_and_type(tmp_home):
+    res = CliRunner().invoke(cli, ["library", "add-guitar", "P Bass",
+                                   "--type", "bass"])
+    assert res.exit_code == 0, res.output
+    data = json.loads(guitars.profile_path("p-bass").read_text())
+    assert data["short_name"] == "P Bass"
+    assert data["type"] == "bass"
+
+
+def test_add_guitar_refuses_existing_slug(tmp_home):
+    r1 = CliRunner().invoke(cli, ["library", "add-guitar", "Jazzmaster"])
+    assert r1.exit_code == 0, r1.output
+    r2 = CliRunner().invoke(cli, ["library", "add-guitar", "Jazzmaster"])
+    assert r2.exit_code != 0
+    assert "already exists" in (r2.output + r2.stderr)
+
+
+def test_add_guitar_rejects_unsluggable_name(tmp_home):
+    res = CliRunner().invoke(cli, ["library", "add-guitar", "--", "---"])
+    assert res.exit_code != 0
+    assert "slug-able" in (res.output + res.stderr)
+
+
+def test_add_guitar_profile_resolves_in_show_and_generate(tmp_home):
+    CliRunner().invoke(cli, ["library", "add-guitar", "Ibanez Prestige",
+                             "--short-name", "Prestige"])
+    res = CliRunner().invoke(cli, ["library", "show", "Prestige"])
+    assert res.exit_code == 0, res.output
+    assert "ibanez-prestige" in res.output
+
+
+def test_add_guitar_auto_commits_home(tmp_home):
+    import shutil as _shutil
+    import subprocess
+    if _shutil.which("git") is None:
+        pytest.skip("git not available on PATH")
+    res = CliRunner().invoke(cli, ["library", "add-guitar", "SG Special"])
+    assert res.exit_code == 0, res.output
+    log = subprocess.run(
+        ["git", "-C", str(tmp_home), "log", "--oneline"],
+        capture_output=True, text=True).stdout
+    assert "guitar profile (sg-special)" in log

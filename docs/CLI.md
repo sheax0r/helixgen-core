@@ -269,6 +269,15 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   with its filename. Exits 1 if any
   problems are found, 0 if clean (warnings never change the code). `--json`
   emits `{"problems": [...], "warnings": [...]}` (both empty when clean).
+- `helixgen library add-guitar <name> [--short-name SHORT] [--type
+  guitar|bass]` — scaffold a new guitar profile at
+  `library/guitars/<slug>.json` (schema 1: name, short_name, type; every
+  other field null/empty for the setup skill — or a hand edit — to enrich)
+  and auto-commit the home repo like every other library write. This is the
+  core write path for new profiles — a profile JSON written directly by a
+  skill would otherwise only get committed on core's next library write. A
+  profile already at `slugify(name)` is refused (exit 1); edit the existing
+  JSON instead (`library validate` checks it).
 - `helixgen library import <file.hsp|dir> [--artist --song | --descriptor]
   [--guitar] [--keep-source]` — import an external `.hsp` (or every `*.hsp`
   in a directory) into the library. By default the source is **moved** into
