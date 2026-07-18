@@ -16,8 +16,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# "*.tmp": the atomic-write temp files (pid-suffixed since #79a/#83c) are
+# removed on success AND on failure, but a hard kill between write and
+# replace can leak one -- it must never get swept into an auto_commit.
 _REQUIRED_LINES = ["devices/", "cache/", "locks/", "tone3000/", "*.bak*",
-                   "*.wav", "*.migrated-*"]
+                   "*.wav", "*.migrated-*", "*.tmp"]
 GITIGNORE = "".join(f"{line}\n" for line in _REQUIRED_LINES)
 
 # Fallback commit identity so `git commit` works even on a machine with no

@@ -411,7 +411,7 @@ def save_tone_meta(meta: ToneMeta) -> ToneMeta:
     try:
         tmp.write_text(json.dumps(_meta_to_dict(meta), indent=2))
         os.replace(tmp, path)
-    except Exception:
+    except BaseException:  # KeyboardInterrupt/SIGTERM must also clean up
         try:
             tmp.unlink()
         except OSError:

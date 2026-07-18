@@ -755,3 +755,53 @@ def test_choose_ir_dest_full_hash_fallback_on_prefix_alias(tmp_home):
     dest, stub = migrate._choose_ir_dest(lib, "pack", src, h)
     assert dest == lib / "pack" / f"cab-{h}.wav"
     assert stub == lib / "pack" / f"cab-{h}.json"
+
+
+def test_heal_refuses_to_adopt_foreign_file_at_destination(tmp_home, monkeypatch):
+    # adversarial-review hardening of the #79e heal: source missing + a file
+    # at the destination slug that does NOT identify as this tone (different
+    # meta.name) must error, never be silently relabeled/adopted.
+    _write_prefs(tmp_home, monkeypatch, [])
+    exports = tmp_home / "exports"
+    exports.mkdir()
+    hsp = exports / "gone.hsp"
+    _write_hsp(hsp, "Vanishing Tone")
+    _register(hsp)
+    plan = migrate.plan_migration()
+
+    hsp.unlink()  # source vanishes out-of-band
+    dest = home.tones_dir() / "vanishing-tone.hsp"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    _write_hsp(dest, "A Completely Different Tone")  # foreign squatter
+    foreign_bytes = dest.read_bytes()
+
+    summary = migrate.run_migration(plan)
+    assert [e["name"] for e in summary["tones"]["errors"]] == ["Vanishing Tone"]
+    assert not summary["tones"]["moved"]
+    assert dest.read_bytes() == foreign_bytes  # untouched
+    assert not tone_meta.meta_path("vanishing-tone").exists()  # no fabricated meta
+
+
+def test_guitars_save_profile_cleans_tmp_on_failure(tmp_home, monkeypatch):
+    # save_profile (add-guitar's writer) gets the same tmp-cleanup guarantee
+    # as save_tone_meta / SetlistManifest.save.
+    import helixgen.guitars as guitars_mod
+
+    p = guitars.GuitarProfile(
+        name="Test Guitar", short_name="TG", type="guitar", active=None,
+        pickups=None, construction=None, character_md=None,
+        genres=[], controls=[])
+    guitars.save_profile(p)
+    path = guitars.profile_path("test-guitar")
+    before = path.read_text()
+
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(guitars_mod.os, "replace", _boom)
+        p.short_name = "Changed"
+        with pytest.raises(OSError):
+            guitars.save_profile(p)
+    assert path.read_text() == before
+    assert list(path.parent.glob("*.tmp")) == []

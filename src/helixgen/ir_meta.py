@@ -293,9 +293,11 @@ def _choose_dest(lib: Path, pack_dir: str, src: Path, irhash: str) -> Path:
     ``migrate._choose_ir_dest``). Two distinct IRs sharing a basename AND the
     8-hex prefix is a ~2^-32 accident (backlog #79f); if even the prefixed
     dest exists with different content, fall back to the FULL irhash in the
-    filename -- unique per content by construction -- so the chosen dest is
-    always either absent or byte-identical to ``src``, never silently
-    aliased."""
+    filename -- unique per content by construction -- so, given a real
+    (non-empty) ``irhash`` as every register path supplies, the chosen dest
+    is always either absent or byte-identical to ``src``, never silently
+    aliased. (A falsy ``irhash`` degrades to the shared ``-ir`` suffix and
+    keeps only the natural-dest guarantee.)"""
     natural = lib / pack_dir / src.name
     if not natural.exists() or _content_matches(natural, src):
         return natural

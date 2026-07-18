@@ -649,7 +649,7 @@ class SetlistManifest:
         try:
             tmp.write_text(json.dumps(self.to_dict(), indent=2))
             os.replace(tmp, self.path)
-        except Exception:
+        except BaseException:  # KeyboardInterrupt/SIGTERM must also clean up
             try:
                 tmp.unlink()
             except OSError:

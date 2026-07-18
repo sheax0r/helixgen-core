@@ -421,6 +421,19 @@ def _is_registered_at(manifest: SetlistManifest, name: str, dest: Path) -> bool:
     return rec is not None and rec.get("path") == str(dest)
 
 
+def _dest_identifies_as(dest: Path, old_name: str, new_name: str) -> bool:
+    """True when the ``.hsp`` at ``dest`` carries this tone's identity --
+    ``meta.name`` equal to the tone's old (pre-rewrite crash window) or new
+    display name. Gates the missing-source self-heal path so an UNRELATED
+    file squatting the destination slug is never silently adopted/relabeled
+    (adversarial-review finding on #79e). Unreadable == not this tone."""
+    try:
+        name = (read_hsp(dest).get("meta") or {}).get("name")
+    except Exception:  # noqa: BLE001 -- unreadable/corrupt: refuse to adopt
+        return False
+    return name in (old_name, new_name)
+
+
 def _heal_placed_tone(e: Dict[str, Any], manifest: SetlistManifest,
                       dest: Path) -> None:
     """Finish the bookkeeping for a tone whose ``.hsp`` already sits at its
@@ -470,12 +483,17 @@ def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
             summary["tones"]["skipped"].append(
                 {"name": old_name, "reason": "already in place"})
             return False
-        if src == dest or not src.exists():
-            # The .hsp already sits at its destination (a prior run moved it)
-            # but the manifest doesn't register it there -- that run died
-            # after the move. SELF-HEAL the bookkeeping instead of erroring
-            # (#79e); a re-run after any post-move failure completes the
-            # migration.
+        if src == dest or (not src.exists()
+                           and _dest_identifies_as(dest, old_name, e["new_name"])):
+            # The .hsp already sits at its destination (a prior run moved it,
+            # or the plan path IS the destination) but the manifest doesn't
+            # register it there -- that run died after the move. SELF-HEAL
+            # the bookkeeping instead of erroring (#79e); a re-run after any
+            # post-move failure completes the migration. When src is merely
+            # MISSING, healing additionally requires the file at dest to
+            # identify as THIS tone (meta.name == the old or new display
+            # name) -- adopting an unrelated file squatting the slug would
+            # silently relabel someone else's tone.
             if not dry_run:
                 _heal_placed_tone(e, manifest, dest)
             summary["tones"]["moved"].append(
@@ -546,8 +564,9 @@ def _choose_ir_dest(lib_irs: Path, pack: str, src: Path, h: str) -> tuple[Path, 
     mapping). Two distinct IRs sharing basename AND 8-hex prefix is a ~2^-32
     accident (backlog #79f); if even the prefixed dest exists with different
     content, fall back to the FULL irhash -- unique per content by
-    construction -- so the chosen dest is always either absent or
-    byte-identical to ``src`` (mirrors ``ir_meta._choose_dest``)."""
+    construction -- so, given a real (non-empty) irhash as every caller
+    supplies, the chosen dest is always either absent or byte-identical to
+    ``src`` (mirrors ``ir_meta._choose_dest``)."""
     natural = lib_irs / pack / src.name
     if not natural.exists() or _ir_content_matches(natural, src):
         return natural, lib_irs / pack / (src.stem + ".json")
