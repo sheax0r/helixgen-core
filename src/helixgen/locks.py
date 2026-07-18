@@ -37,6 +37,7 @@ Pure stdlib; no device/network dependency.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -116,7 +117,23 @@ def locks_root() -> Path:
 
 
 def lock_dir(ip: str) -> Path:
-    return locks_root() / re.sub(r"[^A-Za-z0-9._-]", "_", ip or "default")
+    """Per-device lease directory. The device identity is sanitized into a
+    filesystem-safe name that stays readable for the common case (IPv4 /
+    hostnames pass through unchanged) but is INJECTIVE: distinct identities
+    never share a directory (#72). The naive ``re.sub`` alone is many-to-one
+    — every disallowed char maps to ``_`` and ``_`` is itself allowed, so
+    ``fe80::1`` and ``fe80:_1`` both became ``fe80__1``. Whenever
+    sanitization actually altered the identity we append a short digest of
+    the ORIGINAL string, so any two identities that sanitize to the same
+    base still get distinct directories."""
+    key = ip or "default"
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", key)
+    if safe != key:
+        # some char had to be replaced — disambiguate with a stable digest of
+        # the original so distinct identities can't collide on `safe`.
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+        safe = f"{safe}-{digest}"
+    return locks_root() / safe
 
 
 def lock_path(ip: str, scope: str) -> Path:

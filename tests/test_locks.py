@@ -184,6 +184,32 @@ def test_locks_are_per_device_ip(root):
         pass  # a lease on another device never conflicts
 
 
+def test_distinct_ips_get_distinct_lock_dirs(root):
+    """#72: the IP sanitizer must not collide distinct device identities.
+
+    The old ``re.sub([^A-Za-z0-9._-], "_")`` mapped every disallowed char
+    (``:``, ``%``, brackets, ...) to ``_`` — and ``_`` is itself allowed — so
+    it was many-to-one. Distinct identities that differ only in disallowed
+    characters collapsed onto the same lock directory and wrongly shared
+    advisory locks. Here ``fe80::1`` and the lookalike ``fe80:_1`` both used
+    to sanitize to ``fe80__1``; they must now get distinct lock dirs.
+    """
+    a = locks.lock_dir("fe80::1")
+    b = locks.lock_dir("fe80:_1")
+    assert a != b
+    # and a plain IPv4 (no disallowed chars) is unchanged / readable
+    assert locks.lock_dir("192.0.2.7").name == "192.0.2.7"
+
+
+def test_lock_dir_is_injective_across_disallowed_chars(root):
+    """A spread of identities — including ones colliding under the old rule —
+    must all map to distinct lock directories."""
+    ids = ["fe80::1", "fe80:_1", "fe80::1%en0", "fe80::1%en1",
+           "[fe80::1]", "10.0.0.1", "10:0:0:1", "2001:db8::1"]
+    names = [locks.lock_dir(x).name for x in ids]
+    assert len(set(names)) == len(ids)
+
+
 def test_locks_root_follows_helixgen_home(monkeypatch, tmp_path):
     """$HELIXGEN_LOCKS wins; else the root derives from $HELIXGEN_HOME
     (like every other home subarea); else ~/.helixgen/locks."""
