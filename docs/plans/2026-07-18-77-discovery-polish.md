@@ -31,9 +31,9 @@ change (`--ip ""` rejection); the rest are additive.
 
 ### Task 4: Live-conftest serial tie-break
 
-- [ ] Read `tests/live/` conftest device-selection logic
-- [ ] Write failing test: when multiple discovery records are candidates, selection tie-breaks deterministically by serial (document the ordering in the conftest docstring)
-- [ ] Implement the minimal change
+- [x] Read `tests/live/` conftest device-selection logic
+- [x] Write failing test: when multiple discovery records are candidates, selection tie-breaks deterministically by serial (document the ordering in the conftest docstring)
+- [x] Implement the minimal change
 
 ### Task 5: Reject `--ip ""` (declared behavior change)
 

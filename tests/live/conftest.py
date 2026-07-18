@@ -115,8 +115,14 @@ SRC_DIR = REPO_ROOT / "src"
 def _persisted_device_ip() -> str | None:
     """The #74 resolution chain's record step, replicated stdlib-only (the
     suite must know the IP before helixgen is importable): the most recently
-    discovered ip across ~/.helixgen/devices/*.json ($HELIXGEN_HOME honored),
-    ip_updated_at desc then serial desc — exactly what `resolve_ip()` picks."""
+    discovered ip across ~/.helixgen/devices/*.json ($HELIXGEN_HOME honored).
+
+    Ordering — exactly what ``resolve_ip()`` (via ``devices_with_ips()``)
+    picks: ``ip_updated_at`` desc, then ``serial`` desc as the deterministic
+    tie-break. A record missing an explicit ``serial`` field falls back to its
+    filename stem (``<serial>.json``), matching the CLI, so two same-recency
+    records never resolve to different devices between the suite and the CLI
+    it drives."""
     home = Path(os.environ.get("HELIXGEN_HOME") or (Path.home() / ".helixgen"))
     best: tuple | None = None
     try:
@@ -131,7 +137,7 @@ def _persisted_device_ip() -> str | None:
         if not isinstance(data, dict) or not data.get("ip"):
             continue
         key = (float(data.get("ip_updated_at") or 0.0),
-               str(data.get("serial") or ""))
+               str(data.get("serial") or p.stem))
         if best is None or key > best[0]:
             best = (key, str(data["ip"]))
     return best[1] if best else None
