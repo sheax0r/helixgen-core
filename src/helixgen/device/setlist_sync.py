@@ -26,6 +26,7 @@ destructive whole-``-2``-mirror; its IR-upload helper is copied here.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from helixgen.hsp import read_hsp
@@ -35,6 +36,57 @@ from . import observations as _obs
 from .bridge import UnresolvedModel
 from .client import Container, Cctp, HelixClient, HelixError
 from .manifest import SetlistManifest
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """A single sync progress event handed to the optional ``progress`` callback
+    of :func:`sync_setlists`. Purely advisory — the event stream is the ONLY new
+    observable behavior when a callback is supplied; it never affects the sync's
+    result, ordering, or device I/O.
+
+    Fields:
+
+    * ``phase`` — one of ``"plan"``, ``"install"``, ``"update"``, ``"irs"``,
+      ``"references"``, ``"gc"``, ``"delete"``.
+    * ``label`` — the current item (tone / IR / setlist name), or a summary
+      string on the one-shot ``plan`` event.
+    * ``index`` — 1-based position within the phase (``None`` where N/A, e.g.
+      the ``plan`` event).
+    * ``total`` — total items in the phase, when known.
+    * ``status`` — ``"ok"`` / ``"error"`` / ``"skip"`` / ``None``.
+    * ``detail`` — a human-readable error/skip message when relevant.
+    """
+
+    phase: str
+    label: Optional[str] = None
+    index: Optional[int] = None
+    total: Optional[int] = None
+    status: Optional[str] = None
+    detail: Optional[str] = None
+
+
+def _make_emitter(progress: Optional[Callable[[ProgressEvent], None]]):
+    """Build a guarded event emitter. Returns a callable that no-ops when
+    ``progress`` is None (zero overhead — no events, byte-for-byte-unchanged
+    sync). Otherwise every callback invocation is wrapped so a raising callback
+    NEVER aborts the sync: the first failure warns once to stderr, all further
+    callback errors are swallowed silently."""
+    warned = {"done": False}
+
+    def emit(ev: ProgressEvent) -> None:
+        if progress is None:
+            return
+        try:
+            progress(ev)
+        except Exception as e:  # noqa: BLE001 — advisory; never abort a sync
+            if not warned["done"]:
+                warned["done"] = True
+                import sys
+                print(f"warning: sync progress callback raised ({e!r}); "
+                      f"continuing without progress", file=sys.stderr)
+
+    return emit
 
 
 def _device_serial(client, ip: str) -> str:
@@ -202,6 +254,7 @@ def sync_setlists(
     gc: bool = False,
     exclude_irs: bool = False,
     repush: bool = False,
+    progress: Optional[Callable[[ProgressEvent], None]] = None,
 ) -> Dict[str, Any]:
     """Sync one or more manifest setlists onto the device (pool-first, reference
     rebuild, optional GC).
@@ -240,9 +293,18 @@ def sync_setlists(
     ``ok`` is ``not errors``. Per-tone install/update/IR failures append to
     ``errors`` without aborting the run; an unresolvable setlist name is a clear
     error that skips only that setlist.
+
+    ``progress`` is an optional advisory callback invoked with a
+    :class:`ProgressEvent` at each phase/item of the sync (plan, install,
+    update, irs, references, delete, gc). It is purely observational — when
+    ``None`` (the default) behavior is byte-for-byte unchanged and no events
+    are produced; a callback that raises never aborts the sync (it warns once
+    to stderr and is thereafter ignored). It does not alter the result dict,
+    ordering, or any device I/O.
     """
     all_run = setlists is None
     do_gc = gc and all_run
+    emit = _make_emitter(progress)
 
     result: Dict[str, Any] = {
         "ok": True,
@@ -357,6 +419,12 @@ def sync_setlists(
                 force=repush,
             )
             result["pool"]["skipped"] = list(plan["skip"])
+            emit(ProgressEvent(
+                "plan",
+                total=len(plan["install"]) + len(plan["update"]),
+                label=(f"{len(plan['install'])} install, "
+                       f"{len(plan['update'])} update, "
+                       f"{len(plan['skip'])} skip")))
 
             def _author(name: str):
                 """Read the tone, upload its IRs, return its stored-content blob."""
@@ -382,32 +450,58 @@ def sync_setlists(
                 if not exclude_irs:
                     missing = sorted(bridge.check_irs(client, body).get("missing", []))
                     if missing:
-                        result["irs"].extend(_upload_missing_irs(ip, missing))
+                        ir_results = _upload_missing_irs(ip, missing)
+                        result["irs"].extend(ir_results)
+                        n_ir = len(ir_results)
+                        for i, r in enumerate(ir_results, 1):
+                            emit(ProgressEvent(
+                                "irs", index=i, total=n_ir,
+                                label=(r.get("name") or r.get("hash")),
+                                status=("ok" if r.get("ok") else "error"),
+                                detail=r.get("note")))
                 return _build_blob(body)
 
-            for name in plan["install"]:
+            n_install = len(plan["install"])
+            for i, name in enumerate(plan["install"], 1):
                 try:
                     blob = _author(name)
                     cid = client.install_into_pool(blob, name)
                     if cid is None:
                         errors.append(f"tone '{name}': install returned no cid")
+                        emit(ProgressEvent("install", label=name, index=i,
+                                           total=n_install, status="error",
+                                           detail="install returned no cid"))
                         continue
                     result["pool"]["installed"].append(name)
+                    emit(ProgressEvent("install", label=name, index=i,
+                                       total=n_install, status="ok"))
                 except (UnresolvedModel, ValueError, HelixError, OSError) as e:
                     errors.append(f"tone '{name}': {e}")
+                    emit(ProgressEvent("install", label=name, index=i,
+                                       total=n_install, status="error",
+                                       detail=str(e)))
 
-            for name in plan["update"]:
+            n_update = len(plan["update"])
+            for i, name in enumerate(plan["update"], 1):
                 existing = pool_by_name.get(name)
                 cid = _cid(existing) if existing else None
                 if cid is None:
                     errors.append(f"tone '{name}': no pool cid to update")
+                    emit(ProgressEvent("update", label=name, index=i,
+                                       total=n_update, status="error",
+                                       detail="no pool cid to update"))
                     continue
                 try:
                     blob = _author(name)
                     client._raw.set_content_data(cid, blob)
                     result["pool"]["updated"].append(name)
+                    emit(ProgressEvent("update", label=name, index=i,
+                                       total=n_update, status="ok"))
                 except (UnresolvedModel, ValueError, HelixError, OSError) as e:
                     errors.append(f"tone '{name}': {e}")
+                    emit(ProgressEvent("update", label=name, index=i,
+                                       total=n_update, status="error",
+                                       detail=str(e)))
 
             # Refresh the pool listing (installs added new cids/posis) and record
             # observed placement + last-synced hash for everything we touched.
@@ -427,7 +521,8 @@ def sync_setlists(
                         synced_hash=manifest.content_hash(name))
 
             # 3. Rebuild each resolved setlist's references (manifest order).
-            for name in resolved:
+            n_ref = len(resolved)
+            for i, name in enumerate(resolved, 1):
                 setlist_cid = setlist_cids[name]
                 desired = plan_references(manifest.tones_in(name))
                 ordered_cids: List[int] = []
@@ -451,6 +546,9 @@ def sync_setlists(
                         f"setlist '{name}': could not verify its current "
                         f"references before rebuilding them ({e}); skipping "
                         f"this setlist's reference rebuild this run — retry")
+                    emit(ProgressEvent("references", label=name, index=i,
+                                       total=n_ref, status="error",
+                                       detail=str(e)))
                     continue
                 result["references"][name] = {
                     "added": list(diff.get("added", [])),
@@ -470,6 +568,8 @@ def sync_setlists(
                             refs[tone_name] = {"ref_cid": _cid(item),
                                                "posi": item.get("posi")}
                 obs.record_setlist(name, setlist_cid, refs)
+                emit(ProgressEvent("references", label=name, index=i,
+                                   total=n_ref, status="ok"))
 
             # 4. Managed-set mirror deletes (design §4): a manifest tone with
             # slot=None that helixgen PLACED on the device in a prior sync
@@ -507,9 +607,12 @@ def sync_setlists(
                         f"skipping this run's deletes — retry")
                     referenced = None
                 if referenced is not None:
-                    for name in delete_candidates:
+                    n_del = len(delete_candidates)
+                    for i, name in enumerate(delete_candidates, 1):
                         if name in referenced:
                             result["pool"]["delete_skipped"].append(name)
+                            emit(ProgressEvent("delete", label=name, index=i,
+                                               total=n_del, status="skip"))
                             continue
                         dev = pool_by_name.get(name)
                         try:
@@ -517,8 +620,14 @@ def sync_setlists(
                                 result["pool"]["deleted"].append(name)
                                 obs.clear_pool(name)
                                 pool_by_name.pop(name, None)
+                                emit(ProgressEvent("delete", label=name,
+                                                   index=i, total=n_del,
+                                                   status="ok"))
                         except HelixError as e:
                             errors.append(f"tone '{name}': {e}")
+                            emit(ProgressEvent("delete", label=name, index=i,
+                                               total=n_del, status="error",
+                                               detail=str(e)))
 
             # 5. Garbage-collect orphan pool presets (only on the --all run).
             if do_gc:
@@ -533,7 +642,10 @@ def sync_setlists(
                     # tone — a slot-only tone is not an orphan.
                     union_all = set(manifest.union_tones(manifest.setlists()))
                     union_all.update(manifest.device_marked_tones())
-                    for name in plan_gc(union_all, list(pool_by_name.keys()), referenced):
+                    gc_candidates = plan_gc(
+                        union_all, list(pool_by_name.keys()), referenced)
+                    n_gc = len(gc_candidates)
+                    for i, name in enumerate(gc_candidates, 1):
                         m = pool_by_name.get(name)
                         if m is None:
                             continue
@@ -551,6 +663,8 @@ def sync_setlists(
                             continue
                         if client._raw.delete(Container.POOL, [_cid(m)]):
                             result["gc"]["deleted"].append(name)
+                            emit(ProgressEvent("gc", label=name, index=i,
+                                               total=n_gc, status="ok"))
 
     manifest.save()
     _obs.save_observations(obs)
