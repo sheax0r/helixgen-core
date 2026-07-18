@@ -116,7 +116,8 @@ _IP_HELP = ("Helix device IP. Resolution: --ip wins, else $HELIXGEN_HELIX_IP, "
             "else the device record persisted by `helixgen device discover`. "
             "There is NO built-in default — with none of the three set, the "
             "verb fails fast (no network stall) telling you to run "
-            "`helixgen device discover`.")
+            "`helixgen device discover`. An empty or whitespace-only --ip is "
+            "rejected (pass a real address, or omit the flag to fall back).")
 
 #: Shared --setlist help for the preset verbs (#68b): the closed
 #: user/factory/throwaway token set is gone — real device setlist names work.
@@ -164,9 +165,19 @@ def _ip_callback(ctx, param, value):
     (--list/--dry-run/local verbs) still parse and run. Anything that
     actually needs the device resolves-or-fails at use time (HelixClient /
     HelixSubscriber constructors, the _locked wrapper, the sftp verbs) —
-    immediately and instructively, never as a connect stall."""
+    immediately and instructively, never as a connect stall.
+
+    An *empty* or whitespace-only --ip (typically an unset shell variable
+    expanded to nothing) is a mistake, not a request to fall back to the
+    record — reject it loudly at parse time rather than resolving silently
+    on to the next step (#77)."""
     from helixgen.device import discovery
 
+    if value is not None and not value.strip():
+        raise click.BadParameter(
+            "--ip may not be empty or whitespace — omit it entirely to use "
+            "$HELIXGEN_HELIX_IP or the `helixgen device discover` record, or "
+            "pass a real address.")
     try:
         return discovery.resolve_ip(value)
     except discovery.IPResolutionError:

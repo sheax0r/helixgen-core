@@ -308,7 +308,8 @@ DISCOVER_SURFACES: list[tuple[list[str], list[str]]] = [
     # the shared --ip help (any verb carrying it) pins the resolution chain
     (["device", "info"],
      ["helixgen device discover", "$HELIXGEN_HELIX_IP",
-      "NO built-in default", "fails fast"]),
+      "NO built-in default", "fails fast",
+      "empty or whitespace-only --ip is rejected"]),
     (["device", "sync"],
      ["helixgen device discover", "NO built-in default"]),
 ]

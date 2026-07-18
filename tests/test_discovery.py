@@ -311,6 +311,20 @@ class TestCli:
         assert r.exit_code == 0, r.output
         assert seen["ip"] == "10.9.9.9"
 
+    def test_empty_ip_rejected(self):
+        """--ip "" is a mistake (usually an unset shell var expanded to
+        nothing), not a request to fall back to the record — reject it
+        loudly with a nonzero exit instead of silently resolving on (#77)."""
+        r = CliRunner().invoke(cli, ["device", "info", "--ip", ""])
+        assert r.exit_code != 0
+        assert "--ip" in r.output
+        assert "empty" in r.output.lower()
+
+    def test_whitespace_ip_rejected(self):
+        r = CliRunner().invoke(cli, ["device", "info", "--ip", "   "])
+        assert r.exit_code != 0
+        assert "--ip" in r.output
+
     def test_discover_persists_and_reports(self, monkeypatch):
         cand = discovery.Candidate(ip="192.168.7.42", hostname="p35x1.local.",
                                    instance="p35x1", via="mdns")

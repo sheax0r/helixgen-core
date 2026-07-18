@@ -37,9 +37,9 @@ change (`--ip ""` rejection); the rest are additive.
 
 ### Task 5: Reject `--ip ""` (declared behavior change)
 
-- [ ] Write failing test(s): `--ip ""` (and whitespace-only) is rejected with a clear message and nonzero exit wherever `--ip` is accepted
-- [ ] Implement the minimal change
-- [ ] Note the behavior change in `docs/CLI.md` and the verb `--help` if wording changes
+- [x] Write failing test(s): `--ip ""` (and whitespace-only) is rejected with a clear message and nonzero exit wherever `--ip` is accepted
+- [x] Implement the minimal change
+- [x] Note the behavior change in `docs/CLI.md` and the verb `--help` if wording changes
 
 ## Validation Commands
 

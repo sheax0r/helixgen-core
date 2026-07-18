@@ -32,7 +32,7 @@ Rules that must stay in front of you:
 ### `helixgen device` — network control of a Helix Stadium
 
 Talks to **Stadium** over LAN directly (OSC-over-ZeroMQ; no editor app; needs `pip install 'helixgen[device]'`). Run **`helixgen device
-discover`** once to find + persist Stadium address; every verb then resolves IP as `--ip` > `$HELIXGEN_HELIX_IP` > persisted record — **no built-in default**; none set, verbs fail fast pointing at `device discover`. `--port` likewise defaults to the record's persisted RPC port (2002 unless discovery saw a nonstandard advertised port, #77) — explicit `--port` wins. `device discover --forget <serial-or-ip>` prunes a stale persisted record (no network; clear error, not traceback, on unknown target or absent records). Discovery used once; sessions stay direct-to-IP. **Stadium-only.**
+discover`** once to find + persist Stadium address; every verb then resolves IP as `--ip` > `$HELIXGEN_HELIX_IP` > persisted record — **no built-in default**; none set, verbs fail fast pointing at `device discover`. Empty/whitespace-only `--ip` is rejected (nonzero exit; omit flag to fall back), #77. `--port` likewise defaults to the record's persisted RPC port (2002 unless discovery saw a nonstandard advertised port, #77) — explicit `--port` wins. `device discover --forget <serial-or-ip>` prunes a stale persisted record (no network; clear error, not traceback, on unknown target or absent records). Discovery used once; sessions stay direct-to-IP. **Stadium-only.**
 
 **Full per-verb reference — every flag + gotcha — lives in [`docs/CLI.md`](docs/CLI.md) "Device commands".** Verb index:
 

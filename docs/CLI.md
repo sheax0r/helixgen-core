@@ -352,7 +352,12 @@ else `$HELIXGEN_HELIX_IP`, else the device record persisted by
 anymore (the old baked-in `192.168.x.x` literal was the maintainer's own
 DHCP lease: a guaranteed-wrong default for anyone else that failed as a
 long connect stall). With none of the three available, verbs **fail fast**
-with an instructive error naming `device discover`. `--port` defaults to
+with an instructive error naming `device discover`. An **empty or
+whitespace-only `--ip`** (typically an unset shell variable that expanded to
+nothing) is **rejected at parse time** with a clear message and a nonzero
+exit — it is a mistake, not a request to fall back to the record; omit the
+flag to fall back, or pass a real address (behavior change, backlog #77).
+`--port` defaults to
 the RPC control port **persisted by `device discover`** for the resolved
 device — 2002 unless discovery saw the device advertise a nonstandard port
 (backlog #77) — so a nonstandard-port device is reached automatically
