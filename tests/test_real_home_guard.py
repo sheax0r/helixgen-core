@@ -9,6 +9,7 @@ plan; here we pin the mechanism so a future refactor can't silently blind it.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from tests.conftest import _snapshot_tree
@@ -42,6 +43,22 @@ def test_snapshot_detects_content_change(tmp_path: Path):
     before = _snapshot_tree(tmp_path)
     # Append so size shifts — robust regardless of mtime granularity.
     f.write_text("a-much-longer-body")
+    after = _snapshot_tree(tmp_path)
+    assert before != after
+    assert before[str(f)] != after[str(f)]
+
+
+def test_snapshot_detects_mtime_change_at_same_size(tmp_path: Path):
+    f = tmp_path / "same-size.json"
+    f.write_text("abc")
+    before = _snapshot_tree(tmp_path)
+    # A same-size in-place edit only shifts mtime_ns, not size — so this pins
+    # the mtime_ns limb of the (size, mtime_ns) tuple. os.utime forces a new
+    # mtime deterministically, so the assertion never depends on filesystem
+    # write-mtime granularity: a refactor that drops mtime_ns from the tuple
+    # would be caught here even though the size-based tests still pass.
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
     after = _snapshot_tree(tmp_path)
     assert before != after
     assert before[str(f)] != after[str(f)]
