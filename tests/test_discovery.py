@@ -592,6 +592,43 @@ class TestFailFastCoverage:
         with pytest.raises(FileNotFoundError):
             observations.forget_device("S1")
 
+    def test_forget_device_permission_error_propagates(self, monkeypatch):
+        """A non-benign OS error on unlink (e.g. PermissionError) must
+        propagate, not be swallowed and reported as "no match" — only the
+        benign FileNotFoundError race (file vanished between listing and
+        unlink) is caught. (PR #30 review, Finding 1.)"""
+        observations.record_device_ip("S1", "10.0.0.3")
+
+        from pathlib import Path as _Path
+        real_unlink = _Path.unlink
+
+        def boom(self, *a, **kw):
+            if self.name == "S1.json":
+                raise PermissionError("read-only filesystem")
+            return real_unlink(self, *a, **kw)
+
+        monkeypatch.setattr(_Path, "unlink", boom)
+        with pytest.raises(PermissionError):
+            observations.forget_device("S1")
+
+    def test_forget_device_swallows_vanished_file_race(self, monkeypatch):
+        """The benign race — the file disappeared between listing and unlink —
+        stays a no-op: FileNotFoundError is caught, that record just isn't
+        reported as removed."""
+        observations.record_device_ip("S1", "10.0.0.3")
+
+        from pathlib import Path as _Path
+        real_unlink = _Path.unlink
+
+        def vanished(self, *a, **kw):
+            if self.name == "S1.json":
+                raise FileNotFoundError(str(self))
+            return real_unlink(self, *a, **kw)
+
+        monkeypatch.setattr(_Path, "unlink", vanished)
+        removed = observations.forget_device("S1")
+        assert removed == []
+
     def test_discover_warns_when_env_overrides_record(self, monkeypatch):
         monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.1.1.1")
         cand = discovery.Candidate(ip="10.0.0.5", via="mdns")

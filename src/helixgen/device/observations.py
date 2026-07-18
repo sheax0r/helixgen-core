@@ -229,7 +229,10 @@ def forget_device(target: str) -> List[Path]:
         if target == serial or (ip is not None and target == str(ip)):
             try:
                 path.unlink()
-            except OSError:
+            except FileNotFoundError:
+                # benign race: the file vanished between listing and unlink.
+                # Any other OSError (PermissionError, EROFS, ...) is real and
+                # must propagate — never report it as "no match".
                 continue
             removed.append(path)
     return removed
