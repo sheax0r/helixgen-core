@@ -68,10 +68,13 @@ class ProgressEvent:
 
 def _make_emitter(progress: Optional[Callable[[ProgressEvent], None]]):
     """Build a guarded event emitter. Returns a callable that no-ops when
-    ``progress`` is None (zero overhead — no events, byte-for-byte-unchanged
-    sync). Otherwise every callback invocation is wrapped so a raising callback
-    NEVER aborts the sync: the first failure warns once to stderr, all further
-    callback errors are swallowed silently."""
+    ``progress`` is None — the callback is never invoked in that case, so the
+    sync is byte-for-byte unchanged. Otherwise every callback invocation is
+    wrapped so a raising callback NEVER aborts the sync: the first failure warns
+    once to stderr, all further callback errors are swallowed silently. The
+    warning print is itself guarded — a broken stderr (closed fd, broken pipe,
+    a test stderr whose ``write`` raises) can never escape the emitter and
+    abort the sync it exists to protect."""
     warned = {"done": False}
 
     def emit(ev: ProgressEvent) -> None:
@@ -82,9 +85,12 @@ def _make_emitter(progress: Optional[Callable[[ProgressEvent], None]]):
         except Exception as e:  # noqa: BLE001 — advisory; never abort a sync
             if not warned["done"]:
                 warned["done"] = True
-                import sys
-                print(f"warning: sync progress callback raised ({e!r}); "
-                      f"continuing without progress", file=sys.stderr)
+                try:
+                    import sys
+                    print(f"warning: sync progress callback raised ({e!r}); "
+                          f"continuing without progress", file=sys.stderr)
+                except Exception:  # noqa: BLE001 — even stderr may be broken
+                    pass
 
     return emit
 
@@ -301,6 +307,13 @@ def sync_setlists(
     are produced; a callback that raises never aborts the sync (it warns once
     to stderr and is thereafter ignored). It does not alter the result dict,
     ordering, or any device I/O.
+
+    NOTE on ``irs`` events: their ``index``/``total`` are scoped to the tone
+    currently being authored — they count only THAT tone's missing IRs, not the
+    whole sync's. Two tones each missing one IR both emit ``index=1, total=1``
+    (there is no sync-wide IR total, which would force reading every ``.hsp``
+    up front). A consumer should therefore render IR progress as a running
+    per-tone count / spinner, not a single fixed-total sync-wide bar.
     """
     all_run = setlists is None
     do_gc = gc and all_run
@@ -526,11 +539,13 @@ def sync_setlists(
                 setlist_cid = setlist_cids[name]
                 desired = plan_references(manifest.tones_in(name))
                 ordered_cids: List[int] = []
+                missing_refs = 0
                 for tone in desired:
                     m = pool_by_name.get(tone)
                     if m is not None and _cid(m) is not None:
                         ordered_cids.append(_cid(m))
                     else:
+                        missing_refs += 1
                         errors.append(
                             f"tone '{tone}' not in pool; cannot reference into "
                             f"setlist '{name}'")
@@ -568,8 +583,18 @@ def sync_setlists(
                             refs[tone_name] = {"ref_cid": _cid(item),
                                                "posi": item.get("posi")}
                 obs.record_setlist(name, setlist_cid, refs)
-                emit(ProgressEvent("references", label=name, index=i,
-                                   total=n_ref, status="ok"))
+                # The reference WRITE (mirror_setlist) succeeded, but if any
+                # desired tone was absent from the pool its reference could not
+                # be created — surface that as an error status on the event (the
+                # errors[]/result semantics above are unchanged).
+                if missing_refs:
+                    emit(ProgressEvent(
+                        "references", label=name, index=i, total=n_ref,
+                        status="error",
+                        detail=f"{missing_refs} tone(s) missing from pool"))
+                else:
+                    emit(ProgressEvent("references", label=name, index=i,
+                                       total=n_ref, status="ok"))
 
             # 4. Managed-set mirror deletes (design §4): a manifest tone with
             # slot=None that helixgen PLACED on the device in a prior sync
@@ -623,6 +648,16 @@ def sync_setlists(
                                 emit(ProgressEvent("delete", label=name,
                                                    index=i, total=n_del,
                                                    status="ok"))
+                            else:
+                                # Delete returned falsy (device non-zero status)
+                                # without raising: the candidate was processed
+                                # but not removed. Progress-only — do NOT touch
+                                # errors[]/result (existing behavior preserved).
+                                emit(ProgressEvent("delete", label=name,
+                                                   index=i, total=n_del,
+                                                   status="error",
+                                                   detail="device rejected "
+                                                          "delete"))
                         except HelixError as e:
                             errors.append(f"tone '{name}': {e}")
                             emit(ProgressEvent("delete", label=name, index=i,
@@ -665,6 +700,13 @@ def sync_setlists(
                             result["gc"]["deleted"].append(name)
                             emit(ProgressEvent("gc", label=name, index=i,
                                                total=n_gc, status="ok"))
+                        else:
+                            # Falsy delete (device non-zero status) without a
+                            # raise — emit an error event. Progress-only; the
+                            # result dict / errors[] are left unchanged.
+                            emit(ProgressEvent("gc", label=name, index=i,
+                                               total=n_gc, status="error",
+                                               detail="device rejected delete"))
 
     manifest.save()
     _obs.save_observations(obs)
