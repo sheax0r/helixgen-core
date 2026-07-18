@@ -29,10 +29,17 @@ in-flight library-foundations work collides (2026-07-18).
 
 ### Task 2: irhash_cache.py honors helixgen_home()
 
-- [ ] Same pattern for `irhash_cache.py`: failing test that `HELIXGEN_HOME`
+- [x] Same pattern for `irhash_cache.py`: failing test that `HELIXGEN_HOME`
       relocates the IR-hash cache file, respecting its existing
       `HELIXGEN_IRHASH_CACHE` override (override wins over HOME).
-- [ ] Route through `helixgen_home()`; make the test pass.
+      (`test_default_path_honors_helixgen_home` +
+      `test_cache_specific_env_wins_over_helixgen_home` in
+      `tests/test_irhash_cache.py`; `HELIXGEN_IRHASH_CACHE` > `HELIXGEN_CACHE`
+      > `$HELIXGEN_HOME` preserved.)
+- [x] Route through `helixgen_home()`; make the test pass.
+      (`default_cache_path()` fallback anchors under `home.helixgen_home()`
+      after the two cache-specific env checks — 20 irhash-cache tests + full
+      suite green.)
 
 ### Task 3: reconcile the docs
 

@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 
+from . import home
 from .ir import compute_stadium_irhash
 
 # Bump this if the hash pipeline in ir.py ever changes: a running tag that
@@ -35,7 +36,11 @@ def default_cache_path() -> Path:
 
     Precedence: `$HELIXGEN_IRHASH_CACHE` (full file path) >
     `$HELIXGEN_CACHE` (a cache *dir*, file is `irhash.json` within) >
-    `~/.helixgen/cache/irhash.json`.
+    `helixgen_home()/"cache"/"irhash.json"`.
+
+    The bare default is anchored under `home.helixgen_home()`, so
+    `$HELIXGEN_HOME` relocates the cache too; the common no-env case is
+    unchanged at `~/.helixgen/cache/irhash.json`.
     """
     full = os.environ.get("HELIXGEN_IRHASH_CACHE")
     if full:
@@ -43,7 +48,7 @@ def default_cache_path() -> Path:
     cache_dir = os.environ.get("HELIXGEN_CACHE")
     if cache_dir:
         return Path(cache_dir) / "irhash.json"
-    return Path.home() / ".helixgen" / "cache" / "irhash.json"
+    return home.helixgen_home() / "cache" / "irhash.json"
 
 
 class IrHashCache:

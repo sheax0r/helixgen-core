@@ -260,4 +260,25 @@ def test_default_path_honors_cache_dir_override(monkeypatch, tmp_path):
 def test_default_path_falls_back_to_home(monkeypatch):
     monkeypatch.delenv("HELIXGEN_IRHASH_CACHE", raising=False)
     monkeypatch.delenv("HELIXGEN_CACHE", raising=False)
+    monkeypatch.delenv("HELIXGEN_HOME", raising=False)
     assert default_cache_path() == Path.home() / ".helixgen" / "cache" / "irhash.json"
+
+
+def test_default_path_honors_helixgen_home(monkeypatch, tmp_path):
+    """$HELIXGEN_HOME relocates the IR-hash cache when no cache-specific env is set."""
+    monkeypatch.delenv("HELIXGEN_IRHASH_CACHE", raising=False)
+    monkeypatch.delenv("HELIXGEN_CACHE", raising=False)
+    monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path))
+    assert default_cache_path() == tmp_path / "cache" / "irhash.json"
+
+
+def test_cache_specific_env_wins_over_helixgen_home(monkeypatch, tmp_path):
+    """HELIXGEN_IRHASH_CACHE (and HELIXGEN_CACHE) win over $HELIXGEN_HOME."""
+    monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HELIXGEN_IRHASH_CACHE", str(tmp_path / "custom.json"))
+    monkeypatch.delenv("HELIXGEN_CACHE", raising=False)
+    assert default_cache_path() == tmp_path / "custom.json"
+
+    monkeypatch.delenv("HELIXGEN_IRHASH_CACHE", raising=False)
+    monkeypatch.setenv("HELIXGEN_CACHE", str(tmp_path / "cachedir"))
+    assert default_cache_path() == tmp_path / "cachedir" / "irhash.json"
