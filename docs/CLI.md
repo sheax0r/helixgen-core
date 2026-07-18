@@ -463,7 +463,12 @@ token?, kind, nonce}` — created atomically; the file is the source of truth
 CLI call is a fresh pid work). **Limitations (by design):** advisory —
 nothing stops a `--no-lock` caller — and machine-local — direct-protocol
 clients on **other hosts** and the **Stadium desktop editor are NOT
-covered**.
+covered**. **Mixed versions:** the locking protocol arrived in **0.22.0** —
+**pre-0.22.0 helixgen clients take no leases and ignore existing ones**, so
+running an older client against the device concurrently with a ≥0.22.0
+client (or another old one) is unsafe: it collides as if no locks existed.
+Upgrade every helixgen on the machine to ≥0.22.0 before relying on locks for
+parallelism.
 
 **Scopes** (granular, so safe parallelism is possible):
 

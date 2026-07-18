@@ -33,7 +33,7 @@ stdlib + click only.
 
 ### Task 3: document the mixed-version caveat
 
-- [ ] Document that pre-0.22.0 clients ignore advisory locks (so running them
+- [x] Document that pre-0.22.0 clients ignore advisory locks (so running them
       in parallel against the device is unsafe) — in the lock section of
       `CLAUDE.md` and/or `docs/CLI.md`, wherever locks are described.
 
