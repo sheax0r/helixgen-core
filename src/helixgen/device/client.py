@@ -1052,21 +1052,6 @@ class HelixClient:
             [("i", path), ("i", _grid_slot(block)), ("i", 0), ("i", param_id),
              ("f", float(value)), ("i", -1)]))
 
-    def set_model(self, model_id: int) -> bool:
-        """Set the selected block's model: /ModelSet [127, 0, 1, 0, modelId].
-
-        Note: /ModelSet does not take our request id; it is a fixed-shape
-        command.  Sent without reqid correlation.
-        """
-        if self.sock is None:
-            raise HelixError("client is not connected; call connect() first")
-        self.sock.send(osc_encode(
-            "/ModelSet",
-            [("i", 127), ("i", 0), ("i", 1), ("i", 0), ("i", model_id)]))
-        # best-effort: drain any immediate reply
-        self.poller.poll(int(self.rpc_timeout * 1000))
-        return True
-
     def _find_by_pos_retry(self, container: int, pos: int,
                            tries: int = 4, delay: float = 0.25
                            ) -> Optional[Dict[str, Any]]:
@@ -1218,11 +1203,17 @@ class HelixClient:
         return cid
 
     def _create_status_error(self, container: int, name: str, pos: int,
-                             reply_cid: Optional[int], code: int) -> "HelixError":
+                             reply_cid: Optional[int], code: int, *,
+                             what: str = "pool",
+                             verify_cmd: str = "helixgen device list",
+                             ) -> "HelixError":
         """Handle the #38 anomaly: /CreateContent returned a non-zero ``code``
-        yet the device may have allocated the pool entry anyway. Clean up the
+        yet the device may have allocated the entry anyway. Clean up the
         orphan stub (verify-before-delete) and return a ``HelixError`` that
         surfaces the code and the allocated cid so callers/users can recover.
+        ``what``/``verify_cmd`` label the container kind for the message
+        (pool preset stubs vs setlist stubs — ``create_setlist`` reuses this
+        cleanup, #66 residual).
 
         Not reproducible after 2026-07-15 (the anomaly cleared once the device
         state settled), so we deliberately do **not** treat ``code != 0`` as
@@ -1231,10 +1222,10 @@ class HelixClient:
         """
         cleaned = self._delete_created_stub(container, name, pos)
         if cleaned is not None:
-            detail = f"cleaned up the orphaned pool stub (cid {cleaned})"
+            detail = f"cleaned up the orphaned {what} stub (cid {cleaned})"
         elif reply_cid is not None:
             detail = (f"the device reported new cid {reply_cid} — verify with "
-                      f"`helixgen device list` and delete it manually if it lingers")
+                      f"`{verify_cmd}` and delete it manually if it lingers")
         else:
             detail = "no cid was reported"
         return HelixError(
@@ -1412,19 +1403,35 @@ class HelixClient:
         Sends ``/CreateContent`` under the setlists root ``-5`` with
         ``ctype=1003`` (live-verified 2026-07-14 — closes backlog #8). Like
         preset creation, the cid in the create reply can be unreliable, so the
-        root is re-listed by name to recover the real cid. ``None`` on failure.
+        root is re-listed by name to recover the real cid. ``None`` when no
+        ``/status`` frame came back at all; a **non-zero status code raises**
+        after self-cleaning any stub the device allocated anyway (#66
+        residual — the #38 /CreateContent anomaly applies here too, and the
+        push/save paths already clean up the same way).
         """
         with self.mutating():
             if pos is None:
                 pos = self._lowest_empty_posi(Container.SETLISTS_ROOT)
             msgpack = self._load_msgpack()
-            created: Optional[int] = None
+            reply_cid: Optional[int] = None
+            code: Optional[int] = None
             for addr, args in self._rpc(
                     "/CreateContent",
                     [("i", int(Container.SETLISTS_ROOT)), ("i", int(pos)),
                      ("i", CTYPE_SETLIST), ("b", msgpack.packb({"name": name}))]):
-                if addr == "/status" and len(args) >= 3 and args[2] == 0:
-                    created = args[1]
+                if addr == "/status" and len(args) >= 3:
+                    reply_cid, code = args[1], args[2]
+            if code is not None and code != 0:
+                # #66 residual: the device has been observed to allocate the
+                # entry despite a non-zero code (#38) — delete the stub we
+                # just created (verify-before-delete, by name+posi under the
+                # setlists root) and fail loudly, matching _push_to_slot /
+                # _save_edit_buffer_to.
+                raise self._create_status_error(
+                    int(Container.SETLISTS_ROOT), name, int(pos), reply_cid,
+                    code, what="setlist",
+                    verify_cmd="helixgen device setlists")
+            created = reply_cid if code == 0 else None
             if created is None:
                 return None
             # The create-reply cid is unreliable (same as preset creation), so

@@ -68,8 +68,9 @@ def test_is_playing_gates_on_pitch_and_input():
 
 
 def test_summarize_happy_path():
+    # 60 samples over 6 s = the nominal 10 Hz stream rate
     samples = [measure.MeasureSample(0.02, 0.5, 40.0)] * 60
-    r = measure.summarize(samples, seconds=10.0)
+    r = measure.summarize(samples, seconds=6.0)
     assert r.ok
     assert r.n_samples == 60 and r.n_playing == 60
     assert r.playing_seconds == pytest.approx(6.0)
@@ -78,6 +79,24 @@ def test_summarize_happy_path():
     assert r.output_db_p75 == pytest.approx(meters.to_db(0.5), abs=1e-6)
     # chain gain: 0.5 / 0.02 = 25x = +27.96 dB
     assert r.gain_db == pytest.approx(27.96, abs=0.01)
+
+
+def test_playing_seconds_uses_observed_rate_not_nominal():
+    # #64d: 120 samples over 6 s = 20 Hz OBSERVED; 60 of them playing means
+    # 3.0 s of playing — the old fixed-10 Hz assumption would report 6.0.
+    playing = [measure.MeasureSample(0.02, 0.5, 40.0)] * 60
+    hum = [measure.MeasureSample(0.03, 0.5, -1.0)] * 60
+    r = measure.summarize(playing + hum, seconds=6.0)
+    assert r.seconds == pytest.approx(6.0)
+    assert r.n_playing == 60
+    assert r.playing_seconds == pytest.approx(3.0)
+
+
+def test_playing_seconds_nominal_fallback_when_window_unknown():
+    # seconds <= 0 (unknown window) falls back to the nominal stream rate
+    samples = [measure.MeasureSample(0.02, 0.5, 40.0)] * 60
+    r = measure.summarize(samples, seconds=0.0)
+    assert r.playing_seconds == pytest.approx(60 / measure.STREAM_HZ)
 
 
 def test_summarize_rejects_too_little_playing():
@@ -108,6 +127,42 @@ def test_summarize_p75_nearest_rank():
                for v in (0.1, 0.2, 0.3, 0.4)]
     r = measure.summarize(samples, seconds=1.0, min_playing=1)
     assert r.output_db_p75 == pytest.approx(meters.to_db(0.3), abs=1e-6)
+
+
+def test_is_playing_loop_gates_on_chain_out_only():
+    # #82: front-of-chain looper — jack silent, no pitch, chain out live
+    looped = measure.MeasureSample(0.0, 0.5, -1.0)
+    stopped = measure.MeasureSample(0.0, 0.0, -1.0)
+    assert measure.is_playing_loop(looped)
+    assert not measure.is_playing_loop(stopped)
+    # the input-jack gate rejects the very same looped sample
+    assert not measure.is_playing(looped)
+
+
+def test_summarize_loop_source_reports_output_db_and_null_gain():
+    looped = [measure.MeasureSample(0.0, 0.5, -1.0)] * 60
+    # default input gate: everything rejected
+    assert not measure.summarize(looped, seconds=6.0).ok
+    # loop gate: full window counts; gain has no input reference -> None
+    r = measure.summarize(looped, seconds=6.0, source="loop")
+    assert r.ok and r.n_playing == 60
+    assert r.source == "loop"
+    assert r.gain_db is None
+    assert r.output_db == pytest.approx(meters.to_db(0.5), abs=1e-6)
+    assert r.input_db == meters.DB_FLOOR   # honest: the jack is silent
+
+
+def test_summarize_loop_source_rejects_stopped_looper():
+    silent = [measure.MeasureSample(0.0, 0.0, -1.0)] * 60
+    r = measure.summarize(silent, seconds=6.0, source="loop")
+    assert not r.ok
+    assert "looper" in r.reason
+    assert r.gain_db is None and r.source == "loop"
+
+
+def test_summarize_rejects_unknown_source():
+    with pytest.raises(ValueError):
+        measure.summarize([], seconds=1.0, source="usb")
 
 
 def test_stale_pitch_stops_gating_samples():

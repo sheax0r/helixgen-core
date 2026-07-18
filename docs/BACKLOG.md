@@ -1316,7 +1316,18 @@ Remaining follow-ups:
   tone-skill refinement loop at creation time when the device is online, and
   later iteration via the device skill; (d) skills integration lives in the
   plugin repo (cross-repo, after #56); (e) #75/#76 below (phase-2
-  residuals).
+  residuals); (f) **looper-source mode, core half SHIPPED 2026-07-17**
+  (mirrors workspace #82): `device measure`/`device normalize --source
+  loop` gate on chain-out level (the input-jack pitch+level gate is
+  structurally silent when a front-of-chain looper replays a recorded
+  signal) and compare raw `output_db` across targets instead of the
+  input-normalized `gain_db` (the looped source is identical by
+  construction; `gain_db` reports null). Offline-tested (fake meter
+  streams). **Deferred to the workspace #82 hardware halves:** the
+  setlist-scope looper-injection harness and live characterization of
+  `LOOP_OUTPUT_FLOOR` against a real looper block on hardware (whether a
+  high-gain chain's idle floor at the chain-out taps clears 1e-4 with the
+  jack silent).
 - **#63 MCP server removal — CLI is the only engine surface** — **✅ SHIPPED
   0.20.0** (mirrored in the coordination-workspace backlog, which is now the
   authoritative one). `mcp_server/` + `tests/mcp_server/` + the `[mcp]` extra

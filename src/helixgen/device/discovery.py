@@ -264,6 +264,19 @@ def local_ipv4() -> Optional[str]:
     return ip
 
 
+def probe_reachable(ip: str, port: int = RPC_PORT, *,
+                    timeout: float = 2.0) -> bool:
+    """One cheap TCP connect probe of ``ip:port`` — the canonical "is the
+    device up?" check (the Stadium ignores ICMP ping; an open RPC port is
+    the reliable reachability signal — the same test :func:`probe_subnet`
+    and the live suite's gate use). Never raises."""
+    try:
+        with socket.create_connection((str(ip), int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def probe_subnet(port: int = RPC_PORT, *, connect_timeout: float = 0.35,
                  max_workers: int = 64,
                  subnet_ip: Optional[str] = None) -> List[str]:
