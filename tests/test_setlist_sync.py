@@ -18,7 +18,7 @@ from helixgen.device import observations as _obs
 from helixgen.device import setlist_sync as ss
 from helixgen.device import transcode as _tc
 from helixgen.device.client import Container, Cctp
-from helixgen.device.manifest import SetlistManifest
+from helixgen.device.manifest import SetlistManifest, _hash_file
 
 # The fake client reports this serial; observed cid/posi live in that device's
 # devices/<serial>.json (design §3), not in the manifest.
@@ -322,6 +322,133 @@ def test_changed_hash_updates_not_reinstalls(tmp_path, monkeypatch):
     # updated via SetContentData on the EXISTING cid, not a fresh install
     assert client.set_content_data_calls == [(5000, b"BLOB")]
     assert _obsfile().pool_hash("Tone A") == "sha256:NEW"
+
+
+# ---------------------------------------------------------------------------
+# #92: plain sync recomputes the on-disk .hsp hash so an in-place edit is
+# detected, instead of trusting the stale register-time content_hash cache.
+# These use REAL .hsp files on disk (only _hash_file reads their bytes; the
+# transcoder + read_hsp stay stubbed via _stub_bridge).
+# ---------------------------------------------------------------------------
+
+def _write_hsp(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return path
+
+
+def _manifest_real(tmp_path, setlists, files):
+    """Manifest whose tone paths point at REAL .hsp files on disk, each tone's
+    ``content_hash`` set to that file's actual hash — the register-time cache a
+    prior `generate`/`register` would have written."""
+    m = SetlistManifest(tmp_path / "setlists.json")
+    for sl, tones in setlists.items():
+        m.create_setlist(sl)
+        m.setlists_map[sl]["synced"] = True
+        for t in tones:
+            p = files[t]
+            m.tones[t] = {"path": str(p), "content_hash": _hash_file(p),
+                          "source": "authored", "slot": "auto"}
+            m.setlists_map[sl]["tones"].append(t)
+    return m
+
+
+def test_sync_detects_inplace_hsp_edit(tmp_path, monkeypatch):
+    # #92: a tone edited in place (set-param / patch / device normalize all
+    # rewrite the .hsp bytes but never refresh manifest.content_hash) must be
+    # detected as CHANGED by a plain sync and re-pushed — not silently skipped.
+    _stub_bridge(monkeypatch)
+    hsp = _write_hsp(tmp_path / "tones" / "Tone A.hsp", b"rpshnosj{original}")
+    m = _manifest_real(tmp_path, {"helixgen": ["Tone A"]}, {"Tone A": hsp})
+    orig_hash = _hash_file(hsp)
+    # a completed prior sync: pool holds Tone A, observed synced_hash == the
+    # hash at that time.
+    _seed_pool("Tone A", 5000, 0, orig_hash)
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Tone A", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    # in-place edit: rewrite the file bytes WITHOUT refreshing the manifest
+    # content_hash cache — exactly what every mutator path does today.
+    hsp.write_bytes(b"rpshnosj{edited output level trim}")
+    assert m.content_hash("Tone A") == orig_hash  # stale cache, unchanged
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["updated"] == ["Tone A"]
+    assert res["pool"]["skipped"] == []
+    # updated via SetContentData on the existing cid, not a fresh install
+    assert client.set_content_data_calls == [(5000, b"BLOB")]
+    # the freshly-computed file hash is recorded so the NEXT run reads clean
+    # (no perpetual re-push)
+    assert _obsfile().pool_hash("Tone A") == _hash_file(hsp)
+
+
+def test_sync_install_records_freshly_computed_hash(tmp_path, monkeypatch):
+    # #92 install path: a tone edited before its FIRST sync (stored cache = H1,
+    # on-disk bytes = H2) must install AND record the recomputed H2 — not the
+    # stale stored H1 — so the very next sync sees clean state and does not
+    # spuriously re-push.
+    _stub_bridge(monkeypatch)
+    hsp = _write_hsp(tmp_path / "tones" / "Tone A.hsp", b"rpshnosj{original}")
+    m = _manifest_real(tmp_path, {"helixgen": ["Tone A"]}, {"Tone A": hsp})
+    stored = m.content_hash("Tone A")
+    # edit in place before ever syncing: stored cache is now stale
+    hsp.write_bytes(b"rpshnosj{edited before first sync}")
+    assert m.content_hash("Tone A") == stored  # stale, unchanged
+    # pool is empty → install path
+    client = FakeClient(setlists={"helixgen": 42}, pool=[])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["installed"] == ["Tone A"]
+    # the RECOMPUTED file hash is recorded, not the stale stored cache
+    recorded = _obsfile().pool_hash("Tone A")
+    assert recorded == _hash_file(hsp)
+    assert recorded != stored
+
+
+def test_sync_falls_back_to_stored_hash_when_hsp_unreadable(tmp_path, monkeypatch):
+    # #92 fallback: an existing-but-unreadable .hsp (e.g. permission denied)
+    # must NOT abort the whole sync with a traceback — plan_pool falls back to
+    # the stored content_hash. Here the stored hash matches the observed sync
+    # hash, so the tone is cleanly skipped rather than crashing the run.
+    _stub_bridge(monkeypatch)
+    hsp = _write_hsp(tmp_path / "tones" / "Tone A.hsp", b"rpshnosj{stable}")
+    m = _manifest_real(tmp_path, {"helixgen": ["Tone A"]}, {"Tone A": hsp})
+    stored = m.content_hash("Tone A")
+    _seed_pool("Tone A", 5000, 0, stored)
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Tone A", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    def _boom(path):
+        raise OSError("permission denied")
+    monkeypatch.setattr(ss, "_hash_file", _boom)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["ok"] is True
+    assert res["pool"]["skipped"] == ["Tone A"]
+    assert res["pool"]["updated"] == []
+    assert client.set_content_data_calls == []
+
+
+def test_sync_skips_byte_identical_hsp(tmp_path, monkeypatch):
+    # boundary: a tone whose .hsp is byte-identical since the last sync is still
+    # skipped — recomputing the hash must not create false-positive re-push
+    # churn.
+    _stub_bridge(monkeypatch)
+    hsp = _write_hsp(tmp_path / "tones" / "Tone A.hsp", b"rpshnosj{stable}")
+    m = _manifest_real(tmp_path, {"helixgen": ["Tone A"]}, {"Tone A": hsp})
+    _seed_pool("Tone A", 5000, 0, _hash_file(hsp))
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Tone A", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["pool"]["updated"] == []
+    assert res["pool"]["skipped"] == ["Tone A"]
+    assert client.set_content_data_calls == []
 
 
 def test_repush_forces_content_update_for_hash_matching_tone(tmp_path, monkeypatch):

@@ -45,7 +45,7 @@ discover`** once to find + persist Stadium address; every verb then resolves IP 
 - **Setlists + sync:** `setlist create|rename|delete|duplicate` (device-side; never orphan pool presets), `setlist
   list|add|remove|create-local` (local manifest membership), `setlist
   import-hss` / `export-hss` (EXPERIMENTAL), `sync <setlist>` / `sync
-  --all [--gc]`. `--repush` forces content re-push of unchanged tones — use once after transcoder upgrade (hash-based change detection can't see transcoder-output change).
+  --all [--gc]`. Plain `sync` recomputes each pool tone's `.hsp` hash at sync time, so an in-place edit is detected and re-pushed even though mutating verbs never refresh the manifest's cached hash (#92). `--repush` forces content re-push of tones whose `.hsp` bytes are **unchanged** since last sync — use once after transcoder upgrade (a byte-hash comparison can't see transcoder-output change for an unchanged `.hsp`).
 - **Tone library / slots:** `helixgen register`, `device add` / `unsync` / `library` / `slots [list|restore|reorder] [--verify]`, `device setlist
   sync-on|sync-off`.
 
