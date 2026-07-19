@@ -105,7 +105,7 @@ Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
   terminates in a `b13` output endpoint whose `gain` (Level) always exists;
   `view` just omits the `output` object when both level and pan are default.
   Normalization / volume readers must gate on intent, not `None`-vs-value:
-  use `PathSpec.has_output_override` (truthy only when a `level` or `pan`
+  use `PathEntry.has_output_override` (truthy only when a `level` or `pan`
   override is present), not a `path.output is None` check.
 
 ## Optional: parallel splits — split TYPE + merge mixer
@@ -193,7 +193,7 @@ ABSOLUTE (like `params` overrides), not deltas:
   As with the per-path field, an absent or `null` snapshot `output` means the
   output block sits at device defaults, NOT that the snapshot lacks an output
   block — the `b13` `gain` always exists. Volume readers gate on
-  `PathSpec.has_output_override` for the base, not an `is None` check.
+  `PathEntry.has_output_override` for the base, not an `is None` check.
 - On the wire this is the output endpoint's dense 8-slot per-snapshot
   overrides arrays — the same encoding `helixgen set-param <p> output level
   --snapshot N` and `device normalize --yes` write, realized on-device by
