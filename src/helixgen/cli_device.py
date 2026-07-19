@@ -2749,9 +2749,11 @@ def _make_sync_progress_renderer(no_progress: bool) -> _SyncProgressRenderer:
               help="Install tones only; do not upload their referenced IRs.")
 @click.option("--repush", is_flag=True, default=False,
               help="Force re-transcode + re-push every in-scope tone's content, "
-                   "even when its recorded .hsp hash already matches the pool "
-                   "(use after a transcoder upgrade to refresh already-synced "
-                   "tones).")
+                   "even when its .hsp bytes are unchanged since the last sync. "
+                   "Plain sync already re-pushes genuinely edited .hsp files "
+                   "(it recomputes the file hash at sync time), so this is only "
+                   "for the unchanged-bytes case — refreshing already-synced "
+                   "tones after a transcoder upgrade.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw engine result dict as JSON.")
 @click.option("--no-progress", is_flag=True, default=False,
@@ -2768,11 +2770,14 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     reconciles the preset pool (install/update/skip), then rebuilds each
     setlist's references to manifest order — never orphaning a still-referenced
     pool preset. --gc (only with --all) prunes pool presets no setlist wants any
-    more. --repush treats every in-scope tone already in the pool as changed —
-    re-pushing its content via the same non-activating SetContentData-on-the-
-    existing-cid path an ordinary hash-triggered update uses — even when its
-    .hsp content hash hasn't changed (a transcoder upgrade can change what an
-    unchanged .hsp produces, which hash-based change detection can't see).
+    more. Plain sync recomputes each pool tone's .hsp file hash at sync time, so
+    an in-place edit to an already-synced tone is detected and re-pushed on the
+    next plain sync. --repush treats every in-scope tone already in the pool as
+    changed — re-pushing its content via the same non-activating SetContentData-
+    on-the-existing-cid path an ordinary hash-triggered update uses — even when
+    its .hsp bytes are unchanged since the last sync. Use it only for that
+    unchanged-bytes case: a transcoder upgrade can change what an unchanged .hsp
+    produces, which a byte-hash comparison can't see.
     A setlist the device doesn't have is reported as a clear error (create
     it first with `helixgen device setlist create <name>`). Sync is a
     managed-set mirror: it never touches untracked device presets and never

@@ -55,10 +55,10 @@ correction as the #92 plugin companion after this core PR lands (backlog #92).
 
 ### Task 3: Correct the `--repush` agent-facing surfaces
 
-- [ ] Update the `sync --repush` help text: after this fix, plain `sync` catches genuine `.hsp` edits. `--repush` remains only for the case where the `.hsp` bytes are **genuinely unchanged** but the transcoder *output* differs (e.g. after a transcoder upgrade). Remove any framing that implies `--repush` is the way to push an edited tone.
-- [ ] Reconcile `docs/CLI.md` (the `sync` / `--repush` entry under "Device commands" / "Setlists + sync") to the corrected rationale.
-- [ ] Reconcile the `CLAUDE.md` sync bullet ("`--repush` forces content re-push … hash-based change detection can't see transcoder-output change") to match — keep it accurate about *what* plain sync now detects.
-- [ ] Verify `tests/test_cli_parity.py` (the `--help` contract) passes with the updated help text.
+- [x] Update the `sync --repush` help text: after this fix, plain `sync` catches genuine `.hsp` edits. `--repush` remains only for the case where the `.hsp` bytes are **genuinely unchanged** but the transcoder *output* differs (e.g. after a transcoder upgrade). Remove any framing that implies `--repush` is the way to push an edited tone. — `--repush` option help + `device_sync` docstring now state plain sync recomputes the file hash at sync time and re-pushes genuine edits; `--repush` scoped to the unchanged-bytes/transcoder case.
+- [x] Reconcile `docs/CLI.md` (the `sync` / `--repush` entry under "Device commands" / "Setlists + sync") to the corrected rationale. — pool-reconcile sentence notes hash recomputed at sync time (#92); `--repush` sentence scoped to unchanged bytes.
+- [x] Reconcile the `CLAUDE.md` sync bullet ("`--repush` forces content re-push … hash-based change detection can't see transcoder-output change") to match — keep it accurate about *what* plain sync now detects. — bullet now states plain sync recomputes the `.hsp` hash at sync time (#92); `--repush` scoped to unchanged bytes.
+- [x] Verify `tests/test_cli_parity.py` (the `--help` contract) passes with the updated help text. — 104 passed; full offline suite 2331 passed, 180 skipped.
 
 ## Validation Commands
 
