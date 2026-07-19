@@ -396,6 +396,65 @@ def _meta_lock_path(ip: str) -> Path:
     return lock_dir(ip) / ".acquire.lock"
 
 
+def _read_meta(path: Path) -> dict | None:
+    """Read the acquisition meta-lock JSON (``{pid, t, nonce}``). Missing /
+    unreadable / corrupt → None. The meta-lock's shape differs from a scope
+    lease (no ``acquired_at``/``ttl_seconds``/``hostname``), so it cannot reuse
+    :func:`read_lease`/:func:`is_stale`."""
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _meta_is_stale(path: Path) -> bool:
+    """A meta-lock is stale ONLY when its mtime is past :data:`_ACQUIRE_META_TTL_S`
+    AND its owner process is dead/unknown. The pid-liveness gate (consistent
+    with how scope leases judge staleness) means a live-but-overrunning holder
+    whose critical section stalled past the TTL is NOT broken on mtime alone
+    (#88 W1). A meta-lock is always same-host (machine-local), so the recorded
+    pid can be probed directly."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False  # gone
+    if time.time() - mtime <= _ACQUIRE_META_TTL_S:
+        return False  # within TTL — a live holder
+    data = _read_meta(path)
+    pid = data.get("pid") if data is not None else None
+    return not (isinstance(pid, int) and _pid_alive(pid))
+
+
+def _break_stale_meta(path: Path) -> None:
+    """Remove a stale acquisition meta-lock the race-free way :func:`_break_stale`
+    removes a stale scope lease: serialized by a break-mutex file and
+    re-verified STILL-stale UNDER that mutex, immediately before the unlink.
+
+    This closes the check-then-unlink TOCTOU (#88 W2): two acquirers can no
+    longer both stat the same stale meta and unlink across a gap — only the
+    breaker holding the mutex unlinks, and it unlinks only the exact stale file
+    it re-observes, so the slower reclaimer can never delete the FRESH meta the
+    faster one recreated. No fresh recreate here — return and let the caller's
+    next poll re-create + re-verify (mirrors ``_break_stale``'s reclaim)."""
+    mpath = path.with_name(path.name + ".break")
+    if not _write_new(mpath, {"pid": os.getpid(), "t": time.time()}):
+        # another breaker is active; if it crashed, clear its old mutex
+        try:
+            if time.time() - mpath.stat().st_mtime > _BREAK_MUTEX_TTL_S:
+                mpath.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return  # let the next poll re-assess
+    try:
+        if _meta_is_stale(path):  # re-verify STILL stale under the mutex
+            path.unlink(missing_ok=True)
+    finally:
+        mpath.unlink(missing_ok=True)
+
+
 def _acquire_meta(path: Path) -> str | None:
     """Atomically grab the acquisition meta-lock; returns the nonce written
     into it when held, else None. The nonce lets the holder verify at release
@@ -404,18 +463,17 @@ def _acquire_meta(path: Path) -> str | None:
     re-creates the meta-lock, the first must not delete that fresh holder's
     file — the same #72 TOCTOU guard the rest of this module uses.
 
-    Mirrors ``_break_stale``'s crashed-mutex reclaim: a meta-lock whose holder
-    died (mtime older than the TTL) is unlinked and None returned so the caller
-    re-assesses on the next poll — never unlink-and-recreate in one breath,
-    which could delete a fresh holder's file."""
+    A genuinely stale meta-lock (mtime past the TTL AND owner-dead, per
+    :func:`_meta_is_stale`) is reclaimed through :func:`_break_stale_meta` —
+    mutex-serialized and re-verified, never a bare stat-then-unlink — and None
+    is returned so the caller re-assesses on the next poll. Never
+    unlink-and-recreate in one breath, which could delete a fresh holder's
+    file (#88 W2)."""
     nonce = uuid.uuid4().hex
     if _write_new(path, {"pid": os.getpid(), "t": time.time(), "nonce": nonce}):
         return nonce
-    try:
-        if time.time() - path.stat().st_mtime > _ACQUIRE_META_TTL_S:
-            path.unlink(missing_ok=True)  # crashed holder — reclaim next pass
-    except OSError:
-        pass
+    if _meta_is_stale(path):
+        _break_stale_meta(path)  # crashed holder — reclaim next pass
     return None
 
 

@@ -44,15 +44,21 @@ Repo rules: TDD, stdlib only.
 
 ### Task 2: serialize + re-verify the reclaim (mirror _break_stale)
 
-- [ ] Make the stale-reclaim in `_acquire_meta` race-free the way `_break_stale`
+- [x] Make the stale-reclaim in `_acquire_meta` race-free the way `_break_stale`
       is: re-read/re-verify the meta is STILL the same stale file (same
       mtime/nonce) immediately before unlink, under the same break-mutex
       serialization `_break_stale` uses — never stat-then-unlink across a gap.
       Only unlink the exact stale file observed; never a fresh recreate.
-- [ ] Add a pid-liveness check so a meta whose owner process is still alive is
+      (New `_break_stale_meta`: mutex-serialized, re-verifies `_meta_is_stale`
+      under the mutex before unlink; `_acquire_meta` returns None so the next
+      poll re-creates + re-verifies. W2 test passes deterministically.)
+- [x] Add a pid-liveness check so a meta whose owner process is still alive is
       NOT broken on mtime alone (only break when TTL-expired AND owner dead /
       unknown), consistent with how scope leases are judged stale.
-- [ ] Keep the fast path cheap; do not add fsync.
+      (New `_meta_is_stale`: stale only when mtime past TTL AND recorded pid
+      dead/unknown via `_pid_alive`. W1 test passes.)
+- [x] Keep the fast path cheap; do not add fsync. (Fast path unchanged — a
+      successful `_write_new` returns immediately; no fsync anywhere.)
 
 ### Task 3: prove it
 
