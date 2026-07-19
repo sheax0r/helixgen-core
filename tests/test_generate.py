@@ -193,6 +193,41 @@ def test_compose_preset_sets_meta_name(
     assert preset["data"]["meta"]["author"] == "mike"
 
 
+def test_compose_preset_hlx_warns_on_real_output_override(
+    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block, capsys
+):
+    """A meaningful output override trips the .hlx Stadium-only warning."""
+    lib = Library(tmp_library)
+    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
+
+    spec = parse_spec({
+        "name": "Override",
+        "paths": [{"output": {"level": -3.0}, "blocks": [{"block": "Brit 2204 Custom"}]}],
+    }, source="t.json")
+
+    compose_preset(spec, lib, source="t.json")
+    assert "Stadium-only" in capsys.readouterr().err
+
+
+def test_compose_preset_hlx_no_warn_on_empty_output(
+    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block, capsys
+):
+    """An absent-or-default output must NOT trip the warning: `output: {}` parses
+    to a non-None OutputSpec with all-None fields, which is not a real override."""
+    lib = Library(tmp_library)
+    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
+
+    spec = parse_spec({
+        "name": "Empty",
+        "paths": [{"output": {}, "blocks": [{"block": "Brit 2204 Custom"}]}],
+    }, source="t.json")
+    assert spec.paths[0].output is not None  # parsed to an empty OutputSpec
+    assert spec.paths[0].has_output_override is False
+
+    compose_preset(spec, lib, source="t.json")
+    assert "Stadium-only" not in capsys.readouterr().err
+
+
 def test_compose_preset_writes_provenance(
     tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
 ):

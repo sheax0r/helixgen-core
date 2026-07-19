@@ -198,7 +198,7 @@ def _compose_preset_hlx(
       slot key so Stadium/Helix renders the pairing correctly.
     """
     if (any(p.input is not None for p in spec.paths)
-            or any(p.output is not None for p in spec.paths)
+            or any(p.has_output_override for p in spec.paths)
             or spec.footswitches or spec.expression or spec.midi
             or spec.commands):
         print(
