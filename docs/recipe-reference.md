@@ -100,6 +100,13 @@ Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
   **destination** (Matrix/XLR/1/4"/Path-2 feed…) is not authored here — it
   round-trips verbatim via `structural` entries; an explicit `output` wins
   over a stale structural copy.
+- **`output` absent or `null` means the output block is at device defaults
+  (0.0 dB / 0.5 pan), NOT that the path has no output block.** Every DSP path
+  terminates in a `b13` output endpoint whose `gain` (Level) always exists;
+  `view` just omits the `output` object when both level and pan are default.
+  Normalization / volume readers must gate on intent, not `None`-vs-value:
+  use `PathSpec.has_output_override` (truthy only when a `level` or `pan`
+  override is present), not a `path.output is None` check.
 
 ## Optional: parallel splits — split TYPE + merge mixer
 
@@ -183,6 +190,10 @@ ABSOLUTE (like `params` overrides), not deltas:
   ranges as the per-path `output` field; each entry needs at least one.
 - Snapshots without an `output` entry stay at the path's base output
   (`paths[*].output`, default 0 dB / 0.5 — the untouched slots densify to it).
+  As with the per-path field, an absent or `null` snapshot `output` means the
+  output block sits at device defaults, NOT that the snapshot lacks an output
+  block — the `b13` `gain` always exists. Volume readers gate on
+  `PathSpec.has_output_override` for the base, not an `is None` check.
 - On the wire this is the output endpoint's dense 8-slot per-snapshot
   overrides arrays — the same encoding `helixgen set-param <p> output level
   --snapshot N` and `device normalize --yes` write, realized on-device by

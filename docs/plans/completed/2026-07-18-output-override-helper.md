@@ -40,17 +40,19 @@ surfaces updated in the same change.
 
 ### Task 2: document the field in `recipe-reference.md`
 
-- [ ] In `docs/recipe-reference.md`, at the "Optional: per-path output
+- [x] In `docs/recipe-reference.md`, at the "Optional: per-path output
       level/pan" section (around line 91) and the snapshot `output` section
       (around line 165), add an explicit note: **`output` absent or `null`
       means the output block is at device defaults (0.0 dB / 0.5 pan), NOT that
       the path has no output block** — every path terminates in a `b13` output
       whose `gain` always exists. Point normalization/volume readers at
       `has_output_override` rather than an `is None` check.
-- [ ] Update any other agent-facing surface the change touches (core
+- [x] Update any other agent-facing surface the change touches (core
       `CLAUDE.md` if it references this field; the helper is internal so there
-      is no verb `--help` to change).
-- [ ] Move this plan to `docs/plans/completed/`.
+      is no verb `--help` to change). CLAUDE.md references `output` only as an
+      index pointer delegating detail to recipe-reference.md — no field-level
+      semantics there, so no change needed (repo division-of-labor rule).
+- [x] Move this plan to `docs/plans/completed/`.
 
 ## Validation Commands
 
