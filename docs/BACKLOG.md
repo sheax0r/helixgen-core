@@ -967,6 +967,14 @@ LED control, focus-view/UI cosmetics.
   (the tone-library model's "slots are just addresses" taken to its conclusion).
   Needs its own brainstorm + design spec before any code.
 
+- **#89 Signal-flow structural verbs for the TUI editor (scope-B, from helixgen-tui #13, 2026-07-18)** — the TUI signal-flow editor (helixgen-tui v0.3.0) ships everything core's runtime `mutate` surface supports today: add/remove/swap on **serial** paths, bypass, output level/pan. The rest of the editor's structural scope is blocked on core because `mutate` has no runtime verb for it — these are **author-time only** at generate. Net-new core work, each its own PR (adversarial review + `--help`/`docs/CLI.md` sync + companion plugin PR where skills describe it), landing core-first before the matching TUI affordance flips on (helixgen-tui #13 wires each as it lands):
+  - **Parallel-aware `add-block` / `remove-block`** — drop the split/join refusal so blocks can be added/removed on parallel lanes.
+  - **`move-block` / reorder** within a lane.
+  - **Split / join insert + delete** (author a parallel split, collapse one).
+  - **Path / lane topology edit** — move a block across paths/lanes; add/remove a path.
+  - **Input-source write** — expose `set_input` (gtr1/gtr2/both) via CLI/`patch`; currently wired only into `generate`. Flips the TUI's read-only input node to editable.
+  - **Flow-index-aware block coordinates** — `extract_blocks_from_hsp` exposes no flow index, so multi-flow / dual-slot targets can't be addressed unambiguously (helixgen-tui #13 multi-flow finding; ref #3's stable-API ask). Prerequisite for the parallel/topology verbs above.
+
 - **#30 Slot semantics for slot-only tones — verify + decide** — **needs user input: front-panel check** (is a reference-less pool preset browsable from the device panel?) **+ the (a)/(b) decision.** — `device add`
   + sync installs a slot-marked tone into the **pool** but references it into no
   setlist, so its slot label is an address in name only: nothing is placed at
