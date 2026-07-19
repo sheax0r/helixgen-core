@@ -304,15 +304,21 @@ def sync_setlists(
     setlists (the ``--all`` case). ``gc`` is honored **only** on the all-setlists
     run — a single/subset sync never garbage-collects the pool.
 
+    A plain sync recomputes each pool tone's ``.hsp`` hash from the current
+    on-disk bytes at sync time (:func:`_effective_content_hash`, #92), so a
+    genuine in-place edit to an already-synced tone is detected and re-pushed
+    on the next plain run — no ``--repush`` needed.
+
     ``repush`` (the ``--repush`` flag, #25 residual) forces every in-scope tone
     already present in the pool into the **update** bucket, even when its
-    recorded ``.hsp`` content hash matches — the content refresh reuses the
-    exact same ``SetContentData``-on-the-existing-cid path a normal hash-driven
-    update uses (see the ``plan["update"]`` loop below), so it stays
+    ``.hsp`` bytes are unchanged since the last sync — the content refresh
+    reuses the exact same ``SetContentData``-on-the-existing-cid path a normal
+    hash-driven update uses (see the ``plan["update"]`` loop below), so it stays
     non-activating; only the *decision* to treat the tone as changed is
-    different. Use this after a transcoder upgrade whose output differs for a
-    ``.hsp`` that itself didn't change, since hash-based change detection can't
-    see that. References/IR-upload/GC behavior are unaffected.
+    different. Use this only for that unchanged-bytes case: a transcoder upgrade
+    whose output differs for a ``.hsp`` that itself didn't change, which a
+    byte-hash comparison can't see. References/IR-upload/GC behavior are
+    unaffected.
 
     ``setlists=None`` (the ``--all`` run) maintains only setlists opted into
     mirroring (``synced=True``); local-only drafts are never touched on the
