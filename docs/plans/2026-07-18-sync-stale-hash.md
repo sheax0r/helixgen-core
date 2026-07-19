@@ -42,9 +42,9 @@ correction as the #92 plugin companion after this core PR lands (backlog #92).
 
 ### Task 1: Failing test — plain `sync` detects an in-place `.hsp` edit
 
-- [ ] Add a failing test in the matching sync test module (find it: `grep -rl "plan_pool\|def test.*sync" tests/`; follow that file's fixture pattern for a scratch `$HELIXGEN_HOME` + manifest). Scenario: register/generate a pool tone into a setlist; run one `plan_pool` (or the sync-planning entry point) and record the post-sync observed `synced_hash` (simulate a completed prior sync); mutate the tone's `.hsp` in place via a real edit path (`set-param` on the `output` pseudo-block level, or a direct `write_hsp` of changed bytes) so the on-disk hash genuinely changes; run planning again and assert the tone is classified **changed/needs-push**, NOT skipped.
-- [ ] Confirm it FAILS against current code (tone is skipped — reproduces #92).
-- [ ] Add a second case pinning the intended behavior boundary: a tone whose `.hsp` is byte-identical since last sync is still correctly **skipped** (no false-positive re-push churn).
+- [x] Add a failing test in the matching sync test module (find it: `grep -rl "plan_pool\|def test.*sync" tests/`; follow that file's fixture pattern for a scratch `$HELIXGEN_HOME` + manifest). Scenario: register/generate a pool tone into a setlist; run one `plan_pool` (or the sync-planning entry point) and record the post-sync observed `synced_hash` (simulate a completed prior sync); mutate the tone's `.hsp` in place via a real edit path (`set-param` on the `output` pseudo-block level, or a direct `write_hsp` of changed bytes) so the on-disk hash genuinely changes; run planning again and assert the tone is classified **changed/needs-push**, NOT skipped. — `test_sync_detects_inplace_hsp_edit` (real .hsp on disk, in-place byte rewrite without refreshing `content_hash`; asserts `updated`, `set_content_data`, fresh hash recorded).
+- [x] Confirm it FAILS against current code (tone is skipped — reproduces #92). — confirmed: `assert [] == ['Tone A']` (tone routed to skip).
+- [x] Add a second case pinning the intended behavior boundary: a tone whose `.hsp` is byte-identical since last sync is still correctly **skipped** (no false-positive re-push churn). — `test_sync_skips_byte_identical_hsp` (passes now and after the fix).
 
 ### Task 2: Recompute the file hash at sync time in `plan_pool`
 
