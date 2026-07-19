@@ -48,10 +48,10 @@ correction as the #92 plugin companion after this core PR lands (backlog #92).
 
 ### Task 2: Recompute the file hash at sync time in `plan_pool`
 
-- [ ] In `plan_pool` (`setlist_sync.py` ~144), for a pool tone that has an on-disk path, compare a **freshly computed** `_hash_file(<tone path>)` against the observed hash instead of the stored `manifest.content_hash(name)`. Reuse the existing `_hash_file` helper (`manifest.py`) — do not reimplement hashing. Resolve the tone path via the existing accessor (`m.tones[name]["path"]` / whatever `plan_pool` already has in scope).
-- [ ] Keep the stored `content_hash` as the **fallback** only for pathless tones (no `.hsp` on disk) so their behavior is unchanged.
-- [ ] Ensure the value recorded as the new `synced_hash` after a push is consistent with what the next sync will recompute (so a synced tone reads clean next run — no perpetual re-push). If `record_pool`/`synced_hash` currently stores the stale manifest hash, record the freshly-computed file hash instead for pathful tones.
-- [ ] Make the failing tests from Task 1 pass; run the full offline suite green.
+- [x] In `plan_pool` (`setlist_sync.py` ~144), for a pool tone that has an on-disk path, compare a **freshly computed** `_hash_file(<tone path>)` against the observed hash instead of the stored `manifest.content_hash(name)`. Reuse the existing `_hash_file` helper (`manifest.py`) — do not reimplement hashing. Resolve the tone path via the existing accessor (`m.tones[name]["path"]` / whatever `plan_pool` already has in scope). — new `_effective_content_hash(manifest, name)` helper; `plan_pool` compares it against `observed_hash_of`.
+- [x] Keep the stored `content_hash` as the **fallback** only for pathless tones (no `.hsp` on disk) so their behavior is unchanged. — falls back when path is null, missing on disk, or unreadable (OSError).
+- [x] Ensure the value recorded as the new `synced_hash` after a push is consistent with what the next sync will recompute (so a synced tone reads clean next run — no perpetual re-push). If `record_pool`/`synced_hash` currently stores the stale manifest hash, record the freshly-computed file hash instead for pathful tones. — the `record_pool` call now records `_effective_content_hash`, same value the next sync recomputes.
+- [x] Make the failing tests from Task 1 pass; run the full offline suite green. — `test_setlist_sync.py` 45/45; full offline suite 2331 passed, 180 skipped.
 
 ### Task 3: Correct the `--repush` agent-facing surfaces
 

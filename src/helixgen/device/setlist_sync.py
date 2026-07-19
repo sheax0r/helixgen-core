@@ -27,6 +27,7 @@ destructive whole-``-2``-mirror; its IR-upload helper is copied here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from helixgen.hsp import read_hsp
@@ -35,7 +36,7 @@ from . import bridge
 from . import observations as _obs
 from .bridge import UnresolvedModel
 from .client import Container, Cctp, HelixClient, HelixError
-from .manifest import SetlistManifest
+from .manifest import SetlistManifest, _hash_file
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,35 @@ def _device_serial(client, ip: str) -> str:
 # pure reconcile logic (no device)
 # ---------------------------------------------------------------------------
 
+def _effective_content_hash(
+        manifest: SetlistManifest, name: str) -> Optional[str]:
+    """The content hash to compare against (and record as) the synced hash at
+    sync time.
+
+    For a tone with an on-disk ``.hsp``, recompute the hash from the CURRENT
+    file bytes (#92): every in-place edit path — ``set-param`` / ``patch`` /
+    ``enable`` / ``disable`` / ``add-block`` / ``remove-block`` / ``swap-model``
+    / ``set-ir`` via ``_run_mutation``, and ``device normalize`` — rewrites the
+    file but never refreshes the register-time ``manifest.content_hash`` cache.
+    Trusting that stale cache made a plain ``sync`` skip genuinely edited tones.
+    Recomputing here closes the whole mutator class at one site, regardless of
+    which verb touched the file.
+
+    Falls back to the stored ``manifest.content_hash`` for a pathless tone (no
+    ``.hsp`` on disk) or when the recorded path is missing / unreadable — those
+    keep their prior behavior."""
+    tone_path = getattr(manifest, "tone_path", None)
+    path = tone_path(name) if callable(tone_path) else None
+    if path:
+        p = Path(path)
+        try:
+            if p.exists():
+                return _hash_file(p)
+        except OSError:  # unreadable file — fall back to the stored hash
+            pass
+    return manifest.content_hash(name)
+
+
 def plan_pool(
     manifest: SetlistManifest,
     tone_names: Sequence[str],
@@ -125,8 +155,13 @@ def plan_pool(
     the pool.
 
     * name not present in ``device_pool_names`` → **install**.
-    * present but its ``manifest.content_hash`` differs from the last-synced hash
-      (``observed_hash_of(name)``) → **update** (re-push content in place).
+    * present but its current content hash differs from the last-synced hash
+      (``observed_hash_of(name)``) → **update** (re-push content in place). The
+      current hash is recomputed from the on-disk ``.hsp`` bytes at sync time
+      (:func:`_effective_content_hash`, #92) — NOT the stale register-time
+      ``manifest.content_hash`` cache, which in-place edits never refresh — so a
+      genuinely edited tone is caught. Pathless tones fall back to the stored
+      hash.
     * present and hashes agree → **skip** (idempotent, fast) — unless
       ``force=True`` (the ``--repush`` mode, #25 residual), which bumps every
       already-present tone into **update** regardless of hash agreement, so a
@@ -141,7 +176,7 @@ def plan_pool(
     for name in tone_names:
         if name not in have:
             install.append(name)
-        elif force or manifest.content_hash(name) != observed_hash_of(name):
+        elif force or _effective_content_hash(manifest, name) != observed_hash_of(name):
             update.append(name)
         else:
             skip.append(name)
@@ -531,7 +566,7 @@ def sync_setlists(
                 if m is not None:
                     obs.record_pool(
                         name, _cid(m), m.get("posi"),
-                        synced_hash=manifest.content_hash(name))
+                        synced_hash=_effective_content_hash(manifest, name))
 
             # 3. Rebuild each resolved setlist's references (manifest order).
             n_ref = len(resolved)
