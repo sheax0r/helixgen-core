@@ -22,18 +22,18 @@ surfaces updated in the same change.
 
 ### Task 1: `has_output_override` helper (TDD)
 
-- [ ] Add a failing test (in `tests/test_spec_flow.py`, matching the existing
+- [x] Add a failing test (in `tests/test_spec_flow.py`, matching the existing
       `PathSpec`/`OutputSpec` test patterns) asserting a truthy
       `has_output_override` that returns **False** when a path's `output` is
       `None` or carries no non-default field, and **True** when `level` or `pan`
       is set. Cover both a default path and one with `output={"level": -3.0}`.
-- [ ] Implement the minimal helper — a `PathSpec.has_output_override` property
+- [x] Implement the minimal helper — a `PathSpec.has_output_override` property
       (or equivalently a small function beside `OutputSpec`) returning whether
       the path carries a meaningful output override
       (`self.output is not None and (self.output.level is not None or
       self.output.pan is not None)`). Keep it a pure accessor; no behavior
       change to parse/lift/mutate.
-- [ ] Update the one obvious internal caller that currently gates on
+- [x] Update the one obvious internal caller that currently gates on
       `path.output is None` for override-presence, if one exists, to use the
       helper (grep `path.output`/`.output is None`). Do NOT expand scope beyond
       swapping the predicate — no normalization behavior changes here.

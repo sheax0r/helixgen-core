@@ -7,6 +7,7 @@ import pytest
 from helixgen.spec import (
     InputSpec,
     OutputSpec,
+    PathEntry,
     SpecError,
     SplitEntry,
     parse_spec,
@@ -158,6 +159,24 @@ class TestOutput:
     def test_output_range_validated(self):
         with pytest.raises(SpecError, match="pan"):
             _parse_path0({"output": {"pan": 2.0}, "blocks": []})
+
+    def test_has_output_override_false_when_default(self):
+        # `output` absent -> at device defaults, NOT a real override.
+        p = _parse_path0({"blocks": []})
+        assert p.output is None
+        assert p.has_output_override is False
+
+    def test_has_output_override_false_when_empty_outputspec(self):
+        # An OutputSpec carrying no non-default field is still not an override.
+        assert PathEntry(blocks=[], output=OutputSpec()).has_output_override is False
+
+    def test_has_output_override_true_when_level_set(self):
+        p = _parse_path0({"output": {"level": -3.0}, "blocks": []})
+        assert p.has_output_override is True
+
+    def test_has_output_override_true_when_pan_set(self):
+        p = _parse_path0({"output": {"pan": 0.4}, "blocks": []})
+        assert p.has_output_override is True
 
 
 # --- split type + params --------------------------------------------------------

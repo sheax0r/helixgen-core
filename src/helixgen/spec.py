@@ -86,6 +86,22 @@ class PathEntry:
     input: "str | InputSpec | None" = None
     output: OutputSpec | None = None
 
+    @property
+    def has_output_override(self) -> bool:
+        """True only when this path carries a *meaningful* output override.
+
+        ``output`` being ``None`` (or an :class:`OutputSpec` with every field
+        left ``None``) means the path's ``b13`` output endpoint is at device
+        defaults (0.0 dB / 0.5 pan) — NOT that the path has no output block.
+        Every DSP path always terminates in a ``b13`` output whose ``gain``
+        (Level) exists. Volume/normalization callers should gate on this
+        helper rather than an ``output is None`` check, which conflates
+        "at defaults" with "absent".
+        """
+        return self.output is not None and (
+            self.output.level is not None or self.output.pan is not None
+        )
+
 
 @dataclass
 class SnapshotBlockRef:
