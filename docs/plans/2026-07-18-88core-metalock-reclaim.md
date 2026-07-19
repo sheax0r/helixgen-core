@@ -62,10 +62,15 @@ Repo rules: TDD, stdlib only.
 
 ### Task 3: prove it
 
-- [ ] W1/W2 tests pass; the existing #88 race test still passes
+- [x] W1/W2 tests pass; the existing #88 race test still passes
       deterministically under `-n auto` (stress it).
-- [ ] Full lock suite + full offline suite green. No deadlock/livelock; the
+      (xfail markers removed; W1/W2 + `test_all_vs_scope_create_race...` pass
+      clean across 5 back-to-back `-n auto` runs — no xpass, no flakes.)
+- [x] Full lock suite + full offline suite green. No deadlock/livelock; the
       non-contended acquire cost is unchanged.
+      (`tests/test_locks.py` 86 passed; full offline suite 2326 passed / 180
+      skipped fixture-absent. Fast path untouched, so non-contended cost is
+      unchanged by construction.)
 
 ## Validation Commands
 

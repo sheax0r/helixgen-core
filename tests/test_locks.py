@@ -467,18 +467,12 @@ def test_acquire_proceeds_once_foreign_meta_lock_released(root):
 
 
 # --------------------------------------------------------------------------
-# meta-lock stale-reclaim hardening (backlog #88 follow-up, Task 1):
-# reproduce the check-then-unlink TOCTOU in `_acquire_meta`'s reclaim. Both
-# tests are xfail(strict=False) until the Task-2 mutex-serialized + pid-checked
-# reclaim lands; Task 3 removes the marker and asserts they PASS.
+# meta-lock stale-reclaim hardening (backlog #88 follow-up): the
+# check-then-unlink TOCTOU in `_acquire_meta`'s reclaim, now fixed by the
+# mutex-serialized + pid-checked `_break_stale_meta`. These two tests
+# reproduce W1/W2 and assert the fix holds (Task 3 removed their xfail markers).
 # --------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="W1: the meta-lock reclaim breaks on mtime alone with no pid-"
-           "liveness check, so a live-but-overrunning holder loses its meta. "
-           "Fixed in Task 2; Task 3 removes this marker and asserts it PASSES.",
-)
 def test_w1_live_or_young_holder_meta_is_not_broken(root):
     """W1: a meta whose owner is still ALIVE (or whose mtime is younger than
     the TTL) must not be reclaimed by a contender. Today the reclaim is a pure
@@ -504,13 +498,6 @@ def test_w1_live_or_young_holder_meta_is_not_broken(root):
     meta.unlink()
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="W2: two acquirers stat the same stale meta then unlink across a "
-           "gap; the slower unlink deletes the FRESH meta the faster one "
-           "recreated, so two processes enter the acquisition critical section "
-           "at once. Fixed in Task 2; Task 3 removes this marker.",
-)
 def test_w2_racing_reclaimers_never_delete_a_fresh_meta(root, monkeypatch):
     """W2 (the check-then-unlink TOCTOU): a stale meta C pre-exists. Two
     acquirers both observe C as stale and both proceed to unlink it; the second
