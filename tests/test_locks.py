@@ -466,6 +466,124 @@ def test_acquire_proceeds_once_foreign_meta_lock_released(root):
     assert not meta.exists()
 
 
+# --------------------------------------------------------------------------
+# meta-lock stale-reclaim hardening (backlog #88 follow-up, Task 1):
+# reproduce the check-then-unlink TOCTOU in `_acquire_meta`'s reclaim. Both
+# tests are xfail(strict=False) until the Task-2 mutex-serialized + pid-checked
+# reclaim lands; Task 3 removes the marker and asserts they PASS.
+# --------------------------------------------------------------------------
+
+@pytest.mark.xfail(
+    strict=False,
+    reason="W1: the meta-lock reclaim breaks on mtime alone with no pid-"
+           "liveness check, so a live-but-overrunning holder loses its meta. "
+           "Fixed in Task 2; Task 3 removes this marker and asserts it PASSES.",
+)
+def test_w1_live_or_young_holder_meta_is_not_broken(root):
+    """W1: a meta whose owner is still ALIVE (or whose mtime is younger than
+    the TTL) must not be reclaimed by a contender. Today the reclaim is a pure
+    mtime check with no pid-liveness gate, so an alive holder whose critical
+    section overran the TTL is wrongly broken."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+
+    # (a) young mtime, dead pid: fresh -> never broken (holds today already).
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0, "nonce": "young"}))
+    assert locks._acquire_meta(meta) is None
+    assert meta.exists()
+    meta.unlink()
+
+    # (b) OLD mtime, ALIVE pid: an overrunning-but-live holder. Broken purely
+    #     on mtime today (no pid-liveness check) -> W1. It must survive.
+    meta.write_text(json.dumps({"pid": os.getpid(), "t": 0, "nonce": "live"}))
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    assert locks._acquire_meta(meta) is None, \
+        "contender must not grab a live holder's meta"
+    assert meta.exists(), "a live holder's meta was broken on mtime alone (W1)"
+    meta.unlink()
+
+
+@pytest.mark.xfail(
+    strict=False,
+    reason="W2: two acquirers stat the same stale meta then unlink across a "
+           "gap; the slower unlink deletes the FRESH meta the faster one "
+           "recreated, so two processes enter the acquisition critical section "
+           "at once. Fixed in Task 2; Task 3 removes this marker.",
+)
+def test_w2_racing_reclaimers_never_delete_a_fresh_meta(root, monkeypatch):
+    """W2 (the check-then-unlink TOCTOU): a stale meta C pre-exists. Two
+    acquirers both observe C as stale and both proceed to unlink it; the second
+    unlink lands AFTER the first acquirer has already recreated a FRESH meta and
+    entered the critical section, deleting that fresh file and letting the
+    second acquirer ALSO enter. The meta's peak holder concurrency must stay 1.
+
+    Deterministic: `Path.unlink` on the meta is gated so the first reclaimer
+    parks between its staleness check and its unlink; a second acquirer then
+    reclaims C and creates a fresh meta, and only then is the parked unlink
+    released. Waits are bounded (a fallback timer unparks the reclaimer) so the
+    fixed, serialized reclaim — where the second acquirer can never reclaim
+    while the first holds the break-mutex — falls through instead of hanging."""
+    import threading
+
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    # A stale meta from a crashed acquirer (mtime past the TTL, foreign pid).
+    meta.write_text(json.dumps({"pid": 2147483646, "t": 0, "nonce": "stale"}))
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+
+    real_unlink = Path.unlink
+    parked = threading.Event()    # a reclaimer reached its unlink of C
+    release = threading.Event()   # let that parked unlink proceed
+    armed = {"on": True}          # only the FIRST meta-file unlink parks
+
+    def gated_unlink(self, *a, **k):
+        if self.name == meta.name and armed["on"]:
+            armed["on"] = False
+            parked.set()
+            release.wait(timeout=2.0)
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", gated_unlink)
+
+    state = {"now": 0, "max": 0}
+    guard = threading.Lock()
+
+    def cs_hold(nonce):
+        with guard:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        release.set()          # someone reached the CS -> safe to unpark
+        time.sleep(0.3)        # widen the critical section for overlap
+        with guard:
+            state["now"] -= 1
+        locks._release_meta(meta, nonce)
+
+    def reclaim_and_hold():
+        n = None
+        while n is None:
+            n = locks._acquire_meta(meta)
+            if n is None:
+                time.sleep(0.002)
+        cs_hold(n)
+
+    # Fallback so the FIXED (serialized) reclaim never deadlocks: if no acquirer
+    # reaches the CS while the reclaimer is parked, unpark it anyway.
+    threading.Timer(1.0, release.set).start()
+
+    b = threading.Thread(target=reclaim_and_hold, daemon=True)
+    b.start()
+    parked.wait(timeout=2.0)   # b observed C stale, parked before unlinking
+    a = threading.Thread(target=reclaim_and_hold, daemon=True)
+    a.start()
+    a.join(timeout=3.0)
+    b.join(timeout=3.0)
+    assert not a.is_alive() and not b.is_alive(), "reclaimer deadlocked"
+    assert state["max"] == 1, \
+        f"two acquirers entered the meta critical section at once (W2): {state}"
+
+
 def test_meta_lock_released_after_acquire(root):
     """The acquisition meta-lock is transient — never left behind after a
     successful acquire, nor after a blocked one (both exit via the `finally`)."""
