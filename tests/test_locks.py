@@ -268,62 +268,373 @@ def test_post_create_verification_backs_off_the_younger_lease(root):
     assert locks._post_create_conflict(IP, "library", ours, None) is None
 
 
-@pytest.mark.xfail(
-    "PYTEST_XDIST_WORKER" in os.environ,
-    reason="residual finding-2 scan->create tiebreak race (backlog #88): a "
-           "younger-acquired lease that creates AND re-scans before an older "
-           "creator's file is visible commits, then the older commits too. "
-           "The barrier here forces the gap; parallel-worker CPU contention "
-           "then widens the create->re-scan window enough to expose it. "
-           "Deterministic and green in serial runs, which still enforce the "
-           "invariant; only xfailed under xdist until the mutex-serialized "
-           "acquisition fix lands.",
-    strict=False,
-)
 def test_all_vs_scope_create_race_yields_exactly_one_winner(root, monkeypatch):
-    """Review finding 2 (MAJOR), end-to-end: two DISTINCT sessions racing
-    `all` vs `library` through the scan->create gap (forced with a barrier
-    inside _write_new) must never both acquire. Distinct live foreign pids
-    + tokens model two separate processes (threads of one pid would own
-    each other's leases by design)."""
+    """Review finding 2 (MAJOR) / backlog #88, end-to-end: two DISTINCT
+    sessions racing `all` vs `library` through the scan->create->rescan gap
+    must never both acquire. Distinct live foreign pids + tokens model two
+    separate processes (threads of one pid would own each other's leases by
+    design).
+
+    Deterministic reproduction. `_post_create_conflict`'s tiebreak is only
+    sound if BOTH creates land before EITHER rescans; this harness forces the
+    double-commit order with two ordering events, independent of the
+    scheduler (see the plan's "exact double-commit interleaving" note):
+
+        1. p-old  (`all`,     OLDER acquired_at) scans -> nothing -> reaches
+           `_write_new`, signals `old_scanned`, then WAITS for the younger
+           session to commit.
+        2. p-young (`library`, YOUNGER acquired_at) scans -> nothing -> waits
+           for `old_scanned`, then creates its lease and RESCANS `all` ->
+           still ABSENT -> commits, then signals `young_committed`.
+        3. p-old wakes, creates `all`, RESCANS -> sees the younger `library`
+           lease -> theirs(younger) < ours(older) == False -> does NOT back
+           off -> ALSO commits.
+
+    A correct (serialized) acquisition makes p-old's SCAN observe the
+    already-committed `library` lease, so it blocks -> exactly one winner. The
+    event waits are BOUNDED so the fixed code (where the loser is serialized
+    out and never reaches `_write_new`) falls through gracefully rather than
+    deadlocking.
+    """
     import threading
 
-    sleeper = subprocess.Popen([sys.executable, "-c",
-                                "import time; time.sleep(60)"])
-    try:
-        barrier = threading.Barrier(2, timeout=10)
-        real_write_new = locks._write_new
+    base = time.time()
+    old_scanned = threading.Event()
+    young_committed = threading.Event()
+    # Force the ages deterministically: `all` older (smaller ts) than
+    # `library`, both comfortably inside their TTL so neither reads as stale.
+    forced_at = {"all.lock": base - 10.0, "library.lock": base}
+    real_write_new = locks._write_new
+    real_pcc = locks._post_create_conflict
 
-        def gated(path, payload):
-            if path.name.endswith(".lock") and ".break" not in path.name:
-                try:
-                    barrier.wait()
-                except threading.BrokenBarrierError:
-                    pass  # second passes / loser retries: no more gating
-            return real_write_new(path, payload)
+    def gated_write_new(path, payload):
+        if path.name in forced_at:
+            payload["acquired_at"] = forced_at[path.name]
+            if path.name == "library.lock":      # the younger session
+                old_scanned.wait(timeout=2.0)    # let p-old scan first
+            else:                                 # the older `all` session
+                old_scanned.set()
+                young_committed.wait(timeout=2.0)  # let p-young commit first
+        return real_write_new(path, payload)
 
-        monkeypatch.setattr(locks, "_write_new", gated)
-        results = {}
+    def gated_pcc(ip, scope, payload, token):
+        result = real_pcc(ip, scope, payload, token)
+        if scope == "library":
+            young_committed.set()  # p-young has finished its create + rescan
+        return result
 
-        def go(name, scope, pid, token):
-            try:
-                ls = locks.acquire(IP, (scope,), label=name, timeout=3,
-                                   pid=pid, token=token)
-                results[name] = ("ACQUIRED", ls)
-            except locks.LockHeld as e:
-                results[name] = ("BLOCKED", str(e))
+    monkeypatch.setattr(locks, "_write_new", gated_write_new)
+    monkeypatch.setattr(locks, "_post_create_conflict", gated_pcc)
+    results = {}
 
-        t1 = threading.Thread(target=go, args=("p-all", "all", 1, "t1"))
-        t2 = threading.Thread(target=go,
-                              args=("p-lib", "library", sleeper.pid, "t2"))
-        t1.start(); t2.start(); t1.join(); t2.join()
-        acquired = [n for n, (st, _) in results.items() if st == "ACQUIRED"]
-        assert len(acquired) == 1, results
-        # ...and on disk there is exactly one live lease
-        live = [r for r in locks.status(IP) if r["state"] == "live"]
-        assert len(live) == 1, live
-    finally:
-        sleeper.kill()
+    def go(name, scope, token):
+        try:
+            ls = locks.acquire(IP, (scope,), label=name, timeout=5,
+                               pid=1, token=token)  # pid 1 = live, never ours
+            results[name] = ("ACQUIRED", ls)
+        except locks.LockHeld as e:
+            results[name] = ("BLOCKED", str(e))
+
+    t1 = threading.Thread(target=go, args=("p-old", "all", "t-old"))
+    t2 = threading.Thread(target=go, args=("p-young", "library", "t-young"))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    acquired = [n for n, (st, _) in results.items() if st == "ACQUIRED"]
+    assert len(acquired) == 1, results
+    # ...and on disk there is exactly one live lease
+    live = [r for r in locks.status(IP) if r["state"] == "live"]
+    assert len(live) == 1, live
+
+
+# --------------------------------------------------------------------------
+# acquisition meta-lock (backlog #88, Task 2): serializes scan->create->verify
+# --------------------------------------------------------------------------
+
+def test_acquire_meta_is_mutually_exclusive(root):
+    """(a) Only one holder at a time: a second grab of a held meta-lock
+    fails; once released it is grabbable again."""
+    meta = locks._meta_lock_path(IP)
+    assert locks._acquire_meta(meta) is not None
+    assert locks._acquire_meta(meta) is None    # already held
+    meta.unlink()
+    assert locks._acquire_meta(meta) is not None  # free again
+    meta.unlink()
+
+
+def test_stale_acquire_meta_is_broken_and_acquisition_proceeds(root):
+    """(b) A crashed acquirer's abandoned meta-lock (mtime past the TTL) is
+    reclaimed — the first pass unlinks it, the next pass grabs it — so it can
+    never wedge other acquirers. Mirrors `_break_stale`'s crashed-mutex
+    reclaim (unlink, re-assess next poll)."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0}))  # crashed pid
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    assert locks._acquire_meta(meta) is None     # reclaims (unlinks) the stale
+    assert not meta.exists()
+    assert locks._acquire_meta(meta) is not None  # next pass proceeds
+    meta.unlink()
+
+
+def test_fresh_acquire_meta_is_not_broken(root):
+    """A meta-lock within its TTL is a LIVE holder — never reclaimed."""
+    meta = locks._meta_lock_path(IP)
+    assert locks._acquire_meta(meta) is not None  # holder grabs it now
+    assert locks._acquire_meta(meta) is None     # contender must not break it
+    assert meta.exists()
+    meta.unlink()
+
+
+def test_break_stale_meta_clears_a_crashed_breakers_mutex(root):
+    """A breaker that crashed mid-reclaim leaves a `.break` mutex behind; a
+    later reclaimer whose OWN `_write_new` of that mutex fails must clear the
+    crashed mutex (mtime past `_BREAK_MUTEX_TTL_S`) so meta reclaim never wedges
+    permanently. Mirrors `_break_stale`'s crashed-mutex handling."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    # A stale meta from a crashed acquirer (mtime past the TTL, dead pid).
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0, "nonce": "stale"}))
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    # A crashed breaker's mutex, itself past the mutex TTL.
+    mpath = meta.with_name(meta.name + ".break")
+    mpath.write_text(json.dumps({"pid": dead_pid(), "t": 0}))
+    mold = time.time() - (locks._BREAK_MUTEX_TTL_S + 5)
+    os.utime(mpath, (mold, mold))
+
+    # First pass: our own mutex create loses to the crashed one; we clear it.
+    locks._break_stale_meta(meta)
+    assert not mpath.exists()  # crashed breaker's mutex cleared
+    assert meta.exists()       # meta not yet reclaimed (we re-assess next pass)
+    # Second pass: mutex is free, so the stale meta is now broken.
+    locks._break_stale_meta(meta)
+    assert not meta.exists()
+
+
+def test_corrupt_meta_within_ttl_is_treated_as_live(root):
+    """A meta-lock whose JSON is unparseable but whose mtime is within the TTL
+    is a live holder — not reclaimed (fail-closed, matching scope leases)."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text("{not valid json")
+    assert locks._meta_is_stale(meta) is False    # young → live
+    assert locks._acquire_meta(meta) is None       # contender must not break it
+    assert meta.exists()
+    meta.unlink()
+
+
+def test_corrupt_meta_past_ttl_is_reclaimed(root):
+    """A corrupt meta-lock past the TTL has no readable pid, so it is judged
+    stale (owner unknown/dead) and reclaimed rather than wedging acquirers."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text("{not valid json")
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    assert locks._meta_is_stale(meta) is True
+    assert locks._acquire_meta(meta) is None       # reclaims (unlinks) the stale
+    assert not meta.exists()
+    assert locks._acquire_meta(meta) is not None   # next pass proceeds
+    meta.unlink()
+
+
+def test_meta_lock_contention_serializes_without_deadlock(root):
+    """(c) Many threads hammering the meta-lock never deadlock and never both
+    hold it — observed peak concurrency stays 1, and every worker returns."""
+    import threading
+
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    state = {"now": 0, "max": 0}
+    guard = threading.Lock()
+    stop = threading.Event()
+
+    def worker():
+        while not stop.is_set():
+            if locks._acquire_meta(meta):
+                with guard:
+                    state["now"] += 1
+                    state["max"] = max(state["max"], state["now"])
+                time.sleep(0.001)  # widen the critical section
+                with guard:
+                    state["now"] -= 1
+                meta.unlink(missing_ok=True)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    time.sleep(1.0)
+    stop.set()
+    for t in threads:
+        t.join(timeout=5)
+        assert not t.is_alive(), "worker deadlocked on the meta-lock"
+    assert state["max"] == 1, state  # never two holders at once
+
+
+def test_release_meta_only_unlinks_its_own_nonce(root):
+    """A holder whose critical section overran the TTL must not delete a fresh
+    reclaimer's meta-lock: `_release_meta` unlinks only when the nonce still
+    matches (#72 TOCTOU guard). Otherwise a stale holder's `finally` could
+    re-open the #88 double-commit window by deleting a live meta-lock."""
+    meta = locks._meta_lock_path(IP)
+    stale_nonce = locks._acquire_meta(meta)          # holder A grabs it
+    assert stale_nonce is not None
+    # A stalls past the TTL; reclaimer B breaks + re-creates a FRESH meta-lock:
+    meta.unlink()
+    fresh_nonce = locks._acquire_meta(meta)
+    assert fresh_nonce is not None and fresh_nonce != stale_nonce
+    # A resumes and releases with its OLD nonce — must leave B's file alone
+    locks._release_meta(meta, stale_nonce)
+    assert meta.exists(), "release deleted a fresh reclaimer's meta-lock"
+    # B's own release (current nonce) clears it
+    locks._release_meta(meta, fresh_nonce)
+    assert not meta.exists()
+
+
+def test_acquire_blocked_by_foreign_meta_lock_raises_create_race(root):
+    """A persistently-held foreign acquisition meta-lock surfaces as the
+    synthetic 'create race' holder once the timeout lapses (a transient race
+    artifact, not a real foreign lease), and no scope lease is created."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    assert locks._acquire_meta(meta) is not None     # foreign acquirer holds it
+    with pytest.raises(locks.LockHeld) as exc:
+        locks.acquire(IP, ("library",), label="me", timeout=0)
+    assert "create race" in str(exc.value)
+    assert not lease_path(root, "library").exists()
+    meta.unlink()
+
+
+def test_acquire_proceeds_once_foreign_meta_lock_released(root):
+    """Meta contention is transient: once the foreign meta-lock is released the
+    acquirer spins through and succeeds rather than erroring."""
+    import threading
+
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    assert locks._acquire_meta(meta) is not None
+    threading.Timer(0.15, lambda: meta.unlink(missing_ok=True)).start()
+    with locks.acquire(IP, ("library",), label="me", timeout=5):
+        assert lease_path(root, "library").exists()
+    assert not meta.exists()
+
+
+# --------------------------------------------------------------------------
+# meta-lock stale-reclaim hardening (backlog #88 follow-up): the
+# check-then-unlink TOCTOU in `_acquire_meta`'s reclaim, now fixed by the
+# mutex-serialized + pid-checked `_break_stale_meta`. These two tests
+# reproduce W1/W2 and assert the fix holds (Task 3 removed their xfail markers).
+# --------------------------------------------------------------------------
+
+def test_w1_live_or_young_holder_meta_is_not_broken(root):
+    """W1: a meta whose owner is still ALIVE (or whose mtime is younger than
+    the TTL) must not be reclaimed by a contender. Today the reclaim is a pure
+    mtime check with no pid-liveness gate, so an alive holder whose critical
+    section overran the TTL is wrongly broken."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+
+    # (a) young mtime, dead pid: fresh -> never broken (holds today already).
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0, "nonce": "young"}))
+    assert locks._acquire_meta(meta) is None
+    assert meta.exists()
+    meta.unlink()
+
+    # (b) OLD mtime, ALIVE pid: an overrunning-but-live holder. Broken purely
+    #     on mtime today (no pid-liveness check) -> W1. It must survive.
+    meta.write_text(json.dumps({"pid": os.getpid(), "t": 0, "nonce": "live"}))
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    assert locks._acquire_meta(meta) is None, \
+        "contender must not grab a live holder's meta"
+    assert meta.exists(), "a live holder's meta was broken on mtime alone (W1)"
+    meta.unlink()
+
+
+def test_w2_racing_reclaimers_never_delete_a_fresh_meta(root, monkeypatch):
+    """W2 (the check-then-unlink TOCTOU): a stale meta C pre-exists. Two
+    acquirers both observe C as stale and both proceed to unlink it; the second
+    unlink lands AFTER the first acquirer has already recreated a FRESH meta and
+    entered the critical section, deleting that fresh file and letting the
+    second acquirer ALSO enter. The meta's peak holder concurrency must stay 1.
+
+    Deterministic: `Path.unlink` on the meta is gated so the first reclaimer
+    parks between its staleness check and its unlink; a second acquirer then
+    reclaims C and creates a fresh meta, and only then is the parked unlink
+    released. Waits are bounded (a fallback timer unparks the reclaimer) so the
+    fixed, serialized reclaim — where the second acquirer can never reclaim
+    while the first holds the break-mutex — falls through instead of hanging."""
+    import threading
+
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    # A stale meta from a crashed acquirer (mtime past the TTL, foreign pid).
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0, "nonce": "stale"}))
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+
+    real_unlink = Path.unlink
+    parked = threading.Event()    # a reclaimer reached its unlink of C
+    release = threading.Event()   # let that parked unlink proceed
+    armed = {"on": True}          # only the FIRST meta-file unlink parks
+
+    def gated_unlink(self, *a, **k):
+        if self.name == meta.name and armed["on"]:
+            armed["on"] = False
+            parked.set()
+            release.wait(timeout=2.0)
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", gated_unlink)
+
+    state = {"now": 0, "max": 0}
+    guard = threading.Lock()
+
+    def cs_hold(nonce):
+        with guard:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        release.set()          # someone reached the CS -> safe to unpark
+        time.sleep(0.3)        # widen the critical section for overlap
+        with guard:
+            state["now"] -= 1
+        locks._release_meta(meta, nonce)
+
+    def reclaim_and_hold():
+        n = None
+        while n is None:
+            n = locks._acquire_meta(meta)
+            if n is None:
+                time.sleep(0.002)
+        cs_hold(n)
+
+    # Fallback so the FIXED (serialized) reclaim never deadlocks: if no acquirer
+    # reaches the CS while the reclaimer is parked, unpark it anyway.
+    threading.Timer(1.0, release.set).start()
+
+    b = threading.Thread(target=reclaim_and_hold, daemon=True)
+    b.start()
+    parked.wait(timeout=2.0)   # b observed C stale, parked before unlinking
+    a = threading.Thread(target=reclaim_and_hold, daemon=True)
+    a.start()
+    a.join(timeout=3.0)
+    b.join(timeout=3.0)
+    assert not a.is_alive() and not b.is_alive(), "reclaimer deadlocked"
+    assert state["max"] == 1, \
+        f"two acquirers entered the meta critical section at once (W2): {state}"
+
+
+def test_meta_lock_released_after_acquire(root):
+    """The acquisition meta-lock is transient — never left behind after a
+    successful acquire, nor after a blocked one (both exit via the `finally`)."""
+    with locks.acquire(IP, ("library",), label="me", timeout=0):
+        pass
+    assert not locks._meta_lock_path(IP).exists()
+
+    write_lease(root, "library", pid=1, ttl=3600, age=1)  # live foreign holder
+    with pytest.raises(locks.LockHeld):
+        locks.acquire(IP, ("library",), label="me", timeout=0)
+    assert not locks._meta_lock_path(IP).exists()
 
 
 def test_two_breakers_do_not_unlink_a_fresh_live_lease(root):

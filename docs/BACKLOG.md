@@ -245,7 +245,14 @@ and had to be redirected. Start here so future work begins from the right model.
   (mixed-version deployments only).
 
 - **#88 Cross-scope acquisition tiebreak: same-version double-hold under a
-  create->re-scan visibility skew** (surfaced 2026-07-18 by the #87 xdist
+  create->re-scan visibility skew** — RESOLVED 2026-07-18 (branch
+  `88core-lock-race`). Fixed by serializing scan->create->verify behind a
+  per-device stale-breakable acquisition meta-lock (`_meta_lock_path` /
+  `_acquire_meta` in `locks.py`, modelled on `_break_stale`); the
+  create->re-scan visibility skew can no longer double-commit. The
+  `test_all_vs_scope_create_race_yields_exactly_one_winner` reproduction is
+  now deterministic (event-ordered) and passes serial + under `-n auto`; the
+  `xfail` marker is removed. Original analysis: (surfaced 2026-07-18 by the #87 xdist
   speedup, which widened the window enough to flake
   `tests/test_locks.py::test_all_vs_scope_create_race_yields_exactly_one_winner`
   under parallel-worker CPU contention). Distinct from #72(e) (mixed-version):
@@ -262,8 +269,7 @@ and had to be redirected. Start here so future work begins from the right model.
   way `_break_stale` already mutex-serializes breaking) rather than a
   pre-stamped-timestamp tiebreak — a correctness-critical lock redesign that
   needs its own spec + adversarial review, deliberately NOT folded into the
-  #87 speed PR. Until then the test is `xfail(strict=False)` ONLY under xdist
-  (`PYTEST_XDIST_WORKER` set); serial runs still enforce the invariant.
+  #87 speed PR.
 - **#75 Loudness phase-2 hardware validation [device-write]** (authoritative
   copy: workspace BACKLOG.md) — everything
   #62 phase 2 shipped is offline-tested against fakes; a test-signal rig

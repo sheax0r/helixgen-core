@@ -83,6 +83,11 @@ SESSION_PID_GRACE_S = 120.0
 #: A crashed breaker's mutex file older than this is cleared.
 _BREAK_MUTEX_TTL_S = 10.0
 
+#: A crashed acquirer's meta-lock older than this is reclaimed. Acquisition
+#: (scan->create->verify) is brief; a meta-lock held longer means the holder
+#: died mid-section, so it is broken and the wait retried.
+_ACQUIRE_META_TTL_S = 10.0
+
 
 class LockError(Exception):
     """Base class for lock-layer errors."""
@@ -382,6 +387,107 @@ def _break_stale(path: Path, lease: dict) -> bool:
         mpath.unlink(missing_ok=True)
 
 
+def _meta_lock_path(ip: str) -> Path:
+    """The per-device acquisition meta-lock. A process holds it across the
+    whole scan->create->verify critical section so two racers taking
+    CONFLICTING scopes (e.g. ``all`` vs ``library``) can't both slip through
+    the create->rescan gap and double-commit (#88). One meta-lock per DEVICE,
+    not per scope, because ``all`` conflicts with every granular scope."""
+    return lock_dir(ip) / ".acquire.lock"
+
+
+def _read_meta(path: Path) -> dict | None:
+    """Read the acquisition meta-lock JSON (``{pid, t, nonce}``). Missing /
+    unreadable / corrupt → None. The meta-lock's shape differs from a scope
+    lease (no ``acquired_at``/``ttl_seconds``/``hostname``), so it cannot reuse
+    :func:`read_lease`/:func:`is_stale`."""
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _meta_is_stale(path: Path) -> bool:
+    """A meta-lock is stale ONLY when its mtime is past :data:`_ACQUIRE_META_TTL_S`
+    AND its owner process is dead/unknown. The pid-liveness gate (consistent
+    with how scope leases judge staleness) means a live-but-overrunning holder
+    whose critical section stalled past the TTL is NOT broken on mtime alone
+    (#88 W1). A meta-lock is always same-host (machine-local), so the recorded
+    pid can be probed directly."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False  # gone
+    if time.time() - mtime <= _ACQUIRE_META_TTL_S:
+        return False  # within TTL — a live holder
+    data = _read_meta(path)
+    pid = data.get("pid") if data is not None else None
+    return not (isinstance(pid, int) and _pid_alive(pid))
+
+
+def _break_stale_meta(path: Path) -> None:
+    """Remove a stale acquisition meta-lock the race-free way :func:`_break_stale`
+    removes a stale scope lease: serialized by a break-mutex file and
+    re-verified STILL-stale UNDER that mutex, immediately before the unlink.
+
+    This closes the check-then-unlink TOCTOU (#88 W2): two acquirers can no
+    longer both stat the same stale meta and unlink across a gap — only the
+    breaker holding the mutex unlinks, and it unlinks only the exact stale file
+    it re-observes, so the slower reclaimer can never delete the FRESH meta the
+    faster one recreated. No fresh recreate here — return and let the caller's
+    next poll re-create + re-verify (mirrors ``_break_stale``'s reclaim)."""
+    mpath = path.with_name(path.name + ".break")
+    if not _write_new(mpath, {"pid": os.getpid(), "t": time.time()}):
+        # another breaker is active; if it crashed, clear its old mutex
+        try:
+            if time.time() - mpath.stat().st_mtime > _BREAK_MUTEX_TTL_S:
+                mpath.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return  # let the next poll re-assess
+    try:
+        if _meta_is_stale(path):  # re-verify STILL stale under the mutex
+            path.unlink(missing_ok=True)
+    finally:
+        mpath.unlink(missing_ok=True)
+
+
+def _acquire_meta(path: Path) -> str | None:
+    """Atomically grab the acquisition meta-lock; returns the nonce written
+    into it when held, else None. The nonce lets the holder verify at release
+    that it still owns the file (:func:`_release_meta`): if a holder stalls
+    past :data:`_ACQUIRE_META_TTL_S` and a second acquirer reclaims and
+    re-creates the meta-lock, the first must not delete that fresh holder's
+    file — the same #72 TOCTOU guard the rest of this module uses.
+
+    A genuinely stale meta-lock (mtime past the TTL AND owner-dead, per
+    :func:`_meta_is_stale`) is reclaimed through :func:`_break_stale_meta` —
+    mutex-serialized and re-verified, never a bare stat-then-unlink — and None
+    is returned so the caller re-assesses on the next poll. Never
+    unlink-and-recreate in one breath, which could delete a fresh holder's
+    file (#88 W2)."""
+    nonce = uuid.uuid4().hex
+    if _write_new(path, {"pid": os.getpid(), "t": time.time(), "nonce": nonce}):
+        return nonce
+    if _meta_is_stale(path):
+        _break_stale_meta(path)  # crashed holder — reclaim next pass
+    return None
+
+
+def _release_meta(path: Path, nonce: str) -> None:
+    """Release the acquisition meta-lock only if we still own it. If our
+    critical section overran the TTL and another acquirer reclaimed and
+    re-created the meta-lock, its nonce differs from ours: leave it alone
+    rather than delete a fresh holder's file (#72 pattern, mirrors
+    :meth:`LeaseSet.release`)."""
+    data = _read_meta(path)
+    if data is not None and data.get("nonce") == nonce:
+        path.unlink(missing_ok=True)
+
+
 def _post_create_conflict(ip: str, scope: str, payload: dict,
                           token: str | None):
     """After atomically creating our ``scope`` lease, re-scan the OTHER
@@ -499,6 +605,7 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
                  deadline: float, budget: float,
                  created: list, passthrough: list) -> None:
     attempt = 0
+    meta = _meta_lock_path(ip)
     while True:
         # 1. Pass through (and renew) a covering LIVE lease we own — unless
         #    it's within RENEW_MARGIN_S of expiry (then re-acquire fresh:
@@ -521,76 +628,94 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
         if covered:
             return
 
-        # 2. Find the blocking lease, clearing stale ones (mutex-serialized)
-        #    and our OWN expired/nearly-expired leases (a stale owned lease
-        #    must be reclaimed here, never spun on — review finding 1).
+        # 2+3 run under the per-device acquisition meta-lock so the whole
+        #     scan -> create -> verify critical section is serialized across
+        #     processes: two racers taking CONFLICTING scopes (`all` vs a
+        #     granular scope) can no longer both slip through the
+        #     create->rescan gap and double-commit (#88). The meta-lock is
+        #     held only for this brief section, never across the step-4 wait.
         blocker = None
-        for cpath in _conflict_paths(ip, scope):
-            lease = read_lease(cpath)
-            if lease is None:
-                continue
-            if owned(lease, token):
-                remaining_ttl = _remaining_ttl(lease)
-                if (cpath == lock_path(ip, scope)
-                        and (is_stale(lease)
-                             or (remaining_ttl is not None
-                                 and remaining_ttl <= RENEW_MARGIN_S))):
-                    try:  # our own expired/expiring TARGET lease: clear it
-                        cpath.unlink()  # and re-create fresh below
-                    except FileNotFoundError:
-                        pass
-                # an owned covering/sibling lease never blocks us (a stale
-                # one is left for its owner or a breaker; never unlinked
-                # from here — it may be a session lease siblings rely on)
-                continue
-            if is_stale(lease):
-                if not _break_stale(cpath, lease):
-                    lease = read_lease(cpath)  # live after all / breaker busy
-                    if lease is not None:
-                        blocker = lease
-                        break
-                continue
-            blocker = lease
-            break
+        meta_contended = False
+        meta_nonce = _acquire_meta(meta)
+        if meta_nonce is not None:
+            try:
+                # 2. Find the blocking lease, clearing stale ones (mutex-
+                #    serialized) and our OWN expired/nearly-expired leases (a
+                #    stale owned lease must be reclaimed here, never spun on —
+                #    review finding 1).
+                for cpath in _conflict_paths(ip, scope):
+                    lease = read_lease(cpath)
+                    if lease is None:
+                        continue
+                    if owned(lease, token):
+                        remaining_ttl = _remaining_ttl(lease)
+                        if (cpath == lock_path(ip, scope)
+                                and (is_stale(lease)
+                                     or (remaining_ttl is not None
+                                         and remaining_ttl <= RENEW_MARGIN_S))):
+                            try:  # our own expired/expiring TARGET lease: clear
+                                cpath.unlink()  # and re-create fresh below
+                            except FileNotFoundError:
+                                pass
+                        # an owned covering/sibling lease never blocks us (a
+                        # stale one is left for its owner or a breaker; never
+                        # unlinked here — a session lease siblings rely on)
+                        continue
+                    if is_stale(lease):
+                        if not _break_stale(cpath, lease):
+                            lease = read_lease(cpath)  # live / breaker busy
+                            if lease is not None:
+                                blocker = lease
+                                break
+                        continue
+                    blocker = lease
+                    break
 
-        # 3. Free? Atomic create, then re-verify the OTHER conflicting
-        #    files (the scan and the create are not one atomic step —
-        #    review finding 2). The older lease wins the tiebreak; the
-        #    younger backs off, so both racers never proceed.
-        if blocker is None:
-            payload = {
-                "pid": os.getpid() if pid is None else int(pid),
-                "hostname": hostname(),
-                "acquired_at": time.time(),
-                "ttl_seconds": ttl,
-                "label": label,
-                "kind": kind,
-                "nonce": uuid.uuid4().hex,
-            }
-            if token:
-                payload["token"] = token
-            path = lock_path(ip, scope)
-            if _write_new(path, payload):
-                loser_of = _post_create_conflict(ip, scope, payload, token)
-                if loser_of is None:
-                    created.append((path, payload["nonce"]))
-                    return
-                # we lost the cross-file tiebreak: back off and wait
-                lease = read_lease(path)
-                if lease is not None and lease.get("nonce") == payload["nonce"]:
-                    try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        pass
-                blocker = loser_of
-            else:
-                # lost the same-file create race — reassess after a beat
-                blocker = read_lease(path)
+                # 3. Free? Atomic create, then re-verify the OTHER conflicting
+                #    files (the scan and the create are not one atomic step —
+                #    review finding 2). The older lease wins the tiebreak; the
+                #    younger backs off, so both racers never proceed.
+                if blocker is None:
+                    payload = {
+                        "pid": os.getpid() if pid is None else int(pid),
+                        "hostname": hostname(),
+                        "acquired_at": time.time(),
+                        "ttl_seconds": ttl,
+                        "label": label,
+                        "kind": kind,
+                        "nonce": uuid.uuid4().hex,
+                    }
+                    if token:
+                        payload["token"] = token
+                    path = lock_path(ip, scope)
+                    if _write_new(path, payload):
+                        loser_of = _post_create_conflict(ip, scope, payload,
+                                                         token)
+                        if loser_of is None:
+                            created.append((path, payload["nonce"]))
+                            return
+                        # we lost the cross-file tiebreak: back off and wait
+                        lease = read_lease(path)
+                        if (lease is not None
+                                and lease.get("nonce") == payload["nonce"]):
+                            try:
+                                path.unlink()
+                            except FileNotFoundError:
+                                pass
+                        blocker = loser_of
+                    else:
+                        # lost the same-file create race — reassess after a beat
+                        blocker = read_lease(path)
+            finally:
+                _release_meta(meta, meta_nonce)
+        else:
+            meta_contended = True  # another acquirer holds it — retry soon
 
         # 4. Blocked (or racing): wait with backoff, or fail fast.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            if blocker is None or owned(blocker, token) or is_stale(blocker):
+            if (meta_contended or blocker is None
+                    or owned(blocker, token) or is_stale(blocker)):
                 # a race artifact, not a live foreign holder — one more
                 # immediate pass costs nothing and avoids a bogus error
                 attempt += 1
