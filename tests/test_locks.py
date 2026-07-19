@@ -367,7 +367,7 @@ def test_stale_acquire_meta_is_broken_and_acquisition_proceeds(root):
     reclaim (unlink, re-assess next poll)."""
     meta = locks._meta_lock_path(IP)
     meta.parent.mkdir(parents=True, exist_ok=True)
-    meta.write_text('{"pid": 2147483646, "t": 0}')  # some other, crashed pid
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0}))  # crashed pid
     old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
     os.utime(meta, (old, old))
     assert locks._acquire_meta(meta) is None     # reclaims (unlinks) the stale
@@ -382,6 +382,59 @@ def test_fresh_acquire_meta_is_not_broken(root):
     assert locks._acquire_meta(meta) is not None  # holder grabs it now
     assert locks._acquire_meta(meta) is None     # contender must not break it
     assert meta.exists()
+    meta.unlink()
+
+
+def test_break_stale_meta_clears_a_crashed_breakers_mutex(root):
+    """A breaker that crashed mid-reclaim leaves a `.break` mutex behind; a
+    later reclaimer whose OWN `_write_new` of that mutex fails must clear the
+    crashed mutex (mtime past `_BREAK_MUTEX_TTL_S`) so meta reclaim never wedges
+    permanently. Mirrors `_break_stale`'s crashed-mutex handling."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    # A stale meta from a crashed acquirer (mtime past the TTL, dead pid).
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0, "nonce": "stale"}))
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    # A crashed breaker's mutex, itself past the mutex TTL.
+    mpath = meta.with_name(meta.name + ".break")
+    mpath.write_text(json.dumps({"pid": dead_pid(), "t": 0}))
+    mold = time.time() - (locks._BREAK_MUTEX_TTL_S + 5)
+    os.utime(mpath, (mold, mold))
+
+    # First pass: our own mutex create loses to the crashed one; we clear it.
+    locks._break_stale_meta(meta)
+    assert not mpath.exists()  # crashed breaker's mutex cleared
+    assert meta.exists()       # meta not yet reclaimed (we re-assess next pass)
+    # Second pass: mutex is free, so the stale meta is now broken.
+    locks._break_stale_meta(meta)
+    assert not meta.exists()
+
+
+def test_corrupt_meta_within_ttl_is_treated_as_live(root):
+    """A meta-lock whose JSON is unparseable but whose mtime is within the TTL
+    is a live holder — not reclaimed (fail-closed, matching scope leases)."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text("{not valid json")
+    assert locks._meta_is_stale(meta) is False    # young → live
+    assert locks._acquire_meta(meta) is None       # contender must not break it
+    assert meta.exists()
+    meta.unlink()
+
+
+def test_corrupt_meta_past_ttl_is_reclaimed(root):
+    """A corrupt meta-lock past the TTL has no readable pid, so it is judged
+    stale (owner unknown/dead) and reclaimed rather than wedging acquirers."""
+    meta = locks._meta_lock_path(IP)
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    meta.write_text("{not valid json")
+    old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
+    os.utime(meta, (old, old))
+    assert locks._meta_is_stale(meta) is True
+    assert locks._acquire_meta(meta) is None       # reclaims (unlinks) the stale
+    assert not meta.exists()
+    assert locks._acquire_meta(meta) is not None   # next pass proceeds
     meta.unlink()
 
 
@@ -516,7 +569,7 @@ def test_w2_racing_reclaimers_never_delete_a_fresh_meta(root, monkeypatch):
     meta = locks._meta_lock_path(IP)
     meta.parent.mkdir(parents=True, exist_ok=True)
     # A stale meta from a crashed acquirer (mtime past the TTL, foreign pid).
-    meta.write_text(json.dumps({"pid": 2147483646, "t": 0, "nonce": "stale"}))
+    meta.write_text(json.dumps({"pid": dead_pid(), "t": 0, "nonce": "stale"}))
     old = time.time() - (locks._ACQUIRE_META_TTL_S + 5)
     os.utime(meta, (old, old))
 

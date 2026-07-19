@@ -483,11 +483,8 @@ def _release_meta(path: Path, nonce: str) -> None:
     re-created the meta-lock, its nonce differs from ours: leave it alone
     rather than delete a fresh holder's file (#72 pattern, mirrors
     :meth:`LeaseSet.release`)."""
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return
-    if isinstance(data, dict) and data.get("nonce") == nonce:
+    data = _read_meta(path)
+    if data is not None and data.get("nonce") == nonce:
         path.unlink(missing_ok=True)
 
 
