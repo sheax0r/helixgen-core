@@ -230,9 +230,12 @@ class HelixClient:
         self.mutate_settle = 0.6
         # bounded settle between the retries of the confirming re-list that
         # decides whether a /CreateContent actually landed (#38; the container
-        # index lags a just-completed write).
+        # index lags a just-completed write). Budgeted to match the other
+        # lag-absorbing loop over the same index (maintenance.
+        # resolve_device_ir_live) — under-waiting here turns a landed write
+        # into a confident "it failed", and a retry then duplicates content.
         self.create_confirm_delay = 0.4
-        self.create_confirm_tries = 3
+        self.create_confirm_tries = 5
 
     # -- lifecycle ---------------------------------------------------------
     def _load_zmq(self):
@@ -565,8 +568,16 @@ class HelixClient:
         re-uploaded, so the warning names the possibility. The lag case is far
         commoner and its false "missing" is the one that misleads users, hence
         the trade.
+
+        The listing is **strict** (#40): a dropped or truncated ``-11`` reply
+        must not decode as "the device has no IRs" and send every referenced
+        hash down the point-lookup path — if the transport dropped the listing
+        it is likely to drop the lookups too, and the caller would then be told
+        the preset's IRs are all missing. A failed listing raises instead; both
+        call paths (``bridge.check_irs`` under ``_install_hsp_open``, and the
+        CLI) already handle :class:`HelixError`.
         """
-        hashes = {m["hash"] for m in self.list_irs()}
+        hashes = {m["hash"] for m in self.list_irs(strict=True)}
         for hh in (verify or ()):
             if hh in hashes:
                 continue
@@ -1180,16 +1191,18 @@ class HelixClient:
         return None, None
 
     def _confirm_created(self, container: int, name: str,
-                         pos: int) -> Tuple[Optional[int], bool]:
+                         pos: int) -> Tuple[Optional[int], bool, bool]:
         """Re-list ``container`` looking for the entry we just created (matched
         by ``name`` **and** ``posi == pos``).
 
-        Returns ``(cid, listed_cleanly)``: the cid when the entry was found
-        (``None`` otherwise), and whether **any** attempt got a clean listing
-        back. Both matter — a ``(None, False)`` means "we never managed to
-        read the container", which is NOT evidence the create failed, and the
-        error built from it must not claim otherwise (see
-        :meth:`_create_status_error`).
+        Returns ``(cid, listed_cleanly, saw_cidless_match)``: the cid when the
+        entry was found (``None`` otherwise), whether **any** attempt got a
+        clean listing back, and whether some attempt matched ``(name, pos)``
+        but carried no ``cid_``. All three matter — a ``(None, False, _)``
+        means "we never managed to read the container", which is NOT evidence
+        the create failed, and ``saw_cidless_match`` means the content WAS
+        observed but its cid never resolved, so the error must not tell the
+        user the listing never showed it (see :meth:`_create_status_error`).
 
         This is the authority on whether a ``/CreateContent`` landed — the
         status code is not (see :meth:`_create_content_status`). The match is
@@ -1215,6 +1228,7 @@ class HelixClient:
         pay nothing.
         """
         listed_cleanly = False
+        saw_cidless = False
         with self.mutating():
             for i in range(self.create_confirm_tries):
                 try:
@@ -1226,11 +1240,13 @@ class HelixClient:
                     match = next(
                         (m for m in listing
                          if m.get("name") == name and m.get("posi") == pos), None)
-                    if match is not None and match.get("cid_") is not None:
-                        return match.get("cid_"), True
+                    if match is not None:
+                        if match.get("cid_") is not None:
+                            return match.get("cid_"), True, saw_cidless
+                        saw_cidless = True
                 if i < self.create_confirm_tries - 1:
                     time.sleep(self.create_confirm_delay)
-        return None, listed_cleanly
+        return None, listed_cleanly, saw_cidless
 
     def _create_content_checked(self, container: int, pos: int, name: str,
                                 ctype: int = 2, *, what: str = "pool",
@@ -1248,17 +1264,23 @@ class HelixClient:
 
         ``code == 0`` keeps the historic fast path — the callers already
         re-list by name to recover the real cid — and returns the reply cid.
-        ``None`` when no ``/status`` frame came back at all.
+
+        **No ``/status`` frame at all** (``code is None``) is resolved the same
+        way as a non-zero code, not treated as failure: on the documented-flaky
+        Stadium stack a dropped reply says nothing about whether the create
+        landed, and returning ``None`` there made the callers report a silent
+        failure for content that is really on the device (#38).
         """
         cid, code = self._create_content_status(container, pos, name, ctype)
-        if code is not None and code != 0:
-            confirmed, listed_cleanly = self._confirm_created(container, name, pos)
+        if code != 0:
+            confirmed, listed_cleanly, saw_cidless = self._confirm_created(
+                container, name, pos)
             if confirmed is not None:
                 return confirmed
             raise self._create_status_error(
                 container, name, pos, cid, code,
                 what=what, verify_cmd=verify_cmd,
-                listed_cleanly=listed_cleanly)
+                listed_cleanly=listed_cleanly, saw_cidless=saw_cidless)
         return cid
 
     def _create_content(self, container: int, pos: int, name: str,
@@ -1272,7 +1294,7 @@ class HelixClient:
         ``None`` rather than raising.
         """
         cid, code = self._create_content_status(container, pos, name, ctype)
-        if code is not None and code != 0:
+        if code != 0:
             return self._confirm_created(container, name, pos)[0]
         return cid
 
@@ -1409,10 +1431,11 @@ class HelixClient:
             return cid
 
     def _create_status_error(self, container: int, name: str, pos: int,
-                             reply_cid: Optional[int], code: int, *,
+                             reply_cid: Optional[int], code: Optional[int], *,
                              what: str = "pool",
                              verify_cmd: str = "helixgen device list",
                              listed_cleanly: bool = True,
+                             saw_cidless: bool = False,
                              ) -> "HelixError":
         """Build the error for a ``/CreateContent`` that could not be confirmed.
 
@@ -1435,11 +1458,31 @@ class HelixClient:
         rather than assert the content is absent — on the documented-flaky
         Stadium stack a run of dropped listings would otherwise produce a
         confident, wrong diagnosis for a write that landed.
+
+        ``saw_cidless`` means a listing DID show ``(name, pos)`` but without a
+        cid, so the content is on the device and only its cid is unresolved.
+        Telling the user the listing "never showed it" there would send them to
+        re-create content that is already present.
+
+        ``code`` is ``None`` when no ``/status`` frame came back at all; the
+        message says so rather than printing "status code None".
         """
+        reported = (f"returned status code {code}" if code is not None
+                    else "sent no /status reply")
+        if saw_cidless:
+            return HelixError(
+                f"/CreateContent for {name!r} at slot {pos} {reported}, and the "
+                f"{what} listing DID show an entry at that slot but never "
+                f"reported a cid for it "
+                f"({self.create_confirm_tries} attempts) — the content appears "
+                f"to be on the device, so do NOT retry blindly: check with "
+                f"`{verify_cmd}` first, or a retry may duplicate it. A code of "
+                f"1 on its own is not an error — it reports that the active "
+                f"preset has unsaved edits (backlog #38).")
         if not listed_cleanly:
             return HelixError(
-                f"/CreateContent for {name!r} at slot {pos} returned status "
-                f"code {code}, and the {what} listing could not be read at all "
+                f"/CreateContent for {name!r} at slot {pos} {reported}, "
+                f"and the {what} listing could not be read at all "
                 f"({self.create_confirm_tries} attempts all failed) — so "
                 f"whether the content was created is UNKNOWN. Do not assume it "
                 f"failed: check with `{verify_cmd}` before retrying, or a retry "
@@ -1454,8 +1497,8 @@ class HelixClient:
             detail = (f"no cid was reported and the {what} listing never showed "
                       f"it — verify with `{verify_cmd}`")
         return HelixError(
-            f"/CreateContent for {name!r} at slot {pos} returned status code "
-            f"{code} (expected 0); {detail}. Status code 1 means the active "
+            f"/CreateContent for {name!r} at slot {pos} {reported} "
+            f"(expected code 0); {detail}. Status code 1 means the active "
             f"preset has unsaved edits — save or reload it (in the Helix app or "
             f"on the unit) and retry. Power-cycling does not help: the same "
             f"unsaved state is restored on boot (backlog #38).")
@@ -1659,14 +1702,14 @@ class HelixClient:
                 # a failure — the container is usually right there. Only a
                 # genuinely absent container raises, and that path deletes
                 # nothing, matching _push_to_slot / _save_edit_buffer_to.
-                created, listed_cleanly = self._confirm_created(
+                created, listed_cleanly, saw_cidless = self._confirm_created(
                     int(Container.SETLISTS_ROOT), name, int(pos))
                 if created is None:
                     raise self._create_status_error(
                         int(Container.SETLISTS_ROOT), name, int(pos), reply_cid,
                         code, what="setlist",
                         verify_cmd="helixgen device setlists",
-                        listed_cleanly=listed_cleanly)
+                        listed_cleanly=listed_cleanly, saw_cidless=saw_cidless)
             if created is None:
                 return None
             # The create-reply cid is unreliable (same as preset creation), so

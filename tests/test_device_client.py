@@ -748,6 +748,9 @@ def test_create_status_error_does_not_delete(monkeypatch):
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     h.create_confirm_delay = 0
+    # pinned locally so the wired frame count below stays in step with the
+    # retry budget regardless of the shipped default
+    h.create_confirm_tries = 3
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
     create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
@@ -1805,6 +1808,91 @@ def test_raw_create_content_confirms_a_landed_nonzero_create(monkeypatch):
     _wire_seq(h, [[create], [hit]])
 
     assert h._raw.create_content(-2, 7, "x") == 777
+
+
+def test_a_dropped_status_reply_is_confirmed_not_failed(monkeypatch):
+    """A create whose /status frame never came back (code is None) says NOTHING
+    about whether the content landed — the Stadium stack drops replies. It must
+    go through the SAME confirming re-list as a non-zero code, not be reported
+    as a silent failure for content that is really on the device (#38)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    hit = _pool_listing(1001, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                "posi": 5}])
+    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    # [] for the create == no /status frame at all
+    _wire_seq(h, [[], [hit], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_a_dropped_status_reply_error_does_not_say_code_none(monkeypatch):
+    """When the dropped-reply create really can't be confirmed, the error must
+    name the missing reply rather than print 'status code None'."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    h.create_confirm_tries = 2
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    empty = [_pool_listing(r, []) for r in (1001, 1002)]
+    _wire_seq(h, [[]] + [[f] for f in empty])
+
+    with pytest.raises(HelixError) as exc:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    assert "no /status reply" in str(exc.value)
+    assert "code None" not in str(exc.value)
+
+
+def test_a_cidless_match_is_not_reported_as_never_listed(monkeypatch):
+    """A listing that shows (name, posi) but never reports a cid means the
+    content IS on the device and only its cid is unresolved. Telling the user
+    the listing 'never showed it' would send them to re-create content that is
+    already there — the duplicate-write half of #38."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    h.create_confirm_tries = 2
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    cidless = [_pool_listing(r, [{"name": "X", "cctp": 1000, "posi": 5}])
+               for r in (1001, 1002)]
+    _wire_seq(h, [[create]] + [[f] for f in cidless])
+
+    with pytest.raises(HelixError) as exc:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    msg = str(exc.value)
+    assert "never showed it" not in msg
+    assert "never reported a cid" in msg
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_device_ir_hashes_reads_the_listing_strictly(monkeypatch):
+    """#40: a dropped -11 reply must not decode as 'the device has no IRs'. If
+    it did, every referenced hash would fall through to the point lookup — and
+    a transport dropping the listing likely drops those too, so the caller
+    would be told the preset's IRs are ALL missing and re-upload them."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    seen = {}
+
+    def fake_list_irs(self, *, strict=False, settle=True):
+        seen["strict"] = strict
+        raise HelixError("listing timed out")
+
+    monkeypatch.setattr(HelixClient, "list_irs", fake_list_irs)
+    with pytest.raises(HelixError):
+        h.device_ir_hashes(verify=["bb" * 16])
+    assert seen["strict"] is True
 
 
 def test_confirming_relist_runs_under_a_subscription(monkeypatch):
