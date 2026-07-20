@@ -103,6 +103,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -586,14 +587,25 @@ def create_device_setlist(helix, name: str) -> None:
 
 
 def delete_hgtest_setlists(helix) -> None:
-    """Cleanup: delete every DEVICE setlist whose name starts with HGTEST."""
-    code, out, _ = helix("device", "setlists", "--json")
-    if code != 0:
-        return
-    for m in json.loads(out):
-        name = m.get("name") or ""
-        if name.startswith(HGTEST):
+    """Cleanup: delete every DEVICE setlist whose name starts with HGTEST.
+
+    Swept more than once: the setlists-root index lags a just-completed write
+    (#38 Task 4), so a setlist created moments ago can be absent from the
+    first listing and materialize into the second. A single immediate pass
+    would leave it behind on real hardware — which is exactly the leak the
+    old 3 s pre-sweep sleep was there to prevent.
+    """
+    for attempt in range(3):
+        code, out, _ = helix("device", "setlists", "--json")
+        if code != 0:
+            return
+        stale = [m.get("name") or "" for m in json.loads(out)
+                 if (m.get("name") or "").startswith(HGTEST)]
+        for name in stale:
             helix("device", "setlist", "delete", name, "--yes")
+        if not stale and attempt > 0:
+            return
+        time.sleep(1.0)
 
 
 # --------------------------------------------------------------------------

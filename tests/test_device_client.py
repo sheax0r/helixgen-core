@@ -1646,3 +1646,222 @@ def test_check_irs_does_not_report_a_present_ir_as_missing(monkeypatch):
     res = bridge.check_irs(_C(), body)
     assert res["missing"] == set()
     assert res["present"] == {"bb" * 16}
+
+
+# -- #38 review follow-ups: the confirm loop's own machinery ----------------
+
+def _pool_listing(reqid, items):
+    return osc_encode(
+        "/GetContainerContents",
+        [("i", reqid), ("b", msgpack.packb(items, use_bin_type=True))])
+
+
+def test_confirm_created_recovers_when_the_first_listing_misses(monkeypatch):
+    """The retry loop's whole reason to exist: the container index lags the
+    write, so the FIRST confirming listing can legitimately miss the entry and
+    a later one find it. Pinned by outcome (the create succeeds), not by a
+    call count."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    miss = _pool_listing(1001, [])
+    hit = _pool_listing(1002, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                "posi": 5}])
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [miss], [hit], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_confirm_created_retries_a_failed_listing(monkeypatch):
+    """A listing that FAILS (timeout / truncated reply — strict, #40) is 'not
+    visible yet', not 'absent': it must be retried, never raised and never
+    read as an empty container. Without the strict read a dropped reply would
+    decode as [] and a landed write would be declared missing."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    hit = _pool_listing(1002, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                "posi": 5}])
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    # [] == zero reply frames == the strict timeout case
+    _wire_seq(h, [[create], [], [hit], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
+
+
+def test_confirm_created_ignores_a_match_carrying_no_cid(monkeypatch):
+    """A listing row matching (name, posi) but with no cid_ can't be returned
+    as 'the created cid'. It counts as not-yet-visible and the loop keeps
+    polling."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    cidless = _pool_listing(1001, [{"name": "X", "cctp": 1000, "posi": 5}])
+    hit = _pool_listing(1002, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                "posi": 5}])
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [cidless], [hit], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
+
+
+def test_raw_create_content_confirms_a_landed_nonzero_create(monkeypatch):
+    """The `_raw.create_content` escape hatch keeps the Optional[int] contract
+    but must apply the SAME #38 resolution: a non-zero code whose content the
+    re-list finds is a success returning the LISTED cid, not None."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 1)])
+    hit = _pool_listing(1001, [{"cid_": 777, "name": "x", "cctp": 1000,
+                                "posi": 7}])
+    _wire_seq(h, [[create], [hit]])
+
+    assert h._raw.create_content(-2, 7, "x") == 777
+
+
+def test_confirming_relist_runs_under_a_subscription(monkeypatch):
+    """The confirming re-list is only prompt for a client holding a 2001
+    subscription — the same reason list_irs settles. `device save`/`push`/
+    `slots restore` reach _push_to_slot/_save_edit_buffer_to WITHOUT one of
+    their own, so the write methods must open it themselves or the confirm
+    polls a lagging index and declares a landed write missing."""
+    _patch_recording_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    hit = _pool_listing(1001, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                "posi": 5}])
+    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [hit], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
+    assert _RecordingSub.opened, "no 2001 subscription held over the confirm"
+
+
+def test_save_edit_buffer_confirming_relist_runs_under_a_subscription(monkeypatch):
+    """Same guarantee on the `device save` path — the one the live suite's #38
+    regression guard rides."""
+    _patch_recording_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    hit = _pool_listing(1001, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                "posi": 5}])
+    saved = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [hit], [saved]])
+
+    assert h._raw.save_edit_buffer_to(-2, 5, "X") == 777
+    assert _RecordingSub.opened, "no 2001 subscription held over the confirm"
+
+
+# -- _delete_created_stub: every no-op must be REPORTED ---------------------
+
+def test_delete_created_stub_reports_a_failed_listing(monkeypatch, caplog):
+    """Silence is what let orphans accumulate: a listing that FAILED can't
+    prove the stub is absent, so the no-op is warned about."""
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(
+        h, "list_container",
+        lambda *_a, **_k: (_ for _ in ()).throw(HelixError("timeout")))
+    with caplog.at_level(logging.WARNING):
+        assert h._delete_created_stub(-2, "X", 5) is None
+    assert "the listing failed" in caplog.text
+    assert "stub may be left behind" in caplog.text
+
+
+def test_delete_created_stub_reports_a_match_with_no_cid(monkeypatch, caplog):
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_container",
+                        lambda *_a, **_k: [{"name": "X", "posi": 5}])
+    with caplog.at_level(logging.WARNING):
+        assert h._delete_created_stub(-2, "X", 5) is None
+    assert "carried no cid" in caplog.text
+
+
+def test_delete_created_stub_reports_a_refused_delete(monkeypatch, caplog):
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_container",
+                        lambda *_a, **_k: [{"cid_": 777, "name": "X", "posi": 5}])
+    monkeypatch.setattr(h, "_delete", lambda *_a, **_k: False)
+    with caplog.at_level(logging.WARNING):
+        assert h._delete_created_stub(-2, "X", 5) is None
+    assert "refused to delete cid 777" in caplog.text
+
+
+def test_delete_created_stub_reports_a_raising_delete(monkeypatch, caplog):
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_container",
+                        lambda *_a, **_k: [{"cid_": 777, "name": "X", "posi": 5}])
+    monkeypatch.setattr(
+        h, "_delete",
+        lambda *_a, **_k: (_ for _ in ()).throw(HelixError("boom")))
+    with caplog.at_level(logging.WARNING):
+        assert h._delete_created_stub(-2, "X", 5) is None
+    assert "the delete failed" in caplog.text
+
+
+# -- device_ir_hashes: an unverifiable lookup must not pass silently --------
+
+def test_device_ir_hashes_warns_when_the_point_lookup_fails(monkeypatch, caplog):
+    """A point lookup that ERRORS leaves presence genuinely unknown. The hash
+    stays reported missing (the safe direction — a re-upload is idempotent),
+    but silently would be indistinguishable from a verified absence, so it is
+    warned about."""
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_irs", lambda **_k: [{"hash": "aa" * 16}])
+    monkeypatch.setattr(
+        h, "ir_path_for_hash",
+        lambda _hh: (_ for _ in ()).throw(HelixError("timeout")))
+    with caplog.at_level(logging.WARNING):
+        got = h.device_ir_hashes(verify=["bb" * 16])
+    assert got == {"aa" * 16}
+    assert "bb" * 16 in caplog.text
+    assert "unverified" in caplog.text
+
+
+def test_create_error_says_unknown_when_no_listing_ever_succeeded(monkeypatch):
+    """If EVERY confirming listing failed we never got a readable answer, so
+    the error must NOT assert the content is absent. On the flaky Stadium
+    stack a run of dropped listings would otherwise yield a confident wrong
+    diagnosis for a write that landed — and 'retry' is the wrong advice,
+    since a retry against content that IS there duplicates it."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # every confirming listing times out (zero reply frames == strict failure)
+    _wire_seq(h, [[create]] + [[] for _ in range(h.create_confirm_tries)])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    msg = str(ei.value)
+    assert "UNKNOWN" in msg
+    assert "could not be read at all" in msg
+    assert "may duplicate" in msg
+    # and it must NOT claim the listing showed the content absent
+    assert "never showed it" not in msg
+    # nothing was deleted on the way out
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)

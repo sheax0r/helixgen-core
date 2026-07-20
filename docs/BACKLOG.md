@@ -975,7 +975,13 @@ LED control, focus-view/UI cosmetics.
   - **Input-source write** — expose `set_input` (gtr1/gtr2/both) via CLI/`patch`; currently wired only into `generate`. Flips the TUI's read-only input node to editable.
   - **Flow-index-aware block coordinates** — `extract_blocks_from_hsp` exposes no flow index, so multi-flow / dual-slot targets can't be addressed unambiguously (helixgen-tui #13 multi-flow finding; ref #3's stable-API ask). Prerequisite for the parallel/topology verbs above.
 
-- **#30 Slot semantics for slot-only tones — verify + decide** — **needs user input: front-panel check** (is a reference-less pool preset browsable from the device panel?) **+ the (a)/(b) decision.** — `device add`
+- **#30 Slot semantics for slot-only tones — verify + decide** — **needs user input: front-panel check** (is a reference-less pool preset browsable from the device panel?) **+ the (a)/(b) decision.**
+  - **Partially addressed 2026-07-19 (0.30.0):** `device add --slot <label>` is now
+    **rejected** rather than recorded-and-ignored — the flag used to report a
+    placement sync never performed. Only `auto` is accepted; explicit labels
+    remain a manifest-only vocabulary. The front-panel check and the (a)/(b)
+    decision below are still open, and real placement is still unimplemented.
+  - `device add`
   + sync installs a slot-marked tone into the **pool** but references it into no
   setlist, so its slot label is an address in name only: nothing is placed at
   `5A` in the user setlist, and `assign_slots` never fetches real device
@@ -1448,6 +1454,26 @@ Remaining follow-ups:
   Expect: every create/install/save/setlist-create passes, `list-irs` gains
   the pushed entry, no xfails. Also worth confirming the non-zero taxonomy
   beyond `1` is still uncatalogued (`docs/helix-protocol.md:765-767`).
+
+- **#91 Companion plugin PR for the 0.30.0 agent-facing changes — NOT yet
+  landed.** 0.30.0 changed two CLI-visible behaviors, so the cross-repo rule
+  ("agent-facing surfaces ship in sync") requires a paired PR in
+  `sheax0r/helixgen` that this branch does not have. Stale there:
+  - `docs/CLI.md` — `device add <tone> [--slot auto|5A]` and "default
+    `--slot auto`" (explicit labels are now rejected); plus the copied
+    `setlist create` paragraph still claiming a non-zero `/CreateContent`
+    status **self-cleans** the stub (that cleanup is what destroyed landed
+    creates and is gone).
+  - `docs/helix-protocol.md` — still documents `/CreateContent` field 3 as
+    "the ok-code (`0`=ok)" and the "code-1 anomaly … cleared after a device
+    power-cycle" reading. Both are now known wrong; core's copy is
+    authoritative and was corrected.
+  - `.claude/skills/device/SKILL.md` — cites `device add --slot` as evidence
+    the slot vocabulary runs to bank 128, so the skill will emit a command
+    the CLI now rejects. (`SKILL.md`'s reboot advice for the network stack
+    generally is still correct — that one is not about #38.)
+  Land it before the plugin bumps its pinned core version, and
+  cross-reference both PR descriptions.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

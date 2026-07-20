@@ -96,6 +96,13 @@ blast radius, e.g.:
 HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest -m "live and sync" tests/live
 ```
 
+Run the `device_write` module with the active preset deliberately **dirty**
+(tweak a knob on the unit without saving). A dirty edit buffer is the state
+that made `/CreateContent` answer status field 3 = `1`, which pre-0.30.0
+clients misread as an error and "cleaned up" — a clean buffer answers `0` and
+exercises the uninteresting path, so the #38 regression guard only guards
+under those conditions. See each module's docstring.
+
 Safety is enforced by fixtures: all local state (manifest, IR mapping,
 IR-hash cache, prefs, backups) is redirected to a scratch dir; an upfront
 `device backup` runs; device state is diffed before/after (the suite fails

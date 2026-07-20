@@ -18,12 +18,11 @@ Quirks encoded from the 2026-07-15 live runs:
 `ir-prune` is exercised in its default DRY-RUN form only (read-only); the
 executing forms (--yes/--force) could touch non-HGTEST device IRs.
 
-Setup note — run this module with the edit buffer DIRTY
--------------------------------------------------------
-As with `test_device_write`, the condition that used to fail is an active
-preset carrying unsaved edits (field 3 of the /CreateContent /status reply
-is the dirty flag, not an error code). Tweak a knob on the ACTIVE preset
-without saving before running this module.
+The edit-buffer dirty flag does NOT matter here. These verbs reach the
+device over SFTP (`push_ir`) and `/RemoveContent`, never `/CreateContent`,
+so the field-3 dirty-flag condition `test_device_write` needs has no bearing
+on this module — what it exercises of #38 is the Task 4 half: the -11
+container-index lag and the point-lookup cross-check.
 """
 from __future__ import annotations
 
