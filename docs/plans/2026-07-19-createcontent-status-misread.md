@@ -55,7 +55,7 @@ against the fake/injected socket. No device lock lease is needed; do not run
 
 ### Task 1: Verify `/CreateContent` by re-list instead of trusting field 3
 
-- [ ] Write failing tests first, against the fake/injected socket used by the
+- [x] Write failing tests first, against the fake/injected socket used by the
       existing `tests/test_device_client*.py` patterns:
   - `/status [rid, cid, 1]` **plus** the content present in the follow-up
     container listing → treated as SUCCESS, returns the cid, deletes nothing
@@ -64,11 +64,11 @@ against the fake/injected socket. No device lock lease is needed; do not run
     still an error, and only then may cleanup run
   - the re-list is what determines the cid (the create-reply cid stays
     documented-unreliable)
-- [ ] Change `_create_content_status` / `_create_content`
+- [x] Change `_create_content_status` / `_create_content`
       (`src/helixgen/device/client.py:1085-1126`) and its three callers
       (`install_into_pool` :1340, `_save_edit_buffer_to` :1172,
       `create_setlist` :1400) to confirm by re-list before declaring failure
-- [ ] Keep a bounded settle/retry around the confirming re-list — the
+- [x] Keep a bounded settle/retry around the confirming re-list — the
       container index is known to lag (Task 5 covers the same lag)
 
 ### Task 2: Stop the destructive cleanup on a write that landed

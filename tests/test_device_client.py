@@ -157,10 +157,13 @@ def test_create_content_reads_new_cid_from_status_second_field():
     assert h._raw.create_content(-2, 7, "x") == 930
 
 
-def test_create_content_none_on_nonzero_code():
+def test_create_content_none_on_nonzero_code_when_content_absent():
+    # code != 0 AND the confirming re-list doesn't find (name, posi) -> the
+    # write genuinely didn't land, so the historic None contract stands.
     h = HelixClient("10.0.0.99")
     reply = osc_encode("/status", [("i", 1000), ("i", 5), ("i", 1)])  # code=1
     _wire(h, [reply])
+    h.create_confirm_delay = 0
     assert h._raw.create_content(-2, 7, "x") is None
 
 
@@ -499,28 +502,71 @@ def test_push_to_slot_happy_path_returns_cid(monkeypatch):
     assert h._raw.push_to_slot(-2, 3, "X", blob) == 930
 
 
-def test_push_to_slot_raises_and_cleans_stub_on_create_status_error(monkeypatch):
-    """#38: /CreateContent returns a non-zero code but the device still
-    allocated the pool entry. push_to_slot must (a) raise a HelixError that
-    surfaces the code + the allocated cid, and (b) verify-before-delete the
-    orphan stub by re-listing (name+pos), never leaving it behind."""
+def test_push_to_slot_nonzero_code_with_content_present_is_success(monkeypatch):
+    """#38 root cause: field 3 of the /CreateContent /status reply tracks the
+    device's edit-buffer dirty flag (``hist``), NOT an error code. With a dirty
+    active preset the device answers ``code == 1`` yet creates the content at
+    the requested posi. The confirming re-list finds it, so this is a SUCCESS:
+    push_to_slot must carry on to SetContentData, return the cid, and delete
+    nothing."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # rpc 1000: create -> /status [reqid, newCid=1237, code=1]  (dirty buffer)
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # rpc 1001: the confirming re-list -> the content IS there, real cid 777
+    # (the create-reply cid stays documented-unreliable; the re-list wins)
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1001), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # rpc 1002: SetContentData into the confirmed cid -> ok
+    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [listrep], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
+    # nothing was destroyed: the write landed
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+    # and the content went into the re-listed cid, not the reply cid
+    assert any(b"/SetContentData" in s for s in h.sock.sent)
+
+
+def test_push_to_slot_zero_code_still_succeeds_without_relist(monkeypatch):
+    """code == 0 with the content present stays exactly as before — a clean
+    create needs no confirming re-list (the callers re-list by name anyway)."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 0, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    setdata = osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [setdata]])
+    assert h._raw.push_to_slot(-2, 3, "X", blob) == 930
+    assert not any(b"/GetContainerContents" in s for s in h.sock.sent)
+
+
+def test_push_to_slot_raises_when_nonzero_and_content_absent(monkeypatch):
+    """The genuine failure: non-zero code AND the confirming re-list (bounded
+    settle/retry, the container index lags) never finds the content. Only then
+    is it an error."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    # rpc 1000: create -> /status [reqid, newCid=1237, code=1]  (the anomaly)
     create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
-    # rpc 1001: _delete_created_stub re-lists the pool -> the real stub is 1237@pos5
-    listrep = osc_encode(
+    empty = [osc_encode(
         "/GetContainerContents",
-        [("i", 1001), ("b", msgpack.packb(
-            [{"cid_": 1237, "name": "X", "cctp": 1000, "posi": 5}],
-            use_bin_type=True))],
-    )
-    # rpc 1002: _delete -> /status ok
-    delete = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
-    _wire_seq(h, [[create], [listrep], [delete]])
+        [("i", r), ("b", msgpack.packb([], use_bin_type=True))])
+        for r in range(1001, 1006)]
+    _wire_seq(h, [[create]] + [[f] for f in empty])
 
     with pytest.raises(HelixError) as ei:
         h._raw.push_to_slot(-2, 5, "X", blob)
@@ -528,8 +574,34 @@ def test_push_to_slot_raises_and_cleans_stub_on_create_status_error(monkeypatch)
     assert "status code 1" in msg  # code surfaced
     assert "1237" in msg           # allocated cid surfaced for recovery
     assert "#38" in msg
-    # the orphan stub was deleted (a /RemoveContent was sent)
-    assert any(b"/RemoveContent" in s for s in h.sock.sent)
+    # the confirming re-list retried before giving up
+    assert len([s for s in h.sock.sent if b"/GetContainerContents" in s]) > 1
+    # nothing was written into a slot we could not confirm
+    assert not any(b"/SetContentData" in s for s in h.sock.sent)
+
+
+def test_save_edit_buffer_to_nonzero_code_with_content_present_is_success(
+        monkeypatch):
+    """Same root cause on the save path: saving the edit buffer means the
+    buffer is dirty by definition, so ``code == 1`` is the NORMAL reply here.
+    The preset was created — confirm it and save into the confirmed cid."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1001), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    saved = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [listrep], [saved]])
+
+    assert h._raw.save_edit_buffer_to(-2, 5, "X") == 777
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+    assert any(b"/SavePresetWithCID" in s for s in h.sock.sent)
 
 
 def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypatch):
@@ -903,59 +975,52 @@ def test_create_setlist_sends_ctype_1003_under_root(monkeypatch):
     assert args[3] == ("i", 1003)    # setlist ctype
 
 
-def test_create_setlist_nonzero_code_self_cleans_stub(monkeypatch):
-    # #66 residual: the #38 /CreateContent anomaly applies to setlists too —
-    # the device may allocate the container despite a non-zero status code.
-    # create_setlist now deletes the just-created stub (verify-before-delete
-    # by name+posi under the setlists root, never the unreliable reply cid)
-    # and raises, matching the push/save self-clean pattern.
+def test_create_setlist_nonzero_code_with_container_present_is_success(
+        monkeypatch):
+    # #38 root cause: a non-zero field 3 only means the edit buffer was dirty.
+    # The setlist really was created, so create_setlist must confirm by
+    # re-listing the root and return the cid — never delete what it just made.
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
+    h.create_confirm_delay = 0
     # rpc 1000: list -5 for the next free posi (empty root -> posi 0)
     list1 = osc_encode(
         "/GetContainerContents",
         [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
-    # rpc 1001: /CreateContent -> non-zero code, but a cid WAS allocated
-    create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", -47)])
-    # rpc 1002: _delete_created_stub re-lists -5 -> the stub is there
-    stub = [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 0}]
+    # rpc 1001: /CreateContent -> non-zero code, but the container IS created
+    create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", 1)])
+    made = [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 0}]
+    # rpc 1002: the confirming re-list finds it; rpc 1003: resolve_setlist_cid
     list2 = osc_encode(
         "/GetContainerContents",
-        [("i", 1002), ("b", msgpack.packb(stub, use_bin_type=True))])
-    # rpc 1003: /RemoveContent of the stub from -5 -> ok
-    delete_ok = osc_encode("/status", [("i", 1003), ("i", 0)])
-    _wire_seq(h, [[list1], [create], [list2], [delete_ok]])
+        [("i", 1002), ("b", msgpack.packb(made, use_bin_type=True))])
+    list3 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1003), ("b", msgpack.packb(made, use_bin_type=True))])
+    _wire_seq(h, [[list1], [create], [list2], [list3]])
 
-    with pytest.raises(HelixError) as ei:
-        h.create_setlist("ZZC-x")
-    msg = str(ei.value)
-    assert "cleaned up the orphaned setlist stub (cid 1186)" in msg
-    assert "status code -47" in msg
-    # the delete went to the setlists root, naming the re-listed cid
-    from helixgen.device.osc import parse_osc_message
-    raw = h.sock.sent[-1]
-    addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
-    assert addr == "/RemoveContent"
-    assert args[1] == ("i", -5)
-    assert msgpack.unpackb(args[2][1]) == [1186]
+    assert h.create_setlist("ZZC-x") == 1186
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
 
 
-def test_create_setlist_nonzero_code_uncleanable_names_verify_verb(
-        monkeypatch):
-    # same anomaly, but the stub never shows in the re-list: the error must
-    # point the user at `helixgen device setlists` (not `device list`)
+def test_create_setlist_nonzero_code_absent_names_verify_verb(monkeypatch):
+    # genuine failure: non-zero code AND the container never shows up in the
+    # confirming re-list. The error must point the user at
+    # `helixgen device setlists` (not `device list`)
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
+    h.create_confirm_delay = 0
     list1 = osc_encode(
         "/GetContainerContents",
         [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
     create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", -47)])
-    list2 = osc_encode(
+    empty = [osc_encode(
         "/GetContainerContents",
-        [("i", 1002), ("b", msgpack.packb([], use_bin_type=True))])
-    _wire_seq(h, [[list1], [create], [list2]])
+        [("i", r), ("b", msgpack.packb([], use_bin_type=True))])
+        for r in range(1002, 1008)]
+    _wire_seq(h, [[list1], [create]] + [[f] for f in empty])
 
     with pytest.raises(HelixError) as ei:
         h.create_setlist("ZZC-x")
