@@ -180,8 +180,11 @@ def dirty_edit_buffer(helix, installed):
     if hi is not None and new > float(hi):
         pytest.skip("the active output gain has no headroom to nudge; "
                     "cannot establish the dirty edit buffer #38 needs")
+    # `--` sentinel: a negative value (the usual case for an output gain in dB)
+    # otherwise parses as an option and click rejects it, which would skip this
+    # fixture and silently disarm the #38 regression guard below.
     code, out, err = helix("device", "set-param", "0", "13",
-                           str(target["pid"]), str(new))
+                           str(target["pid"]), "--", str(new))
     if code != 0:
         pytest.skip(f"cannot dirty the edit buffer via set-param: "
                     f"{(err or out).strip()}")

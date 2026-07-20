@@ -528,7 +528,8 @@ def _ledger_remove(cid: int) -> None:
 
 def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
                       setlist_label: str, auto_irs: bool = False,
-                      force: bool = False, ip: str | None = None) -> int:
+                      force: bool = False, known_empty: bool = False,
+                      ip: str | None = None) -> int:
     """Install a parsed .hsp ``body`` onto an already-open client at
     ``(container, pos)`` and return the new cid. Shared by ``device install``
     and ``device slots restore``. Raises ClickException on any failure.
@@ -537,16 +538,27 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     ``_sbepgsm`` blob (:func:`transcode.hsp_to_sbepgsm`) and written into an
     empty slot — no device template is loaded, so the active tone is untouched.
 
-    ``force`` skips the slot-emptiness check so the push proceeds at an
-    occupied posi (``device slots restore --force`` — #25; the occupant is
-    NOT deleted, matching the ``.sbe`` path); without it an occupied slot is
-    refused. The check is strict (backlog #40): a listing timeout raises
-    instead of reading as "empty", so it never proceeds to write into a slot
-    it couldn't actually confirm was free.
+    ``force`` skips the slot-emptiness check so the push proceeds at a
+    possibly-OCCUPIED posi (``device slots restore --force`` — #25; the
+    occupant is NOT deleted, matching the ``.sbe`` path); without it an
+    occupied slot is refused. The check is strict (backlog #40): a listing
+    timeout raises instead of reading as "empty", so it never proceeds to
+    write into a slot it couldn't actually confirm was free.
+
+    ``known_empty`` also skips the check, but for the opposite reason: the
+    CALLER already established the posi is empty (the setlist path, where
+    ``_install_via_dest`` just computed a strictly lowest-empty pool posi).
+    The two must not be conflated — ``force`` means "a stub found here after a
+    failed write may be someone else's preset, leave it alone", while
+    ``known_empty`` means "anything here is ours, so clean it up" (#38). Using
+    ``force`` for the setlist case orphaned an empty pool stub on every failed
+    write and blamed a ``--force`` the user never passed.
     """
     from helixgen.device import bridge, transcode
 
-    if not force and h.find_by_pos(container, pos, strict=True) is not None:
+    prechecked_empty = known_empty or not force
+    if not (force or known_empty) and h.find_by_pos(
+            container, pos, strict=True) is not None:
         raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
     missing = sorted(bridge.check_irs(h, body)["missing"])
     if missing and auto_irs:
@@ -563,7 +575,7 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
         raise click.ClickException(str(e)) from e
     with h.mutating():
         cid = h._raw.push_to_slot(container, pos, name, blob,
-                                  prechecked_empty=not force)
+                                  prechecked_empty=prechecked_empty)
     if cid is None:
         raise click.ClickException("failed to install preset")
     return cid
@@ -2125,11 +2137,13 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
             def _writer(cont, cpos):
                 # _install_hsp_open does its own strict emptiness check for
                 # the pool path; the setlist path just computed a fresh
-                # lowest-empty pool posi, so skip re-checking it.
+                # lowest-empty pool posi, so skip re-checking it. That is
+                # known_empty, NOT force: the posi is ours, so a stub left by
+                # a failed write must still be cleaned up (#38).
                 return _install_hsp_open(h, body, cont, cpos, name,
                                          setlist_label=label,
                                          auto_irs=auto_irs, ip=ip,
-                                         force=(kind == "setlist"))
+                                         known_empty=(kind == "setlist"))
 
             cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, pos, _writer)
@@ -3093,7 +3107,7 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                 def _writer(cont, cpos):
                     return _install_hsp_open(
                         h, body, cont, cpos, name, setlist_label=label,
-                        force=force or kind == "setlist", ip=ip)
+                        force=force, known_empty=(kind == "setlist"), ip=ip)
 
             cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, dest_pos, _writer, force=force)

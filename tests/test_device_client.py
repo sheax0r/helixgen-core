@@ -807,6 +807,65 @@ def test_create_status_error_message_names_the_real_precondition(monkeypatch):
     assert "#38" in msg
 
 
+def test_cidless_preset_message_calls_the_survivor_an_empty_stub(monkeypatch):
+    """A confirming listing that shows (name, pos) but no cid is raised BEFORE
+    the content write, so on the preset paths what survives is an EMPTY stub,
+    not a saved tone. Telling the user "the content is on the device, don't
+    retry" would leave an empty preset squatting the slot while they believe
+    the save worked — `device list` shows the name either way."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # every confirming listing shows the entry but never reports a cid
+    cidless = [osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb(
+            [{"name": "X", "posi": 5, "cctp": 1000}], use_bin_type=True))])
+        for r in range(1001, 1007)]
+    _wire_seq(h, [[create]] + [[f] for f in cidless])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    msg = str(ei.value)
+    assert "EMPTY" in msg
+    assert "Delete it before retrying" in msg
+    # and it must NOT claim the tone itself made it onto the device
+    assert "the content appears to be on the device" not in msg
+    # the create path itself still deletes nothing (#38)
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_cidless_setlist_message_does_not_call_it_a_stub(monkeypatch):
+    """The setlist path is the exception: an empty setlist container IS the
+    deliverable, so a surviving entry needs no cleanup and must not be
+    described as an empty stub to delete."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", 1)])
+    cidless = [osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb(
+            [{"name": "ZZC-x", "posi": 0}], use_bin_type=True))])
+        for r in range(1002, 1008)]
+    _wire_seq(h, [[list1], [create]] + [[f] for f in cidless])
+
+    with pytest.raises(HelixError) as ei:
+        h.create_setlist("ZZC-x")
+    msg = str(ei.value)
+    assert "EMPTY" not in msg
+    assert "the setlist appears to be on the device" in msg
+    assert "helixgen device setlists" in msg
+
+
 def test_cleanup_that_matches_nothing_is_reported(monkeypatch, caplog):
     """The silent-no-op hazard: when cleanup runs (a genuine create-then-write
     failure) but the listing matches nothing, that must be reported. The old
@@ -1224,18 +1283,57 @@ def test_create_setlist_nonzero_code_absent_names_verify_verb(monkeypatch):
     assert "helixgen device setlists" in msg
 
 
-def test_create_setlist_none_when_no_status_frame(monkeypatch):
-    # no /status reply at all (dropped frame) keeps the historic None
-    # contract — the CLI reports "device refused"
+def test_create_setlist_confirms_when_no_status_frame(monkeypatch):
+    # #38: a dropped /status frame says NOTHING about whether the create
+    # landed, so it must be resolved by re-list like a non-zero code — not
+    # reported as failure. Here the confirming listing DOES show the setlist,
+    # so create_setlist returns its real cid instead of the historic None
+    # (which made `setlist duplicate`'s auto-create abort on a setlist that was
+    # really there, leaking it).
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
+    h.create_confirm_delay = 0
     list1 = osc_encode(
         "/GetContainerContents",
         [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
     unrelated = osc_encode("/somethingelse", [("i", 1001), ("i", 0)])
-    _wire_seq(h, [[list1], [unrelated]])
-    assert h.create_setlist("ZZC-x") is None
+    made = [{"name": "ZZC-x", "posi": 0, "cid_": 1186}]
+    listed = [osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb(made, use_bin_type=True))])
+        for r in range(1002, 1008)]
+    _wire_seq(h, [[list1], [unrelated]] + [[f] for f in listed])
+
+    assert h.create_setlist("ZZC-x") == 1186
+    # nothing is ever deleted on this path
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_create_setlist_no_status_frame_and_absent_raises(monkeypatch):
+    # the genuine failure half of the above: no /status AND the confirming
+    # re-list never shows it. That still raises (rather than silently
+    # returning None), and the message says no reply came back at all.
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    unrelated = osc_encode("/somethingelse", [("i", 1001), ("i", 0)])
+    empty = [osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb([], use_bin_type=True))])
+        for r in range(1002, 1008)]
+    _wire_seq(h, [[list1], [unrelated]] + [[f] for f in empty])
+
+    with pytest.raises(HelixError) as ei:
+        h.create_setlist("ZZC-x")
+    msg = str(ei.value)
+    assert "sent no /status reply" in msg
+    assert "helixgen device setlists" in msg
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
 
 
 def test_delete_setlist_removes_from_root(monkeypatch):

@@ -1260,7 +1260,9 @@ class HelixClient:
 
         * content present → SUCCESS, returning the **re-listed** cid;
         * content genuinely absent after the bounded retries → raise
-          :meth:`_create_status_error` (the only path allowed to clean up).
+          :meth:`_create_status_error`, which deletes **nothing** (#38):
+          cleanup belongs to the callers that created a stub and then failed
+          to write into it, never to this path.
 
         ``code == 0`` keeps the historic fast path — the callers already
         re-list by name to recover the real cid — and returns the reply cid.
@@ -1436,6 +1438,7 @@ class HelixClient:
                              verify_cmd: str = "helixgen device list",
                              listed_cleanly: bool = True,
                              saw_cidless: bool = False,
+                             entry_is_empty_stub: bool = True,
                              ) -> "HelixError":
         """Build the error for a ``/CreateContent`` that could not be confirmed.
 
@@ -1460,13 +1463,35 @@ class HelixClient:
         confident, wrong diagnosis for a write that landed.
 
         ``saw_cidless`` means a listing DID show ``(name, pos)`` but without a
-        cid, so the content is on the device and only its cid is unresolved.
+        cid, so the entry is on the device and only its cid is unresolved.
         Telling the user the listing "never showed it" there would send them to
-        re-create content that is already present.
+        re-create an entry that is already present.
+
+        ``entry_is_empty_stub`` says what such a surviving entry actually
+        CONTAINS, which differs by caller and changes the advice materially.
+        This error is raised from :meth:`_create_content_checked`, i.e. before
+        ``_set_content_data``/``_save_preset_with_cid`` has run — so on the
+        preset paths the entry is an **empty stub** and must be deleted before
+        retrying, even though ``device list`` will happily show its name.
+        Saying "the content is on the device, don't retry" there would leave an
+        empty preset squatting the slot and the user believing the write
+        succeeded. ``create_setlist`` passes ``False``: an empty setlist
+        container IS its deliverable, so a surviving entry needs no cleanup.
 
         ``code`` is ``None`` when no ``/status`` frame came back at all; the
         message says so rather than printing "status code None".
         """
+        if entry_is_empty_stub:
+            survivor = (f"an EMPTY {what} entry named {name!r} is most likely "
+                        f"sitting at slot {pos} with no content in it: the "
+                        f"create landed but the content write never ran. "
+                        f"`{verify_cmd}` WILL show the name — that is the stub, "
+                        f"not a saved tone. Delete it before retrying, or the "
+                        f"retry duplicates the name")
+        else:
+            survivor = (f"the {what} appears to be on the device, so do NOT "
+                        f"retry blindly: check with `{verify_cmd}` first, or a "
+                        f"retry may duplicate it")
         reported = (f"returned status code {code}" if code is not None
                     else "sent no /status reply")
         if saw_cidless:
@@ -1474,21 +1499,22 @@ class HelixClient:
                 f"/CreateContent for {name!r} at slot {pos} {reported}, and the "
                 f"{what} listing DID show an entry at that slot but never "
                 f"reported a cid for it "
-                f"({self.create_confirm_tries} attempts) — the content appears "
-                f"to be on the device, so do NOT retry blindly: check with "
-                f"`{verify_cmd}` first, or a retry may duplicate it. A code of "
-                f"1 on its own is not an error — it reports that the active "
+                f"({self.create_confirm_tries} attempts) — {survivor}. A code "
+                f"of 1 on its own is not an error — it reports that the active "
                 f"preset has unsaved edits (backlog #38).")
         if not listed_cleanly:
             return HelixError(
                 f"/CreateContent for {name!r} at slot {pos} {reported}, "
                 f"and the {what} listing could not be read at all "
                 f"({self.create_confirm_tries} attempts all failed) — so "
-                f"whether the content was created is UNKNOWN. Do not assume it "
+                f"whether the entry was created is UNKNOWN. Do not assume it "
                 f"failed: check with `{verify_cmd}` before retrying, or a retry "
-                f"may duplicate content that is already there. A code of 1 on "
-                f"its own is not an error — it reports that the active preset "
-                f"has unsaved edits (backlog #38).")
+                f"may duplicate an entry that is already there"
+                + (f" (and anything `{verify_cmd}` does show at slot {pos} is "
+                   f"an EMPTY stub, not a saved tone — delete it first)"
+                   if entry_is_empty_stub else "")
+                + f". A code of 1 on its own is not an error — it reports that "
+                f"the active preset has unsaved edits (backlog #38).")
         if reply_cid is not None:
             detail = (f"the device reported new cid {reply_cid} but the {what} "
                       f"listing never showed it — verify with `{verify_cmd}` "
@@ -1671,8 +1697,7 @@ class HelixClient:
         Sends ``/CreateContent`` under the setlists root ``-5`` with
         ``ctype=1003`` (live-verified 2026-07-14 — closes backlog #8). Like
         preset creation, the cid in the create reply can be unreliable, so the
-        root is re-listed by name to recover the real cid. ``None`` when no
-        ``/status`` frame came back at all.
+        root is re-listed by name to recover the real cid.
 
         A **non-zero status code is not a failure** (#38, root-caused
         2026-07-19): field 3 of the ``/status`` reply carries the device's
@@ -1696,12 +1721,19 @@ class HelixClient:
                 if addr == "/status" and len(args) >= 3:
                     reply_cid, code = args[1], args[2]
             created = reply_cid
-            if code is not None and code != 0:
+            if code != 0:
                 # #38: a non-zero code only reports the edit-buffer dirty flag,
                 # so confirm by re-listing the setlists root before calling it
                 # a failure — the container is usually right there. Only a
                 # genuinely absent container raises, and that path deletes
                 # nothing, matching _push_to_slot / _save_edit_buffer_to.
+                # ``code is None`` (no /status frame at all) routes here too,
+                # matching _create_content_checked: on the flaky Stadium stack
+                # a dropped reply says nothing about whether the create landed,
+                # and reporting failure for a setlist that IS on the device is
+                # the same #38 false negative — worse here, because
+                # `setlist duplicate`'s auto-create aborts on it without
+                # cleanup and leaks the setlist it claims not to have made.
                 created, listed_cleanly, saw_cidless = self._confirm_created(
                     int(Container.SETLISTS_ROOT), name, int(pos))
                 if created is None:
@@ -1709,7 +1741,10 @@ class HelixClient:
                         int(Container.SETLISTS_ROOT), name, int(pos), reply_cid,
                         code, what="setlist",
                         verify_cmd="helixgen device setlists",
-                        listed_cleanly=listed_cleanly, saw_cidless=saw_cidless)
+                        listed_cleanly=listed_cleanly, saw_cidless=saw_cidless,
+                        # an empty setlist container is the deliverable here,
+                        # unlike the preset paths' contentless stub
+                        entry_is_empty_stub=False)
             if created is None:
                 return None
             # The create-reply cid is unreliable (same as preset creation), so
