@@ -393,9 +393,14 @@ reply, so you can correlate response to request. Reads follow a `/XxxGet` →
 > **`/status` shape differs per command — read carefully.** The **majority** of
 > writes use `[reqid, code, n]` (code in the **second** field). But
 > **`/CreateContent` is the exception**: its `/status` is
-> `[reqid, newCid, code]` — the **second** field is the **new CID** and the
-> **third** field is the ok-code. When parsing a `/status`, key off which
-> command you sent; do not assume field 2 is always the code.
+> `[reqid, newCid, flag]` — the **second** field is the **new CID** and the
+> **third** field is **NOT an error code**: it mirrors the device's
+> **edit-buffer dirty flag** (`hist`), so it reads `1` whenever the active
+> preset has unsaved edits *even though the content was created correctly at
+> the requested `posi`* (live A/B, fw 1.3.2/1340, 2026-07-19 — see §9). When
+> parsing a `/status`, key off which command you sent; do not assume field 2
+> is always the code, and do not treat `/CreateContent`'s field 3 as failure —
+> confirm the write by re-listing the container.
 
 Notation: typetags are shown OSC-style (`,iib` etc.). "msgpack[…]" = a `b` blob
 whose payload is a msgpack array; "msgpack{…}" = a `b` blob whose payload is a
@@ -408,7 +413,7 @@ msgpack map.
 | **LIST** | `/GetContainerContents` | `(reqid:i, containerCID:i)` | `,ibi` → `[reqid, msgpack-array-of-item-maps, trailing:i]` | Lists a container's items (dialect A maps). **Large replies chunk the blob** across multiple frames — reassemble before msgpack-decoding. |
 | **READ meta** | `/GetContentRef` | `(reqid:i, cid:i)` | item metadata map (dialect A) | Single item's metadata. On a root CID returns the container's friendly name. |
 | **LOAD** | `/LoadPresetWithCID` | `(reqid:i, cid:i)` | `/status`; then device streams `/setEditBuffer` + `/setPropertyValue` on **2001** | Loads a preset into the edit buffer. Full content arrives on the PUB stream, not in the 2002 reply. |
-| **CREATE (empty)** | `/CreateContent` | `(reqid:i, container:i, pos:i, ctype:i, msgpack{name:"…"})` | `/status [reqid, newCid, code]` | Creates a **new empty content entry** in `container` at slot `pos`. `ctype = 2` = a **preset**; **`ctype = 1003` under the setlists root `-5` creates a SETLIST** (live-verified 2026-07-14 — an item's `type` metadata field carries the ctype it was created with). **Its `/status` is special:** field 2 is the **new CID**, field 3 is the ok-code (`0`=ok) — unlike every other write. This is the first step of "Save As New" (§7.1), and the `helixgen device setlist create` path. |
+| **CREATE (empty)** | `/CreateContent` | `(reqid:i, container:i, pos:i, ctype:i, msgpack{name:"…"})` | `/status [reqid, newCid, code]` | Creates a **new empty content entry** in `container` at slot `pos`. `ctype = 2` = a **preset**; **`ctype = 1003` under the setlists root `-5` creates a SETLIST** (live-verified 2026-07-14 — an item's `type` metadata field carries the ctype it was created with). **Its `/status` is special:** field 2 is the **new CID**, field 3 is the **edit-buffer dirty flag** (`hist`), **not** an ok-code — `1` here means "the active preset has unsaved edits", and the create still succeeded at the requested `pos` (§9). Confirm by re-listing the container; never delete on a non-zero field 3. This is the first step of "Save As New" (§7.1), and the `helixgen device setlist create` path. |
 | **CREATE (copy)** | `/AddContentsToContainer` | `(reqid:i, container:i, msgpack[srcCIDs], pos:i, 0:i, 0:i)` | `/status [reqid, code, n]` | Copies the listed source CIDs into `container` at slot `pos`. **The new CID is NOT in this `/status`** — re-list the container and match by `posi`/`name` to discover it. Trailing two ints observed as `0,0` (**partially decoded**). |
 | **SAVE (persist buffer)** | `/SavePresetWithCID` | `(reqid:i, cid:i, 0:i, N:i)` | `/status [reqid, code, n]` | Persists the **current edit buffer** into an existing `cid`. The `0` third arg is fixed in captures. **`N` is an unknown 4th arg** — the editor sent `N=6` for a preset whose edit buffer had `bcnt=28` / 20 blocks, so **`N` is NOT the block count**; its meaning is unknown and **`N=0` works** (verified byte-faithful: after a `/SavePresetWithCID … 0` + reload, the `sfg_` and `pm__` sections are identical; only the volatile `hist`/`cg__` sections differ). |
 | **WRITE content** | `/SetContentData` | `(reqid:i, cid:i, contentBlob:b)` | `/status [reqid, code, n]` | Writes preset **content** directly into an existing `cid`, replacing it. `contentBlob` is the **stored-preset** encoding (`\xff\xff\xff\xff pgsm` magic — see §4 "content encodings"), **not** the edit-buffer `_sbepgsm` form. This is how the editor installs an **imported** preset (it also sends `/SetContentAttrs` for name/colour and `/LoadPresetWithCID` after). Live-verified: used to restore a preset **byte-faithfully**. Combined with `/CreateContent` (§7.1) this is the full "author arbitrary content into a new slot" path. |
@@ -522,10 +527,20 @@ zone-index — the batch *is* the activation). Preset-side storage lives under
 | Clone-lock state | `/getCloneLockState` | (see §7) | (state) |
 | Property value | `/PropertyValueGet` | `(reqid:i, …)` | `/getPropertyValue` |
 
+**Command vs. reply spellings — verified live 2026-07-19 (fw 1.3.2/1340).**
+The `/XxxGet`→`/getXxx` convention names the **reply**, and the reply address
+is **not** a usable command. Confirmed: `/ProductInfoGet` and
+`/EditBufferStateGet` work as commands (replying on `/getProductInfo` and
+`/getEditBufferState` respectively); sending `/getProductInfo` or
+`/getEditBufferState` returns `Msg dispatch failed: … is NOT known!!!`.
+**`/getCloneLockState` is the exception and is correct as written** — it is
+the *command* spelling; `/GetCloneLockState` is rejected.
+
 **UNVERIFIED / naming:** reply address names marked "-style" are inferred from
-the `/XxxGet`→`/getXxx` convention and may differ in exact casing (the IR-path
-reply `/xxxIrxPathForHash1` is confirmed exact). `/status` `code` values other
-than `0` (error taxonomy) are not yet catalogued.
+the same convention and may differ in exact casing (the IR-path reply
+`/xxxIrxPathForHash1` is confirmed exact). `/status` `code` values other than
+`0` (error taxonomy) are still uncatalogued — except `/CreateContent`, whose
+field 3 is not a code at all (see the `/status` note in §6 and §9).
 
 ---
 
@@ -558,7 +573,7 @@ of four RPCs on 2002:
 
 1. **`/CreateContent (reqid, container, pos, ctype=2, {name})`** — create the
    empty preset entry. **Grab the new CID from its special `/status [reqid,
-   newCid, code]`** (§6).
+   newCid, hist]`** (§6 — field 3 is the edit-buffer dirty flag, not a code).
 2. **`/SavePresetWithCID (reqid, newCid, 0, N)`** — persist the current edit
    buffer into that CID. `N=0` works (§6).
 3. **`/SetContentAttrs (reqid, newCid, {colr: …})`** — set the preset colour.
@@ -760,15 +775,22 @@ footswitch/controller assignment commands are parameterised on the device.
   block coordinate corrected to the grid slot 2026-07-15).
   (`/ParamValueSet`'s `[reqid, path, grid_slot, 0, paramId, value, -1]`
   layout is also confirmed live, plus its read twin `/ParamValueGet`.)
-- **`/status` error codes.** Only `code == 0` (OK) is confirmed; the non-zero
-  error taxonomy is uncatalogued. **`/CreateContent` code-1 anomaly (2026-07-14,
-  cleared 2026-07-15):** on one session `/CreateContent` returned `code == 1`
-  while *still allocating* the pool entry (a side-effect allocation); it was not
-  reproducible the next day (fw 1.3.2/1340) after a device power-cycle, so it
-  reads as transient device/session state, not a stable second success code — do
-  **not** treat `code != 0` as success. The client now cleans up the
-  side-effect stub (verify-before-delete) and surfaces the allocated cid on a
-  non-zero code. Full investigation:
+- **`/status` error codes.** For the `[reqid, code, n]` writes, only `code == 0`
+  (OK) is confirmed; the non-zero error taxonomy is **still uncatalogued**, so
+  do **not** treat a non-zero `code` as success there.
+  **`/CreateContent` field 3 — RESOLVED 2026-07-19 (fw 1.3.2/1340):** it is
+  **not** an error code. It mirrors the device's **edit-buffer dirty flag**
+  (`hist` in `/EditBufferStateGet`). With `hist=1` (active preset has unsaved
+  edits) `/CreateContent` returns `[reqid, newCid, 1]` **and the content is
+  created, at the exact requested `posi`** — verified by the `/addContent`
+  frame on the 2001 PUB stream and by the row surviving in
+  `list_container(-2)`; with `hist=0` the same code path returns `0`. This
+  supersedes the earlier "transient code-1 anomaly" reading (a power-cycle
+  reloaded the same dirty buffer, which is why it "didn't help"). Ruled out
+  with evidence: not capacity, not `/getCloneLockState` (byte-identical in
+  both states), not slot occupancy, not blob chunking. The client therefore
+  **confirms the write by re-listing the container** and only treats it as a
+  failure when the content is genuinely absent. Full investigation:
   `docs/superpowers/specs/2026-07-15-createcontent-status1-findings.md`.
   (Note: in a **pool** container listing, `blck`/`flow` are `-1` for **every**
   preset — including freshly + successfully installed ones — so they are **not**

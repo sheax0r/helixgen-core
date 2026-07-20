@@ -127,13 +127,13 @@ against the fake/injected socket. No device lock lease is needed; do not run
 
 ### Task 6: Correct the protocol reference
 
-- [ ] `docs/helix-protocol.md` lists command spellings the device rejects.
+- [x] `docs/helix-protocol.md` lists command spellings the device rejects.
       Verified live: `/ProductInfoGet` and `/EditBufferStateGet` work;
       `/getProductInfo` and `/getEditBufferState` return
       `Msg dispatch failed: ... is NOT known!!!`. `/getCloneLockState` is
       correct as written (`/GetCloneLockState` is rejected). Note that
       `/ProductInfoGet` *replies* on address `/getProductInfo`
-- [ ] Document field 3 of the `/CreateContent` `/status` reply as an
+- [x] Document field 3 of the `/CreateContent` `/status` reply as an
       edit-buffer-dirty indicator, not an error code, and mark the rest of
       the non-zero taxonomy still uncatalogued (:765-767)
 
