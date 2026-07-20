@@ -111,18 +111,18 @@ against the fake/injected socket. No device lock lease is needed; do not run
 
 ### Task 5: `device add --slot` — fail loudly (core #30)
 
-- [ ] Failing test: `device add --slot 20A` raises, `--slot auto` and the
+- [x] Failing test: `device add --slot 20A` raises, `--slot auto` and the
       bare form still work
-- [ ] `mark_on_device` (`manifest.py:458-467`) persists the label but sync
+- [x] `mark_on_device` (`manifest.py:458-467`) persists the label but sync
       never converts it to a device address — `install_into_pool` is called
       with no `pos` (`setlist_sync.py:519`), so `_lowest_empty_posi` wins.
       The flag reports success and changes nothing
-- [ ] Reject explicit labels in `device add` (`cli_device.py:2568-2582`) with
+- [x] Reject explicit labels in `device add` (`cli_device.py:2568-2582`) with
       a message naming #30. Do NOT implement real placement here — that
       needs the real-occupancy fetch (`setlist_sync.py:446` passes
       `occupied=set()`) and the pool-posi-vs-setlist-address decision that
       #30 reserves for the user
-- [ ] Update the `--slot` help text and the `docs/CLI.md` entry in the same
+- [x] Update the `--slot` help text and the `docs/CLI.md` entry in the same
       commit (`tests/test_cli_parity.py` pins this)
 
 ### Task 6: Correct the protocol reference

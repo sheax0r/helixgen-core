@@ -2569,10 +2569,27 @@ def device_setlist_sync_off(setlist: str) -> None:
 @device.command(name="add")
 @click.argument("tone")
 @click.option("--slot", default="auto",
-              help="Desired user slot ('1A'..'128D') or 'auto' (default; sync picks).")
+              help="Only 'auto' (the default) is accepted: sync picks the address. "
+                   "An explicit label ('1A'..'128D') is REJECTED — targeted "
+                   "placement is unimplemented (backlog #30), and the manifest "
+                   "used to record the label while sync silently ignored it.")
 def device_add_cmd(tone: str, slot: str) -> None:
-    """Mark a library tone for the device (placed on the next `device sync`)."""
+    """Mark a library tone for the device (placed on the next `device sync`).
+
+    `--slot` accepts only 'auto'. An explicit slot label is refused rather
+    than silently ignored: sync never converted the recorded label into a
+    device address (it installs at the lowest empty slot), so the flag
+    reported success and changed nothing. See backlog #30.
+    """
     SetlistManifest, ManifestError = _manifest()
+
+    if slot != "auto":
+        raise click.ClickException(
+            f"--slot {slot!r} is not supported: targeted placement is "
+            f"unimplemented (backlog #30). `device sync` installs at the "
+            f"lowest empty slot regardless of the label, so recording {slot!r} "
+            f"would report a placement that never happens. Use --slot auto "
+            f"(the default), then move the preset with `device reorder`.")
 
     m = SetlistManifest.load()
     try:

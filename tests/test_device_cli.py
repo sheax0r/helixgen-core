@@ -1647,3 +1647,68 @@ def test_device_list_irs_reports_a_failed_listing(monkeypatch):
     result = CliRunner().invoke(cli, ["device", "list-irs"])
     assert result.exit_code != 0
     assert "no reply listing container -11" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `device add --slot <label>` — reject explicit placement (backlog #30).
+#
+# `mark_on_device` persists the label, but sync never converts it to a device
+# address: `install_into_pool` is called with no `pos`, so `_lowest_empty_posi`
+# wins. The flag reported success and changed nothing; reject it instead.
+# ---------------------------------------------------------------------------
+
+def _register_tone(tmp_path, name="Slot Tone"):
+    hsp = _make_hsp(tmp_path / "slot-tone.hsp", name)
+    res = CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
+    assert res.exit_code == 0, res.output
+    return name
+
+
+def _loaded_manifest():
+    from helixgen.device.manifest import SetlistManifest
+    return SetlistManifest.load()
+
+
+def test_device_add_rejects_an_explicit_slot_label(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "20A"])
+
+    assert res.exit_code != 0, res.output
+    # names the backlog entry that reserves real placement
+    assert "#30" in res.output
+    assert "20A" in res.output
+    assert "auto" in res.output
+    # and the manifest was NOT touched (no silently-ignored placement)
+    assert _loaded_manifest().tones[name]["slot"] is None
+
+
+def test_device_add_slot_auto_still_works(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "auto"])
+
+    assert res.exit_code == 0, res.output
+    assert _loaded_manifest().tones[name]["slot"] == "auto"
+
+
+def test_device_add_bare_form_still_works(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name])
+
+    assert res.exit_code == 0, res.output
+    assert _loaded_manifest().tones[name]["slot"] == "auto"
+
+
+def test_device_add_rejects_a_bogus_slot_before_the_manifest(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "999Z"])
+
+    assert res.exit_code != 0, res.output
+    assert _loaded_manifest().tones[name]["slot"] is None

@@ -628,8 +628,14 @@ plumbing" in `CLAUDE.md`) — only intent is.
   into the library (off-device; `source: import-local`). (The old `--doc`
   companion-markdown flag was retired with manifest v3 — tone descriptions now
   live in the tone-metadata JSON, not a manifest `doc` sidecar path.)
-- `helixgen device add <tone> [--slot auto|5A]` — mark a library tone for the
-  device (default `--slot auto`; placed on the next `device sync`).
+- `helixgen device add <tone> [--slot auto]` — mark a library tone for the
+  device (placed on the next `device sync`). **`--slot` accepts only `auto`**
+  (the default). An explicit label (`5A`) is **rejected with an error**, not
+  recorded: `device sync` never converted a recorded label into a device
+  address — it installs at the lowest empty slot regardless — so the flag used
+  to report a placement that never happened (backlog #30). To put a preset at
+  a specific address, sync it with `auto` and then move it with
+  `device reorder`.
 - `helixgen device unsync <tone>` — clear a tone's slot so the next sync
   **deletes it from the device** (it stays in the library); cascades it out of
   any *synced* setlist.
