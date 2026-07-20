@@ -83,13 +83,13 @@ against the fake/injected socket. No device lock lease is needed; do not run
 
 ### Task 3: Fix the error message (the power-cycle advice is wrong)
 
-- [ ] Failing test pinning the new text (see `tests/test_cli_parity.py` for
+- [x] Failing test pinning the new text (see `tests/test_cli_parity.py` for
       the message-contract pattern)
-- [ ] Rewrite `_create_status_error` (`client.py:1231-1234`). Drop
+- [x] Rewrite `_create_status_error` (`client.py:1231-1234`). Drop
       "power-cycle the Helix and retry" — it demonstrably does not help.
       Point at the real precondition: the active preset has unsaved edits;
       save or reload it in the Helix app (or on the unit) and retry
-- [ ] Update `docs/BACKLOG.md` #38 to root-caused, and correct the recurrence
+- [x] Update `docs/BACKLOG.md` #38 to root-caused, and correct the recurrence
       section at :1097-1121 plus the 2026-07-15 findings spec
 
 ### Task 4: `device list-irs` — stale container index

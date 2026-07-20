@@ -1322,8 +1322,10 @@ class HelixClient:
                       f"it — verify with `{verify_cmd}`")
         return HelixError(
             f"/CreateContent for {name!r} at slot {pos} returned status code "
-            f"{code} (expected 0); {detail}. If this persists, power-cycle the "
-            f"Helix and retry (backlog #38).")
+            f"{code} (expected 0); {detail}. Status code 1 means the active "
+            f"preset has unsaved edits — save or reload it (in the Helix app or "
+            f"on the unit) and retry. Power-cycling does not help: the same "
+            f"unsaved state is restored on boot (backlog #38).")
 
     # -- mutating() context: activate prompt propagation for writes --------
     @contextlib.contextmanager

@@ -702,6 +702,36 @@ def test_create_status_error_does_not_delete(monkeypatch):
                 if b"/GetContainerContents" in s]) == h.create_confirm_tries
 
 
+def test_create_status_error_message_names_the_real_precondition(monkeypatch):
+    """Message contract (#38). The old text said to power-cycle the Helix — live
+    A/B showed that demonstrably does not help, because the same dirty edit
+    buffer is reloaded on boot. The message must instead name the real
+    precondition: the active preset has unsaved edits; save or reload it."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    empty = [osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb([], use_bin_type=True))])
+        for r in range(1001, 1006)]
+    _wire_seq(h, [[create]] + [[f] for f in empty])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    msg = str(ei.value)
+    assert "power-cycle" not in msg.lower()
+    assert "unsaved edits" in msg
+    assert "save or reload" in msg.lower()
+    # the recoverable facts stay in the message
+    assert "status code 1" in msg
+    assert "1237" in msg
+    assert "#38" in msg
+
+
 def test_cleanup_that_matches_nothing_is_reported(monkeypatch, caplog):
     """The silent-no-op hazard: when cleanup runs (a genuine create-then-write
     failure) but the listing matches nothing, that must be reported. The old

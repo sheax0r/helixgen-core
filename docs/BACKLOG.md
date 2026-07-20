@@ -1057,7 +1057,25 @@ LED control, focus-view/UI cosmetics.
   already-registered IRs, offline behavior when no manual exists).
 
 - **#38 `/CreateContent` returning a non-zero status code on a live device** —
-  **🟡 HARDENED 2026-07-15 (anomaly not reproducible; root cause unconfirmed).**
+  **✅ ROOT-CAUSED 2026-07-19. Field 3 of the `/status` reply is not an error
+  code — it is the device's edit-buffer dirty flag (`hist` in
+  `/EditBufferStateGet`).** Established by live A/B against a Stadium XL (fw
+  1.3.2/1340): with an edited active preset every `/CreateContent` answers
+  `1` **while creating the content at the exact requested `posi`** (verified by
+  the `/addContent` frame on the 2001 PUB stream and by the row surviving in
+  `list_container(-2)`); with a freshly loaded/saved preset the same code path
+  answers `0`. Ruled out with evidence: not capacity, not `/getCloneLockState`,
+  not slot occupancy, not blob chunking. **This made the client
+  data-destroying**: treating non-zero as failure ran `_delete_created_stub`
+  against content that had been written correctly. Fixed by
+  `docs/plans/2026-07-19-createcontent-status-misread.md` — the create path now
+  confirms by **re-list** (`_confirm_created`), cleanup is restricted to the
+  genuine not-created case, and a cleanup that matches nothing is logged rather
+  than swallowed. The non-zero taxonomy beyond `1` remains uncatalogued
+  (`docs/helix-protocol.md:765-767`), so a non-zero code is still never blanket-
+  ignored — it is *resolved by re-list*. Everything below this point is the
+  superseded investigation record, kept for provenance; the "transient",
+  "load-correlated" and "power-cycle" theories are **wrong**.
   Found 2026-07-14 while hardware-validating #31's write path: every
   `/CreateContent` returned `code == 1` (not the documented `0`) while still
   allocating the pool entry, so `device install` / `import-hss` reported "failed
@@ -1088,9 +1106,19 @@ LED control, focus-view/UI cosmetics.
     (no evidence supports accepting `code 1` as success). Regression tests
     added; suite 1501 passed. **No user action needed** unless the code-1
     anomaly recurs (then: power-cycle the Helix and retry — the client now
-    self-cleans and names the cid to recover).
+    self-cleans and names the cid to recover). ⚠️ **Superseded 2026-07-19:
+    power-cycling never helped (the same unsaved edit buffer is restored on
+    boot), and the "self-clean" was the data loss. The client no longer treats
+    a non-zero code as failure without a confirming re-list.**
   - **RECURRED 2026-07-15 (evening), while building the live suite (#66) —
-    now with much better telemetry.** Captured facts: (1) it is
+    now with much better telemetry.** ⚠️ **Superseded 2026-07-19: the
+    "intermittent" and "load-correlated" readings below are artefacts of the
+    real mechanism.** The creates were *succeeding* every time; what varied was
+    whether the active preset happened to be dirty (dozens of rapid
+    create/delete cycles late in a live run leave it dirty; a short idle in
+    which the suite reloaded a preset cleared it). The "materializes seconds
+    late" and "ghost entry" observations are the container-index lag, tracked
+    separately. Captured facts as recorded at the time: (1) it is
     **intermittent within one powered-on session** — `device setlist create`
     got `/status [1003, <cid>, 1]` (allocated anyway), an identical raw
     create minutes later got `/status [1002, <cid>, 0]`; (2) it looks
