@@ -73,11 +73,11 @@ against the fake/injected socket. No device lock lease is needed; do not run
 
 ### Task 2: Stop the destructive cleanup on a write that landed
 
-- [ ] Failing test: `_delete_created_stub` must NOT be reachable when the
+- [x] Failing test: `_delete_created_stub` must NOT be reachable when the
       confirming re-list found the content
-- [ ] Restrict `_delete_created_stub` (`client.py:1128`) to the genuine
+- [x] Restrict `_delete_created_stub` (`client.py:1128`) to the genuine
       not-created case
-- [ ] Failing test for the silent-no-op hazard: when cleanup runs but matches
+- [x] Failing test for the silent-no-op hazard: when cleanup runs but matches
       nothing (stale listing), that must be reported, not swallowed — the
       current silence is why orphan accounting looked clean
 

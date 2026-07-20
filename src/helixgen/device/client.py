@@ -1209,22 +1209,44 @@ class HelixClient:
         ours). We never blind-delete the create-reply cid, which could be stale
         or point at an unrelated preset. Returns the cid actually deleted, or
         ``None`` if nothing matched / the delete failed.
+
+        Only for the genuine create-then-write-failed case — the confirmed-create
+        path must never reach it (#38; see :meth:`_create_status_error`).
+
+        A no-op is **reported**, never swallowed: the container index is known to
+        lag, so "nothing matched" may well mean the stub is really there and just
+        not listed yet. The old silence is why the orphan accounting looked
+        clean while presets were being left behind.
         """
+        def _no_op(why: str) -> None:
+            logger.warning(
+                "cleanup of the just-created entry %r at slot %d in container "
+                "%s did not happen (%s) — the container index lags writes, so a "
+                "stub may be left behind; re-list to check", name, pos,
+                container, why)
+
         try:
-            match = next(
-                (m for m in self.list_container(container)
-                 if m.get("name") == name and m.get("posi") == pos), None)
-        except HelixError:
+            listing = self.list_container(container)
+        except HelixError as exc:
+            _no_op(f"the listing failed: {exc}")
             return None
+        match = next(
+            (m for m in listing
+             if m.get("name") == name and m.get("posi") == pos), None)
         if match is None:
+            _no_op("no entry matched (stale listing?)")
             return None
         cid = match.get("cid_")
         if cid is None:
+            _no_op("the matching entry carried no cid")
             return None
         try:
-            return cid if self._delete(container, [cid]) else None
-        except HelixError:
-            return None
+            if self._delete(container, [cid]):
+                return cid
+            _no_op(f"the device refused to delete cid {cid}")
+        except HelixError as exc:
+            _no_op(f"the delete failed: {exc}")
+        return None
 
     def _save_preset_with_cid(self, cid: int, block_count: int = 0) -> bool:
         """Persist the current edit buffer into an existing CID (`/SavePresetWithCID`)."""
@@ -1276,27 +1298,28 @@ class HelixClient:
                              what: str = "pool",
                              verify_cmd: str = "helixgen device list",
                              ) -> "HelixError":
-        """Handle the #38 anomaly: /CreateContent returned a non-zero ``code``
-        yet the device may have allocated the entry anyway. Clean up the
-        orphan stub (verify-before-delete) and return a ``HelixError`` that
-        surfaces the code and the allocated cid so callers/users can recover.
-        ``what``/``verify_cmd`` label the container kind for the message
-        (pool preset stubs vs setlist stubs — ``create_setlist`` reuses this
-        cleanup, #66 residual).
+        """Build the error for a ``/CreateContent`` that could not be confirmed.
 
-        Not reproducible after 2026-07-15 (the anomaly cleared once the device
-        state settled), so we deliberately do **not** treat ``code != 0`` as
-        success — we fail loudly without leaving debris.
-        See ``docs/superpowers/specs/2026-07-15-createcontent-status1-findings.md``.
+        Reached **only** after :meth:`_confirm_created` exhausted its bounded
+        retries without finding the content, i.e. the genuine not-created case.
+        It therefore **must not delete anything** (#38): an entry that would
+        show up in a listing taken after that point is the create landing late
+        against a lagging container index, and removing it is exactly the
+        data loss this path used to cause. Cleanup stays with the callers that
+        genuinely created something and then failed to write into it
+        (:meth:`_push_to_slot` / :meth:`_save_edit_buffer_to`).
+
+        ``what``/``verify_cmd`` label the container kind for the message (pool
+        presets vs setlists — ``create_setlist`` reuses this error, #66
+        residual).
         """
-        cleaned = self._delete_created_stub(container, name, pos)
-        if cleaned is not None:
-            detail = f"cleaned up the orphaned {what} stub (cid {cleaned})"
-        elif reply_cid is not None:
-            detail = (f"the device reported new cid {reply_cid} — verify with "
-                      f"`{verify_cmd}` and delete it manually if it lingers")
+        if reply_cid is not None:
+            detail = (f"the device reported new cid {reply_cid} but the {what} "
+                      f"listing never showed it — verify with `{verify_cmd}` "
+                      f"and delete it manually if it does turn up")
         else:
-            detail = "no cid was reported"
+            detail = (f"no cid was reported and the {what} listing never showed "
+                      f"it — verify with `{verify_cmd}`")
         return HelixError(
             f"/CreateContent for {name!r} at slot {pos} returned status code "
             f"{code} (expected 0); {detail}. If this persists, power-cycle the "

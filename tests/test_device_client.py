@@ -7,6 +7,8 @@ a pre-built OSC reply frame). The client's request ids come from
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 msgpack = pytest.importorskip("msgpack")
@@ -636,6 +638,94 @@ def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypa
     # pull the trailing blob arg (the msgpack cid array) out of the frame
     assert _mp.packb([777], use_bin_type=True) in del_sent[0]
     assert _mp.packb([930], use_bin_type=True) not in del_sent[0]
+
+
+def test_confirmed_create_never_reaches_the_destructive_cleanup(monkeypatch):
+    """The data-destroying path: cleanup must be UNREACHABLE once the confirming
+    re-list found the content. Pinned by making _delete_created_stub explode —
+    the old code deleted a preset that had been written correctly."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+
+    def _boom(*a, **kw):  # pragma: no cover - must never run
+        raise AssertionError("cleanup ran on a create that landed")
+    monkeypatch.setattr(h, "_delete_created_stub", _boom)
+
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1001), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [listrep], [setdata]])
+    assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
+
+
+def test_create_status_error_does_not_delete(monkeypatch):
+    """_create_status_error is only reached when the bounded confirming re-list
+    already established the content is ABSENT — so there is nothing of ours to
+    remove. It must not re-list-and-delete: an entry that shows up in that later
+    listing is the create landing late, and deleting it is the #38 data loss."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # every confirming listing is empty...
+    empty = [osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb([], use_bin_type=True))])
+        for r in range(1001, 1004)]
+    # ...but a further listing WOULD show the entry (the index caught up late).
+    late = osc_encode(
+        "/GetContainerContents",
+        [("i", 1004), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    delete = osc_encode("/status", [("i", 1005), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create]] + [[f] for f in empty] + [[late], [delete]])
+
+    with pytest.raises(HelixError):
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+    # only the bounded confirm listings were made — no extra cleanup listing
+    assert len([s for s in h.sock.sent
+                if b"/GetContainerContents" in s]) == h.create_confirm_tries
+
+
+def test_cleanup_that_matches_nothing_is_reported(monkeypatch, caplog):
+    """The silent-no-op hazard: when cleanup runs (a genuine create-then-write
+    failure) but the listing matches nothing, that must be reported. The old
+    silence is why the orphan accounting looked clean."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    setfail = osc_encode("/status", [("i", 1001), ("i", 1), ("i", 0)])
+    # the cleanup listing is stale/empty -> nothing matches
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    _wire_seq(h, [[create], [setfail], [listrep]])
+
+    with caplog.at_level(logging.WARNING):
+        assert h._raw.push_to_slot(-2, 5, "X", blob) is None
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+    text = caplog.text
+    assert "X" in text and "5" in text
+    assert "stale" in text.lower() or "no entry" in text.lower()
 
 
 def test_create_content_status_returns_cid_and_code():
