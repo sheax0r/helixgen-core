@@ -142,22 +142,23 @@ against the fake/injected socket. No device lock lease is needed; do not run
 **Do not run the live suite in this plan** — edit the markers only. The live
 run is deferred to the next hardware session (file it as a backlog entry).
 
-- [ ] The live suite papers over this bug with cooldown-retry + `xfail`
+- [x] The live suite papers over this bug with cooldown-retry + `xfail`
       (`tests/live/conftest.py:541,547,591`,
       `tests/live/test_device_write.py:129`,
       `tests/live/test_device_ir.py:62`). Remove those xfails — they were
       masking a real, reproducible, data-destroying bug. Leaving them in
       would hide the regression this plan is meant to prevent
-- [ ] Add a live-suite setup note: the device_write/device_ir cases should be
+- [x] Add a live-suite setup note: the device_write/device_ir cases should be
       exercised with the active preset **deliberately left dirty**, the exact
       condition that used to fail
-- [ ] `CLAUDE.md` "Device-write awareness" currently tells agents to "expect
+- [x] `CLAUDE.md` "Device-write awareness" currently tells agents to "expect
       #38 /CreateContent flakiness (re-run)". That advice is now wrong —
       re-running was never the fix and the writes were landing. Correct it
-- [ ] Bump version, tag `vX.Y.Z` — **minor**, not patch: this changes write
-      semantics
-- [ ] File a backlog entry for the deferred live validation
-- [ ] Move this plan to `docs/plans/completed/`
+- [x] Bump version, tag `vX.Y.Z` — **minor**, not patch: this changes write
+      semantics (0.29.0 → 0.30.0; tag pushed by the merge/release step)
+- [x] File a backlog entry for the deferred live validation (`docs/BACKLOG.md`
+      #90)
+- [x] Move this plan to `docs/plans/completed/`
 
 ## Validation Commands
 

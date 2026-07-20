@@ -103,7 +103,6 @@ import re
 import socket
 import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
 
@@ -538,40 +537,21 @@ def hgtest_hsp(cli, scratch: Path, amp_blocks) -> Path:
 
 CID_RE = re.compile(r"as cid (\d+)")
 
-#: Cooldown between retries of a /CreateContent that hit the backlog-#38
-#: status-1 episode — observed live 2026-07-15 to be load-correlated (many
-#: rapid creates/deletes in one session) and to clear after a short idle.
-CREATE_RETRY_COOLDOWN_S = 10.0
-
-
 def install_preset(helix, hsp: Path, name: str, pos: int) -> int:
     """`device install` an HGTEST .hsp; returns the new cid.
 
-    Handles the backlog-#38 /CreateContent status-1 episode: the hardened
-    client already self-cleans the allocated stub and surfaces the code, so
-    on that specific error this retries once after a cooldown and then
-    XFAILs (callable from module fixtures — pytest.xfail in setup xfails the
-    dependent tests instead of ERRORing them).
+    No retry, no xfail: backlog #38 was root-caused 2026-07-19 (field 3 of
+    the /CreateContent /status reply is the edit-buffer dirty flag, not an
+    error code) and the client now confirms the write by re-listing. A
+    /CreateContent failure here is a real regression — let it fail.
     """
     assert name.startswith(HGTEST)
-    last = ""
-    for attempt in range(2):
-        code, out, err = helix("device", "install", hsp, name, "--pos", pos)
-        if code == 0:
-            m = CID_RE.search(out)
-            assert m, f"no cid in install output: {out!r}"
-            return int(m.group(1))
-        last = (err or out).strip()
-        if "/CreateContent" not in last:
-            break  # a different failure mode; retrying won't help
-        if attempt == 0:
-            time.sleep(CREATE_RETRY_COOLDOWN_S)
-    if "/CreateContent" in last:
-        pytest.xfail("backlog #38 episode: /CreateContent returned a non-zero "
-                     f"status on `device install` (stub self-cleaned by the "
-                     f"client; retried after {CREATE_RETRY_COOLDOWN_S:.0f}s "
-                     f"cooldown): {last}")
-    pytest.fail(f"device install of {name!r} failed: {last}")
+    code, out, err = helix("device", "install", hsp, name, "--pos", pos)
+    if code == 0:
+        m = CID_RE.search(out)
+        assert m, f"no cid in install output: {out!r}"
+        return int(m.group(1))
+    pytest.fail(f"device install of {name!r} failed: {(err or out).strip()}")
 
 
 def delete_preset(helix, cid: int) -> None:
@@ -588,45 +568,21 @@ def find_user_preset(helix, name: str) -> dict | None:
     return None
 
 
-def create_device_setlist(helix, name: str, retries: int = 2) -> None:
-    """`device setlist create` with backlog-#38-recurrence handling.
+def create_device_setlist(helix, name: str) -> None:
+    """`device setlist create`, no retry and no xfail.
 
-    /CreateContent can intermittently return status 1 while STILL allocating
-    the content (backlog #38). Observed live while building this suite
-    (2026-07-15 evening, setlist ctype): `/status [1003, <cid>, 1]` on one
-    create, then `/status [1002, <cid>, 0]` for an identical raw create
-    minutes later. The CLI reports the code-1 outcome as "device refused to
-    create setlist" but the setlist IS allocated, so this helper self-cleans
-    the stub, retries, and — if the episode persists — XFAILs with the #38
-    reference instead of leaking artifacts or failing the suite on a known
-    device-state defect.
+    The old cooldown-retry/xfail here masked backlog #38, root-caused
+    2026-07-19: the status-1 replies were the edit-buffer dirty flag and the
+    setlists WERE being allocated (then destroyed by the client's cleanup).
+    `create_setlist` now confirms by re-list, so a failure is a real defect.
+    Any stub left behind by a genuine failure is swept by
+    `delete_hgtest_setlists` and caught by the session state guard.
     """
     assert name.startswith(HGTEST)
-    last = ""
-    for attempt in range(retries + 1):
-        code, out, err = helix("device", "setlist", "create", name)
-        if code == 0:
-            return
-        last = (err or out).strip()
-        # The failed create may still have allocated the setlist — self-clean.
-        # The allocation can LAG the failure (ghost entries were observed
-        # materializing seconds after a status-1 create), so give the listing
-        # a moment first; the callers' finally-blocks and the session state
-        # guard back this up for anything slower.
-        time.sleep(3)
-        code2, out2, _ = helix("device", "setlists", "--json")
-        if code2 == 0 and any(m.get("name") == name
-                              for m in json.loads(out2)):
-            helix("device", "setlist", "delete", name, "--yes")
-        if "refused" not in last:
-            break  # a different failure mode; retrying won't help
-        if attempt < retries:
-            time.sleep(CREATE_RETRY_COOLDOWN_S)
-    if "refused" in last:
-        pytest.xfail("backlog #38 recurrence: /CreateContent returned status 1 "
-                     f"on `device setlist create {name}` (stub self-cleaned): "
-                     f"{last}")
-    pytest.fail(f"device setlist create {name!r} failed: {last}")
+    code, out, err = helix("device", "setlist", "create", name)
+    if code != 0:
+        pytest.fail(
+            f"device setlist create {name!r} failed: {(err or out).strip()}")
 
 
 def delete_hgtest_setlists(helix) -> None:

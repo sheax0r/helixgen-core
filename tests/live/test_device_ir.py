@@ -7,18 +7,23 @@ Quirks encoded from the 2026-07-15 live runs:
   changes the display name only, so after a rename the pull must still use
   the original filename. The flow below is exactly push-ir → rename-ir →
   pull-ir(original basename) → delete-ir.
-* The device can enter a flaky episode (same family as backlog #38) where
-  `push-ir` sees the `/addContent` broadcast ("imported + registered
-  instantly", hash_match) yet the -11 IR registry listing NEVER gains the
-  entry (observed 2026-07-15 evening: still unlisted 40+ min later, while
-  the path index resolved the hash — the "wedged" shape). rename-ir /
-  delete-ir resolve via the registry, so the flow can't continue; the test
-  then cleans its own file via `delete-ir <its-own-hash> --force-wedge` (the
-  CLI's designed wedge remedy, scoped strictly to the hash this test just
-  pushed) and XFAILs.
+* The -11 IR registry listing lags a just-completed push: `push-ir` sees the
+  `/addContent` broadcast while `list-irs` still under-reports (observed
+  2026-07-15). That was root-caused with backlog #38 on 2026-07-19 as
+  container-index lag, not a wedged device — `list_irs` now settles under a
+  subscription and cross-checks the authoritative point lookup, so the entry
+  must appear. The old xfail on this path is gone: a missing entry is a real
+  regression and fails.
 
 `ir-prune` is exercised in its default DRY-RUN form only (read-only); the
 executing forms (--yes/--force) could touch non-HGTEST device IRs.
+
+Setup note — run this module with the edit buffer DIRTY
+-------------------------------------------------------
+As with `test_device_write`, the condition that used to fail is an active
+preset carrying unsaved edits (field 3 of the /CreateContent /status reply
+is the dirty flag, not an error code). Tweak a knob on the ACTIVE preset
+without saving before running this module.
 """
 from __future__ import annotations
 
@@ -47,20 +52,20 @@ def test_push_rename_pull_delete_ir(helix, hgtest_wav, hgtest_wav_hash, tmp_path
         code, out, err = helix("device", "push-ir", hgtest_wav, timeout=120)
         assert code == 0, err or out
 
-        # the registry listing can lag the /addContent broadcast — poll
+        # `list_irs` settles under a subscription and cross-checks the point
+        # lookup, so the entry must be there. Poll only to absorb ordinary
+        # network jitter — a timeout is a REAL failure, not an xfail.
         deadline = time.time() + REGISTRY_WAIT_S
         while time.time() < deadline:
             if hgtest_wav_hash in _device_ir_hashes(helix):
                 registered = True
                 break
             time.sleep(2)
-        if not registered:
-            pytest.xfail(
-                "device did not durably register the pushed IR: push-ir saw "
-                "the /addContent broadcast but the -11 registry listing never "
-                f"gained the entry within {REGISTRY_WAIT_S:.0f}s (flaky-device "
-                "episode, backlog #38 family — observed live 2026-07-15; "
-                "power-cycle the Helix and re-run)")
+        assert registered, (
+            "push-ir saw the /addContent broadcast but the -11 registry "
+            f"listing never gained the entry within {REGISTRY_WAIT_S:.0f}s. "
+            "This is the backlog-#38 index-lag regression: list-irs must "
+            "settle/cross-check rather than report a stale listing.")
 
         code, out, err = helix("device", "rename-ir", hgtest_wav_hash, renamed)
         assert code == 0, err or out

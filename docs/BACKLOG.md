@@ -1431,6 +1431,23 @@ Remaining follow-ups:
   released version); when the plugin bumps to >=0.20.0 it must drop
   `.mcp.json`/the `[mcp]` extra and repoint skills at the CLI (fold into the
   #58 slim).
+- **#90 Live-hardware validation of the #38 fix — deferred to the next
+  hardware session.** The 0.30.0 /CreateContent fix (confirm-by-re-list
+  instead of trusting field 3 of the `/status` reply) was developed and
+  tested entirely offline against the fake/injected socket; the root cause
+  itself was established by direct live A/B against a Stadium XL (fw
+  1.3.2/1340) on 2026-07-19, which the user considered sufficient to ship
+  on. The live suite's masking (cooldown-retry + `xfail` in
+  `tests/live/conftest.py`, `test_device_write.py`, `test_device_ir.py`) was
+  REMOVED in the same change but **never re-run against hardware**. Next
+  session with the device: run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python
+  -m pytest -m "live and (device_write or device_ir or setlists or sync)"
+  tests/live` **with the active preset deliberately left DIRTY** (unsaved
+  edits — the exact condition that used to fail; see the setup notes in
+  `tests/live/test_device_write.py` and `tests/live/test_device_ir.py`).
+  Expect: every create/install/save/setlist-create passes, `list-irs` gains
+  the pushed entry, no xfails. Also worth confirming the non-zero taxonomy
+  beyond `1` is still uncatalogued (`docs/helix-protocol.md:765-767`).
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
@@ -1438,9 +1455,12 @@ Remaining follow-ups:
 - **Device-write safety:** the old "no writes without telling me" gating rule
   was retired 2026-07-16 — device writes no longer require prior user
   permission. The practical safety posture stays: validate against
-  expendable artifacts/slots, take an upfront `device backup`, tear down
-  test artifacts afterwards, and expect the #38 /CreateContent status-1
-  flakiness (re-run; the slot-writing verbs fail safe on an occupied slot).
+  expendable artifacts/slots, take an upfront `device backup`, and tear down
+  test artifacts afterwards (the slot-writing verbs fail safe on an occupied
+  slot). The old "expect #38 /CreateContent status-1 flakiness, re-run"
+  advice is **withdrawn**: #38 was root-caused 2026-07-19 (field 3 of the
+  `/status` reply is the edit-buffer dirty flag, not an error code) and
+  fixed in 0.30.0 — the writes were landing all along.
   Reads (list/get_ref/download/watch) were never restricted.
 - The device is at `192.168.4.84` (ignores ICMP ping; ports 22/2001/2002/2003
   open).

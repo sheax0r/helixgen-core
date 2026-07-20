@@ -10,6 +10,20 @@ Residual: `device load` (here and in liveops) changes the ACTIVE tone —
 whatever UNSAVED edit-buffer changes existed before the run are discarded,
 and the edit buffer is left on the (deleted) HGTEST tone. Saved presets are
 covered by the upfront session backup.
+
+Setup note — run this module with the edit buffer DIRTY
+-------------------------------------------------------
+Backlog #38 was root-caused 2026-07-19: field 3 of the /CreateContent
+/status reply is the device's edit-buffer dirty flag (`hist` in
+/EditBufferStateGet), not an error code. The old client read a dirty buffer
+as failure and DELETED the content it had just correctly written.
+
+So the interesting condition for this module is a dirty edit buffer, and a
+clean one exercises nothing. Before running it, make the active preset
+dirty: on the unit (or in the Helix app) tweak any knob on the ACTIVE preset
+and do NOT save — `helixgen device set-param ...` on the active tone works
+too. The old code failed every /CreateContent in that state; the current
+code must pass. `test_save_edit_buffer` is the primary guard.
 """
 from __future__ import annotations
 
@@ -125,15 +139,15 @@ def test_push_refuses_occupied_slot(helix, installed, tmp_path):
     assert find_user_preset(helix, f"{HGTEST} Never Lands") is None
 
 
-@pytest.mark.xfail(strict=False,
-                   reason="backlog #38: /CreateContent intermittently returns "
-                          "status 1 while still allocating (episodes observed "
-                          "2026-07-14 and 2026-07-15 on fw 1.3.2; the CLI "
-                          "self-cleans its stub on this path). `device save` "
-                          "fails during an episode and XPASSes when the "
-                          "device is healthy — strict=False so a healthy "
-                          "device celebrates the fix instead of failing.")
 def test_save_edit_buffer(helix, installed, free_positions):
+    """`device save` of the edit buffer.
+
+    This test used to be xfailed under backlog #38. It is now the primary
+    regression guard for the #38 root cause (root-caused 2026-07-19): saving
+    while the active preset is DIRTY is exactly the condition that made
+    /CreateContent report status 1 and the old client destroy the write. See
+    the module docstring for the dirty-edit-buffer setup note.
+    """
     name = f"{HGTEST} Save Probe"
     pos = free_positions(1)[0]
     try:
