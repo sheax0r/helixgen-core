@@ -1618,3 +1618,32 @@ def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(
     assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
     assert RaisingFindByPosClient.WRITE_CALLS == []
     assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+def test_device_list_irs_lists_strictly(monkeypatch):
+    """A dropped/truncated -11 listing must not print as 'no IRs' (#38 Task
+    4): the read is strict, so a partial read is loud."""
+    seen = []
+
+    class StrictIr(FakeClient):
+        def list_irs(self, strict=False, settle=True):
+            seen.append(strict)
+            return []
+
+    _patch_client(monkeypatch, StrictIr)
+    result = CliRunner().invoke(cli, ["device", "list-irs"])
+    assert result.exit_code == 0, result.output
+    assert seen == [True]
+
+
+def test_device_list_irs_reports_a_failed_listing(monkeypatch):
+    from helixgen.device.client import HelixError
+
+    class BoomIr(FakeClient):
+        def list_irs(self, strict=False, settle=True):
+            raise HelixError("no reply listing container -11")
+
+    _patch_client(monkeypatch, BoomIr)
+    result = CliRunner().invoke(cli, ["device", "list-irs"])
+    assert result.exit_code != 0
+    assert "no reply listing container -11" in result.output

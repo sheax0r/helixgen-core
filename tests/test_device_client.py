@@ -1545,3 +1545,104 @@ def test_reorder_container_raises_on_total_timeout():
     _wire(h, [])
     with pytest.raises(HelixError, match="no reply"):
         h.reorder_container(-2, [5], 1)
+
+
+# -- IR listing vs. the lagging container index (#38 Task 4) ------------------
+
+
+class _RecordingSub:
+    """Subscriber fake that records the ports every open asked for."""
+
+    opened: list = []
+
+    def __init__(self, _ip, ports=()):
+        _RecordingSub.opened.append(tuple(ports))
+
+    def connect(self):
+        return self
+
+    def close(self):
+        pass
+
+
+def _patch_recording_sub(monkeypatch):
+    from helixgen.device import subscribe as sub_mod
+    _RecordingSub.opened = []
+    monkeypatch.setattr(sub_mod, "HelixSubscriber", _RecordingSub)
+
+
+def _ir_listing_frame(reqid=1000):
+    irs = [{"cid_": 5, "name": "A", "hash": b"\x11" * 16, "mono": False,
+            "posi": 0}]
+    return osc_encode(
+        "/GetContainerContents",
+        [("i", reqid), ("b", msgpack.packb(irs, use_bin_type=True))])
+
+
+def test_list_irs_reads_under_a_2001_subscription(monkeypatch):
+    """The -11 container index lags a just-completed write unless a client is
+    subscribed to the 2001 change stream, so the read that reported 24 IRs for
+    minutes after an upload must open one first (#38 Task 4)."""
+    _patch_recording_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    _wire(h, [_ir_listing_frame()])
+    assert [m["hash"] for m in h.list_irs()] == ["11" * 16]
+    assert _RecordingSub.opened == [(2001,)]
+
+
+def test_list_irs_settle_false_skips_the_subscription(monkeypatch):
+    """The settle is an escape-hatch-able cost: a caller already holding a
+    2001 subscription (or one that wants a bare read) can opt out."""
+    _patch_recording_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    _wire(h, [_ir_listing_frame()])
+    assert len(h.list_irs(settle=False)) == 1
+    assert _RecordingSub.opened == []
+
+
+def test_device_ir_hashes_cross_checks_absent_hashes(monkeypatch, caplog):
+    """A hash the -11 listing omits but /IrPathForHashGet resolves is PRESENT:
+    the listing was stale, not authoritative. It must be reported (loudly),
+    not silently accepted as absent."""
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_irs", lambda **_k: [{"hash": "aa" * 16}])
+    monkeypatch.setattr(
+        h, "ir_path_for_hash",
+        lambda hh: "/data/x.wav" if hh == "bb" * 16 else None)
+    with caplog.at_level(logging.WARNING):
+        got = h.device_ir_hashes(verify=["bb" * 16, "cc" * 16])
+    assert got == {"aa" * 16, "bb" * 16}  # cc genuinely absent
+    assert "bb" * 16 in caplog.text and "stale" in caplog.text.lower()
+
+
+def test_device_ir_hashes_without_verify_is_listing_only(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_irs", lambda **_k: [{"hash": "aa" * 16}])
+
+    def boom(_hh):  # pragma: no cover - must not be called
+        raise AssertionError("no point lookup without verify=")
+
+    monkeypatch.setattr(h, "ir_path_for_hash", boom)
+    assert h.device_ir_hashes() == {"aa" * 16}
+
+
+def test_check_irs_does_not_report_a_present_ir_as_missing(monkeypatch):
+    """bridge.check_irs drives 'you must import this IR' advice; a lagging
+    listing must not make an IR that IS on the device look missing."""
+    from helixgen.device import bridge
+
+    class _C:
+        def list_irs(self, **_k):
+            return [{"hash": "aa" * 16}]
+
+        def ir_path_for_hash(self, hh):
+            return "/data/y.wav" if hh == "bb" * 16 else None
+
+        device_ir_hashes = HelixClient.device_ir_hashes
+
+    body = {"preset": {"flow": [{"b0": {"slot": [{"irhash": "bb" * 16}]}}]}}
+    res = bridge.check_irs(_C(), body)
+    assert res["missing"] == set()
+    assert res["present"] == {"bb" * 16}

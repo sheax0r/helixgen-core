@@ -94,18 +94,18 @@ against the fake/injected socket. No device lock lease is needed; do not run
 
 ### Task 4: `device list-irs` — stale container index
 
-- [ ] Failing test: a container listing that lags a just-completed write must
+- [x] Failing test: a container listing that lags a just-completed write must
       not be reported as authoritative
-- [ ] Reported symptom: `list-irs` returned exactly 24 entries for minutes
+- [x] Reported symptom: `list-irs` returned exactly 24 entries for minutes
       after an IR upload, omitting a genuinely-present IR, while
       `ir_path_for_hash` (`client.py:528-546`) correctly resolved it.
       Confirmed as index lag, NOT truncation — the reply is a single
       2298-byte frame and later read back 25 entries
-- [ ] Make `list_irs` (`client.py:507`) either subscribe/settle before
+- [x] Make `list_irs` (`client.py:507`) either subscribe/settle before
       reading (the `mutating()` mechanism at :1237 exists precisely because
       the device only propagates promptly to a subscribed client) or
       cross-check against the authoritative point lookup
-- [ ] `device list-irs` (`cli_device.py:1786`) currently passes
+- [x] `device list-irs` (`cli_device.py:1786`) currently passes
       `strict=False`, so a partial read is silent. Make partial/stale reads
       loud
 

@@ -1800,7 +1800,10 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
 
     try:
         with HelixClient(ip, port) as h:
-            irs = h.list_irs()
+            # strict: a dropped/undecodable -11 reply must not print as "no
+            # IRs on the device" (#38 Task 4). The read also settles under a
+            # 2001 subscription so a just-uploaded IR isn't missed.
+            irs = h.list_irs(strict=True)
             if as_json:
                 lookup = getattr(h, "ir_path_for_hash", None)
                 for m in irs:

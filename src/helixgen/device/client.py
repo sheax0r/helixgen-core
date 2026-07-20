@@ -509,14 +509,33 @@ class HelixClient:
             return _irmd.normalize_hash_string(h)
         return None
 
-    def list_irs(self, *, strict: bool = False) -> List[Dict[str, Any]]:
+    def list_irs(self, *, strict: bool = False,
+                 settle: bool = True) -> List[Dict[str, Any]]:
         """Return the device's user IRs: ``{cid_, name, hash, mono, posi}``.
 
         ``hash`` is normalized to the 32-hex Stadium IR hash (== helixgen
         ``irhash``).
+
+        The read happens under :meth:`mutating` (``settle=True``, the default):
+        the ``-11`` container index only propagates promptly to a client that
+        holds a 2001 change-stream subscription, so an unsubscribed read can
+        under-report for **minutes** after an IR upload — the reported symptom
+        of 24 entries listed while a 25th was genuinely present and resolving
+        through :meth:`ir_path_for_hash` (#38 Task 4). That is index lag, not
+        truncation. ``settle=False`` skips the subscribe for a caller that
+        already holds one (nesting is cheap, so passing it is rarely needed)
+        or deliberately wants a bare read.
+
+        This listing is still **not** authoritative about absence — nothing
+        forces the index to have caught up. A caller that needs a definitive
+        "is this hash on the device?" must cross-check the point lookup; see
+        :meth:`device_ir_hashes`'s ``verify``.
         """
+        ctx = self.mutating() if settle else contextlib.nullcontext()
+        with ctx:
+            listing = self.list_container(USER_IRS, strict=strict)
         irs = []
-        for m in self.list_container(USER_IRS, strict=strict):
+        for m in listing:
             hh = self._hex_hash(m.get("hash"))
             if hh is None:
                 continue
@@ -526,9 +545,31 @@ class HelixClient:
         irs.sort(key=lambda m: m.get("posi", 1 << 30))
         return irs
 
-    def device_ir_hashes(self) -> set:
-        """The set of IR hashes (hex) present on the device."""
-        return {m["hash"] for m in self.list_irs()}
+    def device_ir_hashes(self, *, verify: Optional[Sequence[str]] = None) -> set:
+        """The set of IR hashes (hex) present on the device.
+
+        ``verify`` — hashes the caller is about to declare **missing**. Each
+        one absent from the (lag-prone, #38 Task 4) container listing is
+        re-checked against :meth:`ir_path_for_hash`, the authoritative point
+        lookup that reflects an import immediately. A hash the point lookup
+        resolves is present: it is added to the result and the stale listing
+        is logged as a warning rather than silently believed.
+        """
+        hashes = {m["hash"] for m in self.list_irs()}
+        for hh in (verify or ()):
+            if hh in hashes:
+                continue
+            try:
+                path = self.ir_path_for_hash(hh)
+            except HelixError:
+                continue
+            if path:
+                logger.warning(
+                    "IR %s is missing from the device's IR listing but "
+                    "resolves to %s — the container index is stale; treating "
+                    "the IR as present (backlog #38)", hh, path)
+                hashes.add(hh)
+        return hashes
 
     def ir_path_for_hash(self, hash_hex: str) -> Optional[str]:
         """Return the device's on-disk path for an IR ``hash`` (hex), or ``None``

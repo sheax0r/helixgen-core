@@ -81,7 +81,11 @@ def test_check_irs_partitions_present_and_missing():
     ]}}
 
     class FakeClient:
-        def device_ir_hashes(self):
+        def device_ir_hashes(self, *, verify=None):
+            # check_irs cross-checks the apparently-missing hashes against the
+            # point lookup (#38 Task 4); here the listing is not stale, so the
+            # verify set changes nothing.
+            assert set(verify or ()) == {"ondev", "missing"}
             return {"ondev", "other"}
 
     status = bridge.check_irs(FakeClient(), body)
