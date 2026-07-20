@@ -640,6 +640,78 @@ def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypa
     assert _mp.packb([930], use_bin_type=True) not in del_sent[0]
 
 
+def test_push_to_slot_without_a_precheck_never_cleans_up(monkeypatch, caplog):
+    """``slots restore --force`` skips the emptiness precheck, so the entry at
+    (name, pos) may be a PRE-EXISTING occupant. A failed write must leave it
+    alone — deleting it would destroy a preset we never created (#38)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # create reports the dirty-buffer flag; confirm re-list matches the occupant
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 1)])
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1001), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # set_content_data FAILS on the occupant we just "confirmed"
+    setfail = osc_encode("/status", [("i", 1002), ("i", 1), ("i", 0)])
+    _wire_seq(h, [[create], [listrep], [setfail]])
+
+    with caplog.at_level(logging.WARNING):
+        assert h._raw.push_to_slot(-2, 5, "X", blob,
+                                   prechecked_empty=False) is None
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent), \
+        "a --force write failure must not delete the slot's occupant"
+    assert "may predate this call" in caplog.text
+
+
+def test_push_to_slot_with_a_precheck_still_cleans_up(monkeypatch):
+    """The default (prechecked-empty) path keeps deleting its own orphan stub —
+    the no-cleanup guard must be scoped to --force, not blanket."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    setfail = osc_encode("/status", [("i", 1001), ("i", 1), ("i", 0)])
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    delete = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [setfail], [listrep], [delete]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob) is None
+    assert any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_delete_created_stub_lists_strictly(monkeypatch, caplog):
+    """A dropped listing reply must raise out of list_container and be reported
+    as a failed listing — never decode as an empty container and read as
+    'no entry matched', which looks like there was nothing to clean up (#40)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    seen = {}
+
+    def _fake_list(cid, *, strict=False):
+        seen["strict"] = strict
+        raise HelixError("timeout")
+    monkeypatch.setattr(h, "list_container", _fake_list)
+
+    with caplog.at_level(logging.WARNING):
+        assert h._delete_created_stub(-2, "X", 5) is None
+    assert seen["strict"] is True
+    assert "the listing failed" in caplog.text
+
+
 def test_confirmed_create_never_reaches_the_destructive_cleanup(monkeypatch):
     """The data-destroying path: cleanup must be UNREACHABLE once the confirming
     re-list found the content. Pinned by making _delete_created_stub explode —

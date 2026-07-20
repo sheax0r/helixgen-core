@@ -562,7 +562,8 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     except bridge.UnresolvedModel as e:
         raise click.ClickException(str(e)) from e
     with h.mutating():
-        cid = h._raw.push_to_slot(container, pos, name, blob)
+        cid = h._raw.push_to_slot(container, pos, name, blob,
+                                  prechecked_empty=not force)
     if cid is None:
         raise click.ClickException("failed to install preset")
     return cid
@@ -3080,7 +3081,10 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                             and h.find_by_pos(cont, cpos, strict=True) is not None):
                         raise click.ClickException(
                             f"{label} slot {cpos} is not empty (use --force)")
-                    return h._raw.push_to_slot(cont, cpos, name, src.read_bytes())
+                    # --force skipped the emptiness check, so a failed write must
+                    # not clean up: the entry may be a pre-existing occupant
+                    return h._raw.push_to_slot(cont, cpos, name, src.read_bytes(),
+                                               prechecked_empty=not force)
             else:  # hsp
                 from helixgen.hsp import read_hsp
 

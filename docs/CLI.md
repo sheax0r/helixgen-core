@@ -653,7 +653,12 @@ plumbing" in `CLAUDE.md`) — only intent is.
   Pathless `save`/`create` tones have no local source and can't be restored.
   `--force` pushes into an occupied **pool** slot (for **both** `.hsp` and
   `.sbe` sources) — it skips the pool emptiness check; the occupant is **not
-  deleted**. An occupied **named-setlist** position is refused even with
+  deleted**. Because that precheck is what makes a same-name entry at the slot
+  identifiable as one helixgen just created, a **failed write under `--force`
+  cleans nothing up** either (#38): the entry there may predate the call, and
+  deleting it would destroy a preset helixgen never created. The failure is
+  reported and the slot left as-is — re-list to check. An occupied
+  **named-setlist** position is refused even with
   `--force` (backlog #69): `reference_into_setlist` never removes an
   incumbent, so proceeding would stack a second reference at one position —
   uncataloged device behavior. Remove the incumbent reference first

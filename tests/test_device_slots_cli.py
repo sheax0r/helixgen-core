@@ -69,7 +69,8 @@ class FakeClient:
         import contextlib
         return contextlib.nullcontext(self)
 
-    def push_to_slot(self, container, pos, name, blob):
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
         self.calls.append(("push_to_slot", container, pos, name))
         return 900
 
@@ -148,7 +149,8 @@ def test_slots_restore_sbe_source_repushes(monkeypatch, tmp_path):
     holder = {}
 
     class Rec(FakeClient):
-        def push_to_slot(self, container, pos, name, blob):
+        def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
             holder["push"] = (container, pos, name)
             return 901
 
@@ -251,7 +253,8 @@ def test_slots_restore_falls_back_to_observed_posi(monkeypatch, tmp_path):
     holder = {}
 
     class Rec(FakeClient):
-        def push_to_slot(self, container, pos, name, blob):
+        def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
             holder["push"] = (container, pos, name)
             return 911
 

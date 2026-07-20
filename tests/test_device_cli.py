@@ -102,7 +102,8 @@ class FakeClient:
         self.calls.append(("find_by_pos", container, pos, strict))
         return None
 
-    def push_to_slot(self, container, pos, name, blob):
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
         self.calls.append(("push_to_slot", container, pos, name))
         return 900
 
@@ -310,7 +311,8 @@ def test_device_push_into_setlist_pool_failure_sends_no_reference(monkeypatch, t
             super().__init__(*a, **k)
             holder["client"] = self
 
-        def push_to_slot(self, container, pos, name, blob):
+        def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
             self.calls.append(("push_to_slot", container, pos, name))
             return None  # pool create failed (e.g. reply timeout)
 
@@ -1536,7 +1538,8 @@ class RaisingFindByPosClient(FakeClient):
                              "connection drop); refusing to treat it as empty")
         return None
 
-    def push_to_slot(self, container, pos, name, blob):
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
         type(self).WRITE_CALLS.append(("push_to_slot", container, pos, name))
         return 900
 

@@ -189,8 +189,10 @@ class _RawOps:
         return self._c._save_edit_buffer_to(container, pos, name)
 
     def push_to_slot(self, container: int, pos: int, name: str,
-                     blob: bytes) -> Optional[int]:
-        return self._c._push_to_slot(container, pos, name, blob)
+                     blob: bytes, *,
+                     prechecked_empty: bool = True) -> Optional[int]:
+        return self._c._push_to_slot(container, pos, name, blob,
+                                     prechecked_empty=prechecked_empty)
 
 
 class HelixClient:
@@ -1302,7 +1304,10 @@ class HelixClient:
                 container, why)
 
         try:
-            listing = self.list_container(container)
+            # strict (#40): a dropped or truncated reply must not decode as an
+            # empty container and report as "no entry matched" — that reads as
+            # "nothing to clean up" when the stub may well be sitting there
+            listing = self.list_container(container, strict=True)
         except HelixError as exc:
             _no_op(f"the listing failed: {exc}")
             return None
@@ -1364,7 +1369,8 @@ class HelixClient:
         return self._ok(self._rpc("/SetContentData", [("i", cid), ("b", blob)]))
 
     def _push_to_slot(self, container: int, pos: int, name: str,
-                     blob: bytes) -> Optional[int]:
+                     blob: bytes, *,
+                     prechecked_empty: bool = True) -> Optional[int]:
         """Create a new preset at ``pos`` and write ``blob`` into it (restore a
         backup / clone / install authored content).  Returns the new CID.
 
@@ -1372,15 +1378,33 @@ class HelixClient:
         cleanup sequence — ``device push`` and ``slots restore`` reach here
         without a subscription of their own, and the confirming re-list needs
         one to be prompt (see :meth:`_confirm_created`). Nesting is cheap for
-        ``install_into_pool`` / ``device install``, which already hold one."""
+        ``install_into_pool`` / ``device install``, which already hold one.
+
+        ``prechecked_empty`` says the caller confirmed ``pos`` was empty before
+        calling, which is what makes a same-name entry at ``pos`` afterwards
+        unambiguously **ours** and therefore safe to clean up on a failed write.
+        ``slots restore --force`` skips that precheck (#25), so there the entry
+        may be a **pre-existing occupant**: neither the create-reply cid nor
+        :meth:`_confirm_created`'s match can distinguish it from a fresh stub,
+        and deleting it would destroy content we never created — the very thing
+        #38 was about. Pass ``prechecked_empty=False`` on those paths and the
+        write failure is reported without any cleanup."""
         with self.mutating():
             cid = self._create_content_checked(container, pos, name)
             if cid is None:
                 return None
             if not self._set_content_data(cid, blob):
-                # cleanup: delete the entry we just created by (name, pos) — the
-                # create-reply cid is unreliable, so never blind-delete it
-                self._delete_created_stub(container, name, pos)
+                if prechecked_empty:
+                    # cleanup: delete the entry we just created by (name, pos) —
+                    # the create-reply cid is unreliable, so never blind-delete it
+                    self._delete_created_stub(container, name, pos)
+                else:
+                    logger.warning(
+                        "writing content to %r at slot %d in container %s "
+                        "failed, and the slot was not checked empty beforehand "
+                        "(--force), so the entry there may predate this call — "
+                        "leaving it alone rather than risk deleting a preset we "
+                        "did not create; re-list to check", name, pos, container)
                 return None
             return cid
 
