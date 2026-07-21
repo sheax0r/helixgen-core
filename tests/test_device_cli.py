@@ -119,8 +119,11 @@ class FakeClient:
         self.reads_under_sub.append(self.sub_depth > 0)
         return None
 
+    # NO default: production _RawOps.push_to_slot defaults prechecked_empty to
+    # False, so a fake defaulting it True would keep the owns_its_stub
+    # assertions green even if the CLI stopped passing the kwarg at all.
     def push_to_slot(self, container, pos, name, blob, *,
-                     prechecked_empty=True):
+                     prechecked_empty):
         self.calls.append(("push_to_slot", container, pos, name))
         self.push_kwargs.append({"container": container, "pos": pos,
                                  "prechecked_empty": prechecked_empty})
@@ -1668,8 +1671,9 @@ class PushRecordingClient(FakeClient):
 
     PUSHES: list = []
 
+    # NO default, same reason as PushRecordingClient above.
     def push_to_slot(self, container, pos, name, blob, *,
-                     prechecked_empty=True):
+                     prechecked_empty):
         type(self).PUSHES.append({"container": container, "pos": pos,
                                   "prechecked_empty": prechecked_empty})
         return 900

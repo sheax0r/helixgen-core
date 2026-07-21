@@ -1536,14 +1536,19 @@ class HelixClient:
                         f"retry may duplicate it")
         reported = (f"returned status code {code}" if code is not None
                     else "sent no /status reply")
+        # only code 1 is the known-benign dirty-edit-buffer flag; the rest of
+        # the non-zero taxonomy is uncatalogued (docs/helix-protocol.md §9), so
+        # riding this note on every message would point the user at an
+        # unrelated precondition for a genuine device-side rejection.
+        dirty = (" A code of 1 on its own is not an error — it reports that "
+                 "the active preset has unsaved edits (backlog #38)."
+                 if code == 1 else "")
         if saw_cidless:
             return HelixError(
                 f"/CreateContent for {name!r} at slot {pos} {reported}, and the "
                 f"{what} listing DID show an entry at that slot but never "
                 f"reported a cid for it "
-                f"({self.create_confirm_tries} attempts) — {survivor}. A code "
-                f"of 1 on its own is not an error — it reports that the active "
-                f"preset has unsaved edits (backlog #38).")
+                f"({self.create_confirm_tries} attempts) — {survivor}." + dirty)
         if not listed_cleanly:
             return HelixError(
                 f"/CreateContent for {name!r} at slot {pos} {reported}, "
@@ -1555,8 +1560,7 @@ class HelixClient:
                 + (f" (and anything `{verify_cmd}` does show at slot {pos} is "
                    f"an EMPTY stub, not a saved tone — delete it first)"
                    if entry_is_empty_stub else "")
-                + ". A code of 1 on its own is not an error — it reports that "
-                "the active preset has unsaved edits (backlog #38).")
+                + "." + dirty)
         if reply_cid is not None:
             detail = (f"the device reported new cid {reply_cid} but the {what} "
                       f"listing never showed it — verify with `{verify_cmd}` "
@@ -1568,9 +1572,7 @@ class HelixClient:
             f"/CreateContent for {name!r} at slot {pos} {reported}, and the "
             f"{what} listing was read cleanly but never showed the entry "
             f"({self.create_confirm_tries} attempts) — so the create really "
-            f"did not land; {detail}. A code of 1 on its own is not an error — "
-            f"it reports that the active preset has unsaved edits, not the "
-            f"cause of this failure (backlog #38).")
+            f"did not land; {detail}." + dirty)
 
     # -- mutating() context: activate prompt propagation for writes --------
     @contextlib.contextmanager

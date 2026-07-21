@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("msgpack")
 
-from helixgen.device import bridge, defs  # noqa: E402
+from helixgen.device import bridge  # noqa: E402
 
 # real device model ids with known categories (from the vendored defs)
 DIST = 310   # HD2_DistScream808Mono   -> distortion
@@ -91,3 +91,19 @@ def test_check_irs_partitions_present_and_missing():
     status = bridge.check_irs(FakeClient(), body)
     assert status["present"] == {"ondev"}
     assert status["missing"] == {"missing"}
+
+
+def test_check_irs_does_not_read_the_listing_when_no_irs_are_referenced():
+    """device_ir_hashes reads the -11 listing STRICTLY, so a dropped reply
+    raises. A preset that references no IRs has nothing to compare — asking
+    anyway would let a transient listing drop abort an install outright."""
+    body = {"preset": {"flow": [
+        {"b01": {"slot": [{"model": "HD2_AmpBrit2204"}]}},
+    ]}}
+
+    class Exploding:
+        def device_ir_hashes(self, *, verify=None):
+            raise AssertionError("must not read the IR listing for 0 IRs")
+
+    status = bridge.check_irs(Exploding(), body)
+    assert status == {"present": set(), "missing": set()}

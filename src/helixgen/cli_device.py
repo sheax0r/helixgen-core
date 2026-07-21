@@ -1812,6 +1812,10 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
     via /IrPathForHashGet) — the file keeps its original upload basename
     even after a `device rename-ir` (which changes only the display name),
     so `file` is what `device pull-ir` needs.
+
+    The listing is read strictly and under a change-stream subscription: a
+    dropped or truncated reply errors rather than printing as "no IRs", and a
+    just-uploaded IR isn't missed by the lagging container index (backlog #38).
     """
     HelixClient, HelixError = _client()
 
@@ -2109,7 +2113,11 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
               help="Destination: " + _SETLIST_HELP)
 @click.option("--auto-irs", is_flag=True, default=False,
               help="Upload any referenced IRs that aren't on the device yet "
-                   "(resolved from your local IR mapping.json).")
+                   "(resolved from your local IR mapping.json). A WEDGED IR "
+                   "(backing file resolves, no registry entry) reads as "
+                   "already-present and is NOT re-pushed, so its cab stays "
+                   "silent; the cross-check warns on stderr — clear it with "
+                   "`device delete-ir --force-wedge` (backlog #93).")
 @_device_option
 @_locked(verb="install", when=lambda kw: ("library", "irs")
         if kw.get("auto_irs") else ("library",))
@@ -3042,7 +3050,12 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
 @click.option("--force", is_flag=True, default=False,
               help="Push even if the destination POOL slot is occupied "
                    "(pool destinations only; an occupied named-setlist "
-                   "position is always refused — backlog #69).")
+                   "position is always refused — backlog #69). Also suppresses "
+                   "the failed-write cleanup: the entry at that slot may "
+                   "predate this call, so a failed write leaves it as-is "
+                   "(re-list to check). Setlist destinations are exempt — they "
+                   "write at a freshly computed lowest-empty pool posi and do "
+                   "clean up their own stub.")
 @_device_option
 @_locked("library", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,

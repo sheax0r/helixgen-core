@@ -7,6 +7,7 @@ a pre-built OSC reply frame). The client's request ids come from
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 
 import pytest
@@ -812,6 +813,36 @@ def test_create_status_error_message_names_the_real_precondition(monkeypatch):
     assert "status code 1" in msg
     assert "1237" in msg
     assert "#38" in msg
+
+
+def test_create_status_error_scopes_the_dirty_flag_note_to_code_1(monkeypatch):
+    """Only code 1 is the known-benign edit-buffer dirty flag. The rest of the
+    non-zero /status taxonomy is uncatalogued (docs/helix-protocol.md §9), so
+    riding the "a code of 1 is not an error" note on EVERY message points the
+    user at an unrelated precondition for a genuine device-side rejection."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    h.create_confirm_tries = 3
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # a code the device has never been observed to send as "dirty buffer"
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", -47)])
+    empty = [osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb([], use_bin_type=True))])
+        for r in range(1001, 1004)]
+    _wire_seq(h, [[create]] + [[f] for f in empty])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    msg = str(ei.value)
+    assert "status code -47" in msg
+    assert "unsaved edits" not in msg, \
+        "the dirty-buffer note must not ride a code that never meant that"
+    # the actionable part of the message survives the guard
+    assert "did not land" in msg
 
 
 def test_cidless_preset_message_calls_the_survivor_an_empty_stub(monkeypatch):
@@ -1726,6 +1757,36 @@ def test_install_into_pool_explicit_pos_skips_lowest_empty_posi(monkeypatch):
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
     assert h.install_into_pool(blob, name, pos=3) == 777
+
+
+def test_install_into_pool_only_prechecks_the_posi_it_chose_itself(monkeypatch):
+    """Only the self-chosen `pos=None` posi comes from a strict lowest-empty
+    read, so only it authorizes the failed-write cleanup to delete by
+    (name, pos). A caller-supplied pos was never checked here and could be a
+    pre-existing occupant (#38) — hardcoding prechecked_empty=True would make
+    a failed write destroy it."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    seen = []
+
+    def fake_push(container, pos, name, blob, *, prechecked_empty=False):
+        seen.append((pos, prechecked_empty))
+        return 777
+
+    monkeypatch.setattr(h, "_push_to_slot", fake_push)
+    monkeypatch.setattr(h, "_lowest_empty_posi", lambda c: 9)
+    # the write batch's 2001 subscription needs a real socket; the posi choice
+    # under test is independent of it
+    monkeypatch.setattr(h, "mutating", contextlib.nullcontext)
+    monkeypatch.setattr(h, "_pool_cid_by_name", lambda n, *, pos=None: 777)
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+
+    h.install_into_pool(blob, "Self Chosen")
+    h.install_into_pool(blob, "Caller Chosen", pos=3)
+
+    assert seen == [(9, True), (3, False)]
 
 
 def test_reorder_container_fallback_listing_stays_lenient(monkeypatch):

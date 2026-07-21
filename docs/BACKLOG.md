@@ -151,8 +151,9 @@ and had to be redirected. Start here so future work begins from the right model.
   scratch env for all local state, upfront `device backup`, before/after
   device-state diff asserted by the suite itself, `HGTEST`-prefixed
   artifacts with teardown-on-failure, and a byte-identity check on the real
-  `~/.helixgen` files. Validated device quirks are encoded (xfails for the
-  #38 /CreateContent episodes and the IR-registry wedge; #67's
+  `~/.helixgen` files. Validated device quirks are encoded (the #38
+  /CreateContent and IR-registry-wedge xfails were **removed** in 0.30.0 —
+  #38 was root-caused, so those paths are now asserted, not tolerated; #67's
   amp-pid-1-only live `set-param`; `pull-ir` by ORIGINAL basename after
   `rename-ir`; `measure`'s clean ok:false when idle; `create` auto-naming).
   Deliberate exclusions documented in `tests/live/conftest.py` (`restore`,
@@ -311,7 +312,10 @@ and had to be redirected. Start here so future work begins from the right model.
   position). *Hardware characterization of an actually-stacked duplicate
   remains uncaptured*: the 2026-07-17 overnight attempt was blocked by a
   persistent backlog-#38 `/CreateContent` status-1 episode (every preset
-  create failed at every posi; setlist create ghost-allocated) — if a future
+  create *reported* failure at every posi; setlist create ghost-allocated).
+  Root-caused 2026-07-19: status field 3 is the edit-buffer dirty flag, so
+  those creates were landing and the old client deleted them — a re-run today
+  would not hit it. If a future
   session wants the catalog entry, stack two references via raw
   `reference_into_setlist` on an HGTEST setlist after a reboot-fresh device.
 - **#70 Deprecated `throwaway`→`-5` remnants + stale dated docs [local]** —
@@ -328,7 +332,7 @@ and had to be redirected. Start here so future work begins from the right model.
 Legend: **[local]** = pure local code, no device needed. **[device-write]** =
 implementation is code, but *hardware validation* requires a device write
 (work against expendable artifacts with an upfront `device backup` and clean
-teardown; mind the #38 /CreateContent flakiness). **[discovery]** = also needs
+teardown). **[discovery]** = also needs
 an OSC command we haven't captured yet.
 
 ### IR — prompt registration (FIXED, 2.7.0)

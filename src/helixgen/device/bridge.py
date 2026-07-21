@@ -579,5 +579,10 @@ def check_irs(client, hsp_body: dict) -> Dict[str, set]:
     the user off to re-import it (#38 Task 4).
     """
     want = hsp_ir_hashes(hsp_body)
+    if not want:
+        # a preset that references no IRs has nothing to compare, and
+        # device_ir_hashes reads the -11 listing STRICTLY: asking anyway would
+        # let a dropped listing abort an install that never needed the answer.
+        return {"present": set(), "missing": set()}
     have = client.device_ir_hashes(verify=sorted(want))
     return {"present": want & have, "missing": want - have}
