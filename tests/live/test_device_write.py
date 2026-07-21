@@ -146,14 +146,14 @@ def dirty_edit_buffer(helix, installed):
     """Leave the ACTIVE preset carrying an UNSAVED edit, and fail loudly if
     that can't be established.
 
-    The module docstring asks the operator to dirty the buffer by hand, but a
-    docstring can't hold: `test_load_installed_preset` runs earlier in this
-    module and `device load` CLEARS the dirty flag, so by the time the #38
-    guard runs the buffer is clean again and `/CreateContent` answers 0 — the
-    uninteresting path. So dirty it here, immediately before the save.
+    This has to be a fixture rather than an instruction to the operator:
+    `test_load_installed_preset` runs earlier in this module and `device load`
+    CLEARS the dirty flag, so by the time the #38 guard runs a hand-dirtied
+    buffer is clean again and `/CreateContent` answers 0 — the uninteresting
+    path. So dirty it here, immediately before the save.
 
     `device load` then `device set-param` on the live buffer is the same
-    "tweak a knob without saving" the docstring describes. If no param can be
+    "tweak a knob without saving" a player would do. If no param can be
     written we SKIP rather than run green: a pass against a clean buffer would
     assert nothing about #38.
     """

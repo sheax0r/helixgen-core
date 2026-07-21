@@ -1517,6 +1517,22 @@ Remaining follow-ups:
   caller (`device save`) prechecks strictly under a subscription — but the
   asymmetry is a trap for the next caller. Give it the same opt-in flag.
 
+- **#96 `_create_content_checked`'s `code == 0` fast path still returns the
+  unverified create-reply cid.** The `code != 0` branch now resolves the cid by
+  re-list (`_confirm_created`) precisely because the reply cid is
+  documented-unreliable (`_pool_cid_by_name`'s docstring; the same unreliability
+  motivated `_delete_created_stub`'s verify-before-delete). The `code == 0`
+  branch returns that reply cid unchanged, and `_push_to_slot` then runs
+  `_set_content_data(cid, blob)` on it — so a stale/misreported cid on a
+  code-0 create writes preset content into an unrelated cid silently. Deliberately
+  out of scope for the #38 fix (no evidence the cid is ever wrong when the code
+  is 0, and the fast path avoids a full pool listing on the common clean-buffer
+  path), but the asymmetry is now load-bearing: the change set's own premise is
+  that the status code carries no success information. Options: always confirm
+  by re-list (costs one listing per create), or cheaply cross-check the reply
+  cid's `name`/`posi` via a point `/GetContentRef` before writing into it.
+  Needs live hardware to characterise — pair with #90.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

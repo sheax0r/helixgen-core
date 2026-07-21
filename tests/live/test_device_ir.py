@@ -51,9 +51,11 @@ def test_push_rename_pull_delete_ir(helix, hgtest_wav, hgtest_wav_hash, tmp_path
         code, out, err = helix("device", "push-ir", hgtest_wav, timeout=120)
         assert code == 0, err or out
 
-        # `list_irs` settles under a subscription and cross-checks the point
-        # lookup, so the entry must be there. Poll only to absorb ordinary
-        # network jitter — a timeout is a REAL failure, not an xfail.
+        # `device list-irs` reads under a 2001 subscription and lets the
+        # registry settle, so the entry must be there. (The point-lookup
+        # cross-check is a separate `device_ir_hashes(verify=...)` path this
+        # CLI listing doesn't take.) Poll only to absorb ordinary network
+        # jitter — a timeout is a REAL failure, not an xfail.
         deadline = time.time() + REGISTRY_WAIT_S
         while time.time() < deadline:
             if hgtest_wav_hash in _device_ir_hashes(helix):

@@ -2612,7 +2612,8 @@ def device_add_cmd(tone: str, slot: str) -> None:
             f"unimplemented (backlog #30). `device sync` installs at the "
             f"lowest empty slot regardless of the label, so recording {slot!r} "
             f"would report a placement that never happens. Use --slot auto "
-            f"(the default), then move the preset with `device reorder`.")
+            f"(the default), then move the preset with `device reorder` "
+            f"(`device reorder -2 <name> --to <N>` for a pool-only tone).")
 
     m = SetlistManifest.load()
     try:
