@@ -543,6 +543,15 @@ class HelixClient:
         for m in listing:
             hh = self._hex_hash(m.get("hash"))
             if hh is None:
+                # never silent (#38 Task 4): a row we can't normalize drops out
+                # of the listing, which under-reports exactly like the lag this
+                # method's subscription exists to avoid — and `strict` promises
+                # a partial read is loud rather than decoding as "not there"
+                logger.warning(
+                    "device IR listing entry %r (slot %s) has an unusable hash "
+                    "%r and was skipped — the IR is on the device but will not "
+                    "appear in this listing",
+                    m.get("name"), m.get("posi"), m.get("hash"))
                 continue
             m = dict(m)
             m["hash"] = hh
@@ -1776,6 +1785,18 @@ class HelixClient:
                 # cleanup and leaks the setlist it claims not to have made.
                 created, listed_cleanly, saw_cidless = self._confirm_created(
                     int(Container.SETLISTS_ROOT), name, int(pos))
+                if created is None:
+                    # _confirm_created matches on exact name AND posi, which is
+                    # the right test for the preset paths (a slot the caller
+                    # checked empty). Nothing live-verifies that a ctype=1003
+                    # create lands at the requested posi, and setlist names are
+                    # matched case-insensitively everywhere else, so fall back
+                    # to the posi-agnostic, case-insensitive lookup the rest of
+                    # this method already trusts before declaring a failure —
+                    # raising for a setlist that IS on the device is the very
+                    # #38 false negative this path exists to remove, and
+                    # `setlist duplicate`'s auto-create leaks it.
+                    created = self.resolve_setlist_cid(name, strict=False)
                 if created is None:
                     raise self._create_status_error(
                         name, int(pos), reply_cid,

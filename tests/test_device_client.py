@@ -1269,6 +1269,36 @@ def test_create_setlist_nonzero_code_with_container_present_is_success(
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
 
 
+def test_create_setlist_nonzero_code_confirms_by_name_when_posi_differs(
+        monkeypatch):
+    # _confirm_created matches on exact name AND posi, which is only
+    # live-verified for the preset ctype. If a ctype=1003 create lands at a
+    # posi other than the one requested, the posi-keyed match misses and the
+    # setlist would be declared absent — reviving the #38 false negative for a
+    # setlist that IS on the device. The name lookup (case-insensitive,
+    # posi-agnostic, as everywhere else) must catch it before raising.
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    list1 = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    # non-zero code == the edit buffer was dirty, not a failure
+    create = osc_encode("/status", [("i", 1001), ("i", 1186), ("i", 1)])
+    # the setlist IS there, but the device put it at posi 3, not the 0 we asked
+    # for, so every confirming re-list fails the posi test
+    made = [{"cid_": 1186, "name": "ZZC-x", "cctp": 1001, "posi": 3}]
+    listings = [[osc_encode(
+        "/GetContainerContents",
+        [("i", r), ("b", msgpack.packb(made, use_bin_type=True))])]
+        for r in range(1002, 1002 + h.create_confirm_tries + 2)]
+    _wire_seq(h, [[list1], [create]] + listings)
+
+    assert h.create_setlist("ZZC-x") == 1186
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
 def test_create_setlist_nonzero_code_absent_names_verify_verb(monkeypatch):
     # genuine failure: non-zero code AND the container never shows up in the
     # confirming re-list. The error must point the user at

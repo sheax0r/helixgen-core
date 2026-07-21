@@ -595,31 +595,42 @@ def delete_hgtest_setlists(helix) -> None:
     would leave it behind on real hardware — which is exactly the leak the
     old 3 s pre-sweep sleep was there to prevent.
     """
+    attempts = 5
     clean_passes = 0
-    for attempt in range(3):
+    for attempt in range(attempts):
         code, out, err = helix("device", "setlists", "--json")
         if code != 0:
             # a listing we could not read is NOT evidence the device is clean:
             # say so loudly rather than return silently and leave HGTEST
             # setlists on real hardware
             print(f"warning: HGTEST setlist sweep could not list the device "
-                  f"(attempt {attempt + 1}/3): {(err or out).strip()}",
+                  f"(attempt {attempt + 1}/{attempts}): {(err or out).strip()}",
                   file=sys.stderr)
-            time.sleep(1.0)
-            continue
-        stale = [m.get("name") or "" for m in json.loads(out)
-                 if (m.get("name") or "").startswith(HGTEST)]
-        for name in stale:
-            helix("device", "setlist", "delete", name, "--yes")
-        if stale:
             clean_passes = 0
         else:
-            # one clean listing can be the lagging index; two in a row is the
-            # confirmation. Never sleep after the last thing we needed.
-            clean_passes += 1
-            if clean_passes >= 2:
-                return
-        time.sleep(1.0)
+            stale = [m.get("name") or "" for m in json.loads(out)
+                     if (m.get("name") or "").startswith(HGTEST)]
+            for name in stale:
+                helix("device", "setlist", "delete", name, "--yes")
+            if stale:
+                clean_passes = 0
+            else:
+                # one clean listing can be the lagging index; two in a row is
+                # the confirmation.
+                clean_passes += 1
+                if clean_passes >= 2:
+                    return
+        # never sleep after the last attempt — there is nothing left to settle
+        if attempt < attempts - 1:
+            time.sleep(1.0)
+    # exhausted without the two-in-a-row confirmation this sweep documents
+    # (e.g. clean/stale/clean, or a run of unreadable listings): returning
+    # silently here reads as "the device is clean" when it may still be
+    # carrying HGTEST setlists on real hardware
+    print(f"warning: HGTEST setlist sweep gave up after {attempts} attempts "
+          f"without two consecutive clean listings — HGTEST setlists may "
+          f"still be on the device; re-run `helixgen device setlists` to "
+          f"check", file=sys.stderr)
 
 
 # --------------------------------------------------------------------------
