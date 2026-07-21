@@ -629,7 +629,8 @@ def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypa
     delete = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
     _wire_seq(h, [[create], [setfail], [listrep], [delete]])
 
-    assert h._raw.push_to_slot(-2, 5, "X", blob) is None
+    assert h._raw.push_to_slot(-2, 5, "X", blob,
+                               prechecked_empty=True) is None
     del_sent = [s for s in h.sock.sent if b"/RemoveContent" in s]
     assert del_sent, "expected a /RemoveContent cleanup"
     # the msgpack cid list in the delete frame must carry 777 (relist), not 930
@@ -688,7 +689,8 @@ def test_push_to_slot_with_a_precheck_still_cleans_up(monkeypatch):
     delete = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
     _wire_seq(h, [[create], [setfail], [listrep], [delete]])
 
-    assert h._raw.push_to_slot(-2, 5, "X", blob) is None
+    assert h._raw.push_to_slot(-2, 5, "X", blob,
+                               prechecked_empty=True) is None
     assert any(b"/RemoveContent" in s for s in h.sock.sent)
 
 
@@ -780,8 +782,10 @@ def test_create_status_error_does_not_delete(monkeypatch):
 def test_create_status_error_message_names_the_real_precondition(monkeypatch):
     """Message contract (#38). The old text said to power-cycle the Helix — live
     A/B showed that demonstrably does not help, because the same dirty edit
-    buffer is reloaded on boot. The message must instead name the real
-    precondition: the active preset has unsaved edits; save or reload it."""
+    buffer is reloaded on boot. Root-causing went further: field 3 is the edit
+    buffer's dirty flag, so a code of 1 is not the failure and "save or reload
+    it and retry" is a non-remedy. The message must say so, matching the
+    saw_cidless / not-listed-cleanly branches rather than contradicting them."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
@@ -800,7 +804,10 @@ def test_create_status_error_message_names_the_real_precondition(monkeypatch):
     msg = str(ei.value)
     assert "power-cycle" not in msg.lower()
     assert "unsaved edits" in msg
-    assert "save or reload" in msg.lower()
+    # code 1 is the dirty-buffer flag, never the diagnosis — no non-remedy
+    assert "save or reload" not in msg.lower()
+    assert "expected code 0" not in msg.lower()
+    assert "not an error" in msg.lower()
     # the recoverable facts stay in the message
     assert "status code 1" in msg
     assert "1237" in msg
@@ -888,7 +895,8 @@ def test_cleanup_that_matches_nothing_is_reported(monkeypatch, caplog):
     _wire_seq(h, [[create], [setfail], [listrep]])
 
     with caplog.at_level(logging.WARNING):
-        assert h._raw.push_to_slot(-2, 5, "X", blob) is None
+        assert h._raw.push_to_slot(-2, 5, "X", blob,
+                               prechecked_empty=True) is None
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
     text = caplog.text
     assert "X" in text and "5" in text
@@ -1778,6 +1786,41 @@ def test_list_irs_settle_false_skips_the_subscription(monkeypatch):
     assert _RecordingSub.opened == []
 
 
+def test_ir_path_for_hash_strict_raises_on_a_dropped_reply(monkeypatch):
+    """A timed-out lookup must not decode as 'the device doesn't have it'.
+    _rpc returns [] on a plain timeout, so without strict= the caller cannot
+    tell a dropped reply from a genuine absence (#40's contract, applied to
+    the point lookup)."""
+    h = HelixClient("10.0.0.99")
+    _wire(h, [])  # no reply frames at all
+    with pytest.raises(HelixError):
+        h.ir_path_for_hash("bb" * 16, strict=True)
+    # non-strict keeps the old lenient reading for callers that want it
+    _wire(h, [])
+    assert h.ir_path_for_hash("bb" * 16) is None
+
+
+def test_device_ir_hashes_warns_when_the_lookup_is_dropped(monkeypatch, caplog):
+    """The verify cross-check exists to survive a flaky transport, so a
+    dropped lookup must warn and report the hash unverified rather than
+    silently degrade to the false 'missing' it was added to prevent — a false
+    missing re-uploads an IR the device already has."""
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_irs", lambda **_k: [{"hash": "aa" * 16}])
+    seen = {}
+
+    def _lookup(hh, **kw):
+        seen["strict"] = kw.get("strict")
+        raise HelixError("no reply")
+
+    monkeypatch.setattr(h, "ir_path_for_hash", _lookup)
+    with caplog.at_level(logging.WARNING):
+        got = h.device_ir_hashes(verify=["bb" * 16])
+    assert seen["strict"] is True, "the cross-check must use the strict lookup"
+    assert got == {"aa" * 16}
+    assert "unverified" in caplog.text
+
+
 def test_device_ir_hashes_cross_checks_absent_hashes(monkeypatch, caplog):
     """A hash the -11 listing omits but /IrPathForHashGet resolves is PRESENT:
     the listing was stale, not authoritative. It must be reported (loudly),
@@ -1786,7 +1829,7 @@ def test_device_ir_hashes_cross_checks_absent_hashes(monkeypatch, caplog):
     monkeypatch.setattr(h, "list_irs", lambda **_k: [{"hash": "aa" * 16}])
     monkeypatch.setattr(
         h, "ir_path_for_hash",
-        lambda hh: "/data/x.wav" if hh == "bb" * 16 else None)
+        lambda hh, **_k: "/data/x.wav" if hh == "bb" * 16 else None)
     with caplog.at_level(logging.WARNING):
         got = h.device_ir_hashes(verify=["bb" * 16, "cc" * 16])
     assert got == {"aa" * 16, "bb" * 16}  # cc genuinely absent
@@ -1813,7 +1856,7 @@ def test_check_irs_does_not_report_a_present_ir_as_missing(monkeypatch):
         def list_irs(self, **_k):
             return [{"hash": "aa" * 16}]
 
-        def ir_path_for_hash(self, hh):
+        def ir_path_for_hash(self, hh, **_k):
             return "/data/y.wav" if hh == "bb" * 16 else None
 
         device_ir_hashes = HelixClient.device_ir_hashes
@@ -2119,7 +2162,7 @@ def test_device_ir_hashes_warns_when_the_point_lookup_fails(monkeypatch, caplog)
     monkeypatch.setattr(h, "list_irs", lambda **_k: [{"hash": "aa" * 16}])
     monkeypatch.setattr(
         h, "ir_path_for_hash",
-        lambda _hh: (_ for _ in ()).throw(HelixError("timeout")))
+        lambda _hh, **_k: (_ for _ in ()).throw(HelixError("timeout")))
     with caplog.at_level(logging.WARNING):
         got = h.device_ir_hashes(verify=["bb" * 16])
     assert got == {"aa" * 16}

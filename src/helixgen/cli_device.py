@@ -2131,7 +2131,11 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
 
     body = read_hsp(hsp_file)
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # The whole sequence runs under one 2001 subscription: the
+            # emptiness reads that decide where to write — and that authorize
+            # the failed-write cleanup to delete by (name, pos) — must not be
+            # answered from a lagging container index (#38).
             kind, container, label = _resolve_setlist_dest(h, setlist)
 
             def _writer(cont, cpos):
@@ -2907,7 +2911,12 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
             def _writer(cont, cpos):
                 if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
                     raise click.ClickException(f"{label} slot {cpos} is not empty")
-                return h._raw.push_to_slot(cont, cpos, name, blob)
+                # both paths reach here with a known-empty posi (the pool
+                # branch just checked strictly; the setlist branch pushes into
+                # a freshly computed lowest-empty pool posi), so a same-named
+                # stub after a failed write is ours to clean up (#38).
+                return h._raw.push_to_slot(cont, cpos, name, blob,
+                                           prechecked_empty=True)
 
             new_cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, pos, _writer)
@@ -3079,7 +3088,11 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     HelixClient, HelixError = _client()
 
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # One subscription for the whole restore — the strict emptiness
+            # checks below decide both whether to refuse and whether a failed
+            # write may delete what it finds, so they must read a settled
+            # container index rather than a lagging one (#38).
             kind, container, label = _resolve_setlist_dest(h, dest_setlist)
             if kind == "setlist" and pos is None:
                 raise click.ClickException(

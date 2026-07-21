@@ -190,7 +190,7 @@ class _RawOps:
 
     def push_to_slot(self, container: int, pos: int, name: str,
                      blob: bytes, *,
-                     prechecked_empty: bool = True) -> Optional[int]:
+                     prechecked_empty: bool = False) -> Optional[int]:
         return self._c._push_to_slot(container, pos, name, blob,
                                      prechecked_empty=prechecked_empty)
 
@@ -582,7 +582,7 @@ class HelixClient:
             if hh in hashes:
                 continue
             try:
-                path = self.ir_path_for_hash(hh)
+                path = self.ir_path_for_hash(hh, strict=True)
             except HelixError as exc:
                 logger.warning(
                     "IR %s is missing from the device's IR listing and the "
@@ -599,22 +599,36 @@ class HelixClient:
                 hashes.add(hh)
         return hashes
 
-    def ir_path_for_hash(self, hash_hex: str) -> Optional[str]:
+    def ir_path_for_hash(self, hash_hex: str, *,
+                         strict: bool = False) -> Optional[str]:
         """Return the device's on-disk path for an IR ``hash`` (hex), or ``None``
         if the device doesn't have it registered.
 
         This is the **reliable** registration check — it reflects a newly
         imported IR immediately, unlike ``list_irs``/``/GetContainerContents``
         (whose container listing lags after a write). Uses the editor's own
-        ``/IrPathForHashGet`` (16-byte blob arg)."""
+        ``/IrPathForHashGet`` (16-byte blob arg).
+
+        ``strict`` (#40, same contract as :meth:`list_container`) raises
+        :class:`HelixError` when the device answered nothing at all, instead
+        of collapsing a dropped reply into the same ``None`` that means "not
+        registered". Callers that use this lookup to *overturn* a missing
+        verdict must pass it: the flaky transport is exactly the condition the
+        cross-check exists to survive, and a silent false "missing" there
+        re-uploads an IR the device already has."""
         try:
             blob = _irmd.irhash_to_irmd(hash_hex)
         except ValueError:
             return None
-        for _addr, args in self._rpc("/IrPathForHashGet", [("b", blob)]):
+        replies = self._rpc("/IrPathForHashGet", [("b", blob)])
+        for _addr, args in replies:
             # reply /xxxIrxPathForHash1 [reqid, path]; empty path == not present
             if len(args) >= 2 and isinstance(args[1], str):
                 return args[1] or None
+        if strict and not replies:
+            raise HelixError(
+                f"/IrPathForHashGet for {hash_hex} returned no reply — cannot "
+                f"tell whether the device has the IR")
         return None
 
     def get_ref(self, cid: int) -> Optional[Dict[str, Any]]:
@@ -1391,25 +1405,27 @@ class HelixClient:
 
     def _push_to_slot(self, container: int, pos: int, name: str,
                      blob: bytes, *,
-                     prechecked_empty: bool = True) -> Optional[int]:
+                     prechecked_empty: bool = False) -> Optional[int]:
         """Create a new preset at ``pos`` and write ``blob`` into it (restore a
         backup / clone / install authored content).  Returns the new CID.
 
         Runs under :meth:`mutating` for the whole create → confirm → write →
-        cleanup sequence — ``device push`` and ``slots restore`` reach here
-        without a subscription of their own, and the confirming re-list needs
-        one to be prompt (see :meth:`_confirm_created`). Nesting is cheap for
-        ``install_into_pool`` / ``device install``, which already hold one.
+        cleanup sequence — the confirming re-list needs a subscription to be
+        prompt (see :meth:`_confirm_created`). Nesting is cheap for callers
+        that already hold one (``install_into_pool``, ``device install``,
+        ``slots restore``, ``setlist sync``).
 
         ``prechecked_empty`` says the caller confirmed ``pos`` was empty before
         calling, which is what makes a same-name entry at ``pos`` afterwards
         unambiguously **ours** and therefore safe to clean up on a failed write.
-        ``slots restore --force`` skips that precheck (#25), so there the entry
+        It **defaults to False** — deleting is the destructive answer, so a
+        caller has to opt in deliberately rather than inherit permission.
+        ``slots restore --force`` skips the precheck (#25), so there the entry
         may be a **pre-existing occupant**: neither the create-reply cid nor
         :meth:`_confirm_created`'s match can distinguish it from a fresh stub,
         and deleting it would destroy content we never created — the very thing
-        #38 was about. Pass ``prechecked_empty=False`` on those paths and the
-        write failure is reported without any cleanup."""
+        #38 was about. Left False, the write failure is reported without any
+        cleanup."""
         with self.mutating():
             cid = self._create_content_checked(container, pos, name)
             if cid is None:
@@ -1521,11 +1537,12 @@ class HelixClient:
             detail = (f"no cid was reported and the {what} listing never showed "
                       f"it — verify with `{verify_cmd}`")
         return HelixError(
-            f"/CreateContent for {name!r} at slot {pos} {reported} "
-            f"(expected code 0); {detail}. Status code 1 means the active "
-            f"preset has unsaved edits — save or reload it (in the Helix app or "
-            f"on the unit) and retry. Power-cycling does not help: the same "
-            f"unsaved state is restored on boot (backlog #38).")
+            f"/CreateContent for {name!r} at slot {pos} {reported}, and the "
+            f"{what} listing was read cleanly but never showed the entry "
+            f"({self.create_confirm_tries} attempts) — so the create really "
+            f"did not land; {detail}. A code of 1 on its own is not an error — "
+            f"it reports that the active preset has unsaved edits, not the "
+            f"cause of this failure (backlog #38).")
 
     # -- mutating() context: activate prompt propagation for writes --------
     @contextlib.contextmanager
@@ -1643,9 +1660,15 @@ class HelixClient:
         flow but is unused here — ``blob`` is already the full content to write.
         """
         with self.mutating():
+            prechecked = pos is None
             if pos is None:
                 pos = self._lowest_empty_posi(Container.POOL)
-            cid = self._push_to_slot(Container.POOL, pos, name, blob)
+            # only the self-chosen posi above is known-empty; a caller-supplied
+            # ``pos`` was never checked here, so it must not authorize the
+            # failed-write cleanup to delete by (name, pos) — that entry could
+            # be a pre-existing occupant (#38).
+            cid = self._push_to_slot(Container.POOL, pos, name, blob,
+                                     prechecked_empty=prechecked)
             if cid is None:
                 return None
             real = self._pool_cid_by_name(name, pos=pos)
