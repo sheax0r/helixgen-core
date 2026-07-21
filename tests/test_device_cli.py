@@ -30,6 +30,9 @@ class FakeClient:
     def __init__(self, *args, **kwargs):
         self.init_args = (args, kwargs)
         self.calls = []
+        # push_to_slot's cleanup-ownership flag, recorded separately so the
+        # existing (op, container, pos, name) assertions keep working (#38)
+        self.push_kwargs = []
 
     # production reaches the raw primitives via client._raw.<name>; on this
     # fake they live directly on the instance.
@@ -105,6 +108,8 @@ class FakeClient:
     def push_to_slot(self, container, pos, name, blob, *,
                      prechecked_empty=True):
         self.calls.append(("push_to_slot", container, pos, name))
+        self.push_kwargs.append({"container": container, "pos": pos,
+                                 "prechecked_empty": prechecked_empty})
         return 900
 
     def save_edit_buffer_to(self, container, pos, name):
@@ -369,8 +374,6 @@ def test_device_save_into_named_setlist(monkeypatch):
 def test_device_slots_restore_named_setlist_requires_pos(monkeypatch, tmp_path):
     """Review finding 2: a tone's recorded slot/posi is a POOL position;
     restoring into a named setlist without an explicit --pos must refuse."""
-    import helixgen.device.manifest as manifest_mod
-
     sbe = tmp_path / "t.sbe"
     sbe.write_bytes(b"_sbepgsm-fake")
     manifest = tmp_path / "setlists.json"
@@ -1597,6 +1600,81 @@ def test_device_install_aborts_on_listing_failure_no_write(monkeypatch, tmp_path
     assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
     assert RaisingFindByPosClient.WRITE_CALLS == []
     assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+class PushRecordingClient(FakeClient):
+    """Records push_to_slot's cleanup-ownership flag at class level (#38).
+
+    `_patch_client` installs the CLASS, so per-instance recording is
+    unreachable from the test body.
+    """
+
+    PUSHES: list = []
+
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
+        type(self).PUSHES.append({"container": container, "pos": pos,
+                                  "prechecked_empty": prechecked_empty})
+        return 900
+
+
+class PushRecordingSetlistClient(PushRecordingClient):
+    """...with a device setlist named Gigs to resolve against."""
+
+    def resolve_setlist_cid(self, name, *, strict=True):
+        return 4242
+
+    def list_setlists(self, *, strict=False):
+        return [{"cid_": 4242, "name": "Gigs"}]
+
+    def _lowest_empty_posi(self, container):
+        return 7
+
+    def reference_into_setlist(self, dest_cid, new_cid, pos):
+        return 555
+
+
+def _stub_install_pipeline(monkeypatch):
+    """Patch out transcode/IR checks so `device install` reaches push_to_slot."""
+    import helixgen.device.bridge as bridge
+    monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+
+
+def test_device_install_into_pool_owns_its_stub(monkeypatch, tmp_path):
+    """The pool path checks the slot empty itself, so a failed content write
+    created the entry sitting there and must clean it up (#38)."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _stub_install_pipeline(monkeypatch)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "Pool Tone")
+    PushRecordingClient.PUSHES = []
+    _patch_client(monkeypatch, PushRecordingClient)
+    result = CliRunner().invoke(
+        cli, ["device", "install", str(hsp), "Pool Tone", "--pos", "3"])
+    assert result.exit_code == 0, result.output
+    pushes = PushRecordingClient.PUSHES
+    assert pushes and pushes[-1]["prechecked_empty"] is True
+
+
+def test_device_install_into_setlist_owns_its_stub(monkeypatch, tmp_path):
+    """The setlist path skips the emptiness check because it just computed a
+    FRESH lowest-empty pool posi — that is known_empty, not force. Passing
+    force here orphaned an empty pool stub on every failed write (#38)."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _stub_install_pipeline(monkeypatch)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "Setlist Tone")
+    PushRecordingSetlistClient.PUSHES = []
+    _patch_client(monkeypatch, PushRecordingSetlistClient)
+    result = CliRunner().invoke(
+        cli, ["device", "install", str(hsp), "Setlist Tone", "--pos", "3",
+              "--setlist", "Gigs"])
+    assert result.exit_code == 0, result.output
+    pushes = PushRecordingSetlistClient.PUSHES
+    assert pushes, "install never reached push_to_slot"
+    assert pushes[-1]["container"] == -2, "the setlist path writes into the POOL"
+    assert pushes[-1]["pos"] == 7, "should use the freshly computed empty posi"
+    assert pushes[-1]["prechecked_empty"] is True
 
 
 def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(

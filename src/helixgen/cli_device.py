@@ -3096,9 +3096,17 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                         raise click.ClickException(
                             f"{label} slot {cpos} is not empty (use --force)")
                     # --force skipped the emptiness check, so a failed write must
-                    # not clean up: the entry may be a pre-existing occupant
-                    return h._raw.push_to_slot(cont, cpos, name, src.read_bytes(),
-                                               prechecked_empty=not force)
+                    # not clean up: the entry may be a pre-existing occupant.
+                    # The setlist path is exempt — _install_via_dest always
+                    # writes at a freshly computed lowest-empty POOL posi, which
+                    # --force never applied to (the check above is pool-only),
+                    # so a failed write there must clean up its own stub rather
+                    # than orphan it and blame a --force the user never aimed
+                    # at the pool (same conflation the .hsp branch fixed via
+                    # known_empty).
+                    return h._raw.push_to_slot(
+                        cont, cpos, name, src.read_bytes(),
+                        prechecked_empty=(kind == "setlist") or not force)
             else:  # hsp
                 from helixgen.hsp import read_hsp
 

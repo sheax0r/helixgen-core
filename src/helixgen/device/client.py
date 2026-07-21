@@ -1249,9 +1249,7 @@ class HelixClient:
         return None, listed_cleanly, saw_cidless
 
     def _create_content_checked(self, container: int, pos: int, name: str,
-                                ctype: int = 2, *, what: str = "pool",
-                                verify_cmd: str = "helixgen device list",
-                                ) -> Optional[int]:
+                                ctype: int = 2) -> Optional[int]:
         """``/CreateContent`` + **verify by re-list**; return the created cid.
 
         The status code alone can't tell success from failure (it reports the
@@ -1280,8 +1278,7 @@ class HelixClient:
             if confirmed is not None:
                 return confirmed
             raise self._create_status_error(
-                container, name, pos, cid, code,
-                what=what, verify_cmd=verify_cmd,
+                name, pos, cid, code,
                 listed_cleanly=listed_cleanly, saw_cidless=saw_cidless)
         return cid
 
@@ -1432,7 +1429,7 @@ class HelixClient:
                 return None
             return cid
 
-    def _create_status_error(self, container: int, name: str, pos: int,
+    def _create_status_error(self, name: str, pos: int,
                              reply_cid: Optional[int], code: Optional[int], *,
                              what: str = "pool",
                              verify_cmd: str = "helixgen device list",
@@ -1451,9 +1448,10 @@ class HelixClient:
         genuinely created something and then failed to write into it
         (:meth:`_push_to_slot` / :meth:`_save_edit_buffer_to`).
 
-        ``what``/``verify_cmd`` label the container kind for the message (pool
-        presets vs setlists — ``create_setlist`` reuses this error, #66
-        residual).
+        ``what``/``verify_cmd`` label the container kind for the message. The
+        preset paths (via :meth:`_create_content_checked`) take the defaults;
+        only ``create_setlist`` overrides them, since it reuses this error for
+        the setlists root (#66 residual).
 
         ``listed_cleanly`` is :meth:`_confirm_created`'s second return value:
         ``False`` means **every** confirming listing failed, so we never got a
@@ -1513,8 +1511,8 @@ class HelixClient:
                 + (f" (and anything `{verify_cmd}` does show at slot {pos} is "
                    f"an EMPTY stub, not a saved tone — delete it first)"
                    if entry_is_empty_stub else "")
-                + f". A code of 1 on its own is not an error — it reports that "
-                f"the active preset has unsaved edits (backlog #38).")
+                + ". A code of 1 on its own is not an error — it reports that "
+                "the active preset has unsaved edits (backlog #38).")
         if reply_cid is not None:
             detail = (f"the device reported new cid {reply_cid} but the {what} "
                       f"listing never showed it — verify with `{verify_cmd}` "
@@ -1738,7 +1736,7 @@ class HelixClient:
                     int(Container.SETLISTS_ROOT), name, int(pos))
                 if created is None:
                     raise self._create_status_error(
-                        int(Container.SETLISTS_ROOT), name, int(pos), reply_cid,
+                        name, int(pos), reply_cid,
                         code, what="setlist",
                         verify_cmd="helixgen device setlists",
                         listed_cleanly=listed_cleanly, saw_cidless=saw_cidless,

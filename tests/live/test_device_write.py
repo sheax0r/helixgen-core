@@ -11,19 +11,21 @@ whatever UNSAVED edit-buffer changes existed before the run are discarded,
 and the edit buffer is left on the (deleted) HGTEST tone. Saved presets are
 covered by the upfront session backup.
 
-Setup note — run this module with the edit buffer DIRTY
--------------------------------------------------------
+Setup note — the #38 guard needs a DIRTY edit buffer
+----------------------------------------------------
 Backlog #38 was root-caused 2026-07-19: field 3 of the /CreateContent
 /status reply is the device's edit-buffer dirty flag (`hist` in
 /EditBufferStateGet), not an error code. The old client read a dirty buffer
 as failure and DELETED the content it had just correctly written.
 
 So the interesting condition for this module is a dirty edit buffer, and a
-clean one exercises nothing. Before running it, make the active preset
-dirty: on the unit (or in the Helix app) tweak any knob on the ACTIVE preset
-and do NOT save — `helixgen device set-param ...` on the active tone works
-too. The old code failed every /CreateContent in that state; the current
-code must pass. `test_save_edit_buffer` is the primary guard.
+clean one exercises nothing. No manual setup is needed — and none would
+hold: `test_load_installed_preset` runs earlier here and `device load` clears
+the flag. The `dirty_edit_buffer` fixture therefore dirties the buffer itself
+immediately before the save, and SKIPS if it can't. The old code failed every
+/CreateContent in that state; the current code must pass.
+`test_save_edit_buffer` is the primary guard — if it SKIPS, the guard did not
+run, which is not the same as passing.
 """
 from __future__ import annotations
 

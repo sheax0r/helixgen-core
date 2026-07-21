@@ -1,7 +1,6 @@
 """CLI tests for the `helixgen device slots` group (list / --verify / restore)."""
 import json
 import pytest
-from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -239,6 +238,89 @@ def test_slots_restore_hsp_force_pushes_into_occupied_posi(monkeypatch, tmp_path
     assert r.exit_code == 0, r.output
     pushes = [c for inst in created for c in inst.calls if c[0] == "push_to_slot"]
     assert pushes and pushes[-1][2] == 12  # 4A -> posi 12
+
+
+def _restore_sbe_recording_prechecked(monkeypatch, tmp_path, *, name, argv,
+                                      client_cls=None):
+    """Run `slots restore` on an .sbe source and return the prechecked_empty
+    the CLI actually passed to push_to_slot."""
+    sbe = tmp_path / "x.sbe"
+    sbe.write_bytes(b"_sbepgsm-blob")
+    _seed(name=name, slot="2B", path=str(sbe), source="push", cid=None)
+
+    holder = {}
+    base = client_cls or FakeClient
+
+    class Rec(base):
+        def push_to_slot(self, container, pos, name, blob, *,
+                         prechecked_empty=True):
+            holder["prechecked_empty"] = prechecked_empty
+            holder["container"] = container
+            return 901
+
+    _patch_client(monkeypatch, Rec)
+    r = CliRunner().invoke(cli, argv)
+    assert r.exit_code == 0, r.output
+    return holder
+
+
+def test_slots_restore_sbe_without_force_cleans_up_a_failed_write(
+        monkeypatch, tmp_path):
+    """No --force means the slot WAS checked empty, so a failed content write
+    owns the stub it created and must clean it up (prechecked_empty=True)."""
+    holder = _restore_sbe_recording_prechecked(
+        monkeypatch, tmp_path, name="Plain",
+        argv=["device", "slots", "restore", "Plain"])
+    assert holder["prechecked_empty"] is True
+
+
+def test_slots_restore_sbe_force_into_pool_does_not_clean_up(
+        monkeypatch, tmp_path):
+    """--force skipped the pool emptiness check, so a same-named entry at that
+    posi may be a pre-existing occupant helixgen never created — a failed write
+    must NOT delete it (prechecked_empty=False)."""
+
+    class Occupied(FakeClient):
+        def find_by_pos(self, container, pos, *, strict=False):
+            return {"cid_": 5, "posi": pos}
+
+    holder = _restore_sbe_recording_prechecked(
+        monkeypatch, tmp_path, name="Forced",
+        argv=["device", "slots", "restore", "Forced", "--force"],
+        client_cls=Occupied)
+    assert holder["prechecked_empty"] is False
+
+
+def test_slots_restore_sbe_force_into_setlist_still_cleans_up(
+        monkeypatch, tmp_path):
+    """--force is a POOL-destination flag: the setlist path always writes at a
+    freshly computed lowest-empty POOL posi, which no --force ever skipped a
+    check on. Conflating the two orphaned an empty pool stub on every failed
+    setlist write and blamed a --force the user never aimed at the pool."""
+
+    class WithSetlist(FakeClient):
+        def resolve_setlist_cid(self, name, *, strict=True):
+            return 4242
+
+        def list_setlists(self, *, strict=False):
+            return [{"cid_": 4242, "name": "Gigs"}]
+
+        def find_by_pos(self, container, pos, *, strict=False):
+            return None
+
+        def _lowest_empty_posi(self, container):
+            return 7
+
+        def reference_into_setlist(self, dest_cid, new_cid, pos):
+            return 555
+
+    holder = _restore_sbe_recording_prechecked(
+        monkeypatch, tmp_path, name="Setlisted",
+        argv=["device", "slots", "restore", "Setlisted", "--force",
+              "--setlist", "Gigs", "--pos", "3"],
+        client_cls=WithSetlist)
+    assert holder["container"] == -2, "the setlist path writes into the POOL"
+    assert holder["prechecked_empty"] is True
 
 
 def test_slots_restore_falls_back_to_observed_posi(monkeypatch, tmp_path):

@@ -833,8 +833,11 @@ def test_cidless_preset_message_calls_the_survivor_an_empty_stub(monkeypatch):
     msg = str(ei.value)
     assert "EMPTY" in msg
     assert "Delete it before retrying" in msg
-    # and it must NOT claim the tone itself made it onto the device
-    assert "the content appears to be on the device" not in msg
+    # and it must NOT claim the tone itself made it onto the device. The
+    # no-cleanup-needed wording is built from `what`, which is "pool" on this
+    # path — asserting on any other noun would pass vacuously.
+    assert "the pool appears to be on the device" not in msg
+    assert "do NOT retry blindly" not in msg
     # the create path itself still deletes nothing (#38)
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
 
@@ -2013,6 +2016,33 @@ def test_confirming_relist_runs_under_a_subscription(monkeypatch):
 
     assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
     assert _RecordingSub.opened, "no 2001 subscription held over the confirm"
+
+
+def test_confirming_relist_requires_the_posi_to_match(monkeypatch):
+    """The confirm matches name AND posi. A same-named preset sitting at a
+    DIFFERENT slot is not our create: confirming on the name alone would return
+    the incumbent's cid and _set_content_data would then overwrite a preset we
+    never created — the same data loss #38 is about, just from the other
+    direction. Every other confirm test wires the match at the requested posi,
+    so this is the one that discriminates the field."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    h.create_confirm_tries = 2
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # "X" exists, but at posi 9 — we asked for slot 5
+    elsewhere = [_pool_listing(r, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                    "posi": 9}])
+                 for r in range(1001, 1004)]
+    _wire_seq(h, [[create]] + [[f] for f in elsewhere])
+
+    with pytest.raises(HelixError):
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    # and it must not have written content into the incumbent's cid
+    assert not any(b"/SetContentData" in s for s in h.sock.sent)
 
 
 def test_save_edit_buffer_confirming_relist_runs_under_a_subscription(monkeypatch):

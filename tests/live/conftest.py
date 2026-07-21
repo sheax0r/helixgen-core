@@ -595,16 +595,30 @@ def delete_hgtest_setlists(helix) -> None:
     would leave it behind on real hardware — which is exactly the leak the
     old 3 s pre-sweep sleep was there to prevent.
     """
+    clean_passes = 0
     for attempt in range(3):
-        code, out, _ = helix("device", "setlists", "--json")
+        code, out, err = helix("device", "setlists", "--json")
         if code != 0:
-            return
+            # a listing we could not read is NOT evidence the device is clean:
+            # say so loudly rather than return silently and leave HGTEST
+            # setlists on real hardware
+            print(f"warning: HGTEST setlist sweep could not list the device "
+                  f"(attempt {attempt + 1}/3): {(err or out).strip()}",
+                  file=sys.stderr)
+            time.sleep(1.0)
+            continue
         stale = [m.get("name") or "" for m in json.loads(out)
                  if (m.get("name") or "").startswith(HGTEST)]
         for name in stale:
             helix("device", "setlist", "delete", name, "--yes")
-        if not stale and attempt > 0:
-            return
+        if stale:
+            clean_passes = 0
+        else:
+            # one clean listing can be the lagging index; two in a row is the
+            # confirmation. Never sleep after the last thing we needed.
+            clean_passes += 1
+            if clean_passes >= 2:
+                return
         time.sleep(1.0)
 
 

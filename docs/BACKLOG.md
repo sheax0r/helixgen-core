@@ -1475,6 +1475,26 @@ Remaining follow-ups:
   Land it before the plugin bumps its pinned core version, and
   cross-reference both PR descriptions.
 
+- **#93 A WEDGED IR is now reported present, so nothing re-uploads it.**
+  0.30.0's `device_ir_hashes(verify=...)` cross-checks each hash the `-11`
+  listing omits against `ir_path_for_hash`, the point lookup that reflects an
+  import immediately, and treats a resolving hash as present. That fixes the
+  common false "missing" caused by the lagging container index — but the
+  **wedged** state (backing file + path index resolve, no `-11` registry
+  entry; the state `delete-ir --force-wedge` exists to clean) *also* satisfies
+  the point lookup. Before this change a wedged IR read as missing and the
+  auto-upload paths (`install --auto-irs`, `sync`'s IR upload,
+  `sync_preset_irs`) re-pushed it, which self-healed the wedge. Now they skip
+  it and the preset's cab stays **silent** with no error. The trade was
+  deliberate (the lag case is far commoner and its false "missing" is the one
+  that misleads users) and the override warns to stderr naming the
+  possibility, so this is a rough edge, not a regression to revert blindly.
+  Proper fix: distinguish "resolves but absent from `-11`" (wedged → still
+  upload) from "absent from a listing we have independent reason to think is
+  lagging" — e.g. only trust the point lookup for a hash we just pushed this
+  session, or probe the registry directly. Needs hardware to reproduce a
+  wedge; fold into the #90 session.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.
