@@ -1,7 +1,6 @@
 """CLI tests for the `helixgen device slots` group (list / --verify / restore)."""
 import json
 import pytest
-from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -69,7 +68,8 @@ class FakeClient:
         import contextlib
         return contextlib.nullcontext(self)
 
-    def push_to_slot(self, container, pos, name, blob):
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
         self.calls.append(("push_to_slot", container, pos, name))
         return 900
 
@@ -148,7 +148,8 @@ def test_slots_restore_sbe_source_repushes(monkeypatch, tmp_path):
     holder = {}
 
     class Rec(FakeClient):
-        def push_to_slot(self, container, pos, name, blob):
+        def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
             holder["push"] = (container, pos, name)
             return 901
 
@@ -239,6 +240,188 @@ def test_slots_restore_hsp_force_pushes_into_occupied_posi(monkeypatch, tmp_path
     assert pushes and pushes[-1][2] == 12  # 4A -> posi 12
 
 
+def _restore_sbe_recording_prechecked(monkeypatch, tmp_path, *, name, argv,
+                                      client_cls=None):
+    """Run `slots restore` on an .sbe source and return the prechecked_empty
+    the CLI actually passed to push_to_slot."""
+    sbe = tmp_path / "x.sbe"
+    sbe.write_bytes(b"_sbepgsm-blob")
+    _seed(name=name, slot="2B", path=str(sbe), source="push", cid=None)
+
+    holder = {}
+    base = client_cls or FakeClient
+
+    class Rec(base):
+        # NO default: production defaults prechecked_empty to False, so a fake
+        # defaulting it True would keep these assertions green even if the CLI
+        # stopped passing the kwarg at all.
+        def push_to_slot(self, container, pos, name, blob, *,
+                         prechecked_empty):
+            holder["prechecked_empty"] = prechecked_empty
+            holder["container"] = container
+            return 901
+
+    _patch_client(monkeypatch, Rec)
+    r = CliRunner().invoke(cli, argv)
+    assert r.exit_code == 0, r.output
+    return holder
+
+
+def test_slots_restore_sbe_without_force_cleans_up_a_failed_write(
+        monkeypatch, tmp_path):
+    """No --force means the slot WAS checked empty, so a failed content write
+    owns the stub it created and must clean it up (prechecked_empty=True)."""
+    holder = _restore_sbe_recording_prechecked(
+        monkeypatch, tmp_path, name="Plain",
+        argv=["device", "slots", "restore", "Plain"])
+    assert holder["prechecked_empty"] is True
+
+
+def test_slots_restore_sbe_force_into_pool_does_not_clean_up(
+        monkeypatch, tmp_path):
+    """--force skipped the pool emptiness check, so a same-named entry at that
+    posi may be a pre-existing occupant helixgen never created — a failed write
+    must NOT delete it (prechecked_empty=False)."""
+
+    class Occupied(FakeClient):
+        def find_by_pos(self, container, pos, *, strict=False):
+            return {"cid_": 5, "posi": pos}
+
+    holder = _restore_sbe_recording_prechecked(
+        monkeypatch, tmp_path, name="Forced",
+        argv=["device", "slots", "restore", "Forced", "--force"],
+        client_cls=Occupied)
+    assert holder["prechecked_empty"] is False
+
+
+def test_slots_restore_sbe_force_into_setlist_still_cleans_up(
+        monkeypatch, tmp_path):
+    """--force is a POOL-destination flag: the setlist path always writes at a
+    freshly computed lowest-empty POOL posi, which no --force ever skipped a
+    check on. Conflating the two orphaned an empty pool stub on every failed
+    setlist write and blamed a --force the user never aimed at the pool."""
+
+    class WithSetlist(FakeClient):
+        def resolve_setlist_cid(self, name, *, strict=True):
+            return 4242
+
+        def list_setlists(self, *, strict=False):
+            return [{"cid_": 4242, "name": "Gigs"}]
+
+        def find_by_pos(self, container, pos, *, strict=False):
+            return None
+
+        def _lowest_empty_posi(self, container):
+            return 7
+
+        def reference_into_setlist(self, dest_cid, new_cid, pos):
+            return 555
+
+    holder = _restore_sbe_recording_prechecked(
+        monkeypatch, tmp_path, name="Setlisted",
+        argv=["device", "slots", "restore", "Setlisted", "--force",
+              "--setlist", "Gigs", "--pos", "3"],
+        client_cls=WithSetlist)
+    assert holder["container"] == -2, "the setlist path writes into the POOL"
+    assert holder["prechecked_empty"] is True
+
+
+def _restore_hsp_recording_prechecked(monkeypatch, tmp_path, *, name, argv,
+                                      client_cls=None):
+    """Same as the .sbe helper but for an .hsp source, which reaches
+    push_to_slot through _install_hsp_open's force/known_empty derivation
+    rather than the .sbe writer's inline one."""
+    import helixgen.cli_device as cd
+
+    hsp = tmp_path / "x.hsp"
+    hsp.write_bytes(b"unused-read_hsp-is-stubbed")
+    _seed(name=name, slot="2B", path=str(hsp), source="push", cid=None)
+
+    monkeypatch.setattr(cd, "_install_hsp_open", cd._install_hsp_open)
+    monkeypatch.setattr("helixgen.hsp.read_hsp", lambda p: {"preset": {}})
+    monkeypatch.setattr("helixgen.device.bridge.check_irs",
+                        lambda c, b: {"present": set(), "missing": set()})
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda b, strict=False: b"_sbepgsm-blob")
+
+    holder = {}
+    base = client_cls or FakeClient
+
+    class Rec(base):
+        # NO default: production _RawOps.push_to_slot defaults prechecked_empty
+        # to False, so a fake that defaults it True would keep these assertions
+        # green even if the CLI stopped passing the kwarg at all.
+        def push_to_slot(self, container, pos, name, blob, *,
+                         prechecked_empty):
+            holder["prechecked_empty"] = prechecked_empty
+            holder["container"] = container
+            return 902
+
+    _patch_client(monkeypatch, Rec)
+    r = CliRunner().invoke(cli, argv)
+    assert r.exit_code == 0, r.output
+    return holder
+
+
+def test_slots_restore_hsp_without_force_cleans_up_a_failed_write(
+        monkeypatch, tmp_path):
+    """The .hsp twin of the .sbe case: no --force means the slot WAS checked
+    empty, so a failed write owns its stub and must clean it up."""
+    holder = _restore_hsp_recording_prechecked(
+        monkeypatch, tmp_path, name="PlainHsp",
+        argv=["device", "slots", "restore", "PlainHsp"])
+    assert holder["prechecked_empty"] is True
+
+
+def test_slots_restore_hsp_force_into_pool_does_not_clean_up(
+        monkeypatch, tmp_path):
+    """--force skipped the pool emptiness check on the .hsp path too, so the
+    entry at that posi may be a pre-existing occupant a failed write must not
+    delete. Pins _install_hsp_open's `known_empty or not force` derivation —
+    hardcoding it True leaves the .sbe tests green but loses this."""
+
+    class Occupied(FakeClient):
+        def find_by_pos(self, container, pos, *, strict=False):
+            return {"cid_": 5, "posi": pos}
+
+    holder = _restore_hsp_recording_prechecked(
+        monkeypatch, tmp_path, name="ForcedHsp",
+        argv=["device", "slots", "restore", "ForcedHsp", "--force"],
+        client_cls=Occupied)
+    assert holder["prechecked_empty"] is False
+
+
+def test_slots_restore_hsp_force_into_setlist_still_cleans_up(
+        monkeypatch, tmp_path):
+    """known_empty must win over force on the .hsp path: the setlist branch
+    writes at a freshly computed lowest-empty POOL posi that --force never
+    skipped a check on, so its failed write cleans up its own stub."""
+
+    class WithSetlist(FakeClient):
+        def resolve_setlist_cid(self, name, *, strict=True):
+            return 4242
+
+        def list_setlists(self, *, strict=False):
+            return [{"cid_": 4242, "name": "Gigs"}]
+
+        def find_by_pos(self, container, pos, *, strict=False):
+            return None
+
+        def _lowest_empty_posi(self, container):
+            return 7
+
+        def reference_into_setlist(self, dest_cid, new_cid, pos):
+            return 556
+
+    holder = _restore_hsp_recording_prechecked(
+        monkeypatch, tmp_path, name="SetlistedHsp",
+        argv=["device", "slots", "restore", "SetlistedHsp", "--force",
+              "--setlist", "Gigs", "--pos", "3"],
+        client_cls=WithSetlist)
+    assert holder["container"] == -2, "the setlist path writes into the POOL"
+    assert holder["prechecked_empty"] is True
+
+
 def test_slots_restore_falls_back_to_observed_posi(monkeypatch, tmp_path):
     """#25b: a tone whose ``slot`` doesn't resolve but whose ``device.posi``
     is known restores at that posi (no 'no recorded slot' error)."""
@@ -251,7 +434,8 @@ def test_slots_restore_falls_back_to_observed_posi(monkeypatch, tmp_path):
     holder = {}
 
     class Rec(FakeClient):
-        def push_to_slot(self, container, pos, name, blob):
+        def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
             holder["push"] = (container, pos, name)
             return 911
 

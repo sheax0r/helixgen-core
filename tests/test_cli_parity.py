@@ -182,6 +182,9 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "pull-ir"], ["list-irs --json", "file", "DISPLAY name"]),
     (["device", "list-irs"], ["file", "pull-ir"]),
     (["device", "unsync"], ["SYNCED setlist", "membership"]),
+    # --slot takes only 'auto'; an explicit label is refused, not ignored (#30)
+    (["device", "add"],
+     ["auto", "REJECTED", "backlog #30", "lowest empty slot"]),
     # --- library metadata group + describe (Task 8) ---
     (["library"], ["logical slug", "preset_name", "cross-link", "describe",
                    "all populated"]),

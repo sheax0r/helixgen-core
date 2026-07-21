@@ -30,6 +30,13 @@ class FakeClient:
     def __init__(self, *args, **kwargs):
         self.init_args = (args, kwargs)
         self.calls = []
+        # push_to_slot's cleanup-ownership flag, recorded separately so the
+        # existing (op, container, pos, name) assertions keep working (#38)
+        self.push_kwargs = []
+        # subscription depth, so tests can assert that the emptiness reads
+        # deciding where to write ran under a 2001 subscription (#38)
+        self.sub_depth = 0
+        self.reads_under_sub = []
 
     # production reaches the raw primitives via client._raw.<name>; on this
     # fake they live directly on the instance.
@@ -52,7 +59,16 @@ class FakeClient:
 
     def mutating(self):
         import contextlib
-        return contextlib.nullcontext(self)
+
+        @contextlib.contextmanager
+        def _sub():
+            self.sub_depth += 1
+            try:
+                yield self
+            finally:
+                self.sub_depth -= 1
+
+        return _sub()
 
     # reads
     def list_presets(self, container=-2, *, strict=False):
@@ -100,10 +116,17 @@ class FakeClient:
     # slot-emptiness gate (#40) + the writes it guards
     def find_by_pos(self, container, pos, *, strict=False):
         self.calls.append(("find_by_pos", container, pos, strict))
+        self.reads_under_sub.append(self.sub_depth > 0)
         return None
 
-    def push_to_slot(self, container, pos, name, blob):
+    # NO default: production _RawOps.push_to_slot defaults prechecked_empty to
+    # False, so a fake defaulting it True would keep the owns_its_stub
+    # assertions green even if the CLI stopped passing the kwarg at all.
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty):
         self.calls.append(("push_to_slot", container, pos, name))
+        self.push_kwargs.append({"container": container, "pos": pos,
+                                 "prechecked_empty": prechecked_empty})
         return 900
 
     def save_edit_buffer_to(self, container, pos, name):
@@ -310,7 +333,8 @@ def test_device_push_into_setlist_pool_failure_sends_no_reference(monkeypatch, t
             super().__init__(*a, **k)
             holder["client"] = self
 
-        def push_to_slot(self, container, pos, name, blob):
+        def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
             self.calls.append(("push_to_slot", container, pos, name))
             return None  # pool create failed (e.g. reply timeout)
 
@@ -367,8 +391,6 @@ def test_device_save_into_named_setlist(monkeypatch):
 def test_device_slots_restore_named_setlist_requires_pos(monkeypatch, tmp_path):
     """Review finding 2: a tone's recorded slot/posi is a POOL position;
     restoring into a named setlist without an explicit --pos must refuse."""
-    import helixgen.device.manifest as manifest_mod
-
     sbe = tmp_path / "t.sbe"
     sbe.write_bytes(b"_sbepgsm-fake")
     manifest = tmp_path / "setlists.json"
@@ -1536,7 +1558,8 @@ class RaisingFindByPosClient(FakeClient):
                              "connection drop); refusing to treat it as empty")
         return None
 
-    def push_to_slot(self, container, pos, name, blob):
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty=True):
         type(self).WRITE_CALLS.append(("push_to_slot", container, pos, name))
         return 900
 
@@ -1579,6 +1602,49 @@ def test_device_push_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):
     assert RaisingFindByPosClient.STRICT_SEEN == [True]
 
 
+def test_device_save_checks_emptiness_under_a_subscription(monkeypatch, tmp_path):
+    """#38: the strict emptiness read decides where `device save` writes AND
+    authorizes _save_edit_buffer_to's failed-write cleanup to delete by
+    (name, pos). The container index only propagates promptly to a client
+    holding a 2001 subscription, so answering it from an unsubscribed (lagging)
+    read can call an occupied slot empty and let the cleanup delete a preset
+    helixgen never created — the data-loss shape #38 was about."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    holder = {}
+
+    class Recorder(FakeClient):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(cli, ["device", "save", "HG Save", "--pos", "3"])
+    assert result.exit_code == 0, result.output
+    assert holder["client"].reads_under_sub == [True]
+
+
+def test_device_push_checks_emptiness_under_a_subscription(monkeypatch, tmp_path):
+    """Same #38 gate for `device push`, which passes the read's verdict on as
+    prechecked_empty=True — the flag that grants _push_to_slot permission to
+    delete by (name, pos) after a failed write."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    infile = tmp_path / "backup.sbe"
+    infile.write_bytes(b"_sbepgsm-fake")
+    holder = {}
+
+    class Recorder(FakeClient):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(infile), "HG Push", "--pos", "3"])
+    assert result.exit_code == 0, result.output
+    assert holder["client"].reads_under_sub == [True]
+    assert holder["client"].push_kwargs[0]["prechecked_empty"] is True
+
+
 def test_device_install_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):
     """Same #40 gate for `device install` (transcodes a .hsp straight onto the
     device) — the emptiness check runs before transcoding, so a listing
@@ -1594,6 +1660,82 @@ def test_device_install_aborts_on_listing_failure_no_write(monkeypatch, tmp_path
     assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
     assert RaisingFindByPosClient.WRITE_CALLS == []
     assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+class PushRecordingClient(FakeClient):
+    """Records push_to_slot's cleanup-ownership flag at class level (#38).
+
+    `_patch_client` installs the CLASS, so per-instance recording is
+    unreachable from the test body.
+    """
+
+    PUSHES: list = []
+
+    # NO default, same reason as PushRecordingClient above.
+    def push_to_slot(self, container, pos, name, blob, *,
+                     prechecked_empty):
+        type(self).PUSHES.append({"container": container, "pos": pos,
+                                  "prechecked_empty": prechecked_empty})
+        return 900
+
+
+class PushRecordingSetlistClient(PushRecordingClient):
+    """...with a device setlist named Gigs to resolve against."""
+
+    def resolve_setlist_cid(self, name, *, strict=True):
+        return 4242
+
+    def list_setlists(self, *, strict=False):
+        return [{"cid_": 4242, "name": "Gigs"}]
+
+    def _lowest_empty_posi(self, container):
+        return 7
+
+    def reference_into_setlist(self, dest_cid, new_cid, pos):
+        return 555
+
+
+def _stub_install_pipeline(monkeypatch):
+    """Patch out transcode/IR checks so `device install` reaches push_to_slot."""
+    import helixgen.device.bridge as bridge
+    monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
+    monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
+                        lambda body, strict=True: b"XCODED")
+
+
+def test_device_install_into_pool_owns_its_stub(monkeypatch, tmp_path):
+    """The pool path checks the slot empty itself, so a failed content write
+    created the entry sitting there and must clean it up (#38)."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _stub_install_pipeline(monkeypatch)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "Pool Tone")
+    PushRecordingClient.PUSHES = []
+    _patch_client(monkeypatch, PushRecordingClient)
+    result = CliRunner().invoke(
+        cli, ["device", "install", str(hsp), "Pool Tone", "--pos", "3"])
+    assert result.exit_code == 0, result.output
+    pushes = PushRecordingClient.PUSHES
+    assert pushes and pushes[-1]["prechecked_empty"] is True
+
+
+def test_device_install_into_setlist_owns_its_stub(monkeypatch, tmp_path):
+    """The setlist path skips the emptiness check because it just computed a
+    FRESH lowest-empty pool posi — that is known_empty, not force. Passing
+    force here orphaned an empty pool stub on every failed write (#38)."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _stub_install_pipeline(monkeypatch)
+    hsp = _make_hsp(tmp_path / "tone.hsp", "Setlist Tone")
+    PushRecordingSetlistClient.PUSHES = []
+    _patch_client(monkeypatch, PushRecordingSetlistClient)
+    result = CliRunner().invoke(
+        cli, ["device", "install", str(hsp), "Setlist Tone", "--pos", "3",
+              "--setlist", "Gigs"])
+    assert result.exit_code == 0, result.output
+    pushes = PushRecordingSetlistClient.PUSHES
+    assert pushes, "install never reached push_to_slot"
+    assert pushes[-1]["container"] == -2, "the setlist path writes into the POOL"
+    assert pushes[-1]["pos"] == 7, "should use the freshly computed empty posi"
+    assert pushes[-1]["prechecked_empty"] is True
 
 
 def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(
@@ -1618,3 +1760,97 @@ def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(
     assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
     assert RaisingFindByPosClient.WRITE_CALLS == []
     assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+def test_device_list_irs_lists_strictly(monkeypatch):
+    """A dropped/truncated -11 listing must not print as 'no IRs' (#38 Task
+    4): the read is strict, so a partial read is loud."""
+    seen = []
+
+    class StrictIr(FakeClient):
+        def list_irs(self, strict=False, settle=True):
+            seen.append(strict)
+            return []
+
+    _patch_client(monkeypatch, StrictIr)
+    result = CliRunner().invoke(cli, ["device", "list-irs"])
+    assert result.exit_code == 0, result.output
+    assert seen == [True]
+
+
+def test_device_list_irs_reports_a_failed_listing(monkeypatch):
+    from helixgen.device.client import HelixError
+
+    class BoomIr(FakeClient):
+        def list_irs(self, strict=False, settle=True):
+            raise HelixError("no reply listing container -11")
+
+    _patch_client(monkeypatch, BoomIr)
+    result = CliRunner().invoke(cli, ["device", "list-irs"])
+    assert result.exit_code != 0
+    assert "no reply listing container -11" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `device add --slot <label>` — reject explicit placement (backlog #30).
+#
+# `mark_on_device` persists the label, but sync never converts it to a device
+# address: `install_into_pool` is called with no `pos`, so `_lowest_empty_posi`
+# wins. The flag reported success and changed nothing; reject it instead.
+# ---------------------------------------------------------------------------
+
+def _register_tone(tmp_path, name="Slot Tone"):
+    hsp = _make_hsp(tmp_path / "slot-tone.hsp", name)
+    res = CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
+    assert res.exit_code == 0, res.output
+    return name
+
+
+def _loaded_manifest():
+    from helixgen.device.manifest import SetlistManifest
+    return SetlistManifest.load()
+
+
+def test_device_add_rejects_an_explicit_slot_label(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "20A"])
+
+    assert res.exit_code != 0, res.output
+    # names the backlog entry that reserves real placement
+    assert "#30" in res.output
+    assert "20A" in res.output
+    assert "auto" in res.output
+    # and the manifest was NOT touched (no silently-ignored placement)
+    assert _loaded_manifest().tones[name]["slot"] is None
+
+
+def test_device_add_slot_auto_still_works(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "auto"])
+
+    assert res.exit_code == 0, res.output
+    assert _loaded_manifest().tones[name]["slot"] == "auto"
+
+
+def test_device_add_bare_form_still_works(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name])
+
+    assert res.exit_code == 0, res.output
+    assert _loaded_manifest().tones[name]["slot"] == "auto"
+
+
+def test_device_add_rejects_a_bogus_slot_before_the_manifest(monkeypatch, tmp_path):
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    name = _register_tone(tmp_path)
+
+    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "999Z"])
+
+    assert res.exit_code != 0, res.output
+    assert _loaded_manifest().tones[name]["slot"] is None

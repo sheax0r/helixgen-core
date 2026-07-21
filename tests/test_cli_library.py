@@ -27,8 +27,12 @@ def test_device_add_and_unsync(tmp_path):
     CliRunner().invoke(cli, ["register", str(hp)])
     assert CliRunner().invoke(cli, ["device", "add", "Alpha"]).exit_code == 0
     assert SetlistManifest.load().tones["Alpha"]["slot"] == "auto"
-    assert CliRunner().invoke(cli, ["device", "add", "Alpha", "--slot", "7C"]).exit_code == 0
-    assert SetlistManifest.load().tones["Alpha"]["slot"] == "7C"
+    assert CliRunner().invoke(cli, ["device", "add", "Alpha", "--slot", "auto"]).exit_code == 0
+    assert SetlistManifest.load().tones["Alpha"]["slot"] == "auto"
+    # an explicit label is refused, not recorded (backlog #30)
+    r = CliRunner().invoke(cli, ["device", "add", "Alpha", "--slot", "7C"])
+    assert r.exit_code != 0
+    assert SetlistManifest.load().tones["Alpha"]["slot"] == "auto"
     assert CliRunner().invoke(cli, ["device", "unsync", "Alpha"]).exit_code == 0
     assert SetlistManifest.load().tones["Alpha"]["slot"] is None
 
@@ -38,7 +42,9 @@ def test_device_add_invalid_slot_errors(tmp_path):
     CliRunner().invoke(cli, ["register", str(hp)])
     r = CliRunner().invoke(cli, ["device", "add", "Beta", "--slot", "ZZ"])
     assert r.exit_code != 0
-    assert "invalid slot" in r.output.lower()
+    # every non-'auto' label is refused the same way, valid-looking or not (#30)
+    assert "not supported" in r.output.lower()
+    assert "#30" in r.output
 
 
 def test_setlist_sync_on_marks_members(tmp_path):

@@ -5,6 +5,26 @@
 **Reference capture:** the 2026-07-14 parity capture ran against desktop app
 `v1.3.2.9805` (same 1.3.2 line) — see `2026-07-14-parity-capture-findings.md`.
 
+> ## ⚠️ SUPERSEDED 2026-07-19 — read this first
+>
+> This document's central conclusion is **wrong**. `code == 1` was never an
+> error and never transient: **field 3 of the `/CreateContent` `/status` reply
+> is the device's edit-buffer dirty flag** (`hist` in `/EditBufferStateGet`),
+> not an error code. With an edited active preset every create answers `1`
+> *while creating the content at the requested `posi`*; with a freshly
+> loaded/saved preset the same code path answers `0`. That is why the anomaly
+> looked like it "cleared" on 2026-07-15 (the device had been power-cycled onto
+> a clean preset) and why it "recurred" later under load (a long run leaves the
+> active preset dirty).
+>
+> Consequence: the "hardening" described below — treating non-zero as failure
+> and deleting the allocated stub — was **data-destroying**, removing presets
+> that had been written correctly. The create path now confirms by **re-list**
+> and only cleans up the genuine not-created case. Current truth:
+> `docs/plans/2026-07-19-createcontent-status-misread.md` and backlog #38.
+> The "Remaining open question" below is answered. Everything else here is kept
+> for provenance — the `blck`/`flow` misdiagnosis finding still stands.
+
 ## TL;DR
 
 - **The code==1 anomaly has CLEARED.** On 2026-07-15 the device returns the
@@ -128,11 +148,16 @@ raise+cleanup, SetContentData-failure cleanup-by-relist (asserts 777 deleted,
 not the reply cid 930), and `_create_content_status` shape. Full suite:
 **1501 passed, 65 skipped.**
 
-## Remaining open question
+## Remaining open question — ANSWERED 2026-07-19
 
-*Why* the device returned `code 1` on 2026-07-14 is still unknown and is not
-reproducible on fw 1.3.2/1340 after the power-cycle. If it recurs, capture the
-raw `/CreateContent` `/status` frame plus the 2001/2003 streams at that moment
-and compare device state (uptime, free storage, pending watched-dir scan). The
-client now degrades safely either way: it never orphans a stub and it tells the
-user the allocated cid + to power-cycle and retry.
+*Why* the device returned `code 1` on 2026-07-14: the active preset had unsaved
+edits. Field 3 is the edit-buffer dirty flag, not an error code — established by
+live A/B on fw 1.3.2/1340 (dirty preset → `1` **with the content created at the
+requested `posi`**; freshly loaded/saved preset → `0`, same code path, same
+payload). Power-cycling never helped, because the same unsaved edit buffer is
+restored on boot; it only appeared to help on 2026-07-15 because the reboot
+landed on a clean preset.
+
+Still uncatalogued: the rest of the non-zero taxonomy
+(`docs/helix-protocol.md:765-767`). Non-zero is therefore never blanket-ignored
+— it is resolved by a confirming re-list.

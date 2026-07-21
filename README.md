@@ -96,6 +96,16 @@ blast radius, e.g.:
 HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest -m "live and sync" tests/live
 ```
 
+The `device_write` module's #38 regression guard only guards when the active
+preset's edit buffer is **dirty** — that is the state that made
+`/CreateContent` answer status field 3 = `1`, which pre-0.30.0 clients misread
+as an error and "cleaned up". A clean buffer answers `0` and exercises the
+uninteresting path. The `dirty_edit_buffer` fixture establishes that state
+itself (a manual tweak wouldn't survive: an earlier `device load` in the same
+module clears the flag), and **skips** rather than passing green if it can't —
+so a skip there means the guard did not actually run. See each module's
+docstring.
+
 Safety is enforced by fixtures: all local state (manifest, IR mapping,
 IR-hash cache, prefs, backups) is redirected to a scratch dir; an upfront
 `device backup` runs; device state is diffed before/after (the suite fails

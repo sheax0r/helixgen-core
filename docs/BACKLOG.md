@@ -151,8 +151,9 @@ and had to be redirected. Start here so future work begins from the right model.
   scratch env for all local state, upfront `device backup`, before/after
   device-state diff asserted by the suite itself, `HGTEST`-prefixed
   artifacts with teardown-on-failure, and a byte-identity check on the real
-  `~/.helixgen` files. Validated device quirks are encoded (xfails for the
-  #38 /CreateContent episodes and the IR-registry wedge; #67's
+  `~/.helixgen` files. Validated device quirks are encoded (the #38
+  /CreateContent and IR-registry-wedge xfails were **removed** in 0.30.0 —
+  #38 was root-caused, so those paths are now asserted, not tolerated; #67's
   amp-pid-1-only live `set-param`; `pull-ir` by ORIGINAL basename after
   `rename-ir`; `measure`'s clean ok:false when idle; `create` auto-naming).
   Deliberate exclusions documented in `tests/live/conftest.py` (`restore`,
@@ -311,7 +312,10 @@ and had to be redirected. Start here so future work begins from the right model.
   position). *Hardware characterization of an actually-stacked duplicate
   remains uncaptured*: the 2026-07-17 overnight attempt was blocked by a
   persistent backlog-#38 `/CreateContent` status-1 episode (every preset
-  create failed at every posi; setlist create ghost-allocated) — if a future
+  create *reported* failure at every posi; setlist create ghost-allocated).
+  Root-caused 2026-07-19: status field 3 is the edit-buffer dirty flag, so
+  those creates were landing and the old client deleted them — a re-run today
+  would not hit it. If a future
   session wants the catalog entry, stack two references via raw
   `reference_into_setlist` on an HGTEST setlist after a reboot-fresh device.
 - **#70 Deprecated `throwaway`→`-5` remnants + stale dated docs [local]** —
@@ -328,7 +332,7 @@ and had to be redirected. Start here so future work begins from the right model.
 Legend: **[local]** = pure local code, no device needed. **[device-write]** =
 implementation is code, but *hardware validation* requires a device write
 (work against expendable artifacts with an upfront `device backup` and clean
-teardown; mind the #38 /CreateContent flakiness). **[discovery]** = also needs
+teardown). **[discovery]** = also needs
 an OSC command we haven't captured yet.
 
 ### IR — prompt registration (FIXED, 2.7.0)
@@ -975,7 +979,13 @@ LED control, focus-view/UI cosmetics.
   - **Input-source write** — expose `set_input` (gtr1/gtr2/both) via CLI/`patch`; currently wired only into `generate`. Flips the TUI's read-only input node to editable.
   - **Flow-index-aware block coordinates** — `extract_blocks_from_hsp` exposes no flow index, so multi-flow / dual-slot targets can't be addressed unambiguously (helixgen-tui #13 multi-flow finding; ref #3's stable-API ask). Prerequisite for the parallel/topology verbs above.
 
-- **#30 Slot semantics for slot-only tones — verify + decide** — **needs user input: front-panel check** (is a reference-less pool preset browsable from the device panel?) **+ the (a)/(b) decision.** — `device add`
+- **#30 Slot semantics for slot-only tones — verify + decide** — **needs user input: front-panel check** (is a reference-less pool preset browsable from the device panel?) **+ the (a)/(b) decision.**
+  - **Partially addressed 2026-07-19 (0.30.0):** `device add --slot <label>` is now
+    **rejected** rather than recorded-and-ignored — the flag used to report a
+    placement sync never performed. Only `auto` is accepted; explicit labels
+    remain a manifest-only vocabulary. The front-panel check and the (a)/(b)
+    decision below are still open, and real placement is still unimplemented.
+  - `device add`
   + sync installs a slot-marked tone into the **pool** but references it into no
   setlist, so its slot label is an address in name only: nothing is placed at
   `5A` in the user setlist, and `assign_slots` never fetches real device
@@ -1057,7 +1067,25 @@ LED control, focus-view/UI cosmetics.
   already-registered IRs, offline behavior when no manual exists).
 
 - **#38 `/CreateContent` returning a non-zero status code on a live device** —
-  **🟡 HARDENED 2026-07-15 (anomaly not reproducible; root cause unconfirmed).**
+  **✅ ROOT-CAUSED 2026-07-19. Field 3 of the `/status` reply is not an error
+  code — it is the device's edit-buffer dirty flag (`hist` in
+  `/EditBufferStateGet`).** Established by live A/B against a Stadium XL (fw
+  1.3.2/1340): with an edited active preset every `/CreateContent` answers
+  `1` **while creating the content at the exact requested `posi`** (verified by
+  the `/addContent` frame on the 2001 PUB stream and by the row surviving in
+  `list_container(-2)`); with a freshly loaded/saved preset the same code path
+  answers `0`. Ruled out with evidence: not capacity, not `/getCloneLockState`,
+  not slot occupancy, not blob chunking. **This made the client
+  data-destroying**: treating non-zero as failure ran `_delete_created_stub`
+  against content that had been written correctly. Fixed by
+  `docs/plans/2026-07-19-createcontent-status-misread.md` — the create path now
+  confirms by **re-list** (`_confirm_created`), cleanup is restricted to the
+  genuine not-created case, and a cleanup that matches nothing is logged rather
+  than swallowed. The non-zero taxonomy beyond `1` remains uncatalogued
+  (`docs/helix-protocol.md:765-767`), so a non-zero code is still never blanket-
+  ignored — it is *resolved by re-list*. Everything below this point is the
+  superseded investigation record, kept for provenance; the "transient",
+  "load-correlated" and "power-cycle" theories are **wrong**.
   Found 2026-07-14 while hardware-validating #31's write path: every
   `/CreateContent` returned `code == 1` (not the documented `0`) while still
   allocating the pool entry, so `device install` / `import-hss` reported "failed
@@ -1088,9 +1116,19 @@ LED control, focus-view/UI cosmetics.
     (no evidence supports accepting `code 1` as success). Regression tests
     added; suite 1501 passed. **No user action needed** unless the code-1
     anomaly recurs (then: power-cycle the Helix and retry — the client now
-    self-cleans and names the cid to recover).
+    self-cleans and names the cid to recover). ⚠️ **Superseded 2026-07-19:
+    power-cycling never helped (the same unsaved edit buffer is restored on
+    boot), and the "self-clean" was the data loss. The client no longer treats
+    a non-zero code as failure without a confirming re-list.**
   - **RECURRED 2026-07-15 (evening), while building the live suite (#66) —
-    now with much better telemetry.** Captured facts: (1) it is
+    now with much better telemetry.** ⚠️ **Superseded 2026-07-19: the
+    "intermittent" and "load-correlated" readings below are artefacts of the
+    real mechanism.** The creates were *succeeding* every time; what varied was
+    whether the active preset happened to be dirty (dozens of rapid
+    create/delete cycles late in a live run leave it dirty; a short idle in
+    which the suite reloaded a preset cleared it). The "materializes seconds
+    late" and "ghost entry" observations are the container-index lag, tracked
+    separately. Captured facts as recorded at the time: (1) it is
     **intermittent within one powered-on session** — `device setlist create`
     got `/status [1003, <cid>, 1]` (allocated anyway), an identical raw
     create minutes later got `/status [1002, <cid>, 0]`; (2) it looks
@@ -1403,6 +1441,101 @@ Remaining follow-ups:
   released version); when the plugin bumps to >=0.20.0 it must drop
   `.mcp.json`/the `[mcp]` extra and repoint skills at the CLI (fold into the
   #58 slim).
+- **#90 Live-hardware validation of the #38 fix — deferred to the next
+  hardware session.** The 0.30.0 /CreateContent fix (confirm-by-re-list
+  instead of trusting field 3 of the `/status` reply) was developed and
+  tested entirely offline against the fake/injected socket; the root cause
+  itself was established by direct live A/B against a Stadium XL (fw
+  1.3.2/1340) on 2026-07-19, which the user considered sufficient to ship
+  on. The live suite's masking (cooldown-retry + `xfail` in
+  `tests/live/conftest.py`, `test_device_write.py`, `test_device_ir.py`) was
+  REMOVED in the same change but **never re-run against hardware**. Next
+  session with the device: run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python
+  -m pytest -m "live and (device_write or device_ir or setlists or sync)"
+  tests/live` **with the active preset deliberately left DIRTY** (unsaved
+  edits — the exact condition that used to fail; see the setup notes in
+  `tests/live/test_device_write.py` and `tests/live/test_device_ir.py`).
+  Expect: every create/install/save/setlist-create passes, `list-irs` gains
+  the pushed entry, no xfails. Also worth confirming the non-zero taxonomy
+  beyond `1` is still uncatalogued (`docs/helix-protocol.md:765-767`).
+
+- **#91 Companion plugin PR for the 0.30.0 agent-facing changes — NOT yet
+  landed.** 0.30.0 changed two CLI-visible behaviors, so the cross-repo rule
+  ("agent-facing surfaces ship in sync") requires a paired PR in
+  `sheax0r/helixgen` that this branch does not have. Stale there:
+  - `docs/CLI.md` — `device add <tone> [--slot auto|5A]` and "default
+    `--slot auto`" (explicit labels are now rejected); plus the copied
+    `setlist create` paragraph still claiming a non-zero `/CreateContent`
+    status **self-cleans** the stub (that cleanup is what destroyed landed
+    creates and is gone).
+  - `docs/helix-protocol.md` — still documents `/CreateContent` field 3 as
+    "the ok-code (`0`=ok)" and the "code-1 anomaly … cleared after a device
+    power-cycle" reading. Both are now known wrong; core's copy is
+    authoritative and was corrected.
+  - `.claude/skills/device/SKILL.md` — cites `device add --slot` as evidence
+    the slot vocabulary runs to bank 128, so the skill will emit a command
+    the CLI now rejects. (`SKILL.md`'s reboot advice for the network stack
+    generally is still correct — that one is not about #38.)
+  Land it before the plugin bumps its pinned core version, and
+  cross-reference both PR descriptions.
+
+- **#93 A WEDGED IR is now reported present, so nothing re-uploads it.**
+  0.30.0's `device_ir_hashes(verify=...)` cross-checks each hash the `-11`
+  listing omits against `ir_path_for_hash`, the point lookup that reflects an
+  import immediately, and treats a resolving hash as present. That fixes the
+  common false "missing" caused by the lagging container index — but the
+  **wedged** state (backing file + path index resolve, no `-11` registry
+  entry; the state `delete-ir --force-wedge` exists to clean) *also* satisfies
+  the point lookup. Before this change a wedged IR read as missing and the
+  auto-upload paths (`install --auto-irs`, `sync`'s IR upload,
+  `sync_preset_irs`) re-pushed it, which self-healed the wedge. Now they skip
+  it and the preset's cab stays **silent** with no error. The trade was
+  deliberate (the lag case is far commoner and its false "missing" is the one
+  that misleads users) and the override warns to stderr naming the
+  possibility, so this is a rough edge, not a regression to revert blindly.
+  Proper fix: distinguish "resolves but absent from `-11`" (wedged → still
+  upload) from "absent from a listing we have independent reason to think is
+  lagging" — e.g. only trust the point lookup for a hash we just pushed this
+  session, or probe the registry directly. Needs hardware to reproduce a
+  wedge; fold into the #90 session.
+
+- **#94 `--force` still resolves the write target by an ambiguous `(name,
+  pos)` match.** `_push_to_slot(prechecked_empty=False)` (the `slots restore
+  --force` path) correctly refuses to *delete* what `_confirm_created` matched,
+  because that entry may be a pre-existing occupant rather than the stub we
+  just created — but it still *writes* the blob into that same ambiguous cid.
+  In the realistic case the incumbent shares the tone's name (restore-over-
+  itself, the case #25 exists for), so writing into it is what the user asked
+  for; the residue is a possibly-orphaned empty stub left at the same posi
+  when the create did land separately. Not data loss, so deferred. Proper fix:
+  snapshot the container's cids before `/CreateContent` and accept only a cid
+  absent from that snapshot, falling back to raising rather than writing into
+  a match we cannot attribute. Needs hardware to establish what the device
+  actually does with a `/CreateContent` aimed at an occupied posi (the same
+  uncataloged behavior as #69); fold into the #90 session.
+
+- **#95 `_save_edit_buffer_to`'s stub cleanup is not opt-in.** `_push_to_slot`
+  gained a `prechecked_empty` gate so a caller has to deliberately grant
+  permission to `_delete_created_stub`; `_save_edit_buffer_to` still deletes
+  unconditionally on a failed `/SavePresetWithCID`. Safe today — its one
+  caller (`device save`) prechecks strictly under a subscription — but the
+  asymmetry is a trap for the next caller. Give it the same opt-in flag.
+
+- **#96 `_create_content_checked`'s `code == 0` fast path still returns the
+  unverified create-reply cid.** The `code != 0` branch now resolves the cid by
+  re-list (`_confirm_created`) precisely because the reply cid is
+  documented-unreliable (`_pool_cid_by_name`'s docstring; the same unreliability
+  motivated `_delete_created_stub`'s verify-before-delete). The `code == 0`
+  branch returns that reply cid unchanged, and `_push_to_slot` then runs
+  `_set_content_data(cid, blob)` on it — so a stale/misreported cid on a
+  code-0 create writes preset content into an unrelated cid silently. Deliberately
+  out of scope for the #38 fix (no evidence the cid is ever wrong when the code
+  is 0, and the fast path avoids a full pool listing on the common clean-buffer
+  path), but the asymmetry is now load-bearing: the change set's own premise is
+  that the status code carries no success information. Options: always confirm
+  by re-list (costs one listing per create), or cheaply cross-check the reply
+  cid's `name`/`posi` via a point `/GetContentRef` before writing into it.
+  Needs live hardware to characterise — pair with #90.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
@@ -1410,9 +1543,12 @@ Remaining follow-ups:
 - **Device-write safety:** the old "no writes without telling me" gating rule
   was retired 2026-07-16 — device writes no longer require prior user
   permission. The practical safety posture stays: validate against
-  expendable artifacts/slots, take an upfront `device backup`, tear down
-  test artifacts afterwards, and expect the #38 /CreateContent status-1
-  flakiness (re-run; the slot-writing verbs fail safe on an occupied slot).
+  expendable artifacts/slots, take an upfront `device backup`, and tear down
+  test artifacts afterwards (the slot-writing verbs fail safe on an occupied
+  slot). The old "expect #38 /CreateContent status-1 flakiness, re-run"
+  advice is **withdrawn**: #38 was root-caused 2026-07-19 (field 3 of the
+  `/status` reply is the edit-buffer dirty flag, not an error code) and
+  fixed in 0.30.0 — the writes were landing all along.
   Reads (list/get_ref/download/watch) were never restricted.
 - The device is at `192.168.4.84` (ignores ICMP ping; ports 22/2001/2002/2003
   open).

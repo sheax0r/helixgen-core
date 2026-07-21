@@ -10,6 +10,22 @@ Residual: `device load` (here and in liveops) changes the ACTIVE tone —
 whatever UNSAVED edit-buffer changes existed before the run are discarded,
 and the edit buffer is left on the (deleted) HGTEST tone. Saved presets are
 covered by the upfront session backup.
+
+Setup note — the #38 guard needs a DIRTY edit buffer
+----------------------------------------------------
+Backlog #38 was root-caused 2026-07-19: field 3 of the /CreateContent
+/status reply is the device's edit-buffer dirty flag (`hist` in
+/EditBufferStateGet), not an error code. The old client read a dirty buffer
+as failure and DELETED the content it had just correctly written.
+
+So the interesting condition for this module is a dirty edit buffer, and a
+clean one exercises nothing. No manual setup is needed — and none would
+hold: `test_load_installed_preset` runs earlier here and `device load` clears
+the flag. The `dirty_edit_buffer` fixture therefore dirties the buffer itself
+immediately before the save, and SKIPS if it can't. The old code failed every
+/CreateContent in that state; the current code must pass.
+`test_save_edit_buffer` is the primary guard — if it SKIPS, the guard did not
+run, which is not the same as passing.
 """
 from __future__ import annotations
 
@@ -125,15 +141,69 @@ def test_push_refuses_occupied_slot(helix, installed, tmp_path):
     assert find_user_preset(helix, f"{HGTEST} Never Lands") is None
 
 
-@pytest.mark.xfail(strict=False,
-                   reason="backlog #38: /CreateContent intermittently returns "
-                          "status 1 while still allocating (episodes observed "
-                          "2026-07-14 and 2026-07-15 on fw 1.3.2; the CLI "
-                          "self-cleans its stub on this path). `device save` "
-                          "fails during an episode and XPASSes when the "
-                          "device is healthy — strict=False so a healthy "
-                          "device celebrates the fix instead of failing.")
-def test_save_edit_buffer(helix, installed, free_positions):
+@pytest.fixture
+def dirty_edit_buffer(helix, installed):
+    """Leave the ACTIVE preset carrying an UNSAVED edit, and fail loudly if
+    that can't be established.
+
+    This has to be a fixture rather than an instruction to the operator:
+    `test_load_installed_preset` runs earlier in this module and `device load`
+    CLEARS the dirty flag, so by the time the #38 guard runs a hand-dirtied
+    buffer is clean again and `/CreateContent` answers 0 — the uninteresting
+    path. So dirty it here, immediately before the save.
+
+    `device load` then `device set-param` on the live buffer is the same
+    "tweak a knob without saving" a player would do. If no param can be
+    written we SKIP rather than run green: a pass against a clean buffer would
+    assert nothing about #38.
+    """
+    code, out, err = helix("device", "load", installed["cid"])
+    assert code == 0, err or out
+    # output block at path 0, grid slot 13 — the coordinates `device set-param`'s
+    # own help documents as hardware-proven (fw 1.3.2).
+    code, out, err = helix("device", "params", "0", "13", "--json")
+    if code != 0:
+        pytest.skip(f"cannot read live params to dirty the edit buffer: "
+                    f"{(err or out).strip()}")
+    params = json.loads(out).get("params") or []
+    target = next((p for p in params
+                   if p.get("name") == "gain" and p.get("pid") is not None), None)
+    if target is None:
+        pytest.skip("no writable 'gain' param on the active output block; "
+                    "cannot establish the dirty edit buffer #38 needs")
+    # nudge to a value distinct from the current one, staying inside the
+    # param's own reported range
+    current = float(target.get("value") or 0.0)
+    lo = target.get("min")
+    hi = target.get("max")
+    new = current - 1.0
+    if lo is not None and new < float(lo):
+        new = current + 1.0
+    if hi is not None and new > float(hi):
+        pytest.skip("the active output gain has no headroom to nudge; "
+                    "cannot establish the dirty edit buffer #38 needs")
+    # `--` sentinel: a negative value (the usual case for an output gain in dB)
+    # otherwise parses as an option and click rejects it, which would skip this
+    # fixture and silently disarm the #38 regression guard below.
+    code, out, err = helix("device", "set-param", "0", "13",
+                           str(target["pid"]), "--", str(new))
+    if code != 0:
+        pytest.skip(f"cannot dirty the edit buffer via set-param: "
+                    f"{(err or out).strip()}")
+    return {"pid": target["pid"], "was": current, "now": new}
+
+
+def test_save_edit_buffer(helix, installed, free_positions, dirty_edit_buffer):
+    """`device save` of the edit buffer, with the buffer deliberately DIRTY.
+
+    This test used to be xfailed under backlog #38. It is now the primary
+    regression guard for the #38 root cause (root-caused 2026-07-19): saving
+    while the active preset is DIRTY is exactly the condition that made
+    /CreateContent report status 1 and the old client destroy the write. The
+    `dirty_edit_buffer` fixture establishes that condition rather than
+    trusting the module docstring's manual setup note — a clean buffer makes
+    this test pass while exercising none of the fix.
+    """
     name = f"{HGTEST} Save Probe"
     pos = free_positions(1)[0]
     try:

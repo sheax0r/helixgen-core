@@ -572,7 +572,17 @@ def check_irs(client, hsp_body: dict) -> Dict[str, set]:
     Returns ``{"present": {...hashes...}, "missing": {...hashes...}}``. Missing
     IRs must be imported onto the device (helixgen ``register-irs``/``ir-scan``
     + the editor's IR import) before the preset's cab will sound right.
+
+    Every hash that looks missing is cross-checked against the device's point
+    lookup (``verify=``) — the ``-11`` container listing lags a just-completed
+    IR upload, and reporting an IR the device already has as "missing" sends
+    the user off to re-import it (#38 Task 4).
     """
     want = hsp_ir_hashes(hsp_body)
-    have = client.device_ir_hashes()
+    if not want:
+        # a preset that references no IRs has nothing to compare, and
+        # device_ir_hashes reads the -11 listing STRICTLY: asking anyway would
+        # let a dropped listing abort an install that never needed the answer.
+        return {"present": set(), "missing": set()}
+    have = client.device_ir_hashes(verify=sorted(want))
     return {"present": want & have, "missing": want - have}

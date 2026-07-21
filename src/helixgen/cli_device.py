@@ -528,7 +528,8 @@ def _ledger_remove(cid: int) -> None:
 
 def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
                       setlist_label: str, auto_irs: bool = False,
-                      force: bool = False, ip: str | None = None) -> int:
+                      force: bool = False, known_empty: bool = False,
+                      ip: str | None = None) -> int:
     """Install a parsed .hsp ``body`` onto an already-open client at
     ``(container, pos)`` and return the new cid. Shared by ``device install``
     and ``device slots restore``. Raises ClickException on any failure.
@@ -537,16 +538,27 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     ``_sbepgsm`` blob (:func:`transcode.hsp_to_sbepgsm`) and written into an
     empty slot — no device template is loaded, so the active tone is untouched.
 
-    ``force`` skips the slot-emptiness check so the push proceeds at an
-    occupied posi (``device slots restore --force`` — #25; the occupant is
-    NOT deleted, matching the ``.sbe`` path); without it an occupied slot is
-    refused. The check is strict (backlog #40): a listing timeout raises
-    instead of reading as "empty", so it never proceeds to write into a slot
-    it couldn't actually confirm was free.
+    ``force`` skips the slot-emptiness check so the push proceeds at a
+    possibly-OCCUPIED posi (``device slots restore --force`` — #25; the
+    occupant is NOT deleted, matching the ``.sbe`` path); without it an
+    occupied slot is refused. The check is strict (backlog #40): a listing
+    timeout raises instead of reading as "empty", so it never proceeds to
+    write into a slot it couldn't actually confirm was free.
+
+    ``known_empty`` also skips the check, but for the opposite reason: the
+    CALLER already established the posi is empty (the setlist path, where
+    ``_install_via_dest`` just computed a strictly lowest-empty pool posi).
+    The two must not be conflated — ``force`` means "a stub found here after a
+    failed write may be someone else's preset, leave it alone", while
+    ``known_empty`` means "anything here is ours, so clean it up" (#38). Using
+    ``force`` for the setlist case orphaned an empty pool stub on every failed
+    write and blamed a ``--force`` the user never passed.
     """
     from helixgen.device import bridge, transcode
 
-    if not force and h.find_by_pos(container, pos, strict=True) is not None:
+    prechecked_empty = known_empty or not force
+    if not (force or known_empty) and h.find_by_pos(
+            container, pos, strict=True) is not None:
         raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
     missing = sorted(bridge.check_irs(h, body)["missing"])
     if missing and auto_irs:
@@ -562,7 +574,8 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     except bridge.UnresolvedModel as e:
         raise click.ClickException(str(e)) from e
     with h.mutating():
-        cid = h._raw.push_to_slot(container, pos, name, blob)
+        cid = h._raw.push_to_slot(container, pos, name, blob,
+                                  prechecked_empty=prechecked_empty)
     if cid is None:
         raise click.ClickException("failed to install preset")
     return cid
@@ -1757,7 +1770,11 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     HelixClient, HelixError = _client()
 
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # One subscription for the whole save — the strict emptiness check
+            # below decides where to write AND authorizes the failed-write
+            # cleanup to delete by (name, pos), so it must read a settled
+            # container index rather than a lagging one (#38).
             kind, container, label = _resolve_setlist_dest(h, setlist)
 
             def _writer(cont, cpos):
@@ -1795,12 +1812,19 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
     via /IrPathForHashGet) — the file keeps its original upload basename
     even after a `device rename-ir` (which changes only the display name),
     so `file` is what `device pull-ir` needs.
+
+    The listing is read strictly and under a change-stream subscription: a
+    dropped or truncated reply errors rather than printing as "no IRs", and a
+    just-uploaded IR isn't missed by the lagging container index (backlog #38).
     """
     HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
-            irs = h.list_irs()
+            # strict: a dropped/undecodable -11 reply must not print as "no
+            # IRs on the device" (#38 Task 4). The read also settles under a
+            # 2001 subscription so a just-uploaded IR isn't missed.
+            irs = h.list_irs(strict=True)
             if as_json:
                 lookup = getattr(h, "ir_path_for_hash", None)
                 for m in irs:
@@ -2089,7 +2113,11 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
               help="Destination: " + _SETLIST_HELP)
 @click.option("--auto-irs", is_flag=True, default=False,
               help="Upload any referenced IRs that aren't on the device yet "
-                   "(resolved from your local IR mapping.json).")
+                   "(resolved from your local IR mapping.json). A WEDGED IR "
+                   "(backing file resolves, no registry entry) reads as "
+                   "already-present and is NOT re-pushed, so its cab stays "
+                   "silent; the cross-check warns on stderr — clear it with "
+                   "`device delete-ir --force-wedge` (backlog #93).")
 @_device_option
 @_locked(verb="install", when=lambda kw: ("library", "irs")
         if kw.get("auto_irs") else ("library",))
@@ -2115,17 +2143,23 @@ def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
 
     body = read_hsp(hsp_file)
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # The whole sequence runs under one 2001 subscription: the
+            # emptiness reads that decide where to write — and that authorize
+            # the failed-write cleanup to delete by (name, pos) — must not be
+            # answered from a lagging container index (#38).
             kind, container, label = _resolve_setlist_dest(h, setlist)
 
             def _writer(cont, cpos):
                 # _install_hsp_open does its own strict emptiness check for
                 # the pool path; the setlist path just computed a fresh
-                # lowest-empty pool posi, so skip re-checking it.
+                # lowest-empty pool posi, so skip re-checking it. That is
+                # known_empty, NOT force: the posi is ours, so a stub left by
+                # a failed write must still be cleaned up (#38).
                 return _install_hsp_open(h, body, cont, cpos, name,
                                          setlist_label=label,
                                          auto_irs=auto_irs, ip=ip,
-                                         force=(kind == "setlist"))
+                                         known_empty=(kind == "setlist"))
 
             cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, pos, _writer)
@@ -2566,10 +2600,28 @@ def device_setlist_sync_off(setlist: str) -> None:
 @device.command(name="add")
 @click.argument("tone")
 @click.option("--slot", default="auto",
-              help="Desired user slot ('1A'..'128D') or 'auto' (default; sync picks).")
+              help="Only 'auto' (the default) is accepted: sync picks the address. "
+                   "An explicit label ('1A'..'128D') is REJECTED — targeted "
+                   "placement is unimplemented (backlog #30), and the manifest "
+                   "used to record the label while sync silently ignored it.")
 def device_add_cmd(tone: str, slot: str) -> None:
-    """Mark a library tone for the device (placed on the next `device sync`)."""
+    """Mark a library tone for the device (placed on the next `device sync`).
+
+    `--slot` accepts only 'auto'. An explicit slot label is refused rather
+    than silently ignored: sync never converted the recorded label into a
+    device address (it installs at the lowest empty slot), so the flag
+    reported success and changed nothing. See backlog #30.
+    """
     SetlistManifest, ManifestError = _manifest()
+
+    if slot != "auto":
+        raise click.ClickException(
+            f"--slot {slot!r} is not supported: targeted placement is "
+            f"unimplemented (backlog #30). `device sync` installs at the "
+            f"lowest empty slot regardless of the label, so recording {slot!r} "
+            f"would report a placement that never happens. Use --slot auto "
+            f"(the default), then move the preset with `device reorder` "
+            f"(`device reorder -2 <name> --to <N>` for a pool-only tone).")
 
     m = SetlistManifest.load()
     try:
@@ -2866,13 +2918,23 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
 
     blob = infile.read_bytes()
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # One subscription for the whole push — the strict emptiness check
+            # below decides where to write AND is what passes
+            # prechecked_empty=True, authorizing the failed-write cleanup to
+            # delete by (name, pos); it must not be answered from a lagging
+            # container index (#38).
             kind, container, label = _resolve_setlist_dest(h, setlist)
 
             def _writer(cont, cpos):
                 if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
                     raise click.ClickException(f"{label} slot {cpos} is not empty")
-                return h._raw.push_to_slot(cont, cpos, name, blob)
+                # both paths reach here with a known-empty posi (the pool
+                # branch just checked strictly; the setlist branch pushes into
+                # a freshly computed lowest-empty pool posi), so a same-named
+                # stub after a failed write is ours to clean up (#38).
+                return h._raw.push_to_slot(cont, cpos, name, blob,
+                                           prechecked_empty=True)
 
             new_cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, pos, _writer)
@@ -2988,7 +3050,12 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
 @click.option("--force", is_flag=True, default=False,
               help="Push even if the destination POOL slot is occupied "
                    "(pool destinations only; an occupied named-setlist "
-                   "position is always refused — backlog #69).")
+                   "position is always refused — backlog #69). Also suppresses "
+                   "the failed-write cleanup: the entry at that slot may "
+                   "predate this call, so a failed write leaves it as-is "
+                   "(re-list to check). Setlist destinations are exempt — they "
+                   "write at a freshly computed lowest-empty pool posi and do "
+                   "clean up their own stub.")
 @_device_option
 @_locked("library", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,
@@ -3044,7 +3111,11 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
     HelixClient, HelixError = _client()
 
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # One subscription for the whole restore — the strict emptiness
+            # checks below decide both whether to refuse and whether a failed
+            # write may delete what it finds, so they must read a settled
+            # container index rather than a lagging one (#38).
             kind, container, label = _resolve_setlist_dest(h, dest_setlist)
             if kind == "setlist" and pos is None:
                 raise click.ClickException(
@@ -3060,7 +3131,18 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                             and h.find_by_pos(cont, cpos, strict=True) is not None):
                         raise click.ClickException(
                             f"{label} slot {cpos} is not empty (use --force)")
-                    return h._raw.push_to_slot(cont, cpos, name, src.read_bytes())
+                    # --force skipped the emptiness check, so a failed write must
+                    # not clean up: the entry may be a pre-existing occupant.
+                    # The setlist path is exempt — _install_via_dest always
+                    # writes at a freshly computed lowest-empty POOL posi, which
+                    # --force never applied to (the check above is pool-only),
+                    # so a failed write there must clean up its own stub rather
+                    # than orphan it and blame a --force the user never aimed
+                    # at the pool (same conflation the .hsp branch fixed via
+                    # known_empty).
+                    return h._raw.push_to_slot(
+                        cont, cpos, name, src.read_bytes(),
+                        prechecked_empty=(kind == "setlist") or not force)
             else:  # hsp
                 from helixgen.hsp import read_hsp
 
@@ -3069,7 +3151,7 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                 def _writer(cont, cpos):
                     return _install_hsp_open(
                         h, body, cont, cpos, name, setlist_label=label,
-                        force=force or kind == "setlist", ip=ip)
+                        force=force, known_empty=(kind == "setlist"), ip=ip)
 
             cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, dest_pos, _writer, force=force)
