@@ -1495,6 +1495,28 @@ Remaining follow-ups:
   session, or probe the registry directly. Needs hardware to reproduce a
   wedge; fold into the #90 session.
 
+- **#94 `--force` still resolves the write target by an ambiguous `(name,
+  pos)` match.** `_push_to_slot(prechecked_empty=False)` (the `slots restore
+  --force` path) correctly refuses to *delete* what `_confirm_created` matched,
+  because that entry may be a pre-existing occupant rather than the stub we
+  just created — but it still *writes* the blob into that same ambiguous cid.
+  In the realistic case the incumbent shares the tone's name (restore-over-
+  itself, the case #25 exists for), so writing into it is what the user asked
+  for; the residue is a possibly-orphaned empty stub left at the same posi
+  when the create did land separately. Not data loss, so deferred. Proper fix:
+  snapshot the container's cids before `/CreateContent` and accept only a cid
+  absent from that snapshot, falling back to raising rather than writing into
+  a match we cannot attribute. Needs hardware to establish what the device
+  actually does with a `/CreateContent` aimed at an occupied posi (the same
+  uncataloged behavior as #69); fold into the #90 session.
+
+- **#95 `_save_edit_buffer_to`'s stub cleanup is not opt-in.** `_push_to_slot`
+  gained a `prechecked_empty` gate so a caller has to deliberately grant
+  permission to `_delete_created_stub`; `_save_edit_buffer_to` still deletes
+  unconditionally on a failed `/SavePresetWithCID`. Safe today — its one
+  caller (`device save`) prechecks strictly under a subscription — but the
+  asymmetry is a trap for the next caller. Give it the same opt-in flag.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

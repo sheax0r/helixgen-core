@@ -1800,6 +1800,33 @@ def test_ir_path_for_hash_strict_raises_on_a_dropped_reply(monkeypatch):
     assert h.ir_path_for_hash("bb" * 16) is None
 
 
+def test_ir_path_for_hash_strict_raises_on_a_malformed_reply(monkeypatch):
+    """A reply that arrived but carried no decodable path is the *likelier*
+    transport failure than no reply at all (truncated/undecodable frame), and
+    it answers the question just as poorly. Under strict= it must raise too —
+    if it collapses into the ``None`` that means 'not registered', the
+    cross-check produces the false 'missing' it exists to prevent and the
+    caller re-uploads an IR the device already has."""
+    def _lookup(reply_args, **kwargs):
+        """Fresh client per case — the request id increments per _rpc call, and
+        _rpc only keeps frames whose first arg matches it."""
+        h = HelixClient("10.0.0.99")
+        _wire(h, [osc_encode("/xxxIrxPathForHash1",
+                             [("i", 1000)] + list(reply_args))])
+        return h.ir_path_for_hash("bb" * 16, **kwargs)
+
+    # a frame arrives, but the path argument is missing / not a string
+    with pytest.raises(HelixError):
+        _lookup([], strict=True)
+    with pytest.raises(HelixError):
+        _lookup([("b", b"\x00\x01")], strict=True)
+    # non-strict keeps the lenient reading for callers that want it
+    assert _lookup([]) is None
+    # a well-formed EMPTY path is a real answer ("not registered"), not a
+    # transport failure — strict must still return None there
+    assert _lookup([("s", "")], strict=True) is None
+
+
 def test_device_ir_hashes_warns_when_the_lookup_is_dropped(monkeypatch, caplog):
     """The verify cross-check exists to survive a flaky transport, so a
     dropped lookup must warn and report the hash unverified rather than

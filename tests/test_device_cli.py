@@ -33,6 +33,10 @@ class FakeClient:
         # push_to_slot's cleanup-ownership flag, recorded separately so the
         # existing (op, container, pos, name) assertions keep working (#38)
         self.push_kwargs = []
+        # subscription depth, so tests can assert that the emptiness reads
+        # deciding where to write ran under a 2001 subscription (#38)
+        self.sub_depth = 0
+        self.reads_under_sub = []
 
     # production reaches the raw primitives via client._raw.<name>; on this
     # fake they live directly on the instance.
@@ -55,7 +59,16 @@ class FakeClient:
 
     def mutating(self):
         import contextlib
-        return contextlib.nullcontext(self)
+
+        @contextlib.contextmanager
+        def _sub():
+            self.sub_depth += 1
+            try:
+                yield self
+            finally:
+                self.sub_depth -= 1
+
+        return _sub()
 
     # reads
     def list_presets(self, container=-2, *, strict=False):
@@ -103,6 +116,7 @@ class FakeClient:
     # slot-emptiness gate (#40) + the writes it guards
     def find_by_pos(self, container, pos, *, strict=False):
         self.calls.append(("find_by_pos", container, pos, strict))
+        self.reads_under_sub.append(self.sub_depth > 0)
         return None
 
     def push_to_slot(self, container, pos, name, blob, *,
@@ -1583,6 +1597,49 @@ def test_device_push_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):
     assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
     assert RaisingFindByPosClient.WRITE_CALLS == []
     assert RaisingFindByPosClient.STRICT_SEEN == [True]
+
+
+def test_device_save_checks_emptiness_under_a_subscription(monkeypatch, tmp_path):
+    """#38: the strict emptiness read decides where `device save` writes AND
+    authorizes _save_edit_buffer_to's failed-write cleanup to delete by
+    (name, pos). The container index only propagates promptly to a client
+    holding a 2001 subscription, so answering it from an unsubscribed (lagging)
+    read can call an occupied slot empty and let the cleanup delete a preset
+    helixgen never created — the data-loss shape #38 was about."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    holder = {}
+
+    class Recorder(FakeClient):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(cli, ["device", "save", "HG Save", "--pos", "3"])
+    assert result.exit_code == 0, result.output
+    assert holder["client"].reads_under_sub == [True]
+
+
+def test_device_push_checks_emptiness_under_a_subscription(monkeypatch, tmp_path):
+    """Same #38 gate for `device push`, which passes the read's verdict on as
+    prechecked_empty=True — the flag that grants _push_to_slot permission to
+    delete by (name, pos) after a failed write."""
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    infile = tmp_path / "backup.sbe"
+    infile.write_bytes(b"_sbepgsm-fake")
+    holder = {}
+
+    class Recorder(FakeClient):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            holder["client"] = self
+
+    _patch_client(monkeypatch, Recorder)
+    result = CliRunner().invoke(
+        cli, ["device", "push", str(infile), "HG Push", "--pos", "3"])
+    assert result.exit_code == 0, result.output
+    assert holder["client"].reads_under_sub == [True]
+    assert holder["client"].push_kwargs[0]["prechecked_empty"] is True
 
 
 def test_device_install_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):

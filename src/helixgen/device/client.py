@@ -610,9 +610,10 @@ class HelixClient:
         ``/IrPathForHashGet`` (16-byte blob arg).
 
         ``strict`` (#40, same contract as :meth:`list_container`) raises
-        :class:`HelixError` when the device answered nothing at all, instead
-        of collapsing a dropped reply into the same ``None`` that means "not
-        registered". Callers that use this lookup to *overturn* a missing
+        :class:`HelixError` when the device answered nothing **usable** — no
+        reply at all, or replies none of which carried a path (a truncated or
+        undecodable frame) — instead of collapsing either into the same
+        ``None`` that means "not registered". Callers that use this lookup to *overturn* a missing
         verdict must pass it: the flaky transport is exactly the condition the
         cross-check exists to survive, and a silent false "missing" there
         re-uploads an IR the device already has."""
@@ -625,9 +626,16 @@ class HelixClient:
             # reply /xxxIrxPathForHash1 [reqid, path]; empty path == not present
             if len(args) >= 2 and isinstance(args[1], str):
                 return args[1] or None
-        if strict and not replies:
+        if strict:
+            # No reply at all AND a reply that carried no decodable path are the
+            # same thing to a caller overturning a "missing" verdict: neither
+            # answers the question, and collapsing either into the ``None`` that
+            # means "not registered" re-uploads an IR the device already has. A
+            # truncated/undecodable frame is the *likelier* transport failure,
+            # so it must raise too — not just the empty-reply case.
             raise HelixError(
-                f"/IrPathForHashGet for {hash_hex} returned no reply — cannot "
+                f"/IrPathForHashGet for {hash_hex} returned no usable reply "
+                f"({len(replies)} frame(s), none carrying a path) — cannot "
                 f"tell whether the device has the IR")
         return None
 

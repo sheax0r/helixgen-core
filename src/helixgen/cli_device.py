@@ -1770,7 +1770,11 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     HelixClient, HelixError = _client()
 
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # One subscription for the whole save — the strict emptiness check
+            # below decides where to write AND authorizes the failed-write
+            # cleanup to delete by (name, pos), so it must read a settled
+            # container index rather than a lagging one (#38).
             kind, container, label = _resolve_setlist_dest(h, setlist)
 
             def _writer(cont, cpos):
@@ -2905,7 +2909,12 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
 
     blob = infile.read_bytes()
     try:
-        with HelixClient(ip, port) as h:
+        with HelixClient(ip, port) as h, h.mutating():
+            # One subscription for the whole push — the strict emptiness check
+            # below decides where to write AND is what passes
+            # prechecked_empty=True, authorizing the failed-write cleanup to
+            # delete by (name, pos); it must not be answered from a lagging
+            # container index (#38).
             kind, container, label = _resolve_setlist_dest(h, setlist)
 
             def _writer(cont, cpos):
