@@ -1,2 +1,12 @@
 external_review_tool = none
 default_branch = main
+
+# Kill a wedged executor session instead of letting it hang silently.
+# Added 2026-07-20 after a claude review pass sat with no output for 1h43m,
+# then had its agents interrupted and returned zero findings — which ralphex
+# logged as "no changes detected" and the run reported as success. idle_timeout
+# resets on each output line, so it only fires on genuine silence.
+# NOTE: review_patience / max_external_iterations do NOT apply here — they are
+# external-review settings and external_review_tool = none in this repo.
+idle_timeout = 15m
+session_timeout = 2h
