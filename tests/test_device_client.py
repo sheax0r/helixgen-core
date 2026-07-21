@@ -2217,9 +2217,46 @@ def test_create_error_says_unknown_when_no_listing_ever_succeeded(monkeypatch):
         h._raw.push_to_slot(-2, 5, "X", blob)
     msg = str(ei.value)
     assert "UNKNOWN" in msg
-    assert "could not be read at all" in msg
+    assert "could not be read" in msg
     assert "may duplicate" in msg
     # and it must NOT claim the listing showed the content absent
     assert "never showed it" not in msg
     # nothing was deleted on the way out
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_create_error_says_unknown_when_only_an_early_listing_succeeded(
+        monkeypatch):
+    """A clean-but-empty read EARLY in the confirm loop is the expected shape of
+    a container index still lagging a just-completed write — it is not evidence
+    of absence. If the later attempts (including the last) all failed to read,
+    the newest answer we have is 'unreadable', so the error must stay UNKNOWN.
+
+    Letting that early read latch a sticky 'listed cleanly' would reinstate the
+    exact #38 failure mode this change exists to remove: a confident 'the create
+    really did not land' for content that IS on the device, whose 'safe to
+    retry' advice duplicates it."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # first confirming listing reads cleanly but the index has not caught up
+    # yet (empty container); every later attempt drops.
+    empty_listing = osc_encode(
+        "/GetContainerContents",
+        [("i", 1001), ("b", msgpack.packb([], use_bin_type=True))])
+    _wire_seq(h, [[create], [empty_listing]]
+              + [[] for _ in range(h.create_confirm_tries - 1)])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob)
+    msg = str(ei.value)
+    assert "UNKNOWN" in msg
+    assert "may duplicate" in msg
+    # the one early clean read must NOT license the confident absence claim
+    assert "really did not land" not in msg
+    assert "never showed it" not in msg
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)

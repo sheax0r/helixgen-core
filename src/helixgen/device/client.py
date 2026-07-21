@@ -1218,10 +1218,10 @@ class HelixClient:
         by ``name`` **and** ``posi == pos``).
 
         Returns ``(cid, listed_cleanly, saw_cidless_match)``: the cid when the
-        entry was found (``None`` otherwise), whether **any** attempt got a
-        clean listing back, and whether some attempt matched ``(name, pos)``
+        entry was found (``None`` otherwise), whether the **final** attempt got
+        a clean listing back, and whether some attempt matched ``(name, pos)``
         but carried no ``cid_``. All three matter — a ``(None, False, _)``
-        means "we never managed to read the container", which is NOT evidence
+        means "the last read of the container failed", which is NOT evidence
         the create failed, and ``saw_cidless_match`` means the content WAS
         observed but its cid never resolved, so the error must not tell the
         user the listing never showed it (see :meth:`_create_status_error`).
@@ -1257,8 +1257,15 @@ class HelixClient:
                     listing = self.list_container(container, strict=True)
                 except HelixError:
                     listing = None
+                # Deliberately NOT sticky: only the LAST attempt's outcome may
+                # license the confident "it really did not land" diagnosis. A
+                # clean-but-empty read early in the loop is the expected shape
+                # of a lagging container index, so letting it latch True would
+                # let one early read plus a run of dropped listings assert
+                # absence for content that is on the device (the #38 failure
+                # mode, just moved). See :meth:`_create_status_error`.
+                listed_cleanly = listing is not None
                 if listing is not None:
-                    listed_cleanly = True
                     match = next(
                         (m for m in listing
                          if m.get("name") == name and m.get("posi") == pos), None)
@@ -1478,11 +1485,15 @@ class HelixClient:
         the setlists root (#66 residual).
 
         ``listed_cleanly`` is :meth:`_confirm_created`'s second return value:
-        ``False`` means **every** confirming listing failed, so we never got a
-        readable answer at all. The message must say "could not verify" there
-        rather than assert the content is absent — on the documented-flaky
+        ``False`` means the **final** confirming listing failed, so the newest
+        answer we have is "unreadable". The message must say "could not verify"
+        there rather than assert the content is absent — on the documented-flaky
         Stadium stack a run of dropped listings would otherwise produce a
-        confident, wrong diagnosis for a write that landed.
+        confident, wrong diagnosis for a write that landed. It is deliberately
+        the last attempt and not "any attempt": the container index lags a
+        just-completed write, so an early clean-but-empty read is the normal
+        shape of a create still propagating, and only a clean read at the end
+        of the retry budget is evidence of absence.
 
         ``saw_cidless`` means a listing DID show ``(name, pos)`` but without a
         cid, so the entry is on the device and only its cid is unresolved.
@@ -1527,8 +1538,8 @@ class HelixClient:
         if not listed_cleanly:
             return HelixError(
                 f"/CreateContent for {name!r} at slot {pos} {reported}, "
-                f"and the {what} listing could not be read at all "
-                f"({self.create_confirm_tries} attempts all failed) — so "
+                f"and the {what} listing could not be read on the final attempt "
+                f"({self.create_confirm_tries} attempts) — so "
                 f"whether the entry was created is UNKNOWN. Do not assume it "
                 f"failed: check with `{verify_cmd}` before retrying, or a retry "
                 f"may duplicate an entry that is already there"
