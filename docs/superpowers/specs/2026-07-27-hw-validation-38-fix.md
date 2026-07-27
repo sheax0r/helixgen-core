@@ -103,6 +103,11 @@ pre-fix behavior.
 
 Hardware validation of the nudge: fresh import left the listing at 26 rows;
 one same-name rename of the new cid → 27 rows, hash present, next read.
+The wedge-heal path itself (remove orphan file + re-import) is validated
+against offline fakes only — no wedged state was manufactured on hardware
+this session. The verdict also only fires off a CONFIRMED listing refresh:
+an empty listing, no usable row to rename, an undecodable-hash row, or an
+unconfirmed nudge all keep the trusting "already" path (backlog #93(b)).
 
 ### Run 3 (post-fix) — verbatim result
 

@@ -271,13 +271,34 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                 # AFTER that refresh is truly wedged. A failed listing is NOT
                 # evidence of a wedge (flaky transport is the common case) —
                 # it keeps the trusting path.
+                # A row with hash None is one list_irs could not normalize —
+                # it may BE this IR, so it vetoes the wedge verdict exactly
+                # like a match (deleting the backing file over an undecodable
+                # row would break a registered IR).
+                def _hits(rs):
+                    return any(m["hash"] in (hg_hash, None) for m in rs)
                 try:
-                    rows = h.list_irs(strict=True)
-                    listed = any(m["hash"] == hg_hash for m in rows)
-                    if not listed and rows:
-                        h.rename(rows[0]["cid_"], rows[0]["name"])
-                        listed = any(m["hash"] == hg_hash
-                                     for m in h.list_irs(strict=True))
+                    rows = h.list_irs(strict=True, include_unusable=True)
+                    listed = _hits(rows)
+                    if not listed:
+                        # The nudge needs a listed row with a usable (cid,
+                        # name) pair to rename — renaming a row to a missing/
+                        # None name would blank a real user IR's display
+                        # name. And a dropped rename reply surfaces as a
+                        # False return (never an exception). Without a
+                        # CONFIRMED refresh the wedge verdict is unearned —
+                        # trust the point lookup, same as the failed-listing
+                        # path below.
+                        nudge = next(
+                            (r for r in rows if r.get("cid_") is not None
+                             and isinstance(r.get("name"), str)
+                             and r["name"]), None)
+                        if nudge is not None and h.rename(nudge["cid_"],
+                                                          nudge["name"]):
+                            listed = _hits(h.list_irs(
+                                strict=True, include_unusable=True))
+                        else:
+                            listed = True
                 except HelixError:
                     listed = True
                 if listed:
@@ -309,13 +330,17 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                             any(fname in str(a) for a in ev.args):
                         saw_our_file = True
                     elif ev.addr == "/addContent":
-                        hh = _addcontent_hash(ev.args)
-                        if hh is not None:
-                            dev_hash = hh  # our upload is the only dir change
-                            for a in ev.args:
-                                if isinstance(a, dict) and "hash" in a:
+                        # cid/name must come from the SAME dict the hash was
+                        # accepted from, or a multi-dict payload could pair
+                        # the hash with another row's cid.
+                        for a in ev.args:
+                            if isinstance(a, dict) and "hash" in a:
+                                hh = _addcontent_hash([a])
+                                if hh is not None:
+                                    dev_hash = hh  # ours: only dir change
                                     reg_cid = a.get("cid_")
                                     reg_name = a.get("name")
+                                    break
             if dev_hash is not None:
                 with HelixClient(ip) as h:
                     if reg_cid is not None:
@@ -329,7 +354,12 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                         # no-op write that forces the refresh. Advisory: the
                         # IR is registered either way.
                         try:
-                            h.rename(reg_cid, reg_name or stem)
+                            # reg_name is device-controlled msgpack — a
+                            # non-str (or empty) name must not be written
+                            # back; the wav stem is the name the import used
+                            h.rename(reg_cid,
+                                     reg_name if isinstance(reg_name, str)
+                                     and reg_name else stem)
                         except HelixError:
                             pass
                     path = h.ir_path_for_hash(dev_hash)

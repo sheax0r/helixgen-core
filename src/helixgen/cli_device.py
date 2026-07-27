@@ -1813,17 +1813,20 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
     even after a `device rename-ir` (which changes only the display name),
     so `file` is what `device pull-ir` needs.
 
-    The listing is read strictly and under a change-stream subscription: a
-    dropped or truncated reply errors rather than printing as "no IRs", and a
-    just-uploaded IR isn't missed by the lagging container index (backlog #38).
+    The listing is read strictly: a dropped or truncated reply errors rather
+    than printing as "no IRs". The device's -11 listing cache is never
+    invalidated by watched-dir IR imports (hardware-observed 2026-07-27) —
+    only an RPC content write refreshes it. helixgen's `push-ir` nudges the
+    cache after registering, so an IR pushed by helixgen must appear; an IR
+    imported by another client may stay unlisted until some content write.
+    The point lookup (/IrPathForHashGet) remains the authority on presence.
     """
     HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
             # strict: a dropped/undecodable -11 reply must not print as "no
-            # IRs on the device" (#38 Task 4). The read also settles under a
-            # 2001 subscription so a just-uploaded IR isn't missed.
+            # IRs on the device" (#38 Task 4).
             irs = h.list_irs(strict=True)
             if as_json:
                 lookup = getattr(h, "ir_path_for_hash", None)
@@ -1853,7 +1856,9 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
               help="If a 32-hex hash isn't in the IR registry but its file "
                    "still resolves on the device (the delete->quick-reimport "
                    "wedge), remove the orphaned file. Do NOT use on an IR you "
-                   "just imported — its listing may merely be lagging.")
+                   "just imported — its listing may merely be lagging (a "
+                   "helixgen push-ir import is nudged into the listing; only "
+                   "imports by other clients lag).")
 @_device_option
 @_locked("irs", verb="delete-ir")
 def device_delete_ir(name_or_hash: str, yes: bool, force_wedge: bool,
@@ -2053,6 +2058,16 @@ def device_push_ir(wav: Path, ip: str) -> None:
     the device's slow ~15-20 min scan; (2) the uploaded IR embeds a ``HASH``
     chunk holding helixgen's ``irhash`` (as the editor's file does), so the
     device registers it under exactly that hash and the preset resolves.
+
+    After registration the new IR is nudged into the device's -11 listing
+    cache (a no-op same-name rename) — a watched-dir import never invalidates
+    that cache on its own, so without the nudge `list-irs`/`rename-ir`/
+    `delete-ir` would miss the IR indefinitely. An "already on device" answer
+    is verified against a nudged listing: a wedged orphan file (#93) is
+    removed and re-imported instead of being reported as already present.
+    The wedge verdict needs a confirmed listing refresh — an empty or failed
+    listing (or a nudge that didn't confirm) keeps the trusting "already"
+    answer; `delete-ir --force-wedge` is the sure clear then.
     """
     # sftp path needs a real address even when --no-lock skipped the
     # _locked wrapper's resolution (#74; HelixSFTP(None) would try

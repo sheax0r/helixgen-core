@@ -514,31 +514,34 @@ class HelixClient:
             return _irmd.normalize_hash_string(h)
         return None
 
-    def list_irs(self, *, strict: bool = False,
-                 settle: bool = True) -> List[Dict[str, Any]]:
+    def list_irs(self, *, strict: bool = False, settle: bool = True,
+                 include_unusable: bool = False) -> List[Dict[str, Any]]:
         """Return the device's user IRs: ``{cid_, name, hash, mono, posi}``.
 
         ``hash`` is normalized to the 32-hex Stadium IR hash (== helixgen
         ``irhash``).
 
-        The read happens under :meth:`mutating` (``settle=True``, the default):
-        the ``-11`` container index only propagates promptly to a client that
-        holds a 2001 change-stream subscription, so an unsubscribed read can
-        under-report for **minutes** after an IR upload — the reported symptom
-        of 24 entries listed while a 25th was genuinely present and resolving
-        through :meth:`ir_path_for_hash` (#38 Task 4). That is index lag, not
-        truncation. ``settle=False`` skips the subscribe for a caller that
-        already holds one (nesting is cheap, so passing it is rarely needed)
-        or deliberately wants a bare read.
+        ``settle=True`` (the default) wraps the read in :meth:`mutating`,
+        which holds a 2001 change-stream subscription for the duration. That
+        was believed to make the lagging ``-11`` index catch up promptly
+        (#38 Task 4); hardware observation 2026-07-27 (fw 1.3.2) disproved
+        it — the listing cache is never invalidated by watched-dir imports,
+        subscribed or not, and only an RPC content write refreshes it
+        (``sftp.push_ir`` nudges the cache that way after registering). The
+        subscription therefore buys no convergence; it is kept only because
+        removing it is an untested behavior change (backlog #97).
+        ``settle=False`` skips it.
 
-        This listing is still **not** authoritative about absence — nothing
-        forces the index to have caught up. In fact a watched-dir IR import
-        never invalidates the device's listing cache at all (hardware-observed
-        2026-07-27, fw 1.3.2: stale for 11+ min despite the subscription; an
-        RPC content write is what refreshes it — ``sftp.push_ir`` nudges the
-        cache that way after registering). A caller that needs a definitive
-        "is this hash on the device?" must cross-check the point lookup; see
+        This listing is **not** authoritative about absence — nothing forces
+        the stale cache to refresh. A caller that needs a definitive "is this
+        hash on the device?" must cross-check the point lookup; see
         :meth:`device_ir_hashes`'s ``verify``.
+
+        ``include_unusable=True`` keeps a row whose hash cannot be normalized
+        (with ``hash`` set to ``None``) instead of dropping it — for a caller
+        whose ABSENCE decision must not be fooled by a row that failed to
+        decode (``sftp.push_ir``'s wedge check). The skip/keep is warned
+        either way.
         """
         ctx = self.mutating() if settle else contextlib.nullcontext()
         with ctx:
@@ -553,10 +556,11 @@ class HelixClient:
                 # a partial read is loud rather than decoding as "not there"
                 logger.warning(
                     "device IR listing entry %r (slot %s) has an unusable hash "
-                    "%r and was skipped — the IR is on the device but will not "
-                    "appear in this listing",
+                    "%r — the IR is on the device but its hash cannot be read "
+                    "from this listing",
                     m.get("name"), m.get("posi"), m.get("hash"))
-                continue
+                if not include_unusable:
+                    continue
             m = dict(m)
             m["hash"] = hh
             irs.append(m)

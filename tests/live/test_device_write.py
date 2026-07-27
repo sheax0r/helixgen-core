@@ -33,6 +33,7 @@ as passing.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -199,16 +200,22 @@ def dirty_edit_buffer(helix, installed):
     # edit sets it). Without this read-back a silently-dropped set-param would
     # leave the buffer clean and every #38 guard downstream would pass while
     # exercising nothing.
+    _assert_buffer_carries_nudge(
+        helix, target["pid"], new,
+        "set-param exited 0 but the live edit buffer does not carry the "
+        "unsaved nudge — the dirty state #38 needs was not established")
+    return {"pid": target["pid"], "was": current, "now": new}
+
+
+def _assert_buffer_carries_nudge(helix, pid, value, msg):
+    """Read the live edit buffer back and assert it carries the unsaved
+    nudge — the CLI-visible proxy for the `hist` dirty flag."""
     code, out, err = helix("device", "params", "0", "13", "--json")
     assert code == 0, err or out
     live = next((p for p in (json.loads(out).get("params") or [])
-                 if p.get("pid") == target["pid"]), None)
-    assert live is not None and abs(float(live["value"]) - new) < 1e-3, (
-        f"set-param exited 0 but the live edit buffer does not carry the "
-        f"unsaved nudge (wanted {new}, buffer has "
-        f"{live and live.get('value')!r}) — the dirty state #38 needs was "
-        f"not established")
-    return {"pid": target["pid"], "was": current, "now": new}
+                 if p.get("pid") == pid), None)
+    assert live is not None and abs(float(live["value"]) - value) < 1e-3, (
+        f"{msg} (wanted {value}, buffer has {live and live.get('value')!r})")
 
 
 def test_save_edit_buffer(helix, installed, free_positions, dirty_edit_buffer):
@@ -266,15 +273,18 @@ def test_install_and_create_with_dirty_buffer(helix, hgtest_hsp, installed,
 
         # install must not clobber the player's live tone: the buffer still
         # carries the unsaved nudge, so the create below also runs dirty.
-        code, out, err = helix("device", "params", "0", "13", "--json")
-        assert code == 0, err or out
-        live = next((p for p in (json.loads(out).get("params") or [])
-                     if p.get("pid") == dirty_edit_buffer["pid"]), None)
-        assert live is not None and abs(
-            float(live["value"]) - dirty_edit_buffer["now"]) < 1e-3, (
+        _assert_buffer_carries_nudge(
+            helix, dirty_edit_buffer["pid"], dirty_edit_buffer["now"],
             "the edit buffer lost its unsaved edit across `device install` — "
             "cannot certify the create below ran against a dirty buffer")
 
+        # a stale "(1)" copy (leaked by an earlier failed run of
+        # test_create_copies_and_autonames) would absorb this name — the
+        # device would autoname the new copy "(2)", the assert below would
+        # find the stale preset, and the real copy would leak past cleanup.
+        assert find_user_preset(helix, copy_name) is None, (
+            f"stale {copy_name!r} already on device (leaked by an earlier "
+            f"run) — remove it before this guard can attribute the copy")
         code, out, err = helix("device", "create",
                                "--from", installed["cid"], "--pos", pos_copy)
         cleanup_names.append(copy_name)
@@ -289,6 +299,10 @@ def test_install_and_create_with_dirty_buffer(helix, hgtest_hsp, installed,
             stub = find_user_preset(helix, name)
             if stub is not None:
                 delete_preset(helix, stub["cid_"])
-        for name in cleanup_names:
-            assert find_user_preset(helix, name) is None, (
-                f"cleanup failed: {name!r} still on device")
+        # only assert cleanup when the body passed — a cleanup assert raised
+        # while the #38 regression signal is propagating would REPLACE it as
+        # the reported failure
+        if sys.exc_info()[0] is None:
+            for name in cleanup_names:
+                assert find_user_preset(helix, name) is None, (
+                    f"cleanup failed: {name!r} still on device")

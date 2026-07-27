@@ -1491,9 +1491,16 @@ Remaining follow-ups:
   (`docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`) — and
   `push_ir` now uses a same-name-rename nudge to force a fresh listing and
   tell stale-cache from wedge (healing the wedge on re-import). Remaining:
-  `device_ir_hashes(verify=...)`'s skip path (`install --auto-irs`, `sync`)
-  still trusts the bare point lookup, so a wedged IR it never re-pushes
-  stays silent — apply the same nudge-then-relist there.
+  (a) `device_ir_hashes(verify=...)`'s skip path (`install --auto-irs`,
+  `sync`) still trusts the bare point lookup, so a wedged IR it never
+  re-pushes stays silent — apply the same nudge-then-relist there;
+  (b) `push_ir`'s wedge check can only earn the verdict when the listing has
+  a nudgeable row — an empty listing (exactly the single-wedged-IR case, the
+  classic delete→quick-re-import repro), a listing with no usable
+  `(cid, name)` row, an undecodable-hash row, or an unconfirmed nudge all
+  fall back to trusting "already on device" (deliberately: no confirmed
+  refresh, no delete), so the heal silently no-ops there and
+  `delete-ir --force-wedge` remains the sure clear.
 
 - **#94 `--force` still resolves the write target by an ambiguous `(name,
   pos)` match.** `_push_to_slot(prechecked_empty=False)` (the `slots restore
@@ -1535,6 +1542,19 @@ Remaining follow-ups:
   Needs live hardware to characterise — not covered by the 2026-07-27 #90
   session (it only exercised the code-0 and code-1 clean/dirty cases, where
   the reply cid matched the re-list).
+
+- **#97 `list_irs`'s `settle` subscription buys no convergence — remove it or
+  default it off.** The 2001-subscription wrap (`settle=True`, the default,
+  added for #38 Task 4) was justified by the theory that the `-11` container
+  index "propagates promptly to a subscribed client". The 2026-07-27 hardware
+  session disproved that: the listing cache is never invalidated by
+  watched-dir imports, subscribed or not — only an RPC content write
+  refreshes it (see `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`).
+  So every `list-irs`, `device_ir_hashes`, and sync IR check pays a
+  subscribe/teardown round-trip for nothing. The docstring was reconciled in
+  the #90 session; the behavior change (default `settle=False` or delete the
+  parameter) is deferred because it touches every listing call path and needs
+  a live blast-radius run to land honestly.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

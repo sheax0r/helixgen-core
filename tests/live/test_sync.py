@@ -52,13 +52,11 @@ def _device_setlist_order(helix, setlist: str) -> list[str]:
     assert code == 0, err or out
     refs = json.loads(out)
     names = [m.get("name") for m in refs]
-    if all(names):
-        return names
-    # references reported without names: resolve through the pool by rcid
-    code, out, err = helix("device", "list", "--json")
-    assert code == 0, err or out
-    by_cid = {m.get("cid_"): m.get("name") for m in json.loads(out)}
-    return [m.get("name") or by_cid.get(m.get("rcid"), "") for m in refs]
+    # the CLI already resolves a nameless reference through the pool
+    # (get_ref), so a missing name is a resolution failure, not an ordering
+    # signal — fail loud rather than compare against ''
+    assert all(names), f"unresolvable setlist references: {refs!r}"
+    return names
 
 
 def _manifest_setlist_order(helix, setlist: str) -> list[str]:
