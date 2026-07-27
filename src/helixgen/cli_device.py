@@ -291,7 +291,10 @@ def _locked(*scopes: str, verb: str, when=None):
                 raise click.ClickException(
                     f"{e} — wait and retry, raise HELIXGEN_LOCK_TIMEOUT, or "
                     f"(dangerous) pass --no-lock") from e
-            with lease:
+            # keep_alive: entry-time renewal alone loses the lease mid-verb
+            # for anything that outruns its TTL (`normalize`, a long `--seconds`
+            # window) — see locks.keep_alive (#97).
+            with lease, locks.keep_alive(ip):
                 return f(*args, **kwargs)
 
         return click.option("--no-lock", "no_lock", is_flag=True,
@@ -320,9 +323,15 @@ def _reads(*scopes: str, when=None):
             # an unresolved ip is left to the verb body's own fail-fast; a
             # read with no token is exactly as unlocked as it was before
             # (check_session itself owns the no-token rule).
-            if eff and ip:
-                _check_session_or_fail(ip, eff)
-            return f(*args, **kwargs)
+            if not (eff and ip):
+                return f(*args, **kwargs)
+            _check_session_or_fail(ip, eff)
+            from helixgen import locks
+
+            # a read can be the LONG verb (`watch`/`measure --seconds N`),
+            # so it heartbeats its session lease the same way (#97).
+            with locks.keep_alive(ip):
+                return f(*args, **kwargs)
 
         return wrapper
     return deco
@@ -870,6 +879,7 @@ def device_unlock(scopes, force, as_json, ip) -> None:
                                    force=force)
     except locks.LockError as e:
         raise click.ClickException(str(e)) from e
+    _warn_dangling_token_after_unlock(ip)  # stderr — --json stdout unaffected
     if as_json:
         click.echo(json.dumps(res, indent=2))
         return
@@ -879,6 +889,26 @@ def device_unlock(scopes, force, as_json, ip) -> None:
         click.echo(f"no leases of yours to release on {ip}")
     for k in res["kept"]:
         click.echo(f"kept '{k['scope']}' — held by {k['holder']}", err=True)
+
+
+def _warn_dangling_token_after_unlock(ip: str) -> None:
+    """The token outlives the lease it opened: this process cannot unset the
+    caller's env var, and a token that now opens nothing makes every later
+    device verb — reads included — fail with LockLost (#97). Releasing your
+    own lease is the documented end of an agent workflow, so say plainly
+    what to do rather than leaving a shell that errors on `device list`."""
+    from helixgen import locks
+
+    tok = locks.env_token()
+    if not tok:
+        return
+    if any(locks.covering_lease(ip, s, tok) is not None
+           for s in locks.VALID_SCOPES):
+        return  # still holding something — the token is still good
+    click.echo("your $HELIXGEN_LOCK_TOKEN no longer opens any lease: "
+               "`unset HELIXGEN_LOCK_TOKEN` (while it is set, helixgen "
+               "device verbs — reads included — will refuse), or take a "
+               "fresh lease with `helixgen device lock`.", err=True)
 
 
 @device.command(name="list")
@@ -1124,6 +1154,7 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the device info as JSON (includes the raw reply).")
 @_device_option
+@_reads("library")
 def device_info(as_json: bool, ip: str, port: int) -> None:
     """Show the connected device's identity: model, firmware, serial, storage.
 

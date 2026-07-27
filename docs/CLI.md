@@ -570,8 +570,8 @@ a held session". If that token opens **no live lease at all** on the device
 (the lease was reclaimed by a contender or its TTL lapsed), the verb
 **errors** naming the current holder instead of proceeding unlocked. This
 applies to **read-only** verbs too — `measure`, `meters`, `tuner`, `blocks`,
-`params`, `active`, `watch` (editbuffer); `list`, `setlists`, `read`, `pull`,
-`backup`, `setlist export-hss`, `slots list --verify` (library); `list-irs`,
+`params`, `active`, `watch` (editbuffer); `info`, `list`, `setlists`, `read`,
+`pull`, `backup`, `setlist export-hss`, `slots list --verify` (library); `list-irs`,
 `pull-ir` (irs); `settings list --values`, `settings get` (globals) — plus
 `ir-prune`'s dry run — because a read taken while
 someone else is driving the device is no more trustworthy than a write (the
@@ -598,10 +598,17 @@ that scope transiently, exactly as before (a granular lease stays granular).
    about to act on (active preset, snapshot, block state) before acting. A
    blind retry of the failed call can succeed against a device that has since
    moved.
-4. Every verb run with the token exported renews the lease, reads included —
-   so an *active* workflow cannot time out. A workflow that goes **idle**
-   (no helixgen calls at all) for longer than the TTL still loses it: size
-   `--ttl` to cover your longest gap.
+4. Every verb run with the token exported renews **every** lease that token
+   owns, reads included — not only the scopes that verb touches, so a stretch
+   of `library` verbs cannot let a sibling `editbuffer` lease of the same
+   session age out. A verb that runs LONGER than the TTL (`normalize`, a long
+   `--seconds` window) keeps renewing **in flight**, from a background
+   heartbeat, so an *active* workflow cannot time out either way. A workflow
+   that goes **idle** (no helixgen calls at all) for longer than the TTL still
+   loses it: size `--ttl` to cover your longest gap.
+5. `device unlock` releases the lease but cannot unset `$HELIXGEN_LOCK_TOKEN`
+   in your shell — a token that opens nothing makes every later device verb
+   refuse, so unset it (the verb says so on stderr) or take a fresh lease.
 
 ### Preset + edit-buffer verbs
 

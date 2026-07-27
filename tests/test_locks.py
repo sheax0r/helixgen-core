@@ -1461,10 +1461,13 @@ def test_97_read_only_verb_renews_the_lease_it_holds(root, fake_client,
     assert json.loads(p.read_text())["acquired_at"] > before
 
 
-def test_97_session_lock_refuses_a_detached_lease_with_no_expiry(root):
-    """The invariant lives in the lock layer, not only in the CLI flag."""
+@pytest.mark.parametrize("ttl", [0, -1, -0.5])
+def test_97_session_lock_refuses_a_detached_lease_with_no_expiry(root, ttl):
+    """The invariant lives in the lock layer, not only in the CLI flag — and
+    a NEGATIVE ttl is 'no expiry' to _remaining_ttl exactly like 0, so it
+    would leave the same unclearable pid-less lease."""
     with pytest.raises(ValueError):
-        locks.session_lock(IP, ["all"], label="agent", ttl=0, detach=True)
+        locks.session_lock(IP, ["all"], label="agent", ttl=ttl, detach=True)
     assert not lease_path(root, "all").exists()
 
 
@@ -1605,3 +1608,125 @@ def test_97_unlock_still_works_with_a_dangling_token(root, monkeypatch):
     assert run_cli("device", "unlock", "--ip", IP).exit_code == 0
     res = run_cli("device", "lock", "--status", "--ip", IP)
     assert res.exit_code == 0, res.output
+
+
+# --------------------------------------------------------------------------
+# #97 review round 2: renewal covers the whole session, and covers a verb
+# that outruns its own TTL
+# --------------------------------------------------------------------------
+
+def test_97_use_renews_every_lease_the_token_owns_not_just_this_verbs_scope(
+        root, monkeypatch):
+    """A multi-scope agent lease is ONE session: a stretch of `library` verbs
+    must not let the sibling `editbuffer` lease age out and be reclaimed
+    under the agent while it is demonstrably active."""
+    eb = write_lease(root, "editbuffer", pid=None, token="tok-97",
+                     kind="detached", age=200,
+                     ttl=locks.DEFAULT_DETACHED_TTL)
+    lib = write_lease(root, "library", pid=None, token="tok-97",
+                      kind="detached", age=200,
+                      ttl=locks.DEFAULT_DETACHED_TTL)
+    before = {p: json.loads(p.read_text())["acquired_at"] for p in (eb, lib)}
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",))
+    for p in (eb, lib):
+        assert json.loads(p.read_text())["acquired_at"] > before[p], p.name
+
+
+def test_97_foreign_leases_are_never_renewed_by_our_use(root, monkeypatch):
+    other = write_lease(root, "irs", pid=1, label="other-agent", age=100)
+    write_lease(root, "library", pid=None, token="tok-97", kind="detached")
+    before = json.loads(other.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",))
+    assert json.loads(other.read_text())["acquired_at"] == before
+
+
+def test_97_keep_alive_renews_a_lease_that_the_verb_outruns(root, monkeypatch):
+    """Renewal at verb ENTRY alone loses the lease mid-flight for anything
+    longer than its TTL (`normalize`, a long `--seconds` window). The
+    heartbeat keeps an ACTIVE long verb's lease alive."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    with locks.keep_alive(IP, token="tok-97"):
+        deadline = time.time() + 2.0
+        while (json.loads(p.read_text())["acquired_at"] == before
+               and time.time() < deadline):
+            time.sleep(0.02)
+    assert json.loads(p.read_text())["acquired_at"] > before
+    # and the thread stops with the verb
+    stopped = json.loads(p.read_text())["acquired_at"]
+    time.sleep(0.2)
+    assert json.loads(p.read_text())["acquired_at"] == stopped
+
+
+def test_97_keep_alive_is_a_noop_when_no_lease_is_held(root):
+    with locks.keep_alive(IP, token="tok-97"):
+        pass
+    assert not lease_path(root, "all").exists()
+
+
+def test_97_long_verb_keeps_its_lease_alive(root, fake_client, monkeypatch):
+    """End to end through the CLI wrapper: the lease is renewed DURING the
+    verb body, not only before it."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    seen = {}
+
+    import helixgen.device as device_mod
+    real_blocks = device_mod.HelixClient.edit_buffer_blocks
+
+    def slow_blocks(self):
+        entry = json.loads(p.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(p.read_text())["acquired_at"] == entry
+               and time.time() < deadline):
+            time.sleep(0.02)
+        seen["renewed_during_call"] = (
+            json.loads(p.read_text())["acquired_at"] > entry)
+        return real_blocks(self)
+
+    monkeypatch.setattr(device_mod.HelixClient, "edit_buffer_blocks",
+                        slow_blocks)
+    assert run_cli("device", "blocks", "--ip", IP).exit_code == 0
+    assert seen["renewed_during_call"] is True
+
+
+def test_97_unlock_tells_you_to_unset_a_now_dangling_token(root, monkeypatch):
+    """`device unlock` is the documented end of an agent workflow — but the
+    token stays exported in the caller's shell, where it now opens nothing
+    and makes every later device verb (reads included) fail."""
+    res = run_cli("device", "lock", "--scope", "all", "--detach", "--label",
+                  "agent-workflow", "--ip", IP)
+    token = [ln.split("=", 1)[1] for ln in res.output.splitlines()
+             if ln.startswith("HELIXGEN_LOCK_TOKEN=")][0]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", token)
+    out = run_cli("device", "unlock", "--ip", IP)
+    assert out.exit_code == 0, out.output
+    assert "unset HELIXGEN_LOCK_TOKEN" in out.output
+
+
+def test_97_unlock_says_nothing_while_the_token_still_opens_a_lease(
+        root, monkeypatch):
+    res = run_cli("device", "lock", "--scope", "editbuffer", "--scope",
+                  "library", "--detach", "--label", "agent", "--ip", IP)
+    token = [ln.split("=", 1)[1] for ln in res.output.splitlines()
+             if ln.startswith("HELIXGEN_LOCK_TOKEN=")][0]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", token)
+    out = run_cli("device", "unlock", "--scope", "library", "--ip", IP)
+    assert out.exit_code == 0, out.output
+    assert "unset HELIXGEN_LOCK_TOKEN" not in out.output
+
+
+def test_97_device_info_refuses_a_dangling_token(root, fake_client,
+                                                 monkeypatch):
+    """`info` is a NETWORKED read, so it is subject to the same check as
+    every other read — it was the one unlisted exception."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "info", "--ip", IP)
+    assert res.exit_code != 0
+    assert "reclaimed or expired" in res.output

@@ -47,12 +47,14 @@ Pure stdlib; no device/network dependency.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import re
 import socket
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -352,11 +354,14 @@ def check_session(ip: str, scopes, *, token: str | None = None) -> None:
     (contending normally, with the usual wait) and a read stays as free as
     it was unlocked. Only a token that opens nothing is a lost session.
 
-    Every covering lease this call finds is RENEWED — a read-only verb is
-    proof its session is still active, which is what the grace/TTL clock
-    should be measuring. Without this, a `device measure`-only stretch
-    performs zero renewals and loses the very lease it is holding (the
-    Task 1 root cause).
+    EVERY lease the token owns is RENEWED, not only the ones covering this
+    verb's scopes — a read-only verb is proof its session is still active,
+    which is what the grace/TTL clock should be measuring. Without this, a
+    `device measure`-only stretch performs zero renewals and loses the very
+    lease it is holding (the Task 1 root cause), and a stretch of `library`
+    verbs silently ages out a sibling `editbuffer` lease of the same session.
+    Renewal at entry only covers a verb that OUTRUNS its TTL — see
+    :func:`keep_alive` for the in-flight half.
 
     NO token set → no-op. Unlocked callers, read-only verbs included, keep
     behaving exactly as before; this never makes a read start taking a lock.
@@ -364,22 +369,18 @@ def check_session(ip: str, scopes, *, token: str | None = None) -> None:
     tok = token if token is not None else env_token()
     if not tok:
         return
-    missing = []
-    for scope in _normalize_scopes(scopes):
-        found = covering_lease(ip, scope, tok)
-        if found is None:
-            missing.append(scope)
-            continue
-        path, lease = found
-        # margin-guarded exactly like _acquire_one's passthrough renewal: at
-        # the expiry boundary a renewal could land on a waiter's legitimate
-        # re-acquisition, so leave those to expire.
-        remaining = _remaining_ttl(lease)
-        if remaining is None or remaining > RENEW_MARGIN_S:
-            _renew(path, lease)
+    missing = [s for s in _normalize_scopes(scopes)
+               if covering_lease(ip, s, tok) is None]
+    # Renew EVERY lease this token owns, not just the ones this verb touches:
+    # a token is one session, and running any verb is proof the whole session
+    # is alive. Renewing only the verb's scopes let a multi-scope agent lease
+    # (`--scope editbuffer --scope library`) drift — a stretch of `library`
+    # verbs never renewed `editbuffer`, which expired and was reclaimed by a
+    # contender while the session was demonstrably active.
+    held, _ = _renew_owned(ip, tok)
     if not missing:
         return
-    if any(covering_lease(ip, s, tok) is not None for s in VALID_SCOPES):
+    if held:
         return  # session alive, just narrower than this verb — not our problem
     scope = missing[0]
     holder = None
@@ -465,6 +466,85 @@ def _renew(path: Path, lease: dict) -> None:
     fresh = dict(lease)
     fresh["acquired_at"] = time.time()
     _rewrite(path, fresh, expect_nonce=lease.get("nonce"))
+
+
+def _renew_owned(ip: str, token: str | None) -> tuple[int, float | None]:
+    """Renew every LIVE lease on ``ip`` owned by ``token`` (or by this
+    process, when no token is set). Returns ``(how many we own, shortest
+    remaining TTL)`` — None when nothing owned has a TTL at all.
+
+    Margin-guarded exactly like ``_acquire_one``'s passthrough renewal: at
+    the expiry boundary a renewal could land on a waiter's legitimate
+    re-acquisition, so those are left to expire.
+    """
+    held = 0
+    shortest: float | None = None
+    for scope in VALID_SCOPES:
+        path = lock_path(ip, scope)
+        lease = read_lease(path)
+        if lease is None or is_stale(lease) or not owned(lease, token):
+            continue
+        held += 1
+        remaining = _remaining_ttl(lease)
+        if remaining is None or remaining > RENEW_MARGIN_S:
+            _renew(path, lease)
+        if remaining is not None:
+            shortest = remaining if shortest is None else min(shortest,
+                                                              remaining)
+    return held, shortest
+
+
+#: Longest a :func:`keep_alive` heartbeat sleeps between renewals. Shorter
+#: TTLs renew proportionally sooner (a third of the shortest owned TTL).
+HEARTBEAT_MAX_S = 30.0
+
+
+@contextlib.contextmanager
+def keep_alive(ip: str, *, token: str | None = None):
+    """Renew owned leases in the background for one verb's duration (#97).
+
+    Renewing only at verb ENTRY means a verb that runs LONGER than its TTL
+    loses its lease mid-flight to a contender while it is still driving the
+    device — reachable today with `device normalize` (human-paced, one
+    `--seconds` window per snapshot) and the telemetry verbs' unbounded
+    `--seconds`, against the 300 s default of a detached lease. A daemon
+    thread re-renews on a third of the shortest owned TTL so an ACTIVE
+    workflow genuinely cannot time out, whether the activity is many short
+    calls or one long one.
+
+    No lease owned at entry → no thread (an unlocked verb costs nothing).
+    Best-effort throughout: a renewal failure never fails the verb.
+    """
+    tok = token if token is not None else env_token()
+    held, shortest = _renew_owned(ip, tok)
+    if not held:
+        yield
+        return
+    stop = threading.Event()
+
+    def _beat() -> None:
+        nonlocal shortest
+        while True:
+            delay = (HEARTBEAT_MAX_S if shortest is None
+                     else max(1.0, min(HEARTBEAT_MAX_S, shortest / 3)))
+            if stop.wait(delay):
+                return
+            try:
+                alive, shortest = _renew_owned(ip, tok)
+            except OSError:
+                return  # lease dir vanished — nothing useful left to renew
+            if not alive:
+                return  # lease gone (reclaimed/released); the verb body owns
+                        # the consequences — see LockLost on the next call
+
+    beat = threading.Thread(target=_beat, name="helixgen-lock-keepalive",
+                            daemon=True)
+    beat.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        beat.join(timeout=1.0)
 
 
 def _break_stale(path: Path, lease: dict) -> bool:
@@ -960,9 +1040,10 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
     no pid — #97): nothing ties it to the caller's process, so only the TTL
     (renewed by every covered verb) or an explicit ``device unlock``
     releases it. Re-locking an owned scope switches it to/from detached.
-    ``detach=True`` with ``ttl=0`` (no expiry) is refused: no pid AND no
-    expiry leaves a lease nothing but ``unlock --force`` could ever clear."""
-    if detach and not ttl:
+    ``detach=True`` with a non-positive ``ttl`` (0, negative — both mean "no
+    expiry" to :func:`is_stale`) is refused: no pid AND no expiry leaves a
+    lease nothing but ``unlock --force`` could ever clear."""
+    if detach and (ttl is None or ttl <= 0):
         raise ValueError(
             "a detached lease needs a TTL: with no pid and no expiry nothing "
             "but `device unlock --force` could ever release it")
