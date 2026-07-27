@@ -154,9 +154,25 @@ LAN and mutates device state):
 
 ## Release
 
-- [ ] Bump the version and tag `vX.Y.Z`. Task 3 changes behavior for any
+- [x] Bump the version and tag `vX.Y.Z`. Task 3 changes behavior for any
       caller that sets `$HELIXGEN_LOCK_TOKEN` (previously-silent proceeds now
       error), so call that out in the release notes — minor-level, not patch.
       Releases are preapproved from the coordination workspace; the tag fires
       the PyPI publish workflow. Sequence the companion plugin skill PR after
       the release, as usual.
+
+      **Bumped to 0.33.0** (minor, not patch: Task 3 makes a dangling
+      `$HELIXGEN_LOCK_TOKEN` an error on verbs that previously proceeded
+      silently, read-only ones included) in `pyproject.toml` +
+      `src/helixgen/__init__.py` on this branch — matching the `(0.33.0, #97)`
+      references already written into `CLAUDE.md`. `github/main` and the tag
+      list were re-fetched first; 0.33.0 was unclaimed.
+
+      Tag `v0.33.0` NOT pushed from here: the publish workflow fires on tags
+      pushed to `main`, so the tag goes on the merge commit after this branch
+      lands, not on a worktree branch head. Release-note line for the tag:
+      *"Device locks: `device lock --detach` gives an agent a lease not bound
+      to the invoking shell (TTL-only, default 300 s, `--ttl 0` refused).
+      BEHAVIOR CHANGE — a set-but-dangling `$HELIXGEN_LOCK_TOKEN` now fails
+      loudly naming the current holder instead of proceeding unlocked, on
+      read-only verbs too; callers with no token are unaffected."*
