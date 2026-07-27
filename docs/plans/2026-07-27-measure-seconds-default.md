@@ -49,7 +49,11 @@ LAN and mutates device state):
 
 ## Release
 
-- [ ] Bump the version and tag `vX.Y.Z` (patch-level: a default change, no API
+- [x] Bump the version and tag `vX.Y.Z` (patch-level: a default change, no API
       change). Releases are preapproved from the coordination workspace; the
       tag fires the PyPI publish workflow. The plugin repo bumps its pin in
       its own companion PR afterwards — core releases first.
+      (Version bumped to 0.32.1 in `pyproject.toml` + `src/helixgen/__init__.py`
+      on this branch. Tag `v0.32.1` NOT pushed from here: the publish workflow
+      fires on the tag, and tagging an unmerged worktree commit would publish
+      unreviewed code. Coordinator pushes the tag on `main` after merge.)
