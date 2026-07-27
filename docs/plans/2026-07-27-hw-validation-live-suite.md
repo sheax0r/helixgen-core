@@ -44,22 +44,22 @@ numbered entry (never a TODO comment).
   real `~/.helixgen` files changed. Read that docstring before touching fixtures.
 - **Device locks:** the live suite's `cli` fixture takes the REAL `all` lease
   itself. So do NOT hold a session lease while running `tests/live`, or the
-  suite will block and fail. For manual/exploratory device steps (Task 2 only)
+  suite will block and fail. For manual/exploratory device steps (Task 3 only)
   take `helixgen device lock --scope all --label "ralphex:hw-validation"` and
   **release it with `helixgen device unlock` before any pytest run**.
 - Device writes are preapproved for test runs, but keep to `HGTEST`-prefixed
   expendable artifacts and never leave the device in a broken state.
 
-## Task 0: housekeeping — retire the completed #92 plan file
+### Task 1: housekeeping — retire the completed #92 plan file
 
 - [ ] `docs/plans/2026-07-18-sync-stale-hash.md` has all 11 checkboxes ticked and
       #92 shipped in core 0.29.0, but the file was never moved on `main`. Move it
       to `docs/plans/completed/` (plain `git mv`, no other change)
 
-## Task 1: Baseline live run with a CLEAN edit buffer
+### Task 2: Baseline live run with a CLEAN edit buffer
 
 - [ ] Confirm the device answers: `helixgen device info` (no `--ip`) and record
-      model/firmware in the findings doc created in Task 4
+      model/firmware in the findings doc created in Task 5
 - [ ] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir or setlists or sync)" tests/live -q`
       with the device's active preset freshly loaded (clean buffer, `hist=0`)
 - [ ] Record the full result (pass/fail counts, any xfail/xpass, any error text)
@@ -69,7 +69,7 @@ numbered entry (never a TODO comment).
       or — if it is device behavior rather than a code defect — file it in
       `docs/BACKLOG.md` as a numbered entry and note it in the findings doc
 
-## Task 2: The #38 condition — creates against a DIRTY edit buffer
+### Task 3: The #38 condition — creates against a DIRTY edit buffer
 
 This is the condition that used to fail. A one-off manual run is not enough:
 the suite's own `device load` calls reset the buffer to clean, so the dirty
@@ -95,7 +95,7 @@ state must be established *inside* the test that needs it.
 - [ ] Leave the device tidy: teardown removed every `HGTEST` artifact, and the
       session state guard passed. Release any lock you took (`helixgen device unlock`)
 
-## Task 3: #7 — reorder → sync read-back on an expendable setlist
+### Task 4: #7 — reorder → sync read-back on an expendable setlist
 
 - [ ] Strengthen `tests/live/test_sync.py::test_sync_lifecycle` (failing first
       against current behavior if the read-back is wrong): after the device-side
@@ -112,7 +112,7 @@ state must be established *inside* the test that needs it.
       control, document it in `docs/CLI.md` under `slots reorder` / `sync` and
       file a numbered `docs/BACKLOG.md` entry instead of forcing the assertion
 
-## Task 4: Findings doc, backlog, and agent-facing surfaces
+### Task 5: Findings doc, backlog, and agent-facing surfaces
 
 - [ ] Write `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`: what was
       run, the exact commands, verbatim results, every observation about
