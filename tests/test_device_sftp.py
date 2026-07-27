@@ -460,6 +460,40 @@ def test_push_ir_addcontent_without_cid_skips_nudge(monkeypatch, tmp_path):
     assert client.renames == []
 
 
+def test_push_ir_addcontent_nonint_cid_skips_nudge(monkeypatch, tmp_path):
+    """cid_ is device-controlled msgpack too: a non-int cid passed to rename()
+    would raise struct.error from osc_encode — which is NOT a HelixError, so
+    it would escape the advisory try/except and fail a push whose IR already
+    registered. Treat a non-int cid like a missing one."""
+    class _StrCidSubscriber(_FakeSubscriber):
+        def __init__(self, ip, ports=()):
+            self.events = [type("Ev", (), {
+                "addr": "/addContent",
+                "args": [{"hash": HG_HASH, "cid_": "1465",
+                          "name": "HGTEST-ir"}]})()]
+
+    client = _FakeClient(path=None)
+    res = _patched_push_ir(monkeypatch, tmp_path, client,
+                           subscriber=_StrCidSubscriber)
+    assert res["ok"] and res["registered"] and res["hash_match"]
+    assert res["cid"] is None
+    assert client.renames == []
+
+
+def test_push_ir_nudge_selector_skips_nonint_cid_rows(monkeypatch, tmp_path):
+    """Listing rows are device-controlled msgpack: a row whose cid_ is not an
+    int cannot be renamed (struct.error, not HelixError — would crash push-ir
+    on an IR that is genuinely present). Skip it; with no other usable row,
+    trust the point lookup."""
+    client = _FakeClient(path="/data/stadium-family-fw/ir/HGTEST-ir.wav",
+                         listed=({"hash": "bb" * 16, "cid_": "7",
+                                  "name": "strcid"},))
+    res = _patched_push_ir(monkeypatch, tmp_path, client)
+    assert res["ok"] and res["already"] is True
+    assert client.renames == []
+    assert _FakePushSFTP.calls == []
+
+
 class _DecoySubscriber(_FakeSubscriber):
     """A multi-dict /addContent payload: a decoy dict with an INVALID hash but
     a cid, then the real registration with a 16-byte blob hash."""

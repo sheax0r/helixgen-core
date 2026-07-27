@@ -290,7 +290,8 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                         # trust the point lookup, same as the failed-listing
                         # path below.
                         nudge = next(
-                            (r for r in rows if r.get("cid_") is not None
+                            (r for r in rows
+                             if isinstance(r.get("cid_"), int)
                              and isinstance(r.get("name"), str)
                              and r["name"]), None)
                         if nudge is not None and h.rename(nudge["cid_"],
@@ -338,7 +339,12 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                                 hh = _addcontent_hash([a])
                                 if hh is not None:
                                     dev_hash = hh  # ours: only dir change
-                                    reg_cid = a.get("cid_")
+                                    # cid_ is device-controlled msgpack — a
+                                    # non-int would raise struct.error (not
+                                    # HelixError) from rename()'s encoder
+                                    cid = a.get("cid_")
+                                    reg_cid = cid if isinstance(cid, int) \
+                                        else None
                                     reg_name = a.get("name")
                                     break
             if dev_hash is not None:
