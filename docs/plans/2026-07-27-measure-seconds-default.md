@@ -26,8 +26,8 @@ mirrored docs (helix workspace `BACKLOG.md`, measurement lineage #62/#82).
 
 ### Task 2: fix the stale 20.0 in the library-metadata docstring
 
-- [ ] `src/helixgen/tone_meta.py:87` documents the `normalized` record's example payload with `"seconds": 20.0,  # per-target window (--seconds)` — update the example to `10.0` so the documented shape matches what a default run now records
-- [ ] Confirm no code reads that value as a constant (it is illustrative only) — if a test asserts the docstring example, update it
+- [x] `src/helixgen/tone_meta.py:87` documents the `normalized` record's example payload with `"seconds": 20.0,  # per-target window (--seconds)` — update the example to `10.0` so the documented shape matches what a default run now records
+- [x] Confirm no code reads that value as a constant (it is illustrative only) — if a test asserts the docstring example, update it (nothing reads it: no `__doc__` consumers; only other 20.0 hit is `tests/test_library_group.py:627`, a recorded-run fixture payload)
 
 ## Validation Commands
 
