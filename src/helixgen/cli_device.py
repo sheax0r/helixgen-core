@@ -1781,7 +1781,12 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
                 if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
                     raise click.ClickException(
                         f"{label} slot {cpos} is not empty; refusing to overwrite")
-                return h._raw.save_edit_buffer_to(cont, cpos, name)
+                # both paths reach here with a known-empty posi (the pool
+                # branch just checked strictly; the setlist branch saves into
+                # a freshly computed lowest-empty pool posi), so a same-named
+                # stub after a failed save is ours to clean up (#95)
+                return h._raw.save_edit_buffer_to(cont, cpos, name,
+                                                  prechecked_empty=True)
 
             new_cid, pool_pos, ref_cid = _install_via_dest(
                 h, kind, container, label, pos, _writer)

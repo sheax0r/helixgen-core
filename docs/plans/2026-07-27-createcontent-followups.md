@@ -48,14 +48,17 @@ entry (never a TODO comment).
 
 Pure code, no hardware. Do this first so the rest of the plan works on top.
 
-- [ ] Failing test first: `_save_edit_buffer_to` currently deletes the created
+- [x] Failing test first: `_save_edit_buffer_to` currently deletes the created
       stub unconditionally on a failed `/SavePresetWithCID`, while `_push_to_slot`
       requires an explicit `prechecked_empty` grant before `_delete_created_stub`
       runs. Pin the asymmetry as a test
-- [ ] Give `_save_edit_buffer_to` the same opt-in flag; update its one caller
+- [x] Give `_save_edit_buffer_to` the same opt-in flag; update its one caller
       (`device save`, which prechecks strictly under a subscription) to pass it
-- [ ] Update agent-facing surfaces if any user-visible behavior changed
-      (likely none — note that explicitly if so)
+- [x] Update agent-facing surfaces if any user-visible behavior changed
+      (none: `device save` passes `prechecked_empty=True`, so its cleanup
+      behavior is byte-identical; only the internal `_raw` default flipped to
+      the safe opt-in — no help text or docs described the old unconditional
+      cleanup)
 
 ### Task 2: #93 — a wedged IR must not read as present
 

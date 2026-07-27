@@ -607,6 +607,62 @@ def test_save_edit_buffer_to_nonzero_code_with_content_present_is_success(
     assert any(b"/SavePresetWithCID" in s for s in h.sock.sent)
 
 
+def test_save_edit_buffer_to_without_a_precheck_never_cleans_up(
+        monkeypatch, caplog):
+    """#95: the same opt-in gate as _push_to_slot. Without prechecked_empty the
+    (name, pos) match after a failed /SavePresetWithCID may be a PRE-EXISTING
+    occupant — cleanup must not run on an entry we cannot attribute (#38)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    # create reports the dirty-buffer flag; confirm re-list matches the occupant
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 1)])
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1001), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # SavePresetWithCID FAILS on the entry we just "confirmed"
+    savefail = osc_encode("/status", [("i", 1002), ("i", 1), ("i", 0)])
+    _wire_seq(h, [[create], [listrep], [savefail]])
+
+    with caplog.at_level(logging.WARNING):
+        assert h._raw.save_edit_buffer_to(-2, 5, "X",
+                                          prechecked_empty=False) is None
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent), \
+        "an unprechecked save failure must not delete the slot's occupant"
+    assert "may predate this call" in caplog.text
+
+
+def test_save_edit_buffer_to_with_a_precheck_still_cleans_up(monkeypatch):
+    """The prechecked (`device save`) path keeps deleting its own orphan stub —
+    by re-listed (name, pos), never the unreliable create-reply cid."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
+    savefail = osc_encode("/status", [("i", 1001), ("i", 1), ("i", 0)])
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    delete = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[create], [savefail], [listrep], [delete]])
+
+    assert h._raw.save_edit_buffer_to(-2, 5, "X",
+                                      prechecked_empty=True) is None
+    del_sent = [s for s in h.sock.sent if b"/RemoveContent" in s]
+    assert del_sent, "expected a /RemoveContent cleanup"
+    import msgpack as _mp
+    assert _mp.packb([777], use_bin_type=True) in del_sent[0]
+    assert _mp.packb([930], use_bin_type=True) not in del_sent[0]
+
+
 def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypatch):
     """On a SetContentData failure, cleanup must delete the entry we created by
     (name, pos) from a fresh listing — NOT the unreliable create-reply cid."""

@@ -185,8 +185,10 @@ class _RawOps:
     def save_preset_with_cid(self, cid: int, block_count: int = 0) -> bool:
         return self._c._save_preset_with_cid(cid, block_count)
 
-    def save_edit_buffer_to(self, container: int, pos: int, name: str) -> Optional[int]:
-        return self._c._save_edit_buffer_to(container, pos, name)
+    def save_edit_buffer_to(self, container: int, pos: int, name: str, *,
+                            prechecked_empty: bool = False) -> Optional[int]:
+        return self._c._save_edit_buffer_to(container, pos, name,
+                                            prechecked_empty=prechecked_empty)
 
     def push_to_slot(self, container: int, pos: int, name: str,
                      blob: bytes, *,
@@ -1401,7 +1403,8 @@ class HelixClient:
         return self._ok(self._rpc(
             "/SavePresetWithCID", [("i", cid), ("i", 0), ("i", block_count)]))
 
-    def _save_edit_buffer_to(self, container: int, pos: int, name: str) -> Optional[int]:
+    def _save_edit_buffer_to(self, container: int, pos: int, name: str, *,
+                             prechecked_empty: bool = False) -> Optional[int]:
         """Save the current edit buffer as a new preset at ``pos``; return its CID.
 
         Mirrors the editor's "Save Preset As -> Save As New": CreateContent then
@@ -1412,16 +1415,18 @@ class HelixClient:
         holding a 2001 subscription, and ``device save``'s CLI path doesn't
         open one of its own (unlike ``device install``). Nesting is cheap for
         the callers that do.
+
+        ``prechecked_empty`` gates the failed-save stub cleanup exactly as it
+        gates :meth:`_push_to_slot`'s (#95) — see that docstring for why it
+        defaults to False and what an unprechecked (name, pos) match may be.
         """
         with self.mutating():
             cid = self._create_content_checked(container, pos, name)
             if cid is None:
                 return None
             if not self._save_preset_with_cid(cid):
-                # don't leave an orphaned empty entry occupying the slot; delete
-                # the entry we just created by (name, pos), not the unreliable
-                # reply cid
-                self._delete_created_stub(container, name, pos)
+                self._after_failed_write(container, pos, name,
+                                         prechecked_empty=prechecked_empty)
                 return None
             return cid
 
@@ -1463,19 +1468,28 @@ class HelixClient:
             if cid is None:
                 return None
             if not self._set_content_data(cid, blob):
-                if prechecked_empty:
-                    # cleanup: delete the entry we just created by (name, pos) —
-                    # the create-reply cid is unreliable, so never blind-delete it
-                    self._delete_created_stub(container, name, pos)
-                else:
-                    logger.warning(
-                        "writing content to %r at slot %d in container %s "
-                        "failed, and the slot was not checked empty beforehand "
-                        "(--force), so the entry there may predate this call — "
-                        "leaving it alone rather than risk deleting a preset we "
-                        "did not create; re-list to check", name, pos, container)
+                self._after_failed_write(container, pos, name,
+                                         prechecked_empty=prechecked_empty)
                 return None
             return cid
+
+    def _after_failed_write(self, container: int, pos: int, name: str, *,
+                            prechecked_empty: bool) -> None:
+        """Shared aftermath for a create-then-write that failed at the write
+        (:meth:`_push_to_slot` / :meth:`_save_edit_buffer_to`, #95): clean up
+        the just-created stub only when the caller prechecked the slot empty —
+        that precheck is what makes the (name, pos) match unambiguously ours."""
+        if prechecked_empty:
+            # cleanup: delete the entry we just created by (name, pos) —
+            # the create-reply cid is unreliable, so never blind-delete it
+            self._delete_created_stub(container, name, pos)
+        else:
+            logger.warning(
+                "writing content to %r at slot %d in container %s "
+                "failed, and the slot was not checked empty beforehand "
+                "(--force), so the entry there may predate this call — "
+                "leaving it alone rather than risk deleting a preset we "
+                "did not create; re-list to check", name, pos, container)
 
     def _create_status_error(self, name: str, pos: int,
                              reply_cid: Optional[int], code: Optional[int], *,
