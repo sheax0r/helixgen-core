@@ -1563,6 +1563,33 @@ Remaining follow-ups:
   exposure. Fix would confirm the write actually failed (e.g. a
   `get_content` size check) before deleting. Deferred from the 2026-07-27
   review as low-impact.
+- **#100 error-path messages assert state they can't know.** Two
+  message-accuracy gaps from the 2026-07-27 second review pass, both
+  error-path-only, no data effect. (i) `_after_failed_write`'s unprechecked
+  branch (`src/helixgen/device/client.py`) unconditionally warns that the
+  create "had INSERTED" and the occupant shifted down with a gap left behind
+  — but unprechecked ≠ occupied (`slots restore --force` at a slot that was
+  in fact empty reaches it), so the warning can prescribe a `device reorder`
+  that isn't needed. The pre-create listing in `_create_attributed` already
+  carries `posi` rows; thread "was `pos` occupied" through to the warning
+  (or soften to conditional wording). (ii) `_create_content_checked`'s
+  excluded-cid branch flatly says "the listing kept showing only cid N"
+  even when `saw_cidless=True` (some attempt matched (name, pos) with no
+  cid — possibly our create with an unresolved cid) or
+  `listed_cleanly=False` (the final listing failed); the operative guidance
+  (re-list, delete only an empty stub) stays correct, but the observation
+  claim should fold in both flags the way `_create_status_error` does.
+- **#101 live wedge test false-fails on a device with no other user IRs.**
+  `tests/live/test_device_ir.py::test_wedged_ir_reads_missing_and_auto_upload_heals`
+  wedges its own HGTEST IR and asserts it reads missing — but on a device
+  whose IR container is otherwise empty, the post-wedge `-11` listing is
+  empty, which is #93's documented single-wedged-IR blind spot:
+  `confirm_ir_listed` fails safe to "present" and the assert fails even
+  though behavior matches spec. Push a second sentinel HGTEST IR first (so
+  the nudged listing has a confirmable row), or skip when `list-irs` is
+  empty. Also: note in `device_ir_hashes`'s docstring that `verify=` can now
+  issue a device write (the same-name rename nudge), so external callers
+  (TUI/plugin) don't treat it as read-only.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
