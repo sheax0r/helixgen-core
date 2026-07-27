@@ -111,8 +111,27 @@ the offline verbs stay exempt — recovery must never be locked out.
 
 ### Task 4: document the constraint that remains
 
-- [ ] Whatever Task 2 lands, a workflow that never renews can still lose a lease. State the operating rule in `CLAUDE.md` + `docs/CLI.md`: an agent driving multi-call device work should take a detached lease, and treat any lock error as "stop and re-establish state", never "retry the failed call and continue"
-- [ ] Note that the companion `device` skill guidance lives in the plugin repo and ships in a separate PR (agent-facing surfaces ship in sync) — flag it in the PR description; do not edit plugin files from here
+- [x] Whatever Task 2 lands, a workflow that never renews can still lose a lease. State the operating rule in `CLAUDE.md` + `docs/CLI.md`: an agent driving multi-call device work should take a detached lease, and treat any lock error as "stop and re-establish state", never "retry the failed call and continue"
+- [x] Note that the companion `device` skill guidance lives in the plugin repo and ships in a separate PR (agent-facing surfaces ship in sync) — flag it in the PR description; do not edit plugin files from here
+
+**Task 4 landed:** `docs/CLI.md` "Device locks" gains (a) the dangling-token
+fail-loud rule from Task 3 — which was code-only until now — naming every
+read-only verb that checks, and (b) a 4-point **operating rule for an agent
+driving multi-call device work**: detached lease up front + exported token,
+`device unlock` at the end (including on failure), any lock error means STOP
+and re-establish state (re-take a lease, re-read active preset/snapshot/block
+state) rather than retry-and-continue, and size `--ttl` to cover long
+read-only stretches because only covered (mutating) verbs renew. `CLAUDE.md`
+carries the same rule in condensed form, pointing at `docs/CLI.md` for the
+verb table.
+
+**For the PR description (companion plugin PR):** this PR changes behavior the
+plugin repo's `device` skill describes — an agent should now take
+`device lock --scope all --detach`, and a dangling `$HELIXGEN_LOCK_TOKEN` now
+errors on read-only verbs too. That skill guidance lives in `sheax0r/helixgen`
+(`.claude/skills/device/`) and ships as a **separate, sequenced PR** after the
+core release (agent-facing surfaces ship in sync; core releases first). No
+plugin files are edited from this repo.
 
 ## Validation Commands
 

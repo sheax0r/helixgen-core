@@ -553,6 +553,39 @@ on Windows it is disabled (probing would kill the probed process) and only
 TTL staleness applies. Lease files are `0600` (the token is a private
 capability).
 
+**A dangling token fails loudly — read-only verbs included (0.33.0, #97).**
+Setting `$HELIXGEN_LOCK_TOKEN` is an explicit declaration of "I am in a held
+session". If that token opens **no live lease** covering a scope the verb
+touches (the lease was reclaimed by a contender or its TTL lapsed), the verb
+**errors** naming the current holder instead of proceeding unlocked. This
+applies to **read-only** verbs too — `measure`, `meters`, `tuner`, `blocks`,
+`params`, `active`, `watch` (editbuffer); `list`, `setlists`, `read`, `pull`,
+`backup`, `setlist export-hss`, `slots list --verify` (library); `list-irs`,
+`pull-ir` (irs); `settings list`/`get` (globals) — because a read taken while
+someone else is driving the device is no more trustworthy than a write (the
+2026-07-27 workflow was denied `device snapshot 0` and then handed a
+well-formed `device measure` of whatever snapshot happened to be active).
+Verbs invoked with **no token** are unchanged: unlocked reads stay free and
+take no lease. `device lock` / `device unlock` / `device discover` and the
+offline verbs are exempt, so recovery is never locked out.
+
+**Operating rule for an agent driving multi-call device work (#97):**
+
+1. Take a **detached** lease up front — `device lock --scope all --detach
+   --label "<who>"` — and export the printed `HELIXGEN_LOCK_TOKEN`. A plain
+   session lease dies with the tool call that took it.
+2. `device unlock` when the workflow ends (including on failure). Nothing but
+   the TTL clears a detached lease.
+3. **Treat any lock error as "stop and re-establish state", never "retry the
+   failed call and continue".** A detached lease is renewed only by covered
+   (mutating) verbs, so a workflow that runs nothing but reads for longer than
+   its TTL can still lose it. Once it is lost, the device may have been driven
+   by someone else: re-take a lease and **re-read** whatever you were about to
+   act on (active preset, snapshot, block state) before acting. A blind retry
+   of the failed call can succeed against a device that has since moved.
+4. Long read-only stretches (a `measure` loop): pass a `--ttl` that covers the
+   stretch, or run a cheap covered verb periodically to renew.
+
 ### Preset + edit-buffer verbs
 
 - `helixgen device list [--setlist <user|factory|NAME>] [--json]` — presets in the pool (`user`, default) or factory; with a named setlist, its **references** (each row: position, the reference's own cid, `rcid=` the pool preset it points at, name).
