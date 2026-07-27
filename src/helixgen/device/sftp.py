@@ -245,7 +245,7 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
     import tempfile
     import time
     from helixgen.ir import write_stadium_ir
-    from .client import HelixClient
+    from .client import HelixClient, confirm_ir_listed
     from .subscribe import HelixSubscriber
 
     stem = Path(local_wav).stem
@@ -261,48 +261,11 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                 # The point lookup answers "the backing file resolves", which
                 # the WEDGED state (#93: file lingering with no -11 registry
                 # entry — e.g. a client killed between /RemoveContent and the
-                # file removal) also satisfies. But an ABSENT listing entry is
-                # not enough to call it wedged: the -11 listing cache is not
-                # invalidated by watched-dir imports (hardware-observed
-                # 2026-07-27, fw 1.3.2 b1340), so a healthy IR imported by a
-                # client that never nudged the cache is unlisted too. An RPC
-                # content write invalidates the cache, so a same-name rename
-                # of any listed row refreshes it; only a hash still unlisted
-                # AFTER that refresh is truly wedged. A failed listing is NOT
-                # evidence of a wedge (flaky transport is the common case) —
-                # it keeps the trusting path.
-                # A row with hash None is one list_irs could not normalize —
-                # it may BE this IR, so it vetoes the wedge verdict exactly
-                # like a match (deleting the backing file over an undecodable
-                # row would break a registered IR).
-                def _hits(rs):
-                    return any(m["hash"] in (hg_hash, None) for m in rs)
-                try:
-                    rows = h.list_irs(strict=True, include_unusable=True)
-                    listed = _hits(rows)
-                    if not listed:
-                        # The nudge needs a listed row with a usable (cid,
-                        # name) pair to rename — renaming a row to a missing/
-                        # None name would blank a real user IR's display
-                        # name. And a dropped rename reply surfaces as a
-                        # False return (never an exception). Without a
-                        # CONFIRMED refresh the wedge verdict is unearned —
-                        # trust the point lookup, same as the failed-listing
-                        # path below.
-                        nudge = next(
-                            (r for r in rows
-                             if isinstance(r.get("cid_"), int)
-                             and isinstance(r.get("name"), str)
-                             and r["name"]), None)
-                        if nudge is not None and h.rename(nudge["cid_"],
-                                                          nudge["name"]):
-                            listed = _hits(h.list_irs(
-                                strict=True, include_unusable=True))
-                        else:
-                            listed = True
-                except HelixError:
-                    listed = True
-                if listed:
+                # file removal) also satisfies. confirm_ir_listed (the shared
+                # wedge discriminator) returns False only on a CONFIRMED
+                # absence after a nudged cache refresh; anything unconfirmable
+                # trusts the point lookup.
+                if confirm_ir_listed(h, hg_hash):
                     return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
                             "device_hash": hg_hash, "hash_match": True,
                             "registered": True, "cid": None,

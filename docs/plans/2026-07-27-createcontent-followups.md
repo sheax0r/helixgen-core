@@ -48,86 +48,121 @@ entry (never a TODO comment).
 
 Pure code, no hardware. Do this first so the rest of the plan works on top.
 
-- [ ] Failing test first: `_save_edit_buffer_to` currently deletes the created
+- [x] Failing test first: `_save_edit_buffer_to` currently deletes the created
       stub unconditionally on a failed `/SavePresetWithCID`, while `_push_to_slot`
       requires an explicit `prechecked_empty` grant before `_delete_created_stub`
       runs. Pin the asymmetry as a test
-- [ ] Give `_save_edit_buffer_to` the same opt-in flag; update its one caller
+- [x] Give `_save_edit_buffer_to` the same opt-in flag; update its one caller
       (`device save`, which prechecks strictly under a subscription) to pass it
-- [ ] Update agent-facing surfaces if any user-visible behavior changed
-      (likely none — note that explicitly if so)
+- [x] Update agent-facing surfaces if any user-visible behavior changed
+      (none: `device save` passes `prechecked_empty=True`, so its cleanup
+      behavior is byte-identical; only the internal `_raw` default flipped to
+      the safe opt-in — no help text or docs described the old unconditional
+      cleanup)
 
 ### Task 2: #93 — a wedged IR must not read as present
 
-- [ ] Reproduce a wedged IR on hardware (backing file + path index resolve, no
+- [x] Reproduce a wedged IR on hardware (backing file + path index resolve, no
       `-11` registry entry — the state `delete-ir --force-wedge` exists to clean).
       Use an `HGTEST`-named IR. Record the exact reproduction steps and the
       observed listing/point-lookup outputs in the findings doc (Task 5)
-- [ ] Confirm the reported failure mode: with 0.30.0's
+- [x] Confirm the reported failure mode: with 0.30.0's
       `device_ir_hashes(verify=...)`, the auto-upload paths (`install --auto-irs`,
       `sync`'s IR upload, `sync_preset_irs`) **skip** the wedged IR and the
       preset's cab stays silent with no error
-- [ ] Failing test first (offline, against the fake/injected socket), then
+- [x] Failing test first (offline, against the fake/injected socket), then
       implement the distinction: "resolves but absent from `-11`" (wedged → still
       needs upload) vs "absent from `-11` because the container index lags"
       (present → skip). Do not regress the lag case — its false "missing" is the
       commoner and more misleading one, which is why the 0.30.0 trade was made
-- [ ] Verify live: re-run the wedge reproduction and confirm the auto-upload path
+- [x] Verify live: re-run the wedge reproduction and confirm the auto-upload path
       now self-heals it. Add live coverage under the `device_ir` marker with full
       `HGTEST` teardown (`delete-ir --force-wedge` is the CLI's own remedy)
-- [ ] Update the stderr warning wording, `docs/CLI.md`, and `CLAUDE.md`'s
+- [x] Update the stderr warning wording, `docs/CLI.md`, and `CLAUDE.md`'s
       wedged-IR paragraph to match the new behavior
 
 ### Task 3: #94 — characterize, then de-ambiguate the `--force` write target
 
-- [ ] **Characterize on hardware first:** what does the device do with a
+- [x] **Characterize on hardware first:** what does the device do with a
       `/CreateContent` aimed at an **occupied** `posi`? (The same uncatalogued
       behavior #69 left open.) Probe with `HGTEST` artifacts: does it create at
       the requested position, relocate, refuse, or overwrite? Record the raw
       replies verbatim in the findings doc
-- [ ] Failing test first, then implement the entry's preferred fix if
+      (INSERTS at the requested posi, incumbent + all subsequent shift +1;
+      never refuses/overwrites/relocates; delete leaves a gap, block reorder
+      heals — recorded verbatim in the findings doc)
+- [x] Failing test first, then implement the entry's preferred fix if
       characterization supports it: snapshot the container's cids before
       `/CreateContent` and accept only a cid **absent** from that snapshot,
       raising rather than writing into a match that cannot be attributed
       (`_push_to_slot(prechecked_empty=False)`, the `slots restore --force` path)
-- [ ] Decide and document the residue: a possibly-orphaned empty stub left at the
+      (implemented as `_create_attributed`, shared with `_save_edit_buffer_to`)
+- [x] Decide and document the residue: a possibly-orphaned empty stub left at the
       same `posi` when the create landed separately. Either clean it up safely or
       state in `docs/CLI.md` why it is left, and file anything punted
-- [ ] Verify live under the `device_write` marker; add regression coverage
+      (snapshot-attributed stubs are now deleted by cid on a failed write; the
+      late-landing stub after a gate refusal is unobservable at raise time —
+      documented in the error message and `docs/CLI.md`; nothing punted)
+- [x] Verify live under the `device_write` marker; add regression coverage
+      (`test_force_create_at_occupied_posi_inserts_and_attributes` + 5 offline
+      regressions; `-m "live and device_write"` green: 10 passed, 1 skipped)
 
 ### Task 4: #96 — characterize the `code == 0` reply cid, then close the asymmetry
 
-- [ ] **Characterize on hardware first:** is the create-reply cid ever wrong when
+- [x] **Characterize on hardware first:** is the create-reply cid ever wrong when
       the status code is `0`? Probe repeatedly (clean and dirty edit buffer, empty
       and occupied targets), cross-checking each reply cid against a point
       `/GetContentRef`'s `name`/`posi`. Record verbatim
-- [ ] Failing test first, then implement whichever option the evidence supports:
+      (21 probes across the sessions: 15 code-0 — clean buffer, empty +
+      occupied targets, including 10 back-to-back — and 6 code-1 dirty;
+      reply cid correct in every one by point `/GetContentRef` AND strict
+      re-list; verbatim in the findings doc)
+- [x] Failing test first, then implement whichever option the evidence supports:
       (a) always confirm by re-list (costs one listing per create), or (b) cheaply
       cross-check the reply cid's `name`/`posi` via a point `/GetContentRef`
       before writing into it. Prefer (b) if it is sufficient — (a) costs a full
       pool listing on the common clean-buffer path
-- [ ] If the evidence shows the reply cid is reliable at `code == 0`, do NOT
+      (evidence supported neither: the reply cid was never wrong, so the
+      next bullet's no-change option applies; the fast-path contract stays
+      pinned by `test_push_to_slot_zero_code_still_succeeds_without_relist`)
+- [x] If the evidence shows the reply cid is reliable at `code == 0`, do NOT
       churn the code: record the evidence, keep the fast path, and rewrite the
       backlog entry to say the asymmetry is characterized and accepted
-- [ ] Verify live under the `device_write` marker
+      (fast path kept; evidence in the findings doc, cited in
+      `_create_content_checked`'s docstring; backlog #96 rewritten
+      CHARACTERIZED AND ACCEPTED)
+- [x] Verify live under the `device_write` marker
+      (`-m "live and device_write"`: 10 passed, 1 skipped; full offline
+      suite 2425 passed)
 
 ### Task 5: Findings doc, backlog, agent-facing surfaces, release
 
-- [ ] Write `docs/superpowers/specs/2026-07-27-createcontent-followups.md`: the
+- [x] Write `docs/superpowers/specs/2026-07-27-createcontent-followups.md`: the
       characterization results for #93/#94/#96 (verbatim device replies), what was
       implemented, and what was deferred
-- [ ] `docs/BACKLOG.md`: close #93/#94/#95/#96 with one-line shipped notes
+      (written incrementally during Tasks 1-4; covers all four entries)
+- [x] `docs/BACKLOG.md`: close #93/#94/#95/#96 with one-line shipped notes
       pointing at the findings doc — or rewrite any entry that could not be
       closed to say precisely what remains and why. Also revisit **#69**, whose
       "what does the device do with an occupied `posi`" gap Task 3 characterizes
-- [ ] Update `docs/helix-protocol.md` (`/CreateContent` semantics), `docs/CLI.md`,
+      (#93/#94/#95 closed ✅ RESOLVED 0.32.0; #96 already rewritten
+      CHARACTERIZED AND ACCEPTED in Task 4; #69 annotated: pool half
+      characterized, setlist half still uncaptured)
+- [x] Update `docs/helix-protocol.md` (`/CreateContent` semantics), `docs/CLI.md`,
       `CLAUDE.md` and affected verb `--help` for every behavior change
-- [ ] Bump the version in `pyproject.toml` **and** `src/helixgen/__init__.py`
+      (protocol doc: occupied-posi INSERT semantics, delete-leaves-gap,
+      reply-cid reliability; CLI.md + CLAUDE.md updated in Tasks 2-3; verb
+      `--help` text DID change — `install --auto-irs` and `slots restore
+      --force` — so the plugin companion PR after the 0.32.0 release is
+      mandatory; `tests/test_cli_parity.py` green)
+- [x] Bump the version in `pyproject.toml` **and** `src/helixgen/__init__.py`
       together (minor bump — this changes device-write and IR-upload behavior),
       and note in the plan's final report that a plugin companion PR is needed
       for any CLI-visible change (the plugin pins core exactly, so it can only
       describe behavior in a **released** core version)
-- [ ] Run the full offline suite and confirm green
+      (0.31.0 → 0.32.0 both files; plugin companion note in final report)
+- [x] Run the full offline suite and confirm green
+      (2425 passed, 183 skipped)
 
 ## Validation Commands
 

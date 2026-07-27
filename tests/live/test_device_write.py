@@ -306,3 +306,53 @@ def test_install_and_create_with_dirty_buffer(helix, hgtest_hsp, installed,
             for name in cleanup_names:
                 assert find_user_preset(helix, name) is None, (
                     f"cleanup failed: {name!r} still on device")
+
+
+def test_force_create_at_occupied_posi_inserts_and_attributes(
+        helix, device, installed, tmp_path):
+    """#94, live: /CreateContent at an occupied posi INSERTS (characterized
+    fw 1.3.2 b1340) — the new entry lands AT the requested posi and the
+    incumbent shifts down one, never overwritten. The unprechecked
+    (`slots restore --force`) write path must therefore attribute the
+    confirmed cid via its pre-create snapshot and write into the fresh stub,
+    not the incumbent. Runs at the tail of the pool so the shift only moves
+    this test's own artifacts; both are deleted in the finalizer."""
+    from helixgen.device.client import HelixClient, Container
+
+    sbe = tmp_path / "HGTEST94.sbe"
+    code, out, err = helix("device", "pull", installed["cid"], sbe)
+    assert code == 0, err or out
+    blob = sbe.read_bytes()
+    name_a = f"{HGTEST} 94 Incumbent"
+    name_b = f"{HGTEST} 94 Inserted"
+    try:
+        with HelixClient(device) as h, h.mutating():
+            listing = h.list_container(Container.POOL, strict=True)
+            # tail: empty, shift-safe (an empty pool starts at 0)
+            pos = max((m["posi"] for m in listing), default=-1) + 1
+            cid_a = h._raw.push_to_slot(Container.POOL, pos, name_a, blob,
+                                        prechecked_empty=True)
+            assert cid_a, "could not stage the incumbent"
+            # the #94 path: pos is now OCCUPIED and deliberately unprechecked
+            cid_b = h._raw.push_to_slot(Container.POOL, pos, name_b, blob,
+                                        prechecked_empty=False)
+            assert cid_b, "unprechecked push at an occupied posi failed"
+            assert cid_b != cid_a, (
+                "the write landed in the incumbent's cid — the attribution "
+                "gate did not hold (#94)")
+            after = {m["cid_"]: m for m in
+                     h.list_container(Container.POOL, strict=True)}
+            assert after[cid_b]["posi"] == pos, "insert not at requested posi"
+            assert after[cid_a]["posi"] == pos + 1, (
+                "incumbent did not shift down one — the INSERT "
+                "characterization no longer holds on this firmware")
+            assert after[cid_a]["name"] == name_a
+    finally:
+        for name in (name_a, name_b):
+            m = find_user_preset(helix, name)
+            if m is not None:
+                delete_preset(helix, m["cid_"])
+        if sys.exc_info()[0] is None:
+            for name in (name_a, name_b):
+                assert find_user_preset(helix, name) is None, (
+                    f"cleanup failed: {name!r} still on device")

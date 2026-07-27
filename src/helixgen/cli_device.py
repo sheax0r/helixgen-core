@@ -540,7 +540,8 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
 
     ``force`` skips the slot-emptiness check so the push proceeds at a
     possibly-OCCUPIED posi (``device slots restore --force`` — #25; the
-    occupant is NOT deleted, matching the ``.sbe`` path); without it an
+    device INSERTS there, shifting the occupant down one — it is never
+    deleted or overwritten, matching the ``.sbe`` path); without it an
     occupied slot is refused. The check is strict (backlog #40): a listing
     timeout raises instead of reading as "empty", so it never proceeds to
     write into a slot it couldn't actually confirm was free.
@@ -548,11 +549,12 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     ``known_empty`` also skips the check, but for the opposite reason: the
     CALLER already established the posi is empty (the setlist path, where
     ``_install_via_dest`` just computed a strictly lowest-empty pool posi).
-    The two must not be conflated — ``force`` means "a stub found here after a
-    failed write may be someone else's preset, leave it alone", while
-    ``known_empty`` means "anything here is ours, so clean it up" (#38). Using
-    ``force`` for the setlist case orphaned an empty pool stub on every failed
-    write and blamed a ``--force`` the user never passed.
+    The two must not be conflated — ``force`` means "route the create through
+    the #94 attribution gate (pre-create cid snapshot), refusing to touch an
+    entry that predates the call", while ``known_empty`` means "anything here
+    is ours, so clean it up by (name, pos)" (#38). Using ``force`` for the
+    setlist case orphaned an empty pool stub on every failed write and blamed
+    a ``--force`` the user never passed.
     """
     from helixgen.device import bridge, transcode
 
@@ -1781,7 +1783,12 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
                 if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
                     raise click.ClickException(
                         f"{label} slot {cpos} is not empty; refusing to overwrite")
-                return h._raw.save_edit_buffer_to(cont, cpos, name)
+                # both paths reach here with a known-empty posi (the pool
+                # branch just checked strictly; the setlist branch saves into
+                # a freshly computed lowest-empty pool posi), so a same-named
+                # stub after a failed save is ours to clean up (#95)
+                return h._raw.save_edit_buffer_to(cont, cpos, name,
+                                                  prechecked_empty=True)
 
             new_cid, pool_pos, ref_cid = _install_via_dest(
                 h, kind, container, label, pos, _writer)
@@ -2129,13 +2136,18 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
 @click.option("--auto-irs", is_flag=True, default=False,
               help="Upload any referenced IRs that aren't on the device yet "
                    "(resolved from your local IR mapping.json). A WEDGED IR "
-                   "(backing file resolves, no registry entry) reads as "
-                   "already-present and is NOT re-pushed, so its cab stays "
-                   "silent; the cross-check warns on stderr — clear it with "
-                   "`device delete-ir --force-wedge` (backlog #93).")
+                   "(backing file resolves, no registry entry) is detected "
+                   "via a confirmed listing refresh, reported missing, and "
+                   "re-pushed — the re-push removes the orphaned file and "
+                   "re-imports (self-heal, backlog #93). Only when the "
+                   "refresh can't be confirmed (empty or failed -11 listing) "
+                   "does the wedge still read as already-present; "
+                   "`device delete-ir --force-wedge` is the sure clear then.")
 @_device_option
-@_locked(verb="install", when=lambda kw: ("library", "irs")
-        if kw.get("auto_irs") else ("library",))
+# `irs` is held even without --auto-irs: the IR presence check runs either
+# way, and its wedge discriminator (confirm_ir_listed, #93) may issue a
+# state-neutral rename nudge — an IR-container write
+@_locked("library", "irs", verb="install")
 def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
                    auto_irs: bool, ip: str, port: int) -> None:
     """Author a helixgen .hsp onto the device as a new, playable preset.
@@ -3074,14 +3086,22 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
 @click.option("--force", is_flag=True, default=False,
               help="Push even if the destination POOL slot is occupied "
                    "(pool destinations only; an occupied named-setlist "
-                   "position is always refused — backlog #69). Also suppresses "
-                   "the failed-write cleanup: the entry at that slot may "
-                   "predate this call, so a failed write leaves it as-is "
-                   "(re-list to check). Setlist destinations are exempt — they "
-                   "write at a freshly computed lowest-empty pool posi and do "
-                   "clean up their own stub.")
+                   "position is always refused — backlog #69). The device "
+                   "INSERTS at an occupied posi: the restored tone lands at "
+                   "the slot and the occupant (and everything after it) "
+                   "shifts down one — nothing is overwritten. The write is "
+                   "attribution-gated (#94): helixgen snapshots the pool's "
+                   "cids first and refuses to write into an entry that "
+                   "predates the call, so a failed or refused write never "
+                   "touches the occupant's CONTENT. Cleanup of a failed "
+                   "write deletes only the fresh stub, but deletes leave a "
+                   "gap: the occupant and everything after it stay shifted "
+                   "down one (warned; fix with `device reorder`).")
 @_device_option
-@_locked("library", verb="slots restore")
+# `irs` too: restoring an .hsp source runs the IR presence check, whose wedge
+# discriminator (confirm_ir_listed, #93) may issue a rename nudge — an
+# IR-container write
+@_locked("library", "irs", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                          force: bool, ip: str, port: int) -> None:
     """Put a recorded tone back in its slot. TARGET is the tone name or slot label.
@@ -3155,14 +3175,16 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                             and h.find_by_pos(cont, cpos, strict=True) is not None):
                         raise click.ClickException(
                             f"{label} slot {cpos} is not empty (use --force)")
-                    # --force skipped the emptiness check, so a failed write must
-                    # not clean up: the entry may be a pre-existing occupant.
+                    # --force skipped the emptiness check, so the create runs
+                    # through the #94 attribution gate (pre-create cid
+                    # snapshot) instead: a confirmed cid that predates the
+                    # call is refused, one the snapshot proved fresh is safe
+                    # to write into and to clean up on a failed write.
                     # The setlist path is exempt — _install_via_dest always
                     # writes at a freshly computed lowest-empty POOL posi, which
                     # --force never applied to (the check above is pool-only),
-                    # so a failed write there must clean up its own stub rather
-                    # than orphan it and blame a --force the user never aimed
-                    # at the pool (same conflation the .hsp branch fixed via
+                    # so its precheck authorizes the (name, pos) cleanup
+                    # directly (same conflation the .hsp branch fixed via
                     # known_empty).
                     return h._raw.push_to_slot(
                         cont, cpos, name, src.read_bytes(),

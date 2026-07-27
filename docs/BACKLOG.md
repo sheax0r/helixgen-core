@@ -315,9 +315,14 @@ and had to be redirected. Start here so future work begins from the right model.
   create *reported* failure at every posi; setlist create ghost-allocated).
   Root-caused 2026-07-19: status field 3 is the edit-buffer dirty flag, so
   those creates were landing and the old client deleted them — a re-run today
-  would not hit it. If a future
-  session wants the catalog entry, stack two references via raw
-  `reference_into_setlist` on an HGTEST setlist after a reboot-fresh device.
+  would not hit it. **Pool half characterized 2026-07-27 (the #94 session):**
+  `/CreateContent` at an occupied **pool** posi INSERTS — incumbent and all
+  subsequent presets shift +1, never refuses/overwrites/relocates
+  (`docs/superpowers/specs/2026-07-27-createcontent-followups.md`). The
+  **setlist** half (two references stacked at one position) remains
+  uncaptured; if a future session wants that catalog entry, stack two
+  references via raw `reference_into_setlist` on an HGTEST setlist after a
+  reboot-fresh device.
 - **#70 Deprecated `throwaway`→`-5` remnants + stale dated docs [local]** —
   `container_for_setlist_keyword`/`THROWAWAY` still map `"throwaway"` to the
   setlists root (no production caller; pinned by a unit test), preserving
@@ -1470,78 +1475,59 @@ Remaining follow-ups:
   Land it before the plugin bumps its pinned core version, and
   cross-reference both PR descriptions.
 
-- **#93 A WEDGED IR is now reported present, so nothing re-uploads it.**
-  0.30.0's `device_ir_hashes(verify=...)` cross-checks each hash the `-11`
-  listing omits against `ir_path_for_hash`, the point lookup that reflects an
-  import immediately, and treats a resolving hash as present. That fixes the
-  common false "missing" caused by the lagging container index — but the
-  **wedged** state (backing file + path index resolve, no `-11` registry
-  entry; the state `delete-ir --force-wedge` exists to clean) *also* satisfies
-  the point lookup. Before this change a wedged IR read as missing and the
-  auto-upload paths (`install --auto-irs`, `sync`'s IR upload,
-  `sync_preset_irs`) re-pushed it, which self-healed the wedge. Now they skip
-  it and the preset's cab stays **silent** with no error. The trade was
-  deliberate (the lag case is far commoner and its false "missing" is the one
-  that misleads users) and the override warns to stderr naming the
-  possibility, so this is a rough edge, not a regression to revert blindly.
-  Proper fix: distinguish "resolves but absent from `-11`" (wedged → still
-  upload) from a stale listing. **Partially resolved by the 2026-07-27 #90
-  session:** the "lag" was root-caused on hardware — the `-11` listing cache
-  is NEVER invalidated by watched-dir imports, only by RPC content writes
-  (`docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`) — and
-  `push_ir` now uses a same-name-rename nudge to force a fresh listing and
-  tell stale-cache from wedge (healing the wedge on re-import). Remaining:
-  (a) `device_ir_hashes(verify=...)`'s skip path (`install --auto-irs`,
-  `sync`) still trusts the bare point lookup, so a wedged IR it never
-  re-pushes stays silent — apply the same nudge-then-relist there;
-  (b) `push_ir`'s wedge check can only earn the verdict when the listing has
-  a nudgeable row — an empty listing (exactly the single-wedged-IR case, the
-  classic delete→quick-re-import repro), a listing with no usable
-  `(cid, name)` row, an undecodable-hash row, or an unconfirmed nudge all
-  fall back to trusting "already on device" (deliberately: no confirmed
-  refresh, no delete), so the heal silently no-ops there and
-  `delete-ir --force-wedge` remains the sure clear.
+- **#93 A wedged IR read as present, so nothing re-uploaded it — ✅ RESOLVED
+  (0.32.0, 2026-07-27).** `device_ir_hashes(verify=...)` now runs the
+  nudged-listing check (`client.confirm_ir_listed`, extracted from `push_ir`)
+  whenever the point lookup overturns a listing absence: a hash still absent
+  from a CONFIRMED-refreshed `-11` listing is wedged and reads **missing**, so
+  the auto-upload paths (`install --auto-irs`, `sync`, `sync_preset_irs`)
+  re-push it and `push_ir` heals it (removes the orphan, re-imports). The lag
+  case still reads present (no regression). Remaining blind spot, deliberate:
+  an unconfirmable refresh — empty/failed listing (the single-wedged-IR case),
+  no nudgeable row, unconfirmed nudge — still trusts the point lookup, so the
+  wedge reads present there and `delete-ir --force-wedge` stays the sure
+  clear. Reproduction, discriminator evidence, and live coverage
+  (`tests/live/test_device_ir.py::test_wedged_ir_reads_missing_and_auto_upload_heals`):
+  `docs/superpowers/specs/2026-07-27-createcontent-followups.md`.
 
-- **#94 `--force` still resolves the write target by an ambiguous `(name,
-  pos)` match.** `_push_to_slot(prechecked_empty=False)` (the `slots restore
-  --force` path) correctly refuses to *delete* what `_confirm_created` matched,
-  because that entry may be a pre-existing occupant rather than the stub we
-  just created — but it still *writes* the blob into that same ambiguous cid.
-  In the realistic case the incumbent shares the tone's name (restore-over-
-  itself, the case #25 exists for), so writing into it is what the user asked
-  for; the residue is a possibly-orphaned empty stub left at the same posi
-  when the create did land separately. Not data loss, so deferred. Proper fix:
-  snapshot the container's cids before `/CreateContent` and accept only a cid
-  absent from that snapshot, falling back to raising rather than writing into
-  a match we cannot attribute. Needs hardware to establish what the device
-  actually does with a `/CreateContent` aimed at an occupied posi (the same
-  uncataloged behavior as #69); not covered by the 2026-07-27 #90 session —
-  needs its own hardware probe.
+- **#94 `--force` resolved the write target by an ambiguous `(name, pos)`
+  match — ✅ RESOLVED (0.32.0, 2026-07-27).** Hardware characterization
+  first: `/CreateContent` at an **occupied** posi always INSERTS (incumbent +
+  all subsequent shift +1; never refuses/overwrites/relocates), so the only
+  ambiguity window is a dropped create with a same-name incumbent at the
+  posi. Fix: `_create_attributed` (shared by `_push_to_slot` and
+  `_save_edit_buffer_to`) snapshots the container's cids before an
+  unprechecked `/CreateContent` and refuses a confirmed cid found in the
+  snapshot rather than writing into it; a snapshot-fresh cid is attributably
+  ours, so a failed write now deletes that exact stub. Prechecked paths pay
+  no extra listing. Verbatim probes and residue notes (late-landing stub
+  after a gate refusal — unobservable, documented in the error + `docs/CLI.md`):
+  `docs/superpowers/specs/2026-07-27-createcontent-followups.md`.
 
-- **#95 `_save_edit_buffer_to`'s stub cleanup is not opt-in.** `_push_to_slot`
-  gained a `prechecked_empty` gate so a caller has to deliberately grant
-  permission to `_delete_created_stub`; `_save_edit_buffer_to` still deletes
-  unconditionally on a failed `/SavePresetWithCID`. Safe today — its one
-  caller (`device save`) prechecks strictly under a subscription — but the
-  asymmetry is a trap for the next caller. Give it the same opt-in flag.
+- **#95 `_save_edit_buffer_to`'s stub cleanup was not opt-in — ✅ RESOLVED
+  (0.32.0, 2026-07-27).** It now takes the same `prechecked_empty` gate as
+  `_push_to_slot`; the one caller (`device save`, which prechecks strictly
+  under a subscription) passes `True`, so user-visible behavior is
+  byte-identical — only the unsafe default flipped. Details:
+  `docs/superpowers/specs/2026-07-27-createcontent-followups.md`.
 
-- **#96 `_create_content_checked`'s `code == 0` fast path still returns the
-  unverified create-reply cid.** The `code != 0` branch now resolves the cid by
-  re-list (`_confirm_created`) precisely because the reply cid is
-  documented-unreliable (`_pool_cid_by_name`'s docstring; the same unreliability
-  motivated `_delete_created_stub`'s verify-before-delete). The `code == 0`
-  branch returns that reply cid unchanged, and `_push_to_slot` then runs
-  `_set_content_data(cid, blob)` on it — so a stale/misreported cid on a
-  code-0 create writes preset content into an unrelated cid silently. Deliberately
-  out of scope for the #38 fix (no evidence the cid is ever wrong when the code
-  is 0, and the fast path avoids a full pool listing on the common clean-buffer
-  path), but the asymmetry is now load-bearing: the change set's own premise is
-  that the status code carries no success information. Options: always confirm
-  by re-list (costs one listing per create), or cheaply cross-check the reply
-  cid's `name`/`posi` via a point `/GetContentRef` before writing into it.
-  Needs live hardware to characterise — not covered by the 2026-07-27 #90
-  session (it only exercised the code-0 and code-1 clean/dirty cases, where
-  the reply cid matched the re-list).
+- **#96 `_create_content_checked`'s `code == 0` fast path — CHARACTERIZED AND
+  ACCEPTED (2026-07-27).** The feared failure (a stale/misreported reply cid on
+  a code-0 create, silently writing preset content into an unrelated cid) was
+  probed live (fw 1.3.2 b1340): 15 code-0 creates — clean buffer, empty and
+  occupied targets, including 10 back-to-back — every reply cid confirmed
+  correct by a point `/GetContentRef` and a strict re-list; also correct in all
+  6 code-1 creates observed across the 2026-07-27 sessions. No wrong cid has
+  ever been observed in a **delivered** `/status` frame — the historic
+  "documented-unreliable" reputation (`_pool_cid_by_name`) attaches to replies
+  that never arrive on the flaky transport, not to lying ones. Decision: keep
+  the fast path (no re-list, no point cross-check) — the `code != 0` re-list
+  exists to resolve whether the create *landed* (#38), not to correct the cid,
+  and the unprechecked paths are additionally covered by the #94 attribution
+  snapshot, which refuses any cid that pre-existed the create. Evidence:
+  `docs/superpowers/specs/2026-07-27-createcontent-followups.md`; pinned by
+  `_create_content_checked`'s docstring and
+  `test_push_to_slot_zero_code_still_succeeds_without_relist`.
 
 - **#97 `list_irs`'s `settle` subscription buys no convergence — remove it or
   default it off.** The 2001-subscription wrap (`settle=True`, the default,
@@ -1555,6 +1541,55 @@ Remaining follow-ups:
   the #90 session; the behavior change (default `settle=False` or delete the
   parameter) is deferred because it touches every listing call path and needs
   a live blast-radius run to land honestly.
+
+- **#98 `device_ir_hashes` pays a full confirm cycle per lagging hash.** The
+  #93 verify loop calls `confirm_ir_listed` once per unlisted-but-resolving
+  hash, and each call is up to two strict `-11` listings (each with a
+  `mutating()` subscribe + settle sleep) plus a rename nudge. N hashes
+  lagging at once — the common shape when another client imported several
+  IRs — pay N full cycles, though one confirmed refresh would answer for
+  all of them. Hoist one nudge + re-list per `device_ir_hashes` call and
+  answer every verify hash from that single refreshed listing, falling back
+  per-hash only when the refresh is unconfirmable. Perf only — verdicts are
+  unchanged — deferred from the 2026-07-27 review.
+- **#99 attributed cleanup deletes on a dropped write reply.** In
+  `_after_failed_write`'s unprechecked branch, `_ok` reads a dropped
+  `/SetContentData`/`/SavePresetWithCID` reply as failure, and the cleanup
+  then deletes the attributed cid outright — on the flaky transport the
+  write may have landed, so a fully-written preset (this call's own; nothing
+  pre-existing is reachable, and a retry converges) can be deleted while the
+  verb reports failure. Same reply-ambiguity class #38/#96 characterized
+  for creates, and the prechecked `_delete_created_stub` path shares the
+  exposure. Fix would confirm the write actually failed (e.g. a
+  `get_content` size check) before deleting. Deferred from the 2026-07-27
+  review as low-impact.
+- **#100 error-path messages assert state they can't know.** Two
+  message-accuracy gaps from the 2026-07-27 second review pass, both
+  error-path-only, no data effect. (i) `_after_failed_write`'s unprechecked
+  branch (`src/helixgen/device/client.py`) unconditionally warns that the
+  create "had INSERTED" and the occupant shifted down with a gap left behind
+  — but unprechecked ≠ occupied (`slots restore --force` at a slot that was
+  in fact empty reaches it), so the warning can prescribe a `device reorder`
+  that isn't needed. The pre-create listing in `_create_attributed` already
+  carries `posi` rows; thread "was `pos` occupied" through to the warning
+  (or soften to conditional wording). (ii) `_create_content_checked`'s
+  excluded-cid branch flatly says "the listing kept showing only cid N"
+  even when `saw_cidless=True` (some attempt matched (name, pos) with no
+  cid — possibly our create with an unresolved cid) or
+  `listed_cleanly=False` (the final listing failed); the operative guidance
+  (re-list, delete only an empty stub) stays correct, but the observation
+  claim should fold in both flags the way `_create_status_error` does.
+- **#101 live wedge test false-fails on a device with no other user IRs.**
+  `tests/live/test_device_ir.py::test_wedged_ir_reads_missing_and_auto_upload_heals`
+  wedges its own HGTEST IR and asserts it reads missing — but on a device
+  whose IR container is otherwise empty, the post-wedge `-11` listing is
+  empty, which is #93's documented single-wedged-IR blind spot:
+  `confirm_ir_listed` fails safe to "present" and the assert fails even
+  though behavior matches spec. Push a second sentinel HGTEST IR first (so
+  the nudged listing has a confirmable row), or skip when `list-irs` is
+  empty. Also: note in `device_ir_hashes`'s docstring that `verify=` can now
+  issue a device write (the same-name rename nudge), so external callers
+  (TUI/plugin) don't treat it as read-only.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline

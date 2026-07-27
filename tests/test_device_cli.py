@@ -33,6 +33,7 @@ class FakeClient:
         # push_to_slot's cleanup-ownership flag, recorded separately so the
         # existing (op, container, pos, name) assertions keep working (#38)
         self.push_kwargs = []
+        self.save_kwargs = []
         # subscription depth, so tests can assert that the emptiness reads
         # deciding where to write ran under a 2001 subscription (#38)
         self.sub_depth = 0
@@ -129,8 +130,12 @@ class FakeClient:
                                  "prechecked_empty": prechecked_empty})
         return 900
 
-    def save_edit_buffer_to(self, container, pos, name):
+    # NO default, same reason as push_to_slot above (#95)
+    def save_edit_buffer_to(self, container, pos, name, *,
+                            prechecked_empty):
         self.calls.append(("save_edit_buffer_to", container, pos, name))
+        self.save_kwargs.append({"container": container, "pos": pos,
+                                 "prechecked_empty": prechecked_empty})
         return 901
 
 
@@ -334,7 +339,7 @@ def test_device_push_into_setlist_pool_failure_sends_no_reference(monkeypatch, t
             holder["client"] = self
 
         def push_to_slot(self, container, pos, name, blob, *,
-                     prechecked_empty=True):
+                     prechecked_empty):
             self.calls.append(("push_to_slot", container, pos, name))
             return None  # pool create failed (e.g. reply timeout)
 
@@ -1559,11 +1564,12 @@ class RaisingFindByPosClient(FakeClient):
         return None
 
     def push_to_slot(self, container, pos, name, blob, *,
-                     prechecked_empty=True):
+                     prechecked_empty):
         type(self).WRITE_CALLS.append(("push_to_slot", container, pos, name))
         return 900
 
-    def save_edit_buffer_to(self, container, pos, name):
+    def save_edit_buffer_to(self, container, pos, name, *,
+                            prechecked_empty):
         type(self).WRITE_CALLS.append(("save_edit_buffer_to", container, pos, name))
         return 901
 
@@ -1621,6 +1627,10 @@ def test_device_save_checks_emptiness_under_a_subscription(monkeypatch, tmp_path
     result = CliRunner().invoke(cli, ["device", "save", "HG Save", "--pos", "3"])
     assert result.exit_code == 0, result.output
     assert holder["client"].reads_under_sub == [True]
+    # #95: that strict precheck is what the CLI passes on as prechecked_empty
+    # =True — the flag that grants _save_edit_buffer_to's failed-write cleanup
+    # permission to delete by (name, pos)
+    assert holder["client"].save_kwargs[0]["prechecked_empty"] is True
 
 
 def test_device_push_checks_emptiness_under_a_subscription(monkeypatch, tmp_path):
