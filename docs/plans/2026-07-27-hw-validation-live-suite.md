@@ -78,7 +78,7 @@ This is the condition that used to fail. A one-off manual run is not enough:
 the suite's own `device load` calls reset the buffer to clean, so the dirty
 state must be established *inside* the test that needs it.
 
-- [ ] Write a failing-first live regression test in `tests/live/test_device_write.py`
+- [x] Write a failing-first live regression test in `tests/live/test_device_write.py`
       (marker `device_write`) that: loads an `HGTEST` preset, dirties the edit
       buffer via a live-ops mutation of the ACTIVE tone (e.g. `device set-param`
       or `device bypass` — do **not** save), asserts the buffer is dirty by
@@ -86,17 +86,26 @@ state must be established *inside* the test that needs it.
       `create` into an expendable slot and asserts the content is **present on
       the device afterwards** (confirm by re-list, the 0.30.0 contract), with
       full `HGTEST` teardown in a finalizer
-- [ ] Add the equivalent dirty-buffer case for the IR path in
+      (`test_install_and_create_with_dirty_buffer`; dirty state asserted via
+      `device params` read-back — `hist` has no CLI surface)
+- [x] Add the equivalent dirty-buffer case for the IR path in
       `tests/live/test_device_ir.py` (marker `device_ir`) if the push-IR path can
       hit `/CreateContent` under a dirty buffer; if it structurally cannot, say so
       in the findings doc and skip rather than inventing coverage
-- [ ] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir)" tests/live -q`
-      and record the result verbatim
-- [ ] Confirm the non-zero `/status` taxonomy beyond `1` is still uncatalogued
+      (structurally cannot: push-ir = SFTP + watched-dir `/addContent`,
+      delete-ir = `/RemoveContent`; noted in findings doc, no coverage invented)
+- [x] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir)" tests/live -q`
+      and record the result verbatim (11 passed, 1 skipped [global gate],
+      63 deselected in 274.29s — verbatim in findings doc)
+- [x] Confirm the non-zero `/status` taxonomy beyond `1` is still uncatalogued
       (`docs/helix-protocol.md` ~765-767). If this run observes any value other
       than `0`/`1`, record it in the findings doc and update the protocol doc
-- [ ] Leave the device tidy: teardown removed every `HGTEST` artifact, and the
+      (raw probe: clean=0, dirty=1, content created+listed both; nothing beyond
+      0/1 observed — protocol doc unchanged)
+- [x] Leave the device tidy: teardown removed every `HGTEST` artifact, and the
       session state guard passed. Release any lock you took (`helixgen device unlock`)
+      (verified: no HGTEST presets/IRs on device, active preset restored to the
+      user's cid 1407 / 16C, `device lock --status` reports no locks held)
 
 ### Task 4: #7 — reorder → sync read-back on an expendable setlist
 

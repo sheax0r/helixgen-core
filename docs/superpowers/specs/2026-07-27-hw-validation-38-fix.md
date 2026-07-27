@@ -122,7 +122,43 @@ docstring, `tests/live/test_device_ir.py` comments.
 
 ## Task 3: dirty-buffer `/CreateContent` regression tests
 
-(pending)
+New permanent live regression test
+`tests/live/test_device_write.py::test_install_and_create_with_dirty_buffer`
+(marker `device_write`): loads the module's HGTEST preset, dirties the edit
+buffer via an unsaved `device set-param` live-ops nudge, then runs
+`device install` and `device create --from` into expendable slots and asserts
+each preset is **present on the device afterwards** (re-list — the 0.30.0
+contract), with full HGTEST teardown in a finalizer. It fails by construction
+against the pre-0.30.0 client, which deleted the content it had just created
+when field 3 was non-zero (that client is gone, so a literal failing-first
+run wasn't reproducible; the offline `/CreateContent` tests in
+`tests/test_device_client.py` pin the same contract in-process).
+
+The `dirty_edit_buffer` fixture was strengthened to ASSERT the dirty state by
+the one signal the CLI exposes: re-reading `device params` and requiring the
+live buffer to carry the unsaved nudge (`hist` itself has no CLI surface).
+The new test also re-asserts the nudge survives `device install` — install
+must not clobber the player's live tone — so the `create` provably also runs
+dirty.
+
+**IR path: structurally cannot hit `/CreateContent`.** `push-ir` reaches the
+device over SFTP plus the watched-dir import (`/addContent` broadcast), and
+`delete-ir` uses `/RemoveContent`; no device IR verb issues `/CreateContent`,
+so there is no dirty-buffer case to write for `tests/live/test_device_ir.py`
+(already documented in that module's docstring). No coverage invented.
+
+### Live run — verbatim result
+
+```
+HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir)" tests/live -q
+...........s                                                             [100%]
+SKIPPED [1] tests/live/test_global_settings.py: global-settings writes are extra-gated: set HELIXGEN_LIVE_GLOBAL=1 (in addition to HELIXGEN_LIVE=1)
+11 passed, 1 skipped, 63 deselected in 274.29s (0:04:34)
+```
+
+No failures, no xfails/xpasses; the skip is the suite's own global-settings
+gate. Device left tidy afterwards (no HGTEST presets/IRs, no locks held,
+active preset back on the user's cid 1407 / slot 16C).
 
 ## Task 4: #7 reorder → sync read-back
 
@@ -130,7 +166,21 @@ docstring, `tests/live/test_device_ir.py` comments.
 
 ## `/CreateContent` status semantics observations
 
-(pending — Task 3)
+Direct raw-RPC probe (2026-07-27, fw 1.3.2 b1340, under a held `all` lease,
+HGTEST-only artifacts, all removed after): `_create_content_status` against
+the pool (`-2`) with a freshly `device load`-ed HGTEST preset, then again
+after an unsaved live-ops `set_param` nudge:
+
+```
+clean: /CreateContent /status -> cid=1489 code=0   (listed: cid 1489)
+dirty: /CreateContent /status -> cid=1490 code=1   (listed: cid 1490)
+```
+
+Exactly the 2026-07-19 A/B result: field 3 mirrors the edit-buffer dirty
+flag; the content is created and listable in both cases. **No `/status`
+value other than `0`/`1` was observed anywhere in this validation run**, so
+the non-zero taxonomy beyond `1` remains uncatalogued —
+`docs/helix-protocol.md` needs no change.
 
 ## Deferred
 
