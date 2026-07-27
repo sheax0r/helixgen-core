@@ -321,14 +321,16 @@ def owned(lease: dict, token: str | None = None) -> bool:
 
 
 def covering_lease(ip: str, scope: str,
-                   token: str | None = None) -> dict | None:
-    """The LIVE lease we own that covers ``scope`` — its own file or the
-    exclusive ``all`` lease — or None when we hold no such lease."""
+                   token: str | None = None) -> tuple[Path, dict] | None:
+    """``(path, lease)`` of the LIVE lease we own that covers ``scope`` — its
+    own file or the exclusive ``all`` lease — or None when we hold no such
+    lease."""
     tok = token if token is not None else env_token()
     for cover in ({scope, ALL} if scope != ALL else {ALL}):
-        lease = read_lease(lock_path(ip, cover))
+        path = lock_path(ip, cover)
+        lease = read_lease(path)
         if lease is not None and not is_stale(lease) and owned(lease, tok):
-            return lease
+            return path, lease
     return None
 
 
@@ -336,13 +338,25 @@ def check_session(ip: str, scopes, *, token: str | None = None) -> None:
     """Fail fast when a presented token no longer owns the device (#97).
 
     Exporting ``$HELIXGEN_LOCK_TOKEN`` is an explicit declaration of "I am
-    in a held session". If it opens no live lease covering a scope the
-    caller is about to touch, that session is GONE — reclaimed by a
-    contender or expired — and the work would proceed unlocked while still
-    believing it is protected. That asymmetry is what made the 2026-07-27
-    workflow dangerous: the mutating call was refused (visibly) while the
-    read-only one returned real-looking numbers for a device someone else
-    was now driving. Raises :class:`LockLost` naming the current holder.
+    in a held session". If it opens no live lease AT ALL on this device,
+    that session is GONE — reclaimed by a contender or expired — and the
+    work would proceed unlocked while still believing it is protected. That
+    asymmetry is what made the 2026-07-27 workflow dangerous: the mutating
+    call was refused (visibly) while the read-only one returned real-looking
+    numbers for a device someone else was now driving. Raises
+    :class:`LockLost` naming the current holder of the scope in question.
+
+    A scope simply OUTSIDE a narrow lease (holding ``library`` and touching
+    ``editbuffer``) is not a lost session and never raises: the session is
+    demonstrably alive, so a mutating verb acquires that scope transiently
+    (contending normally, with the usual wait) and a read stays as free as
+    it was unlocked. Only a token that opens nothing is a lost session.
+
+    Every covering lease this call finds is RENEWED — a read-only verb is
+    proof its session is still active, which is what the grace/TTL clock
+    should be measuring. Without this, a `device measure`-only stretch
+    performs zero renewals and loses the very lease it is holding (the
+    Task 1 root cause).
 
     NO token set → no-op. Unlocked callers, read-only verbs included, keep
     behaving exactly as before; this never makes a read start taking a lock.
@@ -350,17 +364,32 @@ def check_session(ip: str, scopes, *, token: str | None = None) -> None:
     tok = token if token is not None else env_token()
     if not tok:
         return
+    missing = []
     for scope in _normalize_scopes(scopes):
-        if covering_lease(ip, scope, tok) is not None:
+        found = covering_lease(ip, scope, tok)
+        if found is None:
+            missing.append(scope)
             continue
-        holder = None
-        for cpath in _conflict_paths(ip, scope):
-            lease = read_lease(cpath)
-            if (lease is not None and not is_stale(lease)
-                    and not owned(lease, tok)):
-                holder = lease
-                break
-        raise LockLost(ip, scope, holder)
+        path, lease = found
+        # margin-guarded exactly like _acquire_one's passthrough renewal: at
+        # the expiry boundary a renewal could land on a waiter's legitimate
+        # re-acquisition, so leave those to expire.
+        remaining = _remaining_ttl(lease)
+        if remaining is None or remaining > RENEW_MARGIN_S:
+            _renew(path, lease)
+    if not missing:
+        return
+    if any(covering_lease(ip, s, tok) is not None for s in VALID_SCOPES):
+        return  # session alive, just narrower than this verb — not our problem
+    scope = missing[0]
+    holder = None
+    for cpath in _conflict_paths(ip, scope):
+        lease = read_lease(cpath)
+        if (lease is not None and not is_stale(lease)
+                and not owned(lease, tok)):
+            holder = lease
+            break
+    raise LockLost(ip, scope, holder)
 
 
 # --------------------------------------------------------------------------
@@ -930,7 +959,13 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
     ``detach=True`` writes a DETACHED lease instead (``kind: "detached"``,
     no pid — #97): nothing ties it to the caller's process, so only the TTL
     (renewed by every covered verb) or an explicit ``device unlock``
-    releases it. Re-locking an owned scope switches it to/from detached."""
+    releases it. Re-locking an owned scope switches it to/from detached.
+    ``detach=True`` with ``ttl=0`` (no expiry) is refused: no pid AND no
+    expiry leaves a lease nothing but ``unlock --force`` could ever clear."""
+    if detach and not ttl:
+        raise ValueError(
+            "a detached lease needs a TTL: with no pid and no expiry nothing "
+            "but `device unlock --force` could ever release it")
     want = _normalize_scopes(scopes)
     kind = "detached" if detach else "session"
     tok = env_token()

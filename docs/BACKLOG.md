@@ -1591,6 +1591,16 @@ Remaining follow-ups:
   issue a device write (the same-name rename nudge), so external callers
   (TUI/plugin) don't treat it as read-only.
 
+- **#102 `device` skill still teaches the shell-bound lease** (companion to
+  workspace #97, core 0.33.0). Core now has `device lock --detach` and makes a
+  dangling `$HELIXGEN_LOCK_TOKEN` an error on read-only verbs too, but the
+  plugin repo's skill (`sheax0r/helixgen`, `.claude/skills/device/`) still
+  instructs a plain `device lock --scope all` and doesn't carry the
+  stop-and-re-establish-state rule. Agent-facing surfaces ship in sync, so
+  this is a sequenced PR in that repo after the core release — tracked here
+  only because the deferral would otherwise live nowhere but the archived
+  plan file.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

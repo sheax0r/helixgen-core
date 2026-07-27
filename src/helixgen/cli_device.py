@@ -230,6 +230,16 @@ _NO_LOCK_HELP = ("Skip the machine-local advisory device lock for this verb "
                  "the device; see `helixgen device lock --help`).")
 
 
+def _check_session_or_fail(ip: str, scopes) -> None:
+    """`locks.check_session` as a CLI error (#97). No token → no-op."""
+    from helixgen import locks
+
+    try:
+        locks.check_session(ip, scopes)
+    except locks.LockLost as e:
+        raise click.ClickException(str(e)) from e
+
+
 def _locked(*scopes: str, verb: str, when=None):
     """Auto-acquire the verb's advisory device-lock scope(s) for its duration.
 
@@ -248,9 +258,20 @@ def _locked(*scopes: str, verb: str, when=None):
         def wrapper(*args, **kwargs):
             no_lock = kwargs.pop("no_lock", False)
             eff = tuple(when(kwargs)) if when is not None else scopes
-            if no_lock or not eff:
+            if no_lock:
                 return f(*args, **kwargs)
             from helixgen import locks
+
+            if not eff:
+                # narrowed to no lease (a dry-run mode) — but a dry run that
+                # still READS the device must not sail past the dangling-token
+                # check the same read-only verbs are subject to (#97). The
+                # verb's declared scopes say what it touches; ip stays lenient
+                # here (the body owns its own fail-fast), as in `_reads`.
+                ip = kwargs.get("ip")
+                if scopes and ip:
+                    _check_session_or_fail(ip, scopes)
+                return f(*args, **kwargs)
 
             # _ip_callback resolves leniently (None when unconfigured); a
             # verb about to take a device lock is going to write to the
@@ -260,13 +281,10 @@ def _locked(*scopes: str, verb: str, when=None):
             ip = kwargs.get("ip") or _resolve_ip_or_fail()
             if "ip" in kwargs:
                 kwargs["ip"] = ip
-            try:
-                # #97: a presented-but-dangling token means the session this
-                # call belongs to is gone — refuse rather than quietly taking
-                # a fresh transient lease and mutating on.
-                locks.check_session(ip, eff)
-            except locks.LockLost as e:
-                raise click.ClickException(str(e)) from e
+            # #97: a presented-but-dangling token means the session this
+            # call belongs to is gone — refuse rather than quietly taking
+            # a fresh transient lease and mutating on.
+            _check_session_or_fail(ip, eff)
             try:
                 lease = locks.acquire(ip, eff, label=f"helixgen device {verb}")
             except locks.LockHeld as e:
@@ -297,17 +315,13 @@ def _reads(*scopes: str, when=None):
     def deco(f):
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
-            from helixgen import locks
-
             eff = tuple(when(kwargs)) if when is not None else scopes
             ip = kwargs.get("ip")
             # an unresolved ip is left to the verb body's own fail-fast; a
-            # read with no token is exactly as unlocked as it was before.
-            if eff and ip and locks.env_token():
-                try:
-                    locks.check_session(ip, eff)
-                except locks.LockLost as e:
-                    raise click.ClickException(str(e)) from e
+            # read with no token is exactly as unlocked as it was before
+            # (check_session itself owns the no-token rule).
+            if eff and ip:
+                _check_session_or_fail(ip, eff)
             return f(*args, **kwargs)
 
         return wrapper
@@ -686,8 +700,10 @@ _LOCK_SCOPE_HELP = (
                    "required unless --status).")
 @click.option("--ttl", type=float, default=None,
               show_default="900 (300 with --detach)",
-              help="Lease time-to-live in seconds; every covered verb you "
-                   "run renews it. An expired lease is reclaimed by the "
+              help="Lease time-to-live in seconds; every verb you run with "
+                   "the token exported renews it, READ-ONLY ones included, "
+                   "so only an idle stretch can outlast it. An expired "
+                   "lease is reclaimed by the "
                    "next contender. 0 = no TTL expiry (reclaim then relies "
                    "on pid-liveness or `device unlock`); refused with "
                    "--detach, which has no pid to fall back on.")
@@ -726,10 +742,16 @@ def device_lock(scopes, label, ttl, detach, show_status, as_json, ip) -> None:
     SHELL's pid, and an agent's shell exits when its tool call returns —
     the lease then becomes reclaimable after a 120s grace and a contender
     takes the device mid-workflow (#97). A DETACHED lease records no pid,
-    so only its TTL (default 300s, renewed by every covered verb you run
-    with the token exported) or `device unlock` releases it. --ttl 0 is
-    refused with --detach: no pid AND no expiry would leave a lease only
-    `device unlock --force` could clear.
+    so only its TTL (default 300s, renewed by every verb you run with the
+    token exported — READ-ONLY ones included, so an active workflow cannot
+    time out) or `device unlock` releases it. --ttl 0 is refused with
+    --detach: no pid AND no expiry would leave a lease only `device unlock
+    --force` could clear.
+
+    Re-locking a scope you already own renews it in place (new label/ttl,
+    same stored token) and switches its kind: --detach over a session lease
+    drops the pid, a plain re-lock over a detached lease re-binds it to the
+    invoking shell.
     """
     from helixgen import locks
 
@@ -798,9 +820,9 @@ def device_lock(scopes, label, ttl, detach, show_status, as_json, ip) -> None:
                    "through this lock; release with `helixgen device "
                    "unlock`. This lease is DETACHED (no pid): it survives "
                    "the shell that took it, and only its TTL expires it — "
-                   "every covered verb you run with the token exported "
-                   "renews it, so keep the token exported and unlock when "
-                   "you are done.", err=True)
+                   "every verb you run with the token exported renews it "
+                   "(reads included), so keep the token exported and unlock "
+                   "when you are done.", err=True)
     else:
         click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
                    "through this lock; release with `helixgen device unlock`. "
@@ -1160,7 +1182,7 @@ def device_settings() -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit as JSON.")
 @_device_option
-@_reads("globals")
+@_reads(when=lambda kw: ("globals",) if kw.get("values") else ())
 def device_settings_list(page, values, as_json, ip, port):
     """List Global-Settings keys, grouped by page (offline unless --values)."""
     from helixgen.device import settings as S
@@ -2033,7 +2055,8 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result dict as JSON.")
 @_device_option
-@_locked(verb="ir-prune", when=lambda kw: ("irs",) if kw.get("yes") else ())
+@_locked("irs", verb="ir-prune",
+         when=lambda kw: ("irs",) if kw.get("yes") else ())
 def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
                     only: str | None, as_json: bool,
                     ip: str, port: int) -> None:

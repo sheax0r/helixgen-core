@@ -1398,6 +1398,76 @@ def test_97_check_session_passes_with_a_live_covering_lease(root, monkeypatch):
     locks.check_session(IP, ("editbuffer", "irs"))
 
 
+def test_97_check_session_passes_for_a_scope_outside_a_narrow_lease(
+        root, monkeypatch):
+    """Holding `library` and touching `editbuffer` is NOT a lost session — the
+    token demonstrably opens a live lease, the other scope is simply free.
+    Raising here would reduce the whole scope vocabulary to `--scope all`:
+    `device sync` (library+irs) could not run under a `library` lease, and
+    every read of another scope would hard-fail with a message claiming a
+    reclaim that never happened."""
+    write_lease(root, "library", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, label="agent-workflow")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))
+    locks.check_session(IP, ("library", "irs"))
+
+
+def test_97_narrow_lease_holder_still_acquires_other_scopes(root, fake_client,
+                                                            monkeypatch):
+    """End to end: a `library` lease holder runs a verb that locks
+    `editbuffer`. It must take that scope transiently, not be refused."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "agent", "--ip", IP).exit_code == 0
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+def test_97_narrow_lease_holder_contends_normally_not_lockheld_as_lost(
+        root, fake_client, monkeypatch):
+    """And when that other scope IS held by someone else, it is ordinary
+    contention (waited on, reported as locked) — not a lost session."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "agent", "--ip", IP).exit_code == 0
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TIMEOUT", "0")
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code != 0
+    assert "is locked by" in res.output and "other-agent" in res.output
+    assert "reclaimed" not in res.output
+
+
+def test_97_check_session_renews_the_covering_lease(root, monkeypatch):
+    """A read-only call is proof its session is alive, so it renews — the
+    Task 1 root cause was that a measure-only stretch renewed nothing and
+    lost the lease it was holding."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=200, ttl=locks.DEFAULT_DETACHED_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))
+    assert json.loads(p.read_text())["acquired_at"] > before
+
+
+def test_97_read_only_verb_renews_the_lease_it_holds(root, fake_client,
+                                                     monkeypatch):
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=200, ttl=locks.DEFAULT_DETACHED_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "blocks", "--ip", IP).exit_code == 0
+    assert json.loads(p.read_text())["acquired_at"] > before
+
+
+def test_97_session_lock_refuses_a_detached_lease_with_no_expiry(root):
+    """The invariant lives in the lock layer, not only in the CLI flag."""
+    with pytest.raises(ValueError):
+        locks.session_lock(IP, ["all"], label="agent", ttl=0, detach=True)
+    assert not lease_path(root, "all").exists()
+
+
 def test_97_check_session_raises_naming_the_holder_that_reclaimed_it(
         root, monkeypatch):
     write_lease(root, "editbuffer", pid=1, label="live-test-suite")
@@ -1443,22 +1513,57 @@ def test_97_read_only_verb_errors_when_the_lease_was_reclaimed(
     assert "reclaimed" in res.output
 
 
-@pytest.mark.parametrize("argv,scope", [
+# every networked read-only verb carrying @_reads — all of them, so removing
+# a decorator can never pass unnoticed. "{out}" is filled with a scratch path.
+READ_ONLY_VERBS = [
+    (("device", "measure"), "editbuffer"),
     (("device", "meters"), "editbuffer"),
     (("device", "tuner"), "editbuffer"),
+    (("device", "watch", "--seconds", "0.1"), "editbuffer"),
     (("device", "blocks"), "editbuffer"),
     (("device", "params", "0", "0"), "editbuffer"),
     (("device", "active"), "editbuffer"),
     (("device", "list"), "library"),
+    (("device", "setlists"), "library"),
     (("device", "read", "1"), "library"),
+    (("device", "pull", "1", "{out}"), "library"),
+    (("device", "backup", "--dir", "{out}"), "library"),
+    (("device", "setlist", "export-hss", "HGTEST", "{out}"), "library"),
+    (("device", "slots", "list", "--verify"), "library"),
     (("device", "list-irs"), "irs"),
-    (("device", "settings", "list"), "globals"),
-])
+    (("device", "pull-ir", "some.wav", "{out}"), "irs"),
+    (("device", "settings", "list", "--values"), "globals"),
+    (("device", "settings", "get", "global.tuner.type"), "globals"),
+]
+
+
+@pytest.mark.parametrize("argv,scope", READ_ONLY_VERBS)
 def test_97_read_only_verbs_refuse_a_dangling_token(root, fake_client,
-                                                    monkeypatch, argv, scope):
+                                                    monkeypatch, tmp_path,
+                                                    argv, scope):
     write_lease(root, scope, pid=1, label="other-agent")
     monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    argv = tuple(a.format(out=tmp_path / "out") for a in argv)
     res = run_cli(*argv, "--ip", IP)
+    assert res.exit_code != 0, res.output
+    assert "other-agent" in res.output and "reclaimed" in res.output
+
+
+def test_97_settings_list_stays_exempt_when_it_is_offline(root, monkeypatch):
+    """`settings list` without --values touches no network — an offline verb
+    must not be locked out by a dangling token (recovery stays possible)."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "settings", "list", "--ip", IP).exit_code == 0
+
+
+def test_97_dry_run_that_still_reads_the_device_refuses_a_dangling_token(
+        root, fake_client, monkeypatch):
+    """A verb whose `when()` narrows to NO lease (ir-prune without --yes) is
+    still a networked read: it must not slip past the check that `device
+    list-irs`, a strictly weaker read of the same data, is subject to."""
+    write_lease(root, "irs", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "ir-prune", "--ip", IP)
     assert res.exit_code != 0, res.output
     assert "other-agent" in res.output and "reclaimed" in res.output
 
