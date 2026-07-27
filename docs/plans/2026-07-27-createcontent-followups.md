@@ -109,19 +109,31 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
 
 ### Task 4: #96 — characterize the `code == 0` reply cid, then close the asymmetry
 
-- [ ] **Characterize on hardware first:** is the create-reply cid ever wrong when
+- [x] **Characterize on hardware first:** is the create-reply cid ever wrong when
       the status code is `0`? Probe repeatedly (clean and dirty edit buffer, empty
       and occupied targets), cross-checking each reply cid against a point
       `/GetContentRef`'s `name`/`posi`. Record verbatim
-- [ ] Failing test first, then implement whichever option the evidence supports:
+      (17 probes: 15 code-0 — clean buffer, empty + occupied targets,
+      including 10 back-to-back — and 2 code-1 dirty; reply cid correct in
+      every one by point `/GetContentRef` AND strict re-list; verbatim in
+      the findings doc)
+- [x] Failing test first, then implement whichever option the evidence supports:
       (a) always confirm by re-list (costs one listing per create), or (b) cheaply
       cross-check the reply cid's `name`/`posi` via a point `/GetContentRef`
       before writing into it. Prefer (b) if it is sufficient — (a) costs a full
       pool listing on the common clean-buffer path
-- [ ] If the evidence shows the reply cid is reliable at `code == 0`, do NOT
+      (evidence supported neither: the reply cid was never wrong, so the
+      next bullet's no-change option applies; the fast-path contract stays
+      pinned by `test_push_to_slot_zero_code_still_succeeds_without_relist`)
+- [x] If the evidence shows the reply cid is reliable at `code == 0`, do NOT
       churn the code: record the evidence, keep the fast path, and rewrite the
       backlog entry to say the asymmetry is characterized and accepted
-- [ ] Verify live under the `device_write` marker
+      (fast path kept; evidence in the findings doc, cited in
+      `_create_content_checked`'s docstring; backlog #96 rewritten
+      CHARACTERIZED AND ACCEPTED)
+- [x] Verify live under the `device_write` marker
+      (`-m "live and device_write"`: 10 passed, 1 skipped; full offline
+      suite 2425 passed)
 
 ### Task 5: Findings doc, backlog, agent-facing surfaces, release
 

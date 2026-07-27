@@ -1525,23 +1525,23 @@ Remaining follow-ups:
   caller (`device save`) prechecks strictly under a subscription — but the
   asymmetry is a trap for the next caller. Give it the same opt-in flag.
 
-- **#96 `_create_content_checked`'s `code == 0` fast path still returns the
-  unverified create-reply cid.** The `code != 0` branch now resolves the cid by
-  re-list (`_confirm_created`) precisely because the reply cid is
-  documented-unreliable (`_pool_cid_by_name`'s docstring; the same unreliability
-  motivated `_delete_created_stub`'s verify-before-delete). The `code == 0`
-  branch returns that reply cid unchanged, and `_push_to_slot` then runs
-  `_set_content_data(cid, blob)` on it — so a stale/misreported cid on a
-  code-0 create writes preset content into an unrelated cid silently. Deliberately
-  out of scope for the #38 fix (no evidence the cid is ever wrong when the code
-  is 0, and the fast path avoids a full pool listing on the common clean-buffer
-  path), but the asymmetry is now load-bearing: the change set's own premise is
-  that the status code carries no success information. Options: always confirm
-  by re-list (costs one listing per create), or cheaply cross-check the reply
-  cid's `name`/`posi` via a point `/GetContentRef` before writing into it.
-  Needs live hardware to characterise — not covered by the 2026-07-27 #90
-  session (it only exercised the code-0 and code-1 clean/dirty cases, where
-  the reply cid matched the re-list).
+- **#96 `_create_content_checked`'s `code == 0` fast path — CHARACTERIZED AND
+  ACCEPTED (2026-07-27).** The feared failure (a stale/misreported reply cid on
+  a code-0 create, silently writing preset content into an unrelated cid) was
+  probed live (fw 1.3.2 b1340): 15 code-0 creates — clean buffer, empty and
+  occupied targets, including 10 back-to-back — every reply cid confirmed
+  correct by a point `/GetContentRef` and a strict re-list; also correct in all
+  6 code-1 creates observed across the 2026-07-27 sessions. No wrong cid has
+  ever been observed in a **delivered** `/status` frame — the historic
+  "documented-unreliable" reputation (`_pool_cid_by_name`) attaches to replies
+  that never arrive on the flaky transport, not to lying ones. Decision: keep
+  the fast path (no re-list, no point cross-check) — the `code != 0` re-list
+  exists to resolve whether the create *landed* (#38), not to correct the cid,
+  and the unprechecked paths are additionally covered by the #94 attribution
+  snapshot, which refuses any cid that pre-existed the create. Evidence:
+  `docs/superpowers/specs/2026-07-27-createcontent-followups.md`; pinned by
+  `_create_content_checked`'s docstring and
+  `test_push_to_slot_zero_code_still_succeeds_without_relist`.
 
 - **#97 `list_irs`'s `settle` subscription buys no convergence — remove it or
   default it off.** The 2001-subscription wrap (`settle=True`, the default,

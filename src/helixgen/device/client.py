@@ -1325,6 +1325,14 @@ class HelixClient:
 
         ``code == 0`` keeps the historic fast path — the callers already
         re-list by name to recover the real cid — and returns the reply cid.
+        Characterized and accepted (#96, live 2026-07-27, fw 1.3.2 b1340):
+        15 code-0 creates (clean buffer; empty and occupied targets;
+        including 10 back-to-back), every reply cid confirmed correct by a
+        point ``/GetContentRef`` and a strict re-list — and no wrong cid has
+        ever been observed in a **delivered** ``/status`` frame (the
+        ``_pool_cid_by_name`` "unreliable" reputation is about replies that
+        never arrive on the flaky transport, not lying ones). See
+        ``docs/superpowers/specs/2026-07-27-createcontent-followups.md``.
 
         **No ``/status`` frame at all** (``code is None``) is resolved the same
         way as a non-zero code, not treated as failure: on the documented-flaky

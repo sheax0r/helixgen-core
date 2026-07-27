@@ -162,4 +162,68 @@ one position) stays uncharacterized and refused (Task 5 revisits #69).
 
 ## #96 — `code == 0` reply-cid trust
 
-(To be filled by Task 4.)
+### Characterization (2026-07-27, fw 1.3.2 b1340): the reply cid was correct in every probe
+
+Question: is the `/CreateContent` reply cid (`/status [reqid, newCid, code]`
+field 2) ever wrong when `code == 0` — i.e. can `_create_content_checked`'s
+fast path hand `_set_content_data` a stale/misreported cid?
+
+Probed with `HGTEST96`-named artifacts in the pool (`-2`, 66 presets, tail
+posi 66), each reply cid cross-checked against a point `/GetContentRef`
+(name/posi) AND a strict re-list match at `(name, posi)`. Buffer state
+controlled per trial (clean = `/LoadPresetWithCID`; dirty = load + output-gain
+nudge via `/ParamValueSet`, read back to confirm it stuck). Verbatim:
+
+Session A — mixed states, one create per buffer setup:
+
+1. clean + empty posi 66: `/status [1005, 1532, 0]`; `/GetContentRef(1532)` →
+   `{cid_: 1532, name: HGTEST96-CE1, posi: 66}`; listed cid at (name,posi) =
+   1532 — MATCH.
+2. clean + empty 67: `/status [1009, 1533, 0]` → ref/list 1533@67 — MATCH.
+3. clean + empty 68: `/status [1013, 1534, 0]` → 1534@68 — MATCH.
+4. clean + **occupied** 66: `/status [1017, 1535, 0]` → ref 1535@66, listed
+   1535@66 with the incumbent shifted to 67 (the #94 INSERT) — MATCH.
+5. clean + occupied 66: `/status [1021, 1536, 0]` → 1536@66 — MATCH.
+6. **dirty** + empty 71: `/status [1028, 1537, 1]` → 1537@71 — MATCH
+   (code 1 = the #38 dirty flag, as established).
+7. dirty + occupied 66: `/status [1035, 1538, 1]` → 1538@66 — MATCH.
+
+Session B — 10 back-to-back clean-buffer creates (no settle between them,
+the worst case for a stale reply): `/status` cids 1539..1548 at posi 66..75,
+all `code 0`, every `/GetContentRef(cid)` returning the exact requested
+name/posi — 10/10 MATCH.
+
+Total: 15 `code == 0` creates this session, reply cid correct in all 15;
+also correct in all 6 `code == 1` creates (2 here + 4 in the #94 session).
+Combined with the #90 session (clean/dirty A/B, reply cid matched the
+re-list there too), there is **no observed case** — any firmware state, any
+buffer state, empty or occupied target, sequential or rapid — of the reply
+cid being wrong when a `/status` frame arrives at all. The historic
+"documented-unreliable" reputation (`_pool_cid_by_name`) attaches to the
+*absence* of a usable reply on the flaky transport, not to a wrong cid in a
+delivered `/status` frame.
+
+### Decision: fast path kept, asymmetry characterized and accepted
+
+Per the plan's own gate ("if the evidence shows the reply cid is reliable at
+`code == 0`, do NOT churn the code"): no behavior change. The `code == 0`
+fast path in `_create_content_checked` keeps returning the reply cid without
+a confirming re-list; the `code != 0` re-list stays (it exists to resolve
+whether the create *landed* — the #38 dirty-flag ambiguity — not to correct
+the cid). The risk window the entry feared (content written into an
+unrelated cid on a code-0 create) additionally requires a delivered-but-lying
+`/status` frame, which has never been observed; the unprechecked paths are
+also covered by the #94 attribution snapshot, which would refuse any cid
+that pre-existed the create.
+
+Evidence pinned: `_create_content_checked`'s docstring cites this
+characterization, and the offline pin
+`test_push_to_slot_zero_code_still_succeeds_without_relist` asserts the
+fast path pays no listing. Backlog #96 rewritten as characterized/accepted.
+
+### Verification
+
+Teardown verified both sessions: all `HGTEST96` cids deleted in one
+`/RemoveContent`, pool size back to 66, zero leftovers, player's active
+preset restored. Live `device_write` marker suite green post-probe (see
+plan Task 4).
