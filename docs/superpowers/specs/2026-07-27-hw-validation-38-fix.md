@@ -162,7 +162,43 @@ active preset back on the user's cid 1407 / slot 16C).
 
 ## Task 4: #7 reorder → sync read-back
 
-(pending)
+`tests/live/test_sync.py::test_sync_lifecycle` now reads the DEVICE back
+after every order-changing step instead of trusting exit 0
+(`device list --setlist <HGTEST setlist> --json`, posi-sorted reference
+names, vs the manifest's membership order from
+`device setlist list --json`):
+
+- baseline after install: device reference order == manifest order
+  `[A, B]`;
+- after `device reorder <setlist> <B> --to 0`: device order actually moved
+  to `[B, A]`;
+- a `sync` with the manifest still saying `[A, B]` must reorder the device
+  BACK to `[A, B]` — this leg is what makes the read-back non-trivial: the
+  old test's device-reorder-then-slots-reorder sequence left the device
+  already in the target order, so sync's reference-reorder path was never
+  exercised on hardware;
+- after `device slots reorder <B> --to 0 --setlist <setlist>` + `sync`:
+  device order == manifest order == `[B, A]`.
+
+### Live run — verbatim result
+
+```
+HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and sync" tests/live -q
+..                                                                       [100%]
+2 passed, 73 deselected in 149.50s (0:02:29)
+```
+
+Every read-back assertion held on this hardware: the device's setlist
+reference order follows manifest membership order in both directions
+(sync restoring manifest order over a device-side reorder, and sync
+applying a manifest reorder to the device). No bug found; nothing to
+document as device-side semantics helixgen cannot control.
+
+A first attempt at this run died in the session's device-state capture —
+`no Helix Stadium answered at 192.168.4.84:2002` — the known flaky Stadium
+network stack (one test passed before the drop, nothing had mutated the
+device). The device answered again ~2 minutes later and the re-run above
+was fully green.
 
 ## `/CreateContent` status semantics observations
 

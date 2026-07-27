@@ -109,20 +109,26 @@ state must be established *inside* the test that needs it.
 
 ### Task 4: #7 — reorder → sync read-back on an expendable setlist
 
-- [ ] Strengthen `tests/live/test_sync.py::test_sync_lifecycle` (failing first
+- [x] Strengthen `tests/live/test_sync.py::test_sync_lifecycle` (failing first
       against current behavior if the read-back is wrong): after the device-side
       `device reorder`, and again after `device slots reorder --to 0 --setlist
       HGTEST…` + `sync`, read the device back (`device list --setlist <HGTEST
       setlist> --json`, or the equivalent verb that exposes reference order) and
       assert the setlist's reference order matches the manifest's membership
       order for the two `HGTEST` tones — not merely that the verbs exited 0
-- [ ] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and sync" tests/live -q`
-      and record the result verbatim
-- [ ] If the device order does NOT follow manifest order, that is a real bug:
+      (also added the leg the old sequence never exercised: a sync while the
+      manifest still says [A, B] must reorder the device BACK from [B, A])
+- [x] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and sync" tests/live -q`
+      and record the result verbatim (2 passed, 73 deselected in 149.50s —
+      verbatim in findings doc; a first attempt hit the known flaky network
+      stack during state capture, re-run green)
+- [x] If the device order does NOT follow manifest order, that is a real bug:
       diagnose, fix under TDD (offline test first where reachable), re-run live.
       If the mismatch turns out to be device-side semantics helixgen cannot
       control, document it in `docs/CLI.md` under `slots reorder` / `sync` and
       file a numbered `docs/BACKLOG.md` entry instead of forcing the assertion
+      (not needed: device order followed manifest order in both directions on
+      hardware — no bug, nothing to document or defer)
 
 ### Task 5: Findings doc, backlog, and agent-facing surfaces
 

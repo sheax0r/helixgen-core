@@ -45,6 +45,29 @@ def _sync_json(helix, setlist: str) -> dict:
     return json.loads(out)
 
 
+def _device_setlist_order(helix, setlist: str) -> list[str]:
+    """The setlist's reference order as the DEVICE reports it (posi-sorted
+    tone names) — the #7 read-back: never trust a reorder verb's exit 0."""
+    code, out, err = helix("device", "list", "--setlist", setlist, "--json")
+    assert code == 0, err or out
+    refs = json.loads(out)
+    names = [m.get("name") for m in refs]
+    if all(names):
+        return names
+    # references reported without names: resolve through the pool by rcid
+    code, out, err = helix("device", "list", "--json")
+    assert code == 0, err or out
+    by_cid = {m.get("cid_"): m.get("name") for m in json.loads(out)}
+    return [m.get("name") or by_cid.get(m.get("rcid"), "") for m in refs]
+
+
+def _manifest_setlist_order(helix, setlist: str) -> list[str]:
+    """The manifest's membership order for ``setlist`` (local, no device)."""
+    code, out, err = helix("device", "setlist", "list", "--json")
+    assert code == 0, err or out
+    return json.loads(out)["setlists"][setlist]["tones"]
+
+
 def test_sync_lifecycle(helix, cli, scratch, amp_blocks):
     """create setlist → add 2 tones → sync (installs) → re-sync (idempotent)
     → device-side reorder → local slots reorder + sync → unsync both + sync
@@ -69,17 +92,33 @@ def test_sync_lifecycle(helix, cli, scratch, amp_blocks):
         assert not res["pool"].get("installed")
         assert {TONE_A, TONE_B} <= set(res["pool"].get("skipped", []))
 
-        # direct DEVICE-side reorder within the HGTEST setlist
+        # baseline (#7): device reference order mirrors manifest membership
+        assert _manifest_setlist_order(helix, SETLIST) == [TONE_A, TONE_B]
+        assert _device_setlist_order(helix, SETLIST) == [TONE_A, TONE_B]
+
+        # direct DEVICE-side reorder within the HGTEST setlist — read the
+        # device back: the reference order must actually have moved (#7)
         code, out, err = helix("device", "reorder", SETLIST, TONE_B,
                                "--to", "0")
         assert code == 0, err or out
+        assert _device_setlist_order(helix, SETLIST) == [TONE_B, TONE_A]
 
-        # local manifest reorder + sync applies it back
+        # sync enforces MANIFEST order: the manifest still says [A, B], so
+        # this sync must reorder the device right back (#7)
+        res = _sync_json(helix, SETLIST)
+        assert not res.get("errors"), res["errors"]
+        assert _device_setlist_order(helix, SETLIST) == [TONE_A, TONE_B]
+
+        # local manifest reorder + sync applies it back to the device (#7)
         code, out, err = helix("device", "slots", "reorder", TONE_B,
                                "--to", "0", "--setlist", SETLIST)
         assert code == 0, err or out
+        assert _manifest_setlist_order(helix, SETLIST) == [TONE_B, TONE_A]
         res = _sync_json(helix, SETLIST)
         assert not res.get("errors"), res["errors"]
+        assert (_device_setlist_order(helix, SETLIST)
+                == _manifest_setlist_order(helix, SETLIST)
+                == [TONE_B, TONE_A])
 
         # unsync both → the next targeted sync deletes them from the device
         for tone in (TONE_A, TONE_B):
