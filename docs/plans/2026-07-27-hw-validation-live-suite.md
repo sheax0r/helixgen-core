@@ -52,7 +52,7 @@ numbered entry (never a TODO comment).
 
 ### Task 1: housekeeping — retire the completed #92 plan file
 
-- [ ] `docs/plans/2026-07-18-sync-stale-hash.md` has all 11 checkboxes ticked and
+- [x] `docs/plans/2026-07-18-sync-stale-hash.md` has all 11 checkboxes ticked and
       #92 shipped in core 0.29.0, but the file was never moved on `main`. Move it
       to `docs/plans/completed/` (plain `git mv`, no other change)
 
