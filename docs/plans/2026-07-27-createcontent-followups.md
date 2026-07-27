@@ -62,23 +62,23 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
 
 ### Task 2: #93 — a wedged IR must not read as present
 
-- [ ] Reproduce a wedged IR on hardware (backing file + path index resolve, no
+- [x] Reproduce a wedged IR on hardware (backing file + path index resolve, no
       `-11` registry entry — the state `delete-ir --force-wedge` exists to clean).
       Use an `HGTEST`-named IR. Record the exact reproduction steps and the
       observed listing/point-lookup outputs in the findings doc (Task 5)
-- [ ] Confirm the reported failure mode: with 0.30.0's
+- [x] Confirm the reported failure mode: with 0.30.0's
       `device_ir_hashes(verify=...)`, the auto-upload paths (`install --auto-irs`,
       `sync`'s IR upload, `sync_preset_irs`) **skip** the wedged IR and the
       preset's cab stays silent with no error
-- [ ] Failing test first (offline, against the fake/injected socket), then
+- [x] Failing test first (offline, against the fake/injected socket), then
       implement the distinction: "resolves but absent from `-11`" (wedged → still
       needs upload) vs "absent from `-11` because the container index lags"
       (present → skip). Do not regress the lag case — its false "missing" is the
       commoner and more misleading one, which is why the 0.30.0 trade was made
-- [ ] Verify live: re-run the wedge reproduction and confirm the auto-upload path
+- [x] Verify live: re-run the wedge reproduction and confirm the auto-upload path
       now self-heals it. Add live coverage under the `device_ir` marker with full
       `HGTEST` teardown (`delete-ir --force-wedge` is the CLI's own remedy)
-- [ ] Update the stderr warning wording, `docs/CLI.md`, and `CLAUDE.md`'s
+- [x] Update the stderr warning wording, `docs/CLI.md`, and `CLAUDE.md`'s
       wedged-IR paragraph to match the new behavior
 
 ### Task 3: #94 — characterize, then de-ambiguate the `--force` write target

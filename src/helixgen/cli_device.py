@@ -2134,10 +2134,13 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
 @click.option("--auto-irs", is_flag=True, default=False,
               help="Upload any referenced IRs that aren't on the device yet "
                    "(resolved from your local IR mapping.json). A WEDGED IR "
-                   "(backing file resolves, no registry entry) reads as "
-                   "already-present and is NOT re-pushed, so its cab stays "
-                   "silent; the cross-check warns on stderr — clear it with "
-                   "`device delete-ir --force-wedge` (backlog #93).")
+                   "(backing file resolves, no registry entry) is detected "
+                   "via a confirmed listing refresh, reported missing, and "
+                   "re-pushed — the re-push removes the orphaned file and "
+                   "re-imports (self-heal, backlog #93). Only when the "
+                   "refresh can't be confirmed (empty or failed -11 listing) "
+                   "does the wedge still read as already-present; "
+                   "`device delete-ir --force-wedge` is the sure clear then.")
 @_device_option
 @_locked(verb="install", when=lambda kw: ("library", "irs")
         if kw.get("auto_irs") else ("library",))

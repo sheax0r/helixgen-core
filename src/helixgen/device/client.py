@@ -579,14 +579,18 @@ class HelixClient:
         resolves is present: it is added to the result and the stale listing
         is logged as a warning rather than silently believed.
 
-        Caveat — the point lookup answers "the backing file is on the device",
-        which the **wedged** state (file + path index resolving, no ``-11``
+        The point lookup answers "the backing file is on the device", which
+        the **wedged** state (file + path index resolving, no ``-11``
         registry entry; see ``maintenance.delete_device_ir``'s
-        ``force_wedge``) satisfies without the IR being usable by a preset.
-        A wedged IR is therefore reported present here and won't be
-        re-uploaded, so the warning names the possibility. The lag case is far
-        commoner and its false "missing" is the one that misleads users, hence
-        the trade.
+        ``force_wedge``) satisfies without the IR being usable by a preset —
+        so each such hit is put to :func:`confirm_ir_listed` (#93): still
+        absent from a listing taken after a CONFIRMED cache refresh means
+        wedged, and the hash is reported **missing** so an auto-upload path
+        re-pushes it (``sftp.push_ir`` detects the wedge itself, removes the
+        orphaned file, and re-imports — the report is self-healing). An
+        unconfirmable check keeps trusting the point lookup: the lag case's
+        false "missing" is the commoner and more misleading failure, and it
+        must not regress (the #38 trade).
 
         The listing is **strict** (#40): a dropped or truncated ``-11`` reply
         must not decode as "the device has no IRs" and send every referenced
@@ -608,14 +612,22 @@ class HelixClient:
                     "path lookup failed (%s) — reporting it missing "
                     "unverified; re-run to confirm before acting on it", hh, exc)
                 continue
-            if path:
+            if not path:
+                continue
+            if confirm_ir_listed(self, hh):
                 logger.warning(
                     "IR %s is missing from the device's IR listing but "
                     "resolves to %s — the container index is stale; treating "
-                    "the IR as present (backlog #38). If a preset using it is "
-                    "silent, the IR may instead be wedged (file present, never "
-                    "re-listed): see device delete-ir --force-wedge", hh, path)
+                    "the IR as present (backlog #38)", hh, path)
                 hashes.add(hh)
+            else:
+                logger.warning(
+                    "IR %s resolves to %s but stays absent from a freshly "
+                    "refreshed IR listing — it is WEDGED (file present, not "
+                    "registered) and unusable by a preset; reporting it "
+                    "missing so a re-upload can heal it (device push-ir "
+                    "removes the orphaned file and re-imports; backlog #93)",
+                    hh, path)
         return hashes
 
     def ir_path_for_hash(self, hash_hex: str, *,
@@ -1931,3 +1943,44 @@ class HelixClient:
                 if ref is not None:
                     added.append(ref)
             return {"added": added, "removed": removed}
+
+
+def confirm_ir_listed(client, hash_hex: str) -> bool:
+    """Is ``hash_hex`` in the ``-11`` IR listing, forcing a cache refresh if
+    needed? The shared wedge discriminator (#93), used by ``sftp.push_ir``'s
+    "already on device" verdict and :meth:`HelixClient.device_ir_hashes`.
+
+    The ``-11`` listing cache is not invalidated by watched-dir imports
+    (hardware-observed 2026-07-27, fw 1.3.2 b1340), so absence alone proves
+    nothing — a healthy IR imported by a non-nudging client is unlisted too.
+    An RPC content write refreshes the cache, so a same-name rename of any
+    listed row is a state-neutral nudge; only a hash still unlisted AFTER
+    that confirmed refresh is truly wedged (file + path index resolving, no
+    registry entry).
+
+    Returns ``False`` only on that CONFIRMED absence. Everything
+    unconfirmable returns ``True`` — a failed listing (flaky transport is
+    the common case), no listed row with a usable ``(cid_, name)`` to rename
+    (renaming to a missing/``None`` name would blank a real IR's display
+    name; an EMPTY listing is the single-wedged-IR blind spot), a dropped
+    rename reply (``False``, never an exception) — the caller then falls
+    back to trusting the point lookup. A listed row whose hash could not be
+    normalized (``None``) may BE this hash, so it vetoes the wedge verdict
+    exactly like a match.
+    """
+    def _hits(rows):
+        return any(m["hash"] in (hash_hex, None) for m in rows)
+
+    try:
+        rows = client.list_irs(strict=True, include_unusable=True)
+        if _hits(rows):
+            return True
+        nudge = next(
+            (r for r in rows
+             if isinstance(r.get("cid_"), int)
+             and isinstance(r.get("name"), str) and r["name"]), None)
+        if nudge is not None and client.rename(nudge["cid_"], nudge["name"]):
+            return _hits(client.list_irs(strict=True, include_unusable=True))
+        return True
+    except HelixError:
+        return True

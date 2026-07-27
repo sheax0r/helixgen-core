@@ -111,6 +111,68 @@ def test_push_rename_pull_delete_ir(helix, hgtest_wav, hgtest_wav_hash, tmp_path
                   f"delete IR {hgtest_wav_hash}: {(err or out).strip()}")
 
 
+def test_wedged_ir_reads_missing_and_auto_upload_heals(
+        helix, device, hgtest_wav, hgtest_wav_hash):
+    """#93: the wedged state (backing file + path index resolving, no -11
+    registry entry) must read as MISSING from device_ir_hashes' verify
+    cross-check — so the auto-upload paths re-push it — and push-ir must then
+    heal it (remove the orphan, re-import). Wedge creation needs the API (no
+    CLI verb half-deletes an IR, by design): a registry delete with
+    remove_file=False is exactly the killed-between-/RemoveContent-and-file-
+    removal state. Repro window is minutes (the device lazily GCs the orphan),
+    far longer than this test."""
+    from helixgen.device import maintenance
+    from helixgen.device.client import HelixClient
+
+    try:
+        code, out, err = helix("device", "push-ir", hgtest_wav, timeout=120)
+        assert code == 0, err or out
+
+        with HelixClient(device) as h:
+            res = maintenance.delete_device_ir(
+                h, hgtest_wav_hash, ip=device, remove_file=False)
+            assert res["ok"], f"registry delete failed: {res}"
+            # the wedge: path index still resolves, listing lacks the hash
+            assert h.ir_path_for_hash(hgtest_wav_hash, strict=True), \
+                "wedge repro failed: path lookup no longer resolves"
+            assert hgtest_wav_hash not in _device_ir_hashes(helix)
+            # the #93 fix: the verify cross-check must NOT overturn this
+            # absence into "present" — a confirmed wedge reads missing
+            have = h.device_ir_hashes(verify=[hgtest_wav_hash])
+            assert hgtest_wav_hash not in have, (
+                "wedged IR read as present — the auto-upload paths would "
+                "skip it and the cab would be silent (backlog #93)")
+
+        # the heal: push-ir detects the wedge, removes the orphaned file,
+        # and re-imports (already=False path)
+        code, out, err = helix("device", "push-ir", hgtest_wav, timeout=120)
+        assert code == 0, err or out
+        deadline = time.time() + REGISTRY_WAIT_S
+        healed = False
+        while time.time() < deadline:
+            if hgtest_wav_hash in _device_ir_hashes(helix):
+                healed = True
+                break
+            time.sleep(2)
+        assert healed, "push-ir did not re-register the wedged IR"
+    finally:
+        # same teardown contract as test_push_rename_pull_delete_ir: never
+        # assert here; listed -> normal delete, unlisted-but-wedged ->
+        # --force-wedge (only ever addresses THIS test's hash)
+        code, out, err = helix("device", "list-irs", "--json")
+        listed = (code == 0 and
+                  hgtest_wav_hash in {m["hash"] for m in json.loads(out)})
+        if listed:
+            code, out, err = helix("device", "delete-ir",
+                                   hgtest_wav_hash, "--yes")
+        else:
+            code, out, err = helix("device", "delete-ir", hgtest_wav_hash,
+                                   "--force-wedge", "--yes")
+        if code != 0:
+            print(f"\n[tests/live] WARNING: wedge-test teardown could not "
+                  f"delete IR {hgtest_wav_hash}: {(err or out).strip()}")
+
+
 def test_ir_prune_dry_run_only(helix):
     code, out, err = helix("device", "ir-prune", "--json", timeout=300)
     assert code == 0, err or out

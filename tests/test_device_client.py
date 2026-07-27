@@ -2031,6 +2031,81 @@ def test_device_ir_hashes_cross_checks_absent_hashes(monkeypatch, caplog):
     assert "bb" * 16 in caplog.text and "stale" in caplog.text.lower()
 
 
+def test_device_ir_hashes_reports_a_confirmed_wedge_as_missing(monkeypatch,
+                                                               caplog):
+    """#93: a hash the point lookup resolves but that stays absent from a
+    listing taken after a CONFIRMED cache refresh (same-name rename nudge) is
+    WEDGED — file present, not registered, unusable by a preset. It must be
+    reported missing so the auto-upload paths re-push it (push_ir removes the
+    orphan and re-imports: self-heal), not silently skipped as present."""
+    h = HelixClient("10.0.0.99")
+    renames = []
+    monkeypatch.setattr(
+        h, "list_irs",
+        lambda **_k: [{"hash": "aa" * 16, "cid_": 100, "name": "ir0"}])
+    monkeypatch.setattr(h, "ir_path_for_hash",
+                        lambda hh, **_k: "/data/wedge.wav")
+    monkeypatch.setattr(
+        h, "rename", lambda cid, name: (renames.append((cid, name)), True)[1])
+    with caplog.at_level(logging.WARNING):
+        got = h.device_ir_hashes(verify=["bb" * 16])
+    assert got == {"aa" * 16}, "the wedged hash must NOT read as present"
+    assert renames == [(100, "ir0")], "the nudge must be a same-name rename"
+    assert "wedged" in caplog.text.lower()
+
+
+def test_device_ir_hashes_lag_healed_by_nudge_stays_present(monkeypatch,
+                                                            caplog):
+    """The lag case (#38's trade) must not regress: a hash the nudged,
+    refreshed listing DOES contain was merely stale — present, skip."""
+    h = HelixClient("10.0.0.99")
+    listed = [[{"hash": "aa" * 16, "cid_": 100, "name": "ir0"}],
+              [{"hash": "aa" * 16, "cid_": 100, "name": "ir0"},
+               {"hash": "bb" * 16, "cid_": 101, "name": "ir1"}]]
+
+    def _list(**_k):
+        return [dict(r) for r in listed[0]]
+
+    def _rename(cid, name):
+        listed[0] = listed[1]
+        return True
+
+    monkeypatch.setattr(h, "list_irs", _list)
+    monkeypatch.setattr(h, "ir_path_for_hash", lambda hh, **_k: "/data/x.wav")
+    monkeypatch.setattr(h, "rename", _rename)
+    with caplog.at_level(logging.WARNING):
+        got = h.device_ir_hashes(verify=["bb" * 16])
+    assert got == {"aa" * 16, "bb" * 16}
+    assert "wedged" not in caplog.text.lower().replace(
+        "may instead be wedged", "")
+
+
+def test_device_ir_hashes_unconfirmed_nudge_trusts_the_point_lookup(
+        monkeypatch):
+    """A dropped rename reply (False) never earns the wedge verdict: without
+    a confirmed refresh, absence is still just the stale cache — present."""
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(
+        h, "list_irs",
+        lambda **_k: [{"hash": "aa" * 16, "cid_": 100, "name": "ir0"}])
+    monkeypatch.setattr(h, "ir_path_for_hash", lambda hh, **_k: "/data/x.wav")
+    monkeypatch.setattr(h, "rename", lambda cid, name: False)
+    assert h.device_ir_hashes(verify=["bb" * 16]) == {"aa" * 16, "bb" * 16}
+
+
+def test_device_ir_hashes_empty_listing_trusts_the_point_lookup(monkeypatch):
+    """Zero listed rows leave nothing to nudge — the cache was never
+    confirmably refreshed (the single-wedged-IR blind spot, #93). No wedge
+    verdict: trust the point lookup, report present."""
+    h = HelixClient("10.0.0.99")
+    monkeypatch.setattr(h, "list_irs", lambda **_k: [])
+    monkeypatch.setattr(h, "ir_path_for_hash", lambda hh, **_k: "/data/x.wav")
+    monkeypatch.setattr(
+        h, "rename",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("nothing to nudge")))
+    assert h.device_ir_hashes(verify=["bb" * 16]) == {"bb" * 16}
+
+
 def test_device_ir_hashes_without_verify_is_listing_only(monkeypatch):
     h = HelixClient("10.0.0.99")
     monkeypatch.setattr(h, "list_irs", lambda **_k: [{"hash": "aa" * 16}])
