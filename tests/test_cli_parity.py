@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -470,3 +471,19 @@ def test_json_device_networked_verbs(monkeypatch):
         res = CliRunner().invoke(cli, args)
         assert res.exit_code == 0, (args, res.output)
         assert isinstance(json.loads(res.stdout), check), args
+
+
+#: Measurement-window default (2026-07-27): field use showed 10 s windows
+#: carry >2x margin over the playing gate, so the --seconds default is 10.0.
+#: Agents read the rendered signature, so the advertised default is contract.
+@pytest.mark.parametrize("path", [["device", "measure"], ["device", "normalize"]],
+                         ids=["measure", "normalize"])
+def test_measure_window_default_is_ten_seconds(path):
+    cmd = _resolve(path)
+    seconds = next(p for p in cmd.params if p.name == "seconds")
+    assert seconds.default == 10.0, (
+        f"{' '.join(path)}: --seconds default is {seconds.default}, not 10.0")
+    _, rendered = seconds.get_help_record(click.Context(cmd))
+    assert "[default: 10.0]" in rendered, (
+        f"{' '.join(path)}: rendered --seconds help does not advertise "
+        f"[default: 10.0]: {rendered!r}")

@@ -84,7 +84,7 @@ class Variant:
          "scope": "snapshots",                 # or "setlist"
          "target_total_db": 27.96,             # the run's loudness target
          "tolerance_db": 1.0,                  # the run's dead band
-         "seconds": 20.0,                      # per-target window (--seconds)
+         "seconds": 10.0,                      # per-target window (--seconds)
          "helixgen_version": "0.26.0",
          "targets": [                          # one per measured target,
              {"snapshot": 0, "name": "Rhythm", # exactly as normalize --json

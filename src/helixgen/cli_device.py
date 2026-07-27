@@ -3471,7 +3471,7 @@ _SOURCE_HELP = ("Signal source feeding the chain. 'input' (default): a "
 
 
 @device.command(name="measure")
-@click.option("--seconds", type=float, default=20.0, show_default=True,
+@click.option("--seconds", type=float, default=10.0, show_default=True,
               help="How long to sample the telemetry window.")
 @click.option("--min-playing", type=int, default=40, show_default=True,
               help="Minimum playing-gated samples for a trustworthy result "
@@ -3683,7 +3683,7 @@ def _normalize_record_library(entries, *, scope, target_total_db,
                    "in force. Default: the first successfully measured "
                    "target is the anchor and everything else is trimmed to "
                    "match its total.")
-@click.option("--seconds", type=float, default=20.0, show_default=True,
+@click.option("--seconds", type=float, default=10.0, show_default=True,
               help="Measurement window per target.")
 @click.option("--min-playing", type=int, default=40, show_default=True,
               help="Minimum playing-gated samples for a trustworthy "
