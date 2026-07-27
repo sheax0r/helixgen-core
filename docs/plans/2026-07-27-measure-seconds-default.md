@@ -19,10 +19,10 @@ mirrored docs (helix workspace `BACKLOG.md`, measurement lineage #62/#82).
 
 ### Task 1: lower the default in both verbs
 
-- [ ] Write the failing test(s) first: assert the `--help` output of `device measure` and `device normalize` advertises `[default: 10.0]` for `--seconds` (follow the established `--help`-contract pattern in `tests/test_cli_parity.py`)
-- [ ] Change `default=20.0` to `default=10.0` on the `--seconds` option of `device_measure` (`src/helixgen/cli_device.py:3437`) and `device_normalize` (`src/helixgen/cli_device.py:3649`)
-- [ ] Grep the suite for any other test that pins the 20 s default (`grep -rn "20\.0" tests/`) and update whatever asserts it
-- [ ] Update every agent-facing surface the change touches: both verbs' `--help` text (the `show_default` renders it, but check the prose in the docstrings too), `docs/CLI.md:578` and `docs/CLI.md:579` (`[--seconds N=20]` -> `N=10` in both the `measure` and `normalize` entries)
+- [x] Write the failing test(s) first: assert the `--help` output of `device measure` and `device normalize` advertises `[default: 10.0]` for `--seconds` (follow the established `--help`-contract pattern in `tests/test_cli_parity.py`)
+- [x] Change `default=20.0` to `default=10.0` on the `--seconds` option of `device_measure` (`src/helixgen/cli_device.py:3437`) and `device_normalize` (`src/helixgen/cli_device.py:3649`)
+- [x] Grep the suite for any other test that pins the 20 s default (`grep -rn "20\.0" tests/`) and update whatever asserts it (only hit: `tests/test_library_group.py:627`, a recorded-run fixture payload, not a default assertion — no change needed)
+- [x] Update every agent-facing surface the change touches: both verbs' `--help` text (the `show_default` renders it, but check the prose in the docstrings too), `docs/CLI.md:578` and `docs/CLI.md:579` (`[--seconds N=20]` -> `N=10` in both the `measure` and `normalize` entries)
 
 ### Task 2: fix the stale 20.0 in the library-metadata docstring
 
