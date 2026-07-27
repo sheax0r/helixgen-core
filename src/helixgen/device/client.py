@@ -1557,7 +1557,8 @@ class HelixClient:
         **INSERTS** — the new entry lands at the requested posi and the
         incumbent shifts down one — so a create that LANDED always yields a
         cid that did not exist before it. The container's cids are therefore
-        snapshotted (strict — a timeout raises BEFORE the create) and fed to
+        snapshotted (strict — a timeout, or a listing row carrying no cid,
+        raises BEFORE the create) and fed to
         the confirming re-list as ``exclude_cids``: a snapshot cid at
         (name, pos) is skipped as the incumbent — possibly under a stale
         listing that hasn't caught the INSERT yet, so the retries keep
@@ -1574,6 +1575,16 @@ class HelixClient:
         if not prechecked_empty:
             snapshot = {m.get("cid_")
                         for m in self.list_container(container, strict=True)}
+            if None in snapshot:
+                # A row without a cid means the snapshot cannot prove any
+                # later cid fresh — the missing one might be the incumbent's.
+                # Same fail-before-write posture as a strict-listing timeout.
+                raise HelixError(
+                    f"cannot attribution-gate /CreateContent for {name!r} at "
+                    f"slot {pos}: the pre-create listing of container "
+                    f"{container} contained an entry with no cid, so a "
+                    f"pre-existing occupant could not be told apart from a "
+                    f"fresh create. Nothing was written — retry")
         cid = self._create_content_checked(container, pos, name,
                                            exclude_cids=snapshot)
         if cid is not None and snapshot is not None and cid in snapshot:
@@ -1605,6 +1616,16 @@ class HelixClient:
             return
         try:
             if self._delete(container, [cid]):
+                # /RemoveContent leaves a GAP at the deleted posi — it does
+                # not shift entries back — so the INSERT's +1 displacement of
+                # the occupant and everything after it is permanent.
+                logger.warning(
+                    "cleaned up the just-created entry %r at slot %d in "
+                    "container %s, but the create had INSERTED there: the "
+                    "previous occupant and every subsequent preset now sit "
+                    "one posi lower, with a gap at slot %d (deletes do not "
+                    "shift entries back) — use `helixgen device reorder` to "
+                    "restore placement", name, pos, container, pos)
                 return
             why = f"the device refused to delete cid {cid}"
         except HelixError as exc:

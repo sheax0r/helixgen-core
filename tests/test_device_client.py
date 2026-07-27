@@ -893,11 +893,13 @@ def test_push_to_slot_code0_reply_cid_in_snapshot_refuses(monkeypatch):
 
 
 def test_push_to_slot_unprechecked_failed_write_deletes_attributed_stub(
-        monkeypatch):
+        monkeypatch, caplog):
     """#94: once the snapshot proved the cid fresh (absent before our create),
     a failed write CAN clean up — by that exact cid, no re-list needed. The
     old blanket "may predate this call, leave it alone" warning under-cleaned:
-    attribution is precisely what it was missing."""
+    attribution is precisely what it was missing. Because the create INSERTED
+    and deletes leave a gap, the successful cleanup must WARN about the
+    residual one-posi displacement."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
@@ -916,8 +918,9 @@ def test_push_to_slot_unprechecked_failed_write_deletes_attributed_stub(
     delete = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
     _wire_seq(h, [[snap], [create], [setfail], [delete]])
 
-    assert h._raw.push_to_slot(-2, 5, "X", blob,
-                               prechecked_empty=False) is None
+    with caplog.at_level(logging.WARNING):
+        assert h._raw.push_to_slot(-2, 5, "X", blob,
+                                   prechecked_empty=False) is None
     del_sent = [s for s in h.sock.sent if b"/RemoveContent" in s]
     assert del_sent, "the attributed stub must be cleaned up"
     import msgpack as _mp
@@ -925,6 +928,9 @@ def test_push_to_slot_unprechecked_failed_write_deletes_attributed_stub(
     # by-cid delete: the only listing sent was the pre-create snapshot
     assert len([s for s in h.sock.sent
                 if b"/GetContainerContents" in s]) == 1
+    # the INSERT's displacement survives the cleanup and must be surfaced
+    assert "one posi lower" in caplog.text
+    assert "gap" in caplog.text
 
 
 def test_attributed_cleanup_reports_a_refused_delete(monkeypatch, caplog):
@@ -991,6 +997,30 @@ def test_push_to_slot_aborts_before_create_on_snapshot_failure(monkeypatch):
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
 
     with pytest.raises(HelixError, match="no reply"):
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=False)
+    assert not any(b"/CreateContent" in s for s in h.sock.sent)
+
+
+def test_push_to_slot_aborts_before_create_on_cidless_snapshot_row(
+        monkeypatch):
+    """#94: a snapshot row with no cid means the snapshot cannot prove any
+    later cid fresh (the missing cid could be the incumbent's, which a
+    confirming re-list would then hand back as "new"). Fail BEFORE the
+    create, same as a strict-listing timeout."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    # rpc 1000: the snapshot listing carries a row WITHOUT cid_
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb(
+            [{"name": "Old", "cctp": 1000, "posi": 5}], use_bin_type=True))],
+    )
+    _wire_seq(h, [[snap]])
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+
+    with pytest.raises(HelixError, match="no cid"):
         h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=False)
     assert not any(b"/CreateContent" in s for s in h.sock.sent)
 

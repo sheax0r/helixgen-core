@@ -668,7 +668,12 @@ plumbing" in `CLAUDE.md`) — only intent is.
   create lands late an EMPTY stub with the tone's name may appear at the
   posi, shifting the occupant down: re-list, delete the stub, retry. A
   **failed write** into an entry that snapshot PROVED fresh cleans up that
-  exact cid. `--force` is a **pool**
+  exact cid — but deletes leave a **gap** (they never shift entries back),
+  so after that cleanup the occupant and every subsequent preset stay one
+  posi lower with a hole at the target slot; helixgen warns, and
+  `device reorder` restores placement. The attribution snapshot also
+  refuses (before creating) when the pre-create listing carries an entry
+  with no cid — such a listing can't prove a later cid fresh. `--force` is a **pool**
   flag only: restoring into a **named setlist** always writes at a freshly
   computed lowest-empty pool posi, which no `--force` ever skipped a check on,
   so a failed write there **does** clean up the stub it created (same for

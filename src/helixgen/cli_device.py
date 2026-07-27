@@ -3093,7 +3093,10 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
                    "attribution-gated (#94): helixgen snapshots the pool's "
                    "cids first and refuses to write into an entry that "
                    "predates the call, so a failed or refused write never "
-                   "touches the occupant.")
+                   "touches the occupant's CONTENT. Cleanup of a failed "
+                   "write deletes only the fresh stub, but deletes leave a "
+                   "gap: the occupant and everything after it stay shifted "
+                   "down one (warned; fix with `device reorder`).")
 @_device_option
 # `irs` too: restoring an .hsp source runs the IR presence check, whose wedge
 # discriminator (confirm_ir_listed, #93) may issue a rename nudge — an
