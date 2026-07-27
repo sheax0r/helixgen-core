@@ -137,21 +137,30 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
 
 ### Task 5: Findings doc, backlog, agent-facing surfaces, release
 
-- [ ] Write `docs/superpowers/specs/2026-07-27-createcontent-followups.md`: the
+- [x] Write `docs/superpowers/specs/2026-07-27-createcontent-followups.md`: the
       characterization results for #93/#94/#96 (verbatim device replies), what was
       implemented, and what was deferred
-- [ ] `docs/BACKLOG.md`: close #93/#94/#95/#96 with one-line shipped notes
+      (written incrementally during Tasks 1-4; covers all four entries)
+- [x] `docs/BACKLOG.md`: close #93/#94/#95/#96 with one-line shipped notes
       pointing at the findings doc — or rewrite any entry that could not be
       closed to say precisely what remains and why. Also revisit **#69**, whose
       "what does the device do with an occupied `posi`" gap Task 3 characterizes
-- [ ] Update `docs/helix-protocol.md` (`/CreateContent` semantics), `docs/CLI.md`,
+      (#93/#94/#95 closed ✅ RESOLVED 0.32.0; #96 already rewritten
+      CHARACTERIZED AND ACCEPTED in Task 4; #69 annotated: pool half
+      characterized, setlist half still uncaptured)
+- [x] Update `docs/helix-protocol.md` (`/CreateContent` semantics), `docs/CLI.md`,
       `CLAUDE.md` and affected verb `--help` for every behavior change
-- [ ] Bump the version in `pyproject.toml` **and** `src/helixgen/__init__.py`
+      (protocol doc: occupied-posi INSERT semantics, delete-leaves-gap,
+      reply-cid reliability; CLI.md + CLAUDE.md updated in Tasks 2-3; no
+      verb `--help` text changed — `tests/test_cli_parity.py` green)
+- [x] Bump the version in `pyproject.toml` **and** `src/helixgen/__init__.py`
       together (minor bump — this changes device-write and IR-upload behavior),
       and note in the plan's final report that a plugin companion PR is needed
       for any CLI-visible change (the plugin pins core exactly, so it can only
       describe behavior in a **released** core version)
-- [ ] Run the full offline suite and confirm green
+      (0.31.0 → 0.32.0 both files; plugin companion note in final report)
+- [x] Run the full offline suite and confirm green
+      (2425 passed, 183 skipped)
 
 ## Validation Commands
 
