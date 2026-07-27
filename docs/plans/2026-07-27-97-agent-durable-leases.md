@@ -34,9 +34,26 @@ the workload they currently cannot serve.
 
 ### Task 1: characterize the current behavior with failing tests
 
-- [ ] Write the failing test(s) first, following the established patterns in `tests/test_locks.py`
-- [ ] Test: a lease whose recorded pid is dead is reclaimed by a contender after `SESSION_PID_GRACE_S`, and a subsequent call presenting the original `$HELIXGEN_LOCK_TOKEN` is NOT recognized as the owner (this is the #97 bug, and pinning it prevents a regression later reintroducing silent takeover)
-- [ ] Determine and pin whether a token-authenticated call currently RENEWS the lease (`_renew()` exists at `src/helixgen/locks.py:345`). If sibling calls already renew, establish why the observed lease still went stale — the workflow made calls well inside the grace window, so either renewal is not wired to token-authenticated use or the pid-death check short-circuits it. Write down the answer in the plan/PR; do not guess
+- [x] Write the failing test(s) first, following the established patterns in `tests/test_locks.py`
+- [x] Test: a lease whose recorded pid is dead is reclaimed by a contender after `SESSION_PID_GRACE_S`, and a subsequent call presenting the original `$HELIXGEN_LOCK_TOKEN` is NOT recognized as the owner (this is the #97 bug, and pinning it prevents a regression later reintroducing silent takeover)
+- [x] Determine and pin whether a token-authenticated call currently RENEWS the lease (`_renew()` exists at `src/helixgen/locks.py:345`). If sibling calls already renew, establish why the observed lease still went stale — the workflow made calls well inside the grace window, so either renewal is not wired to token-authenticated use or the pid-death check short-circuits it. Write down the answer in the plan/PR; do not guess
+
+**Task 1 answer (determined, pinned by `test_97_*` in `tests/test_locks.py`):**
+renewal IS wired to token-authenticated use. Every lock-taking (mutating)
+verb's `acquire()` passes through an owned live covering lease and `_renew()`s
+it (step 1 of `_acquire_one`), and this works even while the recorded pid is
+already dead, as long as the call lands inside `SESSION_PID_GRACE_S` — each
+such call resets the grace clock (`acquired_at`). The observed lease went
+stale because the workflow's calls were dominated by READ-ONLY verbs
+(`device measure` in a `--source loop`), which take no lock at all and
+therefore never renew: the grace clock runs from the last *mutating* call,
+not the last call. Once it lapsed, the pid-death check short-circuits
+passthrough/renewal for the stale `all` session lease; a later
+token-authenticated mutating call silently narrows to a fresh transient
+lease for just its own scope (leaving the stale `all` file reclaimable),
+and after a contender reclaims, the original token authenticates nothing —
+`owned()` is False and the agent's calls are ordinary unauthenticated
+newcomers (blocked on held scopes, silently unlocked on free ones).
 
 ### Task 2: a lease an agent can actually hold
 

@@ -1198,3 +1198,75 @@ def test_session_lock_falls_back_to_fresh_acquire_when_renew_raced(root,
     with pytest.raises(locks.LockHeld):
         locks.session_lock(IP, ["editbuffer"], label="s", ttl=900, timeout=0)
     assert json.loads(path.read_text())["nonce"] == "THEIRS"  # new owner's lease
+
+
+# --------------------------------------------------------------------------
+# #97 — agent-held session leases vs shell-lifetime pid binding
+# --------------------------------------------------------------------------
+
+def test_97_reclaimed_lease_original_token_is_not_owner(root, monkeypatch,
+                                                        capsys):
+    """#97 characterization: a session lease whose recorded pid is dead (the
+    agent's Bash-call shell exited) is legitimately reclaimed by a contender
+    after SESSION_PID_GRACE_S — and the original $HELIXGEN_LOCK_TOKEN then
+    authenticates NOTHING: `owned()` is False against the contender's lease
+    and a lock-taking call is an ordinary blocked newcomer. Pinning this
+    prevents a later regression where a dangling token silently takes over
+    someone else's lease."""
+    write_lease(root, "all", pid=dead_pid(), token="tok-97", kind="session",
+                age=locks.SESSION_PID_GRACE_S + 5, label="agent-workflow")
+    # the contender (e.g. a live-test pytest run): no token, foreign pid
+    with locks.acquire(IP, ("editbuffer",), label="live-test-suite",
+                       pid=1, timeout=0):
+        assert "breaking stale device lock" in capsys.readouterr().err
+        assert not lease_path(root, "all").exists()  # session lease is GONE
+        contender = locks.read_lease(lease_path(root, "editbuffer"))
+        assert not locks.owned(contender, "tok-97")
+        monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+        with pytest.raises(locks.LockHeld) as e:
+            locks.acquire(IP, ("editbuffer",), label="agent-workflow",
+                          timeout=0)
+        assert "live-test-suite" in str(e.value)
+
+
+def test_97_token_use_renews_a_dead_pid_session_lease_inside_grace(root,
+                                                                   monkeypatch):
+    """#97 characterization (the renewal question): renewal IS wired to
+    token-authenticated use. A covered verb's acquire passes through the
+    owned session lease and renews it — even with the recorded pid already
+    dead — so every LOCK-TAKING call resets the SESSION_PID_GRACE_S clock.
+    The observed staleness came from calls that never touch the lock layer:
+    read-only verbs (`device measure`, `meters`, ...) take no lock, so a
+    measure-heavy stretch performs zero renewals and the grace clock runs
+    from the last mutating call."""
+    p = write_lease(root, "all", pid=dead_pid(), token="tok-97",
+                    kind="session", age=60, ttl=7200)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        pass
+    after = json.loads(p.read_text())
+    assert after["acquired_at"] > before  # grace clock reset
+    assert after["kind"] == "session" and after["token"] == "tok-97"
+
+
+def test_97_past_grace_owned_covering_lease_is_not_resurrected(root,
+                                                               monkeypatch):
+    """#97 characterization: once the grace lapses, the pid-death check
+    short-circuits renewal. A token-authenticated acquire of a granular
+    scope neither passes through nor renews the now-stale owned `all`
+    session lease — it creates a fresh transient lease for just its own
+    scope, leaving the session's `all` file stale on disk, reclaimable by
+    any contender. This silent narrowing is what let the 2026-07-27
+    contender in."""
+    p = write_lease(root, "all", pid=dead_pid(), token="tok-97",
+                    kind="session", age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=7200)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        eb = json.loads(lease_path(root, "editbuffer").read_text())
+        assert eb["kind"] == "auto"  # fresh transient lease, not the session
+    assert json.loads(p.read_text())["acquired_at"] == before  # not renewed
