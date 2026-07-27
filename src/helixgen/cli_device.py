@@ -2682,9 +2682,13 @@ class _SyncProgressRenderer:
       `render_finish()` are called by hand as events arrive and the phase
       changes).
     * **plain** — stderr isn't a TTY, or `--no-progress` was given: no bar,
-      just one short line per phase start and one per item, with no
-      carriage-return redraw — safe for redirected/non-TTY stderr (CI logs,
-      `--json` piped to a file, etc).
+      but NOT quiet — a header line per phase start PLUS one line per item
+      (`  <phase> <i>/<n>: <label>`) and one per IR upload, with no
+      carriage-return redraw. A large sync therefore prints on the order of
+      a hundred stderr lines (a 40-tone sync is ~100). `--no-progress` only
+      turns off the rich bar; it NEVER suppresses these per-item lines
+      (there is no fully-quiet progress mode). Safe for redirected/non-TTY
+      stderr (CI logs, `--json` piped to a file, etc).
 
     The `irs` phase is special-cased in both modes: its `index`/`total` are
     scoped PER authored tone (they reset for every tone with missing IRs), so
@@ -2809,8 +2813,10 @@ def _make_sync_progress_renderer(no_progress: bool) -> _SyncProgressRenderer:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw engine result dict as JSON.")
 @click.option("--no-progress", is_flag=True, default=False,
-              help="Disable the live progress display (plain one-line-per-phase "
-                   "output instead).")
+              help="Turn off the rich progress bar. This does NOT quiet the "
+                   "output: it falls back to the plain text form, which still "
+                   "prints a header line per phase plus one line per item and "
+                   "per IR upload (~100 lines for a large sync).")
 @_device_option
 @_locked(verb="sync", when=lambda kw: ("library",) if kw.get("exclude_irs") else ("library", "irs"))
 def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
@@ -2834,11 +2840,14 @@ def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
     it first with `helixgen device setlist create <name>`). Sync is a
     managed-set mirror: it never touches untracked device presets and never
     orphans a pool preset another setlist still references. Idempotent — if
-    the flaky network drops a run, just re-run it. Shows a live per-phase
-    progress display on stderr (a progress bar when stderr is a TTY, plain
-    one-line-per-phase text otherwise); pass --no-progress to force the
-    plain text form. stdout (this summary, and --json) is never affected by
-    the progress display. EXPERIMENTAL.
+    the flaky network drops a run, just re-run it. Shows a live progress
+    display on stderr: a per-phase progress bar when stderr is a TTY,
+    otherwise (non-TTY, or --no-progress) plain text — a header line per
+    phase plus one line per item and one per IR upload, so a large sync
+    prints on the order of a hundred stderr lines. --no-progress only turns
+    off the rich bar; it does NOT suppress the per-item plain lines (there
+    is no fully-quiet mode). stdout (this summary, and --json) is never
+    affected by the progress display. EXPERIMENTAL.
     """
     SetlistManifest, _ = _manifest()
     from helixgen.device.setlist_sync import sync_setlists
