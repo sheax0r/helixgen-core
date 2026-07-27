@@ -504,6 +504,19 @@ exit, even on failure):
   deadlocking against it. Calls from the **same shell** as the `lock` also
   pass through without the token (the lease records the invoking shell's
   pid). Re-locking your own scope renews it (idempotent).
+- `helixgen device lock --detach --label <text> [--ttl 300]` — a **detached**
+  lease (0.33.0, #97): identical to the above except it records **no pid**
+  (`kind: "detached"`), so it does **not** die with the shell that took it.
+  **This is the lease an agent should take**: an agent's every tool call is a
+  fresh shell, and a plain session lease records that shell's pid — when it
+  exits, the lease is reclaimable after the 120 s grace and a contender takes
+  the device mid-workflow (observed twice on hardware 2026-07-27). Trade-off:
+  with no pid to probe, the **TTL is the only automatic reclaim path**, so the
+  default TTL is **300 s** rather than 900, and **`--ttl 0` is refused** with
+  `--detach` (no pid *and* no expiry = a lease only `unlock --force` clears).
+  Every covered verb you run with `$HELIXGEN_LOCK_TOKEN` exported renews it,
+  so an active workflow keeps its lease and an abandoned one expires by
+  itself. Release with `device unlock` (token) — nothing else will.
 - `helixgen device lock --status [--json]` — inspect the device's leases:
   scope, label, pid, host, age, TTL, live/stale, ours. Read-only, exit 0.
 - `helixgen device unlock [--scope <s>]... [--force]` — release your leases
@@ -533,7 +546,9 @@ or `device unlock`). A **session** lease whose recorded pid is dead gets a
 **120 s grace** (from its last acquisition/renewal) before pid-death makes
 it stale — so run `device lock` from your long-lived shell, not via a
 wrapper script (the wrapper's pid dies immediately; the lease then only
-survives while covered verbs keep renewing it). Pid-liveness is POSIX-only:
+survives while covered verbs keep renewing it), or take `--detach`, which
+records no pid at all and is bounded by its TTL alone. Pid-liveness is
+POSIX-only:
 on Windows it is disabled (probing would kill the probed process) and only
 TTL staleness applies. Lease files are `0600` (the token is a private
 capability).

@@ -1270,3 +1270,104 @@ def test_97_past_grace_owned_covering_lease_is_not_resurrected(root,
         eb = json.loads(lease_path(root, "editbuffer").read_text())
         assert eb["kind"] == "auto"  # fresh transient lease, not the session
     assert json.loads(p.read_text())["acquired_at"] == before  # not renewed
+
+
+# --------------------------------------------------------------------------
+# #97 (Task 2): detached leases — a lease an agent can actually hold
+# --------------------------------------------------------------------------
+
+def test_97_detached_lease_survives_a_dead_shell(root, monkeypatch):
+    """#97 fix: a DETACHED lease records no pid, so the agent's Bash-call
+    shell exiting cannot make it reclaimable. Past SESSION_PID_GRACE_S — the
+    exact point where the 2026-07-27 contender got in — it is still live and
+    still blocks."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_DETACHED_TTL, label="agent-workflow")
+    lease = locks.read_lease(p)
+    assert not locks.is_stale(lease)
+    assert "detached" in locks.describe(lease)  # no bogus "pid None"
+    monkeypatch.setenv("HELIXGEN_LOCK_TIMEOUT", "0")
+    with pytest.raises(locks.LockHeld) as e:
+        locks.acquire(IP, ("editbuffer",), label="live-test-suite", pid=1,
+                      timeout=0)
+    assert "agent-workflow" in str(e.value)
+    assert p.exists()
+
+
+def test_97_detached_lease_is_renewed_by_token_authenticated_use(root,
+                                                                 monkeypatch):
+    """A token-authenticated mutating call passes through the detached lease
+    and renews its TTL — so an ACTIVE workflow keeps its lease indefinitely."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=200, ttl=locks.DEFAULT_DETACHED_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        assert not lease_path(root, "editbuffer").exists()  # passed through
+    after = json.loads(p.read_text())
+    assert after["acquired_at"] > before
+    assert after["kind"] == "detached" and after["pid"] is None
+
+
+def test_97_abandoned_detached_lease_expires_on_its_ttl(root, capsys):
+    """The other half: an ABANDONED detached lease must not brick the device.
+    With no pid to probe, the (short) TTL is what reclaims it."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=locks.DEFAULT_DETACHED_TTL + 5,
+                    ttl=locks.DEFAULT_DETACHED_TTL, label="abandoned-agent")
+    assert locks.is_stale(locks.read_lease(p))
+    with locks.acquire(IP, ("editbuffer",), label="contender", pid=1,
+                       timeout=0):
+        assert "breaking stale device lock" in capsys.readouterr().err
+        assert not p.exists()
+
+
+def test_cli_lock_detach_records_no_pid_and_a_short_ttl(root):
+    res = run_cli("device", "lock", "--scope", "all", "--detach",
+                  "--label", "agent-workflow", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    data = json.loads(lease_path(root, "all").read_text())
+    assert data["kind"] == "detached"
+    assert data["pid"] is None
+    assert data["ttl_seconds"] == locks.DEFAULT_DETACHED_TTL
+    assert locks.DEFAULT_DETACHED_TTL < locks.DEFAULT_SESSION_TTL
+    assert "HELIXGEN_LOCK_TOKEN=" in res.output
+
+
+def test_cli_lock_detach_refuses_ttl_zero(root):
+    """No pid AND no TTL = a lease only --force could ever clear."""
+    res = run_cli("device", "lock", "--detach", "--ttl", "0", "--label", "s",
+                  "--ip", IP)
+    assert res.exit_code != 0
+    assert "--detach" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_detach_relock_keeps_it_detached(root, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "s", "--ip", IP).exit_code == 0
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "s2", "--ip", IP).exit_code == 0
+    data = json.loads(lease_path(root, "library").read_text())
+    assert data["kind"] == "detached" and data["pid"] is None
+    assert data["label"] == "s2" and data["token"] == "tok-x"
+
+
+def test_cli_unlock_releases_a_detached_lease_with_the_token(root, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "all", "--detach", "--label",
+                   "agent", "--ip", IP).exit_code == 0
+    res = run_cli("device", "unlock", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_status_renders_detached_leases(root):
+    assert run_cli("device", "lock", "--scope", "irs", "--detach", "--label",
+                   "agent", "--ip", IP).exit_code == 0
+    res = run_cli("device", "lock", "--status", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert "detached" in res.output and "pid None" not in res.output

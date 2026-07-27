@@ -644,18 +644,25 @@ _LOCK_SCOPE_HELP = (
 @click.option("--label", default=None,
               help="Who/what holds the lock (shown to blocked processes; "
                    "required unless --status).")
-@click.option("--ttl", type=float, default=None, show_default="900",
+@click.option("--ttl", type=float, default=None,
+              show_default="900 (300 with --detach)",
               help="Lease time-to-live in seconds; every covered verb you "
                    "run renews it. An expired lease is reclaimed by the "
                    "next contender. 0 = no TTL expiry (reclaim then relies "
-                   "on pid-liveness or `device unlock`).")
+                   "on pid-liveness or `device unlock`); refused with "
+                   "--detach, which has no pid to fall back on.")
+@click.option("--detach", is_flag=True, default=False,
+              help="Take a DETACHED lease: no pid is recorded, so the lease "
+                   "does NOT die with the shell that took it. Use this for "
+                   "agent-driven work, where every tool call is a fresh "
+                   "shell. TTL-only: release with `device unlock`.")
 @click.option("--status", "show_status", is_flag=True, default=False,
               help="Don't lock — report the device's current leases "
                    "(scope, holder, age, live/stale, ours) and exit 0.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="With --status: emit the lease rows as JSON.")
 @_ip_option
-def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
+def device_lock(scopes, label, ttl, detach, show_status, as_json, ip) -> None:
     """Hold a machine-local advisory device lock across CLI calls (a session
     lease), so concurrent helixgen processes don't collide on the device.
 
@@ -674,6 +681,15 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
     (default 30; 0 = fail fast), reclaim stale leases (expired TTL or dead
     same-host pid) with a warning, then fail naming the holder. Release
     with `device unlock`; inspect with `device lock --status [--json]`.
+
+    AGENTS: use --detach. A plain session lease records the INVOKING
+    SHELL's pid, and an agent's shell exits when its tool call returns —
+    the lease then becomes reclaimable after a 120s grace and a contender
+    takes the device mid-workflow (#97). A DETACHED lease records no pid,
+    so only its TTL (default 300s, renewed by every covered verb you run
+    with the token exported) or `device unlock` releases it. --ttl 0 is
+    refused with --detach: no pid AND no expiry would leave a lease only
+    `device unlock --force` could clear.
     """
     from helixgen import locks
 
@@ -699,10 +715,12 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
                    if isinstance(r.get("age_seconds"), (int, float)) else "?")
             ttl = (f"{r['ttl_seconds']:g}s"
                    if isinstance(r.get("ttl_seconds"), (int, float)) else "?")
+            who = ("detached" if r.get("kind") == "detached"
+                   else f"pid {r['pid']}")
             click.echo(
                 f"{r['scope']:<10} {r['state']:<5} "
                 f"{'ours' if r['ours'] else '    '}  {r['label']!r}  "
-                f"pid {r['pid']} on {r['hostname']}  "
+                f"{who} on {r['hostname']}  "
                 f"age {age} / ttl {ttl}")
         return
 
@@ -711,15 +729,23 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
         raise click.ClickException(
             "--label is required (name the session holding the lock, e.g. "
             "--label 'setlist rebuild agent')")
+    if detach and ttl is not None and ttl <= 0:
+        raise click.ClickException(
+            "--ttl 0 (no expiry) is refused with --detach: a detached lease "
+            "records no pid, so nothing but `device unlock --force` could "
+            "ever reclaim it. Pass a positive --ttl (covered verbs renew it).")
     try:
         # Session leases record the INVOKING SHELL's pid (this CLI process
         # exits immediately); never released here — `device unlock` frees
-        # them. Re-locking an owned scope renews it in place (new
-        # label/ttl, SAME stored token).
+        # them. A --detach lease records NO pid (#97), so an agent whose
+        # shell exits between tool calls keeps it. Re-locking an owned scope
+        # renews it in place (new label/ttl, SAME stored token).
+        default_ttl = (locks.DEFAULT_DETACHED_TTL if detach
+                       else locks.DEFAULT_SESSION_TTL)
         token, outcomes = locks.session_lock(
             ip, scopes, label=label,
-            ttl=locks.DEFAULT_SESSION_TTL if ttl is None else ttl,
-            pid=os.getppid())
+            ttl=default_ttl if ttl is None else ttl,
+            detach=detach, pid=None if detach else os.getppid())
     except locks.LockHeld as e:
         raise click.ClickException(str(e)) from e
     except locks.LockError as e:
@@ -727,13 +753,23 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
     for s, action in outcomes:
         click.echo(f"{action} '{s}' on {ip} (label {label!r})")
     click.echo(f"HELIXGEN_LOCK_TOKEN={token}")
-    click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
-               "through this lock; release with `helixgen device unlock`. "
-               "Run `device lock` from your long-lived shell (not via a "
-               "wrapper script): the lease records the parent pid, and a "
-               "dead parent gives contenders a reclaim path after "
-               f"{locks.SESSION_PID_GRACE_S:.0f}s idle.",
-               err=True)
+    if detach:
+        click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
+                   "through this lock; release with `helixgen device "
+                   "unlock`. This lease is DETACHED (no pid): it survives "
+                   "the shell that took it, and only its TTL expires it — "
+                   "every covered verb you run with the token exported "
+                   "renews it, so keep the token exported and unlock when "
+                   "you are done.", err=True)
+    else:
+        click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
+                   "through this lock; release with `helixgen device unlock`. "
+                   "Run `device lock` from your long-lived shell (not via a "
+                   "wrapper script): the lease records the parent pid, and a "
+                   "dead parent gives contenders a reclaim path after "
+                   f"{locks.SESSION_PID_GRACE_S:.0f}s idle. Agents (each tool "
+                   "call a fresh shell) should use --detach instead.",
+                   err=True)
 
 
 @device.command(name="unlock")
@@ -758,6 +794,11 @@ def device_unlock(scopes, force, as_json, ip) -> None:
     an EXPLICIT --scope you don't own is an error unless --force (which
     breaks even a live foreign lease — dangerous). Stale leases (expired
     TTL / dead pid) can always be cleared.
+
+    A DETACHED lease (`device lock --detach`) records no pid, so this is
+    how you release it: with $HELIXGEN_LOCK_TOKEN exported it is yours;
+    otherwise wait out its TTL or break it with --force. Always unlock a
+    detached lease when your workflow finishes — nothing else will.
     """
     ip = ip or _resolve_ip_or_fail()  # locks are keyed per-ip (#74)
     from helixgen import locks

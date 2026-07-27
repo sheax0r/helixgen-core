@@ -30,6 +30,16 @@ Staleness: a lease is stale when its TTL has expired, or when its recorded
 pid is dead on this host. Stale leases are broken with a stderr warning; a
 LIVE lease is never broken (use ``device unlock --force`` deliberately).
 
+**Detached leases** (``device lock --detach``; #97): a session lease with
+``pid: None`` and ``kind: "detached"``, so nothing binds it to the invoking
+shell's lifetime — an agent takes it from one tool call and the shell that
+exits when that call returns no longer makes the lease reclaimable. Only
+the TTL can expire it, so it defaults to the shorter
+:data:`DEFAULT_DETACHED_TTL` and a no-expiry ``--ttl 0`` is refused (no pid
+AND no TTL = a lease nothing but ``--force`` can clear). Every
+token-authenticated lock-taking call renews it, so an active workflow keeps
+its lease and an abandoned one expires on its own.
+
 Advisory + machine-local ONLY: direct-protocol clients on other hosts and
 the Stadium desktop editor are not covered.
 
@@ -57,6 +67,11 @@ VALID_SCOPES = SCOPES + (ALL,)
 DEFAULT_TIMEOUT = 30.0
 #: Default TTL for `device lock` session leases (renewed by covered verbs).
 DEFAULT_SESSION_TTL = 900
+#: Default TTL for a DETACHED session lease (`device lock --detach`, #97).
+#: Materially shorter than :data:`DEFAULT_SESSION_TTL`: a detached lease has
+#: no pid, so the TTL is the ONLY thing that reclaims an abandoned one.
+#: Covered verbs renew it, so an active workflow never notices the shorter TTL.
+DEFAULT_DETACHED_TTL = 300
 #: TTL for a verb's transient auto-acquired lease (released on verb exit;
 #: the TTL only matters if the process dies AND pid-liveness can't see it).
 AUTO_TTL = 900
@@ -171,7 +186,9 @@ def describe(lease: dict) -> str:
     age = time.time() - lease.get("acquired_at", time.time())
     ttl = lease.get("ttl_seconds")
     ttl_s = f", ttl {ttl:g}s" if isinstance(ttl, (int, float)) else ""
-    return (f"{lease.get('label', '?')!r} (pid {lease.get('pid', '?')} on "
+    who = ("detached" if lease.get("kind") == "detached"
+           else f"pid {lease.get('pid', '?')}")
+    return (f"{lease.get('label', '?')!r} ({who} on "
             f"{lease.get('hostname', '?')}, age {max(0.0, age):.0f}s{ttl_s})")
 
 
@@ -248,7 +265,8 @@ def is_stale(lease: dict) -> bool:
     :data:`SESSION_PID_GRACE_S` before pid-death counts — the recorded pid
     is the locking shell's and may be a short-lived wrapper). Never true
     for a live foreign-host lease inside its TTL. ttl_seconds <= 0 means
-    no TTL expiry."""
+    no TTL expiry. A DETACHED lease records no pid, so only the TTL path
+    can expire it (#97)."""
     remaining = _remaining_ttl(lease)
     if remaining is not None and remaining <= 0:
         return True
@@ -677,7 +695,10 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
                 #    younger backs off, so both racers never proceed.
                 if blocker is None:
                     payload = {
-                        "pid": os.getpid() if pid is None else int(pid),
+                        # a DETACHED lease records no pid at all (#97): the
+                        # invoking shell's lifetime must not bound it.
+                        "pid": None if kind == "detached" else (
+                            os.getpid() if pid is None else int(pid)),
                         "hostname": hostname(),
                         "acquired_at": time.time(),
                         "ttl_seconds": ttl,
@@ -830,7 +851,7 @@ def new_token() -> str:
 
 
 def session_lock(ip: str, scopes, *, label: str, ttl: float,
-                 pid: int | None = None,
+                 pid: int | None = None, detach: bool = False,
                  timeout: float | None = None) -> tuple[str, list]:
     """The ``device lock`` engine: per requested scope, RENEW an existing
     owned covering lease in place (applying the new label/ttl — and
@@ -838,8 +859,14 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
     always actually opens the lease; review finding 7) or acquire a fresh
     session lease. Returns ``(token, [(scope, "locked"|"renewed"), ...])``.
     All-or-nothing for the freshly-locked scopes: on contention, leases
-    this call created are released (renewed ones are left)."""
+    this call created are released (renewed ones are left).
+
+    ``detach=True`` writes a DETACHED lease instead (``kind: "detached"``,
+    no pid — #97): nothing ties it to the caller's process, so only the TTL
+    (renewed by every covered verb) or an explicit ``device unlock``
+    releases it. Re-locking an owned scope switches it to/from detached."""
     want = _normalize_scopes(scopes)
+    kind = "detached" if detach else "session"
     tok = env_token()
     # Adopt the stored token of a live owned covering lease first — the
     # printed token must be the one that opens the lease.
@@ -867,19 +894,20 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
                     and (remaining is None or remaining > RENEW_MARGIN_S)):
                 renewed = dict(lease)
                 renewed.update(label=label, ttl_seconds=ttl, token=tok,
-                               acquired_at=time.time(), kind="session",
-                               pid=os.getppid() if pid is None else int(pid))
+                               acquired_at=time.time(), kind=kind,
+                               pid=None if detach else (
+                                   os.getppid() if pid is None else int(pid)))
                 if not _rewrite(path, renewed, expect_nonce=lease.get("nonce")):
                     # broken + re-acquired since we read it — acquire fresh
                     fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
-                                         token=tok, pid=pid, kind="session",
+                                         token=tok, pid=pid, kind=kind,
                                          timeout=timeout))
                     outcomes.append((scope, "locked"))
                     continue
                 outcomes.append((scope, "renewed"))
             else:
                 fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
-                                     token=tok, pid=pid, kind="session",
+                                     token=tok, pid=pid, kind=kind,
                                      timeout=timeout))
                 outcomes.append((scope, "locked"))
     except BaseException:

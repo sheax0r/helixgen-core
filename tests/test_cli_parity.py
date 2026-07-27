@@ -230,10 +230,12 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "lock"],
      ["machine-local", "advisory", "session lease", "HELIXGEN_LOCK_TOKEN",
       "HELIXGEN_LOCK_TIMEOUT", "fail fast", "stale", "NOT covered",
-      "auto-acquires", "device unlock", "--status"]),
+      "auto-acquires", "device unlock", "--status",
+      # #97: agents must be steered to the detached lease
+      "AGENTS: use --detach", "records no pid"]),
     (["device", "unlock"],
      ["HELIXGEN_LOCK_TOKEN", "parent-pid", "--force", "dangerous",
-      "Stale leases"]),
+      "Stale leases", "DETACHED"]),
     # every mutating verb carries the --no-lock escape hatch; pin one from
     # each scope so the option (and its danger warning) can't silently drop
     (["device", "load"], ["machine-local advisory device lock", "DANGEROUS"]),

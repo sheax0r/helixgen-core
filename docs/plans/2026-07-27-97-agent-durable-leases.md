@@ -57,10 +57,31 @@ newcomers (blocked on held scopes, silently unlocked on free ones).
 
 ### Task 2: a lease an agent can actually hold
 
-- [ ] Provide a way to take a lease not bound to the invoking shell's lifetime. Preferred shape: `device lock --detach` (records `pid: None`, TTL-only, explicitly released via `device unlock`); an alternative is `--pid <pid>` to bind the lease to a caller-supplied long-lived process. Pick ONE and justify it in the PR
-- [ ] A detached lease must NOT be able to brick the device indefinitely: default it to a materially shorter TTL than the 7200 s session default, keep `device unlock` working, and keep an explicit force/break path for a genuinely orphaned lease
-- [ ] Renew a detached lease on each token-authenticated use, so an active workflow keeps its lease and an abandoned one expires on its own
-- [ ] Update every agent-facing surface: `device lock --help`, `device unlock --help`, `CLAUDE.md`, `docs/CLI.md`
+- [x] Provide a way to take a lease not bound to the invoking shell's lifetime. Preferred shape: `device lock --detach` (records `pid: None`, TTL-only, explicitly released via `device unlock`); an alternative is `--pid <pid>` to bind the lease to a caller-supplied long-lived process. Pick ONE and justify it in the PR
+- [x] A detached lease must NOT be able to brick the device indefinitely: default it to a materially shorter TTL than the 7200 s session default, keep `device unlock` working, and keep an explicit force/break path for a genuinely orphaned lease
+- [x] Renew a detached lease on each token-authenticated use, so an active workflow keeps its lease and an abandoned one expires on its own
+- [x] Update every agent-facing surface: `device lock --help`, `device unlock --help`, `CLAUDE.md`, `docs/CLI.md`
+
+**Task 2 decision (for the PR): `--detach`, not `--pid <pid>`.** An agent has
+no long-lived local process to bind a lease to — every tool call is a fresh
+shell, and the agent itself is not a pid in this machine's namespace. `--pid`
+would just relocate the fragility onto whatever pid the caller guessed
+(and invites binding to a pid that gets recycled). `--detach` removes the
+binding entirely: `kind: "detached"`, `pid: None`, so `is_stale()`'s pid
+branch never applies and only the TTL expires it.
+
+Safety, since the TTL becomes the sole automatic reclaim path:
+`DEFAULT_DETACHED_TTL = 300` s vs the session default of **900** (note: the
+plan text above said 7200 — that was the value in the *observed* lease, not
+the code default, which has been `DEFAULT_SESSION_TTL = 900` throughout);
+`--ttl 0` (no expiry) is **refused** with `--detach`, because no pid AND no
+expiry leaves a lease only `unlock --force` can clear; `device unlock` (by
+token) and `device unlock --force` both still work unchanged.
+
+Renewal needed no new mechanism: `_acquire_one` step 1 already passes
+through and `_renew()`s any owned live covering lease, and a detached lease
+is never pid-stale, so every token-authenticated mutating call renews it.
+Pinned by `test_97_detached_lease_is_renewed_by_token_authenticated_use`.
 
 ### Task 3: presented-token-but-no-longer-owner must fail loudly, read-only included
 
