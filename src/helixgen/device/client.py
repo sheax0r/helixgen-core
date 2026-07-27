@@ -532,7 +532,11 @@ class HelixClient:
         or deliberately wants a bare read.
 
         This listing is still **not** authoritative about absence — nothing
-        forces the index to have caught up. A caller that needs a definitive
+        forces the index to have caught up. In fact a watched-dir IR import
+        never invalidates the device's listing cache at all (hardware-observed
+        2026-07-27, fw 1.3.2: stale for 11+ min despite the subscription; an
+        RPC content write is what refreshes it — ``sftp.push_ir`` nudges the
+        cache that way after registering). A caller that needs a definitive
         "is this hash on the device?" must cross-check the point lookup; see
         :meth:`device_ir_hashes`'s ``verify``.
         """

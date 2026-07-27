@@ -58,16 +58,19 @@ numbered entry (never a TODO comment).
 
 ### Task 2: Baseline live run with a CLEAN edit buffer
 
-- [ ] Confirm the device answers: `helixgen device info` (no `--ip`) and record
+- [x] Confirm the device answers: `helixgen device info` (no `--ip`) and record
       model/firmware in the findings doc created in Task 5
-- [ ] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir or setlists or sync)" tests/live -q`
+- [x] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir or setlists or sync)" tests/live -q`
       with the device's active preset freshly loaded (clean buffer, `hist=0`)
-- [ ] Record the full result (pass/fail counts, any xfail/xpass, any error text)
+- [x] Record the full result (pass/fail counts, any xfail/xpass, any error text)
       verbatim into the findings doc. Expected: everything passes, **no xfails**
-- [ ] Any failure here is a real finding: diagnose it before moving on. Fix it
+- [x] Any failure here is a real finding: diagnose it before moving on. Fix it
       under TDD (offline failing test first where the bug is offline-reachable),
       or — if it is device behavior rather than a code defect — file it in
       `docs/BACKLOG.md` as a numbered entry and note it in the findings doc
+      (finding: watched-dir IR imports never invalidate the device's -11
+      listing cache — root-caused on hardware, fixed under TDD by a same-name
+      rename nudge in `push_ir`; post-fix run fully green, see findings doc)
 
 ### Task 3: The #38 condition — creates against a DIRTY edit buffer
 

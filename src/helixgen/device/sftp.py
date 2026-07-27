@@ -258,10 +258,38 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
         with HelixClient(ip) as h:
             already = h.ir_path_for_hash(hg_hash)
             if already:
-                return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
-                        "device_hash": hg_hash, "hash_match": True,
-                        "registered": True, "cid": None, "device_path": already,
-                        "remote": None, "already": True}
+                # The point lookup answers "the backing file resolves", which
+                # the WEDGED state (#93: file lingering with no -11 registry
+                # entry — e.g. a client killed between /RemoveContent and the
+                # file removal) also satisfies. But an ABSENT listing entry is
+                # not enough to call it wedged: the -11 listing cache is not
+                # invalidated by watched-dir imports (hardware-observed
+                # 2026-07-27, fw 1.3.2 b1340), so a healthy IR imported by a
+                # client that never nudged the cache is unlisted too. An RPC
+                # content write invalidates the cache, so a same-name rename
+                # of any listed row refreshes it; only a hash still unlisted
+                # AFTER that refresh is truly wedged. A failed listing is NOT
+                # evidence of a wedge (flaky transport is the common case) —
+                # it keeps the trusting path.
+                try:
+                    rows = h.list_irs(strict=True)
+                    listed = any(m["hash"] == hg_hash for m in rows)
+                    if not listed and rows:
+                        h.rename(rows[0]["cid_"], rows[0]["name"])
+                        listed = any(m["hash"] == hg_hash
+                                     for m in h.list_irs(strict=True))
+                except HelixError:
+                    listed = True
+                if listed:
+                    return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
+                            "device_hash": hg_hash, "hash_match": True,
+                            "registered": True, "cid": None,
+                            "device_path": already,
+                            "remote": None, "already": True}
+                # Wedged orphan — its bytes hash to the very IR we're pushing,
+                # so removing it and importing normally is safe and converges.
+                with HelixSFTP(ip, key_path=key_path, user=user) as s:
+                    s.remove_ir_file(already.rsplit("/", 1)[-1])
 
         # Subscribe to 2001 FIRST — this activates the device's watched-dir
         # monitor so it registers our upload immediately (the delay fix).
@@ -273,6 +301,7 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
 
             saw_our_file = False
             dev_hash = None
+            reg_cid = reg_name = None
             deadline = time.time() + wait_timeout
             while time.time() < deadline and dev_hash is None:
                 for ev in sub.poll(0.5):
@@ -283,13 +312,31 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                         hh = _addcontent_hash(ev.args)
                         if hh is not None:
                             dev_hash = hh  # our upload is the only dir change
+                            for a in ev.args:
+                                if isinstance(a, dict) and "hash" in a:
+                                    reg_cid = a.get("cid_")
+                                    reg_name = a.get("name")
             if dev_hash is not None:
                 with HelixClient(ip) as h:
+                    if reg_cid is not None:
+                        # A watched-dir import registers the IR (row, path
+                        # index, /addContent) but does NOT invalidate the
+                        # device's -11 container-listing cache — list-irs /
+                        # rename-ir / delete-ir would miss it until some later
+                        # RPC content write (hardware-observed 2026-07-27,
+                        # fw 1.3.2 b1340: stale for 11+ min, refreshed the
+                        # instant a row was renamed). A same-name rename is a
+                        # no-op write that forces the refresh. Advisory: the
+                        # IR is registered either way.
+                        try:
+                            h.rename(reg_cid, reg_name or stem)
+                        except HelixError:
+                            pass
                     path = h.ir_path_for_hash(dev_hash)
                 return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
                         "device_hash": dev_hash,
                         "hash_match": dev_hash == hg_hash,
-                        "registered": True, "cid": None,
+                        "registered": True, "cid": reg_cid,
                         "device_path": path, "remote": remote, "already": False,
                         "saw_watched_change": saw_our_file}
 
