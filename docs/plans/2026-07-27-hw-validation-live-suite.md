@@ -132,17 +132,25 @@ state must be established *inside* the test that needs it.
 
 ### Task 5: Findings doc, backlog, and agent-facing surfaces
 
-- [ ] Write `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`: what was
+- [x] Write `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`: what was
       run, the exact commands, verbatim results, every observation about
       `/CreateContent` status semantics, and anything deferred
-- [ ] `docs/BACKLOG.md`: close **#90** (replace with a one-line shipped note
+      (written incrementally through Tasks 2-4; Deferred + close-out sections
+      finalized: #93 skip-path residual, #94, #96 stay open with updated notes)
+- [x] `docs/BACKLOG.md`: close **#90** (replace with a one-line shipped note
       pointing at the findings doc) and close the **#7** residual — or, if either
       could not be fully validated, rewrite the entry to say precisely what
       remains and why. Do not mark anything validated that was not observed
-- [ ] Update agent-facing surfaces only if behavior/contract changed:
+      (both closed — fully observed on hardware; #93/#94/#96 "fold into #90"
+      pointers rewritten to reflect what this session did and did not cover)
+- [x] Update agent-facing surfaces only if behavior/contract changed:
       `docs/helix-protocol.md` (status taxonomy), `docs/CLI.md`, `CLAUDE.md`,
       affected verb `--help`
-- [ ] Run the full offline suite one final time and confirm green
+      (no further changes needed: status taxonomy unchanged — only 0/1
+      observed; the push-ir contract change already updated CLI.md +
+      helix-protocol.md in its own commit; CLAUDE.md still accurate)
+- [x] Run the full offline suite one final time and confirm green
+      (2404 passed, 181 skipped [fixture-absent guards + live gate], 17.46s)
 
 ## Validation Commands
 

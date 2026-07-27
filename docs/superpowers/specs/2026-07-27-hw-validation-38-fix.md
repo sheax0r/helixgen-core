@@ -220,4 +220,22 @@ the non-zero taxonomy beyond `1` remains uncatalogued —
 
 ## Deferred
 
-(none so far)
+Backlog entries that suggested folding into this session but were out of the
+plan's scope (all remain open, entries updated with what this session learned):
+
+- **#93** — partially resolved here: the `-11` cache root cause and
+  `push_ir`'s nudge-based stale-vs-wedge disambiguation landed, but
+  `device_ir_hashes(verify=...)`'s skip path (`install --auto-irs`, `sync`)
+  still trusts the bare point lookup, so a wedged IR those paths never
+  re-push stays silent. Same nudge-then-relist technique applies there.
+- **#94** — `/CreateContent` aimed at an occupied posi still uncharacterised;
+  this session only created into empty slots.
+- **#96** — code-0 fast path's unverified reply cid: this session only
+  observed codes 0/1 with the reply cid matching the re-list, so nothing new
+  to characterise the failure mode with.
+
+## Backlog close-out
+
+- **#90** closed (this doc is the record).
+- **#7 residual** closed — the reorder → sync read-back held in both
+  directions on hardware.
