@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -482,6 +483,7 @@ def test_measure_window_default_is_ten_seconds(path):
     seconds = next(p for p in cmd.params if p.name == "seconds")
     assert seconds.default == 10.0, (
         f"{' '.join(path)}: --seconds default is {seconds.default}, not 10.0")
-    rendered = " ".join(CliRunner().invoke(cli, path + ["--help"]).output.split())
+    _, rendered = seconds.get_help_record(click.Context(cmd))
     assert "[default: 10.0]" in rendered, (
-        f"{' '.join(path)}: rendered --help does not advertise [default: 10.0]")
+        f"{' '.join(path)}: rendered --seconds help does not advertise "
+        f"[default: 10.0]: {rendered!r}")
