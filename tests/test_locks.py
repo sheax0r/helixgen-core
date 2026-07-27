@@ -745,8 +745,10 @@ def test_ttl_zero_means_no_expiry(root):
 
 
 def test_install_auto_irs_also_locks_irs(root, monkeypatch, tmp_path):
-    """Review finding 8 (MINOR): `device install --auto-irs` uploads device
-    IRs, so it must hold `irs` as well as `library`."""
+    """`device install` must hold `irs` as well as `library` — with
+    --auto-irs it uploads device IRs, and even without it the IR presence
+    check's wedge discriminator (confirm_ir_listed, #93) may issue a rename
+    nudge, an IR-container write."""
     from helixgen.hsp import HSP_MAGIC
 
     hsp = tmp_path / "t.hsp"
@@ -757,10 +759,11 @@ def test_install_auto_irs_also_locks_irs(root, monkeypatch, tmp_path):
                   "--auto-irs", "--ip", IP)
     assert res.exit_code != 0
     assert "other-agent" in res.output
-    # without --auto-irs the irs lease is irrelevant (fails later, not on lock)
+    # without --auto-irs too: the presence check's nudge is still a write
     res = run_cli("device", "install", hsp, "HGTEST X", "--pos", "0",
                   "--ip", IP)
-    assert "other-agent" not in res.output
+    assert res.exit_code != 0
+    assert "other-agent" in res.output
 
 
 # --------------------------------------------------------------------------

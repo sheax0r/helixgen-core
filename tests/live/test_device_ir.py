@@ -98,8 +98,11 @@ def test_push_rename_pull_delete_ir(helix, hgtest_wav, hgtest_wav_hash, tmp_path
         # report cleanup problems to stderr instead; the wedged FILE is
         # invisible to the session state guard, so visibility matters.
         code, out, err = helix("device", "list-irs", "--json")
-        listed = (code == 0 and
-                  hgtest_wav_hash in {m["hash"] for m in json.loads(out)})
+        try:  # never raise in this finally — it would mask the real failure
+            listed = (code == 0 and
+                      hgtest_wav_hash in {m["hash"] for m in json.loads(out)})
+        except (ValueError, KeyError, TypeError):
+            listed = False
         if listed:
             code, out, err = helix("device", "delete-ir",
                                    hgtest_wav_hash, "--yes")
@@ -160,8 +163,11 @@ def test_wedged_ir_reads_missing_and_auto_upload_heals(
         # assert here; listed -> normal delete, unlisted-but-wedged ->
         # --force-wedge (only ever addresses THIS test's hash)
         code, out, err = helix("device", "list-irs", "--json")
-        listed = (code == 0 and
-                  hgtest_wav_hash in {m["hash"] for m in json.loads(out)})
+        try:  # never raise in this finally — it would mask the real failure
+            listed = (code == 0 and
+                      hgtest_wav_hash in {m["hash"] for m in json.loads(out)})
+        except (ValueError, KeyError, TypeError):
+            listed = False
         if listed:
             code, out, err = helix("device", "delete-ir",
                                    hgtest_wav_hash, "--yes")

@@ -188,6 +188,11 @@ class _FakeClient:
         return True
 
     def list_irs(self, *, strict=False, settle=True, include_unusable=False):
+        # push_ir's only listings run through confirm_ir_listed, which must
+        # list strictly (#40) and see unusable rows (a None-hash row vetoes
+        # the wedge verdict) — pin both so a dropped kwarg fails loudly
+        assert strict, "confirm_ir_listed must pass strict=True"
+        assert include_unusable, "confirm_ir_listed must pass include_unusable=True"
         if self.listing_error is not None:
             raise self.listing_error
         rows = []

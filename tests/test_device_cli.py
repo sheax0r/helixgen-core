@@ -339,7 +339,7 @@ def test_device_push_into_setlist_pool_failure_sends_no_reference(monkeypatch, t
             holder["client"] = self
 
         def push_to_slot(self, container, pos, name, blob, *,
-                     prechecked_empty=True):
+                     prechecked_empty):
             self.calls.append(("push_to_slot", container, pos, name))
             return None  # pool create failed (e.g. reply timeout)
 
@@ -1564,12 +1564,12 @@ class RaisingFindByPosClient(FakeClient):
         return None
 
     def push_to_slot(self, container, pos, name, blob, *,
-                     prechecked_empty=True):
+                     prechecked_empty):
         type(self).WRITE_CALLS.append(("push_to_slot", container, pos, name))
         return 900
 
     def save_edit_buffer_to(self, container, pos, name, *,
-                            prechecked_empty=True):
+                            prechecked_empty):
         type(self).WRITE_CALLS.append(("save_edit_buffer_to", container, pos, name))
         return 901
 

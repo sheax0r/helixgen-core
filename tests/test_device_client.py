@@ -638,38 +638,33 @@ def test_save_edit_buffer_to_nonzero_code_with_content_present_is_success(
 
 
 def test_save_edit_buffer_to_unprechecked_refuses_preexisting_cid(monkeypatch):
-    """#94 gate on the save path: the confirmed cid was already listed BEFORE
-    our create, so the (name, pos) match is the slot's PRE-EXISTING occupant —
-    the create did not land (the device INSERTS at an occupied posi, so a
-    landed create always allocates a NEW cid; hw-characterized fw 1.3.2
-    b1340). Saving into it would overwrite a preset we never created: raise,
-    save nothing, delete nothing."""
+    """#94 gate on the save path: every confirm re-list keeps matching a cid
+    that was already listed BEFORE our create — the slot's PRE-EXISTING
+    occupant (the device INSERTS at an occupied posi, so a landed create
+    always allocates a NEW cid; hw-characterized fw 1.3.2 b1340). Saving
+    into it would overwrite a preset we never created: raise, save nothing,
+    delete nothing."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     h.create_confirm_delay = 0
+    h.create_confirm_tries = 2
     # rpc 1000: the snapshot already lists cid 777 at (X, 5) — the occupant
-    snap = osc_encode(
-        "/GetContainerContents",
-        [("i", 1000), ("b", msgpack.packb(
-            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
-            use_bin_type=True))],
-    )
+    occupant = msgpack.packb(
+        [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+        use_bin_type=True)
+    snap = osc_encode("/GetContainerContents", [("i", 1000), ("b", occupant)])
     # rpc 1001: create reports the dirty-buffer flag (reply cid unreliable)
     create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 1)])
-    # rpc 1002: confirm re-list matches ... the same pre-existing occupant
-    listrep = osc_encode(
-        "/GetContainerContents",
-        [("i", 1002), ("b", msgpack.packb(
-            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
-            use_bin_type=True))],
-    )
-    _wire_seq(h, [[snap], [create], [listrep]])
+    # rpc 1002-1003: EVERY confirm re-list keeps matching the occupant
+    listreps = [osc_encode("/GetContainerContents",
+                           [("i", r), ("b", occupant)]) for r in (1002, 1003)]
+    _wire_seq(h, [[snap], [create]] + [[f] for f in listreps])
 
     with pytest.raises(HelixError) as ei:
         h._raw.save_edit_buffer_to(-2, 5, "X", prechecked_empty=False)
     msg = str(ei.value)
-    assert "777" in msg  # the unattributable cid, named for recovery
+    assert "777" in msg  # the occupant cid, named for recovery
     assert "Nothing was written" in msg
     assert not any(b"/SavePresetWithCID" in s for s in h.sock.sent), \
         "must not save into a cid that predates our create"
@@ -743,40 +738,41 @@ def test_push_to_slot_unprechecked_refuses_preexisting_cid(monkeypatch):
     the confirming (name, pos) match may be a PRE-EXISTING occupant. The cid
     snapshot taken before /CreateContent settles it: the device INSERTS at an
     occupied posi (hw-characterized fw 1.3.2 b1340), so a landed create
-    always allocates a NEW cid — a confirmed cid that was already in the
-    snapshot means the create did NOT land and the match is the incumbent.
-    Writing the blob into it would overwrite content we never created: raise,
-    write nothing, delete nothing."""
+    always allocates a NEW cid — a snapshot cid at (name, pos) is skipped as
+    the incumbent and the confirm loop keeps polling for a fresh one (a
+    stale listing is the normal shape of a landing INSERT). Only exhausting
+    EVERY retry on incumbent-only sightings refuses: raise, write nothing,
+    delete nothing — and the error must point at the late-landing stub, not
+    tell the user to delete the occupant."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     h.create_confirm_delay = 0
+    h.create_confirm_tries = 2
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
     # rpc 1000: the snapshot already lists cid 777 at (X, 5) — the occupant
-    snap = osc_encode(
-        "/GetContainerContents",
-        [("i", 1000), ("b", msgpack.packb(
-            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
-            use_bin_type=True))],
-    )
+    occupant = msgpack.packb(
+        [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+        use_bin_type=True)
+    snap = osc_encode("/GetContainerContents", [("i", 1000), ("b", occupant)])
     # rpc 1001: create reports the dirty-buffer flag; the create was dropped
     create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 1)])
-    # rpc 1002: confirm re-list matches ... the same pre-existing occupant
-    listrep = osc_encode(
-        "/GetContainerContents",
-        [("i", 1002), ("b", msgpack.packb(
-            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
-            use_bin_type=True))],
-    )
-    _wire_seq(h, [[snap], [create], [listrep]])
+    # rpc 1002-1003: EVERY confirm re-list keeps matching the occupant
+    listreps = [osc_encode("/GetContainerContents",
+                           [("i", r), ("b", occupant)]) for r in (1002, 1003)]
+    _wire_seq(h, [[snap], [create]] + [[f] for f in listreps])
 
     with pytest.raises(HelixError) as ei:
         h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=False)
     msg = str(ei.value)
-    assert "777" in msg  # the unattributable cid, named for recovery
+    assert "777" in msg  # the occupant cid, named for recovery
     assert "Nothing was written" in msg
+    assert "NOT be deleted" in msg  # the occupant is a real preset
     assert "EMPTY stub" in msg  # the late-landing residue, spelled out
+    # the loop retried past the first stale sighting before refusing
+    assert len([s for s in h.sock.sent
+                if b"/GetContainerContents" in s]) == 3  # snapshot + 2 tries
     assert not any(b"/SetContentData" in s for s in h.sock.sent), \
         "must not write the blob into a cid that predates our create"
     assert not any(b"/RemoveContent" in s for s in h.sock.sent), \
@@ -823,6 +819,79 @@ def test_push_to_slot_unprechecked_accepts_fresh_cid_after_insert(monkeypatch):
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
 
 
+def test_push_to_slot_unprechecked_stale_listing_then_fresh_cid_succeeds(
+        monkeypatch):
+    """#94, the stale-listing shape of a LANDED --force restore-over-itself:
+    the first confirm re-list hasn't caught the INSERT yet and still shows
+    the same-named incumbent at the posi. Its cid is in the pre-create
+    snapshot, so it must be skipped — NOT returned and refused — and the
+    retry that follows sees the fresh stub and the write proceeds into it."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # rpc 1000: snapshot — the incumbent 555 shares the name AND the posi
+    occupant = msgpack.packb(
+        [{"cid_": 555, "name": "X", "cctp": 1000, "posi": 5}],
+        use_bin_type=True)
+    snap = osc_encode("/GetContainerContents", [("i", 1000), ("b", occupant)])
+    # rpc 1001: create (dirty-buffer flag; reply cid unreliable as ever)
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 1)])
+    # rpc 1002: confirm re-list is STALE — still the pre-insert state
+    stale = osc_encode("/GetContainerContents", [("i", 1002), ("b", occupant)])
+    # rpc 1003: the retry catches the INSERT: fresh 930 at posi 5, the
+    # incumbent 555 shifted to posi 6
+    fresh = osc_encode(
+        "/GetContainerContents",
+        [("i", 1003), ("b", msgpack.packb(
+            [{"cid_": 930, "name": "X", "cctp": 1000, "posi": 5},
+             {"cid_": 555, "name": "X", "cctp": 1000, "posi": 6}],
+            use_bin_type=True))],
+    )
+    # rpc 1004: SetContentData into the fresh stub -> ok
+    setdata = osc_encode("/status", [("i", 1004), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [stale], [fresh], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob,
+                               prechecked_empty=False) == 930
+    assert any(b"/SetContentData" in s for s in h.sock.sent)
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_push_to_slot_code0_reply_cid_in_snapshot_refuses(monkeypatch):
+    """#94 defense-in-depth on the #96 code-0 fast path: the reply cid skips
+    the confirming re-list entirely, so the snapshot check is the only gate
+    left. A reply cid that already existed before the create cannot be ours —
+    raise before any write, even though delivered reply cids have never been
+    observed lying (the gate exists for when that characterization fails)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # rpc 1000: the snapshot already lists cid 777 at (X, 5) — the occupant
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # rpc 1001: code-0 create whose reply cid IS the occupant's
+    create = osc_encode("/status", [("i", 1001), ("i", 777), ("i", 0)])
+    _wire_seq(h, [[snap], [create]])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=False)
+    msg = str(ei.value)
+    assert "cannot be attributed" in msg
+    assert "777" in msg
+    assert not any(b"/SetContentData" in s for s in h.sock.sent), \
+        "must not write into a reply cid that predates our create"
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
 def test_push_to_slot_unprechecked_failed_write_deletes_attributed_stub(
         monkeypatch):
     """#94: once the snapshot proved the cid fresh (absent before our create),
@@ -856,6 +925,59 @@ def test_push_to_slot_unprechecked_failed_write_deletes_attributed_stub(
     # by-cid delete: the only listing sent was the pre-create snapshot
     assert len([s for s in h.sock.sent
                 if b"/GetContainerContents" in s]) == 1
+
+
+def test_attributed_cleanup_reports_a_refused_delete(monkeypatch, caplog):
+    """The attributed by-cid cleanup follows the same every-no-op-is-REPORTED
+    rule as _delete_created_stub: a refused delete leaves the stub behind,
+    which must be warned about — and swallowed, so push_to_slot still
+    reports the failed write as None rather than raising from cleanup."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    setfail = osc_encode("/status", [("i", 1002), ("i", 1), ("i", 0)])
+    # rpc 1003: the delete of the attributed stub is REFUSED
+    delfail = osc_encode("/status", [("i", 1003), ("i", 1), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [setfail], [delfail]])
+
+    with caplog.at_level(logging.WARNING):
+        assert h._raw.push_to_slot(-2, 5, "X", blob,
+                                   prechecked_empty=False) is None
+    assert "did not happen" in caplog.text
+    assert "refused to delete cid 930" in caplog.text
+
+
+def test_attributed_cleanup_reports_a_raising_delete(monkeypatch, caplog):
+    """A cleanup delete that RAISES must be swallowed and warned about, never
+    escalate a recoverable failed write into an exception from cleanup."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    setfail = osc_encode("/status", [("i", 1002), ("i", 1), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [setfail]])
+    monkeypatch.setattr(
+        h, "_delete",
+        lambda *_a, **_k: (_ for _ in ()).throw(HelixError("boom")))
+
+    with caplog.at_level(logging.WARNING):
+        assert h._raw.push_to_slot(-2, 5, "X", blob,
+                                   prechecked_empty=False) is None
+    assert "did not happen" in caplog.text
+    assert "the delete failed" in caplog.text
 
 
 def test_push_to_slot_aborts_before_create_on_snapshot_failure(monkeypatch):
@@ -2194,9 +2316,14 @@ def test_device_ir_hashes_reports_a_confirmed_wedge_as_missing(monkeypatch,
     orphan and re-imports: self-heal), not silently skipped as present."""
     h = HelixClient("10.0.0.99")
     renames = []
-    monkeypatch.setattr(
-        h, "list_irs",
-        lambda **_k: [{"hash": "aa" * 16, "cid_": 100, "name": "ir0"}])
+
+    def _list(**k):
+        # strict on every call (#40): a dropped reply reading as an empty
+        # listing must never license the wedge verdict
+        assert k.get("strict") is True
+        return [{"hash": "aa" * 16, "cid_": 100, "name": "ir0"}]
+
+    monkeypatch.setattr(h, "list_irs", _list)
     monkeypatch.setattr(h, "ir_path_for_hash",
                         lambda hh, **_k: "/data/wedge.wav")
     monkeypatch.setattr(
@@ -2217,7 +2344,10 @@ def test_device_ir_hashes_lag_healed_by_nudge_stays_present(monkeypatch,
               [{"hash": "aa" * 16, "cid_": 100, "name": "ir0"},
                {"hash": "bb" * 16, "cid_": 101, "name": "ir1"}]]
 
-    def _list(**_k):
+    def _list(**k):
+        # every listing on this path must be strict (#40): a dropped -11
+        # reply decoding as "no IRs" would earn a false wedge verdict
+        assert k.get("strict") is True
         return [dict(r) for r in listed[0]]
 
     def _rename(cid, name):
@@ -2230,8 +2360,7 @@ def test_device_ir_hashes_lag_healed_by_nudge_stays_present(monkeypatch,
     with caplog.at_level(logging.WARNING):
         got = h.device_ir_hashes(verify=["bb" * 16])
     assert got == {"aa" * 16, "bb" * 16}
-    assert "wedged" not in caplog.text.lower().replace(
-        "may instead be wedged", "")
+    assert "wedged" not in caplog.text.lower()
 
 
 def test_device_ir_hashes_unconfirmed_nudge_trusts_the_point_lookup(

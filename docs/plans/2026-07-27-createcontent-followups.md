@@ -113,10 +113,10 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
       the status code is `0`? Probe repeatedly (clean and dirty edit buffer, empty
       and occupied targets), cross-checking each reply cid against a point
       `/GetContentRef`'s `name`/`posi`. Record verbatim
-      (17 probes: 15 code-0 — clean buffer, empty + occupied targets,
-      including 10 back-to-back — and 2 code-1 dirty; reply cid correct in
-      every one by point `/GetContentRef` AND strict re-list; verbatim in
-      the findings doc)
+      (21 probes across the sessions: 15 code-0 — clean buffer, empty +
+      occupied targets, including 10 back-to-back — and 6 code-1 dirty;
+      reply cid correct in every one by point `/GetContentRef` AND strict
+      re-list; verbatim in the findings doc)
 - [x] Failing test first, then implement whichever option the evidence supports:
       (a) always confirm by re-list (costs one listing per create), or (b) cheaply
       cross-check the reply cid's `name`/`posi` via a point `/GetContentRef`
@@ -151,8 +151,10 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
 - [x] Update `docs/helix-protocol.md` (`/CreateContent` semantics), `docs/CLI.md`,
       `CLAUDE.md` and affected verb `--help` for every behavior change
       (protocol doc: occupied-posi INSERT semantics, delete-leaves-gap,
-      reply-cid reliability; CLI.md + CLAUDE.md updated in Tasks 2-3; no
-      verb `--help` text changed — `tests/test_cli_parity.py` green)
+      reply-cid reliability; CLI.md + CLAUDE.md updated in Tasks 2-3; verb
+      `--help` text DID change — `install --auto-irs` and `slots restore
+      --force` — so the plugin companion PR after the 0.32.0 release is
+      mandatory; `tests/test_cli_parity.py` green)
 - [x] Bump the version in `pyproject.toml` **and** `src/helixgen/__init__.py`
       together (minor bump — this changes device-write and IR-upload behavior),
       and note in the plan's final report that a plugin companion PR is needed

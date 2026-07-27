@@ -1243,19 +1243,32 @@ class HelixClient:
                 return args[1], args[2]
         return None, None
 
-    def _confirm_created(self, container: int, name: str,
-                         pos: int) -> Tuple[Optional[int], bool, bool]:
+    def _confirm_created(self, container: int, name: str, pos: int,
+                         exclude_cids: Optional[set] = None,
+                         ) -> Tuple[Optional[int], bool, bool, Optional[int]]:
         """Re-list ``container`` looking for the entry we just created (matched
         by ``name`` **and** ``posi == pos``).
 
-        Returns ``(cid, listed_cleanly, saw_cidless_match)``: the cid when the
-        entry was found (``None`` otherwise), whether the **final** attempt got
-        a clean listing back, and whether some attempt matched ``(name, pos)``
-        but carried no ``cid_``. All three matter — a ``(None, False, _)``
-        means "the last read of the container failed", which is NOT evidence
-        the create failed, and ``saw_cidless_match`` means the content WAS
-        observed but its cid never resolved, so the error must not tell the
-        user the listing never showed it (see :meth:`_create_status_error`).
+        Returns ``(cid, listed_cleanly, saw_cidless_match, excluded_cid)``: the
+        cid when the entry was found (``None`` otherwise), whether the
+        **final** attempt got a clean listing back, and whether some attempt
+        matched ``(name, pos)`` but carried no ``cid_``. All three matter — a
+        ``(None, False, _, _)`` means "the last read of the container failed",
+        which is NOT evidence the create failed, and ``saw_cidless_match``
+        means the content WAS observed but its cid never resolved, so the
+        error must not tell the user the listing never showed it (see
+        :meth:`_create_status_error`).
+
+        ``exclude_cids`` (the #94 pre-create snapshot) makes a ``(name, pos)``
+        match whose cid predates the create count as **no match**: the device
+        INSERTS at an occupied posi, so a landed create always allocates a new
+        cid — a snapshot cid at ``(name, pos)`` is either the incumbent under
+        a stale listing (the create landed, keep polling until the fresh cid
+        surfaces) or the incumbent after a dropped create (nothing to find).
+        Returning it would hand a ``--force`` restore-over-itself the
+        incumbent's cid and falsely refuse a landed create. The last such
+        skipped cid comes back as ``excluded_cid`` so the caller's error can
+        name the occupant and say NOT to delete it.
 
         This is the authority on whether a ``/CreateContent`` landed — the
         status code is not (see :meth:`_create_content_status`). The match is
@@ -1283,6 +1296,7 @@ class HelixClient:
         """
         listed_cleanly = False
         saw_cidless = False
+        excluded_cid: Optional[int] = None
         with self.mutating():
             for i in range(self.create_confirm_tries):
                 try:
@@ -1302,15 +1316,23 @@ class HelixClient:
                         (m for m in listing
                          if m.get("name") == name and m.get("posi") == pos), None)
                     if match is not None:
-                        if match.get("cid_") is not None:
-                            return match.get("cid_"), True, saw_cidless
-                        saw_cidless = True
+                        mcid = match.get("cid_")
+                        if mcid is None:
+                            saw_cidless = True
+                        elif exclude_cids is not None and mcid in exclude_cids:
+                            # pre-existing occupant, possibly under a stale
+                            # listing — keep polling for the fresh cid
+                            excluded_cid = mcid
+                        else:
+                            return mcid, True, saw_cidless, excluded_cid
                 if i < self.create_confirm_tries - 1:
                     time.sleep(self.create_confirm_delay)
-        return None, listed_cleanly, saw_cidless
+        return None, listed_cleanly, saw_cidless, excluded_cid
 
     def _create_content_checked(self, container: int, pos: int, name: str,
-                                ctype: int = 2) -> Optional[int]:
+                                ctype: int = 2, *,
+                                exclude_cids: Optional[set] = None,
+                                ) -> Optional[int]:
         """``/CreateContent`` + **verify by re-list**; return the created cid.
 
         The status code alone can't tell success from failure (it reports the
@@ -1342,10 +1364,30 @@ class HelixClient:
         """
         cid, code = self._create_content_status(container, pos, name, ctype)
         if code != 0:
-            confirmed, listed_cleanly, saw_cidless = self._confirm_created(
-                container, name, pos)
+            confirmed, listed_cleanly, saw_cidless, excluded_cid = \
+                self._confirm_created(container, name, pos,
+                                      exclude_cids=exclude_cids)
             if confirmed is not None:
                 return confirmed
+            if excluded_cid is not None:
+                # #94: every (name, pos) match the retries saw was the slot's
+                # PRE-EXISTING occupant (its cid was in the pre-create
+                # snapshot). Whether the create was dropped or is landing late
+                # against a lagging listing, nothing attributable exists to
+                # write into — and the generic "delete the stub" advice below
+                # would point at the occupant, a real preset.
+                raise HelixError(
+                    f"/CreateContent for {name!r} at slot {pos} could not be "
+                    f"confirmed: the listing kept showing only cid "
+                    f"{excluded_cid} at that slot, an entry that already "
+                    f"existed before the create — the slot's pre-existing "
+                    f"occupant, not our new entry (the device INSERTS at an "
+                    f"occupied posi, so a landed create always allocates a "
+                    f"new cid). Nothing was written, and the occupant must "
+                    f"NOT be deleted — it predates this call. If the create "
+                    f"landed late, an EMPTY stub named {name!r} will surface "
+                    f"at slot {pos}, shifting the occupant down one — "
+                    f"re-list, delete only the empty stub, and retry")
             raise self._create_status_error(
                 name, pos, cid, code,
                 listed_cleanly=listed_cleanly, saw_cidless=saw_cidless)
@@ -1444,14 +1486,14 @@ class HelixClient:
         (:meth:`_create_attributed`).
         """
         with self.mutating():
-            cid, attributed = self._create_attributed(
+            cid = self._create_attributed(
                 container, pos, name, prechecked_empty=prechecked_empty)
             if cid is None:
                 return None
             if not self._save_preset_with_cid(cid):
                 self._after_failed_write(
                     container, pos, name, prechecked_empty=prechecked_empty,
-                    attributed_cid=cid if attributed else None)
+                    cid=cid)
                 return None
             return cid
 
@@ -1486,28 +1528,26 @@ class HelixClient:
         at ``pos`` may be a **pre-existing occupant** — the #94 attribution
         gate (:meth:`_create_attributed`) is what keeps the write out of it."""
         with self.mutating():
-            cid, attributed = self._create_attributed(
+            cid = self._create_attributed(
                 container, pos, name, prechecked_empty=prechecked_empty)
             if cid is None:
                 return None
             if not self._set_content_data(cid, blob):
                 self._after_failed_write(
                     container, pos, name, prechecked_empty=prechecked_empty,
-                    attributed_cid=cid if attributed else None)
+                    cid=cid)
                 return None
             return cid
 
     def _create_attributed(self, container: int, pos: int, name: str, *,
-                           prechecked_empty: bool
-                           ) -> Tuple[Optional[int], bool]:
+                           prechecked_empty: bool) -> Optional[int]:
         """``/CreateContent`` with an attribution guarantee (#94); returns
-        ``(cid, attributed)``.
+        the created cid.
 
         With ``prechecked_empty`` this is exactly
         :meth:`_create_content_checked` — the caller's emptiness precheck
         already makes a (name, pos) match ours by construction, and no extra
-        listing is paid (``attributed`` is False: attribution came from the
-        precheck, not a snapshot).
+        listing is paid.
 
         Without it (``slots restore --force``; ``install_into_pool`` with a
         caller-supplied pos) the confirming re-list's (name, pos) match could
@@ -1517,18 +1557,25 @@ class HelixClient:
         **INSERTS** — the new entry lands at the requested posi and the
         incumbent shifts down one — so a create that LANDED always yields a
         cid that did not exist before it. The container's cids are therefore
-        snapshotted (strict — a timeout raises BEFORE the create) and a
-        confirmed cid found in that snapshot means the create did NOT land
-        and the match is the incumbent: writing into it would overwrite
-        content we never created, so this raises instead. ``attributed=True``
-        marks a snapshot-proven-fresh cid, which is what licenses
-        :meth:`_after_failed_write` to delete it by cid.
+        snapshotted (strict — a timeout raises BEFORE the create) and fed to
+        the confirming re-list as ``exclude_cids``: a snapshot cid at
+        (name, pos) is skipped as the incumbent — possibly under a stale
+        listing that hasn't caught the INSERT yet, so the retries keep
+        polling for the fresh cid instead of refusing outright (the
+        ``--force`` restore-over-itself case, where the incumbent shares the
+        name). Exhausting the retries on only-incumbent sightings raises
+        from :meth:`_create_content_checked` without writing. The remaining
+        check here guards the ``code == 0`` fast path, whose reply cid skips
+        the re-list (#96): a reply cid found in the snapshot cannot be ours.
+        Any cid returned is therefore snapshot-proven fresh, which is what
+        licenses :meth:`_after_failed_write` to delete it by cid.
         """
         snapshot = None
         if not prechecked_empty:
             snapshot = {m.get("cid_")
                         for m in self.list_container(container, strict=True)}
-        cid = self._create_content_checked(container, pos, name)
+        cid = self._create_content_checked(container, pos, name,
+                                           exclude_cids=snapshot)
         if cid is not None and snapshot is not None and cid in snapshot:
             raise HelixError(
                 f"/CreateContent for {name!r} at slot {pos} cannot be "
@@ -1540,41 +1587,32 @@ class HelixClient:
                 f"create lands late, an EMPTY stub named {name!r} may appear "
                 f"at slot {pos}, shifting the occupant down one — re-list, "
                 f"delete the stub, and retry against a slot that is empty")
-        return cid, snapshot is not None and cid is not None
+        return cid
 
     def _after_failed_write(self, container: int, pos: int, name: str, *,
-                            prechecked_empty: bool,
-                            attributed_cid: Optional[int] = None) -> None:
+                            prechecked_empty: bool, cid: int) -> None:
         """Shared aftermath for a create-then-write that failed at the write
         (:meth:`_push_to_slot` / :meth:`_save_edit_buffer_to`, #95): clean up
-        the just-created stub only when it is provably ours — either the
-        caller prechecked the slot empty (making the (name, pos) re-list
-        match unambiguous) or the #94 pre-create snapshot proved the cid
-        fresh (``attributed_cid``, deletable directly, no re-list needed)."""
+        the just-created stub, which is provably ours either way — the caller
+        prechecked the slot empty (making the (name, pos) re-list match
+        unambiguous), or the #94 pre-create snapshot proved ``cid`` fresh
+        (:meth:`_create_attributed` raises before any write otherwise), so it
+        is deletable directly with no re-list."""
         if prechecked_empty:
             # cleanup: delete the entry we just created by (name, pos) —
             # the create-reply cid is unreliable, so never blind-delete it
             self._delete_created_stub(container, name, pos)
-        elif attributed_cid is not None:
-            try:
-                if self._delete(container, [attributed_cid]):
-                    return
-                why = f"the device refused to delete cid {attributed_cid}"
-            except HelixError as exc:
-                why = f"the delete failed: {exc}"
-            logger.warning(
-                "cleanup of the just-created entry %r at slot %d in "
-                "container %s did not happen (%s) — an empty stub may be "
-                "left behind; re-list to check", name, pos, container, why)
-        else:
-            # defensive: neither a precheck nor an attribution — reachable
-            # only if a future caller bypasses _create_attributed
-            logger.warning(
-                "writing content to %r at slot %d in container %s "
-                "failed, and the slot was not checked empty beforehand "
-                "(--force), so the entry there may predate this call — "
-                "leaving it alone rather than risk deleting a preset we "
-                "did not create; re-list to check", name, pos, container)
+            return
+        try:
+            if self._delete(container, [cid]):
+                return
+            why = f"the device refused to delete cid {cid}"
+        except HelixError as exc:
+            why = f"the delete failed: {exc}"
+        logger.warning(
+            "cleanup of the just-created entry %r at slot %d in "
+            "container %s did not happen (%s) — an empty stub may be "
+            "left behind; re-list to check", name, pos, container, why)
 
     def _create_status_error(self, name: str, pos: int,
                              reply_cid: Optional[int], code: Optional[int], *,
@@ -1791,7 +1829,11 @@ class HelixClient:
         Creates an empty preset in the pool then SetContentData's ``blob`` into
         it. If ``pos`` is ``None`` the lowest empty pool slot is chosen. The cid
         in the create reply is unreliable, so the pool is re-listed **by name**
-        to recover the true cid, which is returned (``None`` on failure).
+        to recover the true cid, which is returned (``None`` on failure). With
+        an explicit ``pos`` the create runs unprechecked and can also raise
+        :class:`HelixError` — from the #94 attribution gate (the slot's
+        occupant cannot be told from our new entry) or from the strict
+        pre-create snapshot listing (a timeout raises before the create).
 
         ``template_blob`` is accepted for call-site symmetry with the authoring
         flow but is unused here — ``blob`` is already the full content to write.
@@ -1892,7 +1934,7 @@ class HelixClient:
                 # the same #38 false negative — worse here, because
                 # `setlist duplicate`'s auto-create aborts on it without
                 # cleanup and leaks the setlist it claims not to have made.
-                created, listed_cleanly, saw_cidless = self._confirm_created(
+                created, listed_cleanly, saw_cidless, _ = self._confirm_created(
                     int(Container.SETLISTS_ROOT), name, int(pos))
                 if created is None:
                     # _confirm_created matches on exact name AND posi, which is

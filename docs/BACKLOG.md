@@ -1542,6 +1542,28 @@ Remaining follow-ups:
   parameter) is deferred because it touches every listing call path and needs
   a live blast-radius run to land honestly.
 
+- **#98 `device_ir_hashes` pays a full confirm cycle per lagging hash.** The
+  #93 verify loop calls `confirm_ir_listed` once per unlisted-but-resolving
+  hash, and each call is up to two strict `-11` listings (each with a
+  `mutating()` subscribe + settle sleep) plus a rename nudge. N hashes
+  lagging at once — the common shape when another client imported several
+  IRs — pay N full cycles, though one confirmed refresh would answer for
+  all of them. Hoist one nudge + re-list per `device_ir_hashes` call and
+  answer every verify hash from that single refreshed listing, falling back
+  per-hash only when the refresh is unconfirmable. Perf only — verdicts are
+  unchanged — deferred from the 2026-07-27 review.
+- **#99 attributed cleanup deletes on a dropped write reply.** In
+  `_after_failed_write`'s unprechecked branch, `_ok` reads a dropped
+  `/SetContentData`/`/SavePresetWithCID` reply as failure, and the cleanup
+  then deletes the attributed cid outright — on the flaky transport the
+  write may have landed, so a fully-written preset (this call's own; nothing
+  pre-existing is reachable, and a retry converges) can be deleted while the
+  verb reports failure. Same reply-ambiguity class #38/#96 characterized
+  for creates, and the prechecked `_delete_created_stub` path shares the
+  exposure. Fix would confirm the write actually failed (e.g. a
+  `get_content` size check) before deleting. Deferred from the 2026-07-27
+  review as low-impact.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

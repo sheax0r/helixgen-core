@@ -328,7 +328,8 @@ def test_force_create_at_occupied_posi_inserts_and_attributes(
     try:
         with HelixClient(device) as h, h.mutating():
             listing = h.list_container(Container.POOL, strict=True)
-            pos = max(m["posi"] for m in listing) + 1  # tail: empty, shift-safe
+            # tail: empty, shift-safe (an empty pool starts at 0)
+            pos = max((m["posi"] for m in listing), default=-1) + 1
             cid_a = h._raw.push_to_slot(Container.POOL, pos, name_a, blob,
                                         prechecked_empty=True)
             assert cid_a, "could not stage the incumbent"

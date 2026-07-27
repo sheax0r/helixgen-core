@@ -2144,8 +2144,10 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
                    "does the wedge still read as already-present; "
                    "`device delete-ir --force-wedge` is the sure clear then.")
 @_device_option
-@_locked(verb="install", when=lambda kw: ("library", "irs")
-        if kw.get("auto_irs") else ("library",))
+# `irs` is held even without --auto-irs: the IR presence check runs either
+# way, and its wedge discriminator (confirm_ir_listed, #93) may issue a
+# state-neutral rename nudge — an IR-container write
+@_locked("library", "irs", verb="install")
 def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
                    auto_irs: bool, ip: str, port: int) -> None:
     """Author a helixgen .hsp onto the device as a new, playable preset.
@@ -3093,7 +3095,10 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
                    "predates the call, so a failed or refused write never "
                    "touches the occupant.")
 @_device_option
-@_locked("library", verb="slots restore")
+# `irs` too: restoring an .hsp source runs the IR presence check, whose wedge
+# discriminator (confirm_ir_listed, #93) may issue a rename nudge — an
+# IR-container write
+@_locked("library", "irs", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                          force: bool, ip: str, port: int) -> None:
     """Put a recorded tone back in its slot. TARGET is the tone name or slot label.

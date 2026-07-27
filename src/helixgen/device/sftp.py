@@ -245,8 +245,7 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
     import tempfile
     import time
     from helixgen.ir import write_stadium_ir
-    from .client import HelixClient
-    from .client import confirm_ir_listed as _client_confirm_ir_listed
+    from .client import HelixClient, confirm_ir_listed
     from .subscribe import HelixSubscriber
 
     stem = Path(local_wav).stem
@@ -266,7 +265,7 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                 # wedge discriminator) returns False only on a CONFIRMED
                 # absence after a nudged cache refresh; anything unconfirmable
                 # trusts the point lookup.
-                if _client_confirm_ir_listed(h, hg_hash):
+                if confirm_ir_listed(h, hg_hash):
                     return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
                             "device_hash": hg_hash, "hash_match": True,
                             "registered": True, "cid": None,
