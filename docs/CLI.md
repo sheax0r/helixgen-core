@@ -655,14 +655,20 @@ plumbing" in `CLAUDE.md`) — only intent is.
   preset verbs (named setlist: pooled + referenced at the destination position).
   Pathless `save`/`create` tones have no local source and can't be restored.
   `--force` pushes into an occupied **pool** slot (for **both** `.hsp` and
-  `.sbe` sources) — it skips the pool emptiness check; the occupant is **not
-  deleted**, but note a *successful* write at an occupied slot whose occupant
-  shares the tone's name lands **in that occupant** — `--force` replaces its
-  content in place, which is the point of the flag. Because that precheck is what makes a same-name entry at the slot
-  identifiable as one helixgen just created, a **failed write under `--force`
-  cleans nothing up** either (#38): the entry there may predate the call, and
-  deleting it would destroy a preset helixgen never created. The failure is
-  reported and the slot left as-is — re-list to check. `--force` is a **pool**
+  `.sbe` sources) — it skips the pool emptiness check. The device **INSERTS**
+  at an occupied posi (hardware-characterized fw 1.3.2 b1340, #94/#69): the
+  restored tone lands AT the requested posi and the occupant — every
+  subsequent preset, in fact — **shifts down one**. Nothing is overwritten or
+  deleted; `--force` does NOT replace the occupant's content in place. Because
+  a landed create therefore always allocates a NEW cid, helixgen snapshots
+  the pool's cids before creating (#94) and refuses to write if the entry it
+  would write into already existed before the call (a same-name occupant
+  matched by a lagging confirm when the create was actually dropped) — the
+  error names the cid; nothing is written or deleted, though if the dropped
+  create lands late an EMPTY stub with the tone's name may appear at the
+  posi, shifting the occupant down: re-list, delete the stub, retry. A
+  **failed write** into an entry that snapshot PROVED fresh cleans up that
+  exact cid. `--force` is a **pool**
   flag only: restoring into a **named setlist** always writes at a freshly
   computed lowest-empty pool posi, which no `--force` ever skipped a check on,
   so a failed write there **does** clean up the stub it created (same for

@@ -540,7 +540,8 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
 
     ``force`` skips the slot-emptiness check so the push proceeds at a
     possibly-OCCUPIED posi (``device slots restore --force`` — #25; the
-    occupant is NOT deleted, matching the ``.sbe`` path); without it an
+    device INSERTS there, shifting the occupant down one — it is never
+    deleted or overwritten, matching the ``.sbe`` path); without it an
     occupied slot is refused. The check is strict (backlog #40): a listing
     timeout raises instead of reading as "empty", so it never proceeds to
     write into a slot it couldn't actually confirm was free.
@@ -548,11 +549,12 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
     ``known_empty`` also skips the check, but for the opposite reason: the
     CALLER already established the posi is empty (the setlist path, where
     ``_install_via_dest`` just computed a strictly lowest-empty pool posi).
-    The two must not be conflated — ``force`` means "a stub found here after a
-    failed write may be someone else's preset, leave it alone", while
-    ``known_empty`` means "anything here is ours, so clean it up" (#38). Using
-    ``force`` for the setlist case orphaned an empty pool stub on every failed
-    write and blamed a ``--force`` the user never passed.
+    The two must not be conflated — ``force`` means "route the create through
+    the #94 attribution gate (pre-create cid snapshot), refusing to touch an
+    entry that predates the call", while ``known_empty`` means "anything here
+    is ours, so clean it up by (name, pos)" (#38). Using ``force`` for the
+    setlist case orphaned an empty pool stub on every failed write and blamed
+    a ``--force`` the user never passed.
     """
     from helixgen.device import bridge, transcode
 
@@ -3082,12 +3084,14 @@ def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
 @click.option("--force", is_flag=True, default=False,
               help="Push even if the destination POOL slot is occupied "
                    "(pool destinations only; an occupied named-setlist "
-                   "position is always refused — backlog #69). Also suppresses "
-                   "the failed-write cleanup: the entry at that slot may "
-                   "predate this call, so a failed write leaves it as-is "
-                   "(re-list to check). Setlist destinations are exempt — they "
-                   "write at a freshly computed lowest-empty pool posi and do "
-                   "clean up their own stub.")
+                   "position is always refused — backlog #69). The device "
+                   "INSERTS at an occupied posi: the restored tone lands at "
+                   "the slot and the occupant (and everything after it) "
+                   "shifts down one — nothing is overwritten. The write is "
+                   "attribution-gated (#94): helixgen snapshots the pool's "
+                   "cids first and refuses to write into an entry that "
+                   "predates the call, so a failed or refused write never "
+                   "touches the occupant.")
 @_device_option
 @_locked("library", verb="slots restore")
 def device_slots_restore(target: str, pos: int | None, setlist: str | None,
@@ -3163,14 +3167,16 @@ def device_slots_restore(target: str, pos: int | None, setlist: str | None,
                             and h.find_by_pos(cont, cpos, strict=True) is not None):
                         raise click.ClickException(
                             f"{label} slot {cpos} is not empty (use --force)")
-                    # --force skipped the emptiness check, so a failed write must
-                    # not clean up: the entry may be a pre-existing occupant.
+                    # --force skipped the emptiness check, so the create runs
+                    # through the #94 attribution gate (pre-create cid
+                    # snapshot) instead: a confirmed cid that predates the
+                    # call is refused, one the snapshot proved fresh is safe
+                    # to write into and to clean up on a failed write.
                     # The setlist path is exempt — _install_via_dest always
                     # writes at a freshly computed lowest-empty POOL posi, which
                     # --force never applied to (the check above is pool-only),
-                    # so a failed write there must clean up its own stub rather
-                    # than orphan it and blame a --force the user never aimed
-                    # at the pool (same conflation the .hsp branch fixed via
+                    # so its precheck authorizes the (name, pos) cleanup
+                    # directly (same conflation the .hsp branch fixed via
                     # known_empty).
                     return h._raw.push_to_slot(
                         cont, cpos, name, src.read_bytes(),

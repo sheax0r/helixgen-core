@@ -473,17 +473,23 @@ def test_install_into_pool_relists_by_name_for_cid(monkeypatch):
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     name = "White Limo Lead"
-    # rpc 1000: _create_content -> /status [reqid, newCid=930, 0]
-    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
-    # rpc 1001: _set_content_data -> /status ok
-    setdata = osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])
-    # rpc 1002: list_presets(POOL) -> the real cid is 777 (NOT the create's 930)
+    # rpc 1000: the #94 pre-create snapshot (explicit pos=3 was never
+    # prechecked here, so the create must be attributable)
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    # rpc 1001: _create_content -> /status [reqid, newCid=930, 0]
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    # rpc 1002: _set_content_data -> /status ok
+    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    # rpc 1003: list_presets(POOL) -> the real cid is 777 (NOT the create's 930)
     presets = [{"cid_": 777, "name": name, "cctp": 1000, "posi": 3}]
     listrep = osc_encode(
         "/GetContainerContents",
-        [("i", 1002), ("b", msgpack.packb(presets, use_bin_type=True))],
+        [("i", 1003), ("b", msgpack.packb(presets, use_bin_type=True))],
     )
-    _wire_seq(h, [[create], [setdata], [listrep]])
+    _wire_seq(h, [[snap], [create], [setdata], [listrep]])
 
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
@@ -499,9 +505,14 @@ def test_push_to_slot_happy_path_returns_cid(monkeypatch):
     h.mutate_settle = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
-    setdata = osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])
-    _wire_seq(h, [[create], [setdata]])
+    # rpc 1000: the #94 pre-create snapshot (default prechecked_empty=False)
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [setdata]])
     assert h._raw.push_to_slot(-2, 3, "X", blob) == 930
 
 
@@ -518,19 +529,25 @@ def test_push_to_slot_nonzero_code_with_content_present_is_success(monkeypatch):
     h.create_confirm_delay = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    # rpc 1000: create -> /status [reqid, newCid=1237, code=1]  (dirty buffer)
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
-    # rpc 1001: the confirming re-list -> the content IS there, real cid 777
+    # rpc 1000: the #94 pre-create snapshot — 777 was NOT listed before the
+    # create, so the confirmed cid below is attributable
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    # rpc 1001: create -> /status [reqid, newCid=1237, code=1]  (dirty buffer)
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
+    # rpc 1002: the confirming re-list -> the content IS there, real cid 777
     # (the create-reply cid stays documented-unreliable; the re-list wins)
     listrep = osc_encode(
         "/GetContainerContents",
-        [("i", 1001), ("b", msgpack.packb(
+        [("i", 1002), ("b", msgpack.packb(
             [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
             use_bin_type=True))],
     )
-    # rpc 1002: SetContentData into the confirmed cid -> ok
-    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
-    _wire_seq(h, [[create], [listrep], [setdata]])
+    # rpc 1003: SetContentData into the confirmed cid -> ok
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [listrep], [setdata]])
 
     assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
     # nothing was destroyed: the write landed
@@ -540,8 +557,10 @@ def test_push_to_slot_nonzero_code_with_content_present_is_success(monkeypatch):
 
 
 def test_push_to_slot_zero_code_still_succeeds_without_relist(monkeypatch):
-    """code == 0 with the content present stays exactly as before — a clean
-    create needs no confirming re-list (the callers re-list by name anyway)."""
+    """code == 0 on the PRECHECKED path pays no listing at all: the caller's
+    emptiness precheck already made a (name, pos) match attributable, so
+    there is no #94 snapshot, and a clean create needs no confirming re-list
+    (the callers re-list by name anyway)."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
@@ -550,26 +569,32 @@ def test_push_to_slot_zero_code_still_succeeds_without_relist(monkeypatch):
     create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
     setdata = osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])
     _wire_seq(h, [[create], [setdata]])
-    assert h._raw.push_to_slot(-2, 3, "X", blob) == 930
+    assert h._raw.push_to_slot(-2, 3, "X", blob,
+                               prechecked_empty=True) == 930
     assert not any(b"/GetContainerContents" in s for s in h.sock.sent)
 
 
 def test_push_to_slot_raises_when_nonzero_and_content_absent(monkeypatch):
     """The genuine failure: non-zero code AND the confirming re-list (bounded
     settle/retry, the container index lags) never finds the content. Only then
-    is it an error."""
+    is it an error. (Default prechecked_empty=False, so the #94 snapshot
+    listing runs first — it must not change this outcome.)"""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     h.create_confirm_delay = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
     empty = [osc_encode(
         "/GetContainerContents",
         [("i", r), ("b", msgpack.packb([], use_bin_type=True))])
-        for r in range(1001, 1006)]
-    _wire_seq(h, [[create]] + [[f] for f in empty])
+        for r in range(1002, 1007)]
+    _wire_seq(h, [[snap], [create]] + [[f] for f in empty])
 
     with pytest.raises(HelixError) as ei:
         h._raw.push_to_slot(-2, 5, "X", blob)
@@ -578,7 +603,7 @@ def test_push_to_slot_raises_when_nonzero_and_content_absent(monkeypatch):
     assert "1237" in msg           # allocated cid surfaced for recovery
     assert "#38" in msg
     # the confirming re-list retried before giving up
-    assert len([s for s in h.sock.sent if b"/GetContainerContents" in s]) > 1
+    assert len([s for s in h.sock.sent if b"/GetContainerContents" in s]) > 2
     # nothing was written into a slot we could not confirm
     assert not any(b"/SetContentData" in s for s in h.sock.sent)
 
@@ -592,48 +617,63 @@ def test_save_edit_buffer_to_nonzero_code_with_content_present_is_success(
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     h.create_confirm_delay = 0
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    # rpc 1000: the #94 pre-create snapshot (default prechecked_empty=False)
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
     listrep = osc_encode(
         "/GetContainerContents",
-        [("i", 1001), ("b", msgpack.packb(
+        [("i", 1002), ("b", msgpack.packb(
             [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
             use_bin_type=True))],
     )
-    saved = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
-    _wire_seq(h, [[create], [listrep], [saved]])
+    saved = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [listrep], [saved]])
 
     assert h._raw.save_edit_buffer_to(-2, 5, "X") == 777
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
     assert any(b"/SavePresetWithCID" in s for s in h.sock.sent)
 
 
-def test_save_edit_buffer_to_without_a_precheck_never_cleans_up(
-        monkeypatch, caplog):
-    """#95: the same opt-in gate as _push_to_slot. Without prechecked_empty the
-    (name, pos) match after a failed /SavePresetWithCID may be a PRE-EXISTING
-    occupant — cleanup must not run on an entry we cannot attribute (#38)."""
+def test_save_edit_buffer_to_unprechecked_refuses_preexisting_cid(monkeypatch):
+    """#94 gate on the save path: the confirmed cid was already listed BEFORE
+    our create, so the (name, pos) match is the slot's PRE-EXISTING occupant —
+    the create did not land (the device INSERTS at an occupied posi, so a
+    landed create always allocates a NEW cid; hw-characterized fw 1.3.2
+    b1340). Saving into it would overwrite a preset we never created: raise,
+    save nothing, delete nothing."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     h.create_confirm_delay = 0
-    # create reports the dirty-buffer flag; confirm re-list matches the occupant
-    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 1)])
-    listrep = osc_encode(
+    # rpc 1000: the snapshot already lists cid 777 at (X, 5) — the occupant
+    snap = osc_encode(
         "/GetContainerContents",
-        [("i", 1001), ("b", msgpack.packb(
+        [("i", 1000), ("b", msgpack.packb(
             [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
             use_bin_type=True))],
     )
-    # SavePresetWithCID FAILS on the entry we just "confirmed"
-    savefail = osc_encode("/status", [("i", 1002), ("i", 1), ("i", 0)])
-    _wire_seq(h, [[create], [listrep], [savefail]])
+    # rpc 1001: create reports the dirty-buffer flag (reply cid unreliable)
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 1)])
+    # rpc 1002: confirm re-list matches ... the same pre-existing occupant
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    _wire_seq(h, [[snap], [create], [listrep]])
 
-    with caplog.at_level(logging.WARNING):
-        assert h._raw.save_edit_buffer_to(-2, 5, "X",
-                                          prechecked_empty=False) is None
-    assert not any(b"/RemoveContent" in s for s in h.sock.sent), \
-        "an unprechecked save failure must not delete the slot's occupant"
-    assert "may predate this call" in caplog.text
+    with pytest.raises(HelixError) as ei:
+        h._raw.save_edit_buffer_to(-2, 5, "X", prechecked_empty=False)
+    msg = str(ei.value)
+    assert "777" in msg  # the unattributable cid, named for recovery
+    assert "Nothing was written" in msg
+    assert not any(b"/SavePresetWithCID" in s for s in h.sock.sent), \
+        "must not save into a cid that predates our create"
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
 
 
 def test_save_edit_buffer_to_with_a_precheck_still_cleans_up(monkeypatch):
@@ -698,33 +738,139 @@ def test_push_to_slot_cleanup_relists_not_create_cid_on_setdata_failure(monkeypa
     assert _mp.packb([930], use_bin_type=True) not in del_sent[0]
 
 
-def test_push_to_slot_without_a_precheck_never_cleans_up(monkeypatch, caplog):
-    """``slots restore --force`` skips the emptiness precheck, so the entry at
-    (name, pos) may be a PRE-EXISTING occupant. A failed write must leave it
-    alone — deleting it would destroy a preset we never created (#38)."""
+def test_push_to_slot_unprechecked_refuses_preexisting_cid(monkeypatch):
+    """#94 gate: ``slots restore --force`` skips the emptiness precheck, so
+    the confirming (name, pos) match may be a PRE-EXISTING occupant. The cid
+    snapshot taken before /CreateContent settles it: the device INSERTS at an
+    occupied posi (hw-characterized fw 1.3.2 b1340), so a landed create
+    always allocates a NEW cid — a confirmed cid that was already in the
+    snapshot means the create did NOT land and the match is the incumbent.
+    Writing the blob into it would overwrite content we never created: raise,
+    write nothing, delete nothing."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # rpc 1000: the snapshot already lists cid 777 at (X, 5) — the occupant
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # rpc 1001: create reports the dirty-buffer flag; the create was dropped
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 1)])
+    # rpc 1002: confirm re-list matches ... the same pre-existing occupant
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(
+            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    _wire_seq(h, [[snap], [create], [listrep]])
+
+    with pytest.raises(HelixError) as ei:
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=False)
+    msg = str(ei.value)
+    assert "777" in msg  # the unattributable cid, named for recovery
+    assert "Nothing was written" in msg
+    assert "EMPTY stub" in msg  # the late-landing residue, spelled out
+    assert not any(b"/SetContentData" in s for s in h.sock.sent), \
+        "must not write the blob into a cid that predates our create"
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent), \
+        "a --force write failure must not delete the slot's occupant"
+
+
+def test_push_to_slot_unprechecked_accepts_fresh_cid_after_insert(monkeypatch):
+    """#94, the legit --force restore-over-itself case: a same-named occupant
+    holds the posi, the create lands, and the device INSERTS — fresh stub at
+    the requested posi, incumbent shifted down one. The confirmed cid is
+    absent from the pre-create snapshot, so it is attributably OURS and the
+    write proceeds into it (never into the shifted incumbent)."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    h.create_confirm_delay = 0
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+    # rpc 1000: snapshot — the incumbent 555 shares the name AND the posi
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb(
+            [{"cid_": 555, "name": "X", "cctp": 1000, "posi": 5}],
+            use_bin_type=True))],
+    )
+    # rpc 1001: create (dirty-buffer flag; reply cid unreliable as ever)
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 1)])
+    # rpc 1002: confirm re-list shows the INSERT: fresh 930 at posi 5, the
+    # incumbent 555 shifted to posi 6
+    listrep = osc_encode(
+        "/GetContainerContents",
+        [("i", 1002), ("b", msgpack.packb(
+            [{"cid_": 930, "name": "X", "cctp": 1000, "posi": 5},
+             {"cid_": 555, "name": "X", "cctp": 1000, "posi": 6}],
+            use_bin_type=True))],
+    )
+    # rpc 1003: SetContentData into the fresh stub -> ok
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [listrep], [setdata]])
+
+    assert h._raw.push_to_slot(-2, 5, "X", blob,
+                               prechecked_empty=False) == 930
+    assert any(b"/SetContentData" in s for s in h.sock.sent)
+    assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+def test_push_to_slot_unprechecked_failed_write_deletes_attributed_stub(
+        monkeypatch):
+    """#94: once the snapshot proved the cid fresh (absent before our create),
+    a failed write CAN clean up — by that exact cid, no re-list needed. The
+    old blanket "may predate this call, leave it alone" warning under-cleaned:
+    attribution is precisely what it was missing."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    # create reports the dirty-buffer flag; confirm re-list matches the occupant
-    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 1)])
-    listrep = osc_encode(
+    # rpc 1000: snapshot — empty container, anything created is ours
+    snap = osc_encode(
         "/GetContainerContents",
-        [("i", 1001), ("b", msgpack.packb(
-            [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
-            use_bin_type=True))],
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
     )
-    # set_content_data FAILS on the occupant we just "confirmed"
+    # rpc 1001: clean create, reply cid 930
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    # rpc 1002: SetContentData FAILS
     setfail = osc_encode("/status", [("i", 1002), ("i", 1), ("i", 0)])
-    _wire_seq(h, [[create], [listrep], [setfail]])
+    # rpc 1003: delete of the attributed stub -> ok
+    delete = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [setfail], [delete]])
 
-    with caplog.at_level(logging.WARNING):
-        assert h._raw.push_to_slot(-2, 5, "X", blob,
-                                   prechecked_empty=False) is None
-    assert not any(b"/RemoveContent" in s for s in h.sock.sent), \
-        "a --force write failure must not delete the slot's occupant"
-    assert "may predate this call" in caplog.text
+    assert h._raw.push_to_slot(-2, 5, "X", blob,
+                               prechecked_empty=False) is None
+    del_sent = [s for s in h.sock.sent if b"/RemoveContent" in s]
+    assert del_sent, "the attributed stub must be cleaned up"
+    import msgpack as _mp
+    assert _mp.packb([930], use_bin_type=True) in del_sent[0]
+    # by-cid delete: the only listing sent was the pre-create snapshot
+    assert len([s for s in h.sock.sent
+                if b"/GetContainerContents" in s]) == 1
+
+
+def test_push_to_slot_aborts_before_create_on_snapshot_failure(monkeypatch):
+    """#94: the pre-create snapshot is strict — a listing timeout must raise
+    BEFORE /CreateContent, never proceed to a create it could not attribute."""
+    _patch_sub(monkeypatch)
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    _wire(h, [])  # the snapshot listing itself times out
+    from helixgen.device import content as C
+    blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
+
+    with pytest.raises(HelixError, match="no reply"):
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=False)
+    assert not any(b"/CreateContent" in s for s in h.sock.sent)
 
 
 def test_push_to_slot_with_a_precheck_still_cleans_up(monkeypatch):
@@ -786,15 +932,19 @@ def test_confirmed_create_never_reaches_the_destructive_cleanup(monkeypatch):
 
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))],
+    )
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
     listrep = osc_encode(
         "/GetContainerContents",
-        [("i", 1001), ("b", msgpack.packb(
+        [("i", 1002), ("b", msgpack.packb(
             [{"cid_": 777, "name": "X", "cctp": 1000, "posi": 5}],
             use_bin_type=True))],
     )
-    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
-    _wire_seq(h, [[create], [listrep], [setdata]])
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [listrep], [setdata]])
     assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
 
 
@@ -829,7 +979,7 @@ def test_create_status_error_does_not_delete(monkeypatch):
     _wire_seq(h, [[create]] + [[f] for f in empty] + [[late], [delete]])
 
     with pytest.raises(HelixError):
-        h._raw.push_to_slot(-2, 5, "X", blob)
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=True)
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
     # only the bounded confirm listings were made — no extra cleanup listing
     assert len([s for s in h.sock.sent
@@ -857,7 +1007,7 @@ def test_create_status_error_message_names_the_real_precondition(monkeypatch):
     _wire_seq(h, [[create]] + [[f] for f in empty])
 
     with pytest.raises(HelixError) as ei:
-        h._raw.push_to_slot(-2, 5, "X", blob)
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=True)
     msg = str(ei.value)
     assert "power-cycle" not in msg.lower()
     assert "unsaved edits" in msg
@@ -892,7 +1042,7 @@ def test_create_status_error_scopes_the_dirty_flag_note_to_code_1(monkeypatch):
     _wire_seq(h, [[create]] + [[f] for f in empty])
 
     with pytest.raises(HelixError) as ei:
-        h._raw.push_to_slot(-2, 5, "X", blob)
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=True)
     msg = str(ei.value)
     assert "status code -47" in msg
     assert "unsaved edits" not in msg, \
@@ -923,7 +1073,7 @@ def test_cidless_preset_message_calls_the_survivor_an_empty_stub(monkeypatch):
     _wire_seq(h, [[create]] + [[f] for f in cidless])
 
     with pytest.raises(HelixError) as ei:
-        h._raw.push_to_slot(-2, 5, "X", blob)
+        h._raw.push_to_slot(-2, 5, "X", blob, prechecked_empty=True)
     msg = str(ei.value)
     assert "EMPTY" in msg
     assert "Delete it before retrying" in msg
@@ -1797,19 +1947,23 @@ def test_create_setlist_aborts_before_create_on_listing_failure(monkeypatch):
 
 
 def test_install_into_pool_explicit_pos_skips_lowest_empty_posi(monkeypatch):
-    """An explicit pos= bypasses _lowest_empty_posi entirely — a listing
-    failure elsewhere must not block a caller that already knows its slot."""
+    """An explicit pos= bypasses _lowest_empty_posi entirely — but pays the
+    #94 pre-create snapshot instead: the caller-supplied slot was never
+    prechecked here, so the create must be attributable."""
     _patch_sub(monkeypatch)
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     name = "White Limo Lead"
-    create = osc_encode("/status", [("i", 1000), ("i", 930), ("i", 0)])
-    setdata = osc_encode("/status", [("i", 1001), ("i", 0), ("i", 0)])
+    snap = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb([], use_bin_type=True))])
+    create = osc_encode("/status", [("i", 1001), ("i", 930), ("i", 0)])
+    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
     presets = [{"cid_": 777, "name": name, "cctp": 1000, "posi": 3}]
     listrep = osc_encode(
         "/GetContainerContents",
-        [("i", 1002), ("b", msgpack.packb(presets, use_bin_type=True))])
-    _wire_seq(h, [[create], [setdata], [listrep]])
+        [("i", 1003), ("b", msgpack.packb(presets, use_bin_type=True))])
+    _wire_seq(h, [[snap], [create], [setdata], [listrep]])
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
     assert h.install_into_pool(blob, name, pos=3) == 777
@@ -2235,11 +2389,12 @@ def test_a_dropped_status_reply_is_confirmed_not_failed(monkeypatch):
     h.create_confirm_delay = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    hit = _pool_listing(1001, [{"cid_": 777, "name": "X", "cctp": 1000,
+    snap = _pool_listing(1000, [])
+    hit = _pool_listing(1002, [{"cid_": 777, "name": "X", "cctp": 1000,
                                 "posi": 5}])
-    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
     # [] for the create == no /status frame at all
-    _wire_seq(h, [[], [hit], [setdata]])
+    _wire_seq(h, [[snap], [], [hit], [setdata]])
 
     assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
@@ -2255,8 +2410,9 @@ def test_a_dropped_status_reply_error_does_not_say_code_none(monkeypatch):
     h.create_confirm_tries = 2
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    empty = [_pool_listing(r, []) for r in (1001, 1002)]
-    _wire_seq(h, [[]] + [[f] for f in empty])
+    snap = _pool_listing(1000, [])
+    empty = [_pool_listing(r, []) for r in (1002, 1003)]
+    _wire_seq(h, [[snap], []] + [[f] for f in empty])
 
     with pytest.raises(HelixError) as exc:
         h._raw.push_to_slot(-2, 5, "X", blob)
@@ -2276,10 +2432,11 @@ def test_a_cidless_match_is_not_reported_as_never_listed(monkeypatch):
     h.create_confirm_tries = 2
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    snap = _pool_listing(1000, [])
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
     cidless = [_pool_listing(r, [{"name": "X", "cctp": 1000, "posi": 5}])
-               for r in (1001, 1002)]
-    _wire_seq(h, [[create]] + [[f] for f in cidless])
+               for r in (1002, 1003)]
+    _wire_seq(h, [[snap], [create]] + [[f] for f in cidless])
 
     with pytest.raises(HelixError) as exc:
         h._raw.push_to_slot(-2, 5, "X", blob)
@@ -2321,11 +2478,12 @@ def test_confirming_relist_runs_under_a_subscription(monkeypatch):
     h.create_confirm_delay = 0
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
-    hit = _pool_listing(1001, [{"cid_": 777, "name": "X", "cctp": 1000,
+    snap = _pool_listing(1000, [])
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
+    hit = _pool_listing(1002, [{"cid_": 777, "name": "X", "cctp": 1000,
                                 "posi": 5}])
-    setdata = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
-    _wire_seq(h, [[create], [hit], [setdata]])
+    setdata = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [hit], [setdata]])
 
     assert h._raw.push_to_slot(-2, 5, "X", blob) == 777
     assert _RecordingSub.opened, "no 2001 subscription held over the confirm"
@@ -2345,12 +2503,14 @@ def test_confirming_relist_requires_the_posi_to_match(monkeypatch):
     h.create_confirm_tries = 2
     from helixgen.device import content as C
     blob = C.encode_content({"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}})
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
+    snap = _pool_listing(1000, [{"cid_": 777, "name": "X", "cctp": 1000,
+                                 "posi": 9}])
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
     # "X" exists, but at posi 9 — we asked for slot 5
     elsewhere = [_pool_listing(r, [{"cid_": 777, "name": "X", "cctp": 1000,
                                     "posi": 9}])
-                 for r in range(1001, 1004)]
-    _wire_seq(h, [[create]] + [[f] for f in elsewhere])
+                 for r in range(1002, 1005)]
+    _wire_seq(h, [[snap], [create]] + [[f] for f in elsewhere])
 
     with pytest.raises(HelixError):
         h._raw.push_to_slot(-2, 5, "X", blob)
@@ -2365,11 +2525,12 @@ def test_save_edit_buffer_confirming_relist_runs_under_a_subscription(monkeypatc
     h = HelixClient("10.0.0.99")
     h.mutate_settle = 0
     h.create_confirm_delay = 0
-    create = osc_encode("/status", [("i", 1000), ("i", 1237), ("i", 1)])
-    hit = _pool_listing(1001, [{"cid_": 777, "name": "X", "cctp": 1000,
+    snap = _pool_listing(1000, [])
+    create = osc_encode("/status", [("i", 1001), ("i", 1237), ("i", 1)])
+    hit = _pool_listing(1002, [{"cid_": 777, "name": "X", "cctp": 1000,
                                 "posi": 5}])
-    saved = osc_encode("/status", [("i", 1002), ("i", 0), ("i", 0)])
-    _wire_seq(h, [[create], [hit], [saved]])
+    saved = osc_encode("/status", [("i", 1003), ("i", 0), ("i", 0)])
+    _wire_seq(h, [[snap], [create], [hit], [saved]])
 
     assert h._raw.save_edit_buffer_to(-2, 5, "X") == 777
     assert _RecordingSub.opened, "no 2001 subscription held over the confirm"

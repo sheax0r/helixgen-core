@@ -1263,10 +1263,11 @@ class HelixClient:
         into a slot they checked was empty (``device save``/``push``/
         ``install``) can read a same-name entry now sitting at ``pos`` as
         unambiguously ours. ``slots restore --force`` deliberately skips that
-        precheck, so there the match may be a pre-existing occupant — which is
-        the slot the caller asked to overwrite anyway. The returned cid is the
-        **listed** one; the create-reply cid stays documented-unreliable (see
-        ``_pool_cid_by_name``).
+        precheck, so there the match may be a pre-existing occupant — the #94
+        attribution gate (:meth:`_create_attributed`) catches that case by
+        checking the cid against a pre-create snapshot and refusing the write.
+        The returned cid is the **listed** one; the create-reply cid stays
+        documented-unreliable (see ``_pool_cid_by_name``).
 
         The listing is **strict** (#40): a timeout or truncated reply must not
         decode as "container empty" and count as a clean "not there". A failed
@@ -1431,14 +1432,18 @@ class HelixClient:
         ``prechecked_empty`` gates the failed-save stub cleanup exactly as it
         gates :meth:`_push_to_slot`'s (#95) — see that docstring for why it
         defaults to False and what an unprechecked (name, pos) match may be.
+        Without the precheck the create runs through the #94 attribution gate
+        (:meth:`_create_attributed`).
         """
         with self.mutating():
-            cid = self._create_content_checked(container, pos, name)
+            cid, attributed = self._create_attributed(
+                container, pos, name, prechecked_empty=prechecked_empty)
             if cid is None:
                 return None
             if not self._save_preset_with_cid(cid):
-                self._after_failed_write(container, pos, name,
-                                         prechecked_empty=prechecked_empty)
+                self._after_failed_write(
+                    container, pos, name, prechecked_empty=prechecked_empty,
+                    attributed_cid=cid if attributed else None)
                 return None
             return cid
 
@@ -1470,32 +1475,92 @@ class HelixClient:
         It **defaults to False** — deleting is the destructive answer, so a
         caller has to opt in deliberately rather than inherit permission.
         ``slots restore --force`` skips the precheck (#25), so there the entry
-        may be a **pre-existing occupant**: neither the create-reply cid nor
-        :meth:`_confirm_created`'s match can distinguish it from a fresh stub,
-        and deleting it would destroy content we never created — the very thing
-        #38 was about. Left False, the write failure is reported without any
-        cleanup."""
+        at ``pos`` may be a **pre-existing occupant** — the #94 attribution
+        gate (:meth:`_create_attributed`) is what keeps the write out of it."""
         with self.mutating():
-            cid = self._create_content_checked(container, pos, name)
+            cid, attributed = self._create_attributed(
+                container, pos, name, prechecked_empty=prechecked_empty)
             if cid is None:
                 return None
             if not self._set_content_data(cid, blob):
-                self._after_failed_write(container, pos, name,
-                                         prechecked_empty=prechecked_empty)
+                self._after_failed_write(
+                    container, pos, name, prechecked_empty=prechecked_empty,
+                    attributed_cid=cid if attributed else None)
                 return None
             return cid
 
+    def _create_attributed(self, container: int, pos: int, name: str, *,
+                           prechecked_empty: bool
+                           ) -> Tuple[Optional[int], bool]:
+        """``/CreateContent`` with an attribution guarantee (#94); returns
+        ``(cid, attributed)``.
+
+        With ``prechecked_empty`` this is exactly
+        :meth:`_create_content_checked` — the caller's emptiness precheck
+        already makes a (name, pos) match ours by construction, and no extra
+        listing is paid (``attributed`` is False: attribution came from the
+        precheck, not a snapshot).
+
+        Without it (``slots restore --force``; ``install_into_pool`` with a
+        caller-supplied pos) the confirming re-list's (name, pos) match could
+        be a PRE-EXISTING occupant. Hardware characterization (fw 1.3.2
+        b1340, 2026-07-27, `docs/superpowers/specs/2026-07-27-createcontent-
+        followups.md`) established that /CreateContent at an occupied posi
+        **INSERTS** — the new entry lands at the requested posi and the
+        incumbent shifts down one — so a create that LANDED always yields a
+        cid that did not exist before it. The container's cids are therefore
+        snapshotted (strict — a timeout raises BEFORE the create) and a
+        confirmed cid found in that snapshot means the create did NOT land
+        and the match is the incumbent: writing into it would overwrite
+        content we never created, so this raises instead. ``attributed=True``
+        marks a snapshot-proven-fresh cid, which is what licenses
+        :meth:`_after_failed_write` to delete it by cid.
+        """
+        snapshot = None
+        if not prechecked_empty:
+            snapshot = {m.get("cid_")
+                        for m in self.list_container(container, strict=True)}
+        cid = self._create_content_checked(container, pos, name)
+        if cid is not None and snapshot is not None and cid in snapshot:
+            raise HelixError(
+                f"/CreateContent for {name!r} at slot {pos} cannot be "
+                f"attributed: cid {cid} already existed in container "
+                f"{container} before the create, so it is the slot's "
+                f"pre-existing occupant, not our new entry (the device "
+                f"INSERTS at an occupied posi, so a landed create always "
+                f"allocates a new cid). Nothing was written into it. If the "
+                f"create lands late, an EMPTY stub named {name!r} may appear "
+                f"at slot {pos}, shifting the occupant down one — re-list, "
+                f"delete the stub, and retry against a slot that is empty")
+        return cid, snapshot is not None and cid is not None
+
     def _after_failed_write(self, container: int, pos: int, name: str, *,
-                            prechecked_empty: bool) -> None:
+                            prechecked_empty: bool,
+                            attributed_cid: Optional[int] = None) -> None:
         """Shared aftermath for a create-then-write that failed at the write
         (:meth:`_push_to_slot` / :meth:`_save_edit_buffer_to`, #95): clean up
-        the just-created stub only when the caller prechecked the slot empty —
-        that precheck is what makes the (name, pos) match unambiguously ours."""
+        the just-created stub only when it is provably ours — either the
+        caller prechecked the slot empty (making the (name, pos) re-list
+        match unambiguous) or the #94 pre-create snapshot proved the cid
+        fresh (``attributed_cid``, deletable directly, no re-list needed)."""
         if prechecked_empty:
             # cleanup: delete the entry we just created by (name, pos) —
             # the create-reply cid is unreliable, so never blind-delete it
             self._delete_created_stub(container, name, pos)
+        elif attributed_cid is not None:
+            try:
+                if self._delete(container, [attributed_cid]):
+                    return
+                why = f"the device refused to delete cid {attributed_cid}"
+            except HelixError as exc:
+                why = f"the delete failed: {exc}"
+            logger.warning(
+                "cleanup of the just-created entry %r at slot %d in "
+                "container %s did not happen (%s) — an empty stub may be "
+                "left behind; re-list to check", name, pos, container, why)
         else:
+            # defensive: neither a precheck nor an attribution — reachable
+            # only if a future caller bypasses _create_attributed
             logger.warning(
                 "writing content to %r at slot %d in container %s "
                 "failed, and the slot was not checked empty beforehand "

@@ -83,20 +83,29 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
 
 ### Task 3: #94 — characterize, then de-ambiguate the `--force` write target
 
-- [ ] **Characterize on hardware first:** what does the device do with a
+- [x] **Characterize on hardware first:** what does the device do with a
       `/CreateContent` aimed at an **occupied** `posi`? (The same uncatalogued
       behavior #69 left open.) Probe with `HGTEST` artifacts: does it create at
       the requested position, relocate, refuse, or overwrite? Record the raw
       replies verbatim in the findings doc
-- [ ] Failing test first, then implement the entry's preferred fix if
+      (INSERTS at the requested posi, incumbent + all subsequent shift +1;
+      never refuses/overwrites/relocates; delete leaves a gap, block reorder
+      heals — recorded verbatim in the findings doc)
+- [x] Failing test first, then implement the entry's preferred fix if
       characterization supports it: snapshot the container's cids before
       `/CreateContent` and accept only a cid **absent** from that snapshot,
       raising rather than writing into a match that cannot be attributed
       (`_push_to_slot(prechecked_empty=False)`, the `slots restore --force` path)
-- [ ] Decide and document the residue: a possibly-orphaned empty stub left at the
+      (implemented as `_create_attributed`, shared with `_save_edit_buffer_to`)
+- [x] Decide and document the residue: a possibly-orphaned empty stub left at the
       same `posi` when the create landed separately. Either clean it up safely or
       state in `docs/CLI.md` why it is left, and file anything punted
-- [ ] Verify live under the `device_write` marker; add regression coverage
+      (snapshot-attributed stubs are now deleted by cid on a failed write; the
+      late-landing stub after a gate refusal is unobservable at raise time —
+      documented in the error message and `docs/CLI.md`; nothing punted)
+- [x] Verify live under the `device_write` marker; add regression coverage
+      (`test_force_create_at_occupied_posi_inserts_and_attributes` + 5 offline
+      regressions; `-m "live and device_write"` green: 10 passed, 1 skipped)
 
 ### Task 4: #96 — characterize the `code == 0` reply cid, then close the asymmetry
 

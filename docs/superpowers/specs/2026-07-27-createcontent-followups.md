@@ -84,7 +84,81 @@ orphaned file, and re-imports — self-healing end to end.
 
 ## #94 — `--force` write-target ambiguity
 
-(To be filled by Task 3.)
+### Characterization (2026-07-27, fw 1.3.2 b1340): `/CreateContent` at an occupied posi INSERTS
+
+Probed with `HGTEST` artifacts in the pool (`-2`), all replies verbatim
+(`/status [reqid, newCid, code]`; code 1 throughout = the #38 dirty-buffer
+flag, the active preset carried unsaved edits):
+
+1. Create `HGTEST94-A` at **empty** posi 66 → reply `cid 1512 code 1`;
+   listed `{cid_: 1512, name: HGTEST94-A, posi: 66}`.
+2. Create `HGTEST94-B` at **occupied** posi 66 → reply `cid 1513 code 1`;
+   listed: `{cid_: 1513, HGTEST94-B, posi: 66}`, `{cid_: 1512, HGTEST94-A,
+   posi: 67}` — **inserted at the requested posi, incumbent shifted +1**.
+3. Create `HGTEST94-A` (duplicate name) at occupied posi 66 → reply
+   `cid 1514 code 1`; listed 1514@66, 1513@67, 1512@68 — same insert, name
+   collisions permitted.
+4. Mid-pool: create `HGTEST94-MID` at occupied posi 10 (66-row pool) →
+   reply `cid 1515 code 1`; listed 1515@10 and **every** subsequent preset
+   (old 10..65) shifted to 11..66.
+
+So the device **never refuses, never overwrites, never relocates** the new
+entry: it inserts at the requested posi and shifts the incumbent and all
+subsequent entries down one. The reply cid matched the listed cid in every
+probe. Two adjacent facts, needed to clean up after a probe:
+`/RemoveContent` does NOT shift back — it leaves a **gap** at the deleted
+posi — and a block `/ReorderContainerContent` (all shifted cids, target
+posi) restores a contiguous pool in one op.
+
+### What that means for the #38-era assumptions
+
+The feared "write into a pre-existing occupant" can NOT happen when the
+create lands: the fresh stub always sits at the requested posi and the
+same-name incumbent has been shifted away, so `_confirm_created`'s
+`(name, posi)` match finds OUR stub. The danger window is exactly: the
+create **drops entirely** AND a same-name incumbent holds the posi — then
+the confirming re-list matches the incumbent and `_set_content_data` would
+overwrite a preset helixgen never created. The backlog entry's preferred
+fix (pre-create cid snapshot) targets precisely that window.
+
+### Fix
+
+`_create_attributed` (new, shared by `_push_to_slot` and
+`_save_edit_buffer_to`): when the caller did NOT precheck the slot empty
+(`slots restore --force`; `install_into_pool` with a caller-supplied pos),
+the container's cids are snapshotted (strict — a listing timeout raises
+BEFORE the create) and a confirmed cid found in the snapshot raises instead
+of writing: since a landed create always allocates a new cid, a
+pre-existing cid means the create did not land and the match is the
+incumbent. The prechecked paths are unchanged and pay no extra listing.
+
+Consequence for the failed-write residue: a cid the snapshot proved fresh
+is **attributably ours**, so a failed unprechecked write now deletes that
+exact cid (previously it warned "may predate this call" and orphaned the
+stub). The residue that cannot be cleaned is the gate-refusal case where
+the dropped create lands late: an empty stub named like the tone may then
+appear at the posi (shifting the occupant down one) after we already
+raised. Documented in the error message and `docs/CLI.md` (re-list, delete
+the stub, retry) — it is unobservable at raise time.
+
+### Verification
+
+Offline regression: `tests/test_device_client.py` —
+`test_push_to_slot_unprechecked_refuses_preexisting_cid`,
+`test_push_to_slot_unprechecked_accepts_fresh_cid_after_insert`,
+`test_push_to_slot_unprechecked_failed_write_deletes_attributed_stub`,
+`test_push_to_slot_aborts_before_create_on_snapshot_failure`,
+`test_save_edit_buffer_to_unprechecked_refuses_preexisting_cid`.
+Live (`device_write` marker, both runs green on the hardware above):
+`tests/live/test_device_write.py::
+test_force_create_at_occupied_posi_inserts_and_attributes` — stages an
+incumbent at the pool tail, runs the unprechecked path at its posi, and
+asserts fresh-cid insert at the requested posi + incumbent shifted +1, with
+full `HGTEST` teardown.
+
+`#69` note: the "what does the device do with an occupied posi" gap this
+closes is the **pool** half. The setlist half (two references stacked at
+one position) stays uncharacterized and refused (Task 5 revisits #69).
 
 ## #96 — `code == 0` reply-cid trust
 
