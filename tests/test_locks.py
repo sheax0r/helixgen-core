@@ -970,6 +970,9 @@ def fake_client(monkeypatch, root):
         def get_property_def(self, key):
             raise ValueError(f"unknown settings key {key!r}")
 
+        def edit_buffer_blocks(self):
+            return []
+
     import helixgen.device as device_mod
     monkeypatch.setattr(device_mod, "HelixClient", FakeClient)
     return seen
@@ -1371,3 +1374,129 @@ def test_cli_lock_status_renders_detached_leases(root):
     res = run_cli("device", "lock", "--status", "--ip", IP)
     assert res.exit_code == 0, res.output
     assert "detached" in res.output and "pid None" not in res.output
+
+
+# --------------------------------------------------------------------------
+# #97 (Task 3): a presented-but-dangling token must fail loudly — read-only
+# verbs included. Setting $HELIXGEN_LOCK_TOKEN declares "I am in a held
+# session"; when it opens no live lease for the scope a verb touches, that
+# session is gone and proceeding unlocked is how the 2026-07-27 workflow got
+# real-looking numbers for a snapshot it had been REFUSED permission to select.
+# --------------------------------------------------------------------------
+
+def test_97_check_session_is_a_noop_without_a_token(root):
+    """No token = today's behavior exactly: unlocked reads stay free, even
+    with a foreign lease held."""
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    locks.check_session(IP, ("editbuffer",))
+
+
+def test_97_check_session_passes_with_a_live_covering_lease(root, monkeypatch):
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, label="agent-workflow")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer", "irs"))
+
+
+def test_97_check_session_raises_naming_the_holder_that_reclaimed_it(
+        root, monkeypatch):
+    write_lease(root, "editbuffer", pid=1, label="live-test-suite")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("editbuffer",))
+    msg = str(e.value)
+    assert "live-test-suite" in msg          # the current holder, named
+    assert "reclaimed" in msg                # not merely "locked"
+    assert "device lock" in msg              # actionable: re-establish state
+
+
+def test_97_check_session_raises_when_no_lease_exists_at_all(root, monkeypatch):
+    """The lease may have simply expired — no holder to name, still a lost
+    session, still a refusal."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",))
+    assert "reclaimed or expired" in str(e.value)
+
+
+def test_97_check_session_rejects_a_stale_lease_of_our_own(root, monkeypatch):
+    """A dead-pid session lease past the grace is reclaimable by anyone — it
+    is no longer protection, so a token that only opens IT must not pass."""
+    write_lease(root, "all", pid=dead_pid(), token="tok-97", kind="session",
+                age=locks.SESSION_PID_GRACE_S + 5)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("editbuffer",))
+
+
+def test_97_read_only_verb_errors_when_the_lease_was_reclaimed(
+        root, fake_client, monkeypatch):
+    """The exact observed scenario, end to end: the agent's lease is gone,
+    a contender holds `editbuffer`, and `device measure` — read-only, takes
+    no lock — used to return a well-formed measurement of whatever snapshot
+    happened to be active. It must now error instead."""
+    write_lease(root, "editbuffer", pid=1, label="live-test-suite")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "measure", "--ip", IP)
+    assert res.exit_code != 0
+    assert "live-test-suite" in res.output
+    assert "reclaimed" in res.output
+
+
+@pytest.mark.parametrize("argv,scope", [
+    (("device", "meters"), "editbuffer"),
+    (("device", "tuner"), "editbuffer"),
+    (("device", "blocks"), "editbuffer"),
+    (("device", "params", "0", "0"), "editbuffer"),
+    (("device", "active"), "editbuffer"),
+    (("device", "list"), "library"),
+    (("device", "read", "1"), "library"),
+    (("device", "list-irs"), "irs"),
+    (("device", "settings", "list"), "globals"),
+])
+def test_97_read_only_verbs_refuse_a_dangling_token(root, fake_client,
+                                                    monkeypatch, argv, scope):
+    write_lease(root, scope, pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli(*argv, "--ip", IP)
+    assert res.exit_code != 0, res.output
+    assert "other-agent" in res.output and "reclaimed" in res.output
+
+
+def test_97_read_only_verb_without_a_token_still_runs_unlocked(root,
+                                                               fake_client):
+    """Verbs invoked with NO token keep today's behavior exactly — read-only
+    verbs must not start requiring locks."""
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    res = run_cli("device", "blocks", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+def test_97_read_only_verb_with_a_live_lease_runs(root, fake_client,
+                                                  monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "lock", "--scope", "all", "--detach", "--label",
+                   "agent-workflow", "--ip", IP).exit_code == 0
+    res = run_cli("device", "blocks", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+def test_97_mutating_verb_refuses_instead_of_locking_a_free_scope(
+        root, fake_client, monkeypatch):
+    """Before: a token that authenticated nothing silently acquired a fresh
+    transient lease and proceeded. Now it is a lost session, and the verb
+    stops."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code != 0
+    assert "reclaimed or expired" in res.output
+    assert not lease_path(root, "editbuffer").exists()
+
+
+def test_97_unlock_still_works_with_a_dangling_token(root, monkeypatch):
+    """The recovery path must never be locked out by the new check."""
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "unlock", "--ip", IP).exit_code == 0
+    res = run_cli("device", "lock", "--status", "--ip", IP)
+    assert res.exit_code == 0, res.output

@@ -85,10 +85,29 @@ Pinned by `test_97_detached_lease_is_renewed_by_token_authenticated_use`.
 
 ### Task 3: presented-token-but-no-longer-owner must fail loudly, read-only included
 
-- [ ] This is the safety half and matters more than Task 2. When `$HELIXGEN_LOCK_TOKEN` is set but does not authenticate against a live lease for the scope a verb touches, the verb must FAIL FAST with a clear message naming the current holder — rather than proceeding unlocked
-- [ ] Apply it to read-only verbs too (`device measure`, `device meters`, `device tuner`, `device blocks`, `device params`, ...). Setting the token is an explicit declaration of "I am in a held session"; if that session is gone, a read is no more trustworthy than a write. Verbs invoked with NO token keep today's behavior exactly (unlocked reads stay free — do not make read-only verbs start requiring locks)
-- [ ] Test the exact observed scenario end to end: token set, lease reclaimed by a contender, `device measure` must error instead of returning a measurement
-- [ ] Make the error message actionable: name the holder, and say the workflow's lease was reclaimed (not merely "locked")
+- [x] This is the safety half and matters more than Task 2. When `$HELIXGEN_LOCK_TOKEN` is set but does not authenticate against a live lease for the scope a verb touches, the verb must FAIL FAST with a clear message naming the current holder — rather than proceeding unlocked
+- [x] Apply it to read-only verbs too (`device measure`, `device meters`, `device tuner`, `device blocks`, `device params`, ...). Setting the token is an explicit declaration of "I am in a held session"; if that session is gone, a read is no more trustworthy than a write. Verbs invoked with NO token keep today's behavior exactly (unlocked reads stay free — do not make read-only verbs start requiring locks)
+- [x] Test the exact observed scenario end to end: token set, lease reclaimed by a contender, `device measure` must error instead of returning a measurement
+- [x] Make the error message actionable: name the holder, and say the workflow's lease was reclaimed (not merely "locked")
+
+**Task 3 implementation (for the PR):** `locks.check_session(ip, scopes)` +
+`locks.LockLost`. With no token it is a no-op, so unlocked callers — read-only
+verbs included — are byte-for-byte unchanged; with a token it requires a LIVE
+lease that token opens covering each scope (the scope's own file or `all`),
+else raises naming the current holder ("the session lease was reclaimed or
+expired, and X holds it now") with the recovery instruction (re-take a
+detached lease and re-read state; do not retry-and-continue).
+
+Wired at the CLI policy layer, not inside `acquire()`, so the Task 1
+characterization tests still pin the lock layer's own mechanics:
+`_locked` calls it before acquiring (a dangling token no longer narrows
+silently into a fresh transient lease), and a new sibling decorator
+`_reads(<scope>)` — check only, no lease, no new flag — carries it to the
+read-only networked verbs: `measure`/`meters`/`tuner`/`blocks`/`params`/
+`active`/`watch` (editbuffer), `list`/`setlists`/`read`/`pull`/`backup`/
+`setlist export-hss`/`slots list --verify` (library), `list-irs`/`pull-ir`
+(irs), `settings list`/`get` (globals). `device lock`/`unlock`/`discover` and
+the offline verbs stay exempt — recovery must never be locked out.
 
 ### Task 4: document the constraint that remains
 

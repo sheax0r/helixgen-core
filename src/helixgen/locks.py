@@ -122,6 +122,29 @@ class LockHeld(LockError):
                "; not waiting (timeout 0)"))
 
 
+class LockLost(LockError):
+    """``$HELIXGEN_LOCK_TOKEN`` is set but opens no live lease covering a
+    scope the caller is about to touch (#97): the session it declares was
+    reclaimed or has expired, so proceeding would be unlocked work under the
+    belief that the device is held."""
+
+    def __init__(self, ip: str, scope: str, holder: dict | None):
+        self.ip = ip
+        self.scope = scope
+        self.holder = holder
+        who = (f"{describe(holder)} holds it now"
+               if holder is not None else "nothing holds it now")
+        super().__init__(
+            f"device {ip} scope '{scope}': your $HELIXGEN_LOCK_TOKEN opens no "
+            f"live lease — the session lease was reclaimed or expired, and "
+            f"{who}. Stop and re-establish device state: re-take a lease "
+            f"(`helixgen device lock --scope all --detach --label <who>`) and "
+            f"re-read whatever you were about to act on — do NOT retry this "
+            f"call and continue, the device may have been driven by someone "
+            f"else since. To work unlocked deliberately, unset "
+            f"$HELIXGEN_LOCK_TOKEN.")
+
+
 def locks_root() -> Path:
     """The lease-file root: ``$HELIXGEN_LOCKS`` or
     ``helixgen_home()/"locks"`` (i.e. ``~/.helixgen/locks``, following
@@ -295,6 +318,49 @@ def owned(lease: dict, token: str | None = None) -> bool:
             and lease.get("pid") in (os.getpid(), os.getppid())):
         return True
     return False
+
+
+def covering_lease(ip: str, scope: str,
+                   token: str | None = None) -> dict | None:
+    """The LIVE lease we own that covers ``scope`` — its own file or the
+    exclusive ``all`` lease — or None when we hold no such lease."""
+    tok = token if token is not None else env_token()
+    for cover in ({scope, ALL} if scope != ALL else {ALL}):
+        lease = read_lease(lock_path(ip, cover))
+        if lease is not None and not is_stale(lease) and owned(lease, tok):
+            return lease
+    return None
+
+
+def check_session(ip: str, scopes, *, token: str | None = None) -> None:
+    """Fail fast when a presented token no longer owns the device (#97).
+
+    Exporting ``$HELIXGEN_LOCK_TOKEN`` is an explicit declaration of "I am
+    in a held session". If it opens no live lease covering a scope the
+    caller is about to touch, that session is GONE — reclaimed by a
+    contender or expired — and the work would proceed unlocked while still
+    believing it is protected. That asymmetry is what made the 2026-07-27
+    workflow dangerous: the mutating call was refused (visibly) while the
+    read-only one returned real-looking numbers for a device someone else
+    was now driving. Raises :class:`LockLost` naming the current holder.
+
+    NO token set → no-op. Unlocked callers, read-only verbs included, keep
+    behaving exactly as before; this never makes a read start taking a lock.
+    """
+    tok = token if token is not None else env_token()
+    if not tok:
+        return
+    for scope in _normalize_scopes(scopes):
+        if covering_lease(ip, scope, tok) is not None:
+            continue
+        holder = None
+        for cpath in _conflict_paths(ip, scope):
+            lease = read_lease(cpath)
+            if (lease is not None and not is_stale(lease)
+                    and not owned(lease, tok)):
+                holder = lease
+                break
+        raise LockLost(ip, scope, holder)
 
 
 # --------------------------------------------------------------------------

@@ -261,6 +261,13 @@ def _locked(*scopes: str, verb: str, when=None):
             if "ip" in kwargs:
                 kwargs["ip"] = ip
             try:
+                # #97: a presented-but-dangling token means the session this
+                # call belongs to is gone — refuse rather than quietly taking
+                # a fresh transient lease and mutating on.
+                locks.check_session(ip, eff)
+            except locks.LockLost as e:
+                raise click.ClickException(str(e)) from e
+            try:
                 lease = locks.acquire(ip, eff, label=f"helixgen device {verb}")
             except locks.LockHeld as e:
                 raise click.ClickException(
@@ -271,6 +278,39 @@ def _locked(*scopes: str, verb: str, when=None):
 
         return click.option("--no-lock", "no_lock", is_flag=True,
                             default=False, help=_NO_LOCK_HELP)(wrapper)
+    return deco
+
+
+def _reads(*scopes: str, when=None):
+    """Read-only counterpart of :func:`_locked` (#97): takes NO lease, adds
+    no flag — but if $HELIXGEN_LOCK_TOKEN is set it must still open a live
+    lease covering the scope(s) this verb READS. A token is an explicit
+    "I am in a held session"; once that session has been reclaimed, a read
+    is no more trustworthy than a write (the 2026-07-27 workflow was denied
+    `device snapshot 0` and then handed a well-formed `device measure` of
+    whatever snapshot happened to be active). No token → no check and no
+    lock: unlocked reads stay free. ``when(kwargs)`` narrows the scopes
+    dynamically (e.g. offline-unless---verify verbs).
+
+    Innermost decorator, right above ``def``, like :func:`_locked`.
+    """
+    def deco(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            from helixgen import locks
+
+            eff = tuple(when(kwargs)) if when is not None else scopes
+            ip = kwargs.get("ip")
+            # an unresolved ip is left to the verb body's own fail-fast; a
+            # read with no token is exactly as unlocked as it was before.
+            if eff and ip and locks.env_token():
+                try:
+                    locks.check_session(ip, eff)
+                except locks.LockLost as e:
+                    raise click.ClickException(str(e)) from e
+            return f(*args, **kwargs)
+
+        return wrapper
     return deco
 
 
@@ -829,6 +869,7 @@ def device_unlock(scopes, force, as_json, ip) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw device records as JSON.")
 @_device_option
+@_reads("library")
 def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
     """List the presets in the pool, factory, or a named setlist. Read-only.
 
@@ -873,6 +914,7 @@ def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the setlist list as JSON.")
 @_device_option
+@_reads("library")
 def device_setlists(as_json: bool, ip: str, port: int) -> None:
     """List the device's setlist containers."""
     HelixClient, HelixError = _client()
@@ -1118,6 +1160,7 @@ def device_settings() -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit as JSON.")
 @_device_option
+@_reads("globals")
 def device_settings_list(page, values, as_json, ip, port):
     """List Global-Settings keys, grouped by page (offline unless --values)."""
     from helixgen.device import settings as S
@@ -1192,6 +1235,7 @@ def device_settings_list(page, values, as_json, ip, port):
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit as JSON.")
 @_device_option
+@_reads("globals")
 def device_settings_get(key, as_json, ip, port):
     """Read one Global-Settings value (with its name, range, and enum labels)."""
     from helixgen.device import settings as S
@@ -1329,6 +1373,7 @@ def device_globaleq_set(output, band, param, value, ip, port):
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the content ref as JSON.")
 @_device_option
+@_reads("library")
 def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
     """Read the content ref for a CID (name/slot/parent)."""
     HelixClient, HelixError = _client()
@@ -1557,6 +1602,7 @@ def device_snapshot(index: int, ip: str, port: int) -> None:
 @device.command(name="blocks")
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit as JSON.")
 @_device_option
+@_reads("editbuffer")
 def device_blocks(as_json: bool, ip: str, port: int) -> None:
     """List the live edit buffer's blocks with their (path, block) coordinates.
 
@@ -1594,6 +1640,7 @@ def device_blocks(as_json: bool, ip: str, port: int) -> None:
 @click.argument("block", type=int)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit as JSON.")
 @_device_option
+@_reads("editbuffer")
 def device_params(path: int, block: int, as_json: bool, ip: str, port: int) -> None:
     """List one edit-buffer block's params: numeric pid, name, CURRENT value.
 
@@ -1634,6 +1681,7 @@ def device_params(path: int, block: int, as_json: bool, ip: str, port: int) -> N
 @device.command(name="active")
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit as JSON.")
 @_device_option
+@_reads("editbuffer")
 def device_active(as_json: bool, ip: str, port: int) -> None:
     """Show the device's ACTIVE preset: cid, name, and pool slot. Read-only.
 
@@ -1774,6 +1822,7 @@ def device_reorder(setlist: str, target: str, to_index: int,
 @click.argument("cid", type=int)
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
 @_device_option
+@_reads("library")
 def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
     """Save a preset's raw content blob (a .sbe backup) without activating it.
 
@@ -1853,6 +1902,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
               help="Emit as JSON; each entry also carries `file` = the IR's "
                    "on-device .wav basename (what `device pull-ir` takes).")
 @_device_option
+@_reads("irs")
 def device_list_irs(as_json: bool, ip: str, port: int) -> None:
     """List the impulse responses on the device (name + hash).
 
@@ -2147,6 +2197,7 @@ def device_push_ir(wav: Path, ip: str) -> None:
 @click.argument("filename")
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
 @_ip_option
+@_reads("irs")
 def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
     """Download an IR .wav from the device by its on-device FILE basename.
 
@@ -2605,6 +2656,7 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
 @click.argument("setlist")
 @click.argument("out_file", type=click.Path(dir_okay=False, path_type=Path))
 @_device_option
+@_reads("library")
 def device_setlist_export_hss(setlist: str, out_file: Path, ip: str, port: int) -> None:
     """EXPERIMENTAL: export a DEVICE setlist to a `.hss` bundle (backlog #31).
 
@@ -3074,6 +3126,7 @@ def device_slots(ctx: click.Context) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit raw JSON (the library view, or verify records with --verify).")
 @_device_option
+@_reads(when=lambda kw: ("library",) if kw.get("verify") else ())
 def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
     """List every library tone: slot, on/off device, setlists. Offline unless --verify."""
     SetlistManifest, _ = _manifest()
@@ -3302,6 +3355,7 @@ def _posi_from_slot(slot):
               default=None, help="Output dir (default ~/.helixgen/device-backups/ "
                                  "or $HELIXGEN_DEVICE_BACKUPS).")
 @_device_option
+@_reads("library")
 def device_backup(setlist: str, out_dir, ip: str, port: int) -> None:
     """Back up presets to local .sbe files + a manifest.
 
@@ -3360,6 +3414,7 @@ def device_local_list(out_dir, as_json: bool) -> None:
 @click.option("--filter", "filter_addr", multiple=True,
               help="Only show these OSC addresses (repeatable).")
 @_device_option
+@_reads("editbuffer")
 def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
     """Watch the device's live property/telemetry streams (ports 2001/2003)."""
     from helixgen.device.subscribe import HelixSubscriber
@@ -3382,6 +3437,7 @@ def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit one JSON reading per line instead of a live display.")
 @_device_option
+@_reads("editbuffer")
 def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
     """Live network tuner — reads the device's always-on pitch detector.
 
@@ -3447,6 +3503,7 @@ def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit one JSON reading per line instead of a live display.")
 @_device_option
+@_reads("editbuffer")
 def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
     """Live network level meters — reads the device's grid-level telemetry.
 
@@ -3522,6 +3579,7 @@ _SOURCE_HELP = ("Signal source feeding the chain. 'input' (default): a "
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result as one JSON object.")
 @_device_option
+@_reads("editbuffer")
 def device_measure(seconds: float, min_playing: int, source: str,
                    as_json: bool, ip: str, port: int) -> None:
     """Measure how loud the ACTIVE tone is while you play — read-only.
