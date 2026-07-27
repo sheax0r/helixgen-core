@@ -44,7 +44,7 @@ entry (never a TODO comment).
   exploratory write. Device writes are preapproved for test runs; never leave
   the device broken.
 
-## Task 1: #95 — make `_save_edit_buffer_to`'s stub cleanup opt-in (offline)
+### Task 1: #95 — make `_save_edit_buffer_to`'s stub cleanup opt-in (offline)
 
 Pure code, no hardware. Do this first so the rest of the plan works on top.
 
@@ -57,7 +57,7 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
 - [ ] Update agent-facing surfaces if any user-visible behavior changed
       (likely none — note that explicitly if so)
 
-## Task 2: #93 — a wedged IR must not read as present
+### Task 2: #93 — a wedged IR must not read as present
 
 - [ ] Reproduce a wedged IR on hardware (backing file + path index resolve, no
       `-11` registry entry — the state `delete-ir --force-wedge` exists to clean).
@@ -78,7 +78,7 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
 - [ ] Update the stderr warning wording, `docs/CLI.md`, and `CLAUDE.md`'s
       wedged-IR paragraph to match the new behavior
 
-## Task 3: #94 — characterize, then de-ambiguate the `--force` write target
+### Task 3: #94 — characterize, then de-ambiguate the `--force` write target
 
 - [ ] **Characterize on hardware first:** what does the device do with a
       `/CreateContent` aimed at an **occupied** `posi`? (The same uncatalogued
@@ -95,7 +95,7 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
       state in `docs/CLI.md` why it is left, and file anything punted
 - [ ] Verify live under the `device_write` marker; add regression coverage
 
-## Task 4: #96 — characterize the `code == 0` reply cid, then close the asymmetry
+### Task 4: #96 — characterize the `code == 0` reply cid, then close the asymmetry
 
 - [ ] **Characterize on hardware first:** is the create-reply cid ever wrong when
       the status code is `0`? Probe repeatedly (clean and dirty edit buffer, empty
@@ -111,7 +111,7 @@ Pure code, no hardware. Do this first so the rest of the plan works on top.
       backlog entry to say the asymmetry is characterized and accepted
 - [ ] Verify live under the `device_write` marker
 
-## Task 5: Findings doc, backlog, agent-facing surfaces, release
+### Task 5: Findings doc, backlog, agent-facing surfaces, release
 
 - [ ] Write `docs/superpowers/specs/2026-07-27-createcontent-followups.md`: the
       characterization results for #93/#94/#96 (verbatim device replies), what was
