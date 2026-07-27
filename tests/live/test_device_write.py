@@ -22,14 +22,18 @@ So the interesting condition for this module is a dirty edit buffer, and a
 clean one exercises nothing. No manual setup is needed — and none would
 hold: `test_load_installed_preset` runs earlier here and `device load` clears
 the flag. The `dirty_edit_buffer` fixture therefore dirties the buffer itself
-immediately before the save, and SKIPS if it can't. The old code failed every
-/CreateContent in that state; the current code must pass.
-`test_save_edit_buffer` is the primary guard — if it SKIPS, the guard did not
-run, which is not the same as passing.
+immediately before each guarded write, asserts the dirty state via read-back
+(the unsaved nudge visible in `device params` — `hist` has no CLI surface),
+and SKIPS if it can't. The old code failed every /CreateContent in that
+state; the current code must pass. `test_save_edit_buffer` and
+`test_install_and_create_with_dirty_buffer` are the guards (#90 hardware
+validation) — if they SKIP, the guards did not run, which is not the same
+as passing.
 """
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -190,7 +194,28 @@ def dirty_edit_buffer(helix, installed):
     if code != 0:
         pytest.skip(f"cannot dirty the edit buffer via set-param: "
                     f"{(err or out).strip()}")
+    # Assert the buffer IS dirty by the one signal the CLI exposes: the live
+    # edit buffer now carries the unsaved nudge (the `hist` flag itself has no
+    # CLI surface — hardware A/B 2026-07-19 established any unsaved live-ops
+    # edit sets it). Without this read-back a silently-dropped set-param would
+    # leave the buffer clean and every #38 guard downstream would pass while
+    # exercising nothing.
+    _assert_buffer_carries_nudge(
+        helix, target["pid"], new,
+        "set-param exited 0 but the live edit buffer does not carry the "
+        "unsaved nudge — the dirty state #38 needs was not established")
     return {"pid": target["pid"], "was": current, "now": new}
+
+
+def _assert_buffer_carries_nudge(helix, pid, value, msg):
+    """Read the live edit buffer back and assert it carries the unsaved
+    nudge — the CLI-visible proxy for the `hist` dirty flag."""
+    code, out, err = helix("device", "params", "0", "13", "--json")
+    assert code == 0, err or out
+    live = next((p for p in (json.loads(out).get("params") or [])
+                 if p.get("pid") == pid), None)
+    assert live is not None and abs(float(live["value"]) - value) < 1e-3, (
+        f"{msg} (wanted {value}, buffer has {live and live.get('value')!r})")
 
 
 def test_save_edit_buffer(helix, installed, free_positions, dirty_edit_buffer):
@@ -216,3 +241,68 @@ def test_save_edit_buffer(helix, installed, free_positions, dirty_edit_buffer):
         saved = find_user_preset(helix, name)
         if saved is not None:
             delete_preset(helix, saved["cid_"])
+
+
+def test_install_and_create_with_dirty_buffer(helix, hgtest_hsp, installed,
+                                              free_positions,
+                                              dirty_edit_buffer):
+    """#90 hardware validation: `install` and `create` while the ACTIVE preset
+    carries an UNSAVED edit — the exact /CreateContent condition of #38.
+
+    The pre-0.30.0 client read the dirty flag (field 3 of the /status reply)
+    as an error and DELETED the content it had just correctly written, so this
+    test fails by construction against that client: the presets would vanish
+    between the write and the re-list. The 0.30.0 contract is confirm-by-
+    re-list, so both writes must land and SURVIVE — presence on the device
+    afterwards is the assertion, not the verbs' exit codes alone.
+    """
+    install_name = f"{HGTEST} Dirty Install"
+    copy_name = f"{installed['name']} (1)"
+    pos_install, pos_copy = free_positions(2)
+    cleanup_names = []
+    try:
+        code, out, err = helix("device", "install", hgtest_hsp,
+                               install_name, "--pos", pos_install)
+        cleanup_names.append(install_name)
+        assert code == 0, err or out
+        landed = find_user_preset(helix, install_name)
+        assert landed is not None, (
+            "install exited 0 under a dirty edit buffer but the preset is "
+            "not on the device — the #38 destroy-after-create regression")
+        assert landed["posi"] == pos_install
+
+        # install must not clobber the player's live tone: the buffer still
+        # carries the unsaved nudge, so the create below also runs dirty.
+        _assert_buffer_carries_nudge(
+            helix, dirty_edit_buffer["pid"], dirty_edit_buffer["now"],
+            "the edit buffer lost its unsaved edit across `device install` — "
+            "cannot certify the create below ran against a dirty buffer")
+
+        # a stale "(1)" copy (leaked by an earlier failed run of
+        # test_create_copies_and_autonames) would absorb this name — the
+        # device would autoname the new copy "(2)", the assert below would
+        # find the stale preset, and the real copy would leak past cleanup.
+        assert find_user_preset(helix, copy_name) is None, (
+            f"stale {copy_name!r} already on device (leaked by an earlier "
+            f"run) — remove it before this guard can attribute the copy")
+        code, out, err = helix("device", "create",
+                               "--from", installed["cid"], "--pos", pos_copy)
+        cleanup_names.append(copy_name)
+        assert code == 0, err or out
+        copy = find_user_preset(helix, copy_name)
+        assert copy is not None, (
+            "create exited 0 under a dirty edit buffer but the copy is not "
+            "on the device — the #38 destroy-after-create regression")
+        assert copy["posi"] == pos_copy
+    finally:
+        for name in cleanup_names:
+            stub = find_user_preset(helix, name)
+            if stub is not None:
+                delete_preset(helix, stub["cid_"])
+        # only assert cleanup when the body passed — a cleanup assert raised
+        # while the #38 regression signal is propagating would REPLACE it as
+        # the reported failure
+        if sys.exc_info()[0] is None:
+            for name in cleanup_names:
+                assert find_user_preset(helix, name) is None, (
+                    f"cleanup failed: {name!r} still on device")

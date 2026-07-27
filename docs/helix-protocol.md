@@ -801,6 +801,19 @@ footswitch/controller assignment commands are parameterised on the device.
 - **`/CreateContent` `ctype`.** `ctype = 2` (preset) and `ctype = 1003`
   (setlist, under root `-5`) are live-verified; the IR-creation value is
   unknown (IRs are created by the watched-dir import, not `/CreateContent`).
+- **Watched-dir imports do not invalidate the `-11` container-listing cache**
+  (hardware-observed 2026-07-27, fw 1.3.2 b1340). A watched-dir IR import
+  registers fully — content row (`/GetContentRef` works), path index
+  (`/IrPathForHashGet` resolves), `/addContent` broadcast (carrying the new
+  `cid_`) — yet `/GetContainerContents` on `-11` keeps returning the
+  pre-import listing indefinitely (stale for 11+ min in observation; holding
+  a 2001 subscription during the read does **not** force it to converge).
+  Any RPC **content write** invalidates the cache: a `/SetContentAttrs`
+  rename of a row (even to its same name) made the listing complete on the
+  next read, instantly. This is presumably why the editor never sees the
+  problem — it maintains its own model from `/addContent` deltas rather than
+  re-listing. helixgen's `push_ir` exploits it: after registration it issues
+  a same-name rename of the new cid as a no-op cache nudge.
 - **Preset notes** live as the `preset.meta.info` entry (`{key_, type:"s",
   val_}`) in the content blob's **`pm__` property list** — not as a content
   attr. Read/write = `/GetContentData` → edit the entry → `/SetContentData`

@@ -258,10 +258,60 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
         with HelixClient(ip) as h:
             already = h.ir_path_for_hash(hg_hash)
             if already:
-                return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
-                        "device_hash": hg_hash, "hash_match": True,
-                        "registered": True, "cid": None, "device_path": already,
-                        "remote": None, "already": True}
+                # The point lookup answers "the backing file resolves", which
+                # the WEDGED state (#93: file lingering with no -11 registry
+                # entry — e.g. a client killed between /RemoveContent and the
+                # file removal) also satisfies. But an ABSENT listing entry is
+                # not enough to call it wedged: the -11 listing cache is not
+                # invalidated by watched-dir imports (hardware-observed
+                # 2026-07-27, fw 1.3.2 b1340), so a healthy IR imported by a
+                # client that never nudged the cache is unlisted too. An RPC
+                # content write invalidates the cache, so a same-name rename
+                # of any listed row refreshes it; only a hash still unlisted
+                # AFTER that refresh is truly wedged. A failed listing is NOT
+                # evidence of a wedge (flaky transport is the common case) —
+                # it keeps the trusting path.
+                # A row with hash None is one list_irs could not normalize —
+                # it may BE this IR, so it vetoes the wedge verdict exactly
+                # like a match (deleting the backing file over an undecodable
+                # row would break a registered IR).
+                def _hits(rs):
+                    return any(m["hash"] in (hg_hash, None) for m in rs)
+                try:
+                    rows = h.list_irs(strict=True, include_unusable=True)
+                    listed = _hits(rows)
+                    if not listed:
+                        # The nudge needs a listed row with a usable (cid,
+                        # name) pair to rename — renaming a row to a missing/
+                        # None name would blank a real user IR's display
+                        # name. And a dropped rename reply surfaces as a
+                        # False return (never an exception). Without a
+                        # CONFIRMED refresh the wedge verdict is unearned —
+                        # trust the point lookup, same as the failed-listing
+                        # path below.
+                        nudge = next(
+                            (r for r in rows
+                             if isinstance(r.get("cid_"), int)
+                             and isinstance(r.get("name"), str)
+                             and r["name"]), None)
+                        if nudge is not None and h.rename(nudge["cid_"],
+                                                          nudge["name"]):
+                            listed = _hits(h.list_irs(
+                                strict=True, include_unusable=True))
+                        else:
+                            listed = True
+                except HelixError:
+                    listed = True
+                if listed:
+                    return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
+                            "device_hash": hg_hash, "hash_match": True,
+                            "registered": True, "cid": None,
+                            "device_path": already,
+                            "remote": None, "already": True}
+                # Wedged orphan — its bytes hash to the very IR we're pushing,
+                # so removing it and importing normally is safe and converges.
+                with HelixSFTP(ip, key_path=key_path, user=user) as s:
+                    s.remove_ir_file(already.rsplit("/", 1)[-1])
 
         # Subscribe to 2001 FIRST — this activates the device's watched-dir
         # monitor so it registers our upload immediately (the delay fix).
@@ -273,6 +323,7 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
 
             saw_our_file = False
             dev_hash = None
+            reg_cid = reg_name = None
             deadline = time.time() + wait_timeout
             while time.time() < deadline and dev_hash is None:
                 for ev in sub.poll(0.5):
@@ -280,16 +331,48 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                             any(fname in str(a) for a in ev.args):
                         saw_our_file = True
                     elif ev.addr == "/addContent":
-                        hh = _addcontent_hash(ev.args)
-                        if hh is not None:
-                            dev_hash = hh  # our upload is the only dir change
+                        # cid/name must come from the SAME dict the hash was
+                        # accepted from, or a multi-dict payload could pair
+                        # the hash with another row's cid.
+                        for a in ev.args:
+                            if isinstance(a, dict) and "hash" in a:
+                                hh = _addcontent_hash([a])
+                                if hh is not None:
+                                    dev_hash = hh  # ours: only dir change
+                                    # cid_ is device-controlled msgpack — a
+                                    # non-int would raise struct.error (not
+                                    # HelixError) from rename()'s encoder
+                                    cid = a.get("cid_")
+                                    reg_cid = cid if isinstance(cid, int) \
+                                        else None
+                                    reg_name = a.get("name")
+                                    break
             if dev_hash is not None:
                 with HelixClient(ip) as h:
+                    if reg_cid is not None:
+                        # A watched-dir import registers the IR (row, path
+                        # index, /addContent) but does NOT invalidate the
+                        # device's -11 container-listing cache — list-irs /
+                        # rename-ir / delete-ir would miss it until some later
+                        # RPC content write (hardware-observed 2026-07-27,
+                        # fw 1.3.2 b1340: stale for 11+ min, refreshed the
+                        # instant a row was renamed). A same-name rename is a
+                        # no-op write that forces the refresh. Advisory: the
+                        # IR is registered either way.
+                        try:
+                            # reg_name is device-controlled msgpack — a
+                            # non-str (or empty) name must not be written
+                            # back; the wav stem is the name the import used
+                            h.rename(reg_cid,
+                                     reg_name if isinstance(reg_name, str)
+                                     and reg_name else stem)
+                        except HelixError:
+                            pass
                     path = h.ir_path_for_hash(dev_hash)
                 return {"ok": True, "name": stem, "helixgen_hash": hg_hash,
                         "device_hash": dev_hash,
                         "hash_match": dev_hash == hg_hash,
-                        "registered": True, "cid": None,
+                        "registered": True, "cid": reg_cid,
                         "device_path": path, "remote": remote, "already": False,
                         "saw_watched_change": saw_our_file}
 

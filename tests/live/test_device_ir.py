@@ -9,11 +9,13 @@ Quirks encoded from the 2026-07-15 live runs:
   pull-ir(original basename) → delete-ir.
 * The -11 IR registry listing lags a just-completed push: `push-ir` sees the
   `/addContent` broadcast while `list-irs` still under-reports (observed
-  2026-07-15). That was root-caused with backlog #38 on 2026-07-19 as
-  container-index lag, not a wedged device — `list_irs` now settles under a
-  subscription and cross-checks the authoritative point lookup, so the entry
-  must appear. The old xfail on this path is gone: a missing entry is a real
-  regression and fails.
+  2026-07-15). Hardware-validated root cause (2026-07-27, fw 1.3.2 b1340):
+  a watched-dir import never invalidates the device's -11 listing cache —
+  the 2001-subscription "settle" does NOT make it converge (stale 11+ min in
+  observation); an RPC content write does. `push_ir` therefore nudges the
+  cache with a same-name rename of the cid `/addContent` reported, so the
+  entry must appear promptly. The old xfail on this path is gone: a missing
+  entry is a real regression and fails.
 
 `ir-prune` is exercised in its default DRY-RUN form only (read-only); the
 executing forms (--yes/--force) could touch non-HGTEST device IRs.
@@ -51,11 +53,12 @@ def test_push_rename_pull_delete_ir(helix, hgtest_wav, hgtest_wav_hash, tmp_path
         code, out, err = helix("device", "push-ir", hgtest_wav, timeout=120)
         assert code == 0, err or out
 
-        # `device list-irs` reads under a 2001 subscription and lets the
-        # registry settle, so the entry must be there. (The point-lookup
-        # cross-check is a separate `device_ir_hashes(verify=...)` path this
-        # CLI listing doesn't take.) Poll only to absorb ordinary network
-        # jitter — a timeout is a REAL failure, not an xfail.
+        # push-ir nudges the device's -11 listing cache after registration
+        # (same-name rename of the new cid — the cache ignores watched-dir
+        # imports and refreshes only on an RPC content write, hardware-
+        # validated 2026-07-27), so the entry must be there. Poll only to
+        # absorb ordinary network jitter — a timeout is a REAL failure, not
+        # an xfail.
         deadline = time.time() + REGISTRY_WAIT_S
         while time.time() < deadline:
             if hgtest_wav_hash in _device_ir_hashes(helix):

@@ -52,22 +52,25 @@ numbered entry (never a TODO comment).
 
 ### Task 1: housekeeping — retire the completed #92 plan file
 
-- [ ] `docs/plans/2026-07-18-sync-stale-hash.md` has all 11 checkboxes ticked and
+- [x] `docs/plans/2026-07-18-sync-stale-hash.md` has all 11 checkboxes ticked and
       #92 shipped in core 0.29.0, but the file was never moved on `main`. Move it
       to `docs/plans/completed/` (plain `git mv`, no other change)
 
 ### Task 2: Baseline live run with a CLEAN edit buffer
 
-- [ ] Confirm the device answers: `helixgen device info` (no `--ip`) and record
+- [x] Confirm the device answers: `helixgen device info` (no `--ip`) and record
       model/firmware in the findings doc created in Task 5
-- [ ] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir or setlists or sync)" tests/live -q`
+- [x] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir or setlists or sync)" tests/live -q`
       with the device's active preset freshly loaded (clean buffer, `hist=0`)
-- [ ] Record the full result (pass/fail counts, any xfail/xpass, any error text)
+- [x] Record the full result (pass/fail counts, any xfail/xpass, any error text)
       verbatim into the findings doc. Expected: everything passes, **no xfails**
-- [ ] Any failure here is a real finding: diagnose it before moving on. Fix it
+- [x] Any failure here is a real finding: diagnose it before moving on. Fix it
       under TDD (offline failing test first where the bug is offline-reachable),
       or — if it is device behavior rather than a code defect — file it in
       `docs/BACKLOG.md` as a numbered entry and note it in the findings doc
+      (finding: watched-dir IR imports never invalidate the device's -11
+      listing cache — root-caused on hardware, fixed under TDD by a same-name
+      rename nudge in `push_ir`; post-fix run fully green, see findings doc)
 
 ### Task 3: The #38 condition — creates against a DIRTY edit buffer
 
@@ -75,7 +78,7 @@ This is the condition that used to fail. A one-off manual run is not enough:
 the suite's own `device load` calls reset the buffer to clean, so the dirty
 state must be established *inside* the test that needs it.
 
-- [ ] Write a failing-first live regression test in `tests/live/test_device_write.py`
+- [x] Write a failing-first live regression test in `tests/live/test_device_write.py`
       (marker `device_write`) that: loads an `HGTEST` preset, dirties the edit
       buffer via a live-ops mutation of the ACTIVE tone (e.g. `device set-param`
       or `device bypass` — do **not** save), asserts the buffer is dirty by
@@ -83,48 +86,71 @@ state must be established *inside* the test that needs it.
       `create` into an expendable slot and asserts the content is **present on
       the device afterwards** (confirm by re-list, the 0.30.0 contract), with
       full `HGTEST` teardown in a finalizer
-- [ ] Add the equivalent dirty-buffer case for the IR path in
+      (`test_install_and_create_with_dirty_buffer`; dirty state asserted via
+      `device params` read-back — `hist` has no CLI surface)
+- [x] Add the equivalent dirty-buffer case for the IR path in
       `tests/live/test_device_ir.py` (marker `device_ir`) if the push-IR path can
       hit `/CreateContent` under a dirty buffer; if it structurally cannot, say so
       in the findings doc and skip rather than inventing coverage
-- [ ] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir)" tests/live -q`
-      and record the result verbatim
-- [ ] Confirm the non-zero `/status` taxonomy beyond `1` is still uncatalogued
+      (structurally cannot: push-ir = SFTP + watched-dir `/addContent`,
+      delete-ir = `/RemoveContent`; noted in findings doc, no coverage invented)
+- [x] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and (device_write or device_ir)" tests/live -q`
+      and record the result verbatim (11 passed, 1 skipped [global gate],
+      63 deselected in 274.29s — verbatim in findings doc)
+- [x] Confirm the non-zero `/status` taxonomy beyond `1` is still uncatalogued
       (`docs/helix-protocol.md` ~765-767). If this run observes any value other
       than `0`/`1`, record it in the findings doc and update the protocol doc
-- [ ] Leave the device tidy: teardown removed every `HGTEST` artifact, and the
+      (raw probe: clean=0, dirty=1, content created+listed both; nothing beyond
+      0/1 observed — protocol doc unchanged)
+- [x] Leave the device tidy: teardown removed every `HGTEST` artifact, and the
       session state guard passed. Release any lock you took (`helixgen device unlock`)
+      (verified: no HGTEST presets/IRs on device, active preset restored to the
+      user's cid 1407 / 16C, `device lock --status` reports no locks held)
 
 ### Task 4: #7 — reorder → sync read-back on an expendable setlist
 
-- [ ] Strengthen `tests/live/test_sync.py::test_sync_lifecycle` (failing first
+- [x] Strengthen `tests/live/test_sync.py::test_sync_lifecycle` (failing first
       against current behavior if the read-back is wrong): after the device-side
       `device reorder`, and again after `device slots reorder --to 0 --setlist
       HGTEST…` + `sync`, read the device back (`device list --setlist <HGTEST
       setlist> --json`, or the equivalent verb that exposes reference order) and
       assert the setlist's reference order matches the manifest's membership
       order for the two `HGTEST` tones — not merely that the verbs exited 0
-- [ ] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and sync" tests/live -q`
-      and record the result verbatim
-- [ ] If the device order does NOT follow manifest order, that is a real bug:
+      (also added the leg the old sequence never exercised: a sync while the
+      manifest still says [A, B] must reorder the device BACK from [B, A])
+- [x] Run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python3 -m pytest -m "live and sync" tests/live -q`
+      and record the result verbatim (2 passed, 73 deselected in 149.50s —
+      verbatim in findings doc; a first attempt hit the known flaky network
+      stack during state capture, re-run green)
+- [x] If the device order does NOT follow manifest order, that is a real bug:
       diagnose, fix under TDD (offline test first where reachable), re-run live.
       If the mismatch turns out to be device-side semantics helixgen cannot
       control, document it in `docs/CLI.md` under `slots reorder` / `sync` and
       file a numbered `docs/BACKLOG.md` entry instead of forcing the assertion
+      (not needed: device order followed manifest order in both directions on
+      hardware — no bug, nothing to document or defer)
 
 ### Task 5: Findings doc, backlog, and agent-facing surfaces
 
-- [ ] Write `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`: what was
+- [x] Write `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`: what was
       run, the exact commands, verbatim results, every observation about
       `/CreateContent` status semantics, and anything deferred
-- [ ] `docs/BACKLOG.md`: close **#90** (replace with a one-line shipped note
+      (written incrementally through Tasks 2-4; Deferred + close-out sections
+      finalized: #93 skip-path residual, #94, #96 stay open with updated notes)
+- [x] `docs/BACKLOG.md`: close **#90** (replace with a one-line shipped note
       pointing at the findings doc) and close the **#7** residual — or, if either
       could not be fully validated, rewrite the entry to say precisely what
       remains and why. Do not mark anything validated that was not observed
-- [ ] Update agent-facing surfaces only if behavior/contract changed:
+      (both closed — fully observed on hardware; #93/#94/#96 "fold into #90"
+      pointers rewritten to reflect what this session did and did not cover)
+- [x] Update agent-facing surfaces only if behavior/contract changed:
       `docs/helix-protocol.md` (status taxonomy), `docs/CLI.md`, `CLAUDE.md`,
       affected verb `--help`
-- [ ] Run the full offline suite one final time and confirm green
+      (no further changes needed: status taxonomy unchanged — only 0/1
+      observed; the push-ir contract change already updated CLI.md +
+      helix-protocol.md in its own commit; CLAUDE.md still accurate)
+- [x] Run the full offline suite one final time and confirm green
+      (2404 passed, 181 skipped [fixture-absent guards + live gate], 17.46s)
 
 ## Validation Commands
 

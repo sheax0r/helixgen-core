@@ -1877,6 +1877,27 @@ def test_list_irs_settle_false_skips_the_subscription(monkeypatch):
     assert _RecordingSub.opened == []
 
 
+def test_list_irs_include_unusable_keeps_undecodable_hash_rows(monkeypatch):
+    """A row whose hash can't be normalized is dropped by default (warned),
+    but a caller deciding ABSENCE (push_ir's wedge check) must be able to see
+    it — include_unusable keeps it with hash None."""
+    _patch_recording_sub(monkeypatch)
+    irs = [{"cid_": 5, "name": "A", "hash": b"\x11" * 16, "posi": 0},
+           {"cid_": 6, "name": "B", "hash": 42, "posi": 1}]
+    frame = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb(irs, use_bin_type=True))])
+    h = HelixClient("10.0.0.99")
+    h.mutate_settle = 0
+    _wire(h, [frame])
+    assert [m["hash"] for m in h.list_irs()] == ["11" * 16]
+    h2 = HelixClient("10.0.0.99")
+    h2.mutate_settle = 0
+    _wire(h2, [frame])
+    assert [m["hash"] for m in h2.list_irs(include_unusable=True)] == \
+        ["11" * 16, None]
+
+
 def test_ir_path_for_hash_strict_raises_on_a_dropped_reply(monkeypatch):
     """A timed-out lookup must not decode as 'the device doesn't have it'.
     _rpc returns [] on a plain timeout, so without strict= the caller cannot

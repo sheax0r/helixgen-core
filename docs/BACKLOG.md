@@ -466,8 +466,11 @@ assumption — see #9); the reference-based redesign below then **shipped
   <tone> --to N [--setlist S]` and applied by the managed-mirror `device sync`.
   The old destructive `device slots sync` reorg is retired (superseded).
   User-setlist slot order is deliberately unordered (slots are just addresses,
-  auto-assigned). No separate skill needed. **Hardware-validate the reorder →
-  sync path on an expendable setlist.**
+  auto-assigned). No separate skill needed. **Residual hardware-validated
+  2026-07-27:** `test_sync_lifecycle` now reads the device back after every
+  order-changing step; reference order followed manifest order in both
+  directions on the XL (see
+  `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`).
 
 ### Device-control breadth
 - **#1 Set the currently active tone** — **✅ RESOLVED 2026-07-14 (no new verb
@@ -1441,23 +1444,11 @@ Remaining follow-ups:
   released version); when the plugin bumps to >=0.20.0 it must drop
   `.mcp.json`/the `[mcp]` extra and repoint skills at the CLI (fold into the
   #58 slim).
-- **#90 Live-hardware validation of the #38 fix — deferred to the next
-  hardware session.** The 0.30.0 /CreateContent fix (confirm-by-re-list
-  instead of trusting field 3 of the `/status` reply) was developed and
-  tested entirely offline against the fake/injected socket; the root cause
-  itself was established by direct live A/B against a Stadium XL (fw
-  1.3.2/1340) on 2026-07-19, which the user considered sufficient to ship
-  on. The live suite's masking (cooldown-retry + `xfail` in
-  `tests/live/conftest.py`, `test_device_write.py`, `test_device_ir.py`) was
-  REMOVED in the same change but **never re-run against hardware**. Next
-  session with the device: run `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python
-  -m pytest -m "live and (device_write or device_ir or setlists or sync)"
-  tests/live` **with the active preset deliberately left DIRTY** (unsaved
-  edits — the exact condition that used to fail; see the setup notes in
-  `tests/live/test_device_write.py` and `tests/live/test_device_ir.py`).
-  Expect: every create/install/save/setlist-create passes, `list-irs` gains
-  the pushed entry, no xfails. Also worth confirming the non-zero taxonomy
-  beyond `1` is still uncatalogued (`docs/helix-protocol.md:765-767`).
+- **#90 Live-hardware validation of the #38 fix — ✅ SHIPPED 2026-07-27.**
+  Full live suite green on the Stadium XL (fw 1.3.2/1340), including a new
+  permanent dirty-buffer /CreateContent regression test; `/status` field 3
+  confirmed 0/1 = dirty flag, no other value observed. Findings:
+  `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`.
 
 - **#91 Companion plugin PR for the 0.30.0 agent-facing changes — NOT yet
   landed.** 0.30.0 changed two CLI-visible behaviors, so the cross-repo rule
@@ -1494,10 +1485,22 @@ Remaining follow-ups:
   that misleads users) and the override warns to stderr naming the
   possibility, so this is a rough edge, not a regression to revert blindly.
   Proper fix: distinguish "resolves but absent from `-11`" (wedged → still
-  upload) from "absent from a listing we have independent reason to think is
-  lagging" — e.g. only trust the point lookup for a hash we just pushed this
-  session, or probe the registry directly. Needs hardware to reproduce a
-  wedge; fold into the #90 session.
+  upload) from a stale listing. **Partially resolved by the 2026-07-27 #90
+  session:** the "lag" was root-caused on hardware — the `-11` listing cache
+  is NEVER invalidated by watched-dir imports, only by RPC content writes
+  (`docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`) — and
+  `push_ir` now uses a same-name-rename nudge to force a fresh listing and
+  tell stale-cache from wedge (healing the wedge on re-import). Remaining:
+  (a) `device_ir_hashes(verify=...)`'s skip path (`install --auto-irs`,
+  `sync`) still trusts the bare point lookup, so a wedged IR it never
+  re-pushes stays silent — apply the same nudge-then-relist there;
+  (b) `push_ir`'s wedge check can only earn the verdict when the listing has
+  a nudgeable row — an empty listing (exactly the single-wedged-IR case, the
+  classic delete→quick-re-import repro), a listing with no usable
+  `(cid, name)` row, an undecodable-hash row, or an unconfirmed nudge all
+  fall back to trusting "already on device" (deliberately: no confirmed
+  refresh, no delete), so the heal silently no-ops there and
+  `delete-ir --force-wedge` remains the sure clear.
 
 - **#94 `--force` still resolves the write target by an ambiguous `(name,
   pos)` match.** `_push_to_slot(prechecked_empty=False)` (the `slots restore
@@ -1512,7 +1515,8 @@ Remaining follow-ups:
   absent from that snapshot, falling back to raising rather than writing into
   a match we cannot attribute. Needs hardware to establish what the device
   actually does with a `/CreateContent` aimed at an occupied posi (the same
-  uncataloged behavior as #69); fold into the #90 session.
+  uncataloged behavior as #69); not covered by the 2026-07-27 #90 session —
+  needs its own hardware probe.
 
 - **#95 `_save_edit_buffer_to`'s stub cleanup is not opt-in.** `_push_to_slot`
   gained a `prechecked_empty` gate so a caller has to deliberately grant
@@ -1535,7 +1539,22 @@ Remaining follow-ups:
   that the status code carries no success information. Options: always confirm
   by re-list (costs one listing per create), or cheaply cross-check the reply
   cid's `name`/`posi` via a point `/GetContentRef` before writing into it.
-  Needs live hardware to characterise — pair with #90.
+  Needs live hardware to characterise — not covered by the 2026-07-27 #90
+  session (it only exercised the code-0 and code-1 clean/dirty cases, where
+  the reply cid matched the re-list).
+
+- **#97 `list_irs`'s `settle` subscription buys no convergence — remove it or
+  default it off.** The 2001-subscription wrap (`settle=True`, the default,
+  added for #38 Task 4) was justified by the theory that the `-11` container
+  index "propagates promptly to a subscribed client". The 2026-07-27 hardware
+  session disproved that: the listing cache is never invalidated by
+  watched-dir imports, subscribed or not — only an RPC content write
+  refreshes it (see `docs/superpowers/specs/2026-07-27-hw-validation-38-fix.md`).
+  So every `list-irs`, `device_ir_hashes`, and sync IR check pays a
+  subscribe/teardown round-trip for nothing. The docstring was reconciled in
+  the #90 session; the behavior change (default `settle=False` or delete the
+  parameter) is deferred because it touches every listing call path and needs
+  a live blast-radius run to land honestly.
 
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
