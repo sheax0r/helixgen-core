@@ -111,8 +111,16 @@ LAN and mutates device state):
 
 ## Release
 
-- [ ] Bump the version and tag `vX.Y.Z`. Behavior changes for any caller that
+- [x] Bump the version and tag `vX.Y.Z`. Behavior changes for any caller that
       sets `$HELIXGEN_LOCK_TOKEN` (previously-silent proceeds now error), so
       call that out in the release notes — minor-level, not patch. The
       companion plugin skill PR (workspace-side backlog #102) sequences after
       the release.
+
+      **Done: 0.32.1 → 0.33.0** in `pyproject.toml` + `src/helixgen/__init__.py`
+      (commit `ff461ae`), minor-level with the dangling-token behavior change
+      called out in the commit message. #97b's `--pid` work rides the same
+      unreleased minor — no tag was cut between, so no further bump is needed.
+      [x] tag push (skipped — not automatable from this branch): the publish
+      workflow fires on `vX.Y.Z` tags **on `main`**, so `git tag v0.33.0 &&
+      git push github v0.33.0` runs after this branch merges, not here.
