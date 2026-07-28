@@ -457,9 +457,13 @@ machine (including agents nobody is orchestrating) never collide on the
 device. Read-only verbs acquire nothing. Locks are **lease files** —
 `~/.helixgen/locks/<device-ip>/<scope>.lock` (root override
 `$HELIXGEN_LOCKS`; the default follows `$HELIXGEN_HOME` like every
-other home subarea, and `locks/` is gitignored in the home repo), JSON `{pid, hostname, acquired_at, ttl_seconds, label,
-token?, kind, nonce}` (`kind` is `auto` | `session` | `detached`; `pid` is
-**`null`** for a detached lease — 0.33.0) — created atomically; the file is the source of truth
+other home subarea, and `locks/` is gitignored in the home repo), JSON `{pid, pid_start?, hostname, acquired_at, ttl_seconds, label,
+token?, kind, nonce}` (`kind` is `auto` | `session` | `pid` | `detached`;
+`pid` is **`null`** for a detached lease — 0.33.0. `pid_start` is the owner
+process's start time as `ps` reports it, recorded at acquisition: pid numbers
+are recycled, so lease identity is the **`(pid, pid_start)` pair** and a pid
+whose current start time differs from the recorded one is a *different*
+process, i.e. the owner is dead) — created atomically; the file is the source of truth
 (no fcntl handle is held across processes, so shell-agent flows where every
 CLI call is a fresh pid work). **Limitations (by design):** advisory —
 nothing stops a `--no-lock` caller — and machine-local — direct-protocol
@@ -512,15 +516,33 @@ check, exactly as before.
   included, 0.33.0) renews every lease that token owns. Calls from the
   **same shell** as the `lock` also pass through without the token (the
   lease records the invoking shell's pid). Re-locking your own scope renews it in place (idempotent) — and
-  **switches its kind**: `--detach` over a session lease drops the pid, a
-  plain re-lock over a detached lease re-binds it to the invoking shell.
+  **switches its kind**: `--detach` over a session lease drops the pid,
+  `--pid` re-binds it to the pid you name, a plain re-lock re-binds it to the
+  invoking shell.
+- `helixgen device lock --scope all --pid $PPID --label "<who>"` — a
+  **pid-bound** lease (0.33.0, #97b; `kind: "pid"`). **This is the lease an
+  agent should take.** An agent's every tool call is a fresh shell, and a
+  plain session lease records *that* shell's pid — when it exits, the lease is
+  reclaimable after the 120 s grace and a contender takes the device
+  mid-workflow (observed twice on hardware 2026-07-27). `--pid` binds the
+  lease to a process **you** name that spans the whole workflow and dies with
+  it: from a tool call, `$PPID` is the long-lived agent (`claude`) process.
+  Liveness is then **decidable**, so:
+  - the **120 s dead-pid grace does not apply** (a `session` lease's pid may
+    be a short-lived wrapper; an explicit `--pid` is a deliberate choice, so
+    its death is conclusive and the lease is reclaimable at once);
+  - the **TTL demotes to a backstop** for the one case liveness can't be
+    probed — a lease recorded on another host — and keeps the ordinary
+    **900 s** `DEFAULT_SESSION_TTL`, renewed by every token-carrying verb.
+
+  A `--pid` whose process is **not alive** at acquisition is refused (a lease
+  for a dead owner is stale the moment it is written). Mutually exclusive with
+  `--detach`. Release with `device unlock` at the end of the workflow.
 - `helixgen device lock --detach --label <text> [--ttl 300]` — a **detached**
   lease (0.33.0, #97): identical to the above except it records **no pid**
   (`kind: "detached"`), so it does **not** die with the shell that took it.
-  **This is the lease an agent should take**: an agent's every tool call is a
-  fresh shell, and a plain session lease records that shell's pid — when it
-  exits, the lease is reclaimable after the 120 s grace and a contender takes
-  the device mid-workflow (observed twice on hardware 2026-07-27). Trade-off:
+  Use it when **no process spans the workflow at all** (cron, CI); when one
+  does, prefer `--pid`. Trade-off:
   with no pid to probe, the **TTL is the only automatic reclaim path**, so the
   default TTL is **300 s** rather than 900, and **`--ttl 0` is refused** with
   `--detach` (no pid *and* no expiry = a lease only `unlock --force` clears).
@@ -569,7 +591,9 @@ no-expiry lease). A
 **120 s grace** (from its last acquisition/renewal) before pid-death makes
 it stale — so run `device lock` from your long-lived shell, not via a
 wrapper script (the wrapper's pid dies immediately; the lease then only
-survives while token-carrying calls keep renewing it), or take `--detach`, which
+survives while token-carrying calls keep renewing it), or name a process that
+outlives the call with `--pid` (**no** grace: pid death is conclusive there),
+or take `--detach`, which
 records no pid at all and is bounded by its TTL alone. Pid-liveness is
 POSIX-only:
 on Windows it is disabled (probing would kill the probed process) and only
@@ -632,11 +656,13 @@ lease.
 
 **Operating rule for an agent driving multi-call device work (workspace #97):**
 
-1. Take a **detached** lease up front — `device lock --scope all --detach
+1. Take a **pid-bound** lease up front — `device lock --scope all --pid $PPID
    --label "<who>"` — and export the printed `HELIXGEN_LOCK_TOKEN`. A plain
-   session lease dies with the tool call that took it.
-2. `device unlock` when the workflow ends (including on failure). Nothing but
-   the TTL clears a detached lease.
+   session lease dies with the tool call that took it; `$PPID` is your
+   long-lived agent process, which does not. (No such process — cron, CI? Use
+   `--detach`.)
+2. `device unlock` when the workflow ends (including on failure). Otherwise
+   only your process's death (pid lease) or the TTL clears it.
 3. **Treat any lock error as "stop and re-establish state", never "retry the
    failed call and continue".** Once a lease is lost, the device may have been
    driven by someone else: re-take a lease and **re-read** whatever you were

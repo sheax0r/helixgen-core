@@ -37,6 +37,17 @@ Staleness: a lease is stale when its TTL has expired, or when its recorded
 pid is dead on this host. Stale leases are broken with a stderr warning; a
 LIVE lease is never broken (use ``device unlock --force`` deliberately).
 
+**PID-bound leases** (``device lock --pid <pid>``; #97b) — the mechanism an
+AGENT should use. The caller names a process that spans the whole workflow
+and dies with it (for a Claude Code agent, ``$PPID`` from a tool call: the
+long-lived ``claude`` process), so the lease records ``kind: "pid"`` and
+liveness is DECIDABLE rather than guessed from a TTL. Unlike a
+``kind: "session"`` lease — whose pid is the invoking shell's and may be a
+short-lived wrapper — a dead ``--pid`` owner is conclusive, so
+:data:`SESSION_PID_GRACE_S` does NOT apply: the lease is reclaimable at
+once. Its TTL (:data:`DEFAULT_SESSION_TTL`) is only a backstop for the case
+liveness cannot be probed at all — a lease recorded on another host.
+
 **Detached leases** (``device lock --detach``; #97): a session lease with
 ``pid: None`` and ``kind: "detached"``, so nothing binds it to the invoking
 shell's lifetime — an agent takes it from one tool call and the shell that
@@ -120,6 +131,9 @@ RENEW_MARGIN_S = 2.0
 #: (script/make/`sh -c`) would otherwise be reclaimable instantly (review
 #: finding 4). Covered verbs renew the lease, so an ACTIVE wrapper-based
 #: session survives; an idle one is reclaimable after the grace.
+#: Applies to ``kind: "session"`` ONLY (#97b): a ``kind: "pid"`` lease names
+#: a process the caller chose to span the workflow, so its death is
+#: conclusive, not an artifact of how the lock was taken.
 SESSION_PID_GRACE_S = 120.0
 
 #: A crashed breaker's mutex file older than this is cleared.
@@ -201,8 +215,8 @@ class LockLost(LockError):
             "act on before acting on it."
             if not proven else
             "Stop and re-establish device state: re-take a lease "
-            "(`helixgen device lock --scope all --detach --label <who>`) and "
-            "re-read whatever you were about to act on — do NOT retry this "
+            "(`helixgen device lock --scope all --pid $PPID --label <who>`) "
+            "and re-read whatever you were about to act on — do NOT retry this "
             "call and continue, the device may have been driven by someone "
             "else since.")
         where = (f" Your lease is under device address '{elsewhere}', not "
@@ -1333,6 +1347,14 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
     All-or-nothing for the freshly-locked scopes: on contention, leases
     this call created are released (renewed ones are left).
 
+    An explicit ``pid`` writes a PID-BOUND lease (``kind: "pid"`` — #97b):
+    the caller names a process that spans the whole workflow (an agent passes
+    ``$PPID``, its long-lived agent process), so liveness is decidable and
+    :data:`SESSION_PID_GRACE_S` does not apply. A pid that is not alive right
+    now is refused — a lease for a dead owner is stale the moment it is
+    written. Mutually exclusive with ``detach`` (one binds the lease to a
+    process's lifetime, the other deliberately to none).
+
     ``detach=True`` writes a DETACHED lease instead (``kind: "detached"``,
     no pid — #97): nothing ties it to the caller's process, so only the TTL
     (renewed by every covered verb) or an explicit ``device unlock``
@@ -1351,6 +1373,18 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
             f"typo for `--ttl {abs(ttl):g}`, and it produced the most fragile "
             f"lease shape there is — never expiring, reclaimable only by pid "
             f"liveness — which is what #97 exists to move away from.")
+    if detach and pid is not None:
+        raise ValueError(
+            "--pid and --detach are mutually exclusive: --pid binds the lease "
+            "to a process you name, --detach deliberately binds it to none. "
+            "Agents want --pid $PPID (liveness is then decidable); --detach "
+            "is for work with no owning process at all (cron, CI).")
+    if pid is not None and not _pid_alive(int(pid)):
+        raise ValueError(
+            f"--pid {int(pid)} is not a live process on this host: a lease "
+            f"for a dead owner is stale the moment it is written, so a "
+            f"contender would reclaim the device immediately. Agents: pass "
+            f"$PPID — a tool call's parent is the long-lived agent process.")
     if detach and (ttl is None or ttl <= 0):
         raise ValueError(
             "--detach needs a positive --ttl: a detached lease records no "
@@ -1363,7 +1397,11 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
             f"mid-workflow even while you are using it. Use "
             f"--ttl {MIN_SESSION_TTL:g} or more.")
     want = _normalize_scopes(scopes)
-    kind = "detached" if detach else "session"
+    kind = "detached" if detach else ("pid" if pid is not None else "session")
+    # Resolve the recorded pid ONCE: `device lock` exits immediately, so a
+    # lease naming THIS process would be dead on arrival — the owner is the
+    # invoking shell (legacy `session`) or the pid the caller named (`pid`).
+    own_pid = None if detach else (os.getppid() if pid is None else int(pid))
     tok = env_token()
     # Adopt the stored token of a live owned covering lease first — the
     # printed token must be the one that opens the lease.
@@ -1390,22 +1428,20 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
                     and owned(lease, tok)
                     and (remaining is None or remaining > RENEW_MARGIN_S)):
                 renewed = dict(lease)
-                own_pid = None if detach else (
-                    os.getppid() if pid is None else int(pid))
                 renewed.update(label=label, ttl_seconds=ttl, token=tok,
                                acquired_at=time.time(), kind=kind,
                                pid=own_pid, pid_start=_pid_start(own_pid))
                 if not _rewrite(path, renewed, expect_nonce=lease.get("nonce")):
                     # broken + re-acquired since we read it — acquire fresh
                     fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
-                                         token=tok, pid=pid, kind=kind,
+                                         token=tok, pid=own_pid, kind=kind,
                                          timeout=timeout))
                     outcomes.append((scope, "locked"))
                     continue
                 outcomes.append((scope, "renewed"))
             else:
                 fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
-                                     token=tok, pid=pid, kind=kind,
+                                     token=tok, pid=own_pid, kind=kind,
                                      timeout=timeout))
                 outcomes.append((scope, "locked"))
     except BaseException:

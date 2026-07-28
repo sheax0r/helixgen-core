@@ -1473,6 +1473,129 @@ def test_cli_lock_status_renders_detached_leases(root):
 
 
 # --------------------------------------------------------------------------
+# #97b (Task 2): `--pid <pid>` — a lease bound to a process the CALLER names,
+# one that spans the whole workflow (an agent passes $PPID). Liveness is
+# decidable, so the dead-shell grace that let the 2026-07-27 contender in
+# does not apply here.
+# --------------------------------------------------------------------------
+
+def test_cli_lock_pid_records_kind_pid_with_a_start_time(root):
+    res = run_cli("device", "lock", "--scope", "all", "--pid", os.getpid(),
+                  "--label", "agent-workflow", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    data = json.loads(lease_path(root, "all").read_text())
+    assert data["kind"] == "pid"
+    assert data["pid"] == os.getpid()
+    assert data["pid_start"] == locks._pid_start(os.getpid())
+    assert "HELIXGEN_LOCK_TOKEN=" in res.output
+
+
+def test_cli_lock_pid_uses_the_session_ttl(root):
+    """Settled decision 5: the TTL demotes to a backstop for a --pid lease
+    (liveness is the real check), so it keeps DEFAULT_SESSION_TTL rather than
+    the shorter detached default."""
+    assert run_cli("device", "lock", "--scope", "all", "--pid", os.getpid(),
+                   "--label", "a", "--ip", IP).exit_code == 0
+    data = json.loads(lease_path(root, "all").read_text())
+    assert data["ttl_seconds"] == locks.DEFAULT_SESSION_TTL
+
+
+def test_cli_lock_pid_and_detach_are_mutually_exclusive(root):
+    res = run_cli("device", "lock", "--pid", os.getpid(), "--detach",
+                  "--label", "a", "--ip", IP)
+    assert res.exit_code != 0
+    assert "--pid" in res.output and "--detach" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_pid_refuses_a_dead_owner(root):
+    """A lease for a dead pid is stale the moment it is written — always a
+    caller bug, so it is refused at acquisition rather than written and
+    reclaimed a beat later."""
+    res = run_cli("device", "lock", "--pid", dead_pid(), "--label", "a",
+                  "--ip", IP)
+    assert res.exit_code != 0
+    assert "not a live process" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_pid_relock_rebinds_the_pid(root, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "s", "--ip", IP).exit_code == 0
+    assert run_cli("device", "lock", "--scope", "library", "--pid",
+                   os.getpid(), "--label", "s2", "--ip", IP).exit_code == 0
+    data = json.loads(lease_path(root, "library").read_text())
+    assert data["kind"] == "pid" and data["pid"] == os.getpid()
+    assert data["pid_start"] == locks._pid_start(os.getpid())
+    assert data["token"] == "tok-x"
+
+
+def test_97b_pid_lease_survives_the_shell_that_took_it(root):
+    """The #97 case: the tool call's shell is long gone, but the pid the
+    lease names (the agent process) is alive, so the lease still blocks well
+    past SESSION_PID_GRACE_S."""
+    # pid 1 stands in for the foreign agent process: alive, and not us
+    p = write_lease(root, "all", pid=1, kind="pid",
+                    pid_start=locks._pid_start(1),
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="agent-workflow")
+    assert not locks.is_stale(locks.read_lease(p))
+    with pytest.raises(locks.LockHeld) as e:
+        locks.acquire(IP, ("editbuffer",), label="contender", pid=1, timeout=0)
+    assert "agent-workflow" in str(e.value)
+
+
+def test_97b_dead_pid_lease_is_reclaimable_immediately(root, capsys):
+    """Settled decision 4: no SESSION_PID_GRACE_S for kind 'pid'. The owner
+    was chosen by the caller, so its death is conclusive — a fresh lease
+    (age 0) whose pid is dead is stale right now."""
+    p = write_lease(root, "all", pid=dead_pid(), kind="pid", age=0,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="crashed-agent")
+    assert locks.is_stale(locks.read_lease(p))
+    with locks.acquire(IP, ("editbuffer",), label="contender", pid=1,
+                       timeout=0):
+        assert "breaking stale device lock" in capsys.readouterr().err
+        assert not p.exists()
+
+
+def test_97b_dead_session_lease_keeps_its_grace(root):
+    """...and the legacy kind is UNCHANGED: a session lease records whatever
+    shell took it (possibly a short-lived wrapper), so a dead pid only counts
+    after the grace."""
+    p = write_lease(root, "all", pid=dead_pid(), kind="session", age=0,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="wrapper-session")
+    assert not locks.is_stale(locks.read_lease(p))
+    p = write_lease(root, "irs", pid=dead_pid(), kind="session",
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="wrapper-session")
+    assert locks.is_stale(locks.read_lease(p))
+
+
+def test_97b_recycled_pid_lease_reads_dead(root):
+    """The Task 1 guard applies to the kind it exists for: a --pid lease whose
+    pid is alive but is now a DIFFERENT process is dead, not immortal."""
+    p = write_lease(root, "all", pid=1, kind="pid", age=0,
+                    pid_start="Thu Jan  1 00:00:00 1970",
+                    ttl=locks.DEFAULT_SESSION_TTL, label="recycled")
+    assert locks.is_stale(locks.read_lease(p))
+
+
+def test_97b_pid_lease_is_renewed_by_token_authenticated_use(root, monkeypatch):
+    p = write_lease(root, "all", pid=os.getpid(), kind="pid", token="tok-97b",
+                    pid_start=locks._pid_start(os.getpid()), age=200,
+                    ttl=locks.DEFAULT_SESSION_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97b")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        assert not lease_path(root, "editbuffer").exists()  # passed through
+    after = json.loads(p.read_text())
+    assert after["acquired_at"] > before
+    assert after["kind"] == "pid" and after["pid"] == os.getpid()
+
+
+# --------------------------------------------------------------------------
 # #97 (Task 3): a presented-but-dangling token must fail loudly — read-only
 # verbs included. Setting $HELIXGEN_LOCK_TOKEN declares "I am in a held
 # session"; when it opens no live lease for the scope a verb touches, that

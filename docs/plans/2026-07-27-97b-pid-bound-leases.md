@@ -77,12 +77,12 @@ token → no check, unlocked reads unchanged. Do not revisit this.
 
 ### Task 2: `--pid <pid>` on `device lock`
 
-- [ ] Write the failing test(s) first
-- [ ] Add `--pid <pid>`, recording `kind: "pid"` with the pid and its start time. Mutually exclusive with `--detach`; reject both together with a clear error
-- [ ] Reject a `--pid` whose process is not alive at acquisition time — taking a lease for a dead owner is always a caller bug
-- [ ] Exempt `kind: "pid"` from `SESSION_PID_GRACE_S` (settled decision 4). Test that a `kind: "pid"` lease whose owner just died is immediately reclaimable, and that a `kind: "session"` lease is NOT (grace preserved)
-- [ ] `--pid` leases use `DEFAULT_SESSION_TTL` (settled decision 5)
-- [ ] Update every agent-facing surface: `device lock --help`, `device unlock --help`, `CLAUDE.md`, `docs/CLI.md`. Show the agent invocation explicitly: `helixgen device lock --scope all --pid $PPID --label "<who>"`
+- [x] Write the failing test(s) first
+- [x] Add `--pid <pid>`, recording `kind: "pid"` with the pid and its start time. Mutually exclusive with `--detach`; reject both together with a clear error
+- [x] Reject a `--pid` whose process is not alive at acquisition time — taking a lease for a dead owner is always a caller bug
+- [x] Exempt `kind: "pid"` from `SESSION_PID_GRACE_S` (settled decision 4). Test that a `kind: "pid"` lease whose owner just died is immediately reclaimable, and that a `kind: "session"` lease is NOT (grace preserved)
+- [x] `--pid` leases use `DEFAULT_SESSION_TTL` (settled decision 5)
+- [x] Update every agent-facing surface: `device lock --help`, `device unlock --help`, `CLAUDE.md`, `docs/CLI.md`. Show the agent invocation explicitly: `helixgen device lock --scope all --pid $PPID --label "<who>"`
 
 ### Task 3: reconcile with what the branch already has
 

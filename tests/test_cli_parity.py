@@ -231,11 +231,14 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
      ["machine-local", "advisory", "session lease", "HELIXGEN_LOCK_TOKEN",
       "HELIXGEN_LOCK_TIMEOUT", "fail fast", "stale", "NOT covered",
       "auto-acquires", "device unlock", "--status",
-      # #97: agents must be steered to the detached lease
-      "AGENTS: use --detach", "records no pid"]),
+      # #97/#97b: agents must be steered to the pid-bound lease, with the
+      # invocation spelled out; --detach stays, for work with no owning process
+      "AGENTS: use --pid $PPID",
+      "helixgen device lock --scope all --pid $PPID --label",
+      "records no pid", "mutually exclusive"]),
     (["device", "unlock"],
      ["HELIXGEN_LOCK_TOKEN", "parent-pid", "--force", "dangerous",
-      "Stale leases", "DETACHED"]),
+      "Stale leases", "DETACHED", "PID-BOUND"]),
     # every mutating verb carries the --no-lock escape hatch; pin one from
     # each scope so the option (and its danger warning) can't silently drop
     # #97: --no-lock also skips the dangling-token session check — the flag's
