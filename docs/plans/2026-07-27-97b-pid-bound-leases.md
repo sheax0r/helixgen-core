@@ -86,10 +86,10 @@ token → no check, unlocked reads unchanged. Do not revisit this.
 
 ### Task 3: reconcile with what the branch already has
 
-- [ ] The branch's `--detach`, `_reads()` read-only refusal, renewal-on-use, and `keep_alive` heartbeat all STAY. This task is reconciliation, not redesign
-- [ ] `describe()` / `--status` / JSON output must render all three kinds unambiguously (`kind: "pid"` shows pid + liveness; `detached` shows no pid)
-- [ ] Check the error text a contender sees names which kind it is up against — "held by 'agent' (pid 50754, alive)" is actionable; "locked" is not
-- [ ] Confirm no unrelated files are touched. A prior run's review edited `docs/plans/2026-07-27-hw-validation-live-suite.md`, which had nothing to do with #97 — do not repeat that
+- [x] The branch's `--detach`, `_reads()` read-only refusal, renewal-on-use, and `keep_alive` heartbeat all STAY. This task is reconciliation, not redesign — all four verified intact; the one reconciliation gap found was `_expired_own_lease()`, which listed only `session`/`detached`, so a lapsed `kind: "pid"` lease of ours was NOT treated as proof the scope had been ours (fixed + test)
+- [x] `describe()` / `--status` / JSON output must render all three kinds unambiguously (`kind: "pid"` shows pid + liveness; `detached` shows no pid) — new `locks.pid_liveness()`; `--status` prints `pid <n> alive`/`dead`, JSON gains `pid_alive` (null when not decidable: any other kind, or a pid on another host)
+- [x] Check the error text a contender sees names which kind it is up against — "held by 'agent' (pid 50754, alive)" is actionable; "locked" is not
+- [x] Confirm no unrelated files are touched. A prior run's review edited `docs/plans/2026-07-27-hw-validation-live-suite.md`, which had nothing to do with #97 — do not repeat that — both that file and `docs/plans/2026-07-27-createcontent-followups.md` reverted to their `main` contents
 
 ## Validation Commands
 

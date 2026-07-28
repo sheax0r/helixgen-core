@@ -1596,6 +1596,97 @@ def test_97b_pid_lease_is_renewed_by_token_authenticated_use(root, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# #97b (Task 3): all three lease kinds must RENDER unambiguously — in
+# `--status`, in its JSON, and in the error a blocked contender reads. "held
+# by 'agent' (pid 50754, alive)" tells you to wait; "locked" tells you nothing.
+# --------------------------------------------------------------------------
+
+def test_97b_describe_renders_each_kind_unambiguously(root):
+    live = locks.read_lease(write_lease(root, "all", pid=os.getpid(),
+                                        kind="pid", label="agent",
+                                        pid_start=locks._pid_start(os.getpid())))
+    dead = locks.read_lease(write_lease(root, "irs", pid=dead_pid(),
+                                        kind="pid", label="crashed"))
+    session = locks.read_lease(write_lease(root, "library", pid=os.getpid(),
+                                           kind="session", label="shell"))
+    detached = locks.read_lease(write_lease(root, "globals", pid=None,
+                                            kind="detached", label="cron"))
+    assert f"pid {os.getpid()}, alive" in locks.describe(live)
+    assert f"pid {dead['pid']}, dead" in locks.describe(dead)
+    # the legacy kind is unchanged: pid, no liveness claim
+    assert f"pid {os.getpid()}" in locks.describe(session)
+    assert "alive" not in locks.describe(session)
+    assert "detached" in locks.describe(detached)
+    assert "pid" not in locks.describe(detached)
+
+
+def test_97b_describe_claims_no_liveness_for_a_foreign_host_lease(root):
+    """A pid on ANOTHER host is not probeable — the TTL is all we have there,
+    so the line must not assert 'alive' or 'dead' about it."""
+    lease = locks.read_lease(write_lease(root, "all", pid=os.getpid(),
+                                         kind="pid", host="other-host",
+                                         pid_start="whenever"))
+    line = locks.describe(lease)
+    assert f"pid {os.getpid()}" in line
+    assert "alive" not in line and "dead" not in line
+
+
+def test_97b_status_reports_pid_liveness(root):
+    write_lease(root, "all", pid=os.getpid(), kind="pid",
+                pid_start=locks._pid_start(os.getpid()))
+    write_lease(root, "irs", pid=dead_pid(), kind="pid")
+    write_lease(root, "library", pid=os.getpid(), kind="session")
+    write_lease(root, "globals", pid=None, kind="detached")
+    rows = {r["scope"]: r for r in locks.status(IP)}
+    assert rows["all"]["pid_alive"] is True
+    assert rows["irs"]["pid_alive"] is False
+    # only kind 'pid' claims liveness; the other kinds report none
+    assert rows["library"]["pid_alive"] is None
+    assert rows["globals"]["pid_alive"] is None and rows["globals"]["pid"] is None
+
+
+def test_97b_cli_status_shows_kind_and_liveness(root):
+    write_lease(root, "all", pid=os.getpid(), kind="pid", label="agent",
+                pid_start=locks._pid_start(os.getpid()))
+    write_lease(root, "globals", pid=None, kind="detached", label="cron")
+    res = run_cli("device", "lock", "--status", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert f"pid {os.getpid()} alive" in res.output
+    assert "detached" in res.output
+
+
+def test_97b_a_dead_pid_lease_of_ours_is_a_PROVEN_lost_session(root,
+                                                              monkeypatch):
+    """Reconciliation: a lapsed lease file of ours on disk is proof the scope
+    WAS ours — and that holds for the pid kind too. A --pid lease whose owner
+    died leaves exactly such a file, so the verb must get the full-strength
+    'stop and re-establish' message, not a silent pass."""
+    # the session is demonstrably alive (a live lease on another scope), so
+    # only the lapsed file distinguishes "lost it" from "never held it"
+    write_lease(root, "irs", pid=os.getpid(), token="tok-97b", kind="pid",
+                pid_start=locks._pid_start(os.getpid()),
+                ttl=locks.DEFAULT_SESSION_TTL, label="agent")
+    write_lease(root, "library", pid=dead_pid(), token="tok-97b", kind="pid",
+                age=0, ttl=locks.DEFAULT_SESSION_TTL, label="agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97b")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is True
+    assert "do NOT retry" in str(e.value)
+
+
+def test_97b_contender_error_names_the_kind_it_is_up_against(root):
+    p = write_lease(root, "all", pid=1, kind="pid", label="agent",
+                    pid_start=locks._pid_start(1),
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_SESSION_TTL)
+    with pytest.raises(locks.LockHeld) as e:
+        locks.acquire(IP, ("editbuffer",), label="contender", pid=1, timeout=0)
+    assert "'agent' (pid 1, alive" in str(e.value)
+    assert p.exists()
+
+
+# --------------------------------------------------------------------------
 # #97 (Task 3): a presented-but-dangling token must fail loudly — read-only
 # verbs included. Setting $HELIXGEN_LOCK_TOKEN declares "I am in a held
 # session"; when it opens no live lease for the scope a verb touches, that

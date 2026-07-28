@@ -808,8 +808,10 @@ _LOCK_SCOPE_HELP = (
                    "span the workflow, prefer --pid. TTL-only: release with "
                    "`device unlock`.")
 @click.option("--status", "show_status", is_flag=True, default=False,
-              help="Don't lock — report the device's current leases "
-                   "(scope, holder, age, live/stale, ours) and exit 0.")
+              help="Don't lock — report the device's current leases (scope, "
+                   "holder, age, live/stale, ours) and exit 0. The holder "
+                   "names the kind: 'detached', 'pid <n> alive'/'dead' for a "
+                   "--pid lease on this host, plain 'pid <n>' otherwise.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="With --status: emit the lease rows as JSON.")
 @_ip_option
@@ -884,8 +886,11 @@ def device_lock(scopes, label, ttl, owner_pid, detach, show_status, as_json,
                    if isinstance(r.get("age_seconds"), (int, float)) else "?")
             ttl = (f"{r['ttl_seconds']:g}s"
                    if isinstance(r.get("ttl_seconds"), (int, float)) else "?")
+            alive = r.get("pid_alive")
             who = ("detached" if r.get("kind") == "detached"
-                   else f"pid {r['pid']}")
+                   else f"pid {r['pid']}"
+                   + ("" if alive is None
+                      else f" {'alive' if alive else 'dead'}"))
             click.echo(
                 f"{r['scope']:<10} {r['state']:<5} "
                 f"{'ours' if r['ours'] else '    '}  {r['label']!r}  "

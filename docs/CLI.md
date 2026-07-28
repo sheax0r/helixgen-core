@@ -552,8 +552,13 @@ check, exactly as before.
   lease and an abandoned one expires by itself. Release with `device unlock`
   (token) — nothing else will.
 - `helixgen device lock --status [--json]` — inspect the device's leases:
-  scope, label, pid (or `detached`), host, age, TTL, live/stale, ours.
-  Read-only, exit 0.
+  scope, label, owner, host, age, TTL, live/stale, ours. The owner names the
+  lease **kind**: `detached` (no pid at all), `pid <n> alive` / `pid <n> dead`
+  for a **pid-bound** lease on this host, plain `pid <n>` for a session lease
+  or a pid recorded on another host (unprobeable — no liveness is claimed).
+  `--json` carries the same distinction as `kind` plus `pid_alive`
+  (`true`/`false`, or `null` when liveness is not decidable). Read-only,
+  exit 0.
 - `helixgen device unlock [--scope <s>]... [--force]` — release your leases
   (all of them without `--scope`). An explicit `--scope` you don't own is an
   error unless `--force` (which breaks even a live foreign lease —
@@ -564,7 +569,9 @@ check, exactly as before.
 
 **Contention:** a blocked acquire waits up to `$HELIXGEN_LOCK_TIMEOUT`
 seconds (default **30**; `0` = fail fast) with polling backoff, then exits
-non-zero naming the holder (label, pid, host, age). **Staleness:** a lease
+non-zero naming the holder the same way `--status` does — label, owner
+(`detached` / `pid <n>, alive` / `pid <n>, dead` / `pid <n>`), host, age, TTL
+— so a contender can tell a live agent it should wait for from a corpse. **Staleness:** a lease
 whose TTL expired or whose recorded pid is dead (same host) is reclaimed
 with a stderr warning (stale-breaks are serialized through a break-mutex
 file and re-verified under it, so a renewed/re-acquired lease is never

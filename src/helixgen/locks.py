@@ -292,13 +292,30 @@ def hostname() -> str:
     return socket.gethostname()
 
 
+def pid_liveness(lease: dict) -> bool | None:
+    """Whether a PID-BOUND lease's owner is alive right now, or None when the
+    question has no answer: any other kind, or a pid recorded on another host
+    (unprobeable — there the TTL is all we have). Never claim liveness we
+    cannot check (#97b)."""
+    pid = lease.get("pid")
+    if (lease.get("kind") != "pid" or not isinstance(pid, int)
+            or lease.get("hostname") != hostname()):
+        return None
+    return _pid_alive(pid, lease.get("pid_start"))
+
+
 def describe(lease: dict) -> str:
-    """Human line naming a lease's holder: label, pid, host, age, ttl."""
+    """Human line naming a lease's holder: label, owner, host, age, ttl. The
+    owner renders per kind — ``detached`` (no pid at all), ``pid N, alive`` /
+    ``pid N, dead`` for a pid-bound lease we can probe, plain ``pid N``
+    otherwise — so a blocked contender can tell what it is up against."""
     age = time.time() - lease.get("acquired_at", time.time())
     ttl = lease.get("ttl_seconds")
     ttl_s = f", ttl {ttl:g}s" if isinstance(ttl, (int, float)) else ""
+    alive = pid_liveness(lease)
     who = ("detached" if lease.get("kind") == "detached"
-           else f"pid {lease.get('pid', '?')}")
+           else f"pid {lease.get('pid', '?')}"
+           + ("" if alive is None else f", {'alive' if alive else 'dead'}"))
     return (f"{lease.get('label', '?')!r} ({who} on "
             f"{lease.get('hostname', '?')}, age {max(0.0, age):.0f}s{ttl_s})")
 
@@ -454,7 +471,7 @@ def _unrenewable(lease: dict) -> bool:
 
 
 def _expired_own_lease(ip: str, scope: str, token: str | None) -> Path | None:
-    """Path of an EXPIRED session/detached lease of ours still on disk for
+    """Path of an EXPIRED session/pid/detached lease of ours still on disk for
     ``scope``, else None. That file is proof the scope was ours and lapsed —
     the one case where "I lost it" IS distinguishable from "I never held it",
     so it is reported instead of silently passing as a scope outside a narrow
@@ -464,7 +481,7 @@ def _expired_own_lease(ip: str, scope: str, token: str | None) -> Path | None:
         path = lock_path(ip, cover)
         lease = read_lease(path)
         if (lease is not None and is_stale(lease) and owned(lease, token)
-                and lease.get("kind") in ("session", "detached")):
+                and lease.get("kind") in ("session", "pid", "detached")):
             return path
     return None
 
@@ -1243,7 +1260,9 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
 
 def status(ip: str, token: str | None = None) -> list[dict]:
     """One row per existing lease for ``ip``: scope, holder fields, age,
-    live/stale state, and whether it's ours."""
+    live/stale state, and whether it's ours. ``kind`` plus ``pid_alive``
+    (True/False for a probeable ``kind: "pid"`` lease, None otherwise) name
+    which of the three lease kinds a row is."""
     rows = []
     now = time.time()
     for scope in VALID_SCOPES:
@@ -1262,6 +1281,7 @@ def status(ip: str, token: str | None = None) -> list[dict]:
             "ttl_seconds": lease.get("ttl_seconds"),
             "age_seconds": round(age, 1) if age is not None else None,
             "kind": lease.get("kind"),
+            "pid_alive": pid_liveness(lease),
             "state": "stale" if is_stale(lease) else "live",
             "ours": owned(lease, token),
             "path": str(path),

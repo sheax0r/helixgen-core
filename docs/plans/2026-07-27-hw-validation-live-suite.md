@@ -45,12 +45,8 @@ numbered entry (never a TODO comment).
 - **Device locks:** the live suite's `cli` fixture takes the REAL `all` lease
   itself. So do NOT hold a session lease while running `tests/live`, or the
   suite will block and fail. For manual/exploratory device steps (Task 3 only)
-  take `helixgen device lock --scope all --detach --label
-  "ralphex:hw-validation"` (0.33.0: `--detach` records no pid, so the lease
-  survives each tool call's shell exiting — a plain session lease is reclaimed
-  120 s later, mid-workflow) and **release it with `helixgen device unlock`
-  before any pytest run**, then `unset HELIXGEN_LOCK_TOKEN` — a token that
-  opens no lease makes every later device verb, reads included, refuse.
+  take `helixgen device lock --scope all --label "ralphex:hw-validation"` and
+  **release it with `helixgen device unlock` before any pytest run**.
 - Device writes are preapproved for test runs, but keep to `HGTEST`-prefixed
   expendable artifacts and never leave the device in a broken state.
 

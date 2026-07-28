@@ -36,12 +36,9 @@ entry (never a TODO comment).
   (system `python3` has `click`, `pyzmq`, `pytest`, `pytest-xdist`).
 - **Device locks:** `tests/live`'s `cli` fixture takes the REAL `all` lease
   itself, so do NOT hold a session lease while running pytest. For exploratory
-  device probing take `helixgen device lock --scope all --detach --label
-  "ralphex:createcontent-followups"` (0.33.0: `--detach` records no pid, so the
-  lease survives each tool call's shell exiting — a plain session lease is
-  reclaimed 120 s later, mid-workflow) and release it (`helixgen device
-  unlock`) before any pytest run, then `unset HELIXGEN_LOCK_TOKEN` — a token
-  that opens no lease makes every later device verb, reads included, refuse.
+  device probing take `helixgen device lock --scope all --label
+  "ralphex:createcontent-followups"` and release it (`helixgen device unlock`)
+  before any pytest run.
 - Every device artifact you create by hand gets an `HGTEST` prefix and is torn
   down, including on failure. Take a `helixgen device backup` before the first
   exploratory write. Device writes are preapproved for test runs; never leave
