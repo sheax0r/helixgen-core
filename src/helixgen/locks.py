@@ -157,8 +157,8 @@ class LockLost(LockError):
         self.partial = partial
         who = (f"{describe(holder)} holds it now"
                if holder is not None else "nothing holds it now")
-        lost = ("no longer opens a lease over this scope — that part "
-                "of your session was reclaimed" if partial else
+        lost = ("no longer opens a live lease over this scope — that part "
+                "of your session was reclaimed or expired" if partial else
                 "opens no live lease — the session lease was reclaimed or "
                 "expired")
         super().__init__(
@@ -360,6 +360,30 @@ def covering_lease(ip: str, scope: str,
     return None
 
 
+def _unrenewable(lease: dict) -> bool:
+    """Is this (live) lease inside :data:`RENEW_MARGIN_S` of expiry? Nothing
+    renews such a lease (see :func:`_renew_owned`), so it is going to lapse
+    within seconds whatever the caller does — treated as already lost rather
+    than handed to a verb that would then run unlocked believing otherwise."""
+    remaining = _remaining_ttl(lease)
+    return remaining is not None and remaining <= RENEW_MARGIN_S
+
+
+def _expired_own_session(ip: str, scope: str, token: str | None) -> bool:
+    """Is there an EXPIRED session/detached lease of ours still on disk for
+    ``scope``? That file is proof the scope was ours and lapsed — the one
+    case where "I lost it" IS distinguishable from "I never held it", so it
+    is reported instead of silently passing as a scope outside a narrow
+    lease. Transient per-verb leases (``kind: "auto"``) are ignored: one left
+    behind by a killed verb is not part of the declared session."""
+    for cover in ({scope, ALL} if scope != ALL else {ALL}):
+        lease = read_lease(lock_path(ip, cover))
+        if (lease is not None and is_stale(lease) and owned(lease, token)
+                and lease.get("kind") in ("session", "detached")):
+            return True
+    return False
+
+
 def _foreign_holder(ip: str, scope: str, token: str | None) -> dict | None:
     """The live lease NOT ours that blocks ``scope``, if any."""
     for cpath in _conflict_paths(ip, scope):
@@ -394,9 +418,17 @@ def check_session(ip: str, scopes, *, token: str | None = None,
     right now. A mutating verb contends for it and is refused visibly; a
     read would otherwise return well-formed numbers for a scope someone
     else is driving — the exact 2026-07-27 asymmetry, reachable with a
-    multi-scope narrow lease that lost one scope (there is no way to tell
-    "I lost it" from "I never held it", and the read is untrustworthy
-    either way).
+    multi-scope narrow lease that lost one scope.
+
+    A lost scope whose EXPIRED lease file is still on disk raises for both
+    kinds of caller (:func:`_expired_own_session`): there the file itself
+    tells "I lost it" apart from "I never held it". Once the file is gone or
+    re-acquired the two are indistinguishable, and only the ``strict``
+    foreign-holder case above catches it.
+
+    A live lease within :data:`RENEW_MARGIN_S` of expiry counts as MISSING:
+    nothing renews it, so admitting it would let a long verb start on a
+    lease certain to lapse mid-call (:func:`_renew_owned`).
 
     EVERY lease the token owns is RENEWED, not only the ones covering this
     verb's scopes — a read-only verb is proof its session is still active,
@@ -414,7 +446,8 @@ def check_session(ip: str, scopes, *, token: str | None = None,
     if not tok:
         return
     missing = [s for s in _normalize_scopes(scopes)
-               if covering_lease(ip, s, tok) is None]
+               if (c := covering_lease(ip, s, tok)) is None
+               or _unrenewable(c[1])]
     # Renew EVERY lease this token owns, not just the ones this verb touches:
     # a token is one session, and running any verb is proof the whole session
     # is alive. Renewing only the verb's scopes let a multi-scope agent lease
@@ -427,9 +460,18 @@ def check_session(ip: str, scopes, *, token: str | None = None,
     # name the scope someone else actually holds, when there is one
     blocked = next(((s, h) for s in missing
                     if (h := _foreign_holder(ip, s, tok)) is not None), None)
-    scope, holder = blocked or (missing[0], None)
-    if held and not (strict and holder is not None):
+    # an EXPIRED lease of ours still on disk is positive proof we lost that
+    # scope — the one partial loss we can tell apart from "never held it"
+    expired = next((s for s in missing if _expired_own_session(ip, s, tok)),
+                   None)
+    if strict and blocked is not None:
+        scope, holder = blocked
+    elif expired is not None:
+        scope, holder = expired, _foreign_holder(ip, expired, tok)
+    elif held:
         return  # session alive, just narrower than this verb — not our problem
+    else:
+        scope, holder = blocked or (missing[0], None)
     raise LockLost(ip, scope, holder, partial=bool(held))
 
 
@@ -509,13 +551,18 @@ def _renew(path: Path, lease: dict) -> None:
 
 
 def _renew_owned(ip: str, token: str | None) -> tuple[int, float | None]:
-    """Renew every LIVE lease on ``ip`` owned by ``token`` (or by this
-    process, when no token is set). Returns ``(how many we own, shortest
+    """Renew every RENEWABLE lease on ``ip`` owned by ``token`` (or by this
+    process, when no token is set). Returns ``(how many we hold, shortest
     remaining TTL)`` — None when nothing owned has a TTL at all.
 
     Margin-guarded exactly like ``_acquire_one``'s passthrough renewal: at
     the expiry boundary a renewal could land on a waiter's legitimate
-    re-acquisition, so those are left to expire.
+    re-acquisition, so a lease within :data:`RENEW_MARGIN_S` of expiry is
+    left to expire — and, because nothing will ever renew it again, it is
+    NOT counted as held either. Counting it would let a caller enter a long
+    verb on a lease guaranteed to lapse seconds later (silent unlocked work,
+    the #97 failure); not counting it makes :func:`check_session` refuse
+    while the doomed lease is still nominally live.
     """
     held = 0
     shortest: float | None = None
@@ -524,10 +571,11 @@ def _renew_owned(ip: str, token: str | None) -> tuple[int, float | None]:
         lease = read_lease(path)
         if lease is None or is_stale(lease) or not owned(lease, token):
             continue
-        held += 1
         remaining = _remaining_ttl(lease)
-        if remaining is None or remaining > RENEW_MARGIN_S:
-            _renew(path, lease)
+        if remaining is not None and remaining <= RENEW_MARGIN_S:
+            continue  # unrenewable at the boundary — already lost, in effect
+        held += 1
+        _renew(path, lease)
         if remaining is not None:
             shortest = remaining if shortest is None else min(shortest,
                                                               remaining)
@@ -579,8 +627,17 @@ def keep_alive(ip: str, *, token: str | None = None):
             except OSError:
                 return  # lease dir vanished — nothing useful left to renew
             if not alive:
-                return  # lease gone (reclaimed/released); the verb body owns
-                        # the consequences — see LockLost on the next call
+                # Losing the lease mid-call is exactly the #97 failure, and
+                # here we have positive proof of it — say so rather than let
+                # the verb print well-formed output for a device someone else
+                # may now be driving. The call is not aborted (the body may be
+                # mid-write); the next call refuses outright via LockLost.
+                print(f"warning: device {ip} lock lease lapsed DURING this "
+                      f"call (reclaimed, released, or expired) — this "
+                      f"output may not describe a device you still hold. "
+                      f"Stop and re-establish device state: re-take a lease "
+                      f"and re-read what you were acting on.", file=sys.stderr)
+                return
 
     beat = threading.Thread(target=_beat, name="helixgen-lock-keepalive",
                             daemon=True)

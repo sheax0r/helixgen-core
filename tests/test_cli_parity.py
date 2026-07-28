@@ -238,7 +238,10 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
       "Stale leases", "DETACHED"]),
     # every mutating verb carries the --no-lock escape hatch; pin one from
     # each scope so the option (and its danger warning) can't silently drop
-    (["device", "load"], ["machine-local advisory device lock", "DANGEROUS"]),
+    # #97: --no-lock also skips the dangling-token session check — the flag's
+    # own help must say so, not just docs/CLI.md
+    (["device", "load"], ["machine-local advisory device lock", "DANGEROUS",
+                          "skips the $HELIXGEN_LOCK_TOKEN session check"]),
     (["device", "sync"], ["machine-local advisory device lock"]),
     (["device", "push-ir"], ["machine-local advisory device lock"]),
     (["device", "settings", "set"], ["machine-local advisory device lock"]),

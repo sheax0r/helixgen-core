@@ -1658,6 +1658,26 @@ def test_97_keep_alive_renews_a_lease_that_the_verb_outruns(root, monkeypatch):
                    for t in threading.enumerate())
 
 
+def test_97_keep_alive_warns_when_the_lease_goes_away_mid_call(root, capsys,
+                                                               monkeypatch):
+    """Losing the lease DURING a long verb is the #97 failure with positive
+    proof attached: the heartbeat sees it and must say so, rather than let
+    the verb print well-formed output for a device it no longer holds."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    err = ""
+    with locks.keep_alive(IP, token="tok-97"):
+        p.unlink()  # reclaimed / released by someone else mid-call
+        deadline = time.time() + 2.0
+        while "lapsed" not in err and time.time() < deadline:
+            time.sleep(0.01)
+            err += capsys.readouterr().err
+    err += capsys.readouterr().err
+    assert "lapsed DURING this call" in err, err
+
+
 def test_97_keep_alive_is_a_noop_when_no_lease_is_held(root):
     with locks.keep_alive(IP, token="tok-97"):
         pass
@@ -1790,13 +1810,60 @@ def test_97_lock_accepts_the_minimum_ttl(root):
 def test_97_renewal_leaves_a_lease_at_the_expiry_boundary_alone(root,
                                                                 monkeypatch):
     """RENEW_MARGIN_S: renewing right at expiry can land on top of a waiter's
-    legitimate re-acquisition (#72), so those are left to expire."""
+    legitimate re-acquisition (#72), so those are left to expire — and since
+    NOTHING will renew such a lease again, entering a verb on it is entering
+    on a lease certain to lapse mid-call. It counts as lost, loudly, instead
+    of admitting the verb (silent unlocked work is the #97 failure)."""
     p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
                     ttl=60, age=59.5)  # 0.5s left — inside the margin
     before = json.loads(p.read_text())["acquired_at"]
     monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
-    locks.check_session(IP, ("editbuffer",))
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("editbuffer",))
     assert json.loads(p.read_text())["acquired_at"] == before
+
+
+def test_97_a_lease_with_room_to_renew_is_not_treated_as_doomed(root,
+                                                                monkeypatch):
+    """The falsifying half of the test above: just OUTSIDE the margin the
+    same lease passes and is renewed."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=60, age=55)  # 5s left — outside the margin
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))
+    assert json.loads(p.read_text())["acquired_at"] > before
+
+
+def test_97_an_expired_lease_of_ours_is_reported_not_read_as_never_held(
+        root, fake_client, monkeypatch):
+    """Partial loss with the evidence still on disk: the agent holds
+    editbuffer+irs, the `editbuffer` lease lapses (per-scope TTLs can
+    diverge) and nobody has reclaimed it yet. The token still opens `irs`, so
+    the session reads as alive and `device blocks` used to answer normally —
+    while the scope it was reading was no longer held. The expired file is
+    proof we lost it, so it errors."""
+    write_lease(root, "irs", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=60, age=90)  # expired, still on disk
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "blocks", "--ip", IP)
+    assert res.exit_code != 0, res.output
+    assert "editbuffer" in res.output and "expired" in res.output
+
+
+def test_97_a_stale_transient_lease_of_ours_is_not_a_lost_session(
+        root, fake_client, monkeypatch):
+    """Counterpart: a per-verb (`kind: auto`) lease left behind by a killed
+    verb is not part of the declared session, so it must not turn every
+    later read of that scope into a refusal."""
+    write_lease(root, "irs", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="auto",
+                label="helixgen device load", ttl=60, age=90)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "blocks", "--ip", IP).exit_code == 0
 
 
 def test_97_read_refuses_when_a_contender_took_one_scope_of_a_narrow_lease(

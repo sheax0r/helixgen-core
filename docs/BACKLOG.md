@@ -1616,6 +1616,17 @@ Remaining follow-ups:
   (c) that table is hand-maintained: a new networked read shipped without
   `@_reads` is caught by nothing. Derive it from the click command tree so
   adding a verb forces an explicit decision.
+  (d) `_rewrite`'s nonce re-read and its `os.replace` are not one atomic
+  step, so a heartbeat renewal racing a concurrent `device unlock` can
+  resurrect the just-released lease (sub-millisecond window; the unlock still
+  exits 0). Would need a per-file mutex around the replace, as
+  `_break_stale` does for unlinks.
+  (e) `device info` is scoped `library`, so a foreign `library` holder makes
+  even "what device is this" refuse under a partial token — arguably it
+  belongs with the `lock`/`unlock`/`discover` recovery exemptions.
+  (f) the post-`device unlock` "unset your token" advice is per-ip: with a
+  second device's lease still held under the same token, following it strands
+  that lease behind `--force`.
   Plus: no live coverage of `device lock --detach` / the dangling-token
   refusal against real hardware (#97 was hardware-observed; the offline suite
   pins the behavior).

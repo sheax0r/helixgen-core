@@ -228,7 +228,9 @@ def _device_option(f):
 
 _NO_LOCK_HELP = ("Skip the machine-local advisory device lock for this verb "
                  "(DANGEROUS: concurrent helixgen processes may collide on "
-                 "the device; see `helixgen device lock --help`).")
+                 "the device; see `helixgen device lock --help`). Also skips "
+                 "the $HELIXGEN_LOCK_TOKEN session check, so a token whose "
+                 "session was already reclaimed no longer stops the write.")
 
 
 def _check_session_or_fail(ip: str, scopes, *, strict: bool = False) -> None:
@@ -246,9 +248,10 @@ def _reading_session(ip, scopes):
     """The guard every call that READS the device runs under (#97): refuse a
     dangling token, then heartbeat the session's leases for the call's
     duration (a read can be the LONG verb — `watch`, `measure --seconds N`,
-    an `ir-prune` dry run over the whole pool). ``strict``: a read has no
-    transient-acquire fallback, so a scope held by someone else right now is
-    a refusal, not something to contend for. An unresolved ip is left to the
+    an `ir-prune` dry run over the whole pool). The check is always
+    ``strict``: a read has no transient-acquire fallback, so a scope held by
+    someone else right now is a refusal, not something to contend for. An
+    unresolved ip is left to the
     verb body's own fail-fast; no token → no check and no lock, so unlocked
     reads stay exactly as free as they were."""
     if not (scopes and ip):

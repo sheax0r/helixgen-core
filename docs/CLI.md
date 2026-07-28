@@ -595,9 +595,17 @@ exception is a **read** of a scope a live foreign lease holds *right now* —
 that errors too, whatever else your token opens. A mutating verb contends
 for the scope and is refused visibly; a read has no such fallback, and
 would otherwise hand back well-formed data for a scope someone else is
-driving. This is also how a MULTI-scope lease that lost one scope surfaces:
-there is no way to tell "I lost it" from "I never held it", and the read is
-untrustworthy either way.
+driving. This is also how a MULTI-scope lease that lost one scope surfaces
+once its lease file is gone or re-acquired: there is no way left to tell "I
+lost it" from "I never held it", and the read is untrustworthy either way.
+While the **expired lease file is still on disk**, though, it is proof the
+scope was yours and lapsed — that case errors for mutating verbs too, not
+only reads. A live lease within **2 s of expiry** counts as lost as well:
+nothing renews a lease that close to the boundary, so entering a verb on it
+would mean running unlocked seconds later. Losing a lease *during* a call
+(a long `measure`/`watch`/`normalize`) can't be caught by the entry check —
+the background heartbeat notices and prints a `lapsed DURING this call`
+warning to stderr; treat it exactly like a lock error.
 
 **Operating rule for an agent driving multi-call device work (workspace #97):**
 
