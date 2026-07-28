@@ -265,7 +265,7 @@ def _reading_session(ip, scopes):
         yield
 
 
-def _locked(*scopes: str, verb: str, when=None, narrows_to_read=False):
+def _locked(*scopes: str, verb: str, when=None, note: str | None = None):
     """Auto-acquire the verb's advisory device-lock scope(s) for its duration.
 
     Innermost decorator (right above ``def``): wraps the raw callback, adds
@@ -278,11 +278,13 @@ def _locked(*scopes: str, verb: str, when=None, narrows_to_read=False):
     $HELIXGEN_LOCK_TIMEOUT (default 30 s; 0 = fail fast), then errors
     naming the holder.
 
-    ``narrows_to_read=True`` for a verb whose ``when`` can narrow to NO
-    lease while still reading the device (`ir-prune`'s dry run): that mode
-    is guarded exactly like an ``@_reads`` verb, so its ``--help`` carries
-    the same note. Per-verb help is the agent-facing contract, and this
-    changes when the verb exits nonzero.
+    ``note`` is appended to the verb's ``--help`` for a verb whose ``when``
+    can narrow to NO lease while still reading the device (`ir-prune`'s dry
+    run): that mode is guarded exactly like an ``@_reads`` verb, and this
+    changes when the verb exits nonzero, so it belongs in the per-verb help
+    (the agent-facing contract). It must be verb-specific — the generic
+    :data:`_READS_SESSION_NOTE` opens "takes no device lease", which is a
+    LIE for the mode that does take one.
     """
     def deco(f):
         @functools.wraps(f)
@@ -330,9 +332,9 @@ def _locked(*scopes: str, verb: str, when=None, narrows_to_read=False):
             with lease, locks.keep_alive(ip):
                 return f(*args, **kwargs)
 
-        if narrows_to_read:
+        if note:
             wrapper.__doc__ = (inspect.cleandoc(f.__doc__ or "")
-                               + "\n\n" + _READS_SESSION_NOTE)
+                               + "\n\n" + note)
         return click.option("--no-lock", "no_lock", is_flag=True,
                             default=False, help=_NO_LOCK_HELP)(wrapper)
     return deco
@@ -348,8 +350,32 @@ _READS_SESSION_NOTE = (
     "--detach`) or `unset HELIXGEN_LOCK_TOKEN` to read unlocked."
 )
 
+#: Counterpart for a verb that is OFFLINE unless a flag is passed: the
+#: session check only applies in the flag's mode, so promising an
+#: unconditional failure would be as wrong as promising none.
+_READS_WHEN_NOTE = (
+    "LOCKS: offline without {flag} — takes no device lease and ignores "
+    "$HELIXGEN_LOCK_TOKEN. With {flag} it reads the device, and then a "
+    "$HELIXGEN_LOCK_TOKEN that no longer opens a live lease over the "
+    "'{scope}' scope FAILS the verb instead of reporting on a device someone "
+    "else may be driving (#97); re-take a lease (`helixgen device lock "
+    "--scope all --detach`) or `unset HELIXGEN_LOCK_TOKEN` to read unlocked."
+)
 
-def _reads(*scopes: str, when=None):
+#: `ir-prune` is the one verb whose lock posture DIFFERS by mode: its dry run
+#: is a guarded read, `--yes` takes the 'irs' scope for the delete pass.
+_IR_PRUNE_LOCK_NOTE = (
+    "LOCKS: the dry run is read-only and takes no device lease; --yes takes "
+    "the 'irs' scope for the whole delete pass, so it waits on (and blocks) "
+    "another 'irs' holder like any mutating verb. Either way, if "
+    "$HELIXGEN_LOCK_TOKEN is set and no longer opens a live lease over 'irs', "
+    "the verb FAILS instead of acting for a device someone else may be "
+    "driving (#97); re-take a lease (`helixgen device lock --scope all "
+    "--detach`) or `unset HELIXGEN_LOCK_TOKEN` to run unlocked."
+)
+
+
+def _reads(*scopes: str, when=None, note: str | None = None):
     """Read-only counterpart of :func:`_locked` (#97): takes NO lease, adds
     no flag — but if $HELIXGEN_LOCK_TOKEN is set it must still open a live
     lease covering the scope(s) this verb READS. A token is an explicit
@@ -365,7 +391,11 @@ def _reads(*scopes: str, when=None):
 
     The wrapped verb's ``--help`` gains :data:`_READS_SESSION_NOTE`: this
     changes when a read-only verb EXITS NONZERO, and per-verb help is the
-    agent-facing contract, so it cannot live only in ``docs/CLI.md``.
+    agent-facing contract, so it cannot live only in ``docs/CLI.md``. A verb
+    whose ``when`` narrows to NO scope in its default mode passes its own
+    ``note`` (:data:`_READS_WHEN_NOTE`) — there the check applies only in the
+    flag's mode, and the generic note would promise a failure that cannot
+    happen.
     """
     def deco(f):
         @functools.wraps(f)
@@ -375,7 +405,7 @@ def _reads(*scopes: str, when=None):
                 return f(*args, **kwargs)
 
         wrapper.__doc__ = (inspect.cleandoc(f.__doc__ or "")
-                           + "\n\n" + _READS_SESSION_NOTE)
+                           + "\n\n" + (note or _READS_SESSION_NOTE))
         return wrapper
     return deco
 
@@ -1254,7 +1284,8 @@ def device_settings() -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit as JSON.")
 @_device_option
-@_reads(when=lambda kw: ("globals",) if kw.get("values") else ())
+@_reads(when=lambda kw: ("globals",) if kw.get("values") else (),
+        note=_READS_WHEN_NOTE.format(flag="--values", scope="globals"))
 def device_settings_list(page, values, as_json, ip, port):
     """List Global-Settings keys, grouped by page (offline unless --values)."""
     from helixgen.device import settings as S
@@ -2127,7 +2158,7 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result dict as JSON.")
 @_device_option
-@_locked("irs", verb="ir-prune", narrows_to_read=True,
+@_locked("irs", verb="ir-prune", note=_IR_PRUNE_LOCK_NOTE,
          when=lambda kw: ("irs",) if kw.get("yes") else ())
 def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
                     only: str | None, as_json: bool,
@@ -3221,7 +3252,8 @@ def device_slots(ctx: click.Context) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit raw JSON (the library view, or verify records with --verify).")
 @_device_option
-@_reads(when=lambda kw: ("library",) if kw.get("verify") else ())
+@_reads(when=lambda kw: ("library",) if kw.get("verify") else (),
+        note=_READS_WHEN_NOTE.format(flag="--verify", scope="library"))
 def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
     """List every library tone: slot, on/off device, setlists. Offline unless --verify."""
     SetlistManifest, _ = _manifest()

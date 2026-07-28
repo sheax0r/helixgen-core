@@ -155,18 +155,29 @@ class LockLost(LockError):
     indistinguishable once the old lease file is gone, so the message must
     not assert the first — an agent told its session was reclaimed tears the
     workflow down, when waiting for the holder may be all that is needed.
+
+    ``elsewhere`` names another device ADDRESS this token still holds a live
+    lease under: the session is demonstrably alive, so this is never a
+    reclaim, and the real cause is usually one session spelling the device
+    two ways (`helix.local` vs the dotted quad).
     """
 
     def __init__(self, ip: str, scope: str, holder: dict | None,
-                 partial: bool = False, proven: bool = True):
+                 partial: bool = False, proven: bool = True,
+                 elsewhere: str | None = None):
         self.ip = ip
         self.scope = scope
         self.holder = holder
         self.partial = partial
         self.proven = proven
+        self.elsewhere = elsewhere
         who = (f"{describe(holder)} holds it now"
                if holder is not None else "nothing holds it now")
-        if not proven:
+        if elsewhere:
+            lost = ("opens no live lease over this device — your session is "
+                    "alive, but under another address, so this scope was "
+                    "never yours HERE")
+        elif not proven:
             lost = ("does not open a live lease over this scope — it was "
                     "either reclaimed from your session or never part of it "
                     "(indistinguishable from here)")
@@ -186,10 +197,13 @@ class LockLost(LockError):
             "re-read whatever you were about to act on — do NOT retry this "
             "call and continue, the device may have been driven by someone "
             "else since.")
+        where = (f" Your lease is under device address '{elsewhere}', not "
+                 f"'{ip}' — leases are keyed by address, so use ONE spelling "
+                 f"of the device for the whole session." if elsewhere else "")
         super().__init__(
             f"device {ip} scope '{scope}': your $HELIXGEN_LOCK_TOKEN {lost}, "
-            f"and {who}. {recover} To work unlocked deliberately, unset "
-            f"$HELIXGEN_LOCK_TOKEN.")
+            f"and {who}.{where} {recover} To work unlocked deliberately, "
+            f"unset $HELIXGEN_LOCK_TOKEN.")
 
 
 def locks_root() -> Path:
@@ -531,9 +545,14 @@ def check_session(ip: str, scopes, *, token: str | None = None,
         # right now. Refuse (a read has no contend-and-wait fallback) but do
         # not assert a reclaim that may never have happened.
         # (with held == 0 the token opens nothing at all here — the session
-        # really is gone, and that message stays full-strength.)
+        # really is gone, and that message stays full-strength... UNLESS it
+        # is alive under ANOTHER address: leases are keyed by address, so
+        # owning nothing HERE is the pre-lease state, not a reclaim, and
+        # telling that caller to re-take a lease throws away a live one.)
+        elsewhere = None if held else _owned_on_other_device(ip, tok)
         raise LockLost(ip, blocked[0], blocked[1], partial=bool(held),
-                       proven=not held)
+                       proven=not held and elsewhere is None,
+                       elsewhere=elsewhere)
     if expired is not None:
         scope, path = expired
         holder = _foreign_holder(ip, scope, tok)

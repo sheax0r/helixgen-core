@@ -1821,6 +1821,25 @@ def test_97_other_device_lease_does_not_excuse_a_scope_someone_else_holds(
     assert "other-agent" in str(e.value)
 
 
+def test_97_refusal_under_a_lease_held_elsewhere_is_never_called_a_reclaim(
+        root, monkeypatch):
+    """The refusal above must not tell an agent its session was reclaimed:
+    the token opens nothing HERE, but it opens a live lease one address
+    spelling over, and "re-take a lease, do NOT retry" throws that away.
+    Name the address instead — that IS the fix. (3rd review pass.)"""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    write_lease(root, "library", label="other-agent")  # live, not ours
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is False
+    assert e.value.elsewhere == "198.51.100.7"
+    assert "198.51.100.7" in str(e.value)
+    assert "do NOT retry" not in str(e.value)
+    assert "Wait for the holder" in str(e.value)
+
+
 def test_97_a_stale_lease_elsewhere_does_not_excuse_a_dangling_token(
         root, monkeypatch):
     """The escape hatch is for a LIVE session on another address. An expired

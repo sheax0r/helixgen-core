@@ -621,7 +621,11 @@ keyed elsewhere); to actually hold it, take a lease under the address you
 will be using, and keep using that same spelling for the whole session. Reads
 say so on stderr — `your $HELIXGEN_LOCK_TOKEN holds a lease under device
 address '<other>', not '<this>' … this read is UNLOCKED` — because a token
-that holds nothing here is the #97 failure one address-spelling apart.
+that holds nothing here is the #97 failure one address-spelling apart. When
+that refusal *does* fire (a foreign holder on the scope you are reading), the
+error names the other address too and never claims your session was reclaimed:
+it is alive, just keyed elsewhere, so `device unlock` would throw away a live
+lease.
 
 **Operating rule for an agent driving multi-call device work (workspace #97):**
 

@@ -1601,8 +1601,8 @@ Remaining follow-ups:
   only because the deferral would otherwise live nowhere but the archived
   plan file.
 
-- **#103 lock-layer residuals from the #97 review** (core 0.33.0). Three
-  deferrals, none user-visible:
+- **#103 lock-layer residuals from the #97 review** (core 0.33.0). Deferrals,
+  none user-visible:
   (a) every device verb now renews owned leases **twice** at entry —
   `check_session()` renews, then `keep_alive()`'s entry renews identically.
   Harmless (a few extra 0600 rewrites), but `check_session` should be a pure
@@ -1636,6 +1636,18 @@ Remaining follow-ups:
   knows the full requested scope set, so stamping it into every lease it
   writes (`session_scopes: [...]`) makes a surviving sibling lease positive
   proof that the missing scope was ours.
+  (h) a strict read refuses a contended scope INSTANTLY — no
+  `$HELIXGEN_LOCK_TIMEOUT` wait, no `--no-lock`, unlike the mutating verbs that
+  contend-and-wait. Only reachable with a NARROW session lease (an `all` lease
+  cannot collide), and the message already says "wait for the holder and
+  retry", but a short bounded wait would make narrow leases as usable as wide
+  ones.
+  (i) `keep_alive` starts a heartbeat thread for EVERY mutating verb, including
+  sub-second ones. With no session lease the only owned lease is the verb's own
+  `auto` one, which cannot be reclaimed while its pid lives and carries
+  `AUTO_TTL = 900` — so a thread spawn, a `_renew_owned` scan and a 1 s-bounded
+  join buy nothing there. Gate it on actually holding a `session`/`detached`
+  lease.
   Plus: no live coverage of `device lock --detach` / the dangling-token
   refusal against real hardware (#97 was hardware-observed; the offline suite
   pins the behavior).
