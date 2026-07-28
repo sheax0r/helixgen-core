@@ -2007,6 +2007,56 @@ def test_97_an_expired_lease_of_ours_is_reported_not_read_as_never_held(
     assert "editbuffer" in res.output and "expired" in res.output
 
 
+def test_97_a_reported_expired_lease_is_cleared_so_it_cannot_stick(
+        root, monkeypatch):
+    """Loud ONCE, then self-heal. Nothing renews an expired lease and no
+    acquire path removes an owned lease that isn't its own target, so leaving
+    the file on disk made every later verb over that scope refuse for
+    good — mutating verbs included, against a scope nothing was contending,
+    until `device unlock`. (2nd review pass.)"""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    label="agent", ttl=60, age=90)  # expired, still on disk
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("library",))
+    assert not p.exists()
+    locks.check_session(IP, ("library",))          # the scope is free again
+    locks.check_session(IP, ("library",), strict=True)
+
+
+def test_97_a_scope_someone_else_holds_is_not_reported_as_a_reclaim(
+        root, monkeypatch):
+    """A strict read of a scope outside a narrow lease that a live FOREIGN
+    lease holds right now still refuses — but "reclaimed from your session"
+    and "never part of it" are indistinguishable there, and asserting the
+    first tells an agent to tear a healthy workflow down when waiting for
+    the holder is all it needs. (2nd review pass.)"""
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "library", pid=1, label="other-agent")  # live, not ours
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is False
+    assert "or never part of it" in str(e.value)
+    assert "Wait for the holder" in str(e.value)
+    assert "do NOT retry" not in str(e.value)
+
+
+def test_97_a_dangling_token_still_gets_the_full_strength_message(
+        root, monkeypatch):
+    """The counterpart: the token opens NOTHING here, so the session really
+    is gone and the strong stop-and-re-establish wording stands."""
+    write_lease(root, "library", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is True
+    assert "do NOT retry" in str(e.value)
+
+
 def test_97_a_stale_transient_lease_of_ours_is_not_a_lost_session(
         root, fake_client, monkeypatch):
     """Counterpart: a per-verb (`kind: auto`) lease left behind by a killed

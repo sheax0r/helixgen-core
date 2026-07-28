@@ -265,7 +265,7 @@ def _reading_session(ip, scopes):
         yield
 
 
-def _locked(*scopes: str, verb: str, when=None):
+def _locked(*scopes: str, verb: str, when=None, narrows_to_read=False):
     """Auto-acquire the verb's advisory device-lock scope(s) for its duration.
 
     Innermost decorator (right above ``def``): wraps the raw callback, adds
@@ -277,6 +277,12 @@ def _locked(*scopes: str, verb: str, when=None):
     is passed through and its TTL renewed. On contention, waits up to
     $HELIXGEN_LOCK_TIMEOUT (default 30 s; 0 = fail fast), then errors
     naming the holder.
+
+    ``narrows_to_read=True`` for a verb whose ``when`` can narrow to NO
+    lease while still reading the device (`ir-prune`'s dry run): that mode
+    is guarded exactly like an ``@_reads`` verb, so its ``--help`` carries
+    the same note. Per-verb help is the agent-facing contract, and this
+    changes when the verb exits nonzero.
     """
     def deco(f):
         @functools.wraps(f)
@@ -324,6 +330,9 @@ def _locked(*scopes: str, verb: str, when=None):
             with lease, locks.keep_alive(ip):
                 return f(*args, **kwargs)
 
+        if narrows_to_read:
+            wrapper.__doc__ = (inspect.cleandoc(f.__doc__ or "")
+                               + "\n\n" + _READS_SESSION_NOTE)
         return click.option("--no-lock", "no_lock", is_flag=True,
                             default=False, help=_NO_LOCK_HELP)(wrapper)
     return deco
@@ -2118,7 +2127,7 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result dict as JSON.")
 @_device_option
-@_locked("irs", verb="ir-prune",
+@_locked("irs", verb="ir-prune", narrows_to_read=True,
          when=lambda kw: ("irs",) if kw.get("yes") else ())
 def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
                     only: str | None, as_json: bool,

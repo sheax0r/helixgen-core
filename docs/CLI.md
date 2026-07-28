@@ -636,14 +636,19 @@ that holds nothing here is the #97 failure one address-spelling apart.
    about to act on (active preset, snapshot, block state) before acting. A
    blind retry of the failed call can succeed against a device that has since
    moved.
-4. Every verb run with the token exported renews **every** lease that token
-   owns, reads included — not only the scopes that verb touches, so a stretch
+4. Every verb that **takes or checks a device scope** — the mutating verbs and
+   the read-only ones in the table above — renews **every** lease that token
+   owns, not only the scopes that verb touches, so a stretch
    of `library` verbs cannot let a sibling `editbuffer` lease of the same
    session age out. A verb that runs LONGER than the TTL (`normalize`, a long
    `--seconds` window) keeps renewing **in flight**, from a background
    heartbeat, so an *active* workflow cannot time out either way. A workflow
-   that goes **idle** (no helixgen calls at all) for longer than the TTL still
-   loses it: size `--ttl` to cover your longest gap.
+   that goes **idle** for longer than the TTL still
+   loses it: size `--ttl` to cover your longest gap. **The exempt verbs count
+   as idle** — `device lock --status`, `device unlock`, `device discover` and
+   every offline verb (`slots list` without `--verify`, `settings list`
+   without `--values`, `library`, `local-list`, …) renew nothing at all, so
+   polling `device lock --status` is *not* a keepalive.
 5. `device unlock` releases the lease but cannot unset `$HELIXGEN_LOCK_TOKEN`
    in your shell — a token that opens nothing makes every later device verb
    refuse, so unset it (the verb says so on stderr) or take a fresh lease.

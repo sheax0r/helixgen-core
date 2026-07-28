@@ -147,27 +147,48 @@ class LockLost(LockError):
     reclaimed or has expired, so proceeding would be unlocked work under the
     belief that the device is held. ``partial=True`` when the token still
     opens SOME lease but not one over this scope, and the scope is held by
-    someone else — the same untrustworthy read, narrower cause."""
+    someone else — the same untrustworthy read, narrower cause.
+
+    ``proven=False`` marks the case where we have NO evidence the scope was
+    ever ours (a ``strict`` read of a scope a live foreign lease holds right
+    now): "reclaimed from your session" and "never part of it" are
+    indistinguishable once the old lease file is gone, so the message must
+    not assert the first — an agent told its session was reclaimed tears the
+    workflow down, when waiting for the holder may be all that is needed.
+    """
 
     def __init__(self, ip: str, scope: str, holder: dict | None,
-                 partial: bool = False):
+                 partial: bool = False, proven: bool = True):
         self.ip = ip
         self.scope = scope
         self.holder = holder
         self.partial = partial
+        self.proven = proven
         who = (f"{describe(holder)} holds it now"
                if holder is not None else "nothing holds it now")
-        lost = ("no longer opens a live lease over this scope — that part "
-                "of your session was reclaimed or expired" if partial else
-                "opens no live lease — the session lease was reclaimed or "
-                "expired")
+        if not proven:
+            lost = ("does not open a live lease over this scope — it was "
+                    "either reclaimed from your session or never part of it "
+                    "(indistinguishable from here)")
+        elif partial:
+            lost = ("no longer opens a live lease over this scope — that "
+                    "part of your session was reclaimed or expired")
+        else:
+            lost = ("opens no live lease — the session lease was reclaimed "
+                    "or expired")
+        recover = (
+            "Wait for the holder to finish and retry, or — if this scope WAS "
+            "yours — re-take a lease and re-read whatever you were about to "
+            "act on before acting on it."
+            if not proven else
+            "Stop and re-establish device state: re-take a lease "
+            "(`helixgen device lock --scope all --detach --label <who>`) and "
+            "re-read whatever you were about to act on — do NOT retry this "
+            "call and continue, the device may have been driven by someone "
+            "else since.")
         super().__init__(
             f"device {ip} scope '{scope}': your $HELIXGEN_LOCK_TOKEN {lost}, "
-            f"and {who}. Stop and re-establish device state: re-take a lease "
-            f"(`helixgen device lock --scope all --detach --label <who>`) and "
-            f"re-read whatever you were about to act on — do NOT retry this "
-            f"call and continue, the device may have been driven by someone "
-            f"else since. To work unlocked deliberately, unset "
+            f"and {who}. {recover} To work unlocked deliberately, unset "
             f"$HELIXGEN_LOCK_TOKEN.")
 
 
@@ -369,19 +390,20 @@ def _unrenewable(lease: dict) -> bool:
     return remaining is not None and remaining <= RENEW_MARGIN_S
 
 
-def _expired_own_session(ip: str, scope: str, token: str | None) -> bool:
-    """Is there an EXPIRED session/detached lease of ours still on disk for
-    ``scope``? That file is proof the scope was ours and lapsed — the one
-    case where "I lost it" IS distinguishable from "I never held it", so it
-    is reported instead of silently passing as a scope outside a narrow
+def _expired_own_lease(ip: str, scope: str, token: str | None) -> Path | None:
+    """Path of an EXPIRED session/detached lease of ours still on disk for
+    ``scope``, else None. That file is proof the scope was ours and lapsed —
+    the one case where "I lost it" IS distinguishable from "I never held it",
+    so it is reported instead of silently passing as a scope outside a narrow
     lease. Transient per-verb leases (``kind: "auto"``) are ignored: one left
     behind by a killed verb is not part of the declared session."""
     for cover in ({scope, ALL} if scope != ALL else {ALL}):
-        lease = read_lease(lock_path(ip, cover))
+        path = lock_path(ip, cover)
+        lease = read_lease(path)
         if (lease is not None and is_stale(lease) and owned(lease, token)
                 and lease.get("kind") in ("session", "detached")):
-            return True
-    return False
+            return path
+    return None
 
 
 def _foreign_holder(ip: str, scope: str, token: str | None) -> dict | None:
@@ -449,10 +471,17 @@ def check_session(ip: str, scopes, *, token: str | None = None,
     multi-scope narrow lease that lost one scope.
 
     A lost scope whose EXPIRED lease file is still on disk raises for both
-    kinds of caller (:func:`_expired_own_session`): there the file itself
+    kinds of caller (:func:`_expired_own_lease`): there the file itself
     tells "I lost it" apart from "I never held it". Once the file is gone or
     re-acquired the two are indistinguishable, and only the ``strict``
-    foreign-holder case above catches it.
+    foreign-holder case above catches it — which is why that case's message
+    does NOT assert a reclaim (``LockLost(proven=False)``).
+
+    That expired file is then CLEARED as it is reported: nothing renews an
+    expired lease and no acquire path removes an owned lease that isn't its
+    own target, so leaving it would make every later verb over that scope
+    refuse for good — including mutating verbs, against a scope nothing is
+    contending. Loud once, then self-heal.
 
     A token whose only live lease sits under ANOTHER device address is not a
     lost session (:func:`_owned_on_other_device`) — leases are keyed by
@@ -494,12 +523,28 @@ def check_session(ip: str, scopes, *, token: str | None = None,
                     if (h := _foreign_holder(ip, s, tok)) is not None), None)
     # an EXPIRED lease of ours still on disk is positive proof we lost that
     # scope — the one partial loss we can tell apart from "never held it"
-    expired = next((s for s in missing if _expired_own_session(ip, s, tok)),
+    expired = next(((s, p) for s in missing
+                    if (p := _expired_own_lease(ip, s, tok)) is not None),
                    None)
-    if strict and blocked is not None:
-        scope, holder = blocked
-    elif expired is not None:
-        scope, holder = expired, _foreign_holder(ip, expired, tok)
+    if strict and blocked is not None and expired is None:
+        # No evidence this scope was ever ours: someone else simply holds it
+        # right now. Refuse (a read has no contend-and-wait fallback) but do
+        # not assert a reclaim that may never have happened.
+        # (with held == 0 the token opens nothing at all here — the session
+        # really is gone, and that message stays full-strength.)
+        raise LockLost(ip, blocked[0], blocked[1], partial=bool(held),
+                       proven=not held)
+    if expired is not None:
+        scope, path = expired
+        holder = _foreign_holder(ip, scope, tok)
+        # Report the loss ONCE, then clear the proof. Nothing ever renews an
+        # expired lease and no acquire path removes an owned non-target one,
+        # so leaving the file on disk makes EVERY later verb over that scope
+        # refuse for good — mutating verbs included, against a scope nothing
+        # is contending, until `device unlock`. Loud once, then self-heal.
+        stale = read_lease(path)
+        if stale is not None and is_stale(stale):
+            _break_stale(path, stale)
     elif held:
         return  # session alive, just narrower than this verb — not our problem
     elif (elsewhere := _owned_on_other_device(ip, tok)) is not None:

@@ -253,6 +253,8 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "list-irs"], ["LOCKS: read-only", "no longer opens a live"]),
     (["device", "settings", "get"],
      ["LOCKS: read-only", "no longer opens a live"]),
+    # ...and the one mutating verb whose dry run IS a guarded read
+    (["device", "ir-prune"], ["LOCKS: read-only", "no longer opens a live"]),
 ]
 
 
