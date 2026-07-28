@@ -245,6 +245,14 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "sync"], ["machine-local advisory device lock"]),
     (["device", "push-ir"], ["machine-local advisory device lock"]),
     (["device", "settings", "set"], ["machine-local advisory device lock"]),
+    # #97: read-only verbs take no lease but now FAIL under a dangling
+    # token — a change to when they exit nonzero, so it belongs in their own
+    # help. Pin one read per scope.
+    (["device", "measure"], ["LOCKS: read-only", "no longer opens a live"]),
+    (["device", "list"], ["LOCKS: read-only", "no longer opens a live"]),
+    (["device", "list-irs"], ["LOCKS: read-only", "no longer opens a live"]),
+    (["device", "settings", "get"],
+     ["LOCKS: read-only", "no longer opens a live"]),
 ]
 
 

@@ -394,8 +394,8 @@ def _foreign_holder(ip: str, scope: str, token: str | None) -> dict | None:
     return None
 
 
-def _owned_on_other_device(ip: str, token: str | None) -> bool:
-    """Does ``token`` open a live lease on some OTHER device address?
+def _owned_on_other_device(ip: str, token: str | None) -> str | None:
+    """The OTHER device address where ``token`` opens a live lease, if any.
 
     Leases are keyed by address string, so one session legitimately spans
     several lease dirs: two Stadiums, or the SAME device reached as
@@ -408,16 +408,17 @@ def _owned_on_other_device(ip: str, token: str | None) -> bool:
     happened (reads have no ``--no-lock``, so there was no way past it).
     """
     if not token:
-        return False
+        return None
     here = lock_dir(ip)
     try:
         dirs = [d for d in locks_root().iterdir() if d.is_dir() and d != here]
     except OSError:
-        return False
-    return any(
-        (lease := read_lease(d / f"{scope}.lock")) is not None
-        and not is_stale(lease) and lease.get("token") == token
-        for d in dirs for scope in VALID_SCOPES
+        return None
+    return next(
+        (d.name for d in sorted(dirs) for scope in VALID_SCOPES
+         if (lease := read_lease(d / f"{scope}.lock")) is not None
+         and not is_stale(lease) and lease.get("token") == token),
+        None,
     )
 
 
@@ -501,8 +502,20 @@ def check_session(ip: str, scopes, *, token: str | None = None,
         scope, holder = expired, _foreign_holder(ip, expired, tok)
     elif held:
         return  # session alive, just narrower than this verb — not our problem
-    elif _owned_on_other_device(ip, tok):
-        return  # the session is alive on ANOTHER address — never held here
+    elif (elsewhere := _owned_on_other_device(ip, tok)) is not None:
+        # The session is alive on ANOTHER address — never held here, so this
+        # is not a reclaim and must not refuse. But a read carrying a token
+        # that holds nothing HERE is running unlocked while its caller
+        # believes otherwise: the #97 failure, one address-spelling apart
+        # (`helix.local` vs the dotted quad). Mutating verbs need no warning
+        # — they go on to acquire this address transiently.
+        if strict:
+            print(f"warning: your $HELIXGEN_LOCK_TOKEN holds a lease under "
+                  f"device address '{elsewhere}', not '{ip}' — leases are "
+                  f"keyed by address, so this read is UNLOCKED. Take a lease "
+                  f"under the address you are driving and use one spelling "
+                  f"of it for the whole session.", file=sys.stderr)
+        return
     else:
         scope, holder = blocked or (missing[0], None)
     raise LockLost(ip, scope, holder, partial=bool(held))
@@ -686,6 +699,16 @@ def keep_alive(ip: str, *, token: str | None = None):
                 alive, shortest = _renew_owned(ip, tok)
             except OSError:
                 return  # lease dir vanished — nothing useful left to renew
+            except Exception as exc:  # noqa: BLE001
+                # A daemon thread that dies quietly stops renewing, and the
+                # lease then lapses mid-call with none of the warning below
+                # — exactly the silent loss #97 exists to prevent. Say so.
+                print(f"warning: device {ip} lock keep-alive stopped "
+                      f"({type(exc).__name__}: {exc}) — the lease is no "
+                      f"longer being renewed and may expire during this "
+                      f"call. Check with `helixgen device lock --status`.",
+                      file=sys.stderr)
+                return
             if alive < held:
                 # Losing a lease mid-call is exactly the #97 failure, and
                 # here we have positive proof of it — say so rather than let

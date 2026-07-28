@@ -1700,6 +1700,35 @@ def test_97_keep_alive_warns_when_only_ONE_of_two_scopes_lapses(root, capsys,
     assert "lapsed DURING this call" in err, err
 
 
+def test_97_keep_alive_says_so_when_the_heartbeat_itself_dies(root, capsys,
+                                                              monkeypatch):
+    """An unexpected exception used to kill the daemon thread silently: no
+    more renewals, no `lapsed` warning, lease gone by the next call — the
+    silent loss this whole feature exists to prevent."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL)
+    calls = {"n": 0}
+    real = locks._renew_owned
+
+    def boom(ip, token):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the entry renewal must still succeed
+            return real(ip, token)
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(locks, "_renew_owned", boom)
+    err = ""
+    with locks.keep_alive(IP, token="tok-97"):
+        deadline = time.time() + 2.0
+        while "keep-alive stopped" not in err and time.time() < deadline:
+            time.sleep(0.01)
+            err += capsys.readouterr().err
+    err += capsys.readouterr().err
+    assert "keep-alive stopped" in err and "kaboom" in err, err
+
+
 def test_97_renewal_that_lands_on_a_reacquired_lease_is_not_held(root,
                                                                  monkeypatch):
     """`_renew` is nonce-guarded, so a lease broken + re-acquired under us
@@ -1752,6 +1781,28 @@ def test_97_token_held_on_another_device_address_is_not_a_lost_session(
     monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
     locks.check_session(IP, ("library",), strict=True)  # no refusal
     assert not lease_path(root, "library").exists()  # and still takes nothing
+
+
+def test_97_read_under_a_token_held_elsewhere_warns_that_it_is_unlocked(
+        root, monkeypatch, capsys):
+    """Not a refusal — but not silent either: the caller believes it holds a
+    device it holds nothing on, which is #97 one address-spelling apart."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",), strict=True)
+    err = capsys.readouterr().err
+    assert "198.51.100.7" in err and "UNLOCKED" in err
+
+
+def test_97_mutating_verb_under_a_token_held_elsewhere_does_not_warn(
+        root, monkeypatch, capsys):
+    """It goes on to acquire this address transiently — it IS locked."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",))
+    assert capsys.readouterr().err == ""
 
 
 def test_97_other_device_lease_does_not_excuse_a_scope_someone_else_holds(

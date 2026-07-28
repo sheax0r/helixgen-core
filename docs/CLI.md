@@ -614,10 +614,14 @@ multi-scope session that drops a single scope mid-call still says so.
 Leases are keyed by **device address**, and so is this check: a token whose
 only live lease sits under a *different* address — a second Stadium, or the
 same one reached as `helix.local` here and `10.0.0.4` there — is **not** a
-lost session and does not error. Verbs against that other address behave as
+lost session and does not error (a scope a live *foreign* lease holds right
+now is still a refusal, as above). Verbs against that other address behave as
 they did unlocked (they take no lease there, since the lease you hold is
 keyed elsewhere); to actually hold it, take a lease under the address you
-will be using, and keep using that same spelling for the whole session.
+will be using, and keep using that same spelling for the whole session. Reads
+say so on stderr — `your $HELIXGEN_LOCK_TOKEN holds a lease under device
+address '<other>', not '<this>' … this read is UNLOCKED` — because a token
+that holds nothing here is the #97 failure one address-spelling apart.
 
 **Operating rule for an agent driving multi-call device work (workspace #97):**
 

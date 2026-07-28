@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import inspect
 import json
 import os
 import sys
@@ -328,6 +329,17 @@ def _locked(*scopes: str, verb: str, when=None):
     return deco
 
 
+#: Appended to every ``@_reads`` verb's help (#97). These verbs take no
+#: lease, but they DO now refuse when $HELIXGEN_LOCK_TOKEN opens nothing.
+_READS_SESSION_NOTE = (
+    "LOCKS: read-only — takes no device lease. But if $HELIXGEN_LOCK_TOKEN "
+    "is set and no longer opens a live lease over what this verb reads, the "
+    "verb FAILS instead of printing numbers for a device someone else may "
+    "be driving (#97); re-take a lease (`helixgen device lock --scope all "
+    "--detach`) or `unset HELIXGEN_LOCK_TOKEN` to read unlocked."
+)
+
+
 def _reads(*scopes: str, when=None):
     """Read-only counterpart of :func:`_locked` (#97): takes NO lease, adds
     no flag — but if $HELIXGEN_LOCK_TOKEN is set it must still open a live
@@ -341,6 +353,10 @@ def _reads(*scopes: str, when=None):
     :func:`_reading_session` for the guard itself.
 
     Innermost decorator, right above ``def``, like :func:`_locked`.
+
+    The wrapped verb's ``--help`` gains :data:`_READS_SESSION_NOTE`: this
+    changes when a read-only verb EXITS NONZERO, and per-verb help is the
+    agent-facing contract, so it cannot live only in ``docs/CLI.md``.
     """
     def deco(f):
         @functools.wraps(f)
@@ -349,6 +365,8 @@ def _reads(*scopes: str, when=None):
             with _reading_session(kwargs.get("ip"), eff):
                 return f(*args, **kwargs)
 
+        wrapper.__doc__ = (inspect.cleandoc(f.__doc__ or "")
+                           + "\n\n" + _READS_SESSION_NOTE)
         return wrapper
     return deco
 
