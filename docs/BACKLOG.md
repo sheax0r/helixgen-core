@@ -1665,12 +1665,14 @@ Remaining follow-ups:
   let it lapse. Neither the flag's help nor the docs' "the exempt verbs renew
   NOTHING" list mentions it; renewal is orthogonal to skipping the verb's own
   lease and could stay.
-  (l) `device lock --scope <narrow>` under a covering `all` lease of ours
+  (l) ~~`device lock --scope <narrow>` under a covering `all` lease of ours
   reports `locked '<narrow>'` but writes no lease file and drops the new
-  label: `--status` never shows the scope and `unlock --scope <narrow>` says
-  there is nothing of yours to release. Pre-existing, but `--scope all
-  --detach` is now the recommended agent posture, so this is the common path.
-  Report `covered by 'all'` instead of `locked`.
+  label/kind~~ — FIXED in the #97b review: `session_lock` now converts the
+  covering `all` lease in place (new kind/pid/label/ttl) and reports
+  `renewed 'all'`, so a `--pid`/`--detach` re-lock under a covering lease can
+  no longer silently leave the old shell-bound kind on disk while the CLI
+  affirms the new one (that was a narrow recurrence of #97). Pinned by
+  `test_97b_*_relock_under_covering_all_*` in `tests/test_locks.py`.
   Plus: no live coverage of `device lock --detach` / the dangling-token
   refusal against real hardware (#97 was hardware-observed; the offline suite
   pins the behavior).

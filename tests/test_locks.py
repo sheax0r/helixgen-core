@@ -1734,6 +1734,45 @@ def test_97b_pid_lease_is_renewed_by_token_authenticated_use(root, monkeypatch):
     assert after["kind"] == "pid" and after["pid"] == os.getpid()
 
 
+def test_97b_pid_relock_under_covering_all_converts_the_lease(root,
+                                                              monkeypatch):
+    """A narrow --pid re-lock while holding a covering shell-bound `all`
+    lease must CONVERT that lease in place. acquire()'s passthrough would
+    renew it with its old session kind while the CLI affirms pid binding —
+    the lease stays reclaimable after the 120s dead-pid grace, silently
+    reasserting the #97 failure behind an explicit success message."""
+    write_lease(root, "all", pid=os.getppid(), kind="session",
+                token="tok-cover", label="old-session",
+                ttl=locks.DEFAULT_SESSION_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-cover")
+    tok, outcomes = locks.session_lock(
+        IP, ["library"], label="agent", ttl=locks.DEFAULT_SESSION_TTL,
+        pid=os.getpid())
+    assert tok == "tok-cover"
+    assert outcomes == [("all", "renewed")]  # names the lease touched
+    assert not lease_path(root, "library").exists()  # no shadow narrow lease
+    after = json.loads(lease_path(root, "all").read_text())
+    assert after["kind"] == "pid"
+    assert after["pid"] == os.getpid()
+    assert after["pid_start"] == locks._pid_start(os.getpid())
+    assert after["label"] == "agent"
+
+
+def test_97b_detach_relock_under_covering_all_converts_once(root,
+                                                            monkeypatch):
+    """Same conversion for --detach, and only ONCE for a multi-scope
+    request — both narrow scopes resolve to the same covering lease."""
+    write_lease(root, "all", pid=os.getppid(), kind="session",
+                token="tok-cover", ttl=locks.DEFAULT_SESSION_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-cover")
+    _, outcomes = locks.session_lock(IP, ["library", "irs"], label="cron",
+                                     ttl=300, detach=True)
+    assert outcomes == [("all", "renewed")]
+    after = json.loads(lease_path(root, "all").read_text())
+    assert after["kind"] == "detached" and after["pid"] is None
+    assert after["ttl_seconds"] == 300
+
+
 # --------------------------------------------------------------------------
 # #97b (Task 3): all three lease kinds must RENDER unambiguously — in
 # `--status`, in its JSON, and in the error a blocked contender reads. "held

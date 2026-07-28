@@ -1410,7 +1410,10 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
     ``detach=True`` writes a DETACHED lease instead (``kind: "detached"``,
     no pid — #97): nothing ties it to the caller's process, so only the TTL
     (renewed by every covered verb) or an explicit ``device unlock``
-    releases it. Re-locking an owned scope switches it to/from detached.
+    releases it. Re-locking an owned scope switches it to/from detached;
+    a scope covered by an owned ``all`` lease converts THAT lease in place
+    (reported under ``"all"``) — never a silent passthrough that would keep
+    the old kind while the caller believes the new one took (#97b).
     ``detach=True`` with a non-positive ``ttl`` (0, negative — both mean "no
     expiry" to :func:`is_stale`) is refused: no pid AND no expiry leaves a
     lease nothing but ``unlock --force`` could ever clear."""
@@ -1472,9 +1475,27 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
     outcomes: list[tuple[str, str]] = []
     fresh: list[LeaseSet] = []
     try:
+        converted: set = set()
         for scope in want:
             path = lock_path(ip, scope)
             lease = read_lease(path)
+            outcome_scope = scope
+            if (scope != ALL
+                    and not (lease is not None and not is_stale(lease)
+                             and owned(lease, tok))):
+                # No owned live lease under the exact scope: a covering `all`
+                # lease of ours must be CONVERTED in place, not left to
+                # acquire()'s passthrough — that renews it with its OLD
+                # kind/pid/label while the CLI reports the new ones, leaving
+                # e.g. a --pid request still shell-bound with the 120s
+                # dead-pid grace (the #97 failure, silently reasserted).
+                apath = lock_path(ip, ALL)
+                alease = read_lease(apath)
+                if (alease is not None and not is_stale(alease)
+                        and owned(alease, tok)):
+                    path, lease, outcome_scope = apath, alease, ALL
+            if path in converted:
+                continue  # covering lease already rewritten this call
             remaining = _remaining_ttl(lease) if lease is not None else None
             if (lease is not None and not is_stale(lease)
                     and owned(lease, tok)
@@ -1497,7 +1518,8 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
                                          timeout=timeout))
                     outcomes.append((scope, "locked"))
                     continue
-                outcomes.append((scope, "renewed"))
+                outcomes.append((outcome_scope, "renewed"))
+                converted.add(path)
             else:
                 fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
                                      token=tok, pid=own_pid, kind=kind,

@@ -518,7 +518,9 @@ check, exactly as before.
   lease records the invoking shell's pid). Re-locking your own scope renews it in place (idempotent) — and
   **switches its kind**: `--detach` over a session lease drops the pid,
   `--pid` re-binds it to the pid you name, a plain re-lock re-binds it to the
-  invoking shell.
+  invoking shell. A narrow re-lock under your own covering `all` lease
+  converts *that* lease the same way, reported as `renewed 'all'` — never a
+  silent passthrough that keeps the old kind.
 - `helixgen device lock --scope all --pid $PPID --label "<who>"` — a
   **pid-bound** lease (0.33.0, #97b; `kind: "pid"`). **This is the lease an
   agent should take.** An agent's every tool call is a fresh shell, and a
