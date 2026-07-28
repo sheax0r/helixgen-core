@@ -281,6 +281,31 @@ def test_pid_start_is_read_independently_of_tz_and_locale(monkeypatch):
     assert locks._pid_start(os.getpid()) == baseline
 
 
+def test_pid_start_on_linux_reads_proc_starttime_ticks(tmp_path, monkeypatch):
+    """On Linux `ps -o lstart` renders start time through the WALL clock, so
+    an NTP step / suspend shifts every live process's reported start — the
+    recorded string would then differ from the live owner's and a `kind:
+    "pid"` lease (no grace) would be stolen mid-workflow. Identity there uses
+    /proc starttime ticks, which are boot-relative and step-immune. Field 22
+    is counted after the ')' closing comm — comm may itself contain spaces
+    and parens."""
+    proc = tmp_path / "proc"
+    (proc / "4242").mkdir(parents=True)
+    fields = ["S", "1"] + ["0"] * 17 + ["7654321", "999"]
+    (proc / "4242" / "stat").write_text(
+        "4242 (my (we)ird) prog) " + " ".join(fields) + "\n")
+    monkeypatch.setattr(locks, "_PROC", proc)
+    monkeypatch.setattr(locks.sys, "platform", "linux")
+    assert locks._pid_start(4242) == "7654321"
+
+
+def test_pid_start_on_linux_missing_proc_entry_is_a_miss(tmp_path,
+                                                         monkeypatch):
+    monkeypatch.setattr(locks, "_PROC", tmp_path)
+    monkeypatch.setattr(locks.sys, "platform", "linux")
+    assert locks._pid_start(4242) is None
+
+
 def test_recycled_pid_on_other_host_is_still_not_probed(root):
     """Start times are only meaningful on the recording host; a foreign-host
     lease stays TTL-only."""
@@ -2338,6 +2363,23 @@ def test_97_unlock_says_nothing_while_the_token_still_opens_a_lease(
     out = run_cli("device", "unlock", "--scope", "library", "--ip", IP)
     assert out.exit_code == 0, out.output
     assert "unset HELIXGEN_LOCK_TOKEN" not in out.output
+
+
+def test_97b_unlock_names_the_other_address_still_holding_a_lease(
+        root, monkeypatch):
+    """Leases are keyed by address string: the token may still open a live
+    lease under another spelling of the (possibly same) device. Advising
+    `unset HELIXGEN_LOCK_TOKEN` there strands that lease until TTL — the
+    warning must point at the OTHER address instead."""
+    res = run_cli("device", "lock", "--scope", "all", "--detach",
+                  "--label", "agent", "--ip", "10.0.0.4")
+    token = [ln.split("=", 1)[1] for ln in res.output.splitlines()
+             if ln.startswith("HELIXGEN_LOCK_TOKEN=")][0]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", token)
+    out = run_cli("device", "unlock", "--ip", IP)
+    assert out.exit_code == 0, out.output
+    assert "unset HELIXGEN_LOCK_TOKEN" not in out.output
+    assert "10.0.0.4" in out.output
 
 
 

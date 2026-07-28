@@ -1024,6 +1024,16 @@ def _warn_dangling_token_after_unlock(ip: str) -> None:
     if any(locks.covering_lease(ip, s, tok) is not None
            for s in locks.VALID_SCOPES):
         return  # still holding something — the token is still good
+    other = locks._owned_on_other_device(ip, tok)
+    if other is not None:
+        # Leases are keyed by address string: the token may still open a
+        # live lease under another spelling of the (possibly same) device.
+        # Advising `unset` here would strand that lease until TTL/pid-death.
+        click.echo(f"your $HELIXGEN_LOCK_TOKEN still opens a live lease "
+                   f"under {other!r} — release it with `helixgen device "
+                   f"unlock --ip {other}` before unsetting the token.",
+                   err=True)
+        return
     click.echo("your $HELIXGEN_LOCK_TOKEN no longer opens any lease: "
                "`unset HELIXGEN_LOCK_TOKEN` (while it is set, helixgen "
                "device verbs — reads included — will refuse), or take a "

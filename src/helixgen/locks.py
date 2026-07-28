@@ -322,13 +322,30 @@ def describe(lease: dict) -> str:
             f"{lease.get('hostname', '?')}, age {max(0.0, age):.0f}s{ttl_s})")
 
 
+#: /proc root for the Linux start-time probe (patchable in tests).
+_PROC = Path("/proc")
+
+
 def _pid_start(pid) -> str | None:
-    """The process's start time as ``ps`` reports it, or None when it can't
-    be read (dead pid, no ``ps``, Windows, nonsense input). A MISS, never an
-    exception: this feeds a liveness check that must not blow up on a pid
-    belonging to nobody."""
+    """The process's start time as an opaque comparison token, or None when
+    it can't be read (dead pid, no ``ps``, Windows, nonsense input). A MISS,
+    never an exception: this feeds a liveness check that must not blow up on
+    a pid belonging to nobody."""
     if not isinstance(pid, int) or pid <= 0 or sys.platform == "win32":
         return None
+    if sys.platform.startswith("linux"):
+        # `ps -o lstart` on Linux renders boot-time + start-ticks through the
+        # WALL clock, so an NTP step / suspend shifts every live process's
+        # reported start — the recorded string then differs from the live
+        # owner's and the lease reads RECYCLED (no grace for `kind: "pid"`).
+        # /proc starttime is raw ticks since boot: step-immune. Field 22 of
+        # /proc/<pid>/stat, counted after the ')' closing comm (comm itself
+        # may contain spaces and parens).
+        try:
+            stat = (_PROC / str(pid) / "stat").read_text()
+            return stat.rsplit(")", 1)[1].split()[19]
+        except (OSError, IndexError):
+            return None
     try:
         # Pin TZ + locale: `ps` renders lstart in the CALLING process's $TZ
         # and $LC_TIME, so an unpinned string recorded under one environment
