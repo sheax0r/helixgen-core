@@ -83,7 +83,10 @@ def test_foreign_mutating_verb_blocks_naming_the_holder(cli, live_env):
 
 def test_foreign_read_verb_takes_no_lock(cli, live_env):
     """Read-only verbs acquire nothing — a foreign `device lock --status`
-    succeeds while we hold `all`."""
+    succeeds while we hold `all`. (`lock --status` specifically: it is one of
+    the verbs deliberately EXEMPT from the 0.33.0 dangling-token check, so
+    recovery is never locked out. A foreign process carrying a stale token
+    would be refused on any other read.)"""
     code, out, err = run_foreign(live_env, "device", "lock", "--status",
                                  "--json")
     assert code == 0, err or out

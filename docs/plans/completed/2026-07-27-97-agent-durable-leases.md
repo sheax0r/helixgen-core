@@ -78,10 +78,31 @@ the code default, which has been `DEFAULT_SESSION_TTL = 900` throughout);
 expiry leaves a lease only `unlock --force` can clear; `device unlock` (by
 token) and `device unlock --force` both still work unchanged.
 
-Renewal needed no new mechanism: `_acquire_one` step 1 already passes
+Renewal started with no new mechanism: `_acquire_one` step 1 already passes
 through and `_renew()`s any owned live covering lease, and a detached lease
 is never pid-stale, so every token-authenticated mutating call renews it.
 Pinned by `test_97_detached_lease_is_renewed_by_token_authenticated_use`.
+
+**Post-review amendments (review rounds 2–3, same PR):** that turned out not
+to be enough, and renewal grew two pieces.
+
+- `locks._renew_owned()` renews **every** lease the token owns on **every**
+  token-carrying call — reads included, not just the verb's own scopes. A
+  read is proof the session is active (a `measure`-only stretch renewed
+  nothing at all, the Task 1 root cause), and a stretch of `library` verbs
+  was silently ageing out the sibling `editbuffer` lease of the same session.
+- `locks.keep_alive()` — a daemon-thread heartbeat held for the verb's
+  duration, renewing every `shortest_owned_TTL / 3` clamped to
+  `[HEARTBEAT_MIN_S, HEARTBEAT_MAX_S]` (1 s … 30 s). Entry-time renewal alone
+  loses the lease mid-flight for a verb that OUTRUNS its TTL — reachable with
+  `normalize` (human-paced) and the telemetry verbs' unbounded `--seconds`
+  against a 300 s detached default.
+- Consequence for `--ttl`: a positive TTL under `MIN_SESSION_TTL` (10 s), or
+  a non-finite one, is now **refused** by `session_lock`. Renewal skips a
+  lease within `RENEW_MARGIN_S` of expiry, so a shorter TTL was a lease
+  active use could not keep alive — silent mid-workflow loss, the failure
+  this plan exists to prevent. (`--ttl nan` also slipped past the `--detach`
+  no-expiry guard entirely and wrote invalid JSON.)
 
 ### Task 3: presented-token-but-no-longer-owner must fail loudly, read-only included
 
@@ -106,8 +127,18 @@ silently into a fresh transient lease), and a new sibling decorator
 read-only networked verbs: `measure`/`meters`/`tuner`/`blocks`/`params`/
 `active`/`watch` (editbuffer), `list`/`setlists`/`read`/`pull`/`backup`/
 `setlist export-hss`/`slots list --verify` (library), `list-irs`/`pull-ir`
-(irs), `settings list`/`get` (globals). `device lock`/`unlock`/`discover` and
-the offline verbs stay exempt — recovery must never be locked out.
+(irs), `settings list --values`/`settings get` (globals — bare `settings
+list` is offline and stays exempt), plus `info` and `ir-prune`'s dry run.
+`device lock`/`unlock`/`discover` and the offline verbs stay exempt —
+recovery must never be locked out.
+
+**Post-review amendment (round 3):** reads check `strict=True`, which adds
+one case to "a scope outside a narrow lease is not a lost session": a scope
+a live FOREIGN lease holds right now refuses even when the token still opens
+other leases. A mutating verb contends for that scope and is refused
+visibly; a read has no such fallback and would otherwise return well-formed
+data for a scope someone else is driving — the same asymmetry, reachable
+with a multi-scope lease that lost one scope.
 
 ### Task 4: document the constraint that remains
 
@@ -120,8 +151,9 @@ read-only verb that checks, and (b) a 4-point **operating rule for an agent
 driving multi-call device work**: detached lease up front + exported token,
 `device unlock` at the end (including on failure), any lock error means STOP
 and re-establish state (re-take a lease, re-read active preset/snapshot/block
-state) rather than retry-and-continue, and size `--ttl` to cover long
-read-only stretches because only covered (mutating) verbs renew. `CLAUDE.md`
+state) rather than retry-and-continue, and size `--ttl` to cover the longest
+IDLE gap — reads renew too (round-2 amendment above), and a long verb keeps
+renewing in flight, so only idleness loses a lease. `CLAUDE.md`
 carries the same rule in condensed form, pointing at `docs/CLI.md` for the
 verb table.
 

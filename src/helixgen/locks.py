@@ -40,6 +40,15 @@ AND no TTL = a lease nothing but ``--force`` can clear). Every
 token-authenticated lock-taking call renews it, so an active workflow keeps
 its lease and an abandoned one expires on its own.
 
+**A presented token must open a live lease** (:func:`check_session`, #97):
+``$HELIXGEN_LOCK_TOKEN`` set but opening nothing on this device raises
+:class:`LockLost` rather than proceeding unlocked. The policy is applied at
+the CLI layer (read-only verbs included — see ``cli_device._reads``), not
+inside :func:`acquire`. Every such call also RENEWS every lease the token
+owns, and :func:`keep_alive` keeps renewing from a daemon thread for the
+duration of a long verb, so only an IDLE stretch longer than the TTL loses
+a lease.
+
 Advisory + machine-local ONLY: direct-protocol clients on other hosts and
 the Stadium desktop editor are not covered.
 
@@ -50,6 +59,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import socket
@@ -77,6 +87,13 @@ DEFAULT_DETACHED_TTL = 300
 #: TTL for a verb's transient auto-acquired lease (released on verb exit;
 #: the TTL only matters if the process dies AND pid-liveness can't see it).
 AUTO_TTL = 900
+#: Shortest TTL `device lock` accepts. Renewal skips a lease within
+#: :data:`RENEW_MARGIN_S` of expiry and the heartbeat sleeps at least
+#: :data:`HEARTBEAT_MIN_S`, so anything shorter than this is a lease that
+#: ACTIVE use cannot keep alive — it would expire mid-workflow in silence,
+#: the very failure #97 exists to prevent. (0 / negative still means "no
+#: expiry", which is a deliberate choice, not a too-short one.)
+MIN_SESSION_TTL = 10.0
 
 #: Age below which an unparseable lease file is assumed to be a concurrent
 #: writer mid-write (wait) rather than junk (break).
@@ -128,18 +145,25 @@ class LockLost(LockError):
     """``$HELIXGEN_LOCK_TOKEN`` is set but opens no live lease covering a
     scope the caller is about to touch (#97): the session it declares was
     reclaimed or has expired, so proceeding would be unlocked work under the
-    belief that the device is held."""
+    belief that the device is held. ``partial=True`` when the token still
+    opens SOME lease but not one over this scope, and the scope is held by
+    someone else — the same untrustworthy read, narrower cause."""
 
-    def __init__(self, ip: str, scope: str, holder: dict | None):
+    def __init__(self, ip: str, scope: str, holder: dict | None,
+                 partial: bool = False):
         self.ip = ip
         self.scope = scope
         self.holder = holder
+        self.partial = partial
         who = (f"{describe(holder)} holds it now"
                if holder is not None else "nothing holds it now")
+        lost = ("no longer opens a lease over this scope — that part "
+                "of your session was reclaimed" if partial else
+                "opens no live lease — the session lease was reclaimed or "
+                "expired")
         super().__init__(
-            f"device {ip} scope '{scope}': your $HELIXGEN_LOCK_TOKEN opens no "
-            f"live lease — the session lease was reclaimed or expired, and "
-            f"{who}. Stop and re-establish device state: re-take a lease "
+            f"device {ip} scope '{scope}': your $HELIXGEN_LOCK_TOKEN {lost}, "
+            f"and {who}. Stop and re-establish device state: re-take a lease "
             f"(`helixgen device lock --scope all --detach --label <who>`) and "
             f"re-read whatever you were about to act on — do NOT retry this "
             f"call and continue, the device may have been driven by someone "
@@ -336,7 +360,18 @@ def covering_lease(ip: str, scope: str,
     return None
 
 
-def check_session(ip: str, scopes, *, token: str | None = None) -> None:
+def _foreign_holder(ip: str, scope: str, token: str | None) -> dict | None:
+    """The live lease NOT ours that blocks ``scope``, if any."""
+    for cpath in _conflict_paths(ip, scope):
+        lease = read_lease(cpath)
+        if (lease is not None and not is_stale(lease)
+                and not owned(lease, token)):
+            return lease
+    return None
+
+
+def check_session(ip: str, scopes, *, token: str | None = None,
+                  strict: bool = False) -> None:
     """Fail fast when a presented token no longer owns the device (#97).
 
     Exporting ``$HELIXGEN_LOCK_TOKEN`` is an explicit declaration of "I am
@@ -352,7 +387,16 @@ def check_session(ip: str, scopes, *, token: str | None = None) -> None:
     ``editbuffer``) is not a lost session and never raises: the session is
     demonstrably alive, so a mutating verb acquires that scope transiently
     (contending normally, with the usual wait) and a read stays as free as
-    it was unlocked. Only a token that opens nothing is a lost session.
+    it was unlocked.
+
+    ``strict=True`` (READS — they have no transient-acquire fallback) adds
+    one case: a scope outside our lease that a live FOREIGN lease holds
+    right now. A mutating verb contends for it and is refused visibly; a
+    read would otherwise return well-formed numbers for a scope someone
+    else is driving — the exact 2026-07-27 asymmetry, reachable with a
+    multi-scope narrow lease that lost one scope (there is no way to tell
+    "I lost it" from "I never held it", and the read is untrustworthy
+    either way).
 
     EVERY lease the token owns is RENEWED, not only the ones covering this
     verb's scopes — a read-only verb is proof its session is still active,
@@ -380,17 +424,13 @@ def check_session(ip: str, scopes, *, token: str | None = None) -> None:
     held, _ = _renew_owned(ip, tok)
     if not missing:
         return
-    if held:
+    # name the scope someone else actually holds, when there is one
+    blocked = next(((s, h) for s in missing
+                    if (h := _foreign_holder(ip, s, tok)) is not None), None)
+    scope, holder = blocked or (missing[0], None)
+    if held and not (strict and holder is not None):
         return  # session alive, just narrower than this verb — not our problem
-    scope = missing[0]
-    holder = None
-    for cpath in _conflict_paths(ip, scope):
-        lease = read_lease(cpath)
-        if (lease is not None and not is_stale(lease)
-                and not owned(lease, tok)):
-            holder = lease
-            break
-    raise LockLost(ip, scope, holder)
+    raise LockLost(ip, scope, holder, partial=bool(held))
 
 
 # --------------------------------------------------------------------------
@@ -497,6 +537,10 @@ def _renew_owned(ip: str, token: str | None) -> tuple[int, float | None]:
 #: Longest a :func:`keep_alive` heartbeat sleeps between renewals. Shorter
 #: TTLs renew proportionally sooner (a third of the shortest owned TTL).
 HEARTBEAT_MAX_S = 30.0
+#: Floor on that sleep, so a tiny TTL can't spin the heartbeat thread. It is
+#: why :data:`MIN_SESSION_TTL` exists: a lease this short would beat once and
+#: still find itself inside :data:`RENEW_MARGIN_S` of expiry.
+HEARTBEAT_MIN_S = 1.0
 
 
 @contextlib.contextmanager
@@ -526,7 +570,8 @@ def keep_alive(ip: str, *, token: str | None = None):
         nonlocal shortest
         while True:
             delay = (HEARTBEAT_MAX_S if shortest is None
-                     else max(1.0, min(HEARTBEAT_MAX_S, shortest / 3)))
+                     else max(HEARTBEAT_MIN_S,
+                              min(HEARTBEAT_MAX_S, shortest / 3)))
             if stop.wait(delay):
                 return
             try:
@@ -1043,10 +1088,20 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
     ``detach=True`` with a non-positive ``ttl`` (0, negative — both mean "no
     expiry" to :func:`is_stale`) is refused: no pid AND no expiry leaves a
     lease nothing but ``unlock --force`` could ever clear."""
+    if ttl is not None and not math.isfinite(ttl):
+        raise ValueError(
+            f"ttl must be a finite number of seconds (got {ttl!r}): "
+            "nan/inf are not an expiry at all, and are not valid JSON")
     if detach and (ttl is None or ttl <= 0):
         raise ValueError(
             "a detached lease needs a TTL: with no pid and no expiry nothing "
             "but `device unlock --force` could ever release it")
+    if ttl is not None and 0 < ttl < MIN_SESSION_TTL:
+        raise ValueError(
+            f"ttl {ttl:g}s is too short to keep alive: renewal skips a lease "
+            f"within {RENEW_MARGIN_S:g}s of expiry, so it would lapse "
+            f"mid-workflow even while you are using it. Use "
+            f"--ttl {MIN_SESSION_TTL:g} or more.")
     want = _normalize_scopes(scopes)
     kind = "detached" if detach else "session"
     tok = env_token()

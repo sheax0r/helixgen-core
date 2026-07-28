@@ -1601,6 +1601,25 @@ Remaining follow-ups:
   only because the deferral would otherwise live nowhere but the archived
   plan file.
 
+- **#103 lock-layer residuals from the #97 review** (core 0.33.0). Three
+  deferrals, none user-visible:
+  (a) every device verb now renews owned leases **twice** at entry —
+  `check_session()` renews, then `keep_alive()`'s entry renews identically.
+  Harmless (a few extra 0600 rewrites), but `check_session` should be a pure
+  check with renewal owned solely by `keep_alive`; both current call sites
+  already wrap the body in it.
+  (b) read-only verbs are covered in the REFUSAL direction only
+  (`READ_ONLY_VERBS` in `tests/test_locks.py`); only `device blocks` is
+  pinned to still RUN under a live lease, so a wrong scope string or an
+  over-narrow `when=` lambda would pass. Parametrize the same table
+  positively.
+  (c) that table is hand-maintained: a new networked read shipped without
+  `@_reads` is caught by nothing. Derive it from the click command tree so
+  adding a verb forces an explicit decision.
+  Plus: no live coverage of `device lock --detach` / the dangling-token
+  refusal against real hardware (#97 was hardware-observed; the offline suite
+  pins the behavior).
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

@@ -10,6 +10,7 @@ extra), exactly as before.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import os
@@ -230,14 +231,34 @@ _NO_LOCK_HELP = ("Skip the machine-local advisory device lock for this verb "
                  "the device; see `helixgen device lock --help`).")
 
 
-def _check_session_or_fail(ip: str, scopes) -> None:
+def _check_session_or_fail(ip: str, scopes, *, strict: bool = False) -> None:
     """`locks.check_session` as a CLI error (#97). No token → no-op."""
     from helixgen import locks
 
     try:
-        locks.check_session(ip, scopes)
+        locks.check_session(ip, scopes, strict=strict)
     except locks.LockLost as e:
         raise click.ClickException(str(e)) from e
+
+
+@contextlib.contextmanager
+def _reading_session(ip, scopes):
+    """The guard every call that READS the device runs under (#97): refuse a
+    dangling token, then heartbeat the session's leases for the call's
+    duration (a read can be the LONG verb — `watch`, `measure --seconds N`,
+    an `ir-prune` dry run over the whole pool). ``strict``: a read has no
+    transient-acquire fallback, so a scope held by someone else right now is
+    a refusal, not something to contend for. An unresolved ip is left to the
+    verb body's own fail-fast; no token → no check and no lock, so unlocked
+    reads stay exactly as free as they were."""
+    if not (scopes and ip):
+        yield
+        return
+    _check_session_or_fail(ip, scopes, strict=True)
+    from helixgen import locks
+
+    with locks.keep_alive(ip):
+        yield
 
 
 def _locked(*scopes: str, verb: str, when=None):
@@ -264,14 +285,12 @@ def _locked(*scopes: str, verb: str, when=None):
 
             if not eff:
                 # narrowed to no lease (a dry-run mode) — but a dry run that
-                # still READS the device must not sail past the dangling-token
-                # check the same read-only verbs are subject to (#97). The
-                # verb's declared scopes say what it touches; ip stays lenient
-                # here (the body owns its own fail-fast), as in `_reads`.
-                ip = kwargs.get("ip")
-                if scopes and ip:
-                    _check_session_or_fail(ip, scopes)
-                return f(*args, **kwargs)
+                # still READS the device is exactly a read-only verb, so it
+                # runs under the same guard (#97). The verb's DECLARED scopes
+                # say what it touches; a verb declaring none (`import-hss
+                # --list`) is offline and guarded by nothing, as before.
+                with _reading_session(kwargs.get("ip"), scopes):
+                    return f(*args, **kwargs)
 
             # _ip_callback resolves leniently (None when unconfigured); a
             # verb about to take a device lock is going to write to the
@@ -289,8 +308,12 @@ def _locked(*scopes: str, verb: str, when=None):
                 lease = locks.acquire(ip, eff, label=f"helixgen device {verb}")
             except locks.LockHeld as e:
                 raise click.ClickException(
-                    f"{e} — wait and retry, raise HELIXGEN_LOCK_TIMEOUT, or "
-                    f"(dangerous) pass --no-lock") from e
+                    f"{e} — someone else is driving this device. STOP and "
+                    f"re-establish state rather than retrying blind: if you "
+                    f"are in a held session, re-read whatever you were about "
+                    f"to act on once the device is yours again. Wait longer "
+                    f"with HELIXGEN_LOCK_TIMEOUT, or (dangerous) pass "
+                    f"--no-lock") from e
             # keep_alive: entry-time renewal alone loses the lease mid-verb
             # for anything that outruns its TTL (`normalize`, a long `--seconds`
             # window) — see locks.keep_alive (#97).
@@ -311,7 +334,8 @@ def _reads(*scopes: str, when=None):
     `device snapshot 0` and then handed a well-formed `device measure` of
     whatever snapshot happened to be active). No token → no check and no
     lock: unlocked reads stay free. ``when(kwargs)`` narrows the scopes
-    dynamically (e.g. offline-unless---verify verbs).
+    dynamically (e.g. offline-unless---verify verbs). See
+    :func:`_reading_session` for the guard itself.
 
     Innermost decorator, right above ``def``, like :func:`_locked`.
     """
@@ -319,18 +343,7 @@ def _reads(*scopes: str, when=None):
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
             eff = tuple(when(kwargs)) if when is not None else scopes
-            ip = kwargs.get("ip")
-            # an unresolved ip is left to the verb body's own fail-fast; a
-            # read with no token is exactly as unlocked as it was before
-            # (check_session itself owns the no-token rule).
-            if not (eff and ip):
-                return f(*args, **kwargs)
-            _check_session_or_fail(ip, eff)
-            from helixgen import locks
-
-            # a read can be the LONG verb (`watch`/`measure --seconds N`),
-            # so it heartbeats its session lease the same way (#97).
-            with locks.keep_alive(ip):
+            with _reading_session(kwargs.get("ip"), eff):
                 return f(*args, **kwargs)
 
         return wrapper
@@ -715,7 +728,9 @@ _LOCK_SCOPE_HELP = (
                    "lease is reclaimed by the "
                    "next contender. 0 = no TTL expiry (reclaim then relies "
                    "on pid-liveness or `device unlock`); refused with "
-                   "--detach, which has no pid to fall back on.")
+                   "--detach, which has no pid to fall back on. A positive "
+                   "TTL under 10s is refused: renewal skips a lease within "
+                   "2s of expiry, so it could lapse mid-workflow.")
 @click.option("--detach", is_flag=True, default=False,
               help="Take a DETACHED lease: no pid is recorded, so the lease "
                    "does NOT die with the shell that took it. Use this for "
@@ -820,6 +835,10 @@ def device_lock(scopes, label, ttl, detach, show_status, as_json, ip) -> None:
     except locks.LockHeld as e:
         raise click.ClickException(str(e)) from e
     except locks.LockError as e:
+        raise click.ClickException(str(e)) from e
+    except ValueError as e:
+        # the lock layer's own --ttl invariants (non-finite, too short to
+        # keep alive) — its messages already say what to pass instead.
         raise click.ClickException(str(e)) from e
     for s, action in outcomes:
         click.echo(f"{action} '{s}' on {ip} (label {label!r})")

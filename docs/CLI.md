@@ -494,7 +494,8 @@ exit, even on failure):
 | `library` + `irs` | `sync` (`--exclude-irs` drops the `irs` scope), `install` (with or without `--auto-irs`: the IR presence check's wedge discriminator may issue a state-neutral rename nudge, an IR-container write — #93), `slots restore` (same reason, for `.hsp` sources) |
 | `irs` | `push-ir`, `delete-ir`, `rename-ir`, `ir-prune` (only with `--yes`; dry-run takes nothing) |
 | `globals` | `settings set`, `globaleq set` |
-| *(none — but see "A dangling token fails loudly")* | every read/list verb, the local-manifest verbs (`add`, `unsync`, `library`, `slots list/reorder`, `setlist list/add/remove/create-local/sync-on/sync-off`, `export-hss`, `local-list`), `backup`, `pull`, `pull-ir`, `watch`, `tuner`, `meters`, `measure` |
+| *(none — offline)* | the local-manifest / offline verbs: `add`, `unsync`, `library`, `slots list` (without `--verify`), `slots reorder`, `setlist list/add/remove/create-local/sync-on/sync-off`, `local-list`, `settings list` (without `--values`), `setlist import-hss --list`/`--dry-run` |
+| *(none — but networked; see "A dangling token fails loudly")* | every read/list verb: `info`, `list`, `setlists`, `read`, `blocks`, `params`, `active`, `list-irs`, `settings list --values`, `settings get`, `slots list --verify`, `setlist export-hss`, `backup`, `pull`, `pull-ir`, `watch`, `tuner`, `meters`, `measure`, `ir-prune` (dry run) |
 
 Read/list verbs take **no lease**, but since 0.33.0 the **networked** ones do
 *verify* a presented `$HELIXGEN_LOCK_TOKEN` (see below) — as does a dry-run
@@ -506,10 +507,11 @@ check, exactly as before.
 - `helixgen device lock --scope <editbuffer|library|irs|globals|all> --label
   <text> [--ttl 900]` (scope repeatable; default `all`) — hold scope(s)
   ACROSS calls. Prints `HELIXGEN_LOCK_TOKEN=<token>`; **export it** and
-  every covered verb passes through the lease (renewing its TTL) instead of
-  deadlocking against it. Calls from the **same shell** as the `lock` also
-  pass through without the token (the lease records the invoking shell's
-  pid). Re-locking your own scope renews it in place (idempotent) — and
+  every covered verb passes through the lease instead of deadlocking against
+  it — and **any** verb you run with the token exported (read-only ones
+  included, 0.33.0) renews every lease that token owns. Calls from the
+  **same shell** as the `lock` also pass through without the token (the
+  lease records the invoking shell's pid). Re-locking your own scope renews it in place (idempotent) — and
   **switches its kind**: `--detach` over a session lease drops the pid, a
   plain re-lock over a detached lease re-binds it to the invoking shell.
 - `helixgen device lock --detach --label <text> [--ttl 300]` — a **detached**
@@ -549,15 +551,20 @@ itself (the scan→create→verify step) is serialized per device through a
 stale-breakable `.acquire.lock` meta-lock so two racers taking conflicting
 scopes can't both commit; like the break-mutex it is reclaimed if its holder
 dies and is invisible to `device lock --status`. Escape hatch: every
-mutating verb takes `--no-lock` (dangerous — you're opting out of
-collision protection).
+**mutating** verb takes `--no-lock` (dangerous — you're opting out of
+collision protection), which since 0.33.0 also skips the dangling-token
+check below. Read-only verbs take no lease and carry **no `--no-lock`** —
+the only deliberate opt-out for a read is `unset HELIXGEN_LOCK_TOKEN`.
 
 Fine print: `--ttl 0` = no TTL expiry (reclaim then relies on pid-liveness
-or `device unlock`). A **session** lease whose recorded pid is dead gets a
+or `device unlock`); a *positive* TTL under **10 s** is refused outright
+(renewal skips a lease within 2 s of expiry, so a shorter one would lapse
+mid-workflow however actively you used it), as is a non-finite one. A
+**session** lease whose recorded pid is dead gets a
 **120 s grace** (from its last acquisition/renewal) before pid-death makes
 it stale — so run `device lock` from your long-lived shell, not via a
 wrapper script (the wrapper's pid dies immediately; the lease then only
-survives while covered verbs keep renewing it), or take `--detach`, which
+survives while token-carrying calls keep renewing it), or take `--detach`, which
 records no pid at all and is bounded by its TTL alone. Pid-liveness is
 POSIX-only:
 on Windows it is disabled (probing would kill the probed process) and only
@@ -581,9 +588,16 @@ Verbs invoked with **no token** are unchanged: unlocked reads stay free and
 take no lease. `device lock` / `device unlock` / `device discover` and the
 offline verbs are exempt (including `settings list` without `--values` and
 `setlist import-hss --list`/`--dry-run`), so recovery is never locked out.
-A scope simply **outside a narrow lease** is *not* a lost session and never
-errors: holding `--scope library` and running an `editbuffer` verb acquires
-that scope transiently, exactly as before (a granular lease stays granular).
+A scope simply **outside a narrow lease** is *not* a lost session: holding
+`--scope library` and running an `editbuffer` verb acquires that scope
+transiently, exactly as before (a granular lease stays granular). The one
+exception is a **read** of a scope a live foreign lease holds *right now* —
+that errors too, whatever else your token opens. A mutating verb contends
+for the scope and is refused visibly; a read has no such fallback, and
+would otherwise hand back well-formed data for a scope someone else is
+driving. This is also how a MULTI-scope lease that lost one scope surfaces:
+there is no way to tell "I lost it" from "I never held it", and the read is
+untrustworthy either way.
 
 **Operating rule for an agent driving multi-call device work (workspace #97):**
 
