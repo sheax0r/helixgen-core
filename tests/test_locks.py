@@ -2057,3 +2057,100 @@ def test_97_plain_relock_rebinds_a_detached_lease_to_the_shell(root,
     _lock_and_export(monkeypatch)
     data = json.loads(lease_path(root, "all").read_text())
     assert (data["kind"], data["pid"]) == ("session", os.getppid())
+
+
+# --------------------------------------------------------------------------
+# review follow-ups: the heartbeat on the MUTATING path, its delay, the
+# --no-lock escape hatch vs the session check, and stdout hygiene
+# --------------------------------------------------------------------------
+
+def test_97_long_mutating_verb_keeps_its_lease_alive(root, fake_client,
+                                                     monkeypatch):
+    """`normalize` and friends are the motivating case: the heartbeat has to
+    run on the `_locked` path too, not just on read-only verbs."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    seen = {}
+
+    import helixgen.device as device_mod
+    real_load = device_mod.HelixClient.load_preset
+
+    def slow_load(self, *a, **kw):
+        entry = json.loads(p.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(p.read_text())["acquired_at"] == entry
+               and time.time() < deadline):
+            time.sleep(0.01)
+        seen["renewed"] = json.loads(p.read_text())["acquired_at"] > entry
+        return real_load(self, *a, **kw)
+
+    monkeypatch.setattr(device_mod.HelixClient, "load_preset", slow_load)
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert seen["renewed"] is True
+
+
+def test_97_heartbeat_beats_on_a_third_of_the_shortest_ttl():
+    """A beat per TTL/3 leaves two more chances before the lease lapses.
+    Clamped both ways so a tiny TTL can't spin and a long one still beats."""
+    assert locks._heartbeat_delay(30.0) == 10.0
+    assert locks._heartbeat_delay(None) == locks.HEARTBEAT_MAX_S
+    assert locks._heartbeat_delay(10_000.0) == locks.HEARTBEAT_MAX_S
+    assert locks._heartbeat_delay(0.3) == locks.HEARTBEAT_MIN_S
+    # the floor is why MIN_SESSION_TTL exists: any TTL a user may take must
+    # still get a beat well clear of the renewal margin
+    assert (locks._heartbeat_delay(locks.MIN_SESSION_TTL)
+            < locks.MIN_SESSION_TTL - locks.RENEW_MARGIN_S)
+
+
+def test_97_heartbeat_keeps_renewing_the_scopes_it_still_holds(root, capsys,
+                                                               monkeypatch):
+    """Losing one scope warns but must NOT stop the thread: the surviving
+    sibling lease would then age out unrenewed mid-call — the same silent
+    expiry, one scope over."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    gone = write_lease(root, "editbuffer", pid=None, token="tok-97",
+                       kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
+    kept = write_lease(root, "library", pid=None, token="tok-97",
+                       kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
+    err = ""
+    with locks.keep_alive(IP, token="tok-97"):
+        gone.unlink()
+        deadline = time.time() + 2.0
+        while "lapsed" not in err and time.time() < deadline:
+            time.sleep(0.01)
+            err += capsys.readouterr().err
+        after_warning = json.loads(kept.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(kept.read_text())["acquired_at"] == after_warning
+               and time.time() < deadline):
+            time.sleep(0.01)
+        assert json.loads(kept.read_text())["acquired_at"] > after_warning
+    assert "lapsed DURING this call" in err + capsys.readouterr().err
+
+
+def test_97_no_lock_skips_the_dangling_token_check(root, fake_client,
+                                                   monkeypatch):
+    """`--no-lock` is the documented (dangerous) opt-out of the whole lock
+    layer, session check included — otherwise a dangling token would leave a
+    mutating verb with no way past at all."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-dangling")
+    assert run_cli("device", "load", "1", "--ip", IP).exit_code != 0
+    res = run_cli("device", "load", "1", "--no-lock", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+def test_97_unlock_dangling_warning_keeps_json_stdout_parseable(root,
+                                                                monkeypatch):
+    """The advice goes to stderr: `device unlock --json` stdout must stay
+    machine-readable for the agent that scripted the workflow."""
+    token = _lock_and_export(monkeypatch, "--detach")
+    assert token
+    res = run_cli("device", "unlock", "--json", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)["released"] == ["all"]
+    assert "unset HELIXGEN_LOCK_TOKEN" in res.stderr

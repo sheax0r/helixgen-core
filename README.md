@@ -88,7 +88,8 @@ HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest tests/live -q
 
 Tests are grouped by impact area with registered markers — `authoring`,
 `library`, `ir`, `device_read`, `device_write`, `liveops`, `setlists`,
-`sync`, `device_ir` (plus `live` on everything and `live_global` for the
+`sync`, `device_ir`, `locks`, `discover` (plus `live` on everything and
+`live_global` for the
 extra-gated global-settings write) — so a targeted change can run just its
 blast radius, e.g.:
 

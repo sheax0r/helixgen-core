@@ -1627,6 +1627,15 @@ Remaining follow-ups:
   (f) the post-`device unlock` "unset your token" advice is per-ip: with a
   second device's lease still held under the same token, following it strands
   that lease behind `--force`.
+  (g) a MULTI-scope narrow lease that loses ONE scope to a contender who then
+  RELEASES it is undetectable: the lease file is gone, so neither the
+  expired-file proof nor the live-foreign-holder check fires, and the agent
+  silently re-acquires the scope — the original #97 failure, one scope over.
+  `--scope all` is unaffected (losing it means the token opens nothing) and
+  the limitation is documented, but it need not be permanent: `session_lock`
+  knows the full requested scope set, so stamping it into every lease it
+  writes (`session_scopes: [...]`) makes a surviving sibling lease positive
+  proof that the missing scope was ours.
   Plus: no live coverage of `device lock --detach` / the dangling-token
   refusal against real hardware (#97 was hardware-observed; the offline suite
   pins the behavior).

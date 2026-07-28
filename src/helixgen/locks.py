@@ -638,6 +638,16 @@ HEARTBEAT_MAX_S = 30.0
 HEARTBEAT_MIN_S = 1.0
 
 
+def _heartbeat_delay(shortest: float | None) -> float:
+    """Sleep between renewals: a third of the shortest owned TTL, clamped to
+    [:data:`HEARTBEAT_MIN_S`, :data:`HEARTBEAT_MAX_S`]. A third leaves two
+    further chances to renew before the lease lapses; no TTL at all (a lease
+    that never expires) just beats at the ceiling."""
+    if shortest is None:
+        return HEARTBEAT_MAX_S
+    return max(HEARTBEAT_MIN_S, min(HEARTBEAT_MAX_S, shortest / 3))
+
+
 @contextlib.contextmanager
 def keep_alive(ip: str, *, token: str | None = None):
     """Renew owned leases in the background for one verb's duration (#97).
@@ -668,12 +678,9 @@ def keep_alive(ip: str, *, token: str | None = None):
     stop = threading.Event()
 
     def _beat() -> None:
-        nonlocal shortest
+        nonlocal shortest, held
         while True:
-            delay = (HEARTBEAT_MAX_S if shortest is None
-                     else max(HEARTBEAT_MIN_S,
-                              min(HEARTBEAT_MAX_S, shortest / 3)))
-            if stop.wait(delay):
+            if stop.wait(_heartbeat_delay(shortest)):
                 return
             try:
                 alive, shortest = _renew_owned(ip, tok)
@@ -690,7 +697,14 @@ def keep_alive(ip: str, *, token: str | None = None):
                       f"output may not describe a device you still hold. "
                       f"Stop and re-establish device state: re-take a lease "
                       f"and re-read what you were acting on.", file=sys.stderr)
-                return
+                if not alive:
+                    return  # nothing owned left to renew
+                # keep beating for the scopes we DO still hold: stopping here
+                # would let a surviving sibling lease (`library` when
+                # `editbuffer` was reclaimed) age out unrenewed mid-call —
+                # the same silent expiry, one scope over. A further loss
+                # warns again.
+                held = alive
 
     beat = threading.Thread(target=_beat, name="helixgen-lock-keepalive",
                             daemon=True)
@@ -969,7 +983,9 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
             if (not is_stale(lease)
                     and (remaining_ttl is None
                          or remaining_ttl > RENEW_MARGIN_S)):
-                _renew(cpath, lease)
+                if not _renew(cpath, lease):
+                    continue  # broken + re-acquired under us — not ours to
+                    #           pass through; fall through and acquire fresh
                 passthrough.append(cpath)
                 covered = True
                 break
@@ -1204,8 +1220,9 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
             "nan/inf are not an expiry at all, and are not valid JSON")
     if detach and (ttl is None or ttl <= 0):
         raise ValueError(
-            "a detached lease needs a TTL: with no pid and no expiry nothing "
-            "but `device unlock --force` could ever release it")
+            "--detach needs a positive --ttl: a detached lease records no "
+            "pid, so with no expiry either nothing but `device unlock "
+            "--force` could ever release it (covered verbs renew it)")
     if ttl is not None and 0 < ttl < MIN_SESSION_TTL:
         raise ValueError(
             f"ttl {ttl:g}s is too short to keep alive: renewal skips a lease "

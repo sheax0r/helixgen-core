@@ -818,11 +818,6 @@ def device_lock(scopes, label, ttl, detach, show_status, as_json, ip) -> None:
         raise click.ClickException(
             "--label is required (name the session holding the lock, e.g. "
             "--label 'setlist rebuild agent')")
-    if detach and ttl is not None and ttl <= 0:
-        raise click.ClickException(
-            "--ttl 0 (no expiry) is refused with --detach: a detached lease "
-            "records no pid, so nothing but `device unlock --force` could "
-            "ever reclaim it. Pass a positive --ttl (covered verbs renew it).")
     try:
         # Session leases record the INVOKING SHELL's pid (this CLI process
         # exits immediately); never released here — `device unlock` frees
@@ -835,13 +830,10 @@ def device_lock(scopes, label, ttl, detach, show_status, as_json, ip) -> None:
             ip, scopes, label=label,
             ttl=default_ttl if ttl is None else ttl,
             detach=detach, pid=None if detach else os.getppid())
-    except locks.LockHeld as e:
-        raise click.ClickException(str(e)) from e
-    except locks.LockError as e:
-        raise click.ClickException(str(e)) from e
-    except ValueError as e:
-        # the lock layer's own --ttl invariants (non-finite, too short to
-        # keep alive) — its messages already say what to pass instead.
+    except (locks.LockError, ValueError) as e:
+        # contention, plus the lock layer's own --ttl invariants (non-finite,
+        # zero with --detach, too short to keep alive) — every one of those
+        # messages already says what to pass instead.
         raise click.ClickException(str(e)) from e
     for s, action in outcomes:
         click.echo(f"{action} '{s}' on {ip} (label {label!r})")

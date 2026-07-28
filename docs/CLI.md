@@ -494,7 +494,7 @@ exit, even on failure):
 | `library` + `irs` | `sync` (`--exclude-irs` drops the `irs` scope), `install` (with or without `--auto-irs`: the IR presence check's wedge discriminator may issue a state-neutral rename nudge, an IR-container write — #93), `slots restore` (same reason, for `.hsp` sources) |
 | `irs` | `push-ir`, `delete-ir`, `rename-ir`, `ir-prune` (only with `--yes`; dry-run takes nothing) |
 | `globals` | `settings set`, `globaleq set` |
-| *(none — offline)* | the local-manifest / offline verbs: `add`, `unsync`, `library`, `slots list` (without `--verify`), `slots reorder`, `setlist list/add/remove/create-local/sync-on/sync-off`, `local-list`, `settings list` (without `--values`), `setlist import-hss --list`/`--dry-run` |
+| *(none — offline)* | the local-manifest / offline verbs: `add`, `unsync`, `library`, `slots list` (without `--verify`), `slots reorder`, `setlist list/add/remove/create-local/sync-on/sync-off`, `local-list`, `settings list` (without `--values`), `globaleq list` (write-only verb group: nothing is read back), `setlist import-hss --list`/`--dry-run`; plus `lock`, `unlock` and `discover` — networked but deliberately exempt, so recovery is never locked out |
 | *(none — but networked; see "A dangling token fails loudly")* | every read/list verb: `info`, `list`, `setlists`, `read`, `blocks`, `params`, `active`, `list-irs`, `settings list --values`, `settings get`, `slots list --verify`, `setlist export-hss`, `backup`, `pull`, `pull-ir`, `watch`, `tuner`, `meters`, `measure`, `ir-prune` (dry run) |
 
 Read/list verbs take **no lease**, but since 0.33.0 the **networked** ones do
@@ -554,7 +554,9 @@ dies and is invisible to `device lock --status`. Escape hatch: every
 **mutating** verb takes `--no-lock` (dangerous — you're opting out of
 collision protection), which since 0.33.0 also skips the dangling-token
 check below. Read-only verbs take no lease and carry **no `--no-lock`** —
-the only deliberate opt-out for a read is `unset HELIXGEN_LOCK_TOKEN`.
+the only deliberate opt-out for a read is `unset HELIXGEN_LOCK_TOKEN`. (The
+one seam: `ir-prune`'s dry run is guarded as a read but *is* a mutating verb
+narrowed by `--yes`, so it does carry the flag.)
 
 Fine print: `--ttl 0` = no TTL expiry (reclaim then relies on pid-liveness
 or `device unlock`); a *positive* TTL under **10 s** is refused outright
