@@ -40,7 +40,7 @@ def lease_path(root: Path, scope: str, ip: str = IP) -> Path:
 def write_lease(root: Path, scope: str, *, pid: int = 1, host: str | None = None,
                 age: float = 0.0, ttl: float = 3600, label: str = "other-agent",
                 token: str | None = None, ip: str = IP,
-                kind: str = "auto") -> Path:
+                kind: str = "auto", pid_start: str | None = None) -> Path:
     """Plant a foreign lease file. pid=1 is a live process we never own."""
     p = lease_path(root, scope, ip)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -49,6 +49,8 @@ def write_lease(root: Path, scope: str, *, pid: int = 1, host: str | None = None
             "label": label, "kind": kind, "nonce": "planted"}
     if token is not None:
         data["token"] = token
+    if pid_start is not None:
+        data["pid_start"] = pid_start
     p.write_text(json.dumps(data))
     return p
 
@@ -142,6 +144,86 @@ def test_dead_pid_on_other_host_is_not_reclaimed(root):
     write_lease(root, "library", pid=dead_pid(), host="elsewhere", ttl=3600)
     with pytest.raises(locks.LockHeld):
         locks.acquire(IP, ("library",), label="me", timeout=0)
+
+
+# --------------------------------------------------------------------------
+# (pid, start_time) lease identity (#97b Task 1)
+# --------------------------------------------------------------------------
+
+def test_lease_records_owner_pid_start_time(root):
+    """A lease naming a pid also records that process's start time, so the
+    pid can never be confused with a later recycled one."""
+    with locks.acquire(IP, ("library",), label="me", timeout=0):
+        data = json.loads(lease_path(root, "library").read_text())
+    assert data["pid"] == os.getpid()
+    assert data["pid_start"] == locks._pid_start(os.getpid())
+    assert data["pid_start"]  # a real, non-empty value on this platform
+
+
+def test_recycled_pid_reads_dead(root, capsys):
+    """THE reason `pid_start` exists: a lease whose pid is alive but is now a
+    DIFFERENT process (pid numbers are recycled) must read as dead, not as an
+    immortal live lease."""
+    # pid 1 is unmistakably alive, and just as unmistakably not the process
+    # that took this lease
+    write_lease(root, "library", pid=1, ttl=3600,
+                pid_start="Thu Jan  1 00:00:00 1970")
+    lease = locks.read_lease(lease_path(root, "library"))
+    assert locks.is_stale(lease)
+    with locks.acquire(IP, ("library",), label="me", timeout=0):
+        assert json.loads(
+            lease_path(root, "library").read_text())["label"] == "me"
+    assert "stale" in capsys.readouterr().err
+    # ...while the same pid WITHOUT a recorded start time still blocks
+    write_lease(root, "irs", pid=1, ttl=3600)
+    with pytest.raises(locks.LockHeld):
+        locks.acquire(IP, ("irs",), label="me", timeout=0)
+
+
+def test_matching_pid_start_is_live(root):
+    """The other half: same pid, same start time = genuinely the same live
+    process, so the lease is live and blocks."""
+    write_lease(root, "library", pid=os.getpid(), ttl=3600,
+                pid_start=locks._pid_start(os.getpid()), token="theirs")
+    lease = locks.read_lease(lease_path(root, "library"))
+    assert not locks.is_stale(lease)
+
+
+def test_lease_without_pid_start_falls_back_to_pid_liveness(root):
+    """Leases written before this field (and the acquisition meta-lock) still
+    judge liveness by the pid alone — absent means 'unknown', not 'dead'."""
+    write_lease(root, "library", pid=os.getpid(), ttl=3600)
+    assert not locks.is_stale(locks.read_lease(lease_path(root, "library")))
+    write_lease(root, "irs", pid=dead_pid(), ttl=3600)
+    assert locks.is_stale(locks.read_lease(lease_path(root, "irs")))
+
+
+@pytest.mark.parametrize("pid", [0, -1, 2 ** 31 - 1, None, "x"])
+def test_pid_start_never_raises_on_a_bad_or_dead_pid(pid):
+    """Reading a start time is a MISS, never an exception: dead pids, foreign
+    pids, and nonsense all return None."""
+    assert locks._pid_start(pid) is None
+
+
+def test_pid_start_of_a_dead_pid_is_a_miss():
+    assert locks._pid_start(dead_pid()) is None
+
+
+def test_unreadable_pid_start_reads_dead(root, monkeypatch):
+    """`ps` missing/failing means we cannot confirm the recorded owner — the
+    lease reads dead rather than blowing up or trusting the bare pid."""
+    monkeypatch.setattr(locks, "_pid_start", lambda pid: None)
+    write_lease(root, "library", pid=os.getpid(), ttl=3600,
+                pid_start="Thu Jan  1 00:00:00 1970")
+    assert locks.is_stale(locks.read_lease(lease_path(root, "library")))
+
+
+def test_recycled_pid_on_other_host_is_still_not_probed(root):
+    """Start times are only meaningful on the recording host; a foreign-host
+    lease stays TTL-only."""
+    write_lease(root, "library", pid=os.getpid(), host="elsewhere", ttl=3600,
+                pid_start="Thu Jan  1 00:00:00 1970")
+    assert not locks.is_stale(locks.read_lease(lease_path(root, "library")))
 
 
 def test_waiter_gets_lock_when_ttl_expires_mid_wait(root):

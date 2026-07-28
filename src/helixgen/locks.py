@@ -15,8 +15,15 @@ Scopes (one lease file each; ``all`` is exclusive against everything):
 * ``globals``    — Global Settings / Global EQ writes
 * ``all``        — an exclusive session lease over the whole device
 
-A lease is a JSON object: ``{pid, hostname, acquired_at, ttl_seconds, label,
-token?, kind, nonce}``. Ownership (a holder's OTHER processes passing through
+A lease is a JSON object: ``{pid, pid_start?, hostname, acquired_at,
+ttl_seconds, label, token?, kind, nonce}``. ``pid_start`` is the owner
+process's start time as the OS reports it (``ps -p <pid> -o lstart=``),
+recorded at acquisition: pid NUMBERS are recycled, so the lease's identity is
+the ``(pid, pid_start)`` PAIR — a pid whose current start time differs from
+the recorded one is a DIFFERENT process, i.e. the owner is dead. Without it a
+recycled pid would keep an abandoned lease alive forever. Absent (a lease
+written before this field) → liveness falls back to the bare pid.
+Ownership (a holder's OTHER processes passing through
 its lease instead of deadlocking against it) is established by either:
 
 * **token** — ``$HELIXGEN_LOCK_TOKEN`` matching the lease's ``token`` (the
@@ -63,6 +70,7 @@ import math
 import os
 import re
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -281,7 +289,25 @@ def describe(lease: dict) -> str:
             f"{lease.get('hostname', '?')}, age {max(0.0, age):.0f}s{ttl_s})")
 
 
-def _pid_alive(pid) -> bool:
+def _pid_start(pid) -> str | None:
+    """The process's start time as ``ps`` reports it, or None when it can't
+    be read (dead pid, no ``ps``, Windows, nonsense input). A MISS, never an
+    exception: this feeds a liveness check that must not blow up on a pid
+    belonging to nobody."""
+    if not isinstance(pid, int) or pid <= 0 or sys.platform == "win32":
+        return None
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
+
+
+def _pid_alive(pid, pid_start: str | None = None) -> bool:
+    """Is ``pid`` a live process — and, when ``pid_start`` is recorded, still
+    the SAME process it was at acquisition? A pid whose start time no longer
+    matches has been recycled: the recorded owner is dead (#97b)."""
     if not isinstance(pid, int) or pid <= 0:
         return False
     if sys.platform == "win32":
@@ -293,7 +319,9 @@ def _pid_alive(pid) -> bool:
     except ProcessLookupError:
         return False
     except OSError:
-        return True  # e.g. PermissionError: someone else's live process
+        pass  # e.g. PermissionError: someone else's live process
+    if pid_start is not None and _pid_start(pid) != pid_start:
+        return False  # recycled pid (or unreadable start time) — not our owner
     return True
 
 
@@ -355,7 +383,9 @@ def is_stale(lease: dict) -> bool:
     is the locking shell's and may be a short-lived wrapper). Never true
     for a live foreign-host lease inside its TTL. ttl_seconds <= 0 means
     no TTL expiry. A DETACHED lease records no pid, so only the TTL path
-    can expire it (#97)."""
+    can expire it (#97). A recorded ``pid_start`` that no longer matches the
+    pid's current start time means the pid was RECYCLED — the recorded owner
+    is dead (#97b)."""
     remaining = _remaining_ttl(lease)
     if remaining is not None and remaining <= 0:
         return True
@@ -363,7 +393,7 @@ def is_stale(lease: dict) -> bool:
         return False  # only the TTL path above can expire a synthetic lease
     pid = lease.get("pid")
     if lease.get("hostname") == hostname() and isinstance(pid, int):
-        if _pid_alive(pid):
+        if _pid_alive(pid, lease.get("pid_start")):
             return False
         if lease.get("kind") == "session":
             acquired = lease.get("acquired_at")
@@ -1132,11 +1162,15 @@ def _acquire_one(ip: str, scope: str, *, label: str, ttl: float,
                 #    review finding 2). The older lease wins the tiebreak; the
                 #    younger backs off, so both racers never proceed.
                 if blocker is None:
+                    # a DETACHED lease records no pid at all (#97): the
+                    # invoking shell's lifetime must not bound it.
+                    own_pid = None if kind == "detached" else (
+                        os.getpid() if pid is None else int(pid))
                     payload = {
-                        # a DETACHED lease records no pid at all (#97): the
-                        # invoking shell's lifetime must not bound it.
-                        "pid": None if kind == "detached" else (
-                            os.getpid() if pid is None else int(pid)),
+                        "pid": own_pid,
+                        # identity is the (pid, start time) PAIR, never the
+                        # recycled-any-minute pid alone (#97b)
+                        "pid_start": _pid_start(own_pid),
                         "hostname": hostname(),
                         "acquired_at": time.time(),
                         "ttl_seconds": ttl,
@@ -1356,10 +1390,11 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
                     and owned(lease, tok)
                     and (remaining is None or remaining > RENEW_MARGIN_S)):
                 renewed = dict(lease)
+                own_pid = None if detach else (
+                    os.getppid() if pid is None else int(pid))
                 renewed.update(label=label, ttl_seconds=ttl, token=tok,
                                acquired_at=time.time(), kind=kind,
-                               pid=None if detach else (
-                                   os.getppid() if pid is None else int(pid)))
+                               pid=own_pid, pid_start=_pid_start(own_pid))
                 if not _rewrite(path, renewed, expect_nonce=lease.get("nonce")):
                     # broken + re-acquired since we read it — acquire fresh
                     fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
