@@ -1700,11 +1700,14 @@ def test_97_keep_alive_warns_when_only_ONE_of_two_scopes_lapses(root, capsys,
     assert "lapsed DURING this call" in err, err
 
 
+@pytest.mark.parametrize("exc", [RuntimeError("kaboom"), OSError("kaboom")])
 def test_97_keep_alive_says_so_when_the_heartbeat_itself_dies(root, capsys,
-                                                              monkeypatch):
+                                                              monkeypatch,
+                                                              exc):
     """An unexpected exception used to kill the daemon thread silently: no
     more renewals, no `lapsed` warning, lease gone by the next call — the
-    silent loss this whole feature exists to prevent."""
+    silent loss this whole feature exists to prevent. OSError included: it is
+    the likeliest one here (vanished lease dir) and used to return quietly."""
     monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
     monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
     write_lease(root, "all", pid=None, token="tok-97", kind="detached",
@@ -1716,7 +1719,7 @@ def test_97_keep_alive_says_so_when_the_heartbeat_itself_dies(root, capsys,
         calls["n"] += 1
         if calls["n"] == 1:  # the entry renewal must still succeed
             return real(ip, token)
-        raise RuntimeError("kaboom")
+        raise exc
 
     monkeypatch.setattr(locks, "_renew_owned", boom)
     err = ""

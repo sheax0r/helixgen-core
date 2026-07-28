@@ -697,9 +697,9 @@ def keep_alive(ip: str, *, token: str | None = None):
                 return
             try:
                 alive, shortest = _renew_owned(ip, tok)
-            except OSError:
-                return  # lease dir vanished — nothing useful left to renew
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 — OSError included: a
+                # silent clause here would stop renewals with no warning at
+                # all, the very silent loss the handler below exists for.
                 # A daemon thread that dies quietly stops renewing, and the
                 # lease then lapses mid-call with none of the warning below
                 # — exactly the silent loss #97 exists to prevent. Say so.
