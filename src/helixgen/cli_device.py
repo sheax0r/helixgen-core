@@ -798,8 +798,11 @@ _LOCK_SCOPE_HELP = (
                    "shell — the AGENT mechanism: `--pid $PPID` from a tool "
                    "call names the long-lived agent process, which spans the "
                    "whole workflow and dies with it. Liveness is then "
-                   "decidable, so no 120s dead-pid grace applies and the TTL "
-                   "is only a backstop. Refused if PID is not alive now; "
+                   "decidable, so no 120s dead-pid grace applies; the TTL "
+                   "still bounds an IDLE lease (every verb run with the token "
+                   "renews it) and is the only reclaim path where liveness "
+                   "cannot be probed (another host, Windows). Passthrough is "
+                   "by TOKEN, not by shell. Refused if PID is not alive now; "
                    "mutually exclusive with --detach.")
 @click.option("--detach", is_flag=True, default=False,
               help="Take a DETACHED lease: no pid is recorded, so the lease "
@@ -845,9 +848,13 @@ def device_lock(scopes, label, ttl, owner_pid, detach, show_status, as_json,
     reclaimable after a 120s grace and a contender takes the device
     mid-workflow (#97). --pid binds the lease to a process YOU name that
     spans the workflow instead (from a tool call, $PPID is the long-lived
-    agent process). Its liveness is decidable, so no dead-pid grace applies
-    and the TTL (default 900s) is only a backstop for a lease recorded on
-    another host. Release with `device unlock` when the workflow ends.
+    agent process). Its liveness is decidable, so no dead-pid grace applies;
+    the TTL (default 900s) still expires an IDLE lease — every verb you run
+    with the token exported renews it — and is the only reclaim path where
+    liveness cannot be probed (another host, Windows). Export
+    HELIXGEN_LOCK_TOKEN: a --pid lease passes through by TOKEN, not by shell
+    (the recorded pid is the one you named, not the caller). Release with
+    `device unlock` when the workflow ends.
 
     --detach is for work with NO owning process at all (cron, CI): it
     records no pid, so only its TTL (default 300s, renewed by every verb you

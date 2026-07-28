@@ -531,9 +531,22 @@ check, exactly as before.
   - the **120 s dead-pid grace does not apply** (a `session` lease's pid may
     be a short-lived wrapper; an explicit `--pid` is a deliberate choice, so
     its death is conclusive and the lease is reclaimable at once);
-  - the **TTL demotes to a backstop** for the one case liveness can't be
-    probed — a lease recorded on another host — and keeps the ordinary
-    **900 s** `DEFAULT_SESSION_TTL`, renewed by every token-carrying verb.
+  - the **TTL demotes to a backstop**: it keeps the ordinary **900 s**
+    `DEFAULT_SESSION_TTL` and every token-carrying verb renews it, so only an
+    IDLE stretch longer than the TTL loses the lease — and where liveness
+    cannot be probed at all (a lease recorded on another host, or Windows)
+    the TTL is the only reclaim path there is.
+
+  Pid liveness is **POSIX-only**: on Windows the probe is refused outright
+  (`os.kill(pid, 0)` terminates the target there), so a `--pid` lease is
+  TTL-bounded exactly like a detached one and a dead `--pid` is **not**
+  refused at acquisition.
+
+  Passthrough for a `--pid` lease is **by token**, not by shell: the recorded
+  pid is the process you named, not the calling shell, so the same-shell
+  passthrough that a plain session lease gets does not apply — export
+  `HELIXGEN_LOCK_TOKEN` (that is the mechanism anyway, since an agent's every
+  tool call is a fresh shell).
 
   A `--pid` whose process is **not alive** at acquisition is refused (a lease
   for a dead owner is stale the moment it is written). Mutually exclusive with

@@ -8,6 +8,7 @@ local filesystem state under $HELIXGEN_LOCKS.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -31,6 +32,44 @@ def root(tmp_path, monkeypatch) -> Path:
     monkeypatch.delenv("HELIXGEN_LOCK_TOKEN", raising=False)
     monkeypatch.delenv("HELIXGEN_LOCK_TIMEOUT", raising=False)
     return tmp_path / "locks"
+
+
+class _ThreadSafeErr:
+    """Accumulating stderr sink for the heartbeat tests. `capsys.readouterr()`
+    is seek/read/TRUNCATE on a buffer shared with the daemon heartbeat thread,
+    so draining it in a poll loop can discard the one warning the test waits
+    for (a 2s timeout with no clue why). Collect under a lock instead."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._buf = []
+
+    def write(self, s):
+        with self._lock:
+            self._buf.append(s)
+        return len(s)
+
+    def flush(self):
+        pass
+
+    @property
+    def text(self) -> str:
+        with self._lock:
+            return "".join(self._buf)
+
+
+@contextlib.contextmanager
+def capture_err():
+    """Swap in the sink for the duration of the block. Deliberately NOT a
+    fixture: pytest's capture re-assigns sys.stderr when it resumes for the
+    call phase, which would undo a swap made during fixture setup."""
+    sink = _ThreadSafeErr()
+    old = sys.stderr
+    sys.stderr = sink
+    try:
+        yield sink
+    finally:
+        sys.stderr = old
 
 
 def lease_path(root: Path, scope: str, ip: str = IP) -> Path:
@@ -209,13 +248,37 @@ def test_pid_start_of_a_dead_pid_is_a_miss():
     assert locks._pid_start(dead_pid()) is None
 
 
-def test_unreadable_pid_start_reads_dead(root, monkeypatch):
-    """`ps` missing/failing means we cannot confirm the recorded owner — the
-    lease reads dead rather than blowing up or trusting the bare pid."""
+def test_unreadable_pid_start_does_not_kill_a_live_lease(root, monkeypatch):
+    """An UNREADABLE start time is not evidence of recycling: `ps` can be
+    missing from $PATH (cron, slim container), time out, or lack `lstart`
+    (busybox) — and os.kill already proved the pid alive. Treating that as
+    death would break a live lease on a transient probe failure, with no
+    grace for `kind: "pid"` — the very mid-workflow reclaim #97 exists to
+    stop. The TTL still bounds it."""
     monkeypatch.setattr(locks, "_pid_start", lambda pid: None)
-    write_lease(root, "library", pid=os.getpid(), ttl=3600,
+    write_lease(root, "library", pid=os.getpid(), ttl=3600, kind="pid",
+                pid_start="Thu Jan  1 00:00:00 1970")
+    assert not locks.is_stale(locks.read_lease(lease_path(root, "library")))
+
+
+def test_unreadable_pid_start_still_lets_the_ttl_expire(root, monkeypatch):
+    monkeypatch.setattr(locks, "_pid_start", lambda pid: None)
+    write_lease(root, "library", pid=os.getpid(), ttl=60, age=90, kind="pid",
                 pid_start="Thu Jan  1 00:00:00 1970")
     assert locks.is_stale(locks.read_lease(lease_path(root, "library")))
+
+
+def test_pid_start_is_read_independently_of_tz_and_locale(monkeypatch):
+    """`ps` renders lstart in the CALLING process's $TZ/$LC_TIME. If that
+    leaked into the recorded value, the SAME live process probed from a
+    differently-configured environment would compare unequal — reading as a
+    recycled pid and making a live lease instantly stale."""
+    monkeypatch.setenv("TZ", "UTC")
+    baseline = locks._pid_start(os.getpid())
+    assert baseline
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    assert locks._pid_start(os.getpid()) == baseline
 
 
 def test_recycled_pid_on_other_host_is_still_not_probed(root):
@@ -1490,6 +1553,57 @@ def test_cli_lock_pid_records_kind_pid_with_a_start_time(root):
     assert "HELIXGEN_LOCK_TOKEN=" in res.output
 
 
+def test_cli_lock_prints_the_guidance_that_matches_the_kind(root):
+    """The post-lock stderr epilogue is agent-facing operating instruction:
+    each kind must get ITS guidance. The legacy one ("run from your long-lived
+    shell … dead parent gives contenders a reclaim path after 120s") is wrong
+    for both new kinds — no grace applies to `pid`, and `detached` has no pid
+    at all — and is precisely what #97b exists to retract."""
+    pid_res = run_cli("device", "lock", "--scope", "editbuffer", "--pid",
+                      os.getpid(), "--label", "a", "--ip", IP)
+    assert f"bound to pid {os.getpid()}" in pid_res.output
+    assert "long-lived shell" not in pid_res.output  # the retracted guidance
+
+    det_res = run_cli("device", "lock", "--scope", "irs", "--detach",
+                      "--label", "a", "--ip", IP)
+    assert "DETACHED (no pid)" in det_res.output
+
+    plain_res = run_cli("device", "lock", "--scope", "library", "--label",
+                        "a", "--ip", IP)
+    assert "--pid $PPID" in plain_res.output  # steers to the agent mechanism
+    assert "DETACHED" not in plain_res.output
+
+
+def test_cli_lock_relock_rotates_the_nonce(root, monkeypatch):
+    """Re-locking REPLACES the lease, so it must take a new identity. Sharing
+    the old nonce lets a still-running verb's LeaseSet.release() — which
+    unlinks by nonce — delete the session lease that replaced its transient
+    one, leaving the device silently unlocked."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--label", "a",
+                   "--ip", IP).exit_code == 0
+    before = json.loads(lease_path(root, "library").read_text())["nonce"]
+    assert run_cli("device", "lock", "--scope", "library", "--pid",
+                   os.getpid(), "--label", "a", "--ip", IP).exit_code == 0
+    after = json.loads(lease_path(root, "library").read_text())
+    assert after["nonce"] != before
+    assert after["kind"] == "pid" and after["token"] == "tok-x"
+
+
+def test_97b_transient_release_cannot_delete_the_session_lease(root,
+                                                               monkeypatch):
+    """End to end for the nonce rotation: a verb holds a transient `auto`
+    lease under the session token; the agent re-locks that scope with --pid
+    mid-flight; the verb exiting must not take the new lease with it."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    leases = locks.acquire(IP, ("library",), label="a verb", token="tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--pid",
+                   os.getpid(), "--label", "agent", "--ip", IP).exit_code == 0
+    leases.release()
+    data = json.loads(lease_path(root, "library").read_text())
+    assert data["kind"] == "pid" and data["label"] == "agent"
+
+
 def test_cli_lock_pid_uses_the_session_ttl(root):
     """Settled decision 5: the TTL demotes to a backstop for a --pid lease
     (liveness is the real check), so it keeps DEFAULT_SESSION_TTL rather than
@@ -1732,6 +1846,9 @@ def test_97_narrow_lease_holder_still_acquires_other_scopes(root, fake_client,
                    "--label", "agent", "--ip", IP).exit_code == 0
     res = run_cli("device", "load", "1", "--ip", IP)
     assert res.exit_code == 0, res.output
+    # and it really TOOK that scope — exiting 0 alone would also pass if the
+    # verb had run with no lease at all
+    assert fake_client["editbuffer_locked_during_call"] is True
 
 
 def test_97_narrow_lease_holder_contends_normally_not_lockheld_as_lost(
@@ -1853,6 +1970,14 @@ def test_97_read_only_verbs_refuse_a_dangling_token(root, fake_client,
     assert "other-agent" in res.output and "reclaimed" in res.output
 
 
+def test_97_slots_list_stays_exempt_when_it_is_offline(root, monkeypatch):
+    """`slots list` without --verify reads the local manifest only — the
+    other `when()`-narrowing verb. An offline verb must stay usable under a
+    dangling token: exactly the state you are in when you need to inspect."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "slots", "list", "--ip", IP).exit_code == 0
+
+
 def test_97_settings_list_stays_exempt_when_it_is_offline(root, monkeypatch):
     """`settings list` without --values touches no network — an offline verb
     must not be locked out by a dangling token (recovery stays possible)."""
@@ -1967,7 +2092,7 @@ def test_97_keep_alive_renews_a_lease_that_the_verb_outruns(root, monkeypatch):
                    for t in threading.enumerate())
 
 
-def test_97_keep_alive_warns_when_the_lease_goes_away_mid_call(root, capsys,
+def test_97_keep_alive_warns_when_the_lease_goes_away_mid_call(root,
                                                                monkeypatch):
     """Losing the lease DURING a long verb is the #97 failure with positive
     proof attached: the heartbeat sees it and must say so, rather than let
@@ -1976,18 +2101,15 @@ def test_97_keep_alive_warns_when_the_lease_goes_away_mid_call(root, capsys,
     monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
     p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
                     ttl=locks.DEFAULT_DETACHED_TTL)
-    err = ""
-    with locks.keep_alive(IP, token="tok-97"):
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
         p.unlink()  # reclaimed / released by someone else mid-call
         deadline = time.time() + 2.0
-        while "lapsed" not in err and time.time() < deadline:
+        while "lapsed" not in errlog.text and time.time() < deadline:
             time.sleep(0.01)
-            err += capsys.readouterr().err
-    err += capsys.readouterr().err
-    assert "lapsed DURING this call" in err, err
+    assert "lapsed DURING this call" in errlog.text, errlog.text
 
 
-def test_97_keep_alive_warns_when_only_ONE_of_two_scopes_lapses(root, capsys,
+def test_97_keep_alive_warns_when_only_ONE_of_two_scopes_lapses(root,
                                                                 monkeypatch):
     """A multi-scope session that drops ONE scope mid-call is the same
     untrustworthy output. Waiting for the count to reach zero would let a
@@ -1998,19 +2120,16 @@ def test_97_keep_alive_warns_when_only_ONE_of_two_scopes_lapses(root, capsys,
                     kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
     write_lease(root, "library", pid=None, token="tok-97", kind="detached",
                 ttl=locks.DEFAULT_DETACHED_TTL)
-    err = ""
-    with locks.keep_alive(IP, token="tok-97"):
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
         p.unlink()  # one scope reclaimed; `library` still ours
         deadline = time.time() + 2.0
-        while "lapsed" not in err and time.time() < deadline:
+        while "lapsed" not in errlog.text and time.time() < deadline:
             time.sleep(0.01)
-            err += capsys.readouterr().err
-    err += capsys.readouterr().err
-    assert "lapsed DURING this call" in err, err
+    assert "lapsed DURING this call" in errlog.text, errlog.text
 
 
 @pytest.mark.parametrize("exc", [RuntimeError("kaboom"), OSError("kaboom")])
-def test_97_keep_alive_says_so_when_the_heartbeat_itself_dies(root, capsys,
+def test_97_keep_alive_says_so_when_the_heartbeat_itself_dies(root,
                                                               monkeypatch,
                                                               exc):
     """An unexpected exception used to kill the daemon thread silently: no
@@ -2031,14 +2150,13 @@ def test_97_keep_alive_says_so_when_the_heartbeat_itself_dies(root, capsys,
         raise exc
 
     monkeypatch.setattr(locks, "_renew_owned", boom)
-    err = ""
-    with locks.keep_alive(IP, token="tok-97"):
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
         deadline = time.time() + 2.0
-        while "keep-alive stopped" not in err and time.time() < deadline:
+        while ("keep-alive stopped" not in errlog.text
+               and time.time() < deadline):
             time.sleep(0.01)
-            err += capsys.readouterr().err
-    err += capsys.readouterr().err
-    assert "keep-alive stopped" in err and "kaboom" in err, err
+    assert ("keep-alive stopped" in errlog.text
+            and "kaboom" in errlog.text), errlog.text
 
 
 def test_97_renewal_that_lands_on_a_reacquired_lease_is_not_held(root,
@@ -2271,13 +2389,16 @@ def test_97_lock_refuses_a_non_finite_ttl(root, ttl, extra):
 
 
 @pytest.mark.parametrize("ttl", [1, 2, 3, 9])
-def test_97_lock_refuses_a_ttl_too_short_to_renew(root, ttl):
+@pytest.mark.parametrize("extra", [("--detach",), (), ("--pid", "SELF")])
+def test_97_lock_refuses_a_ttl_too_short_to_renew(root, ttl, extra):
     """Renewal skips a lease within RENEW_MARGIN_S of expiry and the
     heartbeat sleeps at least HEARTBEAT_MIN_S, so a TTL this short expires
     mid-workflow no matter how actively it is used — silent lease loss, the
-    failure #97 exists to prevent."""
-    res = run_cli("device", "lock", "--detach", "--ttl", ttl, "--label", "a",
-                  "--ip", IP)
+    failure #97 exists to prevent. Every kind, `--pid` included: that is the
+    invocation agents are told to use."""
+    extra = tuple(str(os.getpid()) if a == "SELF" else a for a in extra)
+    res = run_cli("device", "lock", "--ttl", ttl, "--label", "a",
+                  "--ip", IP, *extra)
     assert res.exit_code != 0, res.output
     assert "too short" in res.output
     assert not lease_path(root, "all").exists()
@@ -2299,10 +2420,11 @@ def test_97_lock_refuses_a_negative_ttl(root, extra):
     assert not lease_path(root, "all").exists()
 
 
-def test_97_lock_accepts_the_minimum_ttl(root):
-    assert run_cli("device", "lock", "--detach", "--ttl",
-                   locks.MIN_SESSION_TTL, "--label", "a",
-                   "--ip", IP).exit_code == 0
+@pytest.mark.parametrize("extra", [("--detach",), (), ("--pid", "SELF")])
+def test_97_lock_accepts_the_minimum_ttl(root, extra):
+    extra = tuple(str(os.getpid()) if a == "SELF" else a for a in extra)
+    assert run_cli("device", "lock", "--ttl", locks.MIN_SESSION_TTL,
+                   "--label", "a", "--ip", IP, *extra).exit_code == 0
 
 
 def test_97_renewal_leaves_a_lease_at_the_expiry_boundary_alone(root,
@@ -2554,7 +2676,7 @@ def test_97_heartbeat_beats_on_a_third_of_the_shortest_ttl():
             < locks.MIN_SESSION_TTL - locks.RENEW_MARGIN_S)
 
 
-def test_97_heartbeat_keeps_renewing_the_scopes_it_still_holds(root, capsys,
+def test_97_heartbeat_keeps_renewing_the_scopes_it_still_holds(root,
                                                                monkeypatch):
     """Losing one scope warns but must NOT stop the thread: the surviving
     sibling lease would then age out unrenewed mid-call — the same silent
@@ -2565,20 +2687,18 @@ def test_97_heartbeat_keeps_renewing_the_scopes_it_still_holds(root, capsys,
                        kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
     kept = write_lease(root, "library", pid=None, token="tok-97",
                        kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
-    err = ""
-    with locks.keep_alive(IP, token="tok-97"):
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
         gone.unlink()
         deadline = time.time() + 2.0
-        while "lapsed" not in err and time.time() < deadline:
+        while "lapsed" not in errlog.text and time.time() < deadline:
             time.sleep(0.01)
-            err += capsys.readouterr().err
         after_warning = json.loads(kept.read_text())["acquired_at"]
         deadline = time.time() + 2.0
         while (json.loads(kept.read_text())["acquired_at"] == after_warning
                and time.time() < deadline):
             time.sleep(0.01)
         assert json.loads(kept.read_text())["acquired_at"] > after_warning
-    assert "lapsed DURING this call" in err + capsys.readouterr().err
+    assert "lapsed DURING this call" in errlog.text, errlog.text
 
 
 def test_97_no_lock_skips_the_dangling_token_check(root, fake_client,

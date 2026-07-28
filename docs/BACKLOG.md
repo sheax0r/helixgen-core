@@ -1596,10 +1596,13 @@ Remaining follow-ups:
   dangling `$HELIXGEN_LOCK_TOKEN` an error on read-only verbs too, but the
   plugin repo's skill (`sheax0r/helixgen`, `.claude/skills/device/`) still
   instructs a plain `device lock --scope all` and doesn't carry the
-  stop-and-re-establish-state rule. Agent-facing surfaces ship in sync, so
-  this is a sequenced PR in that repo after the core release — tracked here
-  only because the deferral would otherwise live nowhere but the archived
-  plan file.
+  stop-and-re-establish-state rule — nor the `--pid $PPID` lease that 0.33.0
+  makes THE agent mechanism (#97b). That PR must also re-sync the plugin
+  repo's copy of `docs/CLI.md`, whose "Device locks (machine-local, advisory
+  — 0.22.0)" section predates all of this (core is authoritative for the
+  synced copies). Agent-facing surfaces ship in sync, so this is a sequenced
+  PR in that repo after the core release — tracked here only because the
+  deferral would otherwise live nowhere but the archived plan file.
 
 - **#103 lock-layer residuals from the #97 review** (core 0.33.0). Deferrals,
   none user-visible:

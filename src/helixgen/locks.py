@@ -45,8 +45,10 @@ liveness is DECIDABLE rather than guessed from a TTL. Unlike a
 ``kind: "session"`` lease — whose pid is the invoking shell's and may be a
 short-lived wrapper — a dead ``--pid`` owner is conclusive, so
 :data:`SESSION_PID_GRACE_S` does NOT apply: the lease is reclaimable at
-once. Its TTL (:data:`DEFAULT_SESSION_TTL`) is only a backstop for the case
-liveness cannot be probed at all — a lease recorded on another host.
+once. Its TTL (:data:`DEFAULT_SESSION_TTL`) still bounds it — every
+token-carrying verb renews it, so only an IDLE stretch longer than the TTL
+loses it — and it is the ONLY reclaim path where liveness cannot be probed
+at all (a lease recorded on another host, or Windows).
 
 **Detached leases** (``device lock --detach``; #97): a session lease with
 ``pid: None`` and ``kind: "detached"``, so nothing binds it to the invoking
@@ -328,8 +330,14 @@ def _pid_start(pid) -> str | None:
     if not isinstance(pid, int) or pid <= 0 or sys.platform == "win32":
         return None
     try:
+        # Pin TZ + locale: `ps` renders lstart in the CALLING process's $TZ
+        # and $LC_TIME, so an unpinned string recorded under one environment
+        # compares unequal to the SAME live process probed under another —
+        # which reads as a recycled pid and makes a live lease instantly
+        # stale (no grace applies to `kind: "pid"`).
         out = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="],
-                             capture_output=True, text=True, timeout=5)
+                             capture_output=True, text=True, timeout=5,
+                             env={**os.environ, "TZ": "UTC", "LC_ALL": "C"})
     except (OSError, subprocess.SubprocessError):
         return None
     return out.stdout.strip() or None
@@ -351,8 +359,15 @@ def _pid_alive(pid, pid_start: str | None = None) -> bool:
         return False
     except OSError:
         pass  # e.g. PermissionError: someone else's live process
-    if pid_start is not None and _pid_start(pid) != pid_start:
-        return False  # recycled pid (or unreadable start time) — not our owner
+    if pid_start is not None:
+        current = _pid_start(pid)
+        # Only a READABLE start time that DIFFERS proves recycling. None means
+        # we couldn't probe (no `ps` on $PATH, timeout, busybox without
+        # lstart) — and os.kill above already proved the pid alive, so
+        # treating that as death would destroy a live lease (`kind: "pid"`
+        # gets no grace) on a transient probe failure.
+        if current is not None and current != pid_start:
+            return False  # recycled pid — not our owner
     return True
 
 
@@ -1450,7 +1465,14 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
                 renewed = dict(lease)
                 renewed.update(label=label, ttl_seconds=ttl, token=tok,
                                acquired_at=time.time(), kind=kind,
-                               pid=own_pid, pid_start=_pid_start(own_pid))
+                               pid=own_pid, pid_start=_pid_start(own_pid),
+                               # A NEW identity: re-locking replaces the
+                               # lease, so whoever tracked the old nonce (a
+                               # running verb's LeaseSet, whose release()
+                               # unlinks by nonce; an in-flight heartbeat
+                               # renewal) must no longer match it and delete
+                               # or revert the session lease we just took.
+                               nonce=uuid.uuid4().hex)
                 if not _rewrite(path, renewed, expect_nonce=lease.get("nonce")):
                     # broken + re-acquired since we read it — acquire fresh
                     fresh.append(acquire(ip, (scope,), label=label, ttl=ttl,
