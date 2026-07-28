@@ -394,6 +394,33 @@ def _foreign_holder(ip: str, scope: str, token: str | None) -> dict | None:
     return None
 
 
+def _owned_on_other_device(ip: str, token: str | None) -> bool:
+    """Does ``token`` open a live lease on some OTHER device address?
+
+    Leases are keyed by address string, so one session legitimately spans
+    several lease dirs: two Stadiums, or the SAME device reached as
+    ``helix.local`` here and ``10.0.0.4`` there (`--ip` vs
+    ``$HELIXGEN_HELIX_IP`` vs the persisted record). Owning nothing on THIS
+    address is then not evidence that the session was reclaimed — it is the
+    pre-lease state for this address, which is what an untokened caller has
+    too. Without this, a healthy lease on one address turned every verb
+    against another into a hard refusal blaming a reclaim that never
+    happened (reads have no ``--no-lock``, so there was no way past it).
+    """
+    if not token:
+        return False
+    here = lock_dir(ip)
+    try:
+        dirs = [d for d in locks_root().iterdir() if d.is_dir() and d != here]
+    except OSError:
+        return False
+    return any(
+        (lease := read_lease(d / f"{scope}.lock")) is not None
+        and not is_stale(lease) and lease.get("token") == token
+        for d in dirs for scope in VALID_SCOPES
+    )
+
+
 def check_session(ip: str, scopes, *, token: str | None = None,
                   strict: bool = False) -> None:
     """Fail fast when a presented token no longer owns the device (#97).
@@ -425,6 +452,10 @@ def check_session(ip: str, scopes, *, token: str | None = None,
     tells "I lost it" apart from "I never held it". Once the file is gone or
     re-acquired the two are indistinguishable, and only the ``strict``
     foreign-holder case above catches it.
+
+    A token whose only live lease sits under ANOTHER device address is not a
+    lost session (:func:`_owned_on_other_device`) — leases are keyed by
+    address, and one session may span two Stadiums or two spellings of one.
 
     A live lease within :data:`RENEW_MARGIN_S` of expiry counts as MISSING:
     nothing renews it, so admitting it would let a long verb start on a
@@ -470,6 +501,8 @@ def check_session(ip: str, scopes, *, token: str | None = None,
         scope, holder = expired, _foreign_holder(ip, expired, tok)
     elif held:
         return  # session alive, just narrower than this verb — not our problem
+    elif _owned_on_other_device(ip, tok):
+        return  # the session is alive on ANOTHER address — never held here
     else:
         scope, holder = blocked or (missing[0], None)
     raise LockLost(ip, scope, holder, partial=bool(held))
@@ -538,16 +571,28 @@ def _rewrite(path: Path, payload: dict, *,
         return False
 
 
-def _renew(path: Path, lease: dict) -> None:
+def _renew(path: Path, lease: dict) -> bool:
     """Refresh a lease's acquired_at (TTL renewal). Callers only renew
     leases with a comfortable TTL margin (:data:`RENEW_MARGIN_S`), so this
     replace cannot land on top of a waiter's legitimately re-acquired
     lease (waiters only act after expiry). Nonce-guarded regardless: if the
     file was broken + re-acquired since we read it, the renewal no-ops rather
-    than resurrecting our lease on top of the new owner's (#72 TOCTOU)."""
+    than resurrecting our lease on top of the new owner's (#72 TOCTOU).
+
+    Returns whether the lease is STILL OURS afterwards — not whether the
+    write happened. A no-op write has two very different causes: the lease
+    was broken + re-acquired under us (we lost it, and reporting it as held
+    is the silent-expiry failure #97 exists to prevent) or the write itself
+    failed (the lease file is untouched and still ours, just not refreshed —
+    refusing there would be a false alarm). Re-read to tell them apart.
+    """
     fresh = dict(lease)
     fresh["acquired_at"] = time.time()
-    _rewrite(path, fresh, expect_nonce=lease.get("nonce"))
+    if _rewrite(path, fresh, expect_nonce=lease.get("nonce")):
+        return True
+    current = read_lease(path)
+    return (current is not None and not is_stale(current)
+            and current.get("nonce") == lease.get("nonce"))
 
 
 def _renew_owned(ip: str, token: str | None) -> tuple[int, float | None]:
@@ -562,7 +607,8 @@ def _renew_owned(ip: str, token: str | None) -> tuple[int, float | None]:
     NOT counted as held either. Counting it would let a caller enter a long
     verb on a lease guaranteed to lapse seconds later (silent unlocked work,
     the #97 failure); not counting it makes :func:`check_session` refuse
-    while the doomed lease is still nominally live.
+    while the doomed lease is still nominally live. A renewal that finds the
+    lease re-acquired under us is likewise not held (:func:`_renew`).
     """
     held = 0
     shortest: float | None = None
@@ -574,8 +620,9 @@ def _renew_owned(ip: str, token: str | None) -> tuple[int, float | None]:
         remaining = _remaining_ttl(lease)
         if remaining is not None and remaining <= RENEW_MARGIN_S:
             continue  # unrenewable at the boundary — already lost, in effect
+        if not _renew(path, lease):
+            continue  # gone or re-acquired under us — not ours any more
         held += 1
-        _renew(path, lease)
         if remaining is not None:
             shortest = remaining if shortest is None else min(shortest,
                                                               remaining)
@@ -606,6 +653,12 @@ def keep_alive(ip: str, *, token: str | None = None):
 
     No lease owned at entry → no thread (an unlocked verb costs nothing).
     Best-effort throughout: a renewal failure never fails the verb.
+
+    Losing ANY of the leases held at entry warns, not just the last one: a
+    multi-scope session that drops one scope mid-call is the same #97
+    untrustworthy output, and waiting for the count to reach zero would let
+    a `--scope editbuffer --scope library` agent lose `editbuffer` to a
+    contender in silence.
     """
     tok = token if token is not None else env_token()
     held, shortest = _renew_owned(ip, tok)
@@ -626,8 +679,8 @@ def keep_alive(ip: str, *, token: str | None = None):
                 alive, shortest = _renew_owned(ip, tok)
             except OSError:
                 return  # lease dir vanished — nothing useful left to renew
-            if not alive:
-                # Losing the lease mid-call is exactly the #97 failure, and
+            if alive < held:
+                # Losing a lease mid-call is exactly the #97 failure, and
                 # here we have positive proof of it — say so rather than let
                 # the verb print well-formed output for a device someone else
                 # may now be driving. The call is not aborted (the body may be

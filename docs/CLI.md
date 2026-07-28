@@ -605,7 +605,17 @@ nothing renews a lease that close to the boundary, so entering a verb on it
 would mean running unlocked seconds later. Losing a lease *during* a call
 (a long `measure`/`watch`/`normalize`) can't be caught by the entry check —
 the background heartbeat notices and prints a `lapsed DURING this call`
-warning to stderr; treat it exactly like a lock error.
+warning to stderr; treat it exactly like a lock error. That warning fires on
+losing **any one** of the leases held at entry, not just the last one, so a
+multi-scope session that drops a single scope mid-call still says so.
+
+Leases are keyed by **device address**, and so is this check: a token whose
+only live lease sits under a *different* address — a second Stadium, or the
+same one reached as `helix.local` here and `10.0.0.4` there — is **not** a
+lost session and does not error. Verbs against that other address behave as
+they did unlocked (they take no lease there, since the lease you hold is
+keyed elsewhere); to actually hold it, take a lease under the address you
+will be using, and keep using that same spelling for the whole session.
 
 **Operating rule for an agent driving multi-call device work (workspace #97):**
 

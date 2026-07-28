@@ -1678,6 +1678,106 @@ def test_97_keep_alive_warns_when_the_lease_goes_away_mid_call(root, capsys,
     assert "lapsed DURING this call" in err, err
 
 
+def test_97_keep_alive_warns_when_only_ONE_of_two_scopes_lapses(root, capsys,
+                                                                monkeypatch):
+    """A multi-scope session that drops ONE scope mid-call is the same
+    untrustworthy output. Waiting for the count to reach zero would let a
+    `--scope editbuffer --scope library` agent lose `editbuffer` in silence."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "editbuffer", pid=None, token="tok-97",
+                    kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "library", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL)
+    err = ""
+    with locks.keep_alive(IP, token="tok-97"):
+        p.unlink()  # one scope reclaimed; `library` still ours
+        deadline = time.time() + 2.0
+        while "lapsed" not in err and time.time() < deadline:
+            time.sleep(0.01)
+            err += capsys.readouterr().err
+    err += capsys.readouterr().err
+    assert "lapsed DURING this call" in err, err
+
+
+def test_97_renewal_that_lands_on_a_reacquired_lease_is_not_held(root,
+                                                                 monkeypatch):
+    """`_renew` is nonce-guarded, so a lease broken + re-acquired under us
+    silently no-ops the write. Counting that as a renewed, healthy lease
+    would resurrect the exact silent-expiry failure #97 exists to prevent."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+
+    real_rewrite = locks._rewrite
+
+    def steal(path, payload, *, expect_nonce=None):
+        # a contender broke and re-took the lease between our read and write
+        data = json.loads(p.read_text())
+        data.update(nonce="someone-else", token="tok-other",
+                    label="other-agent", acquired_at=time.time())
+        p.write_text(json.dumps(data))
+        return real_rewrite(path, payload, expect_nonce=expect_nonce)
+
+    monkeypatch.setattr(locks, "_rewrite", steal)
+    assert locks._renew_owned(IP, "tok-97") == (0, None)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    monkeypatch.setattr(locks, "_rewrite", real_rewrite)
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("editbuffer",))
+
+
+def test_97_a_failed_renewal_write_does_not_lose_a_lease_that_is_still_ours(
+        root, monkeypatch):
+    """The other no-op cause: the write itself failed (full disk, read-only
+    FS). The lease file is untouched and still ours — refusing there would
+    be a false alarm, so it stays held until the TTL genuinely runs out."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setattr(locks, "_rewrite",
+                        lambda *a, **k: False)  # every write fails
+    held, _ = locks._renew_owned(IP, "tok-97")
+    assert held == 1
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))  # no refusal
+
+
+def test_97_token_held_on_another_device_address_is_not_a_lost_session(
+        root, monkeypatch):
+    """Leases are keyed by ADDRESS, so one session spans two Stadiums — or
+    two spellings of one (`helix.local` here, `10.0.0.4` there). Owning
+    nothing under THIS address is the pre-lease state, not proof of a
+    reclaim; blaming a reclaim blocked reads outright (no `--no-lock`)."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",), strict=True)  # no refusal
+    assert not lease_path(root, "library").exists()  # and still takes nothing
+
+
+def test_97_other_device_lease_does_not_excuse_a_scope_someone_else_holds(
+        root, monkeypatch):
+    """...but only where nothing else is driving THIS device: a live foreign
+    lease over the scope we are about to read is still a refusal."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    write_lease(root, "library", label="other-agent")  # live, not ours
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert "other-agent" in str(e.value)
+
+
+def test_97_a_stale_lease_elsewhere_does_not_excuse_a_dangling_token(
+        root, monkeypatch):
+    """The escape hatch is for a LIVE session on another address. An expired
+    one everywhere means the session really is gone."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=60, age=120, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("library",))
+
+
 def test_97_keep_alive_is_a_noop_when_no_lease_is_held(root):
     with locks.keep_alive(IP, token="tok-97"):
         pass
