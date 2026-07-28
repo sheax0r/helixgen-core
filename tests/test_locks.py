@@ -8,10 +8,12 @@ local filesystem state under $HELIXGEN_LOCKS.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -32,6 +34,44 @@ def root(tmp_path, monkeypatch) -> Path:
     return tmp_path / "locks"
 
 
+class _ThreadSafeErr:
+    """Accumulating stderr sink for the heartbeat tests. `capsys.readouterr()`
+    is seek/read/TRUNCATE on a buffer shared with the daemon heartbeat thread,
+    so draining it in a poll loop can discard the one warning the test waits
+    for (a 2s timeout with no clue why). Collect under a lock instead."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._buf = []
+
+    def write(self, s):
+        with self._lock:
+            self._buf.append(s)
+        return len(s)
+
+    def flush(self):
+        pass
+
+    @property
+    def text(self) -> str:
+        with self._lock:
+            return "".join(self._buf)
+
+
+@contextlib.contextmanager
+def capture_err():
+    """Swap in the sink for the duration of the block. Deliberately NOT a
+    fixture: pytest's capture re-assigns sys.stderr when it resumes for the
+    call phase, which would undo a swap made during fixture setup."""
+    sink = _ThreadSafeErr()
+    old = sys.stderr
+    sys.stderr = sink
+    try:
+        yield sink
+    finally:
+        sys.stderr = old
+
+
 def lease_path(root: Path, scope: str, ip: str = IP) -> Path:
     return root / ip / f"{scope}.lock"
 
@@ -39,7 +79,7 @@ def lease_path(root: Path, scope: str, ip: str = IP) -> Path:
 def write_lease(root: Path, scope: str, *, pid: int = 1, host: str | None = None,
                 age: float = 0.0, ttl: float = 3600, label: str = "other-agent",
                 token: str | None = None, ip: str = IP,
-                kind: str = "auto") -> Path:
+                kind: str = "auto", pid_start: str | None = None) -> Path:
     """Plant a foreign lease file. pid=1 is a live process we never own."""
     p = lease_path(root, scope, ip)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +88,8 @@ def write_lease(root: Path, scope: str, *, pid: int = 1, host: str | None = None
             "label": label, "kind": kind, "nonce": "planted"}
     if token is not None:
         data["token"] = token
+    if pid_start is not None:
+        data["pid_start"] = pid_start
     p.write_text(json.dumps(data))
     return p
 
@@ -143,6 +185,135 @@ def test_dead_pid_on_other_host_is_not_reclaimed(root):
         locks.acquire(IP, ("library",), label="me", timeout=0)
 
 
+# --------------------------------------------------------------------------
+# (pid, start_time) lease identity (#97b Task 1)
+# --------------------------------------------------------------------------
+
+def test_lease_records_owner_pid_start_time(root):
+    """A lease naming a pid also records that process's start time, so the
+    pid can never be confused with a later recycled one."""
+    with locks.acquire(IP, ("library",), label="me", timeout=0):
+        data = json.loads(lease_path(root, "library").read_text())
+    assert data["pid"] == os.getpid()
+    assert data["pid_start"] == locks._pid_start(os.getpid())
+    assert data["pid_start"]  # a real, non-empty value on this platform
+
+
+def test_recycled_pid_reads_dead(root, capsys):
+    """THE reason `pid_start` exists: a lease whose pid is alive but is now a
+    DIFFERENT process (pid numbers are recycled) must read as dead, not as an
+    immortal live lease."""
+    # pid 1 is unmistakably alive, and just as unmistakably not the process
+    # that took this lease
+    write_lease(root, "library", pid=1, ttl=3600,
+                pid_start="Thu Jan  1 00:00:00 1970")
+    lease = locks.read_lease(lease_path(root, "library"))
+    assert locks.is_stale(lease)
+    with locks.acquire(IP, ("library",), label="me", timeout=0):
+        assert json.loads(
+            lease_path(root, "library").read_text())["label"] == "me"
+    assert "stale" in capsys.readouterr().err
+    # ...while the same pid WITHOUT a recorded start time still blocks
+    write_lease(root, "irs", pid=1, ttl=3600)
+    with pytest.raises(locks.LockHeld):
+        locks.acquire(IP, ("irs",), label="me", timeout=0)
+
+
+def test_matching_pid_start_is_live(root):
+    """The other half: same pid, same start time = genuinely the same live
+    process, so the lease is live and blocks."""
+    write_lease(root, "library", pid=os.getpid(), ttl=3600,
+                pid_start=locks._pid_start(os.getpid()), token="theirs")
+    lease = locks.read_lease(lease_path(root, "library"))
+    assert not locks.is_stale(lease)
+
+
+def test_lease_without_pid_start_falls_back_to_pid_liveness(root):
+    """Leases written before this field (and the acquisition meta-lock) still
+    judge liveness by the pid alone — absent means 'unknown', not 'dead'."""
+    write_lease(root, "library", pid=os.getpid(), ttl=3600)
+    assert not locks.is_stale(locks.read_lease(lease_path(root, "library")))
+    write_lease(root, "irs", pid=dead_pid(), ttl=3600)
+    assert locks.is_stale(locks.read_lease(lease_path(root, "irs")))
+
+
+@pytest.mark.parametrize("pid", [0, -1, 2 ** 31 - 1, None, "x"])
+def test_pid_start_never_raises_on_a_bad_or_dead_pid(pid):
+    """Reading a start time is a MISS, never an exception: dead pids, foreign
+    pids, and nonsense all return None."""
+    assert locks._pid_start(pid) is None
+
+
+def test_pid_start_of_a_dead_pid_is_a_miss():
+    assert locks._pid_start(dead_pid()) is None
+
+
+def test_unreadable_pid_start_does_not_kill_a_live_lease(root, monkeypatch):
+    """An UNREADABLE start time is not evidence of recycling: `ps` can be
+    missing from $PATH (cron, slim container), time out, or lack `lstart`
+    (busybox) — and os.kill already proved the pid alive. Treating that as
+    death would break a live lease on a transient probe failure, with no
+    grace for `kind: "pid"` — the very mid-workflow reclaim #97 exists to
+    stop. The TTL still bounds it."""
+    monkeypatch.setattr(locks, "_pid_start", lambda pid: None)
+    write_lease(root, "library", pid=os.getpid(), ttl=3600, kind="pid",
+                pid_start="Thu Jan  1 00:00:00 1970")
+    assert not locks.is_stale(locks.read_lease(lease_path(root, "library")))
+
+
+def test_unreadable_pid_start_still_lets_the_ttl_expire(root, monkeypatch):
+    monkeypatch.setattr(locks, "_pid_start", lambda pid: None)
+    write_lease(root, "library", pid=os.getpid(), ttl=60, age=90, kind="pid",
+                pid_start="Thu Jan  1 00:00:00 1970")
+    assert locks.is_stale(locks.read_lease(lease_path(root, "library")))
+
+
+def test_pid_start_is_read_independently_of_tz_and_locale(monkeypatch):
+    """`ps` renders lstart in the CALLING process's $TZ/$LC_TIME. If that
+    leaked into the recorded value, the SAME live process probed from a
+    differently-configured environment would compare unequal — reading as a
+    recycled pid and making a live lease instantly stale."""
+    monkeypatch.setenv("TZ", "UTC")
+    baseline = locks._pid_start(os.getpid())
+    assert baseline
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    assert locks._pid_start(os.getpid()) == baseline
+
+
+def test_pid_start_on_linux_reads_proc_starttime_ticks(tmp_path, monkeypatch):
+    """On Linux `ps -o lstart` renders start time through the WALL clock, so
+    an NTP step / suspend shifts every live process's reported start — the
+    recorded string would then differ from the live owner's and a `kind:
+    "pid"` lease (no grace) would be stolen mid-workflow. Identity there uses
+    /proc starttime ticks, which are boot-relative and step-immune. Field 22
+    is counted after the ')' closing comm — comm may itself contain spaces
+    and parens."""
+    proc = tmp_path / "proc"
+    (proc / "4242").mkdir(parents=True)
+    fields = ["S", "1"] + ["0"] * 17 + ["7654321", "999"]
+    (proc / "4242" / "stat").write_text(
+        "4242 (my (we)ird) prog) " + " ".join(fields) + "\n")
+    monkeypatch.setattr(locks, "_PROC", proc)
+    monkeypatch.setattr(locks.sys, "platform", "linux")
+    assert locks._pid_start(4242) == "7654321"
+
+
+def test_pid_start_on_linux_missing_proc_entry_is_a_miss(tmp_path,
+                                                         monkeypatch):
+    monkeypatch.setattr(locks, "_PROC", tmp_path)
+    monkeypatch.setattr(locks.sys, "platform", "linux")
+    assert locks._pid_start(4242) is None
+
+
+def test_recycled_pid_on_other_host_is_still_not_probed(root):
+    """Start times are only meaningful on the recording host; a foreign-host
+    lease stays TTL-only."""
+    write_lease(root, "library", pid=os.getpid(), host="elsewhere", ttl=3600,
+                pid_start="Thu Jan  1 00:00:00 1970")
+    assert not locks.is_stale(locks.read_lease(lease_path(root, "library")))
+
+
 def test_waiter_gets_lock_when_ttl_expires_mid_wait(root):
     write_lease(root, "library", pid=1, ttl=1.0, age=0.4)
     t0 = time.monotonic()
@@ -208,6 +379,19 @@ def test_lock_dir_is_injective_across_disallowed_chars(root):
            "[fe80::1]", "10.0.0.1", "10:0:0:1", "2001:db8::1"]
     names = [locks.lock_dir(x).name for x in ids]
     assert len(set(names)) == len(ids)
+
+
+@pytest.mark.parametrize("ident", [".", ".."])
+def test_lock_dir_never_escapes_the_locks_root(root, ident):
+    """`.` and `..` pass the character filter untouched, so `--ip ..` used to
+    resolve the lock dir to the locks root's PARENT (`~/.helixgen`) and write
+    lease files — which carry the private lock token — outside `locks/`, the
+    only path the home repo's .gitignore excludes. An auto-commit could then
+    capture the token."""
+    d = locks.lock_dir(ident)
+    assert d.parent == locks.locks_root()
+    assert d.name not in {".", ".."}
+    assert locks.locks_root() in locks.lock_path(ident, "all").parents
 
 
 def test_locks_root_follows_helixgen_home(monkeypatch, tmp_path):
@@ -970,6 +1154,9 @@ def fake_client(monkeypatch, root):
         def get_property_def(self, key):
             raise ValueError(f"unknown settings key {key!r}")
 
+        def edit_buffer_blocks(self):
+            return []
+
     import helixgen.device as device_mod
     monkeypatch.setattr(device_mod, "HelixClient", FakeClient)
     return seen
@@ -1198,3 +1385,1421 @@ def test_session_lock_falls_back_to_fresh_acquire_when_renew_raced(root,
     with pytest.raises(locks.LockHeld):
         locks.session_lock(IP, ["editbuffer"], label="s", ttl=900, timeout=0)
     assert json.loads(path.read_text())["nonce"] == "THEIRS"  # new owner's lease
+
+
+# --------------------------------------------------------------------------
+# #97 — agent-held session leases vs shell-lifetime pid binding
+# --------------------------------------------------------------------------
+
+def test_97_reclaimed_lease_original_token_is_not_owner(root, monkeypatch,
+                                                        capsys):
+    """#97 characterization: a session lease whose recorded pid is dead (the
+    agent's Bash-call shell exited) is legitimately reclaimed by a contender
+    after SESSION_PID_GRACE_S — and the original $HELIXGEN_LOCK_TOKEN then
+    authenticates NOTHING: `owned()` is False against the contender's lease
+    and a lock-taking call is an ordinary blocked newcomer. Pinning this
+    prevents a later regression where a dangling token silently takes over
+    someone else's lease."""
+    write_lease(root, "all", pid=dead_pid(), token="tok-97", kind="session",
+                age=locks.SESSION_PID_GRACE_S + 5, label="agent-workflow")
+    # the contender (e.g. a live-test pytest run): no token, foreign pid
+    with locks.acquire(IP, ("editbuffer",), label="live-test-suite",
+                       pid=1, timeout=0):
+        assert "breaking stale device lock" in capsys.readouterr().err
+        assert not lease_path(root, "all").exists()  # session lease is GONE
+        contender = locks.read_lease(lease_path(root, "editbuffer"))
+        assert not locks.owned(contender, "tok-97")
+        monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+        with pytest.raises(locks.LockHeld) as e:
+            locks.acquire(IP, ("editbuffer",), label="agent-workflow",
+                          timeout=0)
+        assert "live-test-suite" in str(e.value)
+
+
+def test_97_token_use_renews_a_dead_pid_session_lease_inside_grace(root,
+                                                                   monkeypatch):
+    """#97 characterization (the renewal question): renewal IS wired to
+    token-authenticated use. A covered verb's acquire passes through the
+    owned session lease and renews it — even with the recorded pid already
+    dead — so every LOCK-TAKING call resets the SESSION_PID_GRACE_S clock.
+    The observed staleness came from calls that never touch the lock layer:
+    read-only verbs (`device measure`, `meters`, ...) take no lock, so a
+    measure-heavy stretch performs zero renewals and the grace clock runs
+    from the last mutating call."""
+    p = write_lease(root, "all", pid=dead_pid(), token="tok-97",
+                    kind="session", age=60, ttl=7200)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        pass
+    after = json.loads(p.read_text())
+    assert after["acquired_at"] > before  # grace clock reset
+    assert after["kind"] == "session" and after["token"] == "tok-97"
+
+
+def test_97_past_grace_owned_covering_lease_is_not_resurrected(root,
+                                                               monkeypatch):
+    """#97 characterization: once the grace lapses, the pid-death check
+    short-circuits renewal. A token-authenticated acquire of a granular
+    scope neither passes through nor renews the now-stale owned `all`
+    session lease — it creates a fresh transient lease for just its own
+    scope, leaving the session's `all` file stale on disk, reclaimable by
+    any contender. This silent narrowing is what let the 2026-07-27
+    contender in."""
+    p = write_lease(root, "all", pid=dead_pid(), token="tok-97",
+                    kind="session", age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=7200)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        eb = json.loads(lease_path(root, "editbuffer").read_text())
+        assert eb["kind"] == "auto"  # fresh transient lease, not the session
+    assert json.loads(p.read_text())["acquired_at"] == before  # not renewed
+
+
+# --------------------------------------------------------------------------
+# #97 (Task 2): detached leases — a lease an agent can actually hold
+# --------------------------------------------------------------------------
+
+def test_97_detached_lease_survives_a_dead_shell(root, monkeypatch):
+    """#97 fix: a DETACHED lease records no pid, so the agent's Bash-call
+    shell exiting cannot make it reclaimable. Past SESSION_PID_GRACE_S — the
+    exact point where the 2026-07-27 contender got in — it is still live and
+    still blocks."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_DETACHED_TTL, label="agent-workflow")
+    lease = locks.read_lease(p)
+    assert not locks.is_stale(lease)
+    assert "detached" in locks.describe(lease)  # no bogus "pid None"
+    monkeypatch.setenv("HELIXGEN_LOCK_TIMEOUT", "0")
+    with pytest.raises(locks.LockHeld) as e:
+        locks.acquire(IP, ("editbuffer",), label="live-test-suite", pid=1,
+                      timeout=0)
+    assert "agent-workflow" in str(e.value)
+    assert p.exists()
+
+
+def test_97_detached_lease_is_renewed_by_token_authenticated_use(root,
+                                                                 monkeypatch):
+    """A token-authenticated mutating call passes through the detached lease
+    and renews its TTL — so an ACTIVE workflow keeps its lease indefinitely."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=200, ttl=locks.DEFAULT_DETACHED_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        assert not lease_path(root, "editbuffer").exists()  # passed through
+    after = json.loads(p.read_text())
+    assert after["acquired_at"] > before
+    assert after["kind"] == "detached" and after["pid"] is None
+
+
+def test_97_abandoned_detached_lease_expires_on_its_ttl(root, capsys):
+    """The other half: an ABANDONED detached lease must not brick the device.
+    With no pid to probe, the (short) TTL is what reclaims it."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=locks.DEFAULT_DETACHED_TTL + 5,
+                    ttl=locks.DEFAULT_DETACHED_TTL, label="abandoned-agent")
+    assert locks.is_stale(locks.read_lease(p))
+    with locks.acquire(IP, ("editbuffer",), label="contender", pid=1,
+                       timeout=0):
+        assert "breaking stale device lock" in capsys.readouterr().err
+        assert not p.exists()
+
+
+def test_cli_lock_detach_records_no_pid_and_a_short_ttl(root):
+    res = run_cli("device", "lock", "--scope", "all", "--detach",
+                  "--label", "agent-workflow", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    data = json.loads(lease_path(root, "all").read_text())
+    assert data["kind"] == "detached"
+    assert data["pid"] is None
+    assert data["ttl_seconds"] == locks.DEFAULT_DETACHED_TTL
+    assert locks.DEFAULT_DETACHED_TTL < locks.DEFAULT_SESSION_TTL
+    assert "HELIXGEN_LOCK_TOKEN=" in res.output
+
+
+def test_cli_lock_detach_refuses_ttl_zero(root):
+    """No pid AND no TTL = a lease only --force could ever clear."""
+    res = run_cli("device", "lock", "--detach", "--ttl", "0", "--label", "s",
+                  "--ip", IP)
+    assert res.exit_code != 0
+    assert "--detach" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_detach_relock_keeps_it_detached(root, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "s", "--ip", IP).exit_code == 0
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "s2", "--ip", IP).exit_code == 0
+    data = json.loads(lease_path(root, "library").read_text())
+    assert data["kind"] == "detached" and data["pid"] is None
+    assert data["label"] == "s2" and data["token"] == "tok-x"
+
+
+def test_cli_unlock_releases_a_detached_lease_with_the_token(root, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "all", "--detach", "--label",
+                   "agent", "--ip", IP).exit_code == 0
+    res = run_cli("device", "unlock", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_status_renders_detached_leases(root):
+    assert run_cli("device", "lock", "--scope", "irs", "--detach", "--label",
+                   "agent", "--ip", IP).exit_code == 0
+    res = run_cli("device", "lock", "--status", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert "detached" in res.output and "pid None" not in res.output
+
+
+# --------------------------------------------------------------------------
+# #97b (Task 2): `--pid <pid>` — a lease bound to a process the CALLER names,
+# one that spans the whole workflow (an agent passes $PPID). Liveness is
+# decidable, so the dead-shell grace that let the 2026-07-27 contender in
+# does not apply here.
+# --------------------------------------------------------------------------
+
+def test_cli_lock_pid_records_kind_pid_with_a_start_time(root):
+    res = run_cli("device", "lock", "--scope", "all", "--pid", os.getpid(),
+                  "--label", "agent-workflow", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    data = json.loads(lease_path(root, "all").read_text())
+    assert data["kind"] == "pid"
+    assert data["pid"] == os.getpid()
+    assert data["pid_start"] == locks._pid_start(os.getpid())
+    assert "HELIXGEN_LOCK_TOKEN=" in res.output
+
+
+def test_cli_lock_prints_the_guidance_that_matches_the_kind(root):
+    """The post-lock stderr epilogue is agent-facing operating instruction:
+    each kind must get ITS guidance. The legacy one ("run from your long-lived
+    shell … dead parent gives contenders a reclaim path after 120s") is wrong
+    for both new kinds — no grace applies to `pid`, and `detached` has no pid
+    at all — and is precisely what #97b exists to retract."""
+    pid_res = run_cli("device", "lock", "--scope", "editbuffer", "--pid",
+                      os.getpid(), "--label", "a", "--ip", IP)
+    assert f"bound to pid {os.getpid()}" in pid_res.output
+    assert "long-lived shell" not in pid_res.output  # the retracted guidance
+
+    det_res = run_cli("device", "lock", "--scope", "irs", "--detach",
+                      "--label", "a", "--ip", IP)
+    assert "DETACHED (no pid)" in det_res.output
+
+    plain_res = run_cli("device", "lock", "--scope", "library", "--label",
+                        "a", "--ip", IP)
+    assert "--pid $PPID" in plain_res.output  # steers to the agent mechanism
+    assert "DETACHED" not in plain_res.output
+
+
+def test_cli_lock_relock_rotates_the_nonce(root, monkeypatch):
+    """Re-locking REPLACES the lease, so it must take a new identity. Sharing
+    the old nonce lets a still-running verb's LeaseSet.release() — which
+    unlinks by nonce — delete the session lease that replaced its transient
+    one, leaving the device silently unlocked."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--label", "a",
+                   "--ip", IP).exit_code == 0
+    before = json.loads(lease_path(root, "library").read_text())["nonce"]
+    assert run_cli("device", "lock", "--scope", "library", "--pid",
+                   os.getpid(), "--label", "a", "--ip", IP).exit_code == 0
+    after = json.loads(lease_path(root, "library").read_text())
+    assert after["nonce"] != before
+    assert after["kind"] == "pid" and after["token"] == "tok-x"
+
+
+def test_97b_transient_release_cannot_delete_the_session_lease(root,
+                                                               monkeypatch):
+    """End to end for the nonce rotation: a verb holds a transient `auto`
+    lease under the session token; the agent re-locks that scope with --pid
+    mid-flight; the verb exiting must not take the new lease with it."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    leases = locks.acquire(IP, ("library",), label="a verb", token="tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--pid",
+                   os.getpid(), "--label", "agent", "--ip", IP).exit_code == 0
+    leases.release()
+    data = json.loads(lease_path(root, "library").read_text())
+    assert data["kind"] == "pid" and data["label"] == "agent"
+
+
+def test_cli_lock_pid_uses_the_session_ttl(root):
+    """Settled decision 5: the TTL demotes to a backstop for a --pid lease
+    (liveness is the real check), so it keeps DEFAULT_SESSION_TTL rather than
+    the shorter detached default."""
+    assert run_cli("device", "lock", "--scope", "all", "--pid", os.getpid(),
+                   "--label", "a", "--ip", IP).exit_code == 0
+    data = json.loads(lease_path(root, "all").read_text())
+    assert data["ttl_seconds"] == locks.DEFAULT_SESSION_TTL
+
+
+def test_cli_lock_pid_and_detach_are_mutually_exclusive(root):
+    res = run_cli("device", "lock", "--pid", os.getpid(), "--detach",
+                  "--label", "a", "--ip", IP)
+    assert res.exit_code != 0
+    assert "--pid" in res.output and "--detach" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_pid_refuses_a_dead_owner(root):
+    """A lease for a dead pid is stale the moment it is written — always a
+    caller bug, so it is refused at acquisition rather than written and
+    reclaimed a beat later."""
+    res = run_cli("device", "lock", "--pid", dead_pid(), "--label", "a",
+                  "--ip", IP)
+    assert res.exit_code != 0
+    assert "not a live process" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+def test_cli_lock_pid_relock_rebinds_the_pid(root, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "s", "--ip", IP).exit_code == 0
+    assert run_cli("device", "lock", "--scope", "library", "--pid",
+                   os.getpid(), "--label", "s2", "--ip", IP).exit_code == 0
+    data = json.loads(lease_path(root, "library").read_text())
+    assert data["kind"] == "pid" and data["pid"] == os.getpid()
+    assert data["pid_start"] == locks._pid_start(os.getpid())
+    assert data["token"] == "tok-x"
+
+
+def test_97b_pid_lease_survives_the_shell_that_took_it(root):
+    """The #97 case: the tool call's shell is long gone, but the pid the
+    lease names (the agent process) is alive, so the lease still blocks well
+    past SESSION_PID_GRACE_S."""
+    # pid 1 stands in for the foreign agent process: alive, and not us
+    p = write_lease(root, "all", pid=1, kind="pid",
+                    pid_start=locks._pid_start(1),
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="agent-workflow")
+    assert not locks.is_stale(locks.read_lease(p))
+    with pytest.raises(locks.LockHeld) as e:
+        locks.acquire(IP, ("editbuffer",), label="contender", pid=1, timeout=0)
+    assert "agent-workflow" in str(e.value)
+
+
+def test_97b_dead_pid_lease_is_reclaimable_immediately(root, capsys):
+    """Settled decision 4: no SESSION_PID_GRACE_S for kind 'pid'. The owner
+    was chosen by the caller, so its death is conclusive — a fresh lease
+    (age 0) whose pid is dead is stale right now."""
+    p = write_lease(root, "all", pid=dead_pid(), kind="pid", age=0,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="crashed-agent")
+    assert locks.is_stale(locks.read_lease(p))
+    with locks.acquire(IP, ("editbuffer",), label="contender", pid=1,
+                       timeout=0):
+        assert "breaking stale device lock" in capsys.readouterr().err
+        assert not p.exists()
+
+
+def test_97b_dead_session_lease_keeps_its_grace(root):
+    """...and the legacy kind is UNCHANGED: a session lease records whatever
+    shell took it (possibly a short-lived wrapper), so a dead pid only counts
+    after the grace."""
+    p = write_lease(root, "all", pid=dead_pid(), kind="session", age=0,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="wrapper-session")
+    assert not locks.is_stale(locks.read_lease(p))
+    p = write_lease(root, "irs", pid=dead_pid(), kind="session",
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_SESSION_TTL, label="wrapper-session")
+    assert locks.is_stale(locks.read_lease(p))
+
+
+def test_97b_recycled_pid_lease_reads_dead(root):
+    """The Task 1 guard applies to the kind it exists for: a --pid lease whose
+    pid is alive but is now a DIFFERENT process is dead, not immortal."""
+    p = write_lease(root, "all", pid=1, kind="pid", age=0,
+                    pid_start="Thu Jan  1 00:00:00 1970",
+                    ttl=locks.DEFAULT_SESSION_TTL, label="recycled")
+    assert locks.is_stale(locks.read_lease(p))
+
+
+def test_97b_pid_lease_is_renewed_by_token_authenticated_use(root, monkeypatch):
+    p = write_lease(root, "all", pid=os.getpid(), kind="pid", token="tok-97b",
+                    pid_start=locks._pid_start(os.getpid()), age=200,
+                    ttl=locks.DEFAULT_SESSION_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97b")
+    with locks.acquire(IP, ("editbuffer",), label="device snapshot",
+                       timeout=0):
+        assert not lease_path(root, "editbuffer").exists()  # passed through
+    after = json.loads(p.read_text())
+    assert after["acquired_at"] > before
+    assert after["kind"] == "pid" and after["pid"] == os.getpid()
+
+
+def test_97b_pid_relock_under_covering_all_converts_the_lease(root,
+                                                              monkeypatch):
+    """A narrow --pid re-lock while holding a covering shell-bound `all`
+    lease must CONVERT that lease in place. acquire()'s passthrough would
+    renew it with its old session kind while the CLI affirms pid binding —
+    the lease stays reclaimable after the 120s dead-pid grace, silently
+    reasserting the #97 failure behind an explicit success message."""
+    write_lease(root, "all", pid=os.getppid(), kind="session",
+                token="tok-cover", label="old-session",
+                ttl=locks.DEFAULT_SESSION_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-cover")
+    tok, outcomes = locks.session_lock(
+        IP, ["library"], label="agent", ttl=locks.DEFAULT_SESSION_TTL,
+        pid=os.getpid())
+    assert tok == "tok-cover"
+    assert outcomes == [("all", "renewed")]  # names the lease touched
+    assert not lease_path(root, "library").exists()  # no shadow narrow lease
+    after = json.loads(lease_path(root, "all").read_text())
+    assert after["kind"] == "pid"
+    assert after["pid"] == os.getpid()
+    assert after["pid_start"] == locks._pid_start(os.getpid())
+    assert after["label"] == "agent"
+
+
+def test_97b_detach_relock_under_covering_all_converts_once(root,
+                                                            monkeypatch):
+    """Same conversion for --detach, and only ONCE for a multi-scope
+    request — both narrow scopes resolve to the same covering lease."""
+    write_lease(root, "all", pid=os.getppid(), kind="session",
+                token="tok-cover", ttl=locks.DEFAULT_SESSION_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-cover")
+    _, outcomes = locks.session_lock(IP, ["library", "irs"], label="cron",
+                                     ttl=300, detach=True)
+    assert outcomes == [("all", "renewed")]
+    after = json.loads(lease_path(root, "all").read_text())
+    assert after["kind"] == "detached" and after["pid"] is None
+    assert after["ttl_seconds"] == 300
+
+
+# --------------------------------------------------------------------------
+# #97b (Task 3): all three lease kinds must RENDER unambiguously — in
+# `--status`, in its JSON, and in the error a blocked contender reads. "held
+# by 'agent' (pid 50754, alive)" tells you to wait; "locked" tells you nothing.
+# --------------------------------------------------------------------------
+
+def test_97b_describe_renders_each_kind_unambiguously(root):
+    live = locks.read_lease(write_lease(root, "all", pid=os.getpid(),
+                                        kind="pid", label="agent",
+                                        pid_start=locks._pid_start(os.getpid())))
+    dead = locks.read_lease(write_lease(root, "irs", pid=dead_pid(),
+                                        kind="pid", label="crashed"))
+    session = locks.read_lease(write_lease(root, "library", pid=os.getpid(),
+                                           kind="session", label="shell"))
+    detached = locks.read_lease(write_lease(root, "globals", pid=None,
+                                            kind="detached", label="cron"))
+    assert f"pid {os.getpid()}, alive" in locks.describe(live)
+    assert f"pid {dead['pid']}, dead" in locks.describe(dead)
+    # the legacy kind is unchanged: pid, no liveness claim
+    assert f"pid {os.getpid()}" in locks.describe(session)
+    assert "alive" not in locks.describe(session)
+    assert "detached" in locks.describe(detached)
+    assert "pid" not in locks.describe(detached)
+
+
+def test_97b_describe_claims_no_liveness_for_a_foreign_host_lease(root):
+    """A pid on ANOTHER host is not probeable — the TTL is all we have there,
+    so the line must not assert 'alive' or 'dead' about it."""
+    lease = locks.read_lease(write_lease(root, "all", pid=os.getpid(),
+                                         kind="pid", host="other-host",
+                                         pid_start="whenever"))
+    line = locks.describe(lease)
+    assert f"pid {os.getpid()}" in line
+    assert "alive" not in line and "dead" not in line
+
+
+def test_97b_status_reports_pid_liveness(root):
+    write_lease(root, "all", pid=os.getpid(), kind="pid",
+                pid_start=locks._pid_start(os.getpid()))
+    write_lease(root, "irs", pid=dead_pid(), kind="pid")
+    write_lease(root, "library", pid=os.getpid(), kind="session")
+    write_lease(root, "globals", pid=None, kind="detached")
+    rows = {r["scope"]: r for r in locks.status(IP)}
+    assert rows["all"]["pid_alive"] is True
+    assert rows["irs"]["pid_alive"] is False
+    # only kind 'pid' claims liveness; the other kinds report none
+    assert rows["library"]["pid_alive"] is None
+    assert rows["globals"]["pid_alive"] is None and rows["globals"]["pid"] is None
+
+
+def test_97b_cli_status_shows_kind_and_liveness(root):
+    write_lease(root, "all", pid=os.getpid(), kind="pid", label="agent",
+                pid_start=locks._pid_start(os.getpid()))
+    write_lease(root, "globals", pid=None, kind="detached", label="cron")
+    res = run_cli("device", "lock", "--status", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert f"pid {os.getpid()} alive" in res.output
+    assert "detached" in res.output
+
+
+def test_97b_a_dead_pid_lease_of_ours_is_a_PROVEN_lost_session(root,
+                                                              monkeypatch):
+    """Reconciliation: a lapsed lease file of ours on disk is proof the scope
+    WAS ours — and that holds for the pid kind too. A --pid lease whose owner
+    died leaves exactly such a file, so the verb must get the full-strength
+    'stop and re-establish' message, not a silent pass."""
+    # the session is demonstrably alive (a live lease on another scope), so
+    # only the lapsed file distinguishes "lost it" from "never held it"
+    write_lease(root, "irs", pid=os.getpid(), token="tok-97b", kind="pid",
+                pid_start=locks._pid_start(os.getpid()),
+                ttl=locks.DEFAULT_SESSION_TTL, label="agent")
+    write_lease(root, "library", pid=dead_pid(), token="tok-97b", kind="pid",
+                age=0, ttl=locks.DEFAULT_SESSION_TTL, label="agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97b")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is True
+    assert "do NOT retry" in str(e.value)
+
+
+def test_97b_contender_error_names_the_kind_it_is_up_against(root):
+    p = write_lease(root, "all", pid=1, kind="pid", label="agent",
+                    pid_start=locks._pid_start(1),
+                    age=locks.SESSION_PID_GRACE_S + 5,
+                    ttl=locks.DEFAULT_SESSION_TTL)
+    with pytest.raises(locks.LockHeld) as e:
+        locks.acquire(IP, ("editbuffer",), label="contender", pid=1, timeout=0)
+    assert "'agent' (pid 1, alive" in str(e.value)
+    assert p.exists()
+
+
+# --------------------------------------------------------------------------
+# #97 (Task 3): a presented-but-dangling token must fail loudly — read-only
+# verbs included. Setting $HELIXGEN_LOCK_TOKEN declares "I am in a held
+# session"; when it opens no live lease for the scope a verb touches, that
+# session is gone and proceeding unlocked is how the 2026-07-27 workflow got
+# real-looking numbers for a snapshot it had been REFUSED permission to select.
+# --------------------------------------------------------------------------
+
+def test_97_check_session_is_a_noop_without_a_token(root):
+    """No token = today's behavior exactly: unlocked reads stay free, even
+    with a foreign lease held."""
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    locks.check_session(IP, ("editbuffer",))
+
+
+def test_97_check_session_passes_with_a_live_covering_lease(root, monkeypatch):
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, label="agent-workflow")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer", "irs"))
+
+
+def test_97_check_session_passes_for_a_scope_outside_a_narrow_lease(
+        root, monkeypatch):
+    """Holding `library` and touching `editbuffer` is NOT a lost session — the
+    token demonstrably opens a live lease, the other scope is simply free.
+    Raising here would reduce the whole scope vocabulary to `--scope all`:
+    `device sync` (library+irs) could not run under a `library` lease, and
+    every read of another scope would hard-fail with a message claiming a
+    reclaim that never happened."""
+    write_lease(root, "library", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, label="agent-workflow")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))
+    locks.check_session(IP, ("library", "irs"))
+
+
+def test_97_narrow_lease_holder_still_acquires_other_scopes(root, fake_client,
+                                                            monkeypatch):
+    """End to end: a `library` lease holder runs a verb that locks
+    `editbuffer`. It must take that scope transiently, not be refused."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "agent", "--ip", IP).exit_code == 0
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    # and it really TOOK that scope — exiting 0 alone would also pass if the
+    # verb had run with no lease at all
+    assert fake_client["editbuffer_locked_during_call"] is True
+
+
+def test_97_narrow_lease_holder_contends_normally_not_lockheld_as_lost(
+        root, fake_client, monkeypatch):
+    """And when that other scope IS held by someone else, it is ordinary
+    contention (waited on, reported as locked) — not a lost session."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-x")
+    assert run_cli("device", "lock", "--scope", "library", "--detach",
+                   "--label", "agent", "--ip", IP).exit_code == 0
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TIMEOUT", "0")
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code != 0
+    assert "is locked by" in res.output and "other-agent" in res.output
+    assert "reclaimed" not in res.output
+
+
+def test_97_check_session_renews_the_covering_lease(root, monkeypatch):
+    """A read-only call is proof its session is alive, so it renews — the
+    Task 1 root cause was that a measure-only stretch renewed nothing and
+    lost the lease it was holding."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=200, ttl=locks.DEFAULT_DETACHED_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))
+    assert json.loads(p.read_text())["acquired_at"] > before
+
+
+def test_97_read_only_verb_renews_the_lease_it_holds(root, fake_client,
+                                                     monkeypatch):
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    age=200, ttl=locks.DEFAULT_DETACHED_TTL)
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "blocks", "--ip", IP).exit_code == 0
+    assert json.loads(p.read_text())["acquired_at"] > before
+
+
+@pytest.mark.parametrize("ttl", [0, -1, -0.5])
+def test_97_session_lock_refuses_a_detached_lease_with_no_expiry(root, ttl):
+    """The invariant lives in the lock layer, not only in the CLI flag — and
+    a NEGATIVE ttl is 'no expiry' to _remaining_ttl exactly like 0, so it
+    would leave the same unclearable pid-less lease."""
+    with pytest.raises(ValueError):
+        locks.session_lock(IP, ["all"], label="agent", ttl=ttl, detach=True)
+    assert not lease_path(root, "all").exists()
+
+
+def test_97_check_session_raises_naming_the_holder_that_reclaimed_it(
+        root, monkeypatch):
+    write_lease(root, "editbuffer", pid=1, label="live-test-suite")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("editbuffer",))
+    msg = str(e.value)
+    assert "live-test-suite" in msg          # the current holder, named
+    assert "reclaimed" in msg                # not merely "locked"
+    assert "device lock" in msg              # actionable: re-establish state
+
+
+def test_97_check_session_raises_when_no_lease_exists_at_all(root, monkeypatch):
+    """The lease may have simply expired — no holder to name, still a lost
+    session, still a refusal."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",))
+    assert "reclaimed or expired" in str(e.value)
+
+
+def test_97_check_session_rejects_a_stale_lease_of_our_own(root, monkeypatch):
+    """A dead-pid session lease past the grace is reclaimable by anyone — it
+    is no longer protection, so a token that only opens IT must not pass."""
+    write_lease(root, "all", pid=dead_pid(), token="tok-97", kind="session",
+                age=locks.SESSION_PID_GRACE_S + 5)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("editbuffer",))
+
+
+# every networked read-only verb carrying @_reads — all of them, so removing
+# a decorator can never pass unnoticed. "{out}" is filled with a scratch path.
+# `device measure` here IS the observed 2026-07-27 scenario end to end: the
+# agent's lease is gone, a contender holds `editbuffer`, and the read used to
+# hand back a well-formed measurement of whatever snapshot happened to be
+# active.
+READ_ONLY_VERBS = [
+    (("device", "measure"), "editbuffer"),
+    (("device", "info"), "library"),
+    (("device", "meters"), "editbuffer"),
+    (("device", "tuner"), "editbuffer"),
+    (("device", "watch", "--seconds", "0.1"), "editbuffer"),
+    (("device", "blocks"), "editbuffer"),
+    (("device", "params", "0", "0"), "editbuffer"),
+    (("device", "active"), "editbuffer"),
+    (("device", "list"), "library"),
+    (("device", "setlists"), "library"),
+    (("device", "read", "1"), "library"),
+    (("device", "pull", "1", "{out}"), "library"),
+    (("device", "backup", "--dir", "{out}"), "library"),
+    (("device", "setlist", "export-hss", "HGTEST", "{out}"), "library"),
+    (("device", "slots", "list", "--verify"), "library"),
+    (("device", "list-irs"), "irs"),
+    (("device", "pull-ir", "some.wav", "{out}"), "irs"),
+    (("device", "settings", "list", "--values"), "globals"),
+    (("device", "settings", "get", "global.tuner.type"), "globals"),
+]
+
+
+@pytest.mark.parametrize("argv,scope", READ_ONLY_VERBS)
+def test_97_read_only_verbs_refuse_a_dangling_token(root, fake_client,
+                                                    monkeypatch, tmp_path,
+                                                    argv, scope):
+    write_lease(root, scope, pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    argv = tuple(a.format(out=tmp_path / "out") for a in argv)
+    res = run_cli(*argv, "--ip", IP)
+    assert res.exit_code != 0, res.output
+    assert "other-agent" in res.output and "reclaimed" in res.output
+
+
+def test_97_slots_list_stays_exempt_when_it_is_offline(root, monkeypatch):
+    """`slots list` without --verify reads the local manifest only — the
+    other `when()`-narrowing verb. An offline verb must stay usable under a
+    dangling token: exactly the state you are in when you need to inspect."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "slots", "list", "--ip", IP).exit_code == 0
+
+
+def test_97_settings_list_stays_exempt_when_it_is_offline(root, monkeypatch):
+    """`settings list` without --values touches no network — an offline verb
+    must not be locked out by a dangling token (recovery stays possible)."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "settings", "list", "--ip", IP).exit_code == 0
+
+
+def test_97_dry_run_that_still_reads_the_device_refuses_a_dangling_token(
+        root, fake_client, monkeypatch):
+    """A verb whose `when()` narrows to NO lease (ir-prune without --yes) is
+    still a networked read: it must not slip past the check that `device
+    list-irs`, a strictly weaker read of the same data, is subject to."""
+    write_lease(root, "irs", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "ir-prune", "--ip", IP)
+    assert res.exit_code != 0, res.output
+    assert "other-agent" in res.output and "reclaimed" in res.output
+
+
+def test_97_read_only_verb_without_a_token_still_runs_unlocked(root,
+                                                               fake_client):
+    """Verbs invoked with NO token keep today's behavior exactly — read-only
+    verbs must not start requiring locks."""
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    res = run_cli("device", "blocks", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+def test_97_read_only_verb_with_a_live_lease_runs(root, fake_client,
+                                                  monkeypatch):
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "lock", "--scope", "all", "--detach", "--label",
+                   "agent-workflow", "--ip", IP).exit_code == 0
+    res = run_cli("device", "blocks", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+def test_97_mutating_verb_refuses_instead_of_locking_a_free_scope(
+        root, fake_client, monkeypatch):
+    """Before: a token that authenticated nothing silently acquired a fresh
+    transient lease and proceeded. Now it is a lost session, and the verb
+    stops."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code != 0
+    assert "reclaimed or expired" in res.output
+    assert not lease_path(root, "editbuffer").exists()
+
+
+def test_97_unlock_still_works_with_a_dangling_token(root, monkeypatch):
+    """The recovery path must never be locked out by the new check."""
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "unlock", "--ip", IP).exit_code == 0
+    res = run_cli("device", "lock", "--status", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+# --------------------------------------------------------------------------
+# #97 review round 2: renewal covers the whole session, and covers a verb
+# that outruns its own TTL
+# --------------------------------------------------------------------------
+
+def test_97_use_renews_every_lease_the_token_owns_not_just_this_verbs_scope(
+        root, monkeypatch):
+    """A multi-scope agent lease is ONE session: a stretch of `library` verbs
+    must not let the sibling `editbuffer` lease age out and be reclaimed
+    under the agent while it is demonstrably active."""
+    eb = write_lease(root, "editbuffer", pid=None, token="tok-97",
+                     kind="detached", age=200,
+                     ttl=locks.DEFAULT_DETACHED_TTL)
+    lib = write_lease(root, "library", pid=None, token="tok-97",
+                      kind="detached", age=200,
+                      ttl=locks.DEFAULT_DETACHED_TTL)
+    before = {p: json.loads(p.read_text())["acquired_at"] for p in (eb, lib)}
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",))
+    for p in (eb, lib):
+        assert json.loads(p.read_text())["acquired_at"] > before[p], p.name
+
+
+def test_97_foreign_leases_are_never_renewed_by_our_use(root, monkeypatch):
+    other = write_lease(root, "irs", pid=1, label="other-agent", age=100)
+    write_lease(root, "library", pid=None, token="tok-97", kind="detached")
+    before = json.loads(other.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",))
+    assert json.loads(other.read_text())["acquired_at"] == before
+
+
+def test_97_keep_alive_renews_a_lease_that_the_verb_outruns(root, monkeypatch):
+    """Renewal at verb ENTRY alone loses the lease mid-flight for anything
+    longer than its TTL (`normalize`, a long `--seconds` window). The
+    heartbeat keeps an ACTIVE long verb's lease alive."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    # ... and the 1s floor, or HEARTBEAT_MAX_S alone changes nothing
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    with locks.keep_alive(IP, token="tok-97"):
+        # AFTER entry: keep_alive renews once on the way in, so a `before`
+        # captured outside the block is satisfied without the thread ever
+        # beating (the assertion would pass against a no-op heartbeat).
+        before = json.loads(p.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(p.read_text())["acquired_at"] == before
+               and time.time() < deadline):
+            time.sleep(0.01)
+        assert json.loads(p.read_text())["acquired_at"] > before
+    # and the thread stops with the verb
+    assert not any(t.name == "helixgen-lock-keepalive" and t.is_alive()
+                   for t in threading.enumerate())
+
+
+def test_97_keep_alive_warns_when_the_lease_goes_away_mid_call(root,
+                                                               monkeypatch):
+    """Losing the lease DURING a long verb is the #97 failure with positive
+    proof attached: the heartbeat sees it and must say so, rather than let
+    the verb print well-formed output for a device it no longer holds."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
+        p.unlink()  # reclaimed / released by someone else mid-call
+        deadline = time.time() + 2.0
+        while "lapsed" not in errlog.text and time.time() < deadline:
+            time.sleep(0.01)
+    assert "lapsed DURING this call" in errlog.text, errlog.text
+
+
+def test_97_keep_alive_warns_when_only_ONE_of_two_scopes_lapses(root,
+                                                                monkeypatch):
+    """A multi-scope session that drops ONE scope mid-call is the same
+    untrustworthy output. Waiting for the count to reach zero would let a
+    `--scope editbuffer --scope library` agent lose `editbuffer` in silence."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "editbuffer", pid=None, token="tok-97",
+                    kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "library", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL)
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
+        p.unlink()  # one scope reclaimed; `library` still ours
+        deadline = time.time() + 2.0
+        while "lapsed" not in errlog.text and time.time() < deadline:
+            time.sleep(0.01)
+    assert "lapsed DURING this call" in errlog.text, errlog.text
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("kaboom"), OSError("kaboom")])
+def test_97_keep_alive_says_so_when_the_heartbeat_itself_dies(root,
+                                                              monkeypatch,
+                                                              exc):
+    """An unexpected exception used to kill the daemon thread silently: no
+    more renewals, no `lapsed` warning, lease gone by the next call — the
+    silent loss this whole feature exists to prevent. OSError included: it is
+    the likeliest one here (vanished lease dir) and used to return quietly."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL)
+    calls = {"n": 0}
+    real = locks._renew_owned
+
+    def boom(ip, token):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the entry renewal must still succeed
+            return real(ip, token)
+        raise exc
+
+    monkeypatch.setattr(locks, "_renew_owned", boom)
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
+        deadline = time.time() + 2.0
+        while ("keep-alive stopped" not in errlog.text
+               and time.time() < deadline):
+            time.sleep(0.01)
+    assert ("keep-alive stopped" in errlog.text
+            and "kaboom" in errlog.text), errlog.text
+
+
+def test_97_renewal_that_lands_on_a_reacquired_lease_is_not_held(root,
+                                                                 monkeypatch):
+    """`_renew` is nonce-guarded, so a lease broken + re-acquired under us
+    silently no-ops the write. Counting that as a renewed, healthy lease
+    would resurrect the exact silent-expiry failure #97 exists to prevent."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+
+    real_rewrite = locks._rewrite
+
+    def steal(path, payload, *, expect_nonce=None):
+        # a contender broke and re-took the lease between our read and write
+        data = json.loads(p.read_text())
+        data.update(nonce="someone-else", token="tok-other",
+                    label="other-agent", acquired_at=time.time())
+        p.write_text(json.dumps(data))
+        return real_rewrite(path, payload, expect_nonce=expect_nonce)
+
+    monkeypatch.setattr(locks, "_rewrite", steal)
+    assert locks._renew_owned(IP, "tok-97") == (0, None)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    monkeypatch.setattr(locks, "_rewrite", real_rewrite)
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("editbuffer",))
+
+
+def test_97_a_failed_renewal_write_does_not_lose_a_lease_that_is_still_ours(
+        root, monkeypatch):
+    """The other no-op cause: the write itself failed (full disk, read-only
+    FS). The lease file is untouched and still ours — refusing there would
+    be a false alarm, so it stays held until the TTL genuinely runs out."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setattr(locks, "_rewrite",
+                        lambda *a, **k: False)  # every write fails
+    held, _ = locks._renew_owned(IP, "tok-97")
+    assert held == 1
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))  # no refusal
+
+
+def test_97_token_held_on_another_device_address_is_not_a_lost_session(
+        root, monkeypatch):
+    """Leases are keyed by ADDRESS, so one session spans two Stadiums — or
+    two spellings of one (`helix.local` here, `10.0.0.4` there). Owning
+    nothing under THIS address is the pre-lease state, not proof of a
+    reclaim; blaming a reclaim blocked reads outright (no `--no-lock`)."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",), strict=True)  # no refusal
+    assert not lease_path(root, "library").exists()  # and still takes nothing
+
+
+def test_97_read_under_a_token_held_elsewhere_warns_that_it_is_unlocked(
+        root, monkeypatch, capsys):
+    """Not a refusal — but not silent either: the caller believes it holds a
+    device it holds nothing on, which is #97 one address-spelling apart."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",), strict=True)
+    err = capsys.readouterr().err
+    assert "198.51.100.7" in err and "UNLOCKED" in err
+
+
+def test_97_mutating_verb_under_a_token_held_elsewhere_does_not_warn(
+        root, monkeypatch, capsys):
+    """It goes on to acquire this address transiently — it IS locked."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("library",))
+    assert capsys.readouterr().err == ""
+
+
+def test_97_other_device_lease_does_not_excuse_a_scope_someone_else_holds(
+        root, monkeypatch):
+    """...but only where nothing else is driving THIS device: a live foreign
+    lease over the scope we are about to read is still a refusal."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    write_lease(root, "library", label="other-agent")  # live, not ours
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert "other-agent" in str(e.value)
+
+
+def test_97_refusal_under_a_lease_held_elsewhere_is_never_called_a_reclaim(
+        root, monkeypatch):
+    """The refusal above must not tell an agent its session was reclaimed:
+    the token opens nothing HERE, but it opens a live lease one address
+    spelling over, and "re-take a lease, do NOT retry" throws that away.
+    Name the address instead — that IS the fix. (3rd review pass.)"""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=locks.DEFAULT_DETACHED_TTL, ip="198.51.100.7")
+    write_lease(root, "library", label="other-agent")  # live, not ours
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is False
+    assert e.value.elsewhere == "198.51.100.7"
+    assert "198.51.100.7" in str(e.value)
+    assert "do NOT retry" not in str(e.value)
+    assert "Wait for the holder" in str(e.value)
+
+
+def test_97_a_stale_lease_elsewhere_does_not_excuse_a_dangling_token(
+        root, monkeypatch):
+    """The escape hatch is for a LIVE session on another address. An expired
+    one everywhere means the session really is gone."""
+    write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                ttl=60, age=120, ip="198.51.100.7")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("library",))
+
+
+def test_97_keep_alive_is_a_noop_when_no_lease_is_held(root):
+    with locks.keep_alive(IP, token="tok-97"):
+        pass
+    assert not lease_path(root, "all").exists()
+
+
+def test_97_long_verb_keeps_its_lease_alive(root, fake_client, monkeypatch):
+    """End to end through the CLI wrapper: the lease is renewed DURING the
+    verb body, not only before it."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    # ... and the 1s floor, or HEARTBEAT_MAX_S alone changes nothing
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    seen = {}
+
+    import helixgen.device as device_mod
+    real_blocks = device_mod.HelixClient.edit_buffer_blocks
+
+    def slow_blocks(self):
+        entry = json.loads(p.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(p.read_text())["acquired_at"] == entry
+               and time.time() < deadline):
+            time.sleep(0.02)
+        seen["renewed_during_call"] = (
+            json.loads(p.read_text())["acquired_at"] > entry)
+        return real_blocks(self)
+
+    monkeypatch.setattr(device_mod.HelixClient, "edit_buffer_blocks",
+                        slow_blocks)
+    assert run_cli("device", "blocks", "--ip", IP).exit_code == 0
+    assert seen["renewed_during_call"] is True
+
+
+def test_97_unlock_tells_you_to_unset_a_now_dangling_token(root, monkeypatch):
+    """`device unlock` is the documented end of an agent workflow — but the
+    token stays exported in the caller's shell, where it now opens nothing
+    and makes every later device verb (reads included) fail."""
+    res = run_cli("device", "lock", "--scope", "all", "--detach", "--label",
+                  "agent-workflow", "--ip", IP)
+    token = [ln.split("=", 1)[1] for ln in res.output.splitlines()
+             if ln.startswith("HELIXGEN_LOCK_TOKEN=")][0]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", token)
+    out = run_cli("device", "unlock", "--ip", IP)
+    assert out.exit_code == 0, out.output
+    assert "unset HELIXGEN_LOCK_TOKEN" in out.output
+
+
+def test_97_unlock_says_nothing_while_the_token_still_opens_a_lease(
+        root, monkeypatch):
+    res = run_cli("device", "lock", "--scope", "editbuffer", "--scope",
+                  "library", "--detach", "--label", "agent", "--ip", IP)
+    token = [ln.split("=", 1)[1] for ln in res.output.splitlines()
+             if ln.startswith("HELIXGEN_LOCK_TOKEN=")][0]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", token)
+    out = run_cli("device", "unlock", "--scope", "library", "--ip", IP)
+    assert out.exit_code == 0, out.output
+    assert "unset HELIXGEN_LOCK_TOKEN" not in out.output
+
+
+def test_97b_unlock_names_the_other_address_still_holding_a_lease(
+        root, monkeypatch):
+    """Leases are keyed by address string: the token may still open a live
+    lease under another spelling of the (possibly same) device. Advising
+    `unset HELIXGEN_LOCK_TOKEN` there strands that lease until TTL — the
+    warning must point at the OTHER address instead."""
+    res = run_cli("device", "lock", "--scope", "all", "--detach",
+                  "--label", "agent", "--ip", "10.0.0.4")
+    token = [ln.split("=", 1)[1] for ln in res.output.splitlines()
+             if ln.startswith("HELIXGEN_LOCK_TOKEN=")][0]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", token)
+    out = run_cli("device", "unlock", "--ip", IP)
+    assert out.exit_code == 0, out.output
+    assert "unset HELIXGEN_LOCK_TOKEN" not in out.output
+    assert "10.0.0.4" in out.output
+
+
+
+
+def test_97_unlock_with_no_token_never_suggests_unsetting_one(root):
+    """The most common invocation of all: no token exported, nothing owned.
+    Advising `unset HELIXGEN_LOCK_TOKEN` there is nonsense (and noise for an
+    agent parsing stderr)."""
+    out = run_cli("device", "unlock", "--ip", IP)
+    assert out.exit_code == 0, out.output
+    assert "unset HELIXGEN_LOCK_TOKEN" not in out.output
+
+
+def test_97_unlock_without_the_token_cannot_release_a_detached_lease(root):
+    """A detached lease has no pid to match, so the token is the ONLY proof
+    of ownership: lose it and `unlock` keeps the lease (reporting it) —
+    `--force` is the way out. Pinned because the exit code is 0 and an agent
+    could otherwise read "unlocked" into a device still held."""
+    run_cli("device", "lock", "--scope", "all", "--detach", "--label",
+            "agent", "--ip", IP)
+    bare = run_cli("device", "unlock", "--ip", IP)
+    assert bare.exit_code == 0, bare.output   # nothing OF OURS to release
+    assert "kept 'all'" in bare.output and "detached" in bare.output
+    assert lease_path(root, "all").exists()
+    explicit = run_cli("device", "unlock", "--scope", "all", "--ip", IP)
+    assert explicit.exit_code != 0           # but ASKING for it errors
+    assert run_cli("device", "unlock", "--scope", "all", "--force",
+                   "--ip", IP).exit_code == 0
+    assert not lease_path(root, "all").exists()
+
+
+# --------------------------------------------------------------------------
+# #97 review round 3: TTLs that can't be kept alive, partial lease loss
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("extra", [("--detach",), ()])
+@pytest.mark.parametrize("ttl", ["nan", "inf"])
+def test_97_lock_refuses_a_non_finite_ttl(root, ttl, extra):
+    """`--ttl nan` slipped past the `ttl <= 0` guard (nan compares False to
+    everything) and wrote a pid-less lease with NO expiry — precisely what
+    the --detach guard exists to refuse — plus a bare `NaN` value that is not
+    valid JSON for any non-Python reader. (`-inf` was already refused by the
+    no-expiry guard.)"""
+    res = run_cli("device", "lock", "--ttl", ttl, "--label", "a",
+                  "--ip", IP, *extra)
+    assert res.exit_code != 0, res.output
+    assert "finite" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+@pytest.mark.parametrize("ttl", [1, 2, 3, 9])
+@pytest.mark.parametrize("extra", [("--detach",), (), ("--pid", "SELF")])
+def test_97_lock_refuses_a_ttl_too_short_to_renew(root, ttl, extra):
+    """Renewal skips a lease within RENEW_MARGIN_S of expiry and the
+    heartbeat sleeps at least HEARTBEAT_MIN_S, so a TTL this short expires
+    mid-workflow no matter how actively it is used — silent lease loss, the
+    failure #97 exists to prevent. Every kind, `--pid` included: that is the
+    invocation agents are told to use."""
+    extra = tuple(str(os.getpid()) if a == "SELF" else a for a in extra)
+    res = run_cli("device", "lock", "--ttl", ttl, "--label", "a",
+                  "--ip", IP, *extra)
+    assert res.exit_code != 0, res.output
+    assert "too short" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+@pytest.mark.parametrize("extra", [("--detach",), ()])
+def test_97_lock_refuses_a_negative_ttl(root, extra):
+    """`--ttl -5` is the plausible typo for `--ttl 5` — which the too-short
+    guard refuses instructively. Without this guard the typo slipped past it
+    (`0 < ttl` is False for a negative) on a plain session lease and wrote
+    `ttl_seconds: -5`, which `_remaining_ttl` reads as NO EXPIRY: the most
+    fragile lease shape there is, reclaimable only by pid liveness, rendered
+    by `--status` as `ttl -5s` (reads as already expired, not as no expiry).
+    """
+    res = run_cli("device", "lock", "--ttl", "-5", "--label", "a",
+                  "--ip", IP, *extra)
+    assert res.exit_code != 0, res.output
+    assert "negative" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+@pytest.mark.parametrize("extra", [("--detach",), (), ("--pid", "SELF")])
+def test_97_lock_accepts_the_minimum_ttl(root, extra):
+    extra = tuple(str(os.getpid()) if a == "SELF" else a for a in extra)
+    assert run_cli("device", "lock", "--ttl", locks.MIN_SESSION_TTL,
+                   "--label", "a", "--ip", IP, *extra).exit_code == 0
+
+
+def test_97_renewal_leaves_a_lease_at_the_expiry_boundary_alone(root,
+                                                                monkeypatch):
+    """RENEW_MARGIN_S: renewing right at expiry can land on top of a waiter's
+    legitimate re-acquisition (#72), so those are left to expire — and since
+    NOTHING will renew such a lease again, entering a verb on it is entering
+    on a lease certain to lapse mid-call. It counts as lost, loudly, instead
+    of admitting the verb (silent unlocked work is the #97 failure)."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=60, age=59.5)  # 0.5s left — inside the margin
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("editbuffer",))
+    assert json.loads(p.read_text())["acquired_at"] == before
+
+
+def test_97_a_lease_with_room_to_renew_is_not_treated_as_doomed(root,
+                                                                monkeypatch):
+    """The falsifying half of the test above: just OUTSIDE the margin the
+    same lease passes and is renewed."""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=60, age=55)  # 5s left — outside the margin
+    before = json.loads(p.read_text())["acquired_at"]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    locks.check_session(IP, ("editbuffer",))
+    assert json.loads(p.read_text())["acquired_at"] > before
+
+
+def test_97_an_expired_lease_of_ours_is_reported_not_read_as_never_held(
+        root, fake_client, monkeypatch):
+    """Partial loss with the evidence still on disk: the agent holds
+    editbuffer+irs, the `editbuffer` lease lapses (per-scope TTLs can
+    diverge) and nobody has reclaimed it yet. The token still opens `irs`, so
+    the session reads as alive and `device blocks` used to answer normally —
+    while the scope it was reading was no longer held. The expired file is
+    proof we lost it, so it errors."""
+    write_lease(root, "irs", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=60, age=90)  # expired, still on disk
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "blocks", "--ip", IP)
+    assert res.exit_code != 0, res.output
+    assert "editbuffer" in res.output and "expired" in res.output
+
+
+def test_97_a_reported_expired_lease_is_cleared_so_it_cannot_stick(
+        root, monkeypatch):
+    """Loud ONCE, then self-heal. Nothing renews an expired lease and no
+    acquire path removes an owned lease that isn't its own target, so leaving
+    the file on disk made every later verb over that scope refuse for
+    good — mutating verbs included, against a scope nothing was contending,
+    until `device unlock`. (2nd review pass.)"""
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    label="agent", ttl=60, age=90)  # expired, still on disk
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost):
+        locks.check_session(IP, ("library",))
+    assert not p.exists()
+    locks.check_session(IP, ("library",))          # the scope is free again
+    locks.check_session(IP, ("library",), strict=True)
+
+
+def test_97_a_scope_someone_else_holds_is_not_reported_as_a_reclaim(
+        root, monkeypatch):
+    """A strict read of a scope outside a narrow lease that a live FOREIGN
+    lease holds right now still refuses — but "reclaimed from your session"
+    and "never part of it" are indistinguishable there, and asserting the
+    first tells an agent to tear a healthy workflow down when waiting for
+    the holder is all it needs. (2nd review pass.)"""
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "library", pid=1, label="other-agent")  # live, not ours
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is False
+    assert "or never part of it" in str(e.value)
+    assert "Wait for the holder" in str(e.value)
+    assert "do NOT retry" not in str(e.value)
+
+
+def test_97_a_dangling_token_still_gets_the_full_strength_message(
+        root, monkeypatch):
+    """The counterpart: the token opens NOTHING here, so the session really
+    is gone and the strong stop-and-re-establish wording stands."""
+    write_lease(root, "library", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    with pytest.raises(locks.LockLost) as e:
+        locks.check_session(IP, ("library",), strict=True)
+    assert e.value.proven is True
+    assert "do NOT retry" in str(e.value)
+
+
+def test_97_a_stale_transient_lease_of_ours_is_not_a_lost_session(
+        root, fake_client, monkeypatch):
+    """Counterpart: a per-verb (`kind: auto`) lease left behind by a killed
+    verb is not part of the declared session, so it must not turn every
+    later read of that scope into a refusal."""
+    write_lease(root, "irs", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "editbuffer", pid=None, token="tok-97", kind="auto",
+                label="helixgen device load", ttl=60, age=90)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "blocks", "--ip", IP).exit_code == 0
+
+
+def test_97_read_refuses_when_a_contender_took_one_scope_of_a_narrow_lease(
+        root, fake_client, monkeypatch):
+    """The read/write asymmetry, reachable with a MULTI-SCOPE lease: the
+    agent holds editbuffer+irs, a contender reclaims editbuffer, and
+    `device blocks` used to hand back the edit buffer that contender is now
+    driving (the token still opened the `irs` lease, so the session read as
+    alive). A read has no contend-and-wait fallback, so it refuses."""
+    write_lease(root, "irs", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    write_lease(root, "editbuffer", pid=1, label="other-agent")
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    res = run_cli("device", "blocks", "--ip", IP)
+    assert res.exit_code != 0, res.output
+    assert "other-agent" in res.output and "reclaimed" in res.output
+
+
+def test_97_read_of_a_free_scope_outside_a_narrow_lease_still_passes(
+        root, fake_client, monkeypatch):
+    """...but only when someone else actually holds it. A granular lease
+    stays granular: holding `irs` and reading the (unheld) edit buffer is
+    exactly as free as it was unlocked."""
+    write_lease(root, "irs", pid=None, token="tok-97", kind="detached",
+                label="agent", ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    assert run_cli("device", "blocks", "--ip", IP).exit_code == 0
+
+
+def test_97_ir_prune_dry_run_heartbeats_its_lease(root, fake_client,
+                                                  monkeypatch):
+    """A dry run is a READ (it scans the whole pool) and can outrun a short
+    TTL just like `watch` — it gets the same guard, not only the entry
+    check."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    seen = {}
+
+    import helixgen.device.maintenance as mt
+
+    def slow_prune(**kw):
+        entry = json.loads(p.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(p.read_text())["acquired_at"] == entry
+               and time.time() < deadline):
+            time.sleep(0.01)
+        seen["renewed"] = json.loads(p.read_text())["acquired_at"] > entry
+        return {"ok": True, "dry_run": True, "device_irs": 0,
+                "referenced": [], "protected": [], "orphans": [],
+                "deleted": [], "errors": [], "warnings": []}
+
+    monkeypatch.setattr(mt, "ir_prune", slow_prune)
+    res = run_cli("device", "ir-prune", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert seen["renewed"] is True
+
+
+# --------------------------------------------------------------------------
+# re-locking switches a lease's kind (the `--detach` help text promises both
+# directions)
+# --------------------------------------------------------------------------
+
+def _lock_and_export(monkeypatch, *extra):
+    res = run_cli("device", "lock", "--scope", "all", "--label", "agent",
+                  "--ip", IP, *extra)
+    assert res.exit_code == 0, res.output
+    token = [ln.split("=", 1)[1] for ln in res.output.splitlines()
+             if ln.startswith("HELIXGEN_LOCK_TOKEN=")][0]
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", token)
+    return token
+
+
+def test_97_relock_with_detach_drops_the_pid_of_a_session_lease(root,
+                                                                monkeypatch):
+    _lock_and_export(monkeypatch)
+    data = json.loads(lease_path(root, "all").read_text())
+    assert data["pid"] == os.getppid()
+    _lock_and_export(monkeypatch, "--detach")
+    data = json.loads(lease_path(root, "all").read_text())
+    assert (data["kind"], data["pid"]) == ("detached", None)
+
+
+def test_97_plain_relock_rebinds_a_detached_lease_to_the_shell(root,
+                                                               monkeypatch):
+    """The other direction — a `session` lease with pid None would never be
+    pid-stale and would render as literal "pid None" in --status."""
+    _lock_and_export(monkeypatch, "--detach")
+    _lock_and_export(monkeypatch)
+    data = json.loads(lease_path(root, "all").read_text())
+    assert (data["kind"], data["pid"]) == ("session", os.getppid())
+
+
+# --------------------------------------------------------------------------
+# review follow-ups: the heartbeat on the MUTATING path, its delay, the
+# --no-lock escape hatch vs the session check, and stdout hygiene
+# --------------------------------------------------------------------------
+
+def test_97_long_mutating_verb_keeps_its_lease_alive(root, fake_client,
+                                                     monkeypatch):
+    """`normalize` and friends are the motivating case: the heartbeat has to
+    run on the `_locked` path too, not just on read-only verbs."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    p = write_lease(root, "all", pid=None, token="tok-97", kind="detached",
+                    ttl=locks.DEFAULT_DETACHED_TTL)
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
+    seen = {}
+
+    import helixgen.device as device_mod
+    real_load = device_mod.HelixClient.load_preset
+
+    def slow_load(self, *a, **kw):
+        entry = json.loads(p.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(p.read_text())["acquired_at"] == entry
+               and time.time() < deadline):
+            time.sleep(0.01)
+        seen["renewed"] = json.loads(p.read_text())["acquired_at"] > entry
+        return real_load(self, *a, **kw)
+
+    monkeypatch.setattr(device_mod.HelixClient, "load_preset", slow_load)
+    res = run_cli("device", "load", "1", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert seen["renewed"] is True
+
+
+def test_97_heartbeat_beats_on_a_third_of_the_shortest_ttl():
+    """A beat per TTL/3 leaves two more chances before the lease lapses.
+    Clamped both ways so a tiny TTL can't spin and a long one still beats."""
+    assert locks._heartbeat_delay(30.0) == 10.0
+    assert locks._heartbeat_delay(None) == locks.HEARTBEAT_MAX_S
+    assert locks._heartbeat_delay(10_000.0) == locks.HEARTBEAT_MAX_S
+    assert locks._heartbeat_delay(0.3) == locks.HEARTBEAT_MIN_S
+    # the floor is why MIN_SESSION_TTL exists: any TTL a user may take must
+    # still get a beat well clear of the renewal margin
+    assert (locks._heartbeat_delay(locks.MIN_SESSION_TTL)
+            < locks.MIN_SESSION_TTL - locks.RENEW_MARGIN_S)
+
+
+def test_97_heartbeat_keeps_renewing_the_scopes_it_still_holds(root,
+                                                               monkeypatch):
+    """Losing one scope warns but must NOT stop the thread: the surviving
+    sibling lease would then age out unrenewed mid-call — the same silent
+    expiry, one scope over."""
+    monkeypatch.setattr(locks, "HEARTBEAT_MAX_S", 0.05)
+    monkeypatch.setattr(locks, "HEARTBEAT_MIN_S", 0.02)
+    gone = write_lease(root, "editbuffer", pid=None, token="tok-97",
+                       kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
+    kept = write_lease(root, "library", pid=None, token="tok-97",
+                       kind="detached", ttl=locks.DEFAULT_DETACHED_TTL)
+    with capture_err() as errlog, locks.keep_alive(IP, token="tok-97"):
+        gone.unlink()
+        deadline = time.time() + 2.0
+        while "lapsed" not in errlog.text and time.time() < deadline:
+            time.sleep(0.01)
+        after_warning = json.loads(kept.read_text())["acquired_at"]
+        deadline = time.time() + 2.0
+        while (json.loads(kept.read_text())["acquired_at"] == after_warning
+               and time.time() < deadline):
+            time.sleep(0.01)
+        assert json.loads(kept.read_text())["acquired_at"] > after_warning
+    assert "lapsed DURING this call" in errlog.text, errlog.text
+
+
+def test_97_no_lock_skips_the_dangling_token_check(root, fake_client,
+                                                   monkeypatch):
+    """`--no-lock` is the documented (dangerous) opt-out of the whole lock
+    layer, session check included — otherwise a dangling token would leave a
+    mutating verb with no way past at all."""
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-dangling")
+    assert run_cli("device", "load", "1", "--ip", IP).exit_code != 0
+    res = run_cli("device", "load", "1", "--no-lock", "--ip", IP)
+    assert res.exit_code == 0, res.output
+
+
+def test_97_unlock_dangling_warning_keeps_json_stdout_parseable(root,
+                                                                monkeypatch):
+    """The advice goes to stderr: `device unlock --json` stdout must stay
+    machine-readable for the agent that scripted the workflow."""
+    token = _lock_and_export(monkeypatch, "--detach")
+    assert token
+    res = run_cli("device", "unlock", "--json", "--ip", IP)
+    assert res.exit_code == 0, res.output
+    assert json.loads(res.stdout)["released"] == ["all"]
+    assert "unset HELIXGEN_LOCK_TOKEN" in res.stderr

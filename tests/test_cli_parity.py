@@ -230,16 +230,44 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "lock"],
      ["machine-local", "advisory", "session lease", "HELIXGEN_LOCK_TOKEN",
       "HELIXGEN_LOCK_TIMEOUT", "fail fast", "stale", "NOT covered",
-      "auto-acquires", "device unlock", "--status"]),
+      "auto-acquires", "device unlock", "--status",
+      # #97/#97b: agents must be steered to the pid-bound lease, with the
+      # invocation spelled out; --detach stays, for work with no owning process
+      "AGENTS: use --pid $PPID",
+      "helixgen device lock --scope all --pid $PPID --label",
+      "records no pid", "mutually exclusive"]),
     (["device", "unlock"],
      ["HELIXGEN_LOCK_TOKEN", "parent-pid", "--force", "dangerous",
-      "Stale leases"]),
+      "Stale leases", "DETACHED", "PID-BOUND"]),
     # every mutating verb carries the --no-lock escape hatch; pin one from
     # each scope so the option (and its danger warning) can't silently drop
-    (["device", "load"], ["machine-local advisory device lock", "DANGEROUS"]),
+    # #97: --no-lock also skips the dangling-token session check — the flag's
+    # own help must say so, not just docs/CLI.md
+    (["device", "load"], ["machine-local advisory device lock", "DANGEROUS",
+                          "skips the $HELIXGEN_LOCK_TOKEN session check"]),
     (["device", "sync"], ["machine-local advisory device lock"]),
     (["device", "push-ir"], ["machine-local advisory device lock"]),
     (["device", "settings", "set"], ["machine-local advisory device lock"]),
+    # #97: read-only verbs take no lease but now FAIL under a dangling
+    # token — a change to when they exit nonzero, so it belongs in their own
+    # help. Pin one read per scope.
+    (["device", "measure"], ["LOCKS: read-only", "no longer opens a live"]),
+    (["device", "list"], ["LOCKS: read-only", "no longer opens a live"]),
+    (["device", "list-irs"], ["LOCKS: read-only", "no longer opens a live"]),
+    (["device", "settings", "get"],
+     ["LOCKS: read-only", "no longer opens a live"]),
+    # ...and the one mutating verb whose dry run IS a guarded read. Its help
+    # must NOT claim "read-only — takes no device lease" outright: --yes
+    # takes the 'irs' scope, and an agent reading the generic note would
+    # conclude the delete pass is safe to run beside another 'irs' holder.
+    (["device", "ir-prune"], ["dry run is read-only", "--yes takes the 'irs'",
+                              "no longer opens a live"]),
+    # verbs that are OFFLINE by default: the check applies only in the flag's
+    # mode, so promising an unconditional failure is equally wrong
+    (["device", "settings", "list"],
+     ["LOCKS: offline without --values", "no longer opens a live"]),
+    (["device", "slots", "list"],
+     ["LOCKS: offline without --verify", "no longer opens a live"]),
 ]
 
 

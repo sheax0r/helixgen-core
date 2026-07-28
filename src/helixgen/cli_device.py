@@ -10,7 +10,9 @@ extra), exactly as before.
 """
 from __future__ import annotations
 
+import contextlib
 import functools
+import inspect
 import json
 import os
 import sys
@@ -227,10 +229,43 @@ def _device_option(f):
 
 _NO_LOCK_HELP = ("Skip the machine-local advisory device lock for this verb "
                  "(DANGEROUS: concurrent helixgen processes may collide on "
-                 "the device; see `helixgen device lock --help`).")
+                 "the device; see `helixgen device lock --help`). Also skips "
+                 "the $HELIXGEN_LOCK_TOKEN session check, so a token whose "
+                 "session was already reclaimed no longer stops the write.")
 
 
-def _locked(*scopes: str, verb: str, when=None):
+def _check_session_or_fail(ip: str, scopes, *, strict: bool = False) -> None:
+    """`locks.check_session` as a CLI error (#97). No token → no-op."""
+    from helixgen import locks
+
+    try:
+        locks.check_session(ip, scopes, strict=strict)
+    except locks.LockLost as e:
+        raise click.ClickException(str(e)) from e
+
+
+@contextlib.contextmanager
+def _reading_session(ip, scopes):
+    """The guard every call that READS the device runs under (#97): refuse a
+    dangling token, then heartbeat the session's leases for the call's
+    duration (a read can be the LONG verb — `watch`, `measure --seconds N`,
+    an `ir-prune` dry run over the whole pool). The check is always
+    ``strict``: a read has no transient-acquire fallback, so a scope held by
+    someone else right now is a refusal, not something to contend for. An
+    unresolved ip is left to the
+    verb body's own fail-fast; no token → no check and no lock, so unlocked
+    reads stay exactly as free as they were."""
+    if not (scopes and ip):
+        yield
+        return
+    _check_session_or_fail(ip, scopes, strict=True)
+    from helixgen import locks
+
+    with locks.keep_alive(ip):
+        yield
+
+
+def _locked(*scopes: str, verb: str, when=None, note: str | None = None):
     """Auto-acquire the verb's advisory device-lock scope(s) for its duration.
 
     Innermost decorator (right above ``def``): wraps the raw callback, adds
@@ -242,15 +277,32 @@ def _locked(*scopes: str, verb: str, when=None):
     is passed through and its TTL renewed. On contention, waits up to
     $HELIXGEN_LOCK_TIMEOUT (default 30 s; 0 = fail fast), then errors
     naming the holder.
+
+    ``note`` is appended to the verb's ``--help`` for a verb whose ``when``
+    can narrow to NO lease while still reading the device (`ir-prune`'s dry
+    run): that mode is guarded exactly like an ``@_reads`` verb, and this
+    changes when the verb exits nonzero, so it belongs in the per-verb help
+    (the agent-facing contract). It must be verb-specific — the generic
+    :data:`_READS_SESSION_NOTE` opens "takes no device lease", which is a
+    LIE for the mode that does take one.
     """
     def deco(f):
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
             no_lock = kwargs.pop("no_lock", False)
             eff = tuple(when(kwargs)) if when is not None else scopes
-            if no_lock or not eff:
+            if no_lock:
                 return f(*args, **kwargs)
             from helixgen import locks
+
+            if not eff:
+                # narrowed to no lease (a dry-run mode) — but a dry run that
+                # still READS the device is exactly a read-only verb, so it
+                # runs under the same guard (#97). The verb's DECLARED scopes
+                # say what it touches; a verb declaring none (`import-hss
+                # --list`) is offline and guarded by nothing, as before.
+                with _reading_session(kwargs.get("ip"), scopes):
+                    return f(*args, **kwargs)
 
             # _ip_callback resolves leniently (None when unconfigured); a
             # verb about to take a device lock is going to write to the
@@ -260,17 +312,101 @@ def _locked(*scopes: str, verb: str, when=None):
             ip = kwargs.get("ip") or _resolve_ip_or_fail()
             if "ip" in kwargs:
                 kwargs["ip"] = ip
+            # #97: a presented-but-dangling token means the session this
+            # call belongs to is gone — refuse rather than quietly taking
+            # a fresh transient lease and mutating on.
+            _check_session_or_fail(ip, eff)
             try:
                 lease = locks.acquire(ip, eff, label=f"helixgen device {verb}")
             except locks.LockHeld as e:
                 raise click.ClickException(
-                    f"{e} — wait and retry, raise HELIXGEN_LOCK_TIMEOUT, or "
-                    f"(dangerous) pass --no-lock") from e
-            with lease:
+                    f"{e} — someone else is driving this device. STOP and "
+                    f"re-establish state rather than retrying blind: if you "
+                    f"are in a held session, re-read whatever you were about "
+                    f"to act on once the device is yours again. Wait longer "
+                    f"with HELIXGEN_LOCK_TIMEOUT, or (dangerous) pass "
+                    f"--no-lock") from e
+            # keep_alive: entry-time renewal alone loses the lease mid-verb
+            # for anything that outruns its TTL (`normalize`, a long `--seconds`
+            # window) — see locks.keep_alive (#97).
+            with lease, locks.keep_alive(ip):
                 return f(*args, **kwargs)
 
+        if note:
+            wrapper.__doc__ = (inspect.cleandoc(f.__doc__ or "")
+                               + "\n\n" + note)
         return click.option("--no-lock", "no_lock", is_flag=True,
                             default=False, help=_NO_LOCK_HELP)(wrapper)
+    return deco
+
+
+#: Appended to every ``@_reads`` verb's help (#97). These verbs take no
+#: lease, but they DO now refuse when $HELIXGEN_LOCK_TOKEN opens nothing.
+_READS_SESSION_NOTE = (
+    "LOCKS: read-only — takes no device lease. But if $HELIXGEN_LOCK_TOKEN "
+    "is set and no longer opens a live lease over what this verb reads, the "
+    "verb FAILS instead of printing numbers for a device someone else may "
+    "be driving (#97); re-take a lease (`helixgen device lock --scope all "
+    "--pid $PPID`) or `unset HELIXGEN_LOCK_TOKEN` to read unlocked."
+)
+
+#: Counterpart for a verb that is OFFLINE unless a flag is passed: the
+#: session check only applies in the flag's mode, so promising an
+#: unconditional failure would be as wrong as promising none.
+_READS_WHEN_NOTE = (
+    "LOCKS: offline without {flag} — takes no device lease and ignores "
+    "$HELIXGEN_LOCK_TOKEN. With {flag} it reads the device, and then a "
+    "$HELIXGEN_LOCK_TOKEN that no longer opens a live lease over the "
+    "'{scope}' scope FAILS the verb instead of reporting on a device someone "
+    "else may be driving (#97); re-take a lease (`helixgen device lock "
+    "--scope all --pid $PPID`) or `unset HELIXGEN_LOCK_TOKEN` to read unlocked."
+)
+
+#: `ir-prune` is the one verb whose lock posture DIFFERS by mode: its dry run
+#: is a guarded read, `--yes` takes the 'irs' scope for the delete pass.
+_IR_PRUNE_LOCK_NOTE = (
+    "LOCKS: the dry run is read-only and takes no device lease; --yes takes "
+    "the 'irs' scope for the whole delete pass, so it waits on (and blocks) "
+    "another 'irs' holder like any mutating verb. Either way, if "
+    "$HELIXGEN_LOCK_TOKEN is set and no longer opens a live lease over 'irs', "
+    "the verb FAILS instead of acting for a device someone else may be "
+    "driving (#97); re-take a lease (`helixgen device lock --scope all "
+    "--pid $PPID`) or `unset HELIXGEN_LOCK_TOKEN` to run unlocked."
+)
+
+
+def _reads(*scopes: str, when=None, note: str | None = None):
+    """Read-only counterpart of :func:`_locked` (#97): takes NO lease, adds
+    no flag — but if $HELIXGEN_LOCK_TOKEN is set it must still open a live
+    lease covering the scope(s) this verb READS. A token is an explicit
+    "I am in a held session"; once that session has been reclaimed, a read
+    is no more trustworthy than a write (the 2026-07-27 workflow was denied
+    `device snapshot 0` and then handed a well-formed `device measure` of
+    whatever snapshot happened to be active). No token → no check and no
+    lock: unlocked reads stay free. ``when(kwargs)`` narrows the scopes
+    dynamically (e.g. offline-unless---verify verbs). See
+    :func:`_reading_session` for the guard itself.
+
+    Innermost decorator, right above ``def``, like :func:`_locked`.
+
+    The wrapped verb's ``--help`` gains :data:`_READS_SESSION_NOTE`: this
+    changes when a read-only verb EXITS NONZERO, and per-verb help is the
+    agent-facing contract, so it cannot live only in ``docs/CLI.md``. A verb
+    whose ``when`` narrows to NO scope in its default mode passes its own
+    ``note`` (:data:`_READS_WHEN_NOTE`) — there the check applies only in the
+    flag's mode, and the generic note would promise a failure that cannot
+    happen.
+    """
+    def deco(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            eff = tuple(when(kwargs)) if when is not None else scopes
+            with _reading_session(kwargs.get("ip"), eff):
+                return f(*args, **kwargs)
+
+        wrapper.__doc__ = (inspect.cleandoc(f.__doc__ or "")
+                           + "\n\n" + (note or _READS_SESSION_NOTE))
+        return wrapper
     return deco
 
 
@@ -644,18 +780,46 @@ _LOCK_SCOPE_HELP = (
 @click.option("--label", default=None,
               help="Who/what holds the lock (shown to blocked processes; "
                    "required unless --status).")
-@click.option("--ttl", type=float, default=None, show_default="900",
-              help="Lease time-to-live in seconds; every covered verb you "
-                   "run renews it. An expired lease is reclaimed by the "
+@click.option("--ttl", type=float, default=None,
+              show_default="900 (300 with --detach)",
+              help="Lease time-to-live in seconds; every verb you run with "
+                   "the token exported renews it, READ-ONLY ones included, "
+                   "so only an idle stretch can outlast it. An expired "
+                   "lease is reclaimed by the "
                    "next contender. 0 = no TTL expiry (reclaim then relies "
-                   "on pid-liveness or `device unlock`).")
+                   "on pid-liveness or `device unlock`); refused with "
+                   "--detach, which has no pid to fall back on, and it is "
+                   "the only spelling of 'no expiry' — a NEGATIVE ttl is "
+                   "refused. A positive "
+                   "TTL under 10s is refused: renewal skips a lease within "
+                   "2s of expiry, so it could lapse mid-workflow.")
+@click.option("--pid", "owner_pid", type=int, default=None,
+              help="Bind the lease to the process PID instead of the invoking "
+                   "shell — the AGENT mechanism: `--pid $PPID` from a tool "
+                   "call names the long-lived agent process, which spans the "
+                   "whole workflow and dies with it. Liveness is then "
+                   "decidable, so no 120s dead-pid grace applies; the TTL "
+                   "still bounds an IDLE lease (every verb run with the token "
+                   "renews it) and is the only reclaim path where liveness "
+                   "cannot be probed (another host, Windows). Passthrough is "
+                   "by TOKEN, not by shell. Refused if PID is not alive now; "
+                   "mutually exclusive with --detach.")
+@click.option("--detach", is_flag=True, default=False,
+              help="Take a DETACHED lease: no pid is recorded, so the lease "
+                   "does NOT die with the shell that took it. For work with "
+                   "no owning process at all (cron, CI); when a process DOES "
+                   "span the workflow, prefer --pid. TTL-only: release with "
+                   "`device unlock`.")
 @click.option("--status", "show_status", is_flag=True, default=False,
-              help="Don't lock — report the device's current leases "
-                   "(scope, holder, age, live/stale, ours) and exit 0.")
+              help="Don't lock — report the device's current leases (scope, "
+                   "holder, age, live/stale, ours) and exit 0. The holder "
+                   "names the kind: 'detached', 'pid <n> alive'/'dead' for a "
+                   "--pid lease on this host, plain 'pid <n>' otherwise.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="With --status: emit the lease rows as JSON.")
 @_ip_option
-def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
+def device_lock(scopes, label, ttl, owner_pid, detach, show_status, as_json,
+                ip) -> None:
     """Hold a machine-local advisory device lock across CLI calls (a session
     lease), so concurrent helixgen processes don't collide on the device.
 
@@ -674,6 +838,36 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
     (default 30; 0 = fail fast), reclaim stale leases (expired TTL or dead
     same-host pid) with a warning, then fail naming the holder. Release
     with `device unlock`; inspect with `device lock --status [--json]`.
+
+    AGENTS: use --pid $PPID —
+
+        helixgen device lock --scope all --pid $PPID --label "<who>"
+
+    A plain session lease records the INVOKING SHELL's pid, and an agent's
+    shell exits when its tool call returns — the lease then becomes
+    reclaimable after a 120s grace and a contender takes the device
+    mid-workflow (#97). --pid binds the lease to a process YOU name that
+    spans the workflow instead (from a tool call, $PPID is the long-lived
+    agent process). Its liveness is decidable, so no dead-pid grace applies;
+    the TTL (default 900s) still expires an IDLE lease — every verb you run
+    with the token exported renews it — and is the only reclaim path where
+    liveness cannot be probed (another host, Windows). Export
+    HELIXGEN_LOCK_TOKEN: a --pid lease passes through by TOKEN, not by shell
+    (the recorded pid is the one you named, not the caller). Release with
+    `device unlock` when the workflow ends.
+
+    --detach is for work with NO owning process at all (cron, CI): it
+    records no pid, so only its TTL (default 300s, renewed by every verb you
+    run with the token exported — READ-ONLY ones included, so an active
+    workflow cannot time out) or `device unlock` releases it. --ttl 0 is
+    refused with --detach: no pid AND no expiry would leave a lease only
+    `device unlock --force` could clear. --pid and --detach are mutually
+    exclusive.
+
+    Re-locking a scope you already own renews it in place (new label/ttl,
+    same stored token) and switches its kind: --detach over a session lease
+    drops the pid, --pid re-binds it to the pid you name, a plain re-lock
+    re-binds it to the invoking shell.
     """
     from helixgen import locks
 
@@ -699,10 +893,15 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
                    if isinstance(r.get("age_seconds"), (int, float)) else "?")
             ttl = (f"{r['ttl_seconds']:g}s"
                    if isinstance(r.get("ttl_seconds"), (int, float)) else "?")
+            alive = r.get("pid_alive")
+            who = ("detached" if r.get("kind") == "detached"
+                   else f"pid {r['pid']}"
+                   + ("" if alive is None
+                      else f" {'alive' if alive else 'dead'}"))
             click.echo(
                 f"{r['scope']:<10} {r['state']:<5} "
                 f"{'ours' if r['ours'] else '    '}  {r['label']!r}  "
-                f"pid {r['pid']} on {r['hostname']}  "
+                f"{who} on {r['hostname']}  "
                 f"age {age} / ttl {ttl}")
         return
 
@@ -714,26 +913,51 @@ def device_lock(scopes, label, ttl, show_status, as_json, ip) -> None:
     try:
         # Session leases record the INVOKING SHELL's pid (this CLI process
         # exits immediately); never released here — `device unlock` frees
-        # them. Re-locking an owned scope renews it in place (new
-        # label/ttl, SAME stored token).
+        # them. --pid records a process the CALLER names, one that spans the
+        # workflow (#97b); --detach records NO pid at all (#97). Re-locking an
+        # owned scope renews it in place (new label/ttl, SAME stored token).
+        # A --pid lease is an ordinary session lease for TTL purposes
+        # (DEFAULT_SESSION_TTL): its TTL is a backstop, pid liveness is the
+        # real check, so it needs no shorter default the way --detach does.
+        default_ttl = (locks.DEFAULT_DETACHED_TTL if detach
+                       else locks.DEFAULT_SESSION_TTL)
         token, outcomes = locks.session_lock(
             ip, scopes, label=label,
-            ttl=locks.DEFAULT_SESSION_TTL if ttl is None else ttl,
-            pid=os.getppid())
-    except locks.LockHeld as e:
-        raise click.ClickException(str(e)) from e
-    except locks.LockError as e:
+            ttl=default_ttl if ttl is None else ttl,
+            detach=detach, pid=owner_pid)
+    except (locks.LockError, ValueError) as e:
+        # contention, plus the lock layer's own --ttl invariants (non-finite,
+        # zero with --detach, too short to keep alive) — every one of those
+        # messages already says what to pass instead.
         raise click.ClickException(str(e)) from e
     for s, action in outcomes:
         click.echo(f"{action} '{s}' on {ip} (label {label!r})")
     click.echo(f"HELIXGEN_LOCK_TOKEN={token}")
-    click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
-               "through this lock; release with `helixgen device unlock`. "
-               "Run `device lock` from your long-lived shell (not via a "
-               "wrapper script): the lease records the parent pid, and a "
-               "dead parent gives contenders a reclaim path after "
-               f"{locks.SESSION_PID_GRACE_S:.0f}s idle.",
-               err=True)
+    if detach:
+        click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
+                   "through this lock; release with `helixgen device "
+                   "unlock`. This lease is DETACHED (no pid): it survives "
+                   "the shell that took it, and only its TTL expires it — "
+                   "every verb you run with the token exported renews it "
+                   "(reads included), so keep the token exported and unlock "
+                   "when you are done.", err=True)
+    elif owner_pid is not None:
+        click.echo(f"export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
+                   f"through this lock; release with `helixgen device "
+                   f"unlock`. This lease is bound to pid {owner_pid}: it "
+                   f"survives the shell that took it and is reclaimable the "
+                   f"moment that process dies (no dead-pid grace). Keep the "
+                   f"token exported — every verb you run with it renews the "
+                   f"TTL backstop, reads included.", err=True)
+    else:
+        click.echo("export HELIXGEN_LOCK_TOKEN so your helixgen calls pass "
+                   "through this lock; release with `helixgen device unlock`. "
+                   "Run `device lock` from your long-lived shell (not via a "
+                   "wrapper script): the lease records the parent pid, and a "
+                   "dead parent gives contenders a reclaim path after "
+                   f"{locks.SESSION_PID_GRACE_S:.0f}s idle. Agents (each tool "
+                   "call a fresh shell) should use `--pid $PPID` instead.",
+                   err=True)
 
 
 @device.command(name="unlock")
@@ -758,6 +982,13 @@ def device_unlock(scopes, force, as_json, ip) -> None:
     an EXPLICIT --scope you don't own is an error unless --force (which
     breaks even a live foreign lease — dangerous). Stale leases (expired
     TTL / dead pid) can always be cleared.
+
+    A PID-BOUND lease (`device lock --pid $PPID`, the agent mechanism) or a
+    DETACHED lease (`device lock --detach`) outlives the shell that took it,
+    so this is how you release it: with $HELIXGEN_LOCK_TOKEN exported it is
+    yours; otherwise wait out its TTL (a pid lease also frees the moment its
+    process dies) or break it with --force. Always unlock at the end of a
+    workflow — nothing else will.
     """
     ip = ip or _resolve_ip_or_fail()  # locks are keyed per-ip (#74)
     from helixgen import locks
@@ -767,6 +998,7 @@ def device_unlock(scopes, force, as_json, ip) -> None:
                                    force=force)
     except locks.LockError as e:
         raise click.ClickException(str(e)) from e
+    _warn_dangling_token_after_unlock(ip)  # stderr — --json stdout unaffected
     if as_json:
         click.echo(json.dumps(res, indent=2))
         return
@@ -776,6 +1008,36 @@ def device_unlock(scopes, force, as_json, ip) -> None:
         click.echo(f"no leases of yours to release on {ip}")
     for k in res["kept"]:
         click.echo(f"kept '{k['scope']}' — held by {k['holder']}", err=True)
+
+
+def _warn_dangling_token_after_unlock(ip: str) -> None:
+    """The token outlives the lease it opened: this process cannot unset the
+    caller's env var, and a token that now opens nothing makes every later
+    device verb — reads included — fail with LockLost (#97). Releasing your
+    own lease is the documented end of an agent workflow, so say plainly
+    what to do rather than leaving a shell that errors on `device list`."""
+    from helixgen import locks
+
+    tok = locks.env_token()
+    if not tok:
+        return
+    if any(locks.covering_lease(ip, s, tok) is not None
+           for s in locks.VALID_SCOPES):
+        return  # still holding something — the token is still good
+    other = locks._owned_on_other_device(ip, tok)
+    if other is not None:
+        # Leases are keyed by address string: the token may still open a
+        # live lease under another spelling of the (possibly same) device.
+        # Advising `unset` here would strand that lease until TTL/pid-death.
+        click.echo(f"your $HELIXGEN_LOCK_TOKEN still opens a live lease "
+                   f"under {other!r} — release it with `helixgen device "
+                   f"unlock --ip {other}` before unsetting the token.",
+                   err=True)
+        return
+    click.echo("your $HELIXGEN_LOCK_TOKEN no longer opens any lease: "
+               "`unset HELIXGEN_LOCK_TOKEN` (while it is set, helixgen "
+               "device verbs — reads included — will refuse), or take a "
+               "fresh lease with `helixgen device lock`.", err=True)
 
 
 @device.command(name="list")
@@ -788,6 +1050,7 @@ def device_unlock(scopes, force, as_json, ip) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the raw device records as JSON.")
 @_device_option
+@_reads("library")
 def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
     """List the presets in the pool, factory, or a named setlist. Read-only.
 
@@ -832,6 +1095,7 @@ def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the setlist list as JSON.")
 @_device_option
+@_reads("library")
 def device_setlists(as_json: bool, ip: str, port: int) -> None:
     """List the device's setlist containers."""
     HelixClient, HelixError = _client()
@@ -1019,6 +1283,7 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the device info as JSON (includes the raw reply).")
 @_device_option
+@_reads("library")
 def device_info(as_json: bool, ip: str, port: int) -> None:
     """Show the connected device's identity: model, firmware, serial, storage.
 
@@ -1077,6 +1342,8 @@ def device_settings() -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit as JSON.")
 @_device_option
+@_reads(when=lambda kw: ("globals",) if kw.get("values") else (),
+        note=_READS_WHEN_NOTE.format(flag="--values", scope="globals"))
 def device_settings_list(page, values, as_json, ip, port):
     """List Global-Settings keys, grouped by page (offline unless --values)."""
     from helixgen.device import settings as S
@@ -1151,6 +1418,7 @@ def device_settings_list(page, values, as_json, ip, port):
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit as JSON.")
 @_device_option
+@_reads("globals")
 def device_settings_get(key, as_json, ip, port):
     """Read one Global-Settings value (with its name, range, and enum labels)."""
     from helixgen.device import settings as S
@@ -1288,6 +1556,7 @@ def device_globaleq_set(output, band, param, value, ip, port):
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the content ref as JSON.")
 @_device_option
+@_reads("library")
 def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
     """Read the content ref for a CID (name/slot/parent)."""
     HelixClient, HelixError = _client()
@@ -1516,6 +1785,7 @@ def device_snapshot(index: int, ip: str, port: int) -> None:
 @device.command(name="blocks")
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit as JSON.")
 @_device_option
+@_reads("editbuffer")
 def device_blocks(as_json: bool, ip: str, port: int) -> None:
     """List the live edit buffer's blocks with their (path, block) coordinates.
 
@@ -1553,6 +1823,7 @@ def device_blocks(as_json: bool, ip: str, port: int) -> None:
 @click.argument("block", type=int)
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit as JSON.")
 @_device_option
+@_reads("editbuffer")
 def device_params(path: int, block: int, as_json: bool, ip: str, port: int) -> None:
     """List one edit-buffer block's params: numeric pid, name, CURRENT value.
 
@@ -1593,6 +1864,7 @@ def device_params(path: int, block: int, as_json: bool, ip: str, port: int) -> N
 @device.command(name="active")
 @click.option("--json", "as_json", is_flag=True, default=False, help="Emit as JSON.")
 @_device_option
+@_reads("editbuffer")
 def device_active(as_json: bool, ip: str, port: int) -> None:
     """Show the device's ACTIVE preset: cid, name, and pool slot. Read-only.
 
@@ -1733,6 +2005,7 @@ def device_reorder(setlist: str, target: str, to_index: int,
 @click.argument("cid", type=int)
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
 @_device_option
+@_reads("library")
 def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
     """Save a preset's raw content blob (a .sbe backup) without activating it.
 
@@ -1812,6 +2085,7 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
               help="Emit as JSON; each entry also carries `file` = the IR's "
                    "on-device .wav basename (what `device pull-ir` takes).")
 @_device_option
+@_reads("irs")
 def device_list_irs(as_json: bool, ip: str, port: int) -> None:
     """List the impulse responses on the device (name + hash).
 
@@ -1942,7 +2216,8 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result dict as JSON.")
 @_device_option
-@_locked(verb="ir-prune", when=lambda kw: ("irs",) if kw.get("yes") else ())
+@_locked("irs", verb="ir-prune", note=_IR_PRUNE_LOCK_NOTE,
+         when=lambda kw: ("irs",) if kw.get("yes") else ())
 def device_ir_prune(yes: bool, force: bool, ignore_warnings: bool,
                     only: str | None, as_json: bool,
                     ip: str, port: int) -> None:
@@ -2106,6 +2381,7 @@ def device_push_ir(wav: Path, ip: str) -> None:
 @click.argument("filename")
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
 @_ip_option
+@_reads("irs")
 def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
     """Download an IR .wav from the device by its on-device FILE basename.
 
@@ -2564,6 +2840,7 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
 @click.argument("setlist")
 @click.argument("out_file", type=click.Path(dir_okay=False, path_type=Path))
 @_device_option
+@_reads("library")
 def device_setlist_export_hss(setlist: str, out_file: Path, ip: str, port: int) -> None:
     """EXPERIMENTAL: export a DEVICE setlist to a `.hss` bundle (backlog #31).
 
@@ -3033,6 +3310,8 @@ def device_slots(ctx: click.Context) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit raw JSON (the library view, or verify records with --verify).")
 @_device_option
+@_reads(when=lambda kw: ("library",) if kw.get("verify") else (),
+        note=_READS_WHEN_NOTE.format(flag="--verify", scope="library"))
 def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
     """List every library tone: slot, on/off device, setlists. Offline unless --verify."""
     SetlistManifest, _ = _manifest()
@@ -3261,6 +3540,7 @@ def _posi_from_slot(slot):
               default=None, help="Output dir (default ~/.helixgen/device-backups/ "
                                  "or $HELIXGEN_DEVICE_BACKUPS).")
 @_device_option
+@_reads("library")
 def device_backup(setlist: str, out_dir, ip: str, port: int) -> None:
     """Back up presets to local .sbe files + a manifest.
 
@@ -3319,6 +3599,7 @@ def device_local_list(out_dir, as_json: bool) -> None:
 @click.option("--filter", "filter_addr", multiple=True,
               help="Only show these OSC addresses (repeatable).")
 @_device_option
+@_reads("editbuffer")
 def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
     """Watch the device's live property/telemetry streams (ports 2001/2003)."""
     from helixgen.device.subscribe import HelixSubscriber
@@ -3341,6 +3622,7 @@ def device_watch(seconds: float, filter_addr, ip: str, port: int) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit one JSON reading per line instead of a live display.")
 @_device_option
+@_reads("editbuffer")
 def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
     """Live network tuner — reads the device's always-on pitch detector.
 
@@ -3406,6 +3688,7 @@ def device_tuner(seconds: float, as_json: bool, ip: str, port: int) -> None:
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit one JSON reading per line instead of a live display.")
 @_device_option
+@_reads("editbuffer")
 def device_meters(seconds: float, as_json: bool, ip: str, port: int) -> None:
     """Live network level meters — reads the device's grid-level telemetry.
 
@@ -3481,6 +3764,7 @@ _SOURCE_HELP = ("Signal source feeding the chain. 'input' (default): a "
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result as one JSON object.")
 @_device_option
+@_reads("editbuffer")
 def device_measure(seconds: float, min_playing: int, source: str,
                    as_json: bool, ip: str, port: int) -> None:
     """Measure how loud the ACTIVE tone is while you play — read-only.

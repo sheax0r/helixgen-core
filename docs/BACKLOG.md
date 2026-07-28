@@ -1591,6 +1591,92 @@ Remaining follow-ups:
   issue a device write (the same-name rename nudge), so external callers
   (TUI/plugin) don't treat it as read-only.
 
+- **#102 `device` skill still teaches the shell-bound lease** (companion to
+  workspace #97, core 0.33.0). Core now has `device lock --detach` and makes a
+  dangling `$HELIXGEN_LOCK_TOKEN` an error on read-only verbs too, but the
+  plugin repo's skill (`sheax0r/helixgen`, `.claude/skills/device/`) still
+  instructs a plain `device lock --scope all` and doesn't carry the
+  stop-and-re-establish-state rule — nor the `--pid $PPID` lease that 0.33.0
+  makes THE agent mechanism (#97b). That PR must also re-sync the plugin
+  repo's copy of `docs/CLI.md`, whose "Device locks (machine-local, advisory
+  — 0.22.0)" section predates all of this (core is authoritative for the
+  synced copies). Agent-facing surfaces ship in sync, so this is a sequenced
+  PR in that repo after the core release — tracked here only because the
+  deferral would otherwise live nowhere but the archived plan file.
+
+- **#103 lock-layer residuals from the #97 review** (core 0.33.0). Deferrals,
+  none user-visible:
+  (a) every device verb now renews owned leases **twice** at entry —
+  `check_session()` renews, then `keep_alive()`'s entry renews identically.
+  Harmless (a few extra 0600 rewrites), but `check_session` should be a pure
+  check with renewal owned solely by `keep_alive`; both current call sites
+  already wrap the body in it.
+  (b) read-only verbs are covered in the REFUSAL direction only
+  (`READ_ONLY_VERBS` in `tests/test_locks.py`); only `device blocks` is
+  pinned to still RUN under a live lease, so a wrong scope string or an
+  over-narrow `when=` lambda would pass. Parametrize the same table
+  positively.
+  (c) that table is hand-maintained: a new networked read shipped without
+  `@_reads` is caught by nothing. Derive it from the click command tree so
+  adding a verb forces an explicit decision.
+  (d) `_rewrite`'s nonce re-read and its `os.replace` are not one atomic
+  step, so a heartbeat renewal racing a concurrent `device unlock` can
+  resurrect the just-released lease (sub-millisecond window; the unlock still
+  exits 0). Would need a per-file mutex around the replace, as
+  `_break_stale` does for unlinks.
+  (e) `device info` is scoped `library`, so a foreign `library` holder makes
+  even "what device is this" refuse under a partial token — arguably it
+  belongs with the `lock`/`unlock`/`discover` recovery exemptions.
+  (f) the post-`device unlock` "unset your token" advice is per-ip: with a
+  second device's lease still held under the same token, following it strands
+  that lease behind `--force`.
+  (g) a MULTI-scope narrow lease that loses ONE scope to a contender who then
+  RELEASES it is undetectable: the lease file is gone, so neither the
+  expired-file proof nor the live-foreign-holder check fires, and the agent
+  silently re-acquires the scope — the original #97 failure, one scope over.
+  `--scope all` is unaffected (losing it means the token opens nothing) and
+  the limitation is documented, but it need not be permanent: `session_lock`
+  knows the full requested scope set, so stamping it into every lease it
+  writes (`session_scopes: [...]`) makes a surviving sibling lease positive
+  proof that the missing scope was ours.
+  (h) a strict read refuses a contended scope INSTANTLY — no
+  `$HELIXGEN_LOCK_TIMEOUT` wait, no `--no-lock`, unlike the mutating verbs that
+  contend-and-wait. Only reachable with a NARROW session lease (an `all` lease
+  cannot collide), and the message already says "wait for the holder and
+  retry", but a short bounded wait would make narrow leases as usable as wide
+  ones.
+  (i) `keep_alive` starts a heartbeat thread for EVERY mutating verb, including
+  sub-second ones. With no session lease the only owned lease is the verb's own
+  `auto` one, which cannot be reclaimed while its pid lives and carries
+  `AUTO_TTL = 900` — so a thread spawn, a `_renew_owned` scan and a 1 s-bounded
+  join buy nothing there. Gate it on actually holding a `session`/`detached`
+  lease.
+  (j) a READ that loses its lease mid-call warns on stderr but still exits 0
+  with well-formed output (`keep_alive`'s `_beat`): an agent piping `device
+  measure --json` and checking the exit code consumes numbers for a device
+  someone else took. Deliberate for mutating verbs (the body may be
+  mid-write), but a read has no partial-write concern — `keep_alive` could
+  expose a "lost" `threading.Event` and `_reading_session` could raise
+  `LockLost` after the body. Changes the read verbs' exit-code contract, so
+  it needs the `_READS_SESSION_NOTE` help text, `docs/CLI.md` and `CLAUDE.md`
+  updated with it.
+  (k) `--no-lock` returns before both `check_session` AND `keep_alive`, so a
+  long `device sync --no-lock` under a detached lease renews nothing and can
+  let it lapse. Neither the flag's help nor the docs' "the exempt verbs renew
+  NOTHING" list mentions it; renewal is orthogonal to skipping the verb's own
+  lease and could stay.
+  (l) ~~`device lock --scope <narrow>` under a covering `all` lease of ours
+  reports `locked '<narrow>'` but writes no lease file and drops the new
+  label/kind~~ — FIXED in the #97b review: `session_lock` now converts the
+  covering `all` lease in place (new kind/pid/label/ttl) and reports
+  `renewed 'all'`, so a `--pid`/`--detach` re-lock under a covering lease can
+  no longer silently leave the old shell-bound kind on disk while the CLI
+  affirms the new one (that was a narrow recurrence of #97). Pinned by
+  `test_97b_*_relock_under_covering_all_*` in `tests/test_locks.py`.
+  Plus: no live coverage of `device lock --detach` / the dangling-token
+  refusal against real hardware (#97 was hardware-observed; the offline suite
+  pins the behavior).
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.

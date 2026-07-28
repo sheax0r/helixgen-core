@@ -43,6 +43,15 @@ locks root is deliberately NOT redirected to scratch (real coordination is
 the point); lock files live under ``~/.helixgen/locks/<ip>/`` and the
 teardown ``device unlock`` clears them.
 
+Since 0.33.0 (#97) that exported token is no longer inert plumbing: every
+CLI call the suite makes RENEWS the lease (reads included), and a call whose
+token opens no live lease — i.e. the suite's own lease was reclaimed or
+expired mid-run — FAILS rather than proceeding, on read-only verbs too. A
+lost lease therefore surfaces as test failures naming the new holder instead
+of as silently unlocked device traffic. There is no live coverage of
+``device lock --detach`` yet (workspace #97 was hardware-observed; the
+offline suite pins the behavior).
+
 Safety model (encoded as fixtures)
 ----------------------------------
 * ALL helixgen state is redirected to a session scratch dir: manifest
