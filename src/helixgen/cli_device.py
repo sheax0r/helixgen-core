@@ -788,7 +788,9 @@ _LOCK_SCOPE_HELP = (
                    "lease is reclaimed by the "
                    "next contender. 0 = no TTL expiry (reclaim then relies "
                    "on pid-liveness or `device unlock`); refused with "
-                   "--detach, which has no pid to fall back on. A positive "
+                   "--detach, which has no pid to fall back on, and it is "
+                   "the only spelling of 'no expiry' — a NEGATIVE ttl is "
+                   "refused. A positive "
                    "TTL under 10s is refused: renewal skips a lease within "
                    "2s of expiry, so it could lapse mid-workflow.")
 @click.option("--detach", is_flag=True, default=False,

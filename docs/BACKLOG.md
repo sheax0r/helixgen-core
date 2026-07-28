@@ -1648,6 +1648,26 @@ Remaining follow-ups:
   `AUTO_TTL = 900` — so a thread spawn, a `_renew_owned` scan and a 1 s-bounded
   join buy nothing there. Gate it on actually holding a `session`/`detached`
   lease.
+  (j) a READ that loses its lease mid-call warns on stderr but still exits 0
+  with well-formed output (`keep_alive`'s `_beat`): an agent piping `device
+  measure --json` and checking the exit code consumes numbers for a device
+  someone else took. Deliberate for mutating verbs (the body may be
+  mid-write), but a read has no partial-write concern — `keep_alive` could
+  expose a "lost" `threading.Event` and `_reading_session` could raise
+  `LockLost` after the body. Changes the read verbs' exit-code contract, so
+  it needs the `_READS_SESSION_NOTE` help text, `docs/CLI.md` and `CLAUDE.md`
+  updated with it.
+  (k) `--no-lock` returns before both `check_session` AND `keep_alive`, so a
+  long `device sync --no-lock` under a detached lease renews nothing and can
+  let it lapse. Neither the flag's help nor the docs' "the exempt verbs renew
+  NOTHING" list mentions it; renewal is orthogonal to skipping the verb's own
+  lease and could stay.
+  (l) `device lock --scope <narrow>` under a covering `all` lease of ours
+  reports `locked '<narrow>'` but writes no lease file and drops the new
+  label: `--status` never shows the scope and `unlock --scope <narrow>` says
+  there is nothing of yours to release. Pre-existing, but `--scope all
+  --detach` is now the recommended agent posture, so this is the common path.
+  Report `covered by 'all'` instead of `locked`.
   Plus: no live coverage of `device lock --detach` / the dangling-token
   refusal against real hardware (#97 was hardware-observed; the offline suite
   pins the behavior).

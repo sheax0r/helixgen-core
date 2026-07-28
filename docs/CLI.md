@@ -559,9 +559,12 @@ one seam: `ir-prune`'s dry run is guarded as a read but *is* a mutating verb
 narrowed by `--yes`, so it does carry the flag.)
 
 Fine print: `--ttl 0` = no TTL expiry (reclaim then relies on pid-liveness
-or `device unlock`); a *positive* TTL under **10 s** is refused outright
-(renewal skips a lease within 2 s of expiry, so a shorter one would lapse
-mid-workflow however actively you used it), as is a non-finite one. A
+or `device unlock`) — and `0` is its **only** spelling: a *positive* TTL
+under **10 s** is refused outright (renewal skips a lease within 2 s of
+expiry, so a shorter one would lapse mid-workflow however actively you used
+it), as is a non-finite one and a **negative** one (`--ttl -5`, the typo for
+`--ttl 5`, used to slip past the too-short guard and silently produce the
+no-expiry lease). A
 **session** lease whose recorded pid is dead gets a
 **120 s grace** (from its last acquisition/renewal) before pid-death makes
 it stale — so run `device lock` from your long-lived shell, not via a

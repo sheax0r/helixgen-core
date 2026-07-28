@@ -211,6 +211,19 @@ def test_lock_dir_is_injective_across_disallowed_chars(root):
     assert len(set(names)) == len(ids)
 
 
+@pytest.mark.parametrize("ident", [".", ".."])
+def test_lock_dir_never_escapes_the_locks_root(root, ident):
+    """`.` and `..` pass the character filter untouched, so `--ip ..` used to
+    resolve the lock dir to the locks root's PARENT (`~/.helixgen`) and write
+    lease files — which carry the private lock token — outside `locks/`, the
+    only path the home repo's .gitignore excludes. An auto-commit could then
+    capture the token."""
+    d = locks.lock_dir(ident)
+    assert d.parent == locks.locks_root()
+    assert d.name not in {".", ".."}
+    assert locks.locks_root() in locks.lock_path(ident, "all").parents
+
+
 def test_locks_root_follows_helixgen_home(monkeypatch, tmp_path):
     """$HELIXGEN_LOCKS wins; else the root derives from $HELIXGEN_HOME
     (like every other home subarea); else ~/.helixgen/locks."""
@@ -1971,6 +1984,22 @@ def test_97_lock_refuses_a_ttl_too_short_to_renew(root, ttl):
                   "--ip", IP)
     assert res.exit_code != 0, res.output
     assert "too short" in res.output
+    assert not lease_path(root, "all").exists()
+
+
+@pytest.mark.parametrize("extra", [("--detach",), ()])
+def test_97_lock_refuses_a_negative_ttl(root, extra):
+    """`--ttl -5` is the plausible typo for `--ttl 5` — which the too-short
+    guard refuses instructively. Without this guard the typo slipped past it
+    (`0 < ttl` is False for a negative) on a plain session lease and wrote
+    `ttl_seconds: -5`, which `_remaining_ttl` reads as NO EXPIRY: the most
+    fragile lease shape there is, reclaimable only by pid liveness, rendered
+    by `--status` as `ttl -5s` (reads as already expired, not as no expiry).
+    """
+    res = run_cli("device", "lock", "--ttl", "-5", "--label", "a",
+                  "--ip", IP, *extra)
+    assert res.exit_code != 0, res.output
+    assert "negative" in res.output
     assert not lease_path(root, "all").exists()
 
 

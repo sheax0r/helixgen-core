@@ -232,9 +232,14 @@ def lock_dir(ip: str) -> Path:
     base still get distinct directories."""
     key = ip or "default"
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", key)
-    if safe != key:
+    if safe != key or safe in {".", ".."}:
         # some char had to be replaced — disambiguate with a stable digest of
         # the original so distinct identities can't collide on `safe`.
+        # `.` / `..` survive the character filter untouched but are not names
+        # at all: `--ip ..` would write lease files (private token included)
+        # into the locks root's PARENT — `~/.helixgen`, where only `locks/`
+        # is gitignored, so an auto-commit could capture the token. Digest
+        # them like any other identity the filter had to alter.
         digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
         safe = f"{safe}-{digest}"
     return locks_root() / safe
@@ -1305,6 +1310,13 @@ def session_lock(ip: str, scopes, *, label: str, ttl: float,
         raise ValueError(
             f"ttl must be a finite number of seconds (got {ttl!r}): "
             "nan/inf are not an expiry at all, and are not valid JSON")
+    if ttl is not None and ttl < 0:
+        raise ValueError(
+            f"ttl must not be negative (got {ttl:g}): 'no expiry' has exactly "
+            f"one spelling, --ttl 0. `--ttl -{abs(ttl):g}` is the plausible "
+            f"typo for `--ttl {abs(ttl):g}`, and it produced the most fragile "
+            f"lease shape there is — never expiring, reclaimable only by pid "
+            f"liveness — which is what #97 exists to move away from.")
     if detach and (ttl is None or ttl <= 0):
         raise ValueError(
             "--detach needs a positive --ttl: a detached lease records no "
