@@ -4137,7 +4137,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                         level = NZ.reference_output_level(body, idx)
                         entry["output_level_db"] = round(level, 1)
                         entry["total_db"] = round(
-                            entry[measured_key] + level, 2)
+                            NZ.total_loudness(body, entry[measured_key], idx), 2)
                     else:
                         say(f"  warning: SKIPPED — {res.reason}")
                     results.append(entry)
@@ -4235,11 +4235,11 @@ def device_normalize(preset: Path | None, setlist: str | None,
                         say(f"  measured {measured_label} "
                             f"{entry[measured_key]:+.2f} dB "
                             f"({res.playing_seconds:.1f}s playing)")
-                        level = NZ.reference_output_level(
-                            read_hsp(Path(hsp_path)))
+                        tone_body = read_hsp(Path(hsp_path))
+                        level = NZ.reference_output_level(tone_body)
                         entry["output_level_db"] = round(level, 1)
                         entry["total_db"] = round(
-                            entry[measured_key] + level, 2)
+                            NZ.total_loudness(tone_body, entry[measured_key]), 2)
                     else:
                         say(f"  warning: SKIPPED — {res.reason}")
                     results.append(entry)
@@ -4343,9 +4343,10 @@ def device_normalize(preset: Path | None, setlist: str | None,
                     click.echo(f"wrote {p}")
                 click.echo(
                     "run `helixgen device sync <setlist>` (or `device "
-                    "install`) to rebuild the device copy — output-level "
-                    "trims are exact dB moves the meter grids cannot see "
-                    "(deliberately NOT re-measured).")
+                    "install`) to rebuild the device copy — the trims are "
+                    "written to the LOCAL .hsp only. Once synced, a "
+                    "re-measure will read the new levels (the meter taps sit "
+                    "downstream of the output gain).")
             else:
                 click.echo("nothing to write (every target in band or skipped)")
             for rec in library_recorded:
