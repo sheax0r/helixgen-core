@@ -40,8 +40,11 @@ device = [
     "paramiko>=3.4",
 ]
 # `helixgen analyze-audio` (backlog #62 phase 3): numpy for the LUFS /
-# crest / FFT-band metrics; `capture` adds the EXPERIMENTAL --record path
-# (sounddevice needs the PortAudio system library).
+# crest / FFT-band metrics. `analyze` is also what `device normalize
+# --measure-via capture` needs (hc-57h) — its capture side shells out to the
+# `sox` BINARY, which is a system dependency, not a Python one. `capture`
+# adds only the EXPERIMENTAL `analyze-audio --record` path (sounddevice needs
+# the PortAudio system library); converging it onto sox is backlog #104.
 analyze = [
     "numpy>=1.26",
 ]

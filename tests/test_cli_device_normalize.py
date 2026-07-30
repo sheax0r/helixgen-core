@@ -899,3 +899,129 @@ def test_normalize_setlist_records_base_trim_on_library_variant(
     assert t["total_db"] == pytest.approx(27.96, abs=0.01)
     assert t["trim_db"] == pytest.approx(2.0)
     assert t["applied"] is True
+
+
+# --- capture scope (hc-57h): LUFS from a real USB capture --------------------
+
+CAPTURE_LUFS = {("snap", 0): -18.0, ("snap", 1): -12.0, ("snap", 2): -17.7}
+
+
+def _patch_capture(monkeypatch, lufs=None, calls=None):
+    """Stand in for the sox capture: no binary, no audio hardware. Returns
+    the AudioMetrics a capture of whatever target is selected would yield."""
+    from helixgen import audio_capture as AC
+    from helixgen.audio_metrics import AudioMetrics
+
+    table = dict(CAPTURE_LUFS if lufs is None else lufs)
+    seen = calls if calls is not None else []
+
+    def _fake(out, seconds, **kwargs):
+        seen.append({"out": Path(out), "seconds": seconds, **kwargs})
+        value = table.get(ScriptedSubscriber.state["key"])
+        return AudioMetrics(
+            seconds=seconds - 2 * kwargs.get("skip_seconds", 2.5),
+            rate=48000, channels=1, file=str(out),
+            lufs_integrated=value, peak_dbfs=-3.0, true_peak_dbtp=-2.9,
+            rms_dbfs=-15.0, crest_db=12.0)
+
+    monkeypatch.setattr(AC, "capture_and_analyze", _fake)
+    monkeypatch.setattr(AC, "preflight", lambda **kw: None)
+    return seen
+
+
+def test_normalize_capture_trims_from_lufs(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    calls = _patch_capture(monkeypatch)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "30",
+              "--measure-via", "capture",
+              "--capture-input", "Helix Stadium XL", "--yes"])
+    assert result.exit_code == 0, result.output
+    # anchor = snapshot 0 at -18 LUFS; Lead at -12 needs -6, Clean's +0.3 is
+    # inside the +-1 dB band
+    assert _gain(preset)["snapshots"] == [0.0, -6.0, 0.0, 0.0,
+                                          0.0, 0.0, 0.0, 0.0]
+    # every capture addressed the named device, at the full window
+    assert [c["device"] for c in calls] == ["Helix Stadium XL"] * 3
+    assert {c["seconds"] for c in calls} == {30.0}
+
+
+def test_normalize_capture_needs_a_named_input(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _patch_capture(monkeypatch)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "30",
+              "--measure-via", "capture"])
+    assert result.exit_code != 0
+    assert "--capture-input" in result.output
+
+
+def test_normalize_capture_window_must_survive_the_skip(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _patch_capture(monkeypatch)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "4",
+              "--measure-via", "capture", "--capture-input", "X"])
+    assert result.exit_code != 0
+    assert "--capture-skip" in result.output
+
+
+def test_normalize_capture_json_reports_the_metric(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _patch_capture(monkeypatch)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "30",
+              "--measure-via", "capture", "--capture-input", "X", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["measure_via"] == "capture"
+    assert payload["target_total_db"] == pytest.approx(-18.0)
+    by_name = {t["name"]: t for t in payload["targets"]}
+    assert by_name["Lead"]["lufs_integrated"] == pytest.approx(-12.0)
+    assert by_name["Lead"]["total_db"] == pytest.approx(-12.0)
+    assert by_name["Lead"]["trim_db"] == -6.0
+    assert by_name["Lead"]["crest_db"] == pytest.approx(12.0)
+    # no --capture-dir: the WAVs are scratch, so no path is reported (a
+    # library `normalized` record must not point at a deleted temp file)
+    assert by_name["Lead"]["capture"] is None
+
+
+def test_normalize_capture_keeps_wavs_in_capture_dir(monkeypatch, preset,
+                                                     tmp_path):
+    _patch(monkeypatch, GAINS)
+    calls = _patch_capture(monkeypatch)
+    keep = tmp_path / "caps"
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "30",
+              "--measure-via", "capture", "--capture-input", "X",
+              "--capture-dir", str(keep)])
+    assert result.exit_code == 0, result.output
+    assert keep.is_dir()
+    assert all(c["out"].parent == keep for c in calls)
+    assert len({c["out"] for c in calls}) == 3   # one WAV per target
+
+
+def test_normalize_capture_skips_a_silent_capture(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _patch_capture(monkeypatch, lufs={**CAPTURE_LUFS, ("snap", 2): None})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "30",
+              "--measure-via", "capture", "--capture-input", "X", "--yes"])
+    assert result.exit_code == 1          # partial run
+    assert "SKIPPED" in result.output
+    assert _gain(preset)["snapshots"][1] == -6.0
+
+
+def test_normalize_capture_reports_kept_wav_paths(monkeypatch, preset,
+                                                  tmp_path):
+    _patch(monkeypatch, GAINS)
+    _patch_capture(monkeypatch)
+    keep = tmp_path / "caps"
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "30",
+              "--measure-via", "capture", "--capture-input", "X",
+              "--capture-dir", str(keep), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    caps = [t["capture"] for t in payload["targets"]]
+    assert all(c and c.startswith(str(keep)) for c in caps)

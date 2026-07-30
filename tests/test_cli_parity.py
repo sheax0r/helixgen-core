@@ -284,14 +284,21 @@ def test_lock_surfaces_keep_contract_phrases(path, phrases):
 
 
 #: Loudness phase-2 agent surfaces (backlog #62): the `device normalize`
-#: closed loop and snapshot-aware `set-param`. The phase-0 hardware caveat —
-#: meter taps sit UPSTREAM of the output block's gain, so output trims are
-#: exact but unverifiable by re-measuring — must never drop out of the help.
+#: closed loop and snapshot-aware `set-param`. The hardware fact the loop
+#: rests on — every measurement path sits DOWNSTREAM of the output block's
+#: gain (hc-daz), so a measured value already contains the trim in force and
+#: re-measuring CONFIRMS a trim — must never drop out of the help. (The help
+#: claimed the opposite until hc-57h; the fix in f6b5309 corrected the code
+#: and left this surface behind.)
 NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "normalize"],
      ["DRY-RUN", "--yes", "anchor", "source of truth", "device sync",
-      "NAMED snapshots", "SKIPPED", "dB-native", "UPSTREAM", "INVISIBLE",
-      "NOT re-measure", "PLAY", "--target-db",
+      "NAMED snapshots", "SKIPPED", "dB-native", "DOWNSTREAM",
+      "CONFIRM a trim", "double-count", "PLAY", "--target-db",
+      # hc-57h: the capture path — its dependencies are checked BEFORE the
+      # first capture, and the default metric is deliberately unchanged
+      "--measure-via capture", "BS.1770", "--capture-input",
+      "BEFORE the first capture", "the default is unchanged",
       # C1/I1 (2026-07-16 review): trims equalize TOTAL loudness (gain +
       # output level -> idempotent re-runs), and the measured preset's
       # identity is verified before anything is written

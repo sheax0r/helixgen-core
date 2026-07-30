@@ -3926,7 +3926,7 @@ def _normalize_plan(results, target_total, tolerance_db):
 
 
 def _normalize_record_library(entries, *, scope, target_total_db,
-                              tolerance_db, seconds, source):
+                              tolerance_db, seconds, source, measure_via):
     """Upsert a ``normalized`` record onto every fully-normalized ``.hsp``
     that is a registered tone-library variant (resolved via the library's
     tone metadata -- see ``tone_meta.find_variant_by_hsp``). ``entries`` is
@@ -3964,6 +3964,7 @@ def _normalize_record_library(entries, *, scope, target_total_db,
                     timespec="seconds"),
                 "scope": scope,
                 "source": source,
+                "measure_via": measure_via,
                 "target_total_db": round(float(target_total_db), 2),
                 "tolerance_db": float(tolerance_db),
                 "seconds": float(seconds),
@@ -3990,16 +3991,64 @@ def _normalize_record_library(entries, *, scope, target_total_db,
                    "with the PRESET argument).")
 @click.option("--target-db", type=float, default=None,
               help="Absolute target for each target's TOTAL loudness in dB "
-                   "— the median chain gain (output/input, as `device "
-                   "measure` reports) PLUS the output-block level already "
-                   "in force. Default: the first successfully measured "
-                   "target is the anchor and everything else is trimmed to "
-                   "match its total.")
+                   "— the measured median chain gain (`--measure-via "
+                   "meters`, as `device measure` reports) or the measured "
+                   "integrated LUFS (`--measure-via capture`). Either "
+                   "measurement is taken DOWNSTREAM of the output block, so "
+                   "it already includes the trim in force. Default: the "
+                   "first successfully measured target is the anchor and "
+                   "everything else is trimmed to match its total.")
+@click.option("--measure-via", type=click.Choice(["meters", "capture"]),
+              default="meters", show_default=True,
+              help="How each target is measured. 'meters' (default): the "
+                   "2003 telemetry stream's playing-gated median chain gain "
+                   "— no extra dependency, no cabling, but it is the "
+                   "DEVICE's own envelope meter, not a perceptual number. "
+                   "'capture': record the Stadium's USB audio output with "
+                   "sox and take BS.1770 INTEGRATED LUFS over it — needs "
+                   "`pip install 'helixgen[analyze]'` plus the `sox` binary "
+                   "and --capture-input, and each target costs a real-time "
+                   "capture window. Both are checked BEFORE the first "
+                   "capture, never after. Which metric level-matches BETTER "
+                   "by ear is an open question (hc-3kg): the default is "
+                   "unchanged.")
+@click.option("--capture-input", default=None, metavar="NAME",
+              help="Capture device NAME for --measure-via capture (e.g. "
+                   "'Helix Stadium XL'). REQUIRED in capture mode and "
+                   "deliberately not defaulted: addressing the device by "
+                   "name never touches the system default input, and "
+                   "capturing the wrong input would write confident, wrong "
+                   "trims.")
+@click.option("--capture-channels", type=int, default=1, show_default=True,
+              help="Channels to capture (--measure-via capture). The "
+                   "Stadium's USB map is ch1/2 = processed output, ch7 = DI "
+                   "tap, ch3-6 silent; the default captures the processed "
+                   "output mono. Capture 8 with --capture-remix 1,2 to fold "
+                   "the processed pair down instead.")
+@click.option("--capture-remix", default=None, metavar="SPEC",
+              help="sox `remix` spec applied to the capture (e.g. '1,2' to "
+                   "fold an 8-channel capture down to the processed pair).")
+@click.option("--capture-skip", type=float, default=2.5, show_default=True,
+              help="Seconds dropped from EACH end of a capture before "
+                   "analysis: out go the capture start/stop transients, and "
+                   "a looper's reverb tails still overlap naturally in the "
+                   "middle (capturing exactly one loop period truncates "
+                   "long-reverb leads and under-counts them). --seconds "
+                   "must exceed twice this.")
+@click.option("--capture-dir",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Keep each target's capture WAV in this directory "
+                   "(created if needed) instead of a temp dir wiped at the "
+                   "end — one WAV per target, for A/B listening or "
+                   "re-analysis with `analyze-audio`.")
 @click.option("--seconds", type=float, default=10.0, show_default=True,
               help="Measurement window per target.")
 @click.option("--min-playing", type=int, default=40, show_default=True,
               help="Minimum playing-gated samples for a trustworthy "
-                   "measurement (~10 samples/sec of actual playing).")
+                   "measurement (~10 samples/sec of actual playing). "
+                   "--measure-via meters only: the capture path has no "
+                   "equivalent floor — BS.1770's own gates decide what "
+                   "counts as program material (backlog #104d).")
 @click.option("--tolerance-db", type=float, default=1.0, show_default=True,
               help="Deltas at or below this magnitude are in band and NOT "
                    "trimmed (don't chase meter noise).")
@@ -4014,7 +4063,10 @@ def _normalize_record_library(entries, *, scope, target_total_db,
 @_device_option
 @_locked("editbuffer", verb="normalize")
 def device_normalize(preset: Path | None, setlist: str | None,
-                     target_db: float | None, seconds: float,
+                     target_db: float | None, measure_via: str,
+                     capture_input: str | None, capture_channels: int,
+                     capture_remix: str | None, capture_skip: float,
+                     capture_dir: Path | None, seconds: float,
                      min_playing: int, tolerance_db: float, source: str,
                      yes: bool, as_json: bool, ip: str, port: int) -> None:
     """Level-match snapshots or a setlist by MEASURING while you play (DRY-RUN
@@ -4022,17 +4074,23 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
     The closed loop over `device measure` (loudness spec phase 2): recall
     each target on the device, prompt you to PLAY the same riff steadily for
-    the window, then compute each target's dB trim so its TOTAL loudness —
-    the measured median chain gain PLUS the output-block level already in
-    force (the meter taps sit upstream of the output gain, so the measured
-    gain alone never includes an existing trim) — matches the target total:
-    the anchor's (the first target that measured ok) unless --target-db
-    gives an absolute total. Sizing trims from totals makes the loop
-    IDEMPOTENT: re-running it (or running it over a hand-balanced preset
-    whose output levels already equalize) computes in-band zero trims
-    instead of compounding. Deltas within --tolerance-db are in band and
-    left alone. Targets whose window had too little actual playing are
-    SKIPPED with a warning (and the run exits 1 to flag the partial result).
+    the window, then compute each target's dB trim so its TOTAL loudness
+    matches the target total: the anchor's (the first target that measured
+    ok) unless --target-db gives an absolute total. Sizing trims from totals
+    makes the loop IDEMPOTENT: re-running it (or running it over a
+    hand-balanced preset whose output levels already equalize) computes
+    in-band zero trims instead of compounding. Deltas within --tolerance-db
+    are in band and left alone. Targets whose window had too little actual
+    playing are SKIPPED with a warning (and the run exits 1 to flag the
+    partial result).
+
+    A target's TOTAL loudness IS its measured value — both measurement paths
+    are DOWNSTREAM of the output block's gain (measured on hardware, Stadium
+    XL fw 1.3.2), so an existing trim is already in the number and adding
+    the output level on top would double-count it (that bug made the loop
+    oscillate; see hc-daz). --measure-via meters (default) uses the
+    telemetry median chain gain; --measure-via capture records the Stadium's
+    USB output with sox and uses BS.1770 integrated LUFS.
 
     Two scopes: `device normalize <preset.hsp>` level-matches the preset's
     NAMED snapshots — it recalls each snapshot on the device, so the ACTIVE
@@ -4059,10 +4117,22 @@ def device_normalize(preset: Path | None, setlist: str | None,
     presets does change the device's ACTIVE tone selection while measuring.
 
     The output block's `level` is dB-native, so a trim is EXACT by
-    construction — and (phase-0 hardware finding) every meter tap sits
-    UPSTREAM of the output block's gain, so the trim is INVISIBLE to
-    `device measure`: the loop trusts the dB math and deliberately does NOT
-    re-measure to confirm (a re-measure would falsely report "no change").
+    construction and lands in ONE move. Both measurement paths sit
+    DOWNSTREAM of that gain, so a written trim IS visible once the device
+    copy is rebuilt (`device sync` / `device install`): re-measuring is a
+    valid way to CONFIRM a trim, and re-running the whole loop is a no-op
+    that reports in-band zeros rather than compounding.
+
+    `--measure-via capture` is the perceptual path: each target is recorded
+    off the Stadium's USB audio output with sox (format flags before the
+    device name, so the capture is pinned at 48 kHz and never silently
+    resampled) and reduced to BS.1770 INTEGRATED LUFS over the MIDDLE of the
+    window (--capture-skip drops each end). It needs `pip install
+    'helixgen[analyze]'`, the `sox` binary and --capture-input NAME — all
+    checked BEFORE the first capture, so a missing dependency never costs
+    you a played window. Whether LUFS level-matches better BY EAR than the
+    meter median is still open (hc-3kg, needs a listening test), so the
+    default is unchanged; --capture-dir keeps the WAVs for that comparison.
 
     With --source loop (a front-of-chain LOOPER replays a recorded signal;
     workspace #82), the input-jack gate reads pure silence — measuring
@@ -4107,8 +4177,16 @@ def device_normalize(preset: Path | None, setlist: str | None,
     play_prompt = ("PLAY the same riff steadily"
                    if source == "input"
                    else "keep the LOOPER replaying the same recorded riff")
-    measured_key = "gain_db" if source == "input" else "output_db"
-    measured_label = "chain gain" if source == "input" else "chain out"
+    if measure_via == "capture":
+        # hc-57h: USB capture is downstream of the output gain (measured),
+        # so integrated LUFS is directly comparable across targets and the
+        # --source gate never enters the metric — it only picks the prompt.
+        measured_key, measured_label, measured_word = (
+            "lufs_integrated", "integrated loudness", "LUFS")
+    else:
+        measured_key = "gain_db" if source == "input" else "output_db"
+        measured_label = "chain gain" if source == "input" else "chain out"
+        measured_word = "gain" if source == "input" else "out"
 
     def _measured_fields(res) -> dict:
         return {"ok": res.ok, "reason": res.reason,
@@ -4116,6 +4194,86 @@ def device_normalize(preset: Path | None, setlist: str | None,
                             else round(res.gain_db, 2)),
                 "output_db": round(res.output_db, 2),
                 "playing_seconds": round(res.playing_seconds, 1)}
+
+    def _capture_fields(m, wav: Path) -> dict:
+        def _r(v):
+            return None if v is None else round(float(v), 2)
+        ok = m.lufs_integrated is not None
+        return {
+            "ok": ok,
+            "reason": "" if ok else (
+                "the capture carried no gated audio — nothing was playing, "
+                "or --capture-input names the wrong device"),
+            "lufs_integrated": _r(m.lufs_integrated),
+            "peak_dbfs": _r(m.peak_dbfs),
+            "true_peak_dbtp": _r(m.true_peak_dbtp),
+            "crest_db": _r(m.crest_db),
+            "clipped": bool(m.clipped),
+            "analyzed_seconds": round(float(m.seconds), 1),
+            # only a KEPT capture gets a path: without --capture-dir the WAV
+            # is wiped at the end of the run, and these entries are stored
+            # verbatim in the library's `normalized` record — a permanent
+            # record must not point at a deleted temp file
+            "capture": str(wav) if capture_dir is not None else None,
+        }
+
+    # capture mode preflight: the [analyze] extra + sox are checked BEFORE
+    # the first capture (a missing dep discovered afterwards costs a whole
+    # played window), and the capture root is settled up front.
+    cap_root: Path | None = None
+    tmp_cap_root: str | None = None
+    if measure_via == "capture":
+        from helixgen import audio_capture as AC
+        from helixgen.audio_metrics import AudioMetricsError
+
+        if not capture_input:
+            raise click.ClickException(
+                "--measure-via capture needs --capture-input NAME (the "
+                "Stadium's USB audio device, e.g. 'Helix Stadium XL'); it is "
+                "not defaulted on purpose — capturing the system default "
+                "input would measure the wrong thing and write confident, "
+                "wrong trims")
+        if seconds <= 2 * capture_skip:
+            raise click.ClickException(
+                f"--seconds {seconds:g} leaves nothing to analyze after "
+                f"--capture-skip {capture_skip:g} is dropped from each end; "
+                f"give --seconds > {2 * capture_skip:g} (30 is the proven "
+                f"window) or a smaller --capture-skip")
+        try:
+            AC.preflight()
+        except AudioMetricsError as e:
+            raise click.ClickException(str(e)) from e
+        if capture_dir is not None:
+            capture_dir.mkdir(parents=True, exist_ok=True)
+            cap_root = capture_dir
+        else:
+            import tempfile
+            tmp_cap_root = tempfile.mkdtemp(prefix="helixgen-capture-")
+            cap_root = Path(tmp_cap_root)
+
+    def _measure_target(label: str) -> dict:
+        """One target's measurement, by whichever path --measure-via picked."""
+        if measure_via == "meters":
+            return _measured_fields(
+                _measure_window(ip, seconds, min_playing, source))
+        from helixgen.naming import slugify
+
+        wav = cap_root / f"{len(results):02d}-{slugify(label) or 'target'}.wav"
+        try:
+            m = AC.capture_and_analyze(
+                wav, seconds, skip_seconds=capture_skip,
+                device=capture_input, channels=capture_channels,
+                remix=capture_remix)
+        except AudioMetricsError as e:
+            # a capture failure mid-run is a real rig problem (device
+            # unplugged, name changed) — not a target to skip past
+            raise click.ClickException(str(e)) from e
+        return _capture_fields(m, wav)
+
+    def _measured_detail(entry: dict) -> str:
+        return (f"{entry['playing_seconds']:.1f}s playing"
+                if measure_via == "meters"
+                else f"{entry['analyzed_seconds']:.1f}s analyzed")
 
     try:
         if preset is not None:
@@ -4155,19 +4313,18 @@ def device_normalize(preset: Path | None, setlist: str | None,
                     h.activate_snapshot(idx)
                     say(f"snapshot {idx} {name!r}: {play_prompt} for "
                         f"~{seconds:.0f}s ...")
-                    res = _measure_window(ip, seconds, min_playing, source)
                     entry = {"snapshot": idx, "name": name,
-                             **_measured_fields(res)}
-                    if res.ok:
+                             **_measure_target(name)}
+                    if entry["ok"]:
                         say(f"  measured {measured_label} "
                             f"{entry[measured_key]:+.2f} dB "
-                            f"({res.playing_seconds:.1f}s playing)")
+                            f"({_measured_detail(entry)})")
                         level = NZ.reference_output_level(body, idx)
                         entry["output_level_db"] = round(level, 1)
                         entry["total_db"] = round(
                             NZ.total_loudness(body, entry[measured_key], idx), 2)
                     else:
-                        say(f"  warning: SKIPPED — {res.reason}")
+                        say(f"  warning: SKIPPED — {entry['reason']}")
                     results.append(entry)
                 # leave the device on the preset's on-load snapshot
                 active = ((body.get("preset") or {}).get("params")
@@ -4256,20 +4413,19 @@ def device_normalize(preset: Path | None, setlist: str | None,
                             f"loaded preset's name — proceeding")
                     say(f"tone {name!r}: {play_prompt} for "
                         f"~{seconds:.0f}s ...")
-                    res = _measure_window(ip, seconds, min_playing, source)
                     entry = {"tone": name, "path": hsp_path,
-                             **_measured_fields(res)}
-                    if res.ok:
+                             **_measure_target(name)}
+                    if entry["ok"]:
                         say(f"  measured {measured_label} "
                             f"{entry[measured_key]:+.2f} dB "
-                            f"({res.playing_seconds:.1f}s playing)")
+                            f"({_measured_detail(entry)})")
                         tone_body = read_hsp(Path(hsp_path))
                         level = NZ.reference_output_level(tone_body)
                         entry["output_level_db"] = round(level, 1)
                         entry["total_db"] = round(
                             NZ.total_loudness(tone_body, entry[measured_key]), 2)
                     else:
-                        say(f"  warning: SKIPPED — {res.reason}")
+                        say(f"  warning: SKIPPED — {entry['reason']}")
                     results.append(entry)
                 # best-effort: put the player's selection back
                 if prev_cid is not None:
@@ -4306,6 +4462,12 @@ def device_normalize(preset: Path | None, setlist: str | None,
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
+    finally:
+        # --capture-dir keeps the WAVs; without it they were scratch
+        if tmp_cap_root is not None:
+            import shutil
+
+            shutil.rmtree(tmp_cap_root, ignore_errors=True)
 
     for w in warnings:
         say(f"warning: {w}")
@@ -4324,17 +4486,19 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 library_recorded = _normalize_record_library(
                     [(str(preset), results)], scope=scope,
                     target_total_db=target, tolerance_db=tolerance_db,
-                    seconds=seconds, source=source)
+                    seconds=seconds, source=source, measure_via=measure_via)
         else:
             entries = [(r["path"], [r]) for r in results if r.get("ok")]
             library_recorded = _normalize_record_library(
                 entries, scope=scope, target_total_db=target,
-                tolerance_db=tolerance_db, seconds=seconds, source=source)
+                tolerance_db=tolerance_db, seconds=seconds, source=source,
+                measure_via=measure_via)
 
     skipped = [r for r in results if not r.get("ok")]
     if as_json:
         payload.update({
             "source": source,
+            "measure_via": measure_via,
             "target_total_db": round(target, 2),
             "anchor": anchor_json,
             "tolerance_db": tolerance_db,
@@ -4348,7 +4512,8 @@ def device_normalize(preset: Path | None, setlist: str | None,
         anchor_desc = ("--target-db" if anchor_json is None else
                        f"anchor {anchor_json.get('name', anchor_json.get('tone'))!r}")
         click.echo(f"plan (target = {anchor_desc}, {target:+.2f} dB total "
-                   f"loudness = {measured_label} + output level):")
+                   f"loudness = measured {measured_label}, which already "
+                   f"includes the output level in force):")
         for r in results:
             label = (f"snapshot {r['snapshot']} {r['name']!r}"
                      if scope == "snapshots" else f"tone {r['tone']!r}")
@@ -4356,7 +4521,6 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 click.echo(f"  {label}: SKIPPED ({r['reason']})")
             elif r["trim_db"]:
                 state = "applied" if r["applied"] else "would trim"
-                measured_word = "gain" if source == "input" else "out"
                 click.echo(f"  {label}: {r['total_db']:+.2f} dB total "
                            f"({r[measured_key]:+.2f} {measured_word} "
                            f"{r['output_level_db']:+.1f} level) — {state} "

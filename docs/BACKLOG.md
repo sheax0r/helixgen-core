@@ -1699,6 +1699,38 @@ Remaining follow-ups:
   refusal against real hardware (#97 was hardware-observed; the offline suite
   pins the behavior).
 
+- **#104 residuals from the capture-measurement pipeline** (hc-57h, `device
+  normalize --measure-via capture`). None block the pipeline; all were
+  deferred deliberately.
+  (a) TWO capture implementations now exist: `audio_capture.capture_wav`
+  (sox subprocess — the one proven on hardware, used by `normalize`) and
+  `audio_metrics.record_wav` (sounddevice/PortAudio, the `[capture]` extra,
+  still EXPERIMENTAL and never tested against real hardware, reachable only
+  via `analyze-audio --record`). Converge them: point `--record` at the sox
+  path and retire the `[capture]` extra, or delete `--record` outright.
+  (b) NO hardware verification yet. The pipeline is unit-tested offline
+  end to end (argv ordering, preflight-before-capture, middle-segment
+  analysis, the whole normalize loop against a faked capture), but nobody has
+  run `device normalize --measure-via capture --capture-input 'Helix Stadium
+  XL'` against a real Stadium. What needs a device: that sox opens the USB
+  device by that name; that a 30 s window with `--capture-skip 2.5` yields a
+  stable `lufs_integrated`; and — the one that gates hc-3kg — that a written
+  trim, once synced, moves the next capture by the same dB.
+  (c) no preferences for `measure_via` / capture device / channel pair —
+  every run passes the flags. That is the `measure_via` half of he-xth in the
+  plugin repo, and it should read `preferences.json` the way the other keys
+  do (an agent-facing default is exactly what would stop `--capture-input`
+  being retyped).
+  (d) the capture path has no analog of `--min-playing`: BS.1770's own gates
+  decide what counts as program material, so a window where the player
+  managed two notes measures those two notes and reports `ok`. A minimum
+  gated-block count (the LUFS-side equivalent of `min_playing`) would fail
+  such a window honestly.
+  (e) captures run one per target, serially, in real time — a 30-tone
+  setlist at 30 s each is 15 minutes of playing. Nothing to fix in the code,
+  but the setlist scope is where a looper (`--source loop`) stops being a
+  convenience and becomes the only practical way to run it.
+
 ## Notes / principles
 - **Local-file-first:** every device-write feature should also work offline
   against local `.sbe`/`.hsp`/`.wav` copies and sync to hardware on demand.
