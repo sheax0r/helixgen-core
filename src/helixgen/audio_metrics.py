@@ -11,6 +11,14 @@ metric set from the loudness-feedback spec
 * **Crest factor** in dB (sample peak vs RMS) — how compressed/saturated the
   signal is. Plus peak dBFS, RMS dBFS, and an approximate true peak (dBTP,
   4x FFT oversampling).
+
+  ``peak_dbfs`` / ``rms_dbfs`` / ``crest_db`` are computed over the
+  **BS.1770-gated blocks**, not the whole file (hc-57h). Ungated they read a
+  capture's leading/trailing silence as program material: 5 s of silence in
+  front of a real capture moved ``crest_db`` 12.45 -> 15.46 dB while the
+  (correctly gated) LUFS stayed at -16.77. ``true_peak_dbtp`` and the
+  clipping flag stay WHOLE-FILE — an over in the padding is still a real
+  over.
 * **FFT band energies** over a 5-band guitar vocabulary (see GUITAR_BANDS),
   spectral centroid, and a clipping heuristic.
 
@@ -58,6 +66,7 @@ __all__ = [
     "analyze_wav",
     "load_wav",
     "record_wav",
+    "require_numpy",
     "write_wav_float32",
 ]
 
@@ -105,6 +114,13 @@ def _np():
             "`pip install 'helixgen[analyze]'`"
         ) from exc
     return numpy
+
+
+def require_numpy() -> None:
+    """Raise :class:`AudioMetricsError` (with the install hint) unless the
+    ``analyze`` extra is present. Public so callers can preflight BEFORE an
+    expensive step — a capture must not discover a missing numpy afterwards."""
+    _np()
 
 
 def _sounddevice():
@@ -332,14 +348,15 @@ def _k_weight(x, rate: int):
 
 def _block_loudness(weighted, rate: int, window_s: float, hop_s: float):
     """Per-block loudness (LUFS) + per-block channel-summed mean square.
-    Returns (loudness ndarray, mean_square ndarray); empty when the signal
-    is shorter than one window."""
+    Returns (loudness ndarray, mean_square ndarray, block start indices,
+    block length in samples); the arrays are empty when the signal is
+    shorter than one window."""
     np = _np()
     n = weighted.shape[0]
     block = int(round(window_s * rate))
     hop = max(1, int(round(hop_s * rate)))
     if n < block:
-        return np.empty(0), np.empty(0)
+        return np.empty(0), np.empty(0), np.empty(0, dtype=int), block
     csum = np.vstack([np.zeros((1, weighted.shape[1])),
                       np.cumsum(weighted * weighted, axis=0)])
     starts = np.arange(0, n - block + 1, hop)
@@ -347,23 +364,30 @@ def _block_loudness(weighted, rate: int, window_s: float, hop_s: float):
     zsum = z.sum(axis=1)  # unit channel weights (mono/stereo captures)
     with np.errstate(divide="ignore"):
         loud = _LUFS_OFFSET + 10.0 * np.log10(zsum)
-    return loud, zsum
+    return loud, zsum, starts, block
 
 
 def _loudness_stats(x, rate: int, notes: list[str]):
-    """(integrated, momentary_max, short_term_max) per BS.1770-4."""
+    """(integrated, momentary_max, short_term_max, gated_sample_mask) per
+    BS.1770-4.
+
+    The mask is the union of the gated 400 ms blocks' sample spans — the
+    part of the signal the standard counts as program material. It is
+    ``None`` when no integrated value could be computed; level metrics fall
+    back to the whole file then (see :func:`analyze`)."""
     np = _np()
     weighted = _k_weight(x, rate)
 
-    loud, zsum = _block_loudness(weighted, rate, _BLOCK_S, _HOP_S)
+    loud, zsum, starts, block = _block_loudness(weighted, rate, _BLOCK_S,
+                                                _HOP_S)
     if loud.size == 0:
         notes.append("too short for a 400 ms gating block; LUFS omitted")
-        return None, None, None
+        return None, None, None, None
 
     finite = loud[np.isfinite(loud)]
     momentary_max = float(finite.max()) if finite.size else None
 
-    st_loud, _ = _block_loudness(weighted, rate, _SHORT_TERM_S, _HOP_S)
+    st_loud, _, _, _ = _block_loudness(weighted, rate, _SHORT_TERM_S, _HOP_S)
     st_finite = st_loud[np.isfinite(st_loud)]
     short_term_max = float(st_finite.max()) if st_finite.size else None
 
@@ -371,14 +395,17 @@ def _loudness_stats(x, rate: int, notes: list[str]):
     if not above_abs.any():
         notes.append("every 400 ms block sits below the -70 LUFS absolute "
                      "gate (silence?); integrated LUFS omitted")
-        return None, momentary_max, short_term_max
+        return None, momentary_max, short_term_max, None
     gamma_r = (_LUFS_OFFSET + 10.0 * np.log10(zsum[above_abs].mean())
                + _REL_GATE_LU)
     gated = above_abs & (loud > gamma_r)
     if not gated.any():  # defensive; can't normally happen
-        return None, momentary_max, short_term_max
+        return None, momentary_max, short_term_max, None
     integrated = float(_LUFS_OFFSET + 10.0 * np.log10(zsum[gated].mean()))
-    return integrated, momentary_max, short_term_max
+    mask = np.zeros(x.shape[0], dtype=bool)
+    for s in starts[gated]:
+        mask[int(s):int(s) + block] = True
+    return integrated, momentary_max, short_term_max, mask
 
 
 # ------------------------------------------------------------- spectrum ----
@@ -504,6 +531,8 @@ class AudioMetrics:
     lufs_integrated: float | None = None
     lufs_momentary_max: float | None = None
     lufs_short_term_max: float | None = None
+    # peak/rms/crest ride the BS.1770 gate (see the module docstring);
+    # true_peak_dbtp and clipped are whole-file.
     peak_dbfs: float | None = None
     true_peak_dbtp: float | None = None
     rms_dbfs: float | None = None
@@ -574,21 +603,37 @@ def analyze(samples, rate: int, *, file: str | None = None) -> AudioMetrics:
     m = AudioMetrics(seconds=n / rate, rate=rate, channels=channels,
                      file=file, notes=notes)
 
-    peak = float(np.abs(x).max())
+    (m.lufs_integrated, m.lufs_momentary_max, m.lufs_short_term_max,
+     gate) = _loudness_stats(x, rate, notes)
+
+    # Level metrics ride the BS.1770 gate (hc-57h): ungated, a capture's
+    # leading/trailing silence deflates RMS and inflates crest (5 s of
+    # silence moved crest 12.45 -> 15.46 dB). Whole-file fallback when the
+    # gate is unavailable (too short / silence) or would gate everything out.
+    xl = x
+    if gate is not None and gate.any() and not gate.all():
+        candidate = x[gate]
+        if float(np.abs(candidate).max()) > 0.0:
+            xl = candidate
+            notes.append(
+                f"peak/rms/crest computed over the "
+                f"{int(gate.sum()) / rate:.1f}s of BS.1770-gated blocks, not "
+                f"the whole {n / rate:.1f}s signal")
+
+    peak = float(np.abs(xl).max())
     if peak > 0.0:
-        rms = float(np.sqrt((x * x).mean()))
+        rms = float(np.sqrt((xl * xl).mean()))
         m.peak_dbfs = 20.0 * np.log10(peak)
         m.rms_dbfs = 20.0 * np.log10(rms)
         m.crest_db = m.peak_dbfs - m.rms_dbfs
+        # true peak and clipping stay WHOLE-FILE: an over in the padding is
+        # still an over.
         tp = _true_peak(x, notes)
         m.true_peak_dbtp = 20.0 * np.log10(tp) if tp else None
     else:
         notes.append("digital silence: level metrics omitted")
 
     m.clipped, m.clipped_samples = _clipping(x)
-
-    (m.lufs_integrated, m.lufs_momentary_max,
-     m.lufs_short_term_max) = _loudness_stats(x, rate, notes)
 
     freqs, psd = _welch_psd(x, rate)
     m.bands, m.spectral_centroid_hz = _band_energies(freqs, psd)

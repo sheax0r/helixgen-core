@@ -129,6 +129,29 @@ class TestCrestAndLevels:
         assert m.peak_dbfs == pytest.approx(-6.02, abs=0.05)
         assert m.rms_dbfs == pytest.approx(-9.03, abs=0.05)
 
+    def test_capture_padding_does_not_skew_crest_or_rms(self):
+        """hc-57h: peak/rms/crest ride the BS.1770 gate. Ungated, 5 s of
+        leading silence in front of a capture moved crest 12.45 -> 15.46 dB
+        while the (gated) LUFS correctly stayed put."""
+        tone = sine(220.0, 10.0, amp=0.5)
+        pad = np.zeros((5 * RATE, 1))
+        clean = am.analyze(tone, RATE)
+        padded = am.analyze(np.concatenate([pad, tone, pad]), RATE)
+        assert padded.crest_db == pytest.approx(clean.crest_db, abs=0.3)
+        assert padded.rms_dbfs == pytest.approx(clean.rms_dbfs, abs=0.3)
+        assert padded.peak_dbfs == pytest.approx(clean.peak_dbfs, abs=0.05)
+        # the residual 0.1 dB is the half-silent boundary blocks the standard
+        # itself keeps; the bug being pinned here was 3 dB
+        assert padded.lufs_integrated == pytest.approx(clean.lufs_integrated,
+                                                       abs=0.2)
+        assert any("gated blocks" in n for n in padded.notes)
+
+    def test_unpadded_signal_keeps_whole_file_levels(self):
+        """No padding, no gate note — the gate only bites when it excludes
+        something."""
+        m = am.analyze(sine(1000.0, 2.0, amp=0.5), RATE)
+        assert not any("gated blocks" in n for n in m.notes)
+
     def test_true_peak_of_997hz_sine(self):
         m = am.analyze(sine(997.0, 2.0, amp=0.5), RATE)
         assert m.true_peak_dbtp == pytest.approx(-6.02, abs=0.1)
