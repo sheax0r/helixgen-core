@@ -391,10 +391,11 @@ def probe_network(ip: str, prefixlen: Optional[int],
     """The network the probe will actually sweep: ``ip``'s network at
     ``prefixlen`` (``None`` = the historical /24 assumption), narrowed to at
     most ``max_hosts`` addresses around ``ip``. Pure; raises ``ValueError``
-    on an unparseable address."""
+    on anything that is not a dotted IPv4 address (an IPv6 one included —
+    the probe is IPv4-only)."""
     width = 24 if prefixlen is None else max(0, min(32, int(prefixlen)))
     floor = 32 - (max(1, int(max_hosts)).bit_length() - 1)
-    return ipaddress.ip_network(f"{ip}/{max(width, floor)}", strict=False)
+    return ipaddress.IPv4Network(f"{ip}/{max(width, floor)}", strict=False)
 
 
 def local_probe_network(*, max_hosts: int = MAX_PROBE_HOSTS

@@ -787,6 +787,17 @@ class TestProbeNetwork:
         net = discovery.probe_network("10.1.2.3", 8, max_hosts=256)
         assert str(net) == "10.1.2.0/24"
 
+    @pytest.mark.parametrize("bad", ["not-an-ip", "fe80::1", "", "1.2.3"])
+    def test_bad_address_raises(self, bad):
+        with pytest.raises(ValueError):
+            discovery.probe_network(bad, 24)
+
+    def test_bad_address_refuses_to_probe_without_sockets(self, monkeypatch):
+        def boom(*a, **kw):
+            raise AssertionError("must not open sockets on an unparseable ip")
+        monkeypatch.setattr(discovery.socket, "create_connection", boom)
+        assert discovery.probe_subnet(subnet_ip="fe80::1", prefixlen=24) == []
+
     def test_slash24_host_count_is_unchanged(self):
         assert len(list(discovery.probe_network("10.1.2.3", 24).hosts())) == 254
 
