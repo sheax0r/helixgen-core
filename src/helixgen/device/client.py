@@ -1163,7 +1163,8 @@ class HelixClient:
         items.sort(key=lambda m: m.get("posi", 1 << 30))
         return items
 
-    def set_param(self, path: int, block: int, param_id: int, value: float) -> bool:
+    def set_param(self, path: int, block: int, param_id: int, value: float,
+                  *, force: bool = False) -> bool:
         """Set a param in the edit buffer:
         ``/ParamValueSet [_, path, grid_slot, 0, paramId, value, -1]``.
 
@@ -1173,11 +1174,47 @@ class HelixClient:
         output block's ``gain`` pid 2 — HW-proof 2026-07-15: slot 13 gain
         6.0→3.0→6.0, each write acked ``/status 0`` and read back via
         :meth:`get_param`), not normalized.
+
+        The value is validated against the range :meth:`edit_buffer_params`
+        advertises for that pid (one edit-buffer read per write) and rejected
+        with :class:`HelixError` when outside it (hc-bgx: the device itself
+        clamps nothing — a typo'd ``25`` on a ``[-120..20]`` gain lands and is
+        faithfully applied, measured on hardware 2026-07-30). ``force=True``
+        skips the check: the range comes from the vendored model defs, not
+        from the firmware, so it can be narrower than what the hardware
+        actually accepts.
         """
+        slot = _grid_slot(block)
+        if not force:
+            self._check_param_range(path, slot, param_id, value)
         return self._ok(self._rpc(
             "/ParamValueSet",
-            [("i", path), ("i", _grid_slot(block)), ("i", 0), ("i", param_id),
+            [("i", path), ("i", slot), ("i", 0), ("i", param_id),
              ("f", float(value)), ("i", -1)]))
+
+    def _check_param_range(self, path: int, slot: int, param_id: int,
+                           value: float) -> None:
+        """Raise :class:`HelixError` if ``value`` falls outside the range the
+        model defs advertise for ``param_id`` (bounds inclusive).
+
+        A pid with no advertised min/max — an unknown pid, or one the defs
+        leave open — is not validated. A failed edit-buffer read propagates
+        rather than being swallowed: silently skipping the check would turn a
+        transient read failure into an unvalidated write.
+        """
+        row = next((p for p in self.edit_buffer_params(path, slot)["params"]
+                    if p["pid"] == param_id), None)
+        if row is None:
+            return
+        lo, hi = row.get("min"), row.get("max")
+        if (lo is not None and value < lo) or (hi is not None and value > hi):
+            raise HelixError(
+                f"value {value} is outside the range {row.get('name') or '?'} "
+                f"(pid {param_id}) advertises: [{lo}..{hi}] — see `device "
+                f"params {path} {slot}`. The device does NOT clamp, so an "
+                "out-of-range write lands and is applied; pass --force if "
+                "you mean it (the range is the vendored model defs', which "
+                "can be narrower than the firmware's).")
 
     def _find_by_pos_retry(self, container: int, pos: int,
                            tries: int = 4, delay: float = 0.25

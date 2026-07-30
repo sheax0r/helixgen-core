@@ -34,6 +34,7 @@ class FakeClient:
         # existing (op, container, pos, name) assertions keep working (#38)
         self.push_kwargs = []
         self.save_kwargs = []
+        self.set_param_kwargs = []
         # subscription depth, so tests can assert that the emptiness reads
         # deciding where to write ran under a 2001 subscription (#38)
         self.sub_depth = 0
@@ -110,8 +111,12 @@ class FakeClient:
         self.calls.append(("delete", container, list(cids)))
         return True
 
-    def set_param(self, path, block, param_id, value):
+    # NO default for force: production HelixClient.set_param defaults it
+    # False, so a fake defaulting it would keep the pass-through assertion
+    # green even if the CLI stopped forwarding the flag (hc-bgx).
+    def set_param(self, path, block, param_id, value, *, force):
         self.calls.append(("set_param", path, block, param_id, value))
+        self.set_param_kwargs.append({"force": force})
         return True
 
     # slot-emptiness gate (#40) + the writes it guards
@@ -190,6 +195,25 @@ def test_device_rename_reports_success(monkeypatch):
     assert result.exit_code == 0
     assert seen["args"] == (102, "New Name")
     assert "renamed" in result.output.lower()
+
+
+def test_device_set_param_forwards_force_flag(monkeypatch):
+    # hc-bgx: the range check lives in the client write path; the CLI's
+    # --force is the only way past it, so it must actually be forwarded.
+    fakes = []
+
+    class Recorder(FakeClient):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            fakes.append(self)
+
+    _patch_client(monkeypatch, Recorder)
+    for argv, expected in ((["device", "set-param", "0", "13", "2", "3.0"], False),
+                           (["device", "set-param", "0", "13", "2", "25",
+                             "--force"], True)):
+        result = CliRunner().invoke(cli, argv)
+        assert result.exit_code == 0, result.output
+        assert fakes[-1].set_param_kwargs == [{"force": expected}]
 
 
 def test_device_error_path_nonzero_exit(monkeypatch):

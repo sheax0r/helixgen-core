@@ -94,7 +94,11 @@ Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
 "output": {"level": -3.0, "pan": 0.4}
 ```
 
-- `level` — float dB, −120..20 (the output block's `gain`).
+- `level` — float dB, −120..20 (the output block's `gain`). The +20 ceiling is
+  the **model defs'**, not the hardware's — the device accepts and applies more
+  (HW-measured 2026-07-30). helixgen keeps the advertised cap anyway and now
+  enforces it on the live write path too (`device set-param`); raising it would
+  buy level by amplifying the noise floor, so gain-stage in-chain instead.
 - `pan` — float 0..1 (0.5 = center).
 - Applies to the path's primary (lane-0 `b13`) output block. The output
   **destination** (Matrix/XLR/1/4"/Path-2 feed…) is not authored here — it

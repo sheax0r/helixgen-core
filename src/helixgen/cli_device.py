@@ -1727,10 +1727,12 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
 @click.argument("block", type=int)
 @click.argument("param_id", type=int)
 @click.argument("value", type=float)
+@click.option("--force", is_flag=True, default=False,
+              help="Write a value outside the advertised range anyway.")
 @_device_option
 @_locked("editbuffer", verb="set-param")
 def device_set_param(path: int, block: int, param_id: int, value: float,
-                     ip: str, port: int) -> None:
+                     force: bool, ip: str, port: int) -> None:
     """Set one param in the live edit buffer (PATH BLOCK PARAM_ID VALUE).
 
     PATH/BLOCK are `device blocks` coordinates (DSP index + grid slot, sent
@@ -1739,6 +1741,15 @@ def device_set_param(path: int, block: int, param_id: int, value: float,
     value. VALUE is in the param's RAW units — dB / Hz / enum-int exactly as
     `device params` reports them — NOT normalized 0..1. Mutates the ACTIVE
     tone immediately (volatile until the preset is saved).
+
+    VALUE is checked against the range `device params` advertises for that
+    pid (bounds inclusive) and REJECTED when outside it — the device itself
+    clamps nothing, so a typo'd value would otherwise land and be applied
+    (measured on hardware 2026-07-30: +25 on the output gain's [-120..20]).
+    A pid with no advertised range is not checked. `--force` writes anyway:
+    the range comes from the vendored model defs, which can be narrower than
+    the firmware's — that headroom is deliberately NOT used to lift the +20
+    dB output-level ceiling (see docs/BACKLOG.md).
 
     Example (proven on hardware, fw 1.3.2 — output block at path 0 grid
     slot 13; `device params 0 13` shows `gain` = pid 2, in dB):
@@ -1749,7 +1760,7 @@ def device_set_param(path: int, block: int, param_id: int, value: float,
 
     try:
         with HelixClient(ip, port) as h:
-            ok = h.set_param(path, block, param_id, value)
+            ok = h.set_param(path, block, param_id, value, force=force)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:

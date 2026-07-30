@@ -79,7 +79,9 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
     ("device_rename_preset", ["device", "rename"], ["Rename"]),
     ("device_delete_preset", ["device", "delete"], ["Delete"]),
     ("device_set_param", ["device", "set-param"],
-     ["RAW units", "NOT normalized", "device blocks", "ACTIVE tone"]),
+     ["RAW units", "NOT normalized", "device blocks", "ACTIVE tone",
+      # hc-bgx: the write path validates against the advertised range.
+      "REJECTED", "--force", "clamps nothing"]),
     ("device_info", ["device", "info"], ["Read-only", "firmware"]),
     ("device_settings_list", ["device", "settings", "list"], ["page", "offline"]),
     ("device_settings_get", ["device", "settings", "get"], ["enum"]),
