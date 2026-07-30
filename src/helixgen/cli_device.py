@@ -1120,11 +1120,15 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
                    "floored to 0.5).")
 @click.option("--probe/--no-probe", default=True, show_default=True,
               help="If mDNS finds nothing, fall back to a bounded TCP "
-                   "connect-probe of the LOCAL /24 subnet only, on the "
-                   "Stadium's RPC port 2002 (short timeouts, bounded "
-                   "concurrency; never probes beyond the local subnet, "
-                   "and refuses to scan at all when this machine's own "
-                   "address is not in a private RFC 1918 range).")
+                   "connect-probe of the LOCAL subnet only, on the "
+                   "Stadium's RPC port 2002. The range comes from the "
+                   "interface's own NETMASK (a /22 is probed as a /22, not "
+                   "as a /24), capped at 1024 addresses around this "
+                   "machine's address, and the messages name the range "
+                   "actually probed (short timeouts, bounded concurrency; "
+                   "never probes beyond the local subnet, and refuses to "
+                   "scan at all when the range is not in a private RFC "
+                   "1918 range).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the discovered device records as JSON.")
 @click.option("--forget", "forget", metavar="SERIAL-OR-IP", default=None,
@@ -1169,7 +1173,8 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
         join). The Stadium answers unicast (verified live, fw 1.3.2);
         firmware that replied only via multicast would fall through to
         the subnet probe.
-      * The subnet probe stays inside the machine's own /24 and refuses
+      * The subnet probe stays inside the machine's own subnet (derived
+        from the interface NETMASK, capped at 1024 addresses) and refuses
         public (non-RFC 1918) ranges outright.
     """
     from helixgen.device import discovery, observations
@@ -1195,17 +1200,24 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
     HelixClient, HelixError = _client()
 
     candidates = discovery.mdns_discover(timeout=timeout)
+    probed = None
     if not candidates and probe:
+        # Name the range actually swept, never "the LAN" — the old wording
+        # asserted more than it checked (hc-3qw).
+        probed = discovery.local_probe_network()
         click.echo("mDNS found nothing — falling back to a TCP connect-probe "
-                   "of the local /24 subnet (port 2002)…", err=True)
+                   f"of {probed or 'the local subnet'} (port 2002)…",
+                   err=True)
         candidates = [discovery.Candidate(ip=ip, via="probe")
                       for ip in discovery.probe_subnet()]
     if not candidates:
         raise click.ClickException(
-            "no Helix Stadium found on the LAN (mDNS `_stadiumserver._tcp` "
-            "browse" + (" + local-subnet probe" if probe else "") + "). "
-            "Is the device powered on and on this network/subnet? Try a "
-            "longer --timeout, or pass --ip explicitly to the other verbs.")
+            "no Helix Stadium found (mDNS `_stadiumserver._tcp` browse"
+            + (f" + a connect-probe of {probed}" if probed else
+               " + subnet probe" if probe else "")
+            + "). Is the device powered on and on this network/subnet? A "
+            "device outside the range above is not covered — try a longer "
+            "--timeout, or pass --ip explicitly to the other verbs.")
 
     confirmed = []
     for cand in sorted(candidates, key=lambda c: c.ip):

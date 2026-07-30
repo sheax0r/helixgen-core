@@ -385,12 +385,22 @@ mechanisms, both verified on hardware (Stadium XL, fw 1.3.2, 2026-07-16):
    listen window (default 3 s; values below 0.5 s are floored to 0.5 s).
 2. **Local-subnet TCP probe (fallback, `--probe`, default on).** For
    networks that block multicast: a bounded concurrent TCP connect-probe of
-   the machine's **own /24 only** on RPC port 2002 (the device ignores
-   ICMP). Short per-connect timeouts, bounded concurrency, never probes
-   beyond the local subnet — and it refuses to scan at all when the
-   machine's own address is not RFC 1918-private (10/8, 172.16/12,
-   192.168/16): connect-scanning a public /24 would be a port scan of
-   strangers, not LAN discovery (backlog #77). `--no-probe` disables it.
+   the machine's **own subnet only** on RPC port 2002 (the device ignores
+   ICMP). The range is derived from the interface's own **netmask**, not
+   assumed to be a /24 — on a /22 (`192.168.4.98 netmask 0xfffffc00`) the
+   probe sweeps `192.168.4.0/22`, all four /24s, where the old /24
+   assumption silently missed three quarters of the network and still
+   reported "no Helix Stadium found" (hc-3qw). Wider networks are **capped
+   at 1024 addresses** (`MAX_PROBE_HOSTS`) around the machine's own
+   address, so a /16 probes the enclosing /22 rather than 65k hosts; the
+   fallback and failure messages both name the range actually probed. The
+   netmask is read from `ip -o -4 addr` / `ifconfig`; where neither exists
+   (Windows) the range falls back to the /24. Short per-connect timeouts,
+   bounded concurrency, never probes beyond the local subnet — and it
+   refuses to scan at all when the range is not RFC 1918-private (10/8,
+   172.16/12, 192.168/16): connect-scanning a public subnet would be a port
+   scan of strangers, not LAN discovery (backlog #77). `--no-probe`
+   disables it.
 
 **Known limitations (backlog #77):** both mechanisms look at the
 **default-route interface** — with a VPN up that is usually the tunnel, so a

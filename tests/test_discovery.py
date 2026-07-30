@@ -8,6 +8,7 @@ and the no-hardcoded-IP regression sweep of src/.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import struct
 import time
@@ -654,7 +655,8 @@ class TestProbeSafety:
             probed.append(addr)
             raise OSError("closed")
         monkeypatch.setattr(discovery.socket, "create_connection", fake_connect)
-        assert discovery.probe_subnet(subnet_ip="192.168.7.10") == []
+        assert discovery.probe_subnet(
+            subnet_ip="192.168.7.10", prefixlen=24) == []
         ips = {a[0] for a in probed}
         assert len(ips) == 253  # /24 minus network/broadcast-ish minus self
         assert "192.168.7.10" not in ips
@@ -692,8 +694,189 @@ class TestProbeSafety:
             probed.append(addr)
             raise OSError("closed")
         monkeypatch.setattr(discovery.socket, "create_connection", fake_connect)
-        assert discovery.probe_subnet(subnet_ip="10.1.2.3") == []
+        assert discovery.probe_subnet(subnet_ip="10.1.2.3", prefixlen=24) == []
         assert len({a[0] for a in probed}) == 253
+
+
+# ---------------------------------------------------------------------------
+# netmask-derived probe range (hc-3qw) — pure functions, no sockets
+# ---------------------------------------------------------------------------
+
+class TestNetmaskToPrefixlen:
+    @pytest.mark.parametrize("mask,expected", [
+        ("0xffffff00", 24),          # macOS/BSD hex form, /24
+        ("0xfffffc00", 22),          # the observed /22 (192.168.4.0-7.255)
+        ("0xffff0000", 16),
+        ("255.255.255.0", 24),
+        ("255.255.252.0", 22),
+        ("255.255.0.0", 16),
+        ("0xffffffff", 32),
+        ("0x00000000", 0),
+    ])
+    def test_parses_both_forms(self, mask, expected):
+        assert discovery.netmask_to_prefixlen(mask) == expected
+
+    @pytest.mark.parametrize("mask", [
+        "0xff00ff00",   # non-contiguous — not a legal netmask
+        "255.0.255.0",
+        "not-a-mask",
+        "",
+        "0x1ffffffff",  # out of range
+    ])
+    def test_rejects_junk(self, mask):
+        assert discovery.netmask_to_prefixlen(mask) is None
+
+
+_IFCONFIG_MACOS = """\
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+\tinet 127.0.0.1 netmask 0xff000000
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tinet 192.168.4.98 netmask 0xfffffc00 broadcast 192.168.7.255
+en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+\tinet 10.9.9.4 netmask 0xffffff00 broadcast 10.9.9.255
+"""
+
+_IP_ADDR_LINUX = """\
+1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever
+2: eth0    inet 192.168.4.98/22 brd 192.168.7.255 scope global eth0\\  valid
+3: eth1    inet 172.20.0.5/16 brd 172.20.255.255 scope global eth1\\   valid
+"""
+
+
+class TestParsePrefixlen:
+    @pytest.mark.parametrize("output,ip,expected", [
+        (_IFCONFIG_MACOS, "192.168.4.98", 22),
+        (_IFCONFIG_MACOS, "10.9.9.4", 24),
+        (_IFCONFIG_MACOS, "127.0.0.1", 8),
+        (_IP_ADDR_LINUX, "192.168.4.98", 22),
+        (_IP_ADDR_LINUX, "172.20.0.5", 16),
+        (_IP_ADDR_LINUX, "127.0.0.1", 8),
+    ])
+    def test_finds_the_interface_carrying_the_address(
+            self, output, ip, expected):
+        assert discovery.parse_prefixlen(output, ip) == expected
+
+    @pytest.mark.parametrize("output", [_IFCONFIG_MACOS, _IP_ADDR_LINUX, ""])
+    def test_unknown_address_is_none(self, output):
+        assert discovery.parse_prefixlen(output, "203.0.113.9") is None
+
+    def test_prefix_match_does_not_leak(self):
+        # "10.9.9.4" must not match the line for "10.9.9.40"
+        out = "en0:\n\tinet 10.9.9.40 netmask 0xffff0000\n"
+        assert discovery.parse_prefixlen(out, "10.9.9.4") is None
+
+
+class TestProbeNetwork:
+    @pytest.mark.parametrize("ip,prefixlen,expected", [
+        ("192.168.4.98", 24, "192.168.4.0/24"),
+        ("192.168.4.98", 22, "192.168.4.0/22"),   # the observed real case
+        ("192.168.4.98", None, "192.168.4.0/24"),  # unknown mask -> /24
+        ("10.1.2.3", 8, "10.1.0.0/22"),           # capped, anchored on us
+        ("172.20.30.40", 16, "172.20.28.0/22"),   # capped, anchored on us
+    ])
+    def test_range_derivation(self, ip, prefixlen, expected):
+        assert str(discovery.probe_network(ip, prefixlen)) == expected
+
+    def test_cap_bounds_host_count(self):
+        for prefixlen in (0, 8, 16, 20, 22):
+            net = discovery.probe_network("10.1.2.3", prefixlen)
+            assert net.num_addresses <= discovery.MAX_PROBE_HOSTS
+            assert ipaddress.ip_address("10.1.2.3") in net
+
+    def test_custom_cap(self):
+        net = discovery.probe_network("10.1.2.3", 8, max_hosts=256)
+        assert str(net) == "10.1.2.0/24"
+
+    @pytest.mark.parametrize("bad", ["not-an-ip", "fe80::1", "", "1.2.3"])
+    def test_bad_address_raises(self, bad):
+        with pytest.raises(ValueError):
+            discovery.probe_network(bad, 24)
+
+    def test_bad_address_refuses_to_probe_without_sockets(self, monkeypatch):
+        def boom(*a, **kw):
+            raise AssertionError("must not open sockets on an unparseable ip")
+        monkeypatch.setattr(discovery.socket, "create_connection", boom)
+        assert discovery.probe_subnet(subnet_ip="fe80::1", prefixlen=24) == []
+
+    def test_slash24_host_count_is_unchanged(self):
+        assert len(list(discovery.probe_network("10.1.2.3", 24).hosts())) == 254
+
+
+class TestProbeUsesDerivedRange:
+    def _probed(self, monkeypatch, **kw):
+        seen = []
+
+        def fake_connect(addr, timeout=None):
+            seen.append(addr)
+            raise OSError("closed")
+        monkeypatch.setattr(discovery.socket, "create_connection", fake_connect)
+        assert discovery.probe_subnet(subnet_ip="192.168.4.98", **kw) == []
+        return {a[0] for a in seen}
+
+    def test_slash22_probes_the_whole_slash22(self, monkeypatch):
+        ips = self._probed(monkeypatch, prefixlen=22)
+        assert len(ips) == 1021          # 1022 usable minus our own address
+        assert "192.168.4.98" not in ips
+        assert {"192.168.4.1", "192.168.5.1", "192.168.6.1",
+                "192.168.7.254"} <= ips
+
+    def test_slash16_is_capped_not_65k(self, monkeypatch):
+        ips = self._probed(monkeypatch, prefixlen=16)
+        assert len(ips) == 1021
+        assert all(ipaddress.ip_address(i)
+                   in ipaddress.ip_network("192.168.4.0/22") for i in ips)
+
+    def test_netmask_lookup_drives_the_default(self, monkeypatch):
+        monkeypatch.setattr(discovery, "local_prefixlen", lambda ip: 22)
+        assert len(self._probed(monkeypatch)) == 1021
+
+    def test_unknown_netmask_falls_back_to_slash24(self, monkeypatch):
+        monkeypatch.setattr(discovery, "local_prefixlen", lambda ip: None)
+        assert len(self._probed(monkeypatch)) == 253
+
+    def test_warning_names_the_range_actually_refused(
+            self, monkeypatch, capsys):
+        def boom(*a, **kw):
+            raise AssertionError("must not open sockets on a public range")
+        monkeypatch.setattr(discovery.socket, "create_connection", boom)
+        assert discovery.probe_subnet(
+            subnet_ip="203.0.113.5", prefixlen=24) == []
+        assert "203.0.113.0/24" in capsys.readouterr().err
+
+    def test_local_probe_network_uses_the_interface_netmask(self, monkeypatch):
+        monkeypatch.setattr(discovery, "local_ipv4", lambda: "192.168.4.98")
+        monkeypatch.setattr(discovery, "local_prefixlen", lambda ip: 22)
+        assert str(discovery.local_probe_network()) == "192.168.4.0/22"
+
+    def test_local_probe_network_is_none_off_private_ranges(self, monkeypatch):
+        monkeypatch.setattr(discovery, "local_ipv4", lambda: "203.0.113.5")
+        assert discovery.local_probe_network() is None
+        monkeypatch.setattr(discovery, "local_ipv4", lambda: None)
+        assert discovery.local_probe_network() is None
+
+
+class TestDiscoverNamesTheProbedRange:
+    """The failure message must not assert more than it checked (hc-3qw)."""
+
+    def test_messages_name_the_range(self, monkeypatch):
+        monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [])
+        monkeypatch.setattr(discovery, "local_probe_network",
+                            lambda **kw: ipaddress.ip_network("192.168.4.0/22"))
+        monkeypatch.setattr(discovery, "probe_subnet", lambda **kw: [])
+        monkeypatch.setattr("helixgen.cli_device._client",
+                            lambda: (_FakeClient, discovery.IPResolutionError))
+        r = CliRunner().invoke(cli, ["device", "discover"])
+        assert r.exit_code != 0
+        assert r.output.count("192.168.4.0/22") == 2  # fallback + failure
+        assert "no Helix Stadium found" in r.output
+
+    def test_no_probe_message_does_not_claim_a_probed_range(self, monkeypatch):
+        monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [])
+        monkeypatch.setattr("helixgen.cli_device._client",
+                            lambda: (_FakeClient, discovery.IPResolutionError))
+        r = CliRunner().invoke(cli, ["device", "discover", "--no-probe"])
+        assert r.exit_code != 0
+        assert "subnet probe" not in r.output
 
 
 # ---------------------------------------------------------------------------
