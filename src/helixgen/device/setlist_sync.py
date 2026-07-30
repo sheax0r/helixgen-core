@@ -286,6 +286,38 @@ def _build_blob(body):
     return transcode.hsp_to_sbepgsm(body, strict=True)
 
 
+def _content_source(path, hsp_error: ValueError):
+    """A non-``.hsp`` local source read as a **device content blob** (the
+    ``.sbe`` that ``device push`` / ``device restore`` record).
+
+    Returns ``(blob, ir_hashes)``: the bytes are already the device's stored
+    content, so they need no transcode, and the IRs are read from
+    ``mdls[*].irmd`` rather than a ``.hsp``'s ``irhash`` (mental-model #2).
+    Raises ``ValueError`` naming BOTH formats for a source that is neither —
+    the bare "missing rpshnosj magic" was misleading for a pushed ``.sbe``.
+
+    ``hsp_error`` is what :func:`read_hsp` raised. A file that DOES carry the
+    ``.hsp`` magic and merely failed to parse (corrupt JSON) is not a content
+    blob at all, so that error is re-raised unchanged rather than relabelled.
+    """
+    from helixgen.hsp import is_hsp_bytes
+
+    from . import content as _content
+    from . import maintenance
+
+    raw = Path(path).read_bytes()
+    if is_hsp_bytes(raw):
+        raise hsp_error
+    try:
+        doc = _content.decode_any(raw)
+    except Exception as e:  # noqa: BLE001 — any decode failure is the same verdict
+        raise ValueError(
+            f"{path}: not a .hsp preset (missing rpshnosj magic) and not a "
+            f"device content blob either ({e}); the tone library takes an "
+            f"authored .hsp or a .sbe device backup") from e
+    return raw, maintenance.content_ir_hashes(doc)
+
+
 def sync_setlists(
     manifest: SetlistManifest,
     *,
@@ -490,6 +522,20 @@ def sync_setlists(
                     raise ValueError(
                         "no .hsp source (pathless); "
                         "nothing local to transcode its content from")
+
+                def _ensure_irs(missing) -> None:
+                    if exclude_irs or not missing:
+                        return
+                    ir_results = _upload_missing_irs(ip, sorted(missing))
+                    result["irs"].extend(ir_results)
+                    n_ir = len(ir_results)
+                    for i, r in enumerate(ir_results, 1):
+                        emit(ProgressEvent(
+                            "irs", index=i, total=n_ir,
+                            label=(r.get("name") or r.get("hash")),
+                            status=("ok" if r.get("ok") else "error"),
+                            detail=r.get("note")))
+
                 try:
                     body = read_hsp(path)
                 except FileNotFoundError as e:
@@ -501,18 +547,18 @@ def sync_setlists(
                     raise ValueError(
                         f"manifest .hsp path missing on disk: {path} "
                         f"(file renamed or moved since registration?)") from e
-                if not exclude_irs:
-                    missing = sorted(bridge.check_irs(client, body).get("missing", []))
-                    if missing:
-                        ir_results = _upload_missing_irs(ip, missing)
-                        result["irs"].extend(ir_results)
-                        n_ir = len(ir_results)
-                        for i, r in enumerate(ir_results, 1):
-                            emit(ProgressEvent(
-                                "irs", index=i, total=n_ir,
-                                label=(r.get("name") or r.get("hash")),
-                                status=("ok" if r.get("ok") else "error"),
-                                detail=r.get("note")))
+                except ValueError as e:
+                    # Not a .hsp — but `device push` records its **`.sbe`
+                    # device-content** source verbatim, and that blob already
+                    # IS the stored-content format this function produces. Push
+                    # it unchanged (the same "decode it as content, don't
+                    # force-parse it as a .hsp" fix ir-prune got in #68i);
+                    # force-parsing it here failed the tone on every sync,
+                    # forever (hc-vko).
+                    blob, want = _content_source(path, e)
+                    _ensure_irs(bridge.check_ir_hashes(client, want).get("missing", []))
+                    return blob
+                _ensure_irs(bridge.check_irs(client, body).get("missing", []))
                 return _build_blob(body)
 
             n_install = len(plan["install"])

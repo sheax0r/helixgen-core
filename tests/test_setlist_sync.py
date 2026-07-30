@@ -147,6 +147,7 @@ class FakeClient:
         self._next_cid = 5000
         self._next_ref = 9000
         # call recorders
+        self.installed_blobs = []
         self.set_content_data_calls = []
         self.deleted = []
         self.mirror_calls = []
@@ -191,6 +192,7 @@ class FakeClient:
 
     # -- writes --
     def install_into_pool(self, blob, name, *, template_blob=None, pos=None):
+        self.installed_blobs.append((name, blob))
         cid = self._next_cid
         self._next_cid += 1
         posi = max((m["posi"] for m in self._pool), default=-1) + 1
@@ -1234,3 +1236,135 @@ def test_missing_tone_file_is_per_tone_error_not_crash(tmp_path, monkeypatch):
     # nothing was installed or deleted for the broken tones
     assert res["pool"]["installed"] == []
     assert client.deleted == []
+
+
+# ---------------------------------------------------------------------------
+# hc-vko: a tone whose recorded source is a .sbe device-content blob (what
+# `device push` records, and what `ir-prune` already decodes natively, #68i).
+# The blob IS the device's stored-content format, so sync pushes it verbatim
+# instead of force-parsing it as a .hsp and failing "missing rpshnosj magic"
+# on every sync, forever.
+# ---------------------------------------------------------------------------
+
+def _sbe(path, doc=None):
+    from helixgen.device import content as _content
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_content.encode_content_data(
+        doc if doc is not None else {"cg__": {}, "hist": 1, "pm__": [], "sfg_": {}}))
+    return path
+
+
+def _manifest_source(tmp_path, setlist, name, path):
+    """Manifest holding ONE tone with a verbatim recorded source path (the
+    shape `device push` writes: source 'push', no content_hash)."""
+    m = SetlistManifest(tmp_path / "setlists.json")
+    m.create_setlist(setlist)
+    m.setlists_map[setlist]["synced"] = True
+    m.tones[name] = {"path": str(path), "content_hash": None,
+                     "source": "push", "slot": "auto"}
+    m.setlists_map[setlist]["tones"].append(name)
+    return m
+
+
+def _stub_transcode_only(monkeypatch):
+    """Like _stub_bridge but leaves read_hsp REAL — these tests need the magic
+    check to actually run against a file on disk."""
+    monkeypatch.setattr(_tc, "hsp_to_sbepgsm", lambda body, strict=True: b"BLOB")
+    monkeypatch.setattr(ss.bridge, "check_irs",
+                        lambda client, body: {"present": set(), "missing": set()})
+
+
+def test_sync_installs_sbe_source_verbatim(tmp_path, monkeypatch):
+    _stub_transcode_only(monkeypatch)
+    sbe = _sbe(tmp_path / "zombie-alt.sbe")
+    m = _manifest_source(tmp_path, "helixgen", "Pushed Tone", sbe)
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["errors"] == []
+    assert res["pool"]["installed"] == ["Pushed Tone"]
+    # pushed unchanged — the .sbe already IS the stored-content format
+    assert client.installed_blobs == [("Pushed Tone", sbe.read_bytes())]
+    # and the synced hash is recorded, so the NEXT sync skips it (the bug was
+    # that this tone errored on every sync, forever)
+    assert _obsfile().pool_hash("Pushed Tone") == _hash_file(sbe)
+
+
+def test_resync_sbe_source_skips(tmp_path, monkeypatch):
+    _stub_transcode_only(monkeypatch)
+    sbe = _sbe(tmp_path / "zombie-alt.sbe")
+    m = _manifest_source(tmp_path, "helixgen", "Pushed Tone", sbe)
+    _seed_pool("Pushed Tone", 5000, 0, _hash_file(sbe))
+    client = FakeClient(setlists={"helixgen": 42}, pool=[("Pushed Tone", 5000, 0)])
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["errors"] == []
+    assert res["pool"]["skipped"] == ["Pushed Tone"]
+    assert client.set_content_data_calls == []
+
+
+def test_sync_sbe_source_uploads_its_irs(tmp_path, monkeypatch):
+    """A .sbe references IRs as `mdls[*].irmd` (raw 16 bytes), not `irhash` —
+    the missing-IR check must read them from the decoded content doc."""
+    _stub_transcode_only(monkeypatch)
+    h = "aa" * 16
+    sbe = _sbe(tmp_path / "pushed.sbe",
+               {"sfg_": {"flow": [{"blks": {"b1": {
+                   "mdls": [{"irmd": bytes.fromhex(h)}]}}}]}})
+    seen = []
+    monkeypatch.setattr(ss.bridge, "check_ir_hashes",
+                        lambda client, hashes: seen.append(set(hashes)) or
+                        {"present": set(), "missing": set(hashes)})
+    uploads = []
+    monkeypatch.setattr(ss, "_upload_missing_irs",
+                        lambda ip, hashes: uploads.append((ip, hashes)) or
+                        [{"hash": x, "ok": True} for x in hashes])
+    m = _manifest_source(tmp_path, "helixgen", "Pushed Tone", sbe)
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["errors"] == []
+    assert seen == [{h}]
+    assert uploads == [("1.2.3.4", [h])]
+
+
+def test_sync_junk_source_errors_naming_both_formats(tmp_path, monkeypatch):
+    """A source that is neither a .hsp nor a device content blob is a real
+    error — but the message must name BOTH formats, not just the .hsp magic."""
+    _stub_transcode_only(monkeypatch)
+    junk = tmp_path / "notes.txt"
+    junk.write_bytes(b"this is not a preset at all")
+    m = _manifest_source(tmp_path, "helixgen", "Junk Tone", junk)
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["ok"] is False
+    err = next(e for e in res["errors"] if "Junk Tone" in e)
+    assert str(junk) in err
+    assert ".hsp" in err and "content blob" in err
+    assert res["pool"]["installed"] == []
+
+
+def test_sync_corrupt_hsp_keeps_its_own_error(tmp_path, monkeypatch):
+    """Same guard on the sync side: a .hsp with broken JSON reports the parse
+    error, not "not a device content blob either"."""
+    _stub_transcode_only(monkeypatch)
+    p = tmp_path / "broken.hsp"
+    p.write_bytes(b"rpshnosj{not json")
+    m = _manifest_source(tmp_path, "helixgen", "Broken Tone", p)
+    client = FakeClient(setlists={"helixgen": 42})
+    monkeypatch.setattr(ss, "HelixClient", lambda **k: client)
+
+    res = ss.sync_setlists(m, ip="1.2.3.4", setlists=["helixgen"])
+
+    assert res["ok"] is False
+    err = next(e for e in res["errors"] if "Broken Tone" in e)
+    assert "content blob" not in err

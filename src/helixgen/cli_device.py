@@ -594,7 +594,10 @@ def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
             if source_path and str(source_path).endswith(".hsp"):
                 name = m.register_tone(source_path, source="import-local")
             elif source_path:
-                # a pushed .sbe (or other local source): store the path verbatim
+                # a pushed .sbe (or other local source): store the path
+                # verbatim. It IS device content, so `device sync` re-pushes
+                # those bytes unchanged and `ir-prune` decodes them for IR
+                # references — neither force-parses it as a .hsp (hc-vko/#68i).
                 m.tones[name] = {"path": str(source_path), "content_hash": None,
                                  "source": "push", "slot": None}
             else:
@@ -3248,7 +3251,9 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     raises instead of reading as empty). With a NAMED --setlist the content
     lands in the POOL (lowest empty slot) and a REFERENCE is added to the
     setlist at --pos. The .sbe is recorded as the tone's local source in the
-    tone library (ir-prune decodes it for IR references).
+    tone library: it already IS device content, so `device sync` re-pushes
+    those bytes verbatim (no transcode) and `ir-prune` decodes them for IR
+    references — neither reads it as a .hsp.
     """
     HelixClient, HelixError = _client()
 
