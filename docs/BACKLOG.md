@@ -190,8 +190,10 @@ and had to be redirected. Start here so future work begins from the right model.
   renumbered 2026-07-17 from a second "#75" that collided with the loudness
   HW-validation #75 below — the workspace BACKLOG.md numbering is
   authoritative). **Partially addressed 2026-07-17:**
-  (a) interface/subnet awareness — the /24 probe now **refuses non-RFC 1918
-  ranges** (explicit 10/8 + 172.16/12 + 192.168/16 check — deterministic
+  (a) interface/subnet awareness — the probe **derives its range from the
+  interface netmask** (hc-3qw, capped at 1024 addresses around our own
+  address; `ip -o -4 addr` / `ifconfig`, /24 fallback where neither exists)
+  instead of assuming a /24, and **refuses non-RFC 1918 ranges** (explicit 10/8 + 172.16/12 + 192.168/16 check — deterministic
   across Python versions, unlike `ipaddress.is_private`; stderr warning
   names `--ip` as the escape hatch). The default-route interface blindness
   REMAINS (a VPN default route makes both mDNS and the probe look at the

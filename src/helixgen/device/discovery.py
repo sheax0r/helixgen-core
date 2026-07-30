@@ -13,13 +13,17 @@ Pure stdlib — no pyzmq/msgpack/zeroconf. Two mechanisms, used by
    bit set and parses every response received within the timeout.
 
 2. **Subnet TCP probe (fallback).** For networks that block multicast:
-   a bounded concurrent TCP *connect* probe of the local /24 on the
+   a bounded concurrent TCP *connect* probe of the local subnet on the
    Stadium's RPC port 2002 (the device ignores ICMP, so ping is useless).
-   Strictly limited to the machine's own /24 — never probes beyond the
-   local subnet — with short per-connect timeouts and bounded concurrency.
-   The probe additionally refuses to run when the machine's own address is
-   not in a private (RFC 1918) range: connect-scanning 253 hosts of a
-   PUBLIC /24 is a port scan of strangers, not LAN discovery (backlog #77).
+   The range comes from the interface's own NETMASK — not an assumed /24,
+   which silently under-scanned every wider network (a /22 hides three
+   quarters of its hosts; hc-3qw) — capped at :data:`MAX_PROBE_HOSTS`
+   addresses anchored on our own address, so a /16 probes a bounded slice
+   rather than 65k hosts. Strictly limited to the machine's own subnet —
+   never probes beyond the local subnet — with short per-connect timeouts
+   and bounded concurrency. The probe additionally refuses to run when the
+   range is not in a private (RFC 1918) range: connect-scanning a PUBLIC
+   subnet is a port scan of strangers, not LAN discovery (backlog #77).
 
 Known limitations (backlog #77):
 
@@ -59,8 +63,10 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import socket
 import struct
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -322,6 +328,87 @@ def local_ipv4() -> Optional[str]:
     return ip
 
 
+#: Ceiling on how many addresses one connect-probe sweep may touch. A /22
+#: (1024 addresses) takes ~6 s at the default timeout/concurrency; a /16
+#: would be 65k hosts — a scan, not a discovery. When the interface's
+#: network is wider than this, the probe sweeps the cap-sized block
+#: containing our own address instead (hc-3qw).
+MAX_PROBE_HOSTS = 1024
+
+
+def netmask_to_prefixlen(mask: str) -> Optional[int]:
+    """``0xfffffc00`` / ``255.255.252.0`` -> ``22``. ``None`` for anything
+    that is not a legal contiguous IPv4 netmask (fail closed)."""
+    try:
+        if mask.lower().startswith("0x"):
+            mask = str(ipaddress.IPv4Address(int(mask, 16)))
+        return ipaddress.IPv4Network(f"0.0.0.0/{mask}").prefixlen
+    except ValueError:
+        return None
+
+
+def parse_prefixlen(output: str, ip: str) -> Optional[int]:
+    """Prefix length of the interface carrying ``ip``, read out of
+    ``ifconfig`` or ``ip -o -4 addr`` output. Pure — the offline half of
+    :func:`local_prefixlen`.
+
+    Handles both spellings: iproute2's ``inet 192.168.4.98/22`` and
+    BSD/macOS's ``inet 192.168.4.98 netmask 0xfffffc00``. ``None`` when the
+    address does not appear (callers then assume /24, the old behavior).
+    """
+    quoted = re.escape(ip)
+    m = re.search(rf"\binet\s+{quoted}/(\d{{1,2}})(?!\d)", output)
+    if m:
+        return int(m.group(1))
+    m = re.search(rf"\binet\s+{quoted}\s+netmask\s+(\S+)", output)
+    return netmask_to_prefixlen(m.group(1)) if m else None
+
+
+def local_prefixlen(ip: str) -> Optional[int]:
+    """The netmask width of the local interface holding ``ip``, or ``None``
+    when it can't be determined (no ``ip``/``ifconfig`` on PATH — Windows,
+    say — or the address belongs to no local interface).
+
+    Shelling out is the portable way in: stdlib exposes no per-interface
+    netmask (``socket`` gives addresses only, and ``fcntl``'s
+    ``SIOCGIFNETMASK`` is Linux-only and wants an interface name).
+    """
+    for cmd in (["ip", "-o", "-4", "addr"], ["ifconfig", "-a"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        found = parse_prefixlen(out or "", ip)
+        if found is not None:
+            return found
+    return None
+
+
+def probe_network(ip: str, prefixlen: Optional[int],
+                  *, max_hosts: int = MAX_PROBE_HOSTS
+                  ) -> ipaddress.IPv4Network:
+    """The network the probe will actually sweep: ``ip``'s network at
+    ``prefixlen`` (``None`` = the historical /24 assumption), narrowed to at
+    most ``max_hosts`` addresses around ``ip``. Pure; raises ``ValueError``
+    on an unparseable address."""
+    width = 24 if prefixlen is None else max(0, min(32, int(prefixlen)))
+    floor = 32 - (max(1, int(max_hosts)).bit_length() - 1)
+    return ipaddress.ip_network(f"{ip}/{max(width, floor)}", strict=False)
+
+
+def local_probe_network(*, max_hosts: int = MAX_PROBE_HOSTS
+                        ) -> Optional[ipaddress.IPv4Network]:
+    """The range :func:`probe_subnet` would sweep right now, or ``None``
+    when there is nothing probeable (no local IPv4, or a non-RFC 1918
+    address the probe refuses to scan). Lets the CLI name the range it
+    actually checked instead of claiming "the LAN"."""
+    me = local_ipv4()
+    if not me or not _is_rfc1918(me):
+        return None
+    return probe_network(me, local_prefixlen(me), max_hosts=max_hosts)
+
+
 def probe_reachable(ip: str, port: int = RPC_PORT, *,
                     timeout: float = 2.0) -> bool:
     """One cheap TCP connect probe of ``ip:port`` — the canonical "is the
@@ -337,30 +424,41 @@ def probe_reachable(ip: str, port: int = RPC_PORT, *,
 
 def probe_subnet(port: int = RPC_PORT, *, connect_timeout: float = 0.35,
                  max_workers: int = 64,
-                 subnet_ip: Optional[str] = None) -> List[str]:
-    """TCP connect-probe of the **local /24 only** for an open Stadium RPC
-    port. Etiquette: never probes beyond the machine's own /24 (254 hosts),
-    short per-connect timeouts, bounded thread pool, skips our own address.
-    Returns the responding IPs (unconfirmed candidates).
+                 subnet_ip: Optional[str] = None,
+                 prefixlen: Optional[int] = None,
+                 max_hosts: int = MAX_PROBE_HOSTS) -> List[str]:
+    """TCP connect-probe of the **local subnet only** for an open Stadium
+    RPC port. The range comes from the interface's netmask
+    (:func:`local_prefixlen`; ``prefixlen`` overrides it, ``None`` on both
+    falls back to /24) capped at ``max_hosts`` addresses around our own
+    address — see :func:`probe_network`. Etiquette: never probes beyond the
+    machine's own subnet, short per-connect timeouts, bounded thread pool,
+    skips our own address. Returns the responding IPs (unconfirmed).
 
-    Private ranges only (backlog #77): when the machine's own address is
-    not RFC 1918-private, the probe refuses to run (stderr warning, empty
-    result) — connect-scanning a public /24 would be a port scan of 253
-    strangers' hosts, not LAN discovery. Use ``--ip`` /
+    Private ranges only (backlog #77): when the range is not RFC
+    1918-private, the probe refuses to run (stderr warning naming the
+    range, empty result) — connect-scanning a public subnet would be a port
+    scan of strangers' hosts, not LAN discovery. Use ``--ip`` /
     ``$HELIXGEN_HELIX_IP`` to reach a device on an exotic network.
     """
     me = subnet_ip or local_ipv4()
     if not me:
         return []
-    if not _is_rfc1918(me):
+    try:
+        net = probe_network(
+            me, local_prefixlen(me) if prefixlen is None else prefixlen,
+            max_hosts=max_hosts)
+    except ValueError:
+        net = None
+    # Both gates matter: our own address must be private, and so must every
+    # address the (possibly wider-than-/24) sweep would touch.
+    if net is None or not any(net.subnet_of(n) for n in _RFC1918_NETS):
         sys.stderr.write(
-            f"warning: this machine's address {me} is not in a private "
-            "(RFC 1918) range — refusing to connect-scan a non-private "
-            "/24. Pass --ip (or set $HELIXGEN_HELIX_IP) to target the "
-            "device directly instead.\n")
+            f"warning: {net or me} is not in a private (RFC 1918) range — "
+            "refusing to connect-scan it. Pass --ip (or set "
+            "$HELIXGEN_HELIX_IP) to target the device directly instead.\n")
         return []
-    base = me.rsplit(".", 1)[0]
-    targets = [f"{base}.{i}" for i in range(1, 255) if f"{base}.{i}" != me]
+    targets = [str(host) for host in net.hosts() if str(host) != me]
 
     def _try(ip: str) -> Optional[str]:
         try:
