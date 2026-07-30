@@ -184,6 +184,26 @@ and had to be redirected. Start here so future work begins from the right model.
 
 ## 🔲 Remaining
 
+### Hardware output gain exceeds the +20 schema cap — cap KEPT (hc-bgx, 2026-07-30)
+
+Measured on hardware (Stadium XL, fw 1.3.2): `device set-param 0 13 2 25` on the
+output block's `gain` — advertised `f [-120..20]` by `device params` and by the
+model defs — is accepted, reads back as 25.0, and adds a real +5 dB over the +20
+setting (capture peak −0.59 dBFS, so not a clipping artifact). The +20 ceiling is
+therefore a **local schema limit, not a hardware limit**, and `device normalize`'s
+"a target above chain gain + 20 is unreachable" ceiling is self-imposed.
+
+**Decision: enforce the advertised range on the write path; do NOT widen the cap.**
+`device set-param` now validates against the pid's advertised min/max and refuses
+out-of-range writes (`--force` overrides, since the range is the vendored defs' and
+may be narrower than the firmware's). Widening the cap would "fix" the 5 library
+tones pinned at +20 (he-7kz) by amplifying their noise floor — the level they lack
+belongs in in-chain gain staging, not in more output trim. Reopen only with a
+reason that isn't "the pinned tones are quiet".
+
+Still open, should someone want it: the same validation on `device globaleq set` /
+`device settings set`, which write raw values through other paths.
+
 ### Deferred from the 0.24.0 discovery adversarial review (2026-07-16)
 
 - **#77 Discovery residuals** (workspace #74 shipped 0.24.0; PR #12 review;

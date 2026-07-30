@@ -496,8 +496,19 @@ values >1.0 legal; dB = `20*log10(v)`). HW-characterized 2026-07-14 on a
 serial-path preset: mid 796 = the path chain nodes as adjacent L/R cell pairs
 (cells 0–1 = instrument input; cells 8–9 == 26–27 = chain out), mid 800's
 populated cells = the output-send stereo pairs, each carrying the chain-out
-level. **Every tap sits upstream of the output block's `gain`** (a landed
-−60 dB output-gain write moves no cell). Bypassing the amp collapses the
+level. **Every tap sits DOWNSTREAM of the output block's `gain`** — a meter
+reading already includes whatever output level is in force.
+**Re-measured 2026-07-30** (Stadium XL, fw 1.3.2), same preset and stimulus,
+only the output gain moved: `0 dB → gain_db +8.37`, `−20 dB → gain_db
+−11.11`, i.e. a −20 dB write moved the meter −20.04 dB.
+This **corrects a prior claim** here that "every tap sits upstream of the
+output block's `gain` (a landed −60 dB output-gain write moves no cell)".
+That was an inference, not a measurement, and `device normalize` was built on
+it: it added the output level on top of a gain that already contained it, so
+every trim was double-counted and the loop oscillated instead of converging
+(see hc-daz). Treat any tap-position claim as measured only when it names the
+experiment, the model and the firmware — as this one now does.
+Bypassing the amp collapses the
 downstream cells ~−33 dB — the meters are the ground truth for whether a
 live-op actually landed (the 2001 echo is NOT: the device echoes success for
 a toggle of the wrong block). Full per-layout cell-index formula still open

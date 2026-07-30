@@ -6,24 +6,34 @@ backlog #62): compare per-target TOTAL loudness against a target and write dB
 trims into the LOCAL ``.hsp`` — the source of truth; the device copy is
 rebuilt from it by ``device sync`` / ``device install``.
 
-**Total loudness, not raw chain gain.** Every meter-grid tap sits UPSTREAM of
-the output block's gain (the phase-0 hardware finding), so `device measure`'s
-median chain ``gain_db`` never includes any output trim already in force.
-What a listener hears is ``gain_db + output level``, and THAT is what the
-loop equalizes (:func:`total_loudness`): ``trim = (gain_anchor + L_anchor) −
-(gain_target + L_target)``. Sizing trims from totals is what makes the loop
-idempotent — a re-run measures the same gains but sees the updated levels, so
-every trim lands in the dead-band — and what keeps hand-balanced presets
-(correct output overrides already written) untouched. Sizing from raw gains
-instead would double every trim on a re-run and destroy pre-balanced state
-(the spec §5 "trim to absolute target, not cumulative" promise).
+**The measured gain IS the total.** The meter taps sit DOWNSTREAM of the
+output block's gain, so `device measure`'s median chain ``gain_db`` ALREADY
+includes any output trim in force. Measured on live hardware (Stadium XL fw
+1.3.2, 2026-07-30) — same preset, same stimulus, only the output gain moved::
+
+    output gain   0 dB  ->  output_db -22.82,  gain_db   8.37
+    output gain -20 dB  ->  output_db -42.86,  gain_db -11.11
+
+A −20 dB write moved the meter −20.04 dB. So the loop equalizes ``gain_db``
+directly (:func:`total_loudness`): ``trim = target − gain_target``.
+
+This corrects a prior premise (``docs/helix-protocol.md``: "every tap sits
+upstream of the output block's gain") that was an inference presented as a
+measurement. Adding the output level on top of a gain that already contained
+it DOUBLE-COUNTED it, so every trim was wrong by exactly the output level and
+the loop OSCILLATED between two states instead of converging: a real 34-tone
+library run trimmed −21.90 dB on one pass and +21.90 dB on the next, leaving
+the library exactly where it started. See hc-daz.
+
+Idempotency now comes from the trim being sized against an absolute target
+each run: once a target measures at ``target_db``, the next run's delta is
+zero and lands in the dead-band.
 
 The actuator is the path output block's ``level`` (``b13`` ``gain``), which
 is dB-native so a correction is exact in one move: per-snapshot overrides for
 the snapshot scope, a whole-preset shift (base + any existing per-snapshot
-array) for the setlist scope. The same meter-tap caveat means an output trim
-can never be confirmed by re-measuring — the loop trusts the dB math by
-design (a naive re-measure-to-confirm would falsely read "no change").
+array) for the setlist scope. Because the taps are downstream, a written trim
+IS visible to a re-measure — re-measuring is a valid way to confirm one.
 
 This module is pure local logic (unit-testable offline); the ``device
 normalize`` CLI verb owns the device interaction (snapshot recall / preset
@@ -104,12 +114,20 @@ def reference_output_level(
 def total_loudness(
     body: Dict[str, Any], gain_db: float, snap_idx: Optional[int] = None
 ) -> float:
-    """What the listener hears, in dB: the measured chain ``gain_db`` plus
-    the output level in force (:func:`reference_output_level`). The meter
-    taps sit upstream of the output gain, so the measured gain alone never
-    reflects a trim — totals are what the loop equalizes, and what makes a
-    re-run idempotent."""
-    return gain_db + reference_output_level(body, snap_idx)
+    """What the listener hears, in dB — which is just the measured chain
+    ``gain_db``.
+
+    The meter taps sit DOWNSTREAM of the output block's gain (measured on
+    Stadium XL fw 1.3.2: a −20 dB output-gain write moved the meter −20.04
+    dB), so ``gain_db`` already includes the output level in force. Adding
+    :func:`reference_output_level` on top of it double-counts, which made the
+    loop oscillate instead of converge — see the module docstring and hc-daz.
+
+    ``body`` and ``snap_idx`` are retained for API compatibility and for
+    callers that still want the level itself via
+    :func:`reference_output_level` (the trim is applied as a DELTA to that
+    level, so it is still needed on the apply path)."""
+    return gain_db
 
 
 def compute_trim(

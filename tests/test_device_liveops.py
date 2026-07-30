@@ -99,16 +99,62 @@ def test_set_block_model_wire():
     assert args[1:] == [0, 4, 0, 70]
 
 
-def test_set_param_wire():
+def test_set_param_wire(monkeypatch):
     # /ParamValueSet [reqid, path, grid_slot, 0, paramId, value, -1] with the
     # value in RAW units (dB floats verbatim; HW 2026-07-15: slot 13 gain
     # 6.0→3.0→6.0 acked + read back).
     h = HelixClient("10.0.0.99")
     _wire(h)
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
     h.set_param(0, 13, 2, -6.0)
     addr, args = _last_sent(h)
     assert addr == "/ParamValueSet"
     assert args[1:] == [0, 13, 0, 2, -6.0, -1]
+
+
+def test_set_param_rejects_out_of_range(monkeypatch):
+    # hc-bgx: the device happily applies +25 dB on a gain the defs (and
+    # `device params`) advertise as [-120..20]. The write path validates
+    # against the advertised range instead of letting a typo land.
+    from helixgen.device.client import HelixError
+
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
+    with pytest.raises(HelixError, match=r"-120\.\.20"):
+        h.set_param(0, 13, 2, 25.0)
+    assert h.sock.sent == []       # nothing reached the wire
+
+
+def test_set_param_force_writes_out_of_range(monkeypatch):
+    # The range is the vendored defs', not the hardware's — --force writes it.
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
+    h.set_param(0, 13, 2, 25.0, force=True)
+    addr, args = _last_sent(h)
+    assert addr == "/ParamValueSet"
+    assert args[1:] == [0, 13, 0, 2, 25.0, -1]
+
+
+def test_set_param_bounds_are_inclusive(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
+    for value in (20.0, -120.0):
+        h.set_param(0, 13, 2, value)
+    assert len(h.sock.sent) == 2
+
+
+def test_set_param_unknown_pid_has_no_range(monkeypatch):
+    # pid 999 is stored but absent from the defs: no advertised range, so
+    # nothing to validate against — the write goes through as before.
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: _FLAT_EB)
+    h.set_param(0, 1, 999, 12345.0)
+    addr, _args = _last_sent(h)
+    assert addr == "/ParamValueSet"
 
 
 def test_get_param_wire_and_reply():

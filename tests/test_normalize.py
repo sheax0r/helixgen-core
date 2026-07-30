@@ -45,14 +45,30 @@ def test_effective_output_level_reads_snapshot_then_base(snapshots_body):
     assert NZ.effective_output_level(snapshots_body, 0, snap_idx=2) == 0.0
 
 
-def test_total_loudness_adds_reference_output_level(snapshots_body):
-    # total loudness = measured chain gain + the output level in force on
-    # the FIRST output path (the meters tap upstream of output gain, so the
-    # measured gain never includes the trim)
+def test_total_loudness_is_the_measured_gain(snapshots_body):
+    # The meters tap DOWNSTREAM of the output block gain (measured on Stadium
+    # XL fw 1.3.2: a -20 dB output-gain write moved the meter -20.04 dB), so
+    # gain_db ALREADY includes the output level. Adding it again double-counts
+    # and makes the loop oscillate — see hc-daz.
     assert NZ.total_loudness(snapshots_body, 30.0) == 30.0
     _gain(snapshots_body)["snapshots"] = [0.0, -3.0] + [0.0] * 6
-    assert NZ.total_loudness(snapshots_body, 30.0, snap_idx=1) == 27.0
+    # An output level in force must NOT change the total: it is already in the
+    # measured gain. Both of these were 27.0 / 30.0 under the old double-count.
+    assert NZ.total_loudness(snapshots_body, 30.0, snap_idx=1) == 30.0
     assert NZ.total_loudness(snapshots_body, 30.0, snap_idx=2) == 30.0
+
+
+def test_trim_converges_in_one_pass_and_does_not_oscillate(snapshots_body):
+    # Regression for hc-daz. A target measuring 30 dB against a 17.5 dB goal
+    # must trim -12.5 once, and then — re-measured at the new level — trim 0.
+    trim = NZ.compute_trim(NZ.total_loudness(snapshots_body, 30.0), 17.5, 1.0)
+    assert trim == -12.5
+    NZ.apply_snapshot_trim(snapshots_body, 1, trim)
+    # The next run measures the tone at its NEW level: the trim landed, so the
+    # meter now reads the target. Under the old math this returned +12.5 and
+    # the loop flipped back and forth forever.
+    assert NZ.compute_trim(
+        NZ.total_loudness(snapshots_body, 17.5, snap_idx=1), 17.5, 1.0) == 0.0
 
 
 # --- applying ---------------------------------------------------------------
@@ -65,33 +81,36 @@ def test_apply_snapshot_trim_writes_per_snapshot_override(snapshots_body):
     assert w["snapshots"][0] == 0.0 and w["value"] == 0.0
 
 
-def _plan_and_apply(body, gain_anchor, gain_target, tolerance=1.0):
-    """One planning+apply pass the way the CLI runs it: trims are sized from
-    TOTAL loudness (chain gain + effective output level), then applied as a
-    relative move on every output path."""
-    target = NZ.total_loudness(body, gain_anchor, snap_idx=0)
+def _plan_and_apply(body, target_db, gain_measured, tolerance=1.0):
+    """One planning+apply pass the way the CLI runs it: the trim is sized from
+    the MEASURED gain — which already includes the output level in force,
+    because the taps are downstream of it — and applied as a relative move on
+    every output path."""
     trim = NZ.compute_trim(
-        NZ.total_loudness(body, gain_target, snap_idx=1), target, tolerance)
+        NZ.total_loudness(body, gain_measured, snap_idx=1), target_db,
+        tolerance)
     if trim:
         NZ.apply_snapshot_trim(body, 1, trim)
     return trim
 
 
-def test_trim_loop_is_idempotent_on_second_run(snapshots_body):
-    # C1 (2026-07-16 review): the meters tap upstream of output gain, so a
-    # re-run sees the SAME measured gains — sizing trims from total loudness
-    # makes the second pass a dead-band no-op instead of doubling the trim.
+def test_trim_loop_converges_without_doubling(snapshots_body):
+    # hc-daz: the meters tap DOWNSTREAM of the output gain, so a re-run
+    # measures the tone at its NEW level. First pass moves it onto target;
+    # the second pass measures the target and lands in the dead band.
     assert _plan_and_apply(snapshots_body, 27.96, 33.98) == -6.0
     assert _gain(snapshots_body)["snapshots"][1] == -6.0
-    assert _plan_and_apply(snapshots_body, 27.96, 33.98) == 0.0
+    # re-measured after the trim landed: 33.98 - 6.0 = 27.98
+    assert _plan_and_apply(snapshots_body, 27.96, 27.98) == 0.0
     assert _gain(snapshots_body)["snapshots"][1] == -6.0  # NOT -12
 
 
 def test_trim_loop_leaves_pre_balanced_overrides_alone(snapshots_body):
-    # C1: a hand-balanced override that already equalizes total loudness
-    # (Lead measures +6 dB hotter, its output is already -6 dB) is in band.
+    # A hand-balanced override that already equalizes loudness measures ON
+    # target (the -6 dB override is already inside the measured gain), so the
+    # planner leaves it alone.
     _gain(snapshots_body)["snapshots"] = [0.0, -6.0] + [0.0] * 6
-    assert _plan_and_apply(snapshots_body, 27.96, 33.98) == 0.0
+    assert _plan_and_apply(snapshots_body, 27.96, 27.96) == 0.0
     assert _gain(snapshots_body)["snapshots"][1] == -6.0
 
 

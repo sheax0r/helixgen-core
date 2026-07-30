@@ -33,6 +33,14 @@ IN_LEVEL = 0.02
 GAINS = {("snap", 0): 0.5, ("snap", 1): 1.0, ("snap", 2): 0.52}
 
 
+def _after_trim(level, trim_db):
+    """The scripted chain-out level a target reads AFTER a trim lands.
+    The meter taps sit DOWNSTREAM of the output gain (hc-daz), so a
+    re-run measures the tone at its new level."""
+    return level * 10 ** (trim_db / 20)
+
+
+
 class _Ev:
     def __init__(self, args):
         self.args = args
@@ -243,13 +251,15 @@ def test_normalize_snapshots_json(monkeypatch, preset):
 
 
 def test_normalize_snapshots_yes_rerun_is_noop(monkeypatch, preset):
-    # C1: the meters tap upstream of output gain, so a re-run measures the
-    # SAME gains — sizing trims from TOTAL loudness (gain + output level)
-    # makes the second --yes pass a dead-band no-op, not a doubled trim.
+    # hc-daz: the meters tap DOWNSTREAM of output gain, so a re-run measures
+    # the tone at its NEW level and the second --yes pass is a dead-band
+    # no-op, not a doubled trim.
     _patch(monkeypatch, GAINS)
     args = ["device", "normalize", str(preset), "--seconds", "6", "--yes"]
     assert CliRunner().invoke(cli, args).exit_code == 0
     assert _gain(preset)["snapshots"][1] == -6.0
+    _patch(monkeypatch,
+           {**GAINS, ("snap", 1): _after_trim(GAINS[("snap", 1)], -6.0)})
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
     assert "nothing to write" in result.output
@@ -258,16 +268,16 @@ def test_normalize_snapshots_yes_rerun_is_noop(monkeypatch, preset):
 
 def test_normalize_snapshots_preserves_hand_balanced_overrides(
         monkeypatch, preset):
-    # C1: a pre-existing hand-balanced override that already equalizes total
-    # loudness (Lead measures +6 dB hotter, its output is already -6 dB)
-    # must be left alone, not re-trimmed toward -12.
+    # A pre-existing hand-balanced override that already equalizes loudness
+    # must be left alone. With downstream taps the -6 dB override is already
+    # inside the measured gain, so Lead reads level with the anchor.
     from helixgen.hsp import write_hsp
     body = read_hsp(preset)
     for fl in (0, 1):
         body["preset"]["flow"][fl]["b13"]["slot"][0]["params"]["gain"][
             "snapshots"] = [0.0, -6.0] + [0.0] * 6
     write_hsp(preset, body)
-    _patch(monkeypatch, GAINS)
+    _patch(monkeypatch, {**GAINS, ("snap", 1): GAINS[("snap", 0)]})
     result = CliRunner().invoke(
         cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
     assert result.exit_code == 0, result.output
@@ -396,11 +406,10 @@ def test_normalize_setlist_source_loop_uses_output_db(
     assert result.exit_code == 0, result.output
     a, b = gig_setlist["paths"]
     assert _gain(a)["value"] == 0.0            # anchor untouched
-    # ToneB's chain out is +6.02 dB over the anchor but already carries a
-    # -4.5 dB base level -> total delta +1.52 dB -> uniform -1.5 dB shift
-    # (identical to the input-mode total-loudness sizing)
-    assert _gain(b)["value"] == -6.0
-    assert _gain(b, flow=1)["value"] == -1.5
+    # ToneB's chain out reads +6.02 dB over the anchor, already including its
+    # -4.5 dB base -> uniform -6.0 dB shift (same sizing as input mode)
+    assert _gain(b)["value"] == -10.5
+    assert _gain(b, flow=1)["value"] == -6.0
 
 
 # --- setlist scope -----------------------------------------------------------
@@ -449,12 +458,11 @@ def test_normalize_setlist_trims_equalize_total_loudness(
     assert ("load_preset", 102) in FakeClient.calls
     a, b = gig_setlist["paths"]
     assert _gain(a)["value"] == 0.0     # anchor untouched
-    # C1: ToneB measures +6.02 dB hotter but already carries a -4.5 dB base,
-    # so its TOTAL loudness is only 1.52 dB above the anchor's — the whole
-    # preset shifts -1.5 dB (uniform, preserving intra-preset balance),
-    # ending equalized in total loudness (not shifted the full -6)
-    assert _gain(b)["value"] == -6.0
-    assert _gain(b, flow=1)["value"] == -1.5
+    # hc-daz: ToneB MEASURES +6.02 dB hotter, and that measurement already
+    # includes its -4.5 dB base, so the whole preset shifts -6.0 dB (uniform,
+    # preserving intra-preset balance): -4.5 - 6.0 = -10.5 on flow 0.
+    assert _gain(b)["value"] == -10.5
+    assert _gain(b, flow=1)["value"] == -6.0
     # M7: the player's previously ACTIVE preset (cid 7) is restored
     assert FakeClient.calls[-1] == ("load_preset", 7)
 
@@ -464,12 +472,16 @@ def test_normalize_setlist_yes_rerun_is_noop(monkeypatch, gig_setlist):
     args = ["device", "normalize", "--setlist", "Gig", "--seconds", "6",
             "--yes"]
     assert CliRunner().invoke(cli, args).exit_code == 0
-    _patch_gig(monkeypatch, gig_setlist)   # fresh call log, same telemetry
+    # hc-daz: taps are DOWNSTREAM, so the re-run measures ToneB at its NEW
+    # level — 6 dB quieter, landing every trim in the dead band.
+    _patch_gig(monkeypatch, gig_setlist,
+               script={("cid", 101): 0.5,
+                       ("cid", 102): _after_trim(1.0, -6.0)})
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
     assert "nothing to write" in result.output
     b = gig_setlist["paths"][1]
-    assert _gain(b)["value"] == -6.0       # NOT -7.5
+    assert _gain(b)["value"] == -10.5      # unchanged by the re-run, NOT doubled
 
 
 def test_normalize_setlist_skips_tone_with_mismatched_device_name(
@@ -696,7 +708,10 @@ def test_normalize_rerun_overwrites_record(monkeypatch, library_preset):
     assert CliRunner().invoke(cli, args).exit_code == 0
     first = _library_normalized()
     assert {t["name"]: t["trim_db"] for t in first["targets"]}["Lead"] == -6.0
-    # second run: same telemetry, trims now in band -> record OVERWRITTEN
+    # second run: the trim landed, so Lead now measures 6 dB quieter and every
+    # trim falls in band -> record OVERWRITTEN
+    _patch(monkeypatch,
+           {**GAINS, ("snap", 1): _after_trim(GAINS[("snap", 1)], -6.0)})
     result = CliRunner().invoke(cli, args)
     assert result.exit_code == 0, result.output
     rec = _library_normalized()
