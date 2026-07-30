@@ -578,7 +578,14 @@ def check_irs(client, hsp_body: dict) -> Dict[str, set]:
     IR upload, and reporting an IR the device already has as "missing" sends
     the user off to re-import it (#38 Task 4).
     """
-    want = hsp_ir_hashes(hsp_body)
+    return check_ir_hashes(client, hsp_ir_hashes(hsp_body))
+
+
+def check_ir_hashes(client, want) -> Dict[str, set]:
+    """:func:`check_irs` over an already-collected hash set — the entry point
+    for a source that isn't a ``.hsp`` (a ``.sbe`` device-content blob carries
+    its IRs as ``mdls[*].irmd``, see ``maintenance.content_ir_hashes``)."""
+    want = set(want)
     if not want:
         # a preset that references no IRs has nothing to compare, and
         # device_ir_hashes reads the -11 listing STRICTLY: asking anyway would

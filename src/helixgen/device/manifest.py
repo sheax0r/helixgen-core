@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from helixgen import gitops, home, libinit
-from helixgen.hsp import read_hsp
+from helixgen.hsp import is_hsp_bytes, read_hsp
 from helixgen.device.client import slot_label as _slot_label
 
 MANIFEST_VERSION = 3
@@ -401,10 +401,22 @@ class SetlistManifest:
 
         Reads ``meta.name`` (falling back to the filename stem) as the tone name.
         Preserves an existing tone's ``slot`` if it was already known.
-        Raises :class:`ManifestError` on a name collision with a different path.
+        Raises :class:`ManifestError` on a name collision with a different path,
+        or when the file is not a ``.hsp`` — the source is checked HERE, at
+        registration, not left to fail on every later sync (hc-vko).
         """
         p = Path(hsp_path).resolve()
-        body = read_hsp(p)
+        try:
+            body = read_hsp(p)
+        except ValueError as e:
+            # A file that carries the magic but won't parse is a CORRUPT .hsp,
+            # not a wrong-format source — don't point it at `device push`.
+            hint = "" if is_hsp_bytes(p.read_bytes()[:8]) else (
+                " A .sbe device backup is recorded by `helixgen device push`"
+                " (which installs it and records it as that tone's source).")
+            reason = str(e) if str(e).startswith(str(p)) else f"{p}: {e}"
+            raise ManifestError(
+                f"{reason}; this verb registers an AUTHORED .hsp.{hint}") from e
         name = (body.get("meta") or {}).get("name") or p.stem
         abs_path = str(p)
         existing = self.tones.get(name)

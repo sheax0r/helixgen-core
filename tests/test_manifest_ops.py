@@ -86,3 +86,44 @@ def test_rename_setlist_collision_rejected(tmp_path):
     m.create_setlist("b")
     with pytest.raises(ManifestError):
         m.rename_setlist("a", "b")
+
+
+# ---------------------------------------------------------------------------
+# hc-vko: registration-time rejection. `register` / `setlist add` take an
+# AUTHORED .hsp; a source that isn't one used to escape as a raw ValueError
+# (a traceback, not a rejection) or — worse, via the verbatim-path branch of
+# `device push` — land in the manifest and fail every later sync.
+# ---------------------------------------------------------------------------
+
+def test_register_tone_rejects_non_hsp_at_registration(tmp_path):
+    m = SetlistManifest(tmp_path / "s.json")
+    sbe = tmp_path / "zombie-alt.sbe"
+    sbe.write_bytes(b"_sbepgsm-ish device backup bytes")
+    with pytest.raises(ManifestError) as e:
+        m.register_tone(sbe)
+    msg = str(e.value)
+    assert "zombie-alt.sbe" in msg
+    assert ".hsp" in msg
+    assert "device push" in msg          # the verb that DOES take a .sbe
+    assert "zombie-alt" not in m.tones   # nothing recorded
+
+
+def test_setlist_add_rejects_non_hsp_at_registration(tmp_path):
+    m = SetlistManifest(tmp_path / "s.json")
+    bad = tmp_path / "notes.txt"
+    bad.write_bytes(b"not a preset")
+    with pytest.raises(ManifestError):
+        m.add_tone("helixgen", bad)
+    assert m.tones == {}
+    assert m.tones_in("helixgen") == []
+
+
+def test_register_tone_corrupt_hsp_is_not_mislabelled(tmp_path):
+    """A file that HAS the magic but won't parse is a corrupt .hsp — the
+    rejection must not send the user off to `device push`."""
+    p = tmp_path / "broken.hsp"
+    p.write_bytes(b"rpshnosj{not json")
+    with pytest.raises(ManifestError) as e:
+        m = SetlistManifest(tmp_path / "s.json")
+        m.register_tone(p)
+    assert "device push" not in str(e.value)
