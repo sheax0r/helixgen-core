@@ -1025,3 +1025,352 @@ def test_normalize_capture_reports_kept_wav_paths(monkeypatch, preset,
     payload = json.loads(result.stdout)
     caps = [t["capture"] for t in payload["targets"]]
     assert all(c and c.startswith(str(keep)) for c in caps)
+
+
+# --- prefs-driven defaults (he-xth / hc-cwm) --------------------------------
+
+
+def _write_prefs(block: dict) -> None:
+    """Write a `normalization` block into the tmp $HELIXGEN_HOME prefs file
+    (the autouse conftest fixture already points HELIXGEN_HOME at tmp_path,
+    so this never touches the real ~/.helixgen)."""
+    from helixgen.preferences import default_prefs_path
+
+    path = default_prefs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 1, "normalization": block}))
+
+
+def test_normalize_takes_target_db_from_prefs(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
+    assert result.exit_code == 0, result.output
+    # identical to passing --target-db 30 by hand
+    assert _gain(preset)["snapshots"] == [2.0, -4.0, 1.7, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_normalize_explicit_flag_beats_prefs(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"target_db": 12.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "30", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert _gain(preset)["snapshots"][0] == 2.0
+
+
+def test_normalize_prefs_tolerance_widens_the_dead_band(monkeypatch, preset):
+    # Lead is 6.02 dB over the anchor: a 7 dB tolerance puts it in band.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"tolerance_db": 7.0})
+    before = preset.read_bytes()
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--yes"])
+    assert result.exit_code == 0, result.output
+    # every target in band -> zero trims -> the .hsp is never rewritten
+    assert preset.read_bytes() == before
+
+
+def test_normalize_json_reports_where_each_setting_came_from(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0, "seconds": 6.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--tolerance-db", "2",
+              "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    origin = payload["settings_from"]
+    assert origin["target_db"] == "prefs"
+    assert origin["seconds"] == "prefs"
+    assert origin["tolerance_db"] == "flag"
+    assert origin["source"] == "default"
+    assert payload["mode"] == "play"
+    assert payload["target_total_db"] == 30.0
+    assert payload["seconds"] == 6.0
+
+
+def test_normalize_warns_on_stale_calibration(monkeypatch, preset):
+    # sample mode replays a recorded stimulus, so the run is only as good as
+    # its source-level calibration -- an old one is worth saying out loud.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "calibration": {"reference_input_db": -31.0,
+                                  "reference_guitar": "ec-1000",
+                                  "calibrated_on": "2020-01-01"}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--no-stimulus"])
+    assert result.exit_code == 0, result.output
+    assert "calibrat" in result.output.lower()
+    assert "2020-01-01" in result.output
+
+
+def test_normalize_play_mode_never_warns_about_calibration(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert "re-run `helixgen device calibrate`" not in result.output
+
+
+def test_normalize_prefs_measure_via_capture_is_preflighted(
+        monkeypatch, preset):
+    # capture mode without --capture-input must fail the SAME way whether the
+    # mode came from a flag or from prefs -- before any window is played.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"measure_via": "capture"})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code != 0
+    assert "--capture-input" in result.output
+
+
+def test_normalize_prefs_looper_mode_implies_source_loop(monkeypatch, preset):
+    # an on-device looper leaves the jack silent, so the gate must move to
+    # chain-out level -- the input gate would score every window as "not
+    # playing" and skip the whole run.
+    _patch(monkeypatch, GAINS, loop=True)
+    _write_prefs({"mode": "looper", "target_db": 30.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["source"] == "loop"
+    assert payload["settings_from"]["source"] == "prefs"
+    assert all(t["ok"] for t in payload["targets"])
+
+
+# --- reachability preflight (he-xth / hc-73h) ------------------------------
+
+
+def test_normalize_reports_unreachable_targets_before_writing(
+        monkeypatch, preset):
+    # The trim is the LAST stage, so a target can only reach its measured
+    # loudness minus the level in force plus the +20 dB output cap. A target
+    # asked for more than that is an in-chain gain-staging problem, and
+    # saying so BEFORE the write is the whole point.
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "60", "--yes"])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "cannot reach" in out.lower()
+    assert "gain staging" in out.lower()
+    # the reachable ceiling is named, so the user can pick a real target
+    assert "47.9" in out or "48.0" in out
+
+
+def test_normalize_json_carries_reachability(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "60", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["unreachable"], payload
+    entry = payload["unreachable"][0]
+    assert entry["name"] in {"Rhythm", "Lead", "Clean"}
+    assert entry["ceiling_db"] == pytest.approx(47.96, abs=0.1)
+    for t in payload["targets"]:
+        assert t["reachable"] is False
+
+
+def test_normalize_reachable_run_says_nothing_about_ceilings(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "30", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["unreachable"] == []
+    assert all(t["reachable"] for t in payload["targets"])
+
+
+def test_normalize_unreachable_target_is_still_trimmed_as_far_as_it_goes(
+        monkeypatch, preset):
+    # the preflight REPORTS; it must not silently drop the write, or a run
+    # would leave the library both unbalanced and unexplained.
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "60", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert _gain(preset)["snapshots"][0] == 20.0  # clamped at the +20 cap
+
+
+def test_normalize_refuses_a_meters_target_in_capture_mode(monkeypatch, preset):
+    # H2: LUFS is <= 0 by construction, so a positive target came from the
+    # meters metric. Applied under --measure-via capture it would ask every
+    # tone for ~35 dB and slam every output level to the cap, exit 0.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"target_db": 17.5, "measure_via": "capture"})
+    before = preset.read_bytes()
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--capture-input", "Helix Stadium XL", "--yes"])
+    assert result.exit_code != 0
+    assert "LUFS" in result.output
+    assert "normalization.target_db" in result.output   # names the source
+    assert preset.read_bytes() == before
+
+
+def test_normalize_allows_a_lufs_target_in_capture_mode(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"target_db": -18.0, "measure_via": "capture"})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    # it gets past the unit guard (and then fails on the missing sox/analyze
+    # deps, which is the capture path's own preflight, not this check)
+    assert "not a LUFS target" not in result.output
+
+
+def test_normalize_warns_when_the_window_cannot_reach_min_playing(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "2",
+              "--min-playing", "40"])
+    assert "every target" in result.output and "SKIPPED" in result.output
+
+
+def test_normalize_reports_unreachable_before_it_writes(monkeypatch, preset):
+    # S2: the report must precede the writes, or the user learns their tones
+    # were out of range only after their .hsp files were rewritten.
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "60", "--yes"])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "CANNOT REACH" in out
+    assert out.index("CANNOT REACH") < out.index("wrote ")
+
+
+def test_normalize_stale_calibration_warning_respects_the_mode(
+        monkeypatch, preset):
+    # T2: with a stale calibration present, `play` must stay quiet and
+    # `sample` must warn -- the mode guard is the thing under test.
+    stale = {"reference_input_db": -31.0, "reference_guitar": "g",
+             "calibrated_on": "2020-01-01"}
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0, "calibration": stale})
+    quiet = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert "2020-01-01" not in quiet.output
+
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0, "calibration": stale})
+    loud = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--no-stimulus"])
+    assert "2020-01-01" in loud.output
+
+
+# --- sample mode actually plays the stimulus (he-xth, review S1-1) ----------
+
+
+@pytest.fixture
+def fake_stimulus(monkeypatch, tmp_path):
+    """Record when the stimulus is playing, without running sox."""
+    import contextlib
+
+    from helixgen.device import stimulus as ST
+
+    wav = tmp_path / "cal-loop.wav"
+    wav.write_bytes(b"RIFF" + b"\0" * 32)
+    state = {"path": wav, "windows": [], "playing": False, "preflighted": []}
+
+    @contextlib.contextmanager
+    def _playing(path, cmd):
+        state["playing"] = True
+        try:
+            yield object()
+        finally:
+            state["playing"] = False
+
+    monkeypatch.setattr(ST, "playing", _playing)
+    monkeypatch.setattr(ST, "preflight",
+                        lambda path, cmd: state["preflighted"].append(str(path)))
+
+    import helixgen.cli_device as CD
+
+    real_measure = CD._measure_window
+
+    def _measure(ip, seconds, min_playing, source="input"):
+        state["windows"].append(state["playing"])
+        return real_measure(ip, seconds, min_playing, source)
+
+    monkeypatch.setattr(CD, "_measure_window", _measure)
+    return state
+
+
+def test_normalize_plays_the_stimulus_in_sample_mode(
+        monkeypatch, preset, fake_stimulus):
+    # the whole promise of `sample` mode: the CLI plays the loop, so no agent
+    # orchestrates a background sox. Without this, every window measures
+    # silence and every target is skipped.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--json"])
+    assert result.exit_code == 0, result.output
+    # every measured window ran with the stimulus playing
+    assert fake_stimulus["windows"] == [True, True, True]
+    # and it was preflighted BEFORE the first window, not after
+    assert fake_stimulus["preflighted"]
+    assert json.loads(result.stdout)["stimulus"] == str(fake_stimulus["path"])
+
+
+def test_normalize_sample_mode_prompt_does_not_tell_the_user_to_play(
+        monkeypatch, preset, fake_stimulus):
+    # the guitar is UNPLUGGED in sample mode; "PLAY the same riff" would be
+    # the opposite of the instruction the rig needs.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert "PLAY the same riff" not in result.output
+    assert "plays automatically" in result.output
+
+
+def test_normalize_sample_mode_without_a_stimulus_path_errors(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code != 0
+    assert "device calibrate" in result.output
+    assert "--no-stimulus" in result.output
+
+
+def test_normalize_no_stimulus_opts_out(monkeypatch, preset, fake_stimulus):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--no-stimulus"])
+    assert result.exit_code == 0, result.output
+    assert fake_stimulus["windows"] == [False, False, False]
+
+
+def test_normalize_play_mode_never_starts_a_stimulus(
+        monkeypatch, preset, fake_stimulus):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert fake_stimulus["windows"] == [False, False, False]
