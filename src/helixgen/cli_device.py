@@ -4404,6 +4404,11 @@ def _normalize_settings(flags: dict):
                    "`normalization.mode` preference wins over this default "
                    "(mode `looper` implies --source loop; `play` and "
                    "`sample` both drive the instrument jack).")
+@click.option("--no-stimulus", is_flag=True, default=False,
+              help="Do NOT play the profile's recorded stimulus, even in "
+                   "`sample` mode — measure whatever is already reaching the "
+                   "jack (you are driving playback yourself, or checking the "
+                   "rig by hand).")
 @click.option("--yes", is_flag=True, default=False,
               help="Actually write the trims into the local .hsp file(s) "
                    "(default is a measure-and-report dry-run).")
@@ -4421,6 +4426,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                      capture_remix: str | None, capture_skip: float,
                      capture_dir: Path | None, seconds: float,
                      min_playing: int, tolerance_db: float, source: str,
+                     no_stimulus: bool,
                      yes: bool, as_json: bool, ip: str, port: int) -> None:
     """Level-match snapshots or a setlist by MEASURING while you play (DRY-RUN
     by default).
@@ -4563,15 +4569,41 @@ def device_normalize(preset: Path | None, setlist: str | None,
         for warning in normalization.calibration_warnings(
                 default_guitar=default_guitar):
             say(f"warning: {warning}")
+    # `sample` mode's whole promise is that the CLI plays the stimulus —
+    # an agent orchestrating a background sox process is exactly what this
+    # verb exists to avoid, and a sample run with nothing playing measures
+    # silence and skips every target.
+    stimulus_path = None
+    if normalization.mode == "sample" and not no_stimulus:
+        from helixgen.device import stimulus as ST
+
+        stimulus_path = normalization.sample.path
+        if not stimulus_path:
+            raise click.ClickException(
+                "`normalization.mode` is \"sample\" but no "
+                "`normalization.sample.path` is set — run `helixgen device "
+                "calibrate --stimulus <file.wav>` first, or pass "
+                "--no-stimulus to measure whatever is already playing")
+        try:
+            # checked BEFORE the first target: a missing player discovered
+            # halfway through costs the user a whole run
+            ST.preflight(stimulus_path, normalization.sample.playback_cmd)
+        except ST.StimulusError as e:
+            raise click.ClickException(str(e)) from e
+
     results: list[dict] = []
     written: list[str] = []
     warnings: list[str] = []
     # #82: the per-target prompt and comparison metric depend on the source
     # — a human on the jack plays; a looper replays; input mode compares the
     # input-invariant chain gain, loop mode the raw chain-out output_db.
-    play_prompt = ("PLAY the same riff steadily"
-                   if source == "input"
-                   else "keep the LOOPER replaying the same recorded riff")
+    if stimulus_path is not None:
+        play_prompt = ("the recorded stimulus plays automatically — leave the "
+                       "rig alone")
+    elif source == "input":
+        play_prompt = "PLAY the same riff steadily"
+    else:
+        play_prompt = "keep the LOOPER replaying the same recorded riff"
     if measure_via == "capture":
         # hc-57h: USB capture is downstream of the output gain (measured),
         # so integrated LUFS is directly comparable across targets and the
@@ -4646,19 +4678,42 @@ def device_normalize(preset: Path | None, setlist: str | None,
             tmp_cap_root = tempfile.mkdtemp(prefix="helixgen-capture-")
             cap_root = Path(tmp_cap_root)
 
+    @contextlib.contextmanager
+    def _stimulus_playing():
+        """Play the profile's stimulus for the duration of one window.
+
+        Per window rather than once per run: the loop between targets recalls
+        snapshots and loads presets, and a stimulus that keeps playing through
+        those is neither measured nor useful. Each window therefore gets an
+        identical stretch of the same loop, which is the property that makes
+        the runs comparable."""
+        if stimulus_path is None:
+            yield
+            return
+        from helixgen.device import stimulus as ST
+
+        try:
+            with ST.playing(stimulus_path,
+                            normalization.sample.playback_cmd):
+                yield
+        except ST.StimulusError as e:
+            raise click.ClickException(str(e)) from e
+
     def _measure_target(label: str) -> dict:
         """One target's measurement, by whichever path --measure-via picked."""
         if measure_via == "meters":
-            return _measured_fields(
-                _measure_window(ip, seconds, min_playing, source))
+            with _stimulus_playing():
+                window = _measure_window(ip, seconds, min_playing, source)
+            return _measured_fields(window)
         from helixgen.naming import slugify
 
         wav = cap_root / f"{len(results):02d}-{slugify(label) or 'target'}.wav"
         try:
-            m = AC.capture_and_analyze(
-                wav, seconds, skip_seconds=capture_skip,
-                device=capture_input, channels=capture_channels,
-                remix=capture_remix)
+            with _stimulus_playing():
+                m = AC.capture_and_analyze(
+                    wav, seconds, skip_seconds=capture_skip,
+                    device=capture_input, channels=capture_channels,
+                    remix=capture_remix)
         except AudioMetricsError as e:
             # a capture failure mid-run is a real rig problem (device
             # unplugged, name changed) — not a target to skip past
@@ -4899,6 +4954,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
             "source": source,
             "measure_via": measure_via,
             "mode": normalization.mode,
+            "stimulus": str(stimulus_path) if stimulus_path else None,
             "seconds": seconds,
             "settings_from": settings_from,
             "target_total_db": round(target, 2),

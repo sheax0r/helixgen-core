@@ -1101,7 +1101,8 @@ def test_normalize_warns_on_stale_calibration(monkeypatch, preset):
                                   "reference_guitar": "ec-1000",
                                   "calibrated_on": "2020-01-01"}})
     result = CliRunner().invoke(
-        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--no-stimulus"])
     assert result.exit_code == 0, result.output
     assert "calibrat" in result.output.lower()
     assert "2020-01-01" in result.output
@@ -1267,5 +1268,109 @@ def test_normalize_stale_calibration_warning_respects_the_mode(
     _patch(monkeypatch, GAINS)
     _write_prefs({"mode": "sample", "target_db": 30.0, "calibration": stale})
     loud = CliRunner().invoke(
-        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--no-stimulus"])
     assert "2020-01-01" in loud.output
+
+
+# --- sample mode actually plays the stimulus (he-xth, review S1-1) ----------
+
+
+@pytest.fixture
+def fake_stimulus(monkeypatch, tmp_path):
+    """Record when the stimulus is playing, without running sox."""
+    import contextlib
+
+    from helixgen.device import stimulus as ST
+
+    wav = tmp_path / "cal-loop.wav"
+    wav.write_bytes(b"RIFF" + b"\0" * 32)
+    state = {"path": wav, "windows": [], "playing": False, "preflighted": []}
+
+    @contextlib.contextmanager
+    def _playing(path, cmd):
+        state["playing"] = True
+        try:
+            yield object()
+        finally:
+            state["playing"] = False
+
+    monkeypatch.setattr(ST, "playing", _playing)
+    monkeypatch.setattr(ST, "preflight",
+                        lambda path, cmd: state["preflighted"].append(str(path)))
+
+    import helixgen.cli_device as CD
+
+    real_measure = CD._measure_window
+
+    def _measure(ip, seconds, min_playing, source="input"):
+        state["windows"].append(state["playing"])
+        return real_measure(ip, seconds, min_playing, source)
+
+    monkeypatch.setattr(CD, "_measure_window", _measure)
+    return state
+
+
+def test_normalize_plays_the_stimulus_in_sample_mode(
+        monkeypatch, preset, fake_stimulus):
+    # the whole promise of `sample` mode: the CLI plays the loop, so no agent
+    # orchestrates a background sox. Without this, every window measures
+    # silence and every target is skipped.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--json"])
+    assert result.exit_code == 0, result.output
+    # every measured window ran with the stimulus playing
+    assert fake_stimulus["windows"] == [True, True, True]
+    # and it was preflighted BEFORE the first window, not after
+    assert fake_stimulus["preflighted"]
+    assert json.loads(result.stdout)["stimulus"] == str(fake_stimulus["path"])
+
+
+def test_normalize_sample_mode_prompt_does_not_tell_the_user_to_play(
+        monkeypatch, preset, fake_stimulus):
+    # the guitar is UNPLUGGED in sample mode; "PLAY the same riff" would be
+    # the opposite of the instruction the rig needs.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert "PLAY the same riff" not in result.output
+    assert "plays automatically" in result.output
+
+
+def test_normalize_sample_mode_without_a_stimulus_path_errors(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code != 0
+    assert "device calibrate" in result.output
+    assert "--no-stimulus" in result.output
+
+
+def test_normalize_no_stimulus_opts_out(monkeypatch, preset, fake_stimulus):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--no-stimulus"])
+    assert result.exit_code == 0, result.output
+    assert fake_stimulus["windows"] == [False, False, False]
+
+
+def test_normalize_play_mode_never_starts_a_stimulus(
+        monkeypatch, preset, fake_stimulus):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert fake_stimulus["windows"] == [False, False, False]
