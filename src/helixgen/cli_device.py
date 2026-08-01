@@ -4538,6 +4538,8 @@ def device_normalize(preset: Path | None, setlist: str | None,
             "give exactly one scope: a PRESET .hsp (snapshot scope) or "
             "--setlist NAME (setlist scope)")
 
+    from helixgen import preferences as PREFS
+
     settings, settings_from, normalization, default_guitar = (
         _normalize_settings({
             "target_db": target_db, "seconds": seconds,
@@ -4662,6 +4664,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 "gain_db": (None if res.gain_db is None
                             else round(res.gain_db, 2)),
                 "output_db": round(res.output_db, 2),
+                "input_db": round(res.input_db, 2),
                 "playing_seconds": round(res.playing_seconds, 1)}
 
     def _capture_fields(m, wav: Path) -> dict:
@@ -4743,7 +4746,13 @@ def device_normalize(preset: Path | None, setlist: str | None,
         from helixgen.device import stimulus as ST
 
         want = normalization.sample.volume
-        entry_volume = ST.get_output_volume() if want is not None else None
+        if want is None:
+            # Uncalibrated: pin a known level rather than inheriting whatever
+            # the system volume happens to be. A machine left at 100% drives
+            # the jack far hotter than any guitar and silently invalidates
+            # every measurement in the run.
+            want = PREFS.DEFAULT_STIMULUS_VOLUME
+        entry_volume = ST.get_output_volume()
         if want is not None and not ST.set_output_volume(want):
             say(f"warning: could not set the output volume to the calibrated "
                 f"{want} — set it by hand, or this run measures at whatever "
@@ -4778,6 +4787,31 @@ def device_normalize(preset: Path | None, setlist: str | None,
             # unplugged, name changed) — not a target to skip past
             raise click.ClickException(str(e)) from e
         return _capture_fields(m, wav)
+
+    def _check_source_level(entry: dict) -> None:
+        """Flag a jack level no guitar produces. `gain_db` is a RATIO, so a
+        wrong source level looks perfectly plausible in the results while
+        making every derived trim an artifact of the playback volume — the
+        one failure the numbers alone cannot show."""
+        got = entry.get("input_db")
+        if got is None or not entry.get("ok"):
+            return
+        ref = normalization.calibration.reference_input_db
+        if ref is not None:
+            if abs(got - ref) > 3.0:
+                say(f"warning: the jack is reading {got:+.1f} dBFS but this "
+                    f"rig was calibrated against {ref:+.1f} — something in "
+                    f"the playback path changed, so this run is not "
+                    f"comparable to earlier ones. Re-run `device calibrate`.")
+            return
+        low, high = PREFS.PLAUSIBLE_INPUT_DB
+        if not (low <= got <= high):
+            hotter = "hotter" if got > high else "quieter"
+            say(f"warning: the jack is reading {got:+.1f} dBFS, far {hotter} "
+                f"than an instrument-level source (a guitar sits around "
+                f"{low:.0f}..{high:.0f}). Every trim below is an artifact of "
+                f"the playback level, not of the tone. Run `device "
+                f"calibrate`, or check the computer's output volume.")
 
     def _measured_detail(entry: dict) -> str:
         return (f"{entry['playing_seconds']:.1f}s playing"
@@ -4824,6 +4858,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                         f"~{seconds:.0f}s ...")
                     entry = {"snapshot": idx, "name": name,
                              **_measure_target(name)}
+                    _check_source_level(entry)
                     if entry["ok"]:
                         say(f"  measured {measured_label} "
                             f"{entry[measured_key]:+.2f} dB "
@@ -4927,6 +4962,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
                         f"~{seconds:.0f}s ...")
                     entry = {"tone": name, "path": hsp_path,
                              **_measure_target(name)}
+                    _check_source_level(entry)
                     if entry["ok"]:
                         say(f"  measured {measured_label} "
                             f"{entry[measured_key]:+.2f} dB "

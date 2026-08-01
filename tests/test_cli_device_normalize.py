@@ -67,6 +67,8 @@ def _bursts(pitch, inp, out, n=60):
 
 
 class ScriptedSubscriber:
+    in_level = IN_LEVEL   # overridable per test (source-level sanity checks)
+
     """Yields a telemetry window for whatever target the fake client last
     selected. A target scripted as "hum" yields pitchless (gated-out) data;
     "silence" yields a dead chain (stopped looper). With ``loop=True`` the
@@ -97,7 +99,7 @@ class ScriptedSubscriber:
         elif type(self).loop:
             yield from _bursts(-1.0, 0.0, out)
         else:
-            yield from _bursts(40.0, IN_LEVEL, out)
+            yield from _bursts(40.0, self.in_level, out)
 
 
 class FakeClient:
@@ -139,10 +141,11 @@ class FakeClient:
 
 
 def _patch(monkeypatch, script, active_name="Snapshots Corpus", names=None,
-           loop=False):
+           loop=False, in_level=None):
     import helixgen.device as device_mod
     from helixgen.device import subscribe as sub_mod
 
+    ScriptedSubscriber.in_level = IN_LEVEL if in_level is None else in_level
     ScriptedSubscriber.script = dict(script)
     ScriptedSubscriber.state = {"key": None}
     ScriptedSubscriber.loop = loop
@@ -1440,11 +1443,18 @@ def test_normalize_replays_at_the_calibrated_volume(monkeypatch, preset,
     assert volumes == [53, 30, 53, 30, 53, 30]
 
 
-def test_normalize_without_a_calibrated_volume_leaves_it_alone(
-        monkeypatch, preset, fake_stimulus):
+def test_uncalibrated_run_pins_a_known_volume(monkeypatch, preset,
+                                              fake_stimulus):
+    # Found in the field: an uncalibrated run inherited whatever the system
+    # volume happened to be. A machine left at 100% drove the jack ~17 dB
+    # hotter than a guitar and every measurement in the run was an artifact
+    # of it. A deterministic default is not a calibration, but it is at least
+    # the SAME every time.
     from helixgen.device import stimulus as ST
+    from helixgen.preferences import DEFAULT_STIMULUS_VOLUME
 
     volumes = []
+    monkeypatch.setattr(ST, "get_output_volume", lambda: 100)
     monkeypatch.setattr(ST, "set_output_volume",
                         lambda v: volumes.append(v) or True)
     _patch(monkeypatch, GAINS)
@@ -1453,7 +1463,9 @@ def test_normalize_without_a_calibrated_volume_leaves_it_alone(
     assert CliRunner().invoke(
         cli, ["device", "normalize", str(preset), "--seconds", "6"]
     ).exit_code == 0
-    assert volumes == []
+    assert DEFAULT_STIMULUS_VOLUME == 50
+    assert volumes[0] == 50          # pinned, not inherited
+    assert volumes[-1] == 100        # and the user's setting restored
 
 
 def test_normalize_warns_when_the_volume_cannot_be_set(
@@ -1594,3 +1606,30 @@ def test_a_target_inside_the_tolerance_band_is_never_unreachable(
     assert rhythm["trim_db"] == 0.0        # in band
     assert rhythm["reachable"] is True     # ...so not "unreachable"
     assert "Rhythm" not in json.dumps(payload["unreachable"])
+
+
+def test_normalize_flags_a_jack_level_no_guitar_produces(monkeypatch, preset):
+    # gain_db is a RATIO, so a wrong source level looks perfectly plausible in
+    # the results while making every trim an artifact of playback volume. The
+    # field case: system at 100%, jack at -13.7 dBFS, all six targets bogus.
+    _patch(monkeypatch, GAINS, in_level=0.2)      # ~-14 dBFS at the jack
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "17.5", "--no-stimulus"])
+    assert "far hotter than an instrument-level source" in result.output
+    assert "artifact of the playback level" in result.output
+
+
+def test_normalize_flags_drift_from_the_calibrated_reference(
+        monkeypatch, preset, fake_stimulus):
+    _patch(monkeypatch, GAINS, in_level=0.2)
+    _write_prefs({"mode": "sample", "target_db": 17.5,
+                  "sample": {"path": str(fake_stimulus["path"]), "volume": 53},
+                  "calibration": {"reference_input_db": -31.0,
+                                  "reference_guitar": "g",
+                                  "calibrated_on": _today_iso()}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert "was calibrated against" in result.output
+    assert "not\ncomparable" in result.output or "not comparable" in " ".join(
+        result.output.split())
