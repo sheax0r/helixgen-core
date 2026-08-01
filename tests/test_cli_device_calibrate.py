@@ -71,6 +71,11 @@ def rig(monkeypatch):
     monkeypatch.setattr(ST, "preflight", lambda path, cmd: ["play", str(path)])
     monkeypatch.setattr(ST, "set_output_volume",
                         lambda v: state["volumes"].append(v) or True)
+    # Pin the READ too: unstubbed it shells out to osascript, so on macOS the
+    # restore fires with the host's real volume and every assertion below
+    # depends on the machine running the suite. Tests that care about
+    # restoration stub it themselves.
+    monkeypatch.setattr(ST, "get_output_volume", lambda: None)
     return state
 
 
