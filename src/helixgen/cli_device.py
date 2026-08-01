@@ -4197,6 +4197,11 @@ def _normalize_reachability(results, target_total):
         r["ceiling_db"] = round(ceiling, 2)
         r["reachable"] = target_total <= ceiling + 1e-9
         if not r["reachable"]:
+            # Writing the clamped trim would raise this chain's output by the
+            # cap and its NOISE FLOOR by exactly as much, without reaching
+            # the target -- a worse tone AND still unmatched. The fix is
+            # in-chain gain staging, so leave the file alone and say so.
+            r["trim_db"] = 0.0
             short.append({
                 k: r[k] for k in ("snapshot", "tone", "name", "total_db",
                                   "output_level_db", "ceiling_db")
@@ -4540,18 +4545,26 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
     if (measure_via == "capture" and target_db is not None
             and target_db > 0):
+        where = {"flag": "--target-db", "prefs": "your saved target",
+                 "default": "the built-in target"}[settings_from["target_db"]]
         raise click.ClickException(
-            f"--target-db {target_db:g} is not a LUFS target: integrated "
+            f"{where} ({target_db:g}) is not a LUFS target: integrated "
             f"loudness is at or below 0 by construction, so this number came "
             f"from the METERS metric (chain gain). Measuring via capture "
             f"against it would ask every tone for ~{target_db:g} dB of trim "
             f"and slam each output level to the cap. Pick a LUFS target "
             f"(e.g. -18) for --measure-via capture, or drop back to "
             f"--measure-via meters."
-            + ("" if settings_from["target_db"] == "flag" else
-               " The target came from your `normalization.target_db` "
-               "preference — the two settings are stored independently, so "
-               "changing measure_via does not convert it."))
+            + {"flag": "",
+               "prefs": (" It came from `normalization.target_db` in your "
+                         "preferences — the two settings are stored "
+                         "independently, so changing measure_via does not "
+                         "convert one into the other."),
+               "default": (" You did not choose it: it is the built-in "
+                           "meters target (the factory reference), which "
+                           "capture mode cannot use. Pass --target-db "
+                           "explicitly here."),
+               }[settings_from["target_db"]])
 
     say = (lambda msg: click.echo(msg, err=True)) if as_json else click.echo
 

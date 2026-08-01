@@ -1193,16 +1193,32 @@ def test_normalize_reachable_run_says_nothing_about_ceilings(
     assert all(t["reachable"] for t in payload["targets"])
 
 
-def test_normalize_unreachable_target_is_still_trimmed_as_far_as_it_goes(
-        monkeypatch, preset):
-    # the preflight REPORTS; it must not silently drop the write, or a run
-    # would leave the library both unbalanced and unexplained.
+def test_normalize_leaves_an_unreachable_target_alone(monkeypatch, preset):
+    # Writing the CLAMPED trim would raise the chain's output by the cap and
+    # its noise floor by exactly as much, without reaching the target: a
+    # worse tone that is still unmatched. The preflight reports it instead
+    # and the .hsp is left for gain staging to fix.
     _patch(monkeypatch, GAINS)
+    before = preset.read_bytes()
     result = CliRunner().invoke(
         cli, ["device", "normalize", str(preset), "--seconds", "6",
               "--target-db", "60", "--yes"])
-    assert result.exit_code == 0, result.output
-    assert _gain(preset)["snapshots"][0] == 20.0  # clamped at the +20 cap
+    assert "CANNOT REACH" in result.output
+    assert preset.read_bytes() == before
+    assert "gain staging" in result.output.lower()
+
+
+def test_normalize_still_trims_the_reachable_targets_of_a_mixed_run(
+        monkeypatch, preset):
+    # only the unreachable target is skipped; a run must not be all-or-nothing
+    _patch(monkeypatch, {**GAINS, ("snap", 1): 0.001})   # Lead far too quiet
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "30", "--yes"])
+    assert "CANNOT REACH" in result.output
+    w = _gain(preset)["snapshots"]
+    assert w[1] == 0.0        # unreachable Lead untouched
+    assert w[0] != 0.0        # reachable Rhythm still trimmed
 
 
 def test_normalize_refuses_a_meters_target_in_capture_mode(monkeypatch, preset):
@@ -1247,10 +1263,11 @@ def test_normalize_reports_unreachable_before_it_writes(monkeypatch, preset):
     result = CliRunner().invoke(
         cli, ["device", "normalize", str(preset), "--seconds", "6",
               "--target-db", "60", "--yes"])
-    assert result.exit_code == 0, result.output
     out = result.output
     assert "CANNOT REACH" in out
-    assert out.index("CANNOT REACH") < out.index("wrote ")
+    # nothing is written for an all-unreachable run, so the report IS the
+    # output; when a mixed run does write, the warning still precedes it
+    assert "wrote " not in out or out.index("CANNOT REACH") < out.index("wrote ")
 
 
 def test_normalize_stale_calibration_warning_respects_the_mode(
@@ -1374,3 +1391,22 @@ def test_normalize_play_mode_never_starts_a_stimulus(
         cli, ["device", "normalize", str(preset), "--seconds", "6"])
     assert result.exit_code == 0, result.output
     assert fake_stimulus["windows"] == [False, False, False]
+
+
+def test_capture_refusal_names_where_the_target_came_from(monkeypatch, preset):
+    # blaming "--target-db" for a value the user never typed sends them
+    # looking for a flag that isn't in their command line.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"target_db": 17.5, "measure_via": "capture"})
+    from_prefs = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--capture-input", "X"])
+    assert "your saved target" in from_prefs.output
+    assert "--target-db 17.5 is not" not in from_prefs.output
+
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"measure_via": "capture"})
+    from_flag = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--capture-input", "X", "--target-db", "17.5"])
+    assert "--target-db" in from_flag.output
