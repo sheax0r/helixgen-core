@@ -1,4 +1,5 @@
 """Tests for helixgen.preferences: load/env-precedence/scaffold."""
+import datetime
 import json
 import sys
 from pathlib import Path
@@ -618,3 +619,203 @@ def test_deprecation_warning_still_fires_for_a_different_file(tmp_path, capsys):
     assert "deprecated" in capsys.readouterr().err
     load_preferences(b)
     assert "deprecated" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# normalization block (he-xth / hc-2wn)
+# ---------------------------------------------------------------------------
+
+
+_NORMALIZE_ENV = (
+    "HELIXGEN_NORMALIZE_MODE",
+    "HELIXGEN_NORMALIZE_TARGET_DB",
+    "HELIXGEN_NORMALIZE_SECONDS",
+    "HELIXGEN_NORMALIZE_TOLERANCE_DB",
+    "HELIXGEN_NORMALIZE_MEASURE_VIA",
+    "HELIXGEN_NORMALIZE_CAPTURE_INPUT",
+)
+
+
+@pytest.fixture
+def no_normalize_env(monkeypatch):
+    for key in _NORMALIZE_ENV:
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_normalization_absent_block_is_all_unset(tmp_path, no_normalize_env):
+    # The whole point of the block being additive: an absent one must leave
+    # every CLI default in force, so every field reads None (mode is the one
+    # exception -- "play" needs no setup at all).
+    prefs = load_preferences(tmp_path / "missing.json")
+    n = prefs.normalization
+    assert n.mode == "play"
+    assert n.target_db is None
+    assert n.seconds is None
+    assert n.tolerance_db is None
+    assert n.measure_via is None
+    assert n.capture_input is None
+    assert n.target_source is None
+    assert n.sample.path is None
+    assert n.calibration.reference_input_db is None
+    assert n.is_calibrated is False
+
+
+def test_normalization_reads_the_full_block(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "schema_version": 1,
+        "normalization": {
+            "mode": "sample",
+            "target_db": 17.5,
+            "target_source": {"kind": "factory_preset",
+                              "name": "Stadium Rock Rig",
+                              "measured_total_db": 17.51,
+                              "measured_on": "2026-07-29"},
+            "seconds": 10,
+            "tolerance_db": 1.0,
+            "measure_via": "capture",
+            "capture_input": "Helix Stadium XL",
+            "sample": {"path": "/tmp/helix-cal-loop.wav", "loop_seconds": 5.0,
+                       "playback_cmd": "play -q {path} repeat 9999",
+                       "output_device": "External Headphones", "volume": 53},
+            "calibration": {"reference_input_db": -31.0,
+                            "reference_guitar": "esp-ltd-ec-1000",
+                            "achieved_input_db": -30.72,
+                            "calibrated_on": "2026-07-29"},
+        },
+    }))
+    n = load_preferences(p).normalization
+    assert n.mode == "sample"
+    assert n.target_db == 17.5
+    assert n.seconds == 10.0
+    assert n.tolerance_db == 1.0
+    assert n.measure_via == "capture"
+    assert n.capture_input == "Helix Stadium XL"
+    assert n.target_source["name"] == "Stadium Rock Rig"
+    assert n.sample.loop_seconds == 5.0
+    assert n.sample.volume == 53
+    assert n.calibration.reference_input_db == -31.0
+    assert n.calibration.reference_guitar == "esp-ltd-ec-1000"
+    assert n.is_calibrated is True
+
+
+def test_normalization_env_overrides_win_over_file(tmp_path, monkeypatch):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "schema_version": 1,
+        "normalization": {"mode": "sample", "target_db": 17.5,
+                          "measure_via": "meters"},
+    }))
+    monkeypatch.setenv("HELIXGEN_NORMALIZE_MODE", "play")
+    monkeypatch.setenv("HELIXGEN_NORMALIZE_TARGET_DB", "12.0")
+    monkeypatch.setenv("HELIXGEN_NORMALIZE_MEASURE_VIA", "capture")
+    n = load_preferences(p).normalization
+    assert n.mode == "play"
+    assert n.target_db == 12.0
+    assert n.measure_via == "capture"
+
+
+def test_normalization_rejects_unknown_mode(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"normalization": {"mode": "whistling"}}))
+    with pytest.raises(PreferencesError, match="normalization.mode"):
+        load_preferences(p)
+
+
+def test_normalization_rejects_unknown_measure_via(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"normalization": {"measure_via": "usb"}}))
+    with pytest.raises(PreferencesError, match="normalization.measure_via"):
+        load_preferences(p)
+
+
+def test_normalization_rejects_non_numeric_target_db(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"normalization": {"target_db": "loud"}}))
+    with pytest.raises(PreferencesError, match="normalization.target_db"):
+        load_preferences(p)
+
+
+def test_normalization_rejects_non_object_block(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"normalization": [1, 2]}))
+    with pytest.raises(PreferencesError, match="normalization must be an object"):
+        load_preferences(p)
+
+
+def test_normalization_bad_env_value_is_an_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("HELIXGEN_NORMALIZE_TARGET_DB", "loud")
+    with pytest.raises(PreferencesError, match="HELIXGEN_NORMALIZE_TARGET_DB"):
+        load_preferences(tmp_path / "missing.json")
+
+
+def test_scaffold_writes_the_normalization_block(tmp_path, no_normalize_env):
+    path = scaffold_default(tmp_path / "preferences.json")
+    data = json.loads(path.read_text())
+    assert "normalization" in data
+    assert data["normalization"]["mode"] == "play"
+    # scaffolded values must round-trip through the loader unchanged
+    n = load_preferences(path).normalization
+    assert n.mode == "play"
+    assert n.target_db is None
+
+
+# --- staleness warnings ----------------------------------------------------
+
+
+def test_calibration_warnings_none_when_uncalibrated(tmp_path, no_normalize_env):
+    # play mode needs no calibration at all -- warning about its absence
+    # would be noise on the one path that is always ready to run.
+    prefs = load_preferences(tmp_path / "missing.json")
+    assert prefs.normalization.calibration_warnings(default_guitar="strat") == []
+
+
+def test_calibration_warns_on_a_different_reference_guitar(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "default_guitar": "prestige",
+        "normalization": {"mode": "sample", "calibration": {
+            "reference_input_db": -31.0, "reference_guitar": "esp-ltd-ec-1000",
+            "calibrated_on": _today()}},
+    }))
+    prefs = load_preferences(p)
+    warnings = prefs.normalization.calibration_warnings(
+        default_guitar=prefs.default_guitar)
+    assert any("esp-ltd-ec-1000" in w and "prestige" in w for w in warnings)
+
+
+def test_calibration_warns_when_stale(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "normalization": {"mode": "sample", "calibration": {
+            "reference_input_db": -31.0, "reference_guitar": "g",
+            "calibrated_on": "2020-01-01"}},
+    }))
+    n = load_preferences(p).normalization
+    assert any("2020-01-01" in w for w in n.calibration_warnings(default_guitar="g"))
+
+
+def test_calibration_quiet_when_fresh_and_matching(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "normalization": {"mode": "sample", "calibration": {
+            "reference_input_db": -31.0, "reference_guitar": "g",
+            "calibrated_on": _today()}},
+    }))
+    n = load_preferences(p).normalization
+    assert n.calibration_warnings(default_guitar="g") == []
+
+
+def test_calibration_warnings_ignore_unparseable_date(tmp_path, no_normalize_env):
+    # a hand-edited date must not crash a normalize run over a warning.
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "normalization": {"mode": "sample", "calibration": {
+            "reference_input_db": -31.0, "calibrated_on": "last tuesday"}},
+    }))
+    n = load_preferences(p).normalization
+    assert n.calibration_warnings(default_guitar=None) == []
+
+
+def _today() -> str:
+    return datetime.date.today().isoformat()
