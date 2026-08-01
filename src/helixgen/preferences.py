@@ -38,6 +38,24 @@ _VALID_MEASURE_VIA = ("meters", "capture")
 #: normalize` refuses a positive target in capture mode rather than trimming
 #: every tone to the cap.
 DEFAULT_TARGET_DB = 17.5
+
+#: The measurement stimulus shipped inside this package: 10 guitar-DI notes
+#: E2-C5, EXACTLY 240000 samples (5.00 s at 48 kHz), 24-bit mono, peak -3
+#: dBFS, CC0 (FreePats FSBS Electric Guitar Direct).
+#:
+#: It lives here, not in the plugin, so that "replay a fixed stimulus" is the
+#: default for EVERY caller rather than only for users whose agent ran a
+#: setup skill first -- and so that no profile ever records a path into a
+#: VERSIONED plugin cache directory, which rots on the next update.
+DEFAULT_STIMULUS_LOOP_SECONDS = 5.0
+
+
+def bundled_stimulus() -> Path | None:
+    """The packaged stimulus wav, or None when it is somehow absent (a
+    partial install, a zipped egg). Never raises: a missing asset must
+    degrade to hand-played windows, not break the verb."""
+    candidate = Path(__file__).resolve().parent / "assets" / "helix-cal-loop.wav"
+    return candidate if candidate.is_file() else None
 DEFAULT_TARGET_SOURCE = {
     "kind": "factory_preset",
     "name": "Stadium Rock Rig",
@@ -208,7 +226,7 @@ class Normalization:
     behavior. ``mode`` defaults to ``play`` (the user plays the guitar), the
     one mode that needs no cabling and no calibration."""
 
-    mode: str = "play"
+    mode: str = "sample"
     target_db: float | None = None
     target_source: dict | None = None
     seconds: float | None = None
@@ -218,6 +236,18 @@ class Normalization:
     sample: NormalizationSample = field(default_factory=NormalizationSample)
     calibration: NormalizationCalibration = field(
         default_factory=NormalizationCalibration)
+
+    def resolved_stimulus(self) -> Path | None:
+        """The stimulus this profile should replay: the configured
+        ``sample.path`` if set, else the one bundled with this package.
+
+        Falling back to the bundled asset is what makes `sample` a workable
+        DEFAULT: a user who has configured nothing still gets a fixed,
+        repeatable stimulus instead of being asked to hand-play a window per
+        target, forever, on every run."""
+        if self.sample.path:
+            return Path(self.sample.path).expanduser()
+        return bundled_stimulus()
 
     @property
     def source(self) -> str | None:

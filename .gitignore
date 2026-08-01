@@ -20,6 +20,13 @@ irs/
 *.wav
 *.WAV
 
+# ...EXCEPT the measurement stimulus shipped inside the package. The rules
+# above exist to keep paid IR audio out of the repo; this file is CC0, 703 KB,
+# and has to be committed or `sample` mode has no default stimulus at all
+# (CI caught exactly that: a local build passed because the file was sitting
+# untracked on disk).
+!src/helixgen/assets/*.wav
+
 # stale packaging artifacts — never commit
 build/
 *.egg-info/

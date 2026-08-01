@@ -648,7 +648,11 @@ def test_normalization_absent_block_is_all_unset(tmp_path, no_normalize_env):
     # exception -- "play" needs no setup at all).
     prefs = load_preferences(tmp_path / "missing.json")
     n = prefs.normalization
-    assert n.mode == "play"
+    # `sample` is the default MODE, and it resolves to the packaged stimulus
+    # even with nothing configured -- replaying a fixed loop is the normal
+    # way to measure, not an upgrade you have to opt into.
+    assert n.mode == "sample"
+    assert n.resolved_stimulus().name == "helix-cal-loop.wav"
     assert n.target_db is None
     assert n.seconds is None
     assert n.tolerance_db is None
@@ -753,10 +757,10 @@ def test_scaffold_writes_the_normalization_block(tmp_path, no_normalize_env):
     path = scaffold_default(tmp_path / "preferences.json")
     data = json.loads(path.read_text())
     assert "normalization" in data
-    assert data["normalization"]["mode"] == "play"
+    assert data["normalization"]["mode"] == "sample"
     # scaffolded values must round-trip through the loader unchanged
     n = load_preferences(path).normalization
-    assert n.mode == "play"
+    assert n.mode == "sample"
     assert n.target_db == 17.5          # the shipped reference, not null
 
 

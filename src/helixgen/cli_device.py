@@ -4590,19 +4590,27 @@ def device_normalize(preset: Path | None, setlist: str | None,
     if normalization.mode == "sample" and not no_stimulus:
         from helixgen.device import stimulus as ST
 
-        stimulus_path = normalization.sample.path
-        if not stimulus_path:
-            raise click.ClickException(
-                "`normalization.mode` is \"sample\" but no "
-                "`normalization.sample.path` is set — run `helixgen device "
-                "calibrate --stimulus <file.wav>` first, or pass "
-                "--no-stimulus to measure whatever is already playing")
-        try:
-            # checked BEFORE the first target: a missing player discovered
-            # halfway through costs the user a whole run
-            ST.preflight(stimulus_path, normalization.sample.playback_cmd)
-        except ST.StimulusError as e:
-            raise click.ClickException(str(e)) from e
+        # Resolves to the PACKAGED stimulus when the profile names none, so
+        # replaying a fixed loop is the default for everyone -- a user who
+        # configured nothing is not sentenced to hand-playing a window per
+        # target on every run.
+        candidate = normalization.resolved_stimulus()
+        if candidate is None:
+            say("note: no stimulus available (the bundled one is missing "
+                "from this install) — measuring what you play instead")
+        else:
+            try:
+                # checked BEFORE the first target: a missing player found
+                # halfway through costs the user a whole run
+                ST.preflight(candidate, normalization.sample.playback_cmd)
+                stimulus_path = candidate
+            except ST.StimulusError as e:
+                # A missing player is not a reason to fail a run the user
+                # can still do by hand -- say what would fix it and carry on
+                # measuring their playing.
+                say(f"note: cannot replay the stimulus ({e}) — measuring "
+                    f"what you play instead. Install `sox` for unattended "
+                    f"runs, or pass --no-stimulus to silence this.")
 
     results: list[dict] = []
     written: list[str] = []
