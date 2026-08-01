@@ -4175,7 +4175,7 @@ def _normalize_plan(results, target_total, tolerance_db):
         r["applied"] = False
 
 
-def _normalize_reachability(results, target_total):
+def _normalize_reachability(results, target_total, tolerance_db=0.0):
     """Stamp each ok result with ``reachable`` + its ``ceiling_db``, and
     return the ones that fall short.
 
@@ -4195,7 +4195,13 @@ def _normalize_reachability(results, target_total):
             continue
         ceiling = r["total_db"] - r["output_level_db"] + NZ.OUTPUT_LEVEL_MAX
         r["ceiling_db"] = round(ceiling, 2)
-        r["reachable"] = target_total <= ceiling + 1e-9
+        # A target already INSIDE the tolerance band needs no trim at all,
+        # so its ceiling is irrelevant -- calling it "unreachable" sends the
+        # user off to fix gain staging on a tone that is already correct.
+        # (Measured on a real library: a snapshot 0.54 dB from target, with
+        # a +-1 dB band, was reported unreachable.)
+        in_band = abs(target_total - r["total_db"]) <= tolerance_db
+        r["reachable"] = in_band or target_total <= ceiling + 1e-9
         if not r["reachable"]:
             # Writing the clamped trim would raise this chain's output by the
             # cap and its NOISE FLOOR by exactly as much, without reaching
@@ -4840,7 +4846,8 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
             target, anchor = _normalize_resolve_target(results, target_db)
             _normalize_plan(results, target, tolerance_db)
-            unreachable = _normalize_reachability(results, target)
+            unreachable = _normalize_reachability(results, target,
+                                                  tolerance_db)
             _normalize_say_unreachable(unreachable, say)
             if yes:
                 for r in results:
@@ -4941,7 +4948,8 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
             target, anchor = _normalize_resolve_target(results, target_db)
             _normalize_plan(results, target, tolerance_db)
-            unreachable = _normalize_reachability(results, target)
+            unreachable = _normalize_reachability(results, target,
+                                                  tolerance_db)
             _normalize_say_unreachable(unreachable, say)
             if yes:
                 for r in results:
