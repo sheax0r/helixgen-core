@@ -11,6 +11,7 @@ extra), exactly as before.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import functools
 import inspect
 import json
@@ -3871,6 +3872,193 @@ def device_measure(seconds: float, min_playing: int, source: str,
         raise SystemExit(1)
 
 
+# --- device calibrate (normalization protocol, he-xth / hc-5dx) -------------
+
+@device.command(name="calibrate")
+@click.option("--stimulus", type=click.Path(dir_okay=False, path_type=Path),
+              default=None,
+              help="The recorded loop to calibrate (default: the "
+                   "`normalization.sample.path` preference). The shipped "
+                   "stimulus is the plugin's helix-cal-loop.wav — 10 guitar "
+                   "DI notes, EXACTLY 5.00 s, so a measurement window can "
+                   "cover whole loop cycles.")
+@click.option("--volume", type=int, default=None,
+              help="Output volume to start from (default: the "
+                   "`normalization.sample.volume` preference, else 50). On "
+                   "macOS the loop sets it; elsewhere it is reported for you "
+                   "to set by hand.")
+@click.option("--guitar", default=None,
+              help="The guitar the by-hand reference is played on (default: "
+                   "your `default_guitar`). RECORDED, because instruments "
+                   "differ by 10+ dB — a reference taken with another guitar "
+                   "is not a reference.")
+@click.option("--seconds", type=float, default=10.0, show_default=True,
+              help="Measurement window per step.")
+@click.option("--min-playing", type=int, default=40, show_default=True,
+              help="Minimum playing-gated samples for a trustworthy window.")
+@click.option("--tolerance-db", type=float, default=1.0, show_default=True,
+              help="Stop once the stimulus reads within this of the by-hand "
+                   "reference.")
+@click.option("--max-steps", type=int, default=5, show_default=True,
+              help="Give up after this many stimulus windows. Giving up "
+                   "writes NOTHING: a stimulus that will not converge is "
+                   "usually not reaching the jack at all.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the calibration as one JSON object; prompts and "
+                   "progress go to stderr.")
+@_device_option
+@_reads("editbuffer")
+def device_calibrate(stimulus: Path | None, volume: int | None,
+                     guitar: str | None, seconds: float, min_playing: int,
+                     tolerance_db: float, max_steps: int, as_json: bool,
+                     ip: str, port: int) -> None:
+    """Calibrate a recorded stimulus against your own playing, and save it.
+
+    `sample`-mode normalization replays a fixed recording so runs are
+    repeatable — but the SOURCE LEVEL decides what the trims mean. A clean
+    chain tracks source level ~1:1 while a saturated one is nearly
+    source-independent (measured 0.16 dB/dB), so the clean-to-saturated
+    spread — and every trim derived from it — is a function of how hard the
+    source drives the chain, NOT a property of the preset. Pick a playback
+    level arbitrarily and the run is perfectly repeatable and consistently
+    wrong.
+
+    Two steps. First you PLAY BY HAND for one window and the jack level
+    (input_db) is recorded as the reference. Then the stimulus is played and
+    measured, and the volume stepped, until it reads within --tolerance-db
+    of that reference. The reference is `input_db` — the jack level itself,
+    which is chain-independent — and deliberately NOT `gain_db`: on a clean
+    chain, gain_db is precisely the quantity that does not move with source
+    level, so nulling against it "converges" instantly at any level and
+    calibrates nothing.
+
+    Both the calibration and the stimulus are written to
+    `normalization` in preferences.json, and the mode is set to `sample`;
+    `device normalize` then takes its defaults from there. A run that does
+    NOT converge writes nothing — the usual cause is that the audio never
+    reached the jack, because the Stadium is itself a USB audio interface
+    and often steals the system default output.
+    """
+    from helixgen import preferences as PREFS
+    from helixgen.device import stimulus as ST
+
+    say = (lambda msg: click.echo(msg, err=True)) if as_json else click.echo
+
+    try:
+        prefs = PREFS.load_preferences()
+    except PREFS.PreferencesError as e:
+        raise click.ClickException(str(e)) from e
+    normalization = prefs.normalization
+
+    path = stimulus or normalization.sample.path
+    if not path:
+        raise click.ClickException(
+            "no stimulus to calibrate: pass --stimulus <file.wav> or set "
+            "`normalization.sample.path` in preferences.json (the plugin "
+            "ships helix-cal-loop.wav for this)")
+    playback_cmd = normalization.sample.playback_cmd
+    try:
+        ST.preflight(path, playback_cmd)
+    except ST.StimulusError as e:
+        raise click.ClickException(str(e)) from e
+
+    start_volume = (volume if volume is not None
+                    else normalization.sample.volume)
+    if start_volume is None:
+        start_volume = 50
+    reference_guitar = guitar or prefs.default_guitar
+
+    # --- step 1: the by-hand reference --------------------------------------
+    say("step 1/2 — the REFERENCE: play the guitar steadily for the whole "
+        f"window ({seconds:.0f}s). This reads the jack level your own "
+        "playing produces, which is what the stimulus gets matched to.")
+    if not as_json:
+        click.prompt("press Enter when you are ready to play",
+                     default="", show_default=False, prompt_suffix=" ")
+    hand = _measure_window(ip, seconds, min_playing)
+    if not hand.ok:
+        raise click.ClickException(
+            f"the by-hand window is not usable ({hand.reason}) — nothing was "
+            f"saved; re-run and play steadily for the whole window")
+    reference = round(hand.input_db, 2)
+    say(f"reference: {reference:+.2f} dB at the jack"
+        + (f" (guitar {reference_guitar!r})" if reference_guitar else ""))
+
+    # --- step 2: null the stimulus against it -------------------------------
+    say(f"step 2/2 — the STIMULUS: {path} now plays and the output volume is "
+        f"stepped until it reads within {tolerance_db:g} dB of that. Make "
+        f"sure the computer's OUTPUT DEVICE is the one cabled to the "
+        f"instrument jack — the Stadium is itself a USB interface and often "
+        f"steals the system default.")
+    if not as_json:
+        click.prompt("press Enter when the cable is in and the guitar is out",
+                     default="", show_default=False, prompt_suffix=" ")
+
+    steps, current, achieved, manual = [], int(start_volume), None, False
+    for _ in range(max(1, max_steps)):
+        if not ST.set_output_volume(current):
+            manual = True
+            say(f"set the output volume to {current} BY HAND (this platform "
+                f"has no volume control helixgen can drive), then re-run")
+            break
+        with ST.playing(path, playback_cmd):
+            # the gate stays on the JACK: the stimulus is cabled into it,
+            # so input_db is exactly the quantity being nulled.
+            window = _measure_window(ip, seconds, min_playing, source="input")
+        delta = reference - round(window.input_db, 2)
+        steps.append({"volume": current,
+                      "input_db": round(window.input_db, 2),
+                      "delta_db": round(delta, 2),
+                      "ok": window.ok, "reason": window.reason})
+        say(f"  volume {current}: {window.input_db:+.2f} dB "
+            f"({delta:+.2f} dB from the reference)")
+        if window.ok and abs(delta) <= tolerance_db:
+            achieved = round(window.input_db, 2)
+            break
+        current = ST.next_volume(current, delta_db=delta)
+
+    if achieved is None:
+        raise click.ClickException(
+            ("set the volume by hand and re-run" if manual else
+             f"the stimulus did not converge in {max_steps} windows — "
+             f"NOTHING was saved. The usual cause is that the audio never "
+             f"reaches the jack: pin the computer's OUTPUT DEVICE to the one "
+             f"cabled to the Stadium (it steals the system default), check "
+             f"the cable, and make sure the guitar is unplugged."))
+
+    saved = PREFS.save_normalization({
+        "mode": "sample",
+        "sample": {"path": str(path), "volume": current,
+                   "playback_cmd": playback_cmd},
+        "calibration": {
+            "reference_input_db": reference,
+            "reference_guitar": reference_guitar,
+            "achieved_input_db": achieved,
+            "calibrated_on": datetime.date.today().isoformat(),
+        },
+    })
+
+    if as_json:
+        click.echo(json.dumps({
+            "stimulus": str(path),
+            "reference_input_db": reference,
+            "reference_guitar": reference_guitar,
+            "achieved_input_db": achieved,
+            "volume": current,
+            "tolerance_db": tolerance_db,
+            "converged": True,
+            "steps": steps,
+            "preferences": str(saved),
+        }, indent=2))
+    else:
+        click.echo(f"calibrated: volume {current} reads {achieved:+.2f} dB "
+                   f"against a {reference:+.2f} dB reference — saved to "
+                   f"{saved}")
+        click.echo("`device normalize` now takes its mode, stimulus and "
+                   "volume from there. Re-run this whenever the rig changes "
+                   "(different guitar, different cable, moved knob).")
+
+
 # --- device normalize (loudness phase 2, backlog #62) -----------------------
 
 def _measure_window(ip: str, seconds: float, min_playing: int,
@@ -3923,6 +4111,35 @@ def _normalize_plan(results, target_total, tolerance_db):
             NZ.compute_trim(r["total_db"], target_total, tolerance_db)
             if r.get("ok") else None)
         r["applied"] = False
+
+
+def _normalize_reachability(results, target_total):
+    """Stamp each ok result with ``reachable`` + its ``ceiling_db``, and
+    return the ones that fall short.
+
+    The trim is the LAST stage of the chain, so a target can only be lifted
+    to ``measured total - the level already in force + the output block's
+    +20 dB cap``. Anything asked for above that ceiling is NOT a level
+    problem: it is in-chain gain staging (typically the amp's channel
+    volume, which is wildly non-linear in dB -- 0.55 -> 1.0 was +24.7 dB on
+    one measured amp). Reporting it BEFORE the write is the point; the write
+    still proceeds and lands clamped at the cap, because a silently dropped
+    trim would leave the library both unbalanced and unexplained."""
+    from helixgen.device import normalize as NZ
+
+    short = []
+    for r in results:
+        if not r.get("ok"):
+            continue
+        ceiling = r["total_db"] - r["output_level_db"] + NZ.OUTPUT_LEVEL_MAX
+        r["ceiling_db"] = round(ceiling, 2)
+        r["reachable"] = target_total <= ceiling + 1e-9
+        if not r["reachable"]:
+            short.append({
+                k: r[k] for k in ("snapshot", "tone", "name", "total_db",
+                                  "output_level_db", "ceiling_db")
+                if k in r})
+    return short
 
 
 def _normalize_record_library(entries, *, scope, target_total_db,
@@ -3982,6 +4199,47 @@ def _normalize_record_library(entries, *, scope, target_total_db,
     return recorded
 
 
+def _normalize_settings(flags: dict):
+    """Resolve each normalize setting as flag > `normalization` prefs block >
+    the option's own default, and report WHERE each landed.
+
+    "Did the user pass this?" is answered by click's PARAMETER SOURCE, not by
+    a None sentinel -- so every option keeps its real, advertised default in
+    `--help` (the agent contract) while an unpassed one still yields to the
+    profile. Returns ``(settings, origin, normalization, default_guitar)``;
+    ``origin`` maps each key to "flag" / "prefs" / "default" so a run's own
+    --json says how it was configured -- a run whose target came from a
+    profile is otherwise indistinguishable from one that anchored itself, and
+    they are not the same run. Preferences that fail to load warn and leave
+    the built-ins in force: a broken profile must not block a device
+    session."""
+    from click.core import ParameterSource
+
+    from helixgen import preferences as PREFS
+
+    try:
+        prefs = PREFS.load_preferences()
+    except PREFS.PreferencesError as e:
+        click.echo(f"warning: ignoring preferences ({e})", err=True)
+        prefs = PREFS.Preferences()
+    normalization = prefs.normalization
+
+    ctx = click.get_current_context(silent=True)
+    settings, origin = {}, {}
+    for key, value in flags.items():
+        from_cmdline = (
+            ctx is not None
+            and ctx.get_parameter_source(key) is ParameterSource.COMMANDLINE)
+        preferred = getattr(normalization, key, None)
+        if from_cmdline:
+            settings[key], origin[key] = value, "flag"
+        elif preferred is not None:
+            settings[key], origin[key] = preferred, "prefs"
+        else:
+            settings[key], origin[key] = value, "default"
+    return settings, origin, normalization, prefs.default_guitar
+
+
 @device.command(name="normalize")
 @click.argument("preset", required=False,
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
@@ -4000,7 +4258,9 @@ def _normalize_record_library(entries, *, scope, target_total_db,
                    "everything else is trimmed to match its total.")
 @click.option("--measure-via", type=click.Choice(["meters", "capture"]),
               default="meters", show_default=True,
-              help="How each target is measured. 'meters' (default): the "
+              help="How each target is measured (unset, the "
+                   "`normalization.measure_via` preference wins over this "
+                   "default). 'meters' (default): the "
                    "2003 telemetry stream's playing-gated median chain gain "
                    "— no extra dependency, no cabling, but it is the "
                    "DEVICE's own envelope meter, not a perceptual number. "
@@ -4042,7 +4302,9 @@ def _normalize_record_library(entries, *, scope, target_total_db,
                    "end — one WAV per target, for A/B listening or "
                    "re-analysis with `analyze-audio`.")
 @click.option("--seconds", type=float, default=10.0, show_default=True,
-              help="Measurement window per target.")
+              help="Measurement window per target (unset, the "
+                   "`normalization.seconds` preference wins over this "
+                   "default).")
 @click.option("--min-playing", type=int, default=40, show_default=True,
               help="Minimum playing-gated samples for a trustworthy "
                    "measurement (~10 samples/sec of actual playing). "
@@ -4051,15 +4313,24 @@ def _normalize_record_library(entries, *, scope, target_total_db,
                    "counts as program material (backlog #104d).")
 @click.option("--tolerance-db", type=float, default=1.0, show_default=True,
               help="Deltas at or below this magnitude are in band and NOT "
-                   "trimmed (don't chase meter noise).")
+                   "trimmed (don't chase meter noise). Unset, the "
+                   "`normalization.tolerance_db` preference wins over this "
+                   "default.")
 @click.option("--source", type=click.Choice(["input", "loop"]),
-              default="input", show_default=True, help=_SOURCE_HELP)
+              default="input", show_default=True,
+              help=_SOURCE_HELP + " Unset, the source implied by the "
+                   "`normalization.mode` preference wins over this default "
+                   "(mode `looper` implies --source loop; `play` and "
+                   "`sample` both drive the instrument jack).")
 @click.option("--yes", is_flag=True, default=False,
               help="Actually write the trims into the local .hsp file(s) "
                    "(default is a measure-and-report dry-run).")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the run (per-target measurements, trims, written "
-                   "files) as one JSON object; progress goes to stderr.")
+                   "files) as one JSON object; progress goes to stderr. "
+                   "Carries `settings_from`, naming each setting's origin "
+                   "(flag / prefs / default) so a run is reproducible from "
+                   "its own report.")
 @_device_option
 @_locked("editbuffer", verb="normalize")
 def device_normalize(preset: Path | None, setlist: str | None,
@@ -4167,7 +4438,27 @@ def device_normalize(preset: Path | None, setlist: str | None,
             "give exactly one scope: a PRESET .hsp (snapshot scope) or "
             "--setlist NAME (setlist scope)")
 
+    settings, settings_from, normalization, default_guitar = (
+        _normalize_settings({
+            "target_db": target_db, "seconds": seconds,
+            "tolerance_db": tolerance_db, "source": source,
+            "measure_via": measure_via, "capture_input": capture_input}))
+    target_db = settings["target_db"]
+    seconds = settings["seconds"]
+    tolerance_db = settings["tolerance_db"]
+    source = settings["source"]
+    measure_via = settings["measure_via"]
+    capture_input = settings["capture_input"]
+
     say = (lambda msg: click.echo(msg, err=True)) if as_json else click.echo
+
+    # A recorded stimulus is only comparable between sessions while its
+    # source-level calibration holds; `play` mode has no such dependency
+    # (the guitar IS the stimulus), so it never warns.
+    if normalization.mode in ("sample", "looper"):
+        for warning in normalization.calibration_warnings(
+                default_guitar=default_guitar):
+            say(f"warning: {warning}")
     results: list[dict] = []
     written: list[str] = []
     warnings: list[str] = []
@@ -4337,6 +4628,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
             target, anchor = _normalize_resolve_target(results, target_db)
             _normalize_plan(results, target, tolerance_db)
+            unreachable = _normalize_reachability(results, target)
             if yes:
                 for r in results:
                     if r.get("ok") and r["trim_db"]:
@@ -4436,6 +4728,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
             target, anchor = _normalize_resolve_target(results, target_db)
             _normalize_plan(results, target, tolerance_db)
+            unreachable = _normalize_reachability(results, target)
             if yes:
                 for r in results:
                     if r.get("ok") and r["trim_db"]:
@@ -4499,11 +4792,15 @@ def device_normalize(preset: Path | None, setlist: str | None,
         payload.update({
             "source": source,
             "measure_via": measure_via,
+            "mode": normalization.mode,
+            "seconds": seconds,
+            "settings_from": settings_from,
             "target_total_db": round(target, 2),
             "anchor": anchor_json,
             "tolerance_db": tolerance_db,
             "dry_run": not yes,
             "targets": results,
+            "unreachable": unreachable,
             "written": written,
             "library_recorded": library_recorded,
         })
@@ -4529,6 +4826,16 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 mark = " (anchor)" if r is anchor else ""
                 click.echo(f"  {label}: {r['total_db']:+.2f} dB total — "
                            f"in band (±{tolerance_db:g} dB){mark}")
+        for u in unreachable:
+            label = (f"snapshot {u['name']!r}" if "snapshot" in u
+                     else f"tone {u['tone']!r}")
+            click.echo(
+                f"  {label}: CANNOT REACH the target — its ceiling is "
+                f"{u['ceiling_db']:+.2f} dB total (measured "
+                f"{u['total_db']:+.2f} at {u['output_level_db']:+.1f} level, "
+                f"+{NZ.OUTPUT_LEVEL_MAX:g} dB output cap). That is in-chain "
+                f"GAIN STAGING, not a level move: raise the amp's channel "
+                f"volume (both amps on a dual-amp preset), then re-run.")
         if yes:
             if written:
                 for p in written:

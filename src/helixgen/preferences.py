@@ -196,6 +196,17 @@ class Normalization:
         default_factory=NormalizationCalibration)
 
     @property
+    def source(self) -> str | None:
+        """The `--source` gate this mode REQUIRES, or None when it has no
+        opinion. Only `looper` has one: an on-device looper leaves the jack
+        structurally silent, so the gate must move to chain-out level or every
+        window scores as "not playing". `play` and `sample` both drive the
+        instrument jack, which is the CLI default anyway -- returning None
+        there keeps a run's reported provenance honest (nothing was
+        configured, so nothing came from preferences)."""
+        return "loop" if self.mode == "looper" else None
+
+    @property
     def is_calibrated(self) -> bool:
         """True once a source-level reference has been recorded. ``play`` mode
         never needs one (the guitar IS the stimulus)."""
@@ -593,6 +604,44 @@ def _default_scaffold_dict() -> dict:
         "git_commit_tones": "auto",
         "normalization": Normalization().to_dict(),
     }
+
+
+def save_normalization(changes: dict, path: Path | None = None) -> Path:
+    """Merge ``changes`` into the file's ``normalization`` block and write it
+    back, preserving every other preference verbatim.
+
+    Nested ``sample`` / ``calibration`` dicts merge key-by-key rather than
+    replacing wholesale, so recording a calibration never silently drops a
+    stimulus path the user set by hand. Writes atomically (tmp + rename),
+    matching ``scaffold_default``."""
+    resolved_path = path if path is not None else default_prefs_path()
+
+    data: dict[str, Any] = {}
+    if resolved_path.exists():
+        try:
+            data = json.loads(resolved_path.read_text())
+        except json.JSONDecodeError as exc:
+            raise PreferencesError(
+                f"malformed JSON in {resolved_path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise PreferencesError(f"{resolved_path} must contain a JSON object")
+
+    data.setdefault("schema_version", SCHEMA_VERSION)
+    block = data.get("normalization")
+    if not isinstance(block, dict):
+        block = {}
+    for key, value in changes.items():
+        if isinstance(value, dict) and isinstance(block.get(key), dict):
+            block[key] = {**block[key], **value}
+        else:
+            block[key] = value
+    data["normalization"] = block
+
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = resolved_path.with_suffix(resolved_path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, resolved_path)
+    return resolved_path
 
 
 def scaffold_default(path: Path | None = None, *, force: bool = False) -> Path:
