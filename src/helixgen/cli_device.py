@@ -4579,9 +4579,23 @@ def device_normalize(preset: Path | None, setlist: str | None,
     # source-level calibration holds; `play` mode has no such dependency
     # (the guitar IS the stimulus), so it never warns.
     if normalization.mode in ("sample", "looper"):
-        for warning in normalization.calibration_warnings(
-                default_guitar=default_guitar):
+        warnings_out = normalization.calibration_warnings(
+            default_guitar=default_guitar)
+        for warning in warnings_out:
             say(f"warning: {warning}")
+        if not normalization.is_calibrated:
+            # An UNCALIBRATED replay is the silent failure mode: it runs
+            # fine, it is repeatable within one session, and its trims are
+            # an artifact of whatever the system volume happens to be. Said
+            # once per run, never as a blocker -- the numbers are still
+            # right relative to each other within a preset.
+            say("note: this rig is not calibrated, so the stimulus plays at "
+                "whatever the system volume currently is. Snapshots within "
+                "one preset still balance correctly against each other, but "
+                "hitting an ABSOLUTE target — and comparing runs made on "
+                "different days — depends on the source level. "
+                "`helixgen device calibrate` pins it: one window of playing, "
+                "once per rig.")
     # `sample` mode's whole promise is that the CLI plays the stimulus —
     # an agent orchestrating a background sox process is exactly what this
     # verb exists to avoid, and a sample run with nothing playing measures
