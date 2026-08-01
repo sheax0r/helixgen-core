@@ -1360,15 +1360,16 @@ def test_normalize_sample_mode_prompt_does_not_tell_the_user_to_play(
     assert "plays automatically" in result.output
 
 
-def test_normalize_sample_mode_without_a_stimulus_path_errors(
-        monkeypatch, preset):
+def test_normalize_sample_mode_without_a_configured_path_uses_the_bundled_one(
+        monkeypatch, preset, fake_stimulus):
+    # An unset sample.path is the COMMON case, not an error: it means "you
+    # never configured one", and the package ships one for exactly that.
     _patch(monkeypatch, GAINS)
     _write_prefs({"mode": "sample", "target_db": 30.0})
     result = CliRunner().invoke(
-        cli, ["device", "normalize", str(preset), "--seconds", "6"])
-    assert result.exit_code != 0
-    assert "device calibrate" in result.output
-    assert "--no-stimulus" in result.output
+        cli, ["device", "normalize", str(preset), "--seconds", "6", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["stimulus"].endswith("helix-cal-loop.wav")
 
 
 def test_normalize_no_stimulus_opts_out(monkeypatch, preset, fake_stimulus):
@@ -1464,3 +1465,40 @@ def test_normalize_warns_when_the_volume_cannot_be_set(
         cli, ["device", "normalize", str(preset), "--seconds", "6"])
     assert "could not set the output volume" in result.output
     assert "53" in result.output
+
+
+def test_normalize_uses_the_bundled_stimulus_with_no_configuration(
+        monkeypatch, preset, fake_stimulus):
+    # THE default: a profile that configures nothing must still replay a
+    # fixed loop. Being asked to hand-play a window per target, on every run,
+    # because one prefs field was never written is the failure this prevents.
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "30", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "sample"
+    assert payload["stimulus"] and payload["stimulus"].endswith(
+        "helix-cal-loop.wav")
+    assert fake_stimulus["windows"] == [True, True, True]
+
+
+def test_normalize_falls_back_to_playing_when_the_loop_cannot_run(
+        monkeypatch, preset):
+    # No sox, no unattended run — but the user can still play, so measure
+    # that rather than failing a run they are standing right next to.
+    from helixgen.device import stimulus as ST
+
+    def _no_player(path, cmd):
+        raise ST.StimulusError("the playback command 'play' is not on PATH")
+
+    monkeypatch.setattr(ST, "preflight", _no_player)
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "30"])
+    assert result.exit_code == 0, result.output
+    assert "cannot replay the stimulus" in result.output
+    assert "PLAY the same riff" in result.output      # the fallback prompt
+    assert "sox" in result.output                     # and how to fix it
