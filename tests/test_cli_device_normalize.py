@@ -1030,6 +1030,11 @@ def test_normalize_capture_reports_kept_wav_paths(monkeypatch, preset,
 # --- prefs-driven defaults (he-xth / hc-cwm) --------------------------------
 
 
+def _today_iso() -> str:
+    import datetime
+    return datetime.date.today().isoformat()
+
+
 def _write_prefs(block: dict) -> None:
     """Write a `normalization` block into the tmp $HELIXGEN_HOME prefs file
     (the autouse conftest fixture already points HELIXGEN_HOME at tmp_path,
@@ -1502,3 +1507,44 @@ def test_normalize_falls_back_to_playing_when_the_loop_cannot_run(
     assert "cannot replay the stimulus" in result.output
     assert "PLAY the same riff" in result.output      # the fallback prompt
     assert "sox" in result.output                     # and how to fix it
+
+
+def test_normalize_says_when_the_rig_is_not_calibrated(
+        monkeypatch, preset, fake_stimulus):
+    # The silent failure mode: an uncalibrated replay runs fine and produces
+    # trims that are an artifact of the current system volume. Nothing warned,
+    # because calibration_warnings() only speaks when a calibration EXISTS.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert "not calibrated" in result.output
+    assert "device calibrate" in result.output
+    # and it is a NOTE, not a blocker -- the run still produced its plan
+    assert "plan (target" in result.output
+
+
+def test_normalize_stays_quiet_once_the_rig_is_calibrated(
+        monkeypatch, preset, fake_stimulus):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"]), "volume": 53},
+                  "calibration": {"reference_input_db": -31.0,
+                                  "reference_guitar": "ec-1000",
+                                  "calibrated_on": _today_iso()}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    assert "not calibrated" not in result.output
+
+
+def test_normalize_play_mode_never_mentions_calibration(monkeypatch, preset):
+    # play mode has no source-level dependency at all -- the guitar IS the
+    # stimulus, so the note would be pure noise.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert "not calibrated" not in result.output
