@@ -757,7 +757,7 @@ def test_scaffold_writes_the_normalization_block(tmp_path, no_normalize_env):
     # scaffolded values must round-trip through the loader unchanged
     n = load_preferences(path).normalization
     assert n.mode == "play"
-    assert n.target_db is None
+    assert n.target_db == 17.5          # the shipped reference, not null
 
 
 # --- staleness warnings ----------------------------------------------------
@@ -906,3 +906,23 @@ def test_normalization_rejects_an_out_of_range_volume(tmp_path, no_normalize_env
     p.write_text(json.dumps({"normalization": {"sample": {"volume": 250}}}))
     with pytest.raises(PreferencesError, match="between 0 and 100"):
         load_preferences(p)
+
+
+def test_scaffold_carries_the_shipped_target_and_its_provenance():
+    # 17.5 is a CONSTANT, not a per-rig measurement: separate runs only land
+    # on a common level if they all use the same number, so a fresh profile
+    # ships with it instead of a null that makes normalize self-anchor.
+    from helixgen.preferences import DEFAULT_TARGET_DB, scaffold_default
+
+    path = scaffold_default(tmp := Path(__file__).parent / "_scaffold_tmp.json")
+    try:
+        block = json.loads(path.read_text())["normalization"]
+        assert block["target_db"] == DEFAULT_TARGET_DB == 17.5
+        src = block["target_source"]
+        assert src["name"] == "Stadium Rock Rig"
+        assert src["measured_total_db"] == 17.51
+        assert src["measure_via"] == "meters"   # NOT a LUFS target
+        # and it round-trips through the loader as a real target
+        assert load_preferences(path).normalization.target_db == 17.5
+    finally:
+        tmp.unlink(missing_ok=True)

@@ -27,6 +27,30 @@ _VALID_INSTRUMENT_TYPES = ("guitar", "bass")
 _VALID_NORMALIZE_MODES = ("play", "sample", "looper")
 _VALID_MEASURE_VIA = ("meters", "capture")
 
+#: The shipped loudness target, in dB of total loudness, and where it came
+#: from. It is a CONSTANT, not a per-rig measurement: the factory presets are
+#: identical across Stadiums, so the same reference reproduces on similar
+#: hardware, and separate runs only land on a common level if they all use the
+#: same number. Scaffolded into a fresh profile so nobody has to type it.
+#:
+#: METERS METRIC ONLY. Integrated LUFS (``--measure-via capture``) is at or
+#: below 0 by construction, so this target is meaningless there -- `device
+#: normalize` refuses a positive target in capture mode rather than trimming
+#: every tone to the cap.
+DEFAULT_TARGET_DB = 17.5
+DEFAULT_TARGET_SOURCE = {
+    "kind": "factory_preset",
+    "name": "Stadium Rock Rig",
+    "measured_total_db": 17.51,
+    "measured_on": "2026-07-29",
+    "measure_via": "meters",
+    "note": ("the factory reference, measured on a Stadium XL; factory "
+             "presets carry output level 0.0 dB, so total == chain gain. "
+             "Per-category targets were tested and rejected: lead-over-"
+             "rhythm was only 1.4 dB and two clean presets disagreed by "
+             "6.3 dB."),
+}
+
 #: A calibration older than this is reported as stale (advisory only). It is
 #: valid exactly as long as the physical rig is unchanged, which nothing here
 #: can observe -- so this is a nudge to re-run two cheap measurements, never a
@@ -622,7 +646,15 @@ def _default_scaffold_dict() -> dict:
         "volume_normalize_snapshots": True,
         "volume_normalize_baseline": True,
         "git_commit_tones": "auto",
-        "normalization": Normalization().to_dict(),
+        "normalization": {
+            **Normalization().to_dict(),
+            # Scaffolded with the shipped reference rather than null: a
+            # target left unset makes `device normalize` anchor on its own
+            # first target, which level-matches WITHIN one preset and leaves
+            # separate runs nowhere near each other.
+            "target_db": DEFAULT_TARGET_DB,
+            "target_source": dict(DEFAULT_TARGET_SOURCE),
+        },
     }
 
 
