@@ -4225,8 +4225,9 @@ def _normalize_say_unreachable(unreachable, say) -> None:
             f"at {u['output_level_db']:+.1f} level, +{NZ.OUTPUT_LEVEL_MAX:g} "
             f"dB output cap). That is in-chain GAIN STAGING, not a level "
             f"move: raise the amp's channel volume (both amps on a dual-amp "
-            f"preset), then re-run. The trim below is still written, clamped "
-            f"at the cap.")
+            f"preset), then re-run. NOTHING is written for this target — a "
+            f"trim clamped at the cap would raise its noise floor by the "
+            f"same amount without reaching the target.")
 
 
 def _normalize_record_library(entries, *, scope, target_total_db,
@@ -5036,6 +5037,12 @@ def device_normalize(preset: Path | None, setlist: str | None,
                            f"({r[measured_key]:+.2f} {measured_word} "
                            f"{r['output_level_db']:+.1f} level) — {state} "
                            f"{r['trim_db']:+.1f} dB")
+            elif not r.get("reachable", True):
+                # NOT "in band": its trim is zero because the target is out
+                # of its reach, which is the opposite of already-correct.
+                click.echo(f"  {label}: {r['total_db']:+.2f} dB total — "
+                           f"UNREACHABLE (ceiling {r['ceiling_db']:+.2f} dB); "
+                           f"left alone, fix the chain's gain staging")
             else:
                 mark = " (anchor)" if r is anchor else ""
                 click.echo(f"  {label}: {r['total_db']:+.2f} dB total — "

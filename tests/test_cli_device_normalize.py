@@ -1548,3 +1548,31 @@ def test_normalize_play_mode_never_mentions_calibration(monkeypatch, preset):
     result = CliRunner().invoke(
         cli, ["device", "normalize", str(preset), "--seconds", "6"])
     assert "not calibrated" not in result.output
+
+
+def test_unreachable_target_is_not_reported_as_in_band(monkeypatch, preset):
+    # Found by running it on real hardware: a snapshot 7.5 dB below an
+    # unreachable target printed "in band (+-1 dB)", which reads as "already
+    # correct". Its trim is zero because the target is out of REACH — the
+    # opposite of already-correct.
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "60"])
+    assert result.exit_code == 0, result.output
+    plan = result.output.split("plan (target")[1]
+    assert "in band" not in plan
+    assert "UNREACHABLE" in plan
+    assert "ceiling" in plan
+
+
+def test_unreachable_message_does_not_promise_a_clamped_write(
+        monkeypatch, preset):
+    # The message still described the pre-0.37.0 behavior ("the trim below
+    # is still written, clamped at the cap") after the write was removed.
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "60", "--yes"])
+    assert "still written" not in result.output
+    assert "NOTHING is written for this target" in result.output
