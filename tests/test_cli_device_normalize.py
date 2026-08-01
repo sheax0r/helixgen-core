@@ -1202,3 +1202,70 @@ def test_normalize_unreachable_target_is_still_trimmed_as_far_as_it_goes(
               "--target-db", "60", "--yes"])
     assert result.exit_code == 0, result.output
     assert _gain(preset)["snapshots"][0] == 20.0  # clamped at the +20 cap
+
+
+def test_normalize_refuses_a_meters_target_in_capture_mode(monkeypatch, preset):
+    # H2: LUFS is <= 0 by construction, so a positive target came from the
+    # meters metric. Applied under --measure-via capture it would ask every
+    # tone for ~35 dB and slam every output level to the cap, exit 0.
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"target_db": 17.5, "measure_via": "capture"})
+    before = preset.read_bytes()
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--capture-input", "Helix Stadium XL", "--yes"])
+    assert result.exit_code != 0
+    assert "LUFS" in result.output
+    assert "normalization.target_db" in result.output   # names the source
+    assert preset.read_bytes() == before
+
+
+def test_normalize_allows_a_lufs_target_in_capture_mode(monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"target_db": -18.0, "measure_via": "capture"})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    # it gets past the unit guard (and then fails on the missing sox/analyze
+    # deps, which is the capture path's own preflight, not this check)
+    assert "not a LUFS target" not in result.output
+
+
+def test_normalize_warns_when_the_window_cannot_reach_min_playing(
+        monkeypatch, preset):
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "2",
+              "--min-playing", "40"])
+    assert "every target" in result.output and "SKIPPED" in result.output
+
+
+def test_normalize_reports_unreachable_before_it_writes(monkeypatch, preset):
+    # S2: the report must precede the writes, or the user learns their tones
+    # were out of range only after their .hsp files were rewritten.
+    _patch(monkeypatch, GAINS)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "60", "--yes"])
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "CANNOT REACH" in out
+    assert out.index("CANNOT REACH") < out.index("wrote ")
+
+
+def test_normalize_stale_calibration_warning_respects_the_mode(
+        monkeypatch, preset):
+    # T2: with a stale calibration present, `play` must stay quiet and
+    # `sample` must warn -- the mode guard is the thing under test.
+    stale = {"reference_input_db": -31.0, "reference_guitar": "g",
+             "calibrated_on": "2020-01-01"}
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "play", "target_db": 30.0, "calibration": stale})
+    quiet = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert "2020-01-01" not in quiet.output
+
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0, "calibration": stale})
+    loud = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert "2020-01-01" in loud.output

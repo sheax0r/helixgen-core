@@ -3942,7 +3942,16 @@ def device_calibrate(stimulus: Path | None, volume: int | None,
     from helixgen import preferences as PREFS
     from helixgen.device import stimulus as ST
 
+    if max_steps < 1:
+        raise click.ClickException(
+            f"--max-steps must be at least 1 (got {max_steps}) — a run with "
+            f"no stimulus window cannot calibrate anything")
+
     say = (lambda msg: click.echo(msg, err=True)) if as_json else click.echo
+    # --json redirects the prompts to stderr rather than SUPPRESSING them:
+    # an unannounced by-hand window measures an empty room and fails.
+    ask = functools.partial(click.prompt, default="", show_default=False,
+                            prompt_suffix=" ", err=as_json)
 
     try:
         prefs = PREFS.load_preferences()
@@ -3956,12 +3965,27 @@ def device_calibrate(stimulus: Path | None, volume: int | None,
             "no stimulus to calibrate: pass --stimulus <file.wav> or set "
             "`normalization.sample.path` in preferences.json (the plugin "
             "ships helix-cal-loop.wav for this)")
+    path = Path(path).expanduser()
     playback_cmd = normalization.sample.playback_cmd
     try:
         ST.preflight(path, playback_cmd)
     except ST.StimulusError as e:
         raise click.ClickException(str(e)) from e
+    path = path.resolve()   # stored in prefs: a relative path breaks elsewhere
 
+    ctx = click.get_current_context(silent=True)
+
+    def _from_prefs(name, value, preferred):
+        """Same resolution rule as `device normalize`: an unpassed flag yields
+        to the profile. Two verbs reading one block must not disagree."""
+        from click.core import ParameterSource
+        passed = (ctx is not None and ctx.get_parameter_source(name)
+                  is ParameterSource.COMMANDLINE)
+        return value if passed or preferred is None else preferred
+
+    seconds = _from_prefs("seconds", seconds, normalization.seconds)
+    tolerance_db = _from_prefs("tolerance_db", tolerance_db,
+                               normalization.tolerance_db)
     start_volume = (volume if volume is not None
                     else normalization.sample.volume)
     if start_volume is None:
@@ -3972,9 +3996,7 @@ def device_calibrate(stimulus: Path | None, volume: int | None,
     say("step 1/2 — the REFERENCE: play the guitar steadily for the whole "
         f"window ({seconds:.0f}s). This reads the jack level your own "
         "playing produces, which is what the stimulus gets matched to.")
-    if not as_json:
-        click.prompt("press Enter when you are ready to play",
-                     default="", show_default=False, prompt_suffix=" ")
+    ask("press Enter when you are ready to play")
     hand = _measure_window(ip, seconds, min_playing)
     if not hand.ok:
         raise click.ClickException(
@@ -3990,44 +4012,81 @@ def device_calibrate(stimulus: Path | None, volume: int | None,
         f"sure the computer's OUTPUT DEVICE is the one cabled to the "
         f"instrument jack — the Stadium is itself a USB interface and often "
         f"steals the system default.")
-    if not as_json:
-        click.prompt("press Enter when the cable is in and the guitar is out",
-                     default="", show_default=False, prompt_suffix=" ")
+    if normalization.sample.output_device:
+        say(f"(your profile says the output device should be "
+            f"{normalization.sample.output_device!r})")
+    ask("press Enter when the cable is in and the guitar is out")
 
+    # The loop DRIVES the system volume, so remember where it started and put
+    # it back on every exit path -- success, failure or Ctrl-C. Leaving a
+    # user's machine wherever the search ended, with a loop cabled into a
+    # guitar amp, is not an acceptable exit state.
+    entry_volume = ST.get_output_volume()
     steps, current, achieved, manual = [], int(start_volume), None, False
-    for _ in range(max(1, max_steps)):
-        if not ST.set_output_volume(current):
-            manual = True
-            say(f"set the output volume to {current} BY HAND (this platform "
-                f"has no volume control helixgen can drive), then re-run")
-            break
-        with ST.playing(path, playback_cmd):
-            # the gate stays on the JACK: the stimulus is cabled into it,
-            # so input_db is exactly the quantity being nulled.
-            window = _measure_window(ip, seconds, min_playing, source="input")
-        delta = reference - round(window.input_db, 2)
-        steps.append({"volume": current,
-                      "input_db": round(window.input_db, 2),
-                      "delta_db": round(delta, 2),
-                      "ok": window.ok, "reason": window.reason})
-        say(f"  volume {current}: {window.input_db:+.2f} dB "
-            f"({delta:+.2f} dB from the reference)")
-        if window.ok and abs(delta) <= tolerance_db:
-            achieved = round(window.input_db, 2)
-            break
-        current = ST.next_volume(current, delta_db=delta)
+    try:
+        for _ in range(max_steps):
+            if not ST.set_output_volume(current):
+                manual = True
+                say(f"set the output volume to {current} BY HAND (helixgen "
+                    f"could not set it on this machine), then re-run")
+                break
+            try:
+                with ST.playing(path, playback_cmd):
+                    # the gate stays on the JACK: the stimulus is cabled into
+                    # it, so input_db is exactly the quantity being nulled.
+                    window = _measure_window(ip, seconds, min_playing,
+                                             source="input")
+            except ST.StimulusError as e:
+                raise click.ClickException(str(e)) from e
+            delta = reference - round(window.input_db, 2)
+            steps.append({"volume": current,
+                          "input_db": round(window.input_db, 2),
+                          "delta_db": round(delta, 2),
+                          "ok": window.ok, "reason": window.reason})
+            say(f"  volume {current}: {window.input_db:+.2f} dB "
+                f"({delta:+.2f} dB from the reference)")
+            if not window.ok:
+                # NOT a level problem: a window that gates nothing reads the
+                # dB floor, and stepping the volume toward that would ramp
+                # straight to 100 and stay there for every remaining window.
+                raise click.ClickException(
+                    f"the stimulus window measured nothing ({window.reason}) "
+                    f"— NOTHING was saved. The audio is not reaching the "
+                    f"instrument jack: pin the computer's OUTPUT DEVICE to "
+                    f"the one cabled to the Stadium (it is itself a USB "
+                    f"interface and often steals the system default), check "
+                    f"the cable, and confirm the file plays by hand.")
+            if abs(delta) <= tolerance_db:
+                achieved = round(window.input_db, 2)
+                break
+            nxt = ST.next_volume(current, delta_db=delta)
+            if nxt == current:
+                raise click.ClickException(
+                    f"the output volume is already at {current} and the "
+                    f"stimulus is still {delta:+.2f} dB from the reference — "
+                    f"NOTHING was saved. Raise the level before the computer "
+                    f"output (interface gain, or an unengaged input Pad), or "
+                    f"re-take the reference with the same guitar.")
+            current = nxt
+    finally:
+        if entry_volume is not None:
+            ST.set_output_volume(entry_volume)
 
     if achieved is None:
         raise click.ClickException(
             ("set the volume by hand and re-run" if manual else
              f"the stimulus did not converge in {max_steps} windows — "
-             f"NOTHING was saved. The usual cause is that the audio never "
-             f"reaches the jack: pin the computer's OUTPUT DEVICE to the one "
-             f"cabled to the Stadium (it steals the system default), check "
-             f"the cable, and make sure the guitar is unplugged."))
+             f"NOTHING was saved. Try a wider --tolerance-db, more "
+             f"--max-steps, or check that the playback level can actually "
+             f"reach the reference."))
 
+    # `looper` also needs calibration (same physics), and rewriting it to
+    # `sample` would flip the implied --source back to `input`, whose gate
+    # reads pure silence while a looper replays -- every target SKIPPED.
+    calibrated_mode = ("looper" if normalization.mode == "looper"
+                       else "sample")
     saved = PREFS.save_normalization({
-        "mode": "sample",
+        "mode": calibrated_mode,
         "sample": {"path": str(path), "volume": current,
                    "playback_cmd": playback_cmd},
         "calibration": {
@@ -4045,13 +4104,16 @@ def device_calibrate(stimulus: Path | None, volume: int | None,
             "reference_guitar": reference_guitar,
             "achieved_input_db": achieved,
             "volume": current,
+            "mode": calibrated_mode,
             "tolerance_db": tolerance_db,
+            "seconds": seconds,
             "converged": True,
             "steps": steps,
             "preferences": str(saved),
         }, indent=2))
     else:
-        click.echo(f"calibrated: volume {current} reads {achieved:+.2f} dB "
+        click.echo(f"calibrated ({calibrated_mode} mode): volume {current} "
+                   f"reads {achieved:+.2f} dB "
                    f"against a {reference:+.2f} dB reference — saved to "
                    f"{saved}")
         click.echo("`device normalize` now takes its mode, stimulus and "
@@ -4140,6 +4202,26 @@ def _normalize_reachability(results, target_total):
                                   "output_level_db", "ceiling_db")
                 if k in r})
     return short
+
+
+def _normalize_say_unreachable(unreachable, say) -> None:
+    """Report the targets the requested total cannot lift, BEFORE any write.
+
+    The spec is explicit that this lands before files are touched: a user who
+    learns their tones were out of range only after the .hsp files were
+    rewritten has been told too late to decide anything."""
+    from helixgen.device import normalize as NZ
+
+    for u in unreachable:
+        label = (f"snapshot {u['name']!r}" if "snapshot" in u
+                 else f"tone {u['tone']!r}")
+        say(f"  {label}: CANNOT REACH the target — its ceiling is "
+            f"{u['ceiling_db']:+.2f} dB total (measured {u['total_db']:+.2f} "
+            f"at {u['output_level_db']:+.1f} level, +{NZ.OUTPUT_LEVEL_MAX:g} "
+            f"dB output cap). That is in-chain GAIN STAGING, not a level "
+            f"move: raise the amp's channel volume (both amps on a dual-amp "
+            f"preset), then re-run. The trim below is still written, clamped "
+            f"at the cap.")
 
 
 def _normalize_record_library(entries, *, scope, target_total_db,
@@ -4450,7 +4532,29 @@ def device_normalize(preset: Path | None, setlist: str | None,
     measure_via = settings["measure_via"]
     capture_input = settings["capture_input"]
 
+    if (measure_via == "capture" and target_db is not None
+            and target_db > 0):
+        raise click.ClickException(
+            f"--target-db {target_db:g} is not a LUFS target: integrated "
+            f"loudness is at or below 0 by construction, so this number came "
+            f"from the METERS metric (chain gain). Measuring via capture "
+            f"against it would ask every tone for ~{target_db:g} dB of trim "
+            f"and slam each output level to the cap. Pick a LUFS target "
+            f"(e.g. -18) for --measure-via capture, or drop back to "
+            f"--measure-via meters."
+            + ("" if settings_from["target_db"] == "flag" else
+               " The target came from your `normalization.target_db` "
+               "preference — the two settings are stored independently, so "
+               "changing measure_via does not convert it."))
+
     say = (lambda msg: click.echo(msg, err=True)) if as_json else click.echo
+
+    # L7: the playing gate needs ~10 credited samples/sec, so a short window
+    # cannot reach a high --min-playing and EVERY target would be skipped.
+    if measure_via == "meters" and seconds * 10 < min_playing:
+        say(f"warning: --seconds {seconds:g} can yield at most ~{seconds*10:.0f} "
+            f"gated samples, below --min-playing {min_playing} — every target "
+            f"would be SKIPPED. Raise --seconds or lower --min-playing.")
 
     # A recorded stimulus is only comparable between sessions while its
     # source-level calibration holds; `play` mode has no such dependency
@@ -4629,6 +4733,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
             target, anchor = _normalize_resolve_target(results, target_db)
             _normalize_plan(results, target, tolerance_db)
             unreachable = _normalize_reachability(results, target)
+            _normalize_say_unreachable(unreachable, say)
             if yes:
                 for r in results:
                     if r.get("ok") and r["trim_db"]:
@@ -4729,6 +4834,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
             target, anchor = _normalize_resolve_target(results, target_db)
             _normalize_plan(results, target, tolerance_db)
             unreachable = _normalize_reachability(results, target)
+            _normalize_say_unreachable(unreachable, say)
             if yes:
                 for r in results:
                     if r.get("ok") and r["trim_db"]:
@@ -4826,16 +4932,6 @@ def device_normalize(preset: Path | None, setlist: str | None,
                 mark = " (anchor)" if r is anchor else ""
                 click.echo(f"  {label}: {r['total_db']:+.2f} dB total — "
                            f"in band (±{tolerance_db:g} dB){mark}")
-        for u in unreachable:
-            label = (f"snapshot {u['name']!r}" if "snapshot" in u
-                     else f"tone {u['tone']!r}")
-            click.echo(
-                f"  {label}: CANNOT REACH the target — its ceiling is "
-                f"{u['ceiling_db']:+.2f} dB total (measured "
-                f"{u['total_db']:+.2f} at {u['output_level_db']:+.1f} level, "
-                f"+{NZ.OUTPUT_LEVEL_MAX:g} dB output cap). That is in-chain "
-                f"GAIN STAGING, not a level move: raise the amp's channel "
-                f"volume (both amps on a dual-amp preset), then re-run.")
         if yes:
             if written:
                 for p in written:

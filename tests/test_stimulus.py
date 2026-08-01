@@ -154,11 +154,23 @@ def test_set_output_volume_is_a_no_op_off_darwin(monkeypatch):
     assert ST.set_output_volume(53) is False
 
 
+class _Ran:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def _fake_run(calls, returncode=0, stdout=""):
+    def run(argv, **kw):
+        calls.append(argv)
+        return _Ran(returncode, stdout)
+    return run
+
+
 def test_set_output_volume_runs_osascript_on_darwin(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     calls = []
-    monkeypatch.setattr(ST.subprocess, "run",
-                        lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(ST.subprocess, "run", _fake_run(calls))
     assert ST.set_output_volume(53) is True
     assert calls[0][0] == "osascript"
     assert "set volume output volume 53" in " ".join(calls[0])
@@ -167,12 +179,51 @@ def test_set_output_volume_runs_osascript_on_darwin(monkeypatch):
 def test_set_output_volume_clamps_to_the_0_100_range(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     calls = []
-    monkeypatch.setattr(ST.subprocess, "run",
-                        lambda argv, **kw: calls.append(argv))
+    monkeypatch.setattr(ST.subprocess, "run", _fake_run(calls))
     ST.set_output_volume(140)
     ST.set_output_volume(-8)
     assert "set volume output volume 100" in " ".join(calls[0])
     assert "set volume output volume 0" in " ".join(calls[1])
+
+
+def test_set_output_volume_reports_a_failed_osascript(monkeypatch):
+    # a Mac without automation permission (headless ssh, MDM) must NOT read
+    # as success: the calibration loop would chase a volume that never moved
+    # and then blame the output device when it gives up.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(ST.subprocess, "run", _fake_run([], returncode=1))
+    assert ST.set_output_volume(53) is False
+
+
+def test_set_output_volume_survives_a_missing_osascript(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+
+    def boom(argv, **kw):
+        raise OSError("no osascript")
+
+    monkeypatch.setattr(ST.subprocess, "run", boom)
+    assert ST.set_output_volume(53) is False
+
+
+def test_get_output_volume_reads_the_current_setting(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(ST.subprocess, "run", _fake_run([], stdout="42\n"))
+    assert ST.get_output_volume() == 42
+
+
+def test_get_output_volume_is_none_when_unreadable(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(ST.subprocess, "run", _fake_run([], stdout="loud"))
+    assert ST.get_output_volume() is None
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert ST.get_output_volume() is None
+
+
+def test_argv_rejects_an_unparseable_command(tmp_path):
+    wav = tmp_path / "loop.wav"
+    wav.write_bytes(b"RIFF")
+    with pytest.raises(ST.StimulusError, match="does not parse"):
+        ST.argv(wav, 'play -q "{path} repeat')
 
 
 def test_next_volume_steps_toward_the_reference():

@@ -49,8 +49,13 @@ def argv(path: Path | str, playback_cmd: str) -> list[str]:
             f"playback command {playback_cmd!r} has no {{path}} placeholder — "
             f"it would play nothing (expected e.g. "
             f"'play -q {{path}} repeat 9999')")
-    return [tok.replace("{path}", str(path))
-            for tok in shlex.split(playback_cmd)]
+    try:
+        tokens = shlex.split(playback_cmd)
+    except ValueError as e:
+        raise StimulusError(
+            f"playback command {playback_cmd!r} does not parse as a shell "
+            f"command line ({e})") from e
+    return [tok.replace("{path}", str(path)) for tok in tokens]
 
 
 def preflight(path: Path | str, playback_cmd: str) -> list[str]:
@@ -101,20 +106,47 @@ def playing(path: Path | str, playback_cmd: str):
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+                    proc.wait(timeout=5)   # reap it; don't leave a zombie
+
+
+def get_output_volume() -> int | None:
+    """The current system output volume (macOS only), or None when it cannot
+    be read. Read so a calibration run can put it BACK: the loop drives the
+    volume toward a reference, and leaving a user's machine at whatever it
+    reached -- into a guitar amp -- is not an acceptable exit state."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", "output volume of (get volume settings)"],
+            capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        return int(out.stdout.strip())
+    except ValueError:
+        return None
 
 
 def set_output_volume(volume: int) -> bool:
-    """Set the system output volume (macOS only). Returns False -- without
-    raising -- anywhere else, so the calibration loop can fall back to
-    telling the user what to change by hand."""
+    """Set the system output volume. Returns False -- without raising -- when
+    this platform has no volume control helixgen can drive, AND when the
+    attempt FAILED (a Mac without automation permission, e.g. headless ssh or
+    MDM-restricted): claiming success there would send the calibration loop
+    chasing a volume that never moved and blame the wrong cause when it gives
+    up."""
     if sys.platform != "darwin":
         return False
     clamped = max(0, min(100, int(round(volume))))
-    subprocess.run(["osascript", "-e",
-                    f"set volume output volume {clamped}"],
-                   check=False, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)
-    return True
+    try:
+        done = subprocess.run(
+            ["osascript", "-e", f"set volume output volume {clamped}"],
+            capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
 
 
 def next_volume(volume: int, *, delta_db: float) -> int:

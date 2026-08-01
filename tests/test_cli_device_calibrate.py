@@ -161,21 +161,126 @@ def test_calibrate_fails_when_the_hand_played_window_has_no_playing(
     assert not default_prefs_path().exists()   # nothing half-written
 
 
-def test_calibrate_gives_up_after_max_steps_and_writes_nothing(rig, stimulus):
-    # a stimulus that never moves (e.g. the audio is leaving over USB) must
-    # not be recorded as a calibration -- that would make every later run
-    # confidently wrong.
+def test_calibrate_gives_up_when_the_volume_is_already_at_the_rail(
+        rig, stimulus):
+    # a stimulus that stays 29 dB down with the volume pegged is not a level
+    # problem any further step can fix -- stop, and record NOTHING (a
+    # calibration derived from it would be confidently wrong forever).
     rig["windows"] = [_result(-31.0)] + [_result(-60.0)] * 4
     result = CliRunner().invoke(
         cli, ["device", "calibrate", "--stimulus", str(stimulus),
               "--seconds", "6", "--volume", "50", "--max-steps", "4"],
         input="\n\n")
     assert result.exit_code != 0
-    assert "did not converge" in result.output.lower()
-    assert "output device" in result.output.lower()   # the usual culprit
-    assert "normalization" not in (
-        json.loads(default_prefs_path().read_text())
-        if default_prefs_path().exists() else {})
+    assert "already at" in result.output.lower()
+    assert not default_prefs_path().exists()
+
+
+def test_calibrate_stops_on_a_window_that_gated_nothing(rig, stimulus):
+    # the dB floor is not a quiet stimulus, it is NO stimulus: stepping the
+    # volume toward it ramps straight to 100 and stays there. Name the real
+    # cause (the output device) instead, and save nothing.
+    rig["windows"] = [_result(-31.0),
+                      _result(-140.0, ok=False, reason="not enough playing")]
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", str(stimulus),
+              "--seconds", "6", "--volume", "50"], input="\n\n")
+    assert result.exit_code != 0
+    assert "output device" in result.output.lower()
+    assert rig["volumes"] == [50]          # never ramped
+    assert not default_prefs_path().exists()
+
+
+def test_calibrate_never_records_an_un_ok_window_as_the_result(rig, stimulus):
+    # T1: an un-ok window whose input_db happens to sit in band must NOT be
+    # accepted -- the number is not a measurement of anything.
+    rig["windows"] = [_result(-31.0),
+                      _result(-31.2, ok=False, reason="not enough playing")]
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", str(stimulus),
+              "--seconds", "6", "--volume", "53"], input="\n\n")
+    assert result.exit_code != 0
+    assert not default_prefs_path().exists()
+
+
+def test_calibrate_keeps_looper_mode(rig, stimulus):
+    # H1: `looper` needs calibration too, and rewriting it to `sample` flips
+    # the implied --source back to `input` -- whose gate reads pure silence
+    # while a looper replays, so every later normalize target is SKIPPED.
+    path = default_prefs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 1,
+                                "normalization": {"mode": "looper"}}))
+    rig["windows"] = [_result(-31.0), _result(-31.1)]
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", str(stimulus),
+              "--seconds", "6", "--volume", "53"], input="\n\n")
+    assert result.exit_code == 0, result.output
+    assert _prefs_block()["mode"] == "looper"
+    assert load_preferences(path).normalization.source == "loop"
+
+
+def test_calibrate_restores_the_volume_it_found(rig, stimulus, monkeypatch):
+    # the loop drives the system volume; leaving a machine wherever the
+    # search ended, with a loop cabled into a guitar amp, is not an
+    # acceptable exit state -- on success OR on failure.
+    from helixgen.device import stimulus as ST
+
+    monkeypatch.setattr(ST, "get_output_volume", lambda: 25)
+    rig["windows"] = [_result(-31.0), _result(-37.0), _result(-30.9)]
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", str(stimulus),
+              "--seconds", "6", "--volume", "50"], input="\n\n")
+    assert result.exit_code == 0, result.output
+    assert rig["volumes"][-1] == 25          # put back where it started
+    assert _prefs_block()["sample"]["volume"] == 100   # what was CALIBRATED
+
+
+def test_calibrate_restores_the_volume_after_a_failure(rig, stimulus,
+                                                       monkeypatch):
+    from helixgen.device import stimulus as ST
+
+    monkeypatch.setattr(ST, "get_output_volume", lambda: 25)
+    rig["windows"] = [_result(-31.0),
+                      _result(-140.0, ok=False, reason="not enough playing")]
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", str(stimulus),
+              "--seconds", "6", "--volume", "50"], input="\n\n")
+    assert result.exit_code != 0
+    assert rig["volumes"][-1] == 25
+
+
+def test_calibrate_rejects_a_max_steps_below_one(rig, stimulus):
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", str(stimulus),
+              "--max-steps", "0"])
+    assert result.exit_code != 0
+    assert "--max-steps" in result.output
+
+
+def test_calibrate_stores_an_absolute_stimulus_path(rig, stimulus, tmp_path,
+                                                    monkeypatch):
+    # a relative --stimulus recorded verbatim breaks from any other cwd
+    monkeypatch.chdir(stimulus.parent)
+    rig["windows"] = [_result(-31.0), _result(-31.1)]
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", stimulus.name,
+              "--seconds", "6", "--volume", "53"], input="\n\n")
+    assert result.exit_code == 0, result.output
+    from pathlib import Path
+    assert Path(_prefs_block()["sample"]["path"]).is_absolute()
+
+
+def test_calibrate_json_still_prompts_on_stderr(rig, stimulus):
+    # the help promises prompts go to stderr under --json. SUPPRESSING them
+    # starts the by-hand window with no warning, which measures an empty room.
+    rig["windows"] = [_result(-31.0), _result(-31.1)]
+    result = CliRunner().invoke(
+        cli, ["device", "calibrate", "--stimulus", str(stimulus),
+              "--seconds", "6", "--volume", "53", "--json"], input="\n\n")
+    assert result.exit_code == 0, result.stderr
+    assert "ready to play" in result.stderr
+    json.loads(result.stdout)          # stdout stays pure JSON
 
 
 def test_calibrate_needs_a_stimulus(rig):

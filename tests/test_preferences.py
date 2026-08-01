@@ -819,3 +819,90 @@ def test_calibration_warnings_ignore_unparseable_date(tmp_path, no_normalize_env
 
 def _today() -> str:
     return datetime.date.today().isoformat()
+
+
+# --- save_normalization (he-xth / hc-5dx) -----------------------------------
+
+
+def test_save_normalization_merges_nested_blocks_key_by_key(tmp_path):
+    from helixgen.preferences import save_normalization
+
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "schema_version": 1, "author": "mike",
+        "normalization": {"target_db": 17.5,
+                          "sample": {"path": "/a.wav", "loop_seconds": 5.0}},
+    }))
+    save_normalization({"mode": "sample",
+                        "sample": {"volume": 53},
+                        "calibration": {"reference_input_db": -31.0}}, p)
+    data = json.loads(p.read_text())
+    assert data["author"] == "mike"                     # untouched
+    assert data["normalization"]["target_db"] == 17.5   # untouched
+    assert data["normalization"]["sample"]["loop_seconds"] == 5.0  # merged, not replaced
+    assert data["normalization"]["sample"]["volume"] == 53
+    assert data["normalization"]["calibration"]["reference_input_db"] == -31.0
+
+
+def test_save_normalization_creates_a_missing_file(tmp_path):
+    from helixgen.preferences import save_normalization
+
+    p = tmp_path / "nested" / "preferences.json"
+    save_normalization({"mode": "play"}, p)
+    assert json.loads(p.read_text())["normalization"]["mode"] == "play"
+
+
+def test_save_normalization_writes_through_a_symlink(tmp_path):
+    # a dotfiles-managed preferences.json is commonly a symlink; replacing
+    # the LINK leaves the real file stale and unlinked from the user's repo.
+    from helixgen.preferences import save_normalization
+
+    real = tmp_path / "real.json"
+    real.write_text(json.dumps({"schema_version": 1, "author": "mike"}))
+    link = tmp_path / "preferences.json"
+    link.symlink_to(real)
+
+    save_normalization({"mode": "sample"}, link)
+    assert link.is_symlink()
+    assert json.loads(real.read_text())["normalization"]["mode"] == "sample"
+    assert json.loads(real.read_text())["author"] == "mike"
+
+
+def test_save_normalization_rejects_a_json_array(tmp_path):
+    from helixgen.preferences import save_normalization
+
+    p = tmp_path / "preferences.json"
+    p.write_text("[1, 2]")
+    with pytest.raises(PreferencesError, match="must contain a JSON object"):
+        save_normalization({"mode": "play"}, p)
+
+
+def test_save_normalization_leaves_no_tmp_file_behind(tmp_path):
+    from helixgen.preferences import save_normalization
+
+    p = tmp_path / "preferences.json"
+    save_normalization({"mode": "play"}, p)
+    assert [f.name for f in tmp_path.iterdir()] == ["preferences.json"]
+
+
+def test_normalization_rejects_a_non_string_sample_path(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"normalization": {"sample": {"path": 123}}}))
+    with pytest.raises(PreferencesError, match="sample.path"):
+        load_preferences(p)
+
+
+def test_normalization_rejects_a_non_numeric_volume(tmp_path, no_normalize_env):
+    # reached `int()` as a traceback before: every neighbouring key errors
+    # cleanly, so this one must too.
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"normalization": {"sample": {"volume": "loud"}}}))
+    with pytest.raises(PreferencesError, match="sample.volume"):
+        load_preferences(p)
+
+
+def test_normalization_rejects_an_out_of_range_volume(tmp_path, no_normalize_env):
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"normalization": {"sample": {"volume": 250}}}))
+    with pytest.raises(PreferencesError, match="between 0 and 100"):
+        load_preferences(p)

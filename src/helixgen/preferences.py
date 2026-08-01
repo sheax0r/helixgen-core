@@ -299,14 +299,34 @@ def _parse_normalization(raw: Any) -> Normalization:
     if target_source is not None and not isinstance(target_source, dict):
         raise _normalize_block_error("target_source", target_source, "an object")
 
+    sample_path = sample_raw.get("path")
+    if sample_path is not None and not isinstance(sample_path, str):
+        raise _normalize_block_error("sample.path", sample_path, "a string")
+    playback_cmd = sample_raw.get("playback_cmd")
+    if playback_cmd is not None and not isinstance(playback_cmd, str):
+        raise _normalize_block_error("sample.playback_cmd", playback_cmd,
+                                     "a string")
+    sample_volume = sample_raw.get("volume")
+    if sample_volume is not None:
+        volume_number = _validate_number(sample_volume,
+                                         field_name="sample.volume")
+        if not 0 <= volume_number <= 100:
+            raise _normalize_block_error("sample.volume", sample_volume,
+                                         "a number between 0 and 100")
+        sample_volume = int(round(volume_number))
+    for name in ("reference_guitar", "calibrated_on"):
+        value = calib_raw.get(name)
+        if value is not None and not isinstance(value, str):
+            raise _normalize_block_error(f"calibration.{name}", value,
+                                         "a string")
+
     sample = NormalizationSample(
-        path=sample_raw.get("path"),
+        path=sample_path,
         loop_seconds=_validate_number(sample_raw.get("loop_seconds"),
                                       field_name="sample.loop_seconds"),
-        playback_cmd=sample_raw.get("playback_cmd")
-        or NormalizationSample.playback_cmd,
+        playback_cmd=playback_cmd or NormalizationSample.playback_cmd,
         output_device=sample_raw.get("output_device"),
-        volume=sample_raw.get("volume"),
+        volume=sample_volume,
     )
     calibration = NormalizationCalibration(
         reference_input_db=_validate_number(
@@ -637,10 +657,21 @@ def save_normalization(changes: dict, path: Path | None = None) -> Path:
             block[key] = value
     data["normalization"] = block
 
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = resolved_path.with_suffix(resolved_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    os.replace(tmp, resolved_path)
+    # Write THROUGH a symlink (a dotfiles-managed preferences.json is
+    # commonly one): replacing the link itself would leave the real file
+    # stale and silently unlinked from the user's repo.
+    target = resolved_path.resolve() if resolved_path.is_symlink() else resolved_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # A FIXED tmp name is shared by every concurrent writer, so two runs
+    # interleave bytes into one file and `os.replace` publishes the mix.
+    # This is the first read-modify-write of this file, so it needs its own.
+    tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
     return resolved_path
 
 
