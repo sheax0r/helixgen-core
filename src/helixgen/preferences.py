@@ -49,6 +49,19 @@ DEFAULT_TARGET_DB = 17.5
 #: VERSIONED plugin cache directory, which rots on the next update.
 DEFAULT_STIMULUS_LOOP_SECONDS = 5.0
 
+#: Output volume used for the stimulus when the rig has NOT been calibrated.
+#: Not a calibration — a deterministic starting point, so an uncalibrated run
+#: is at least the same every time instead of "whatever the slider was at".
+#: The alternative is what actually happened in the field: a system left at
+#: 100% drove the jack ~17 dB hotter than a guitar does and every measurement
+#: was an artifact of it.
+DEFAULT_STIMULUS_VOLUME = 50
+
+#: An instrument-level source at the jack sits in roughly this window. Outside
+#: it, the stimulus is being driven at a level no guitar produces, and every
+#: derived trim is an artifact of the playback level rather than the tone.
+PLAUSIBLE_INPUT_DB = (-45.0, -22.0)
+
 
 def bundled_stimulus() -> Path | None:
     """The packaged stimulus wav, or None when it is somehow absent (a
