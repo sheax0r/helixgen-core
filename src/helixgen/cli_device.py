@@ -4693,24 +4693,41 @@ def device_normalize(preset: Path | None, setlist: str | None,
 
     @contextlib.contextmanager
     def _stimulus_playing():
-        """Play the profile's stimulus for the duration of one window.
+        """Play the profile's stimulus for the duration of one window, AT THE
+        CALIBRATED VOLUME.
 
         Per window rather than once per run: the loop between targets recalls
         snapshots and loads presets, and a stimulus that keeps playing through
         those is neither measured nor useful. Each window therefore gets an
         identical stretch of the same loop, which is the property that makes
-        the runs comparable."""
+        the runs comparable.
+
+        Re-applying ``sample.volume`` is what makes that property survive
+        BETWEEN sessions: calibration records the volume that hit the
+        reference, and without setting it back every run silently measures at
+        whatever the system volume happens to be — the one variable the whole
+        calibration exists to pin down. The volume the run found is restored
+        afterwards, since it is the user's machine, not ours."""
         if stimulus_path is None:
             yield
             return
         from helixgen.device import stimulus as ST
 
+        want = normalization.sample.volume
+        entry_volume = ST.get_output_volume() if want is not None else None
+        if want is not None and not ST.set_output_volume(want):
+            say(f"warning: could not set the output volume to the calibrated "
+                f"{want} — set it by hand, or this run measures at whatever "
+                f"the system volume happens to be")
         try:
             with ST.playing(stimulus_path,
                             normalization.sample.playback_cmd):
                 yield
         except ST.StimulusError as e:
             raise click.ClickException(str(e)) from e
+        finally:
+            if entry_volume is not None:
+                ST.set_output_volume(entry_volume)
 
     def _measure_target(label: str) -> dict:
         """One target's measurement, by whichever path --measure-via picked."""

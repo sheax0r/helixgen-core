@@ -1410,3 +1410,57 @@ def test_capture_refusal_names_where_the_target_came_from(monkeypatch, preset):
         cli, ["device", "normalize", str(preset), "--seconds", "6",
               "--capture-input", "X", "--target-db", "17.5"])
     assert "--target-db" in from_flag.output
+
+
+def test_normalize_replays_at_the_calibrated_volume(monkeypatch, preset,
+                                                    fake_stimulus):
+    # Calibration records the volume that hit the reference; if normalize
+    # does not set it back, every run measures at whatever the system volume
+    # happens to be — the one variable calibration exists to pin down.
+    from helixgen.device import stimulus as ST
+
+    volumes = []
+    monkeypatch.setattr(ST, "get_output_volume", lambda: 30)
+    monkeypatch.setattr(ST, "set_output_volume",
+                        lambda v: volumes.append(v) or True)
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"]),
+                             "volume": 53}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert result.exit_code == 0, result.output
+    # set to 53 for each of the three windows, restored to 30 after each
+    assert volumes == [53, 30, 53, 30, 53, 30]
+
+
+def test_normalize_without_a_calibrated_volume_leaves_it_alone(
+        monkeypatch, preset, fake_stimulus):
+    from helixgen.device import stimulus as ST
+
+    volumes = []
+    monkeypatch.setattr(ST, "set_output_volume",
+                        lambda v: volumes.append(v) or True)
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"])}})
+    assert CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"]
+    ).exit_code == 0
+    assert volumes == []
+
+
+def test_normalize_warns_when_the_volume_cannot_be_set(
+        monkeypatch, preset, fake_stimulus):
+    from helixgen.device import stimulus as ST
+
+    monkeypatch.setattr(ST, "get_output_volume", lambda: None)
+    monkeypatch.setattr(ST, "set_output_volume", lambda v: False)
+    _patch(monkeypatch, GAINS)
+    _write_prefs({"mode": "sample", "target_db": 30.0,
+                  "sample": {"path": str(fake_stimulus["path"]),
+                             "volume": 53}})
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6"])
+    assert "could not set the output volume" in result.output
+    assert "53" in result.output
