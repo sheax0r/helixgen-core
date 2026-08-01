@@ -313,6 +313,13 @@ NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
       # #82 core: loop-source runs gate on chain-out and equalize raw
       # output_db totals (the looped source is identical by construction)
       "--source loop", "LOOPER", "identical across targets"]),
+    # he-xth: the normalization PROTOCOL — the calibration crux (null against
+    # input_db, never gain_db), what a non-converging run does (nothing), and
+    # the failure mode that causes it (the Stadium steals the default output).
+    (["device", "calibrate"],
+     ["input_db", "NOT `gain_db`", "clean chain", "0.16 dB/dB",
+      "does not converge", "USB audio interface", "preferences",
+      "10+ dB", "PLAY BY HAND", "chain-independent"]),
     (["set-param"],
      ["--snapshot", "per-snapshot override", "base value",
       "densify", "active snapshot", "round-trip",

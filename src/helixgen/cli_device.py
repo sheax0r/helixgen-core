@@ -3935,7 +3935,7 @@ def device_calibrate(stimulus: Path | None, volume: int | None,
     Both the calibration and the stimulus are written to
     `normalization` in preferences.json, and the mode is set to `sample`;
     `device normalize` then takes its defaults from there. A run that does
-    NOT converge writes nothing — the usual cause is that the audio never
+    not converge writes nothing — the usual cause is that the audio never
     reached the jack, because the Stadium is itself a USB audio interface
     and often steals the system default output.
     """
