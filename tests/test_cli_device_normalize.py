@@ -1576,3 +1576,21 @@ def test_unreachable_message_does_not_promise_a_clamped_write(
               "--target-db", "60", "--yes"])
     assert "still written" not in result.output
     assert "NOTHING is written for this target" in result.output
+
+
+def test_a_target_inside_the_tolerance_band_is_never_unreachable(
+        monkeypatch, preset):
+    # Found on real hardware: a snapshot 0.54 dB from target, inside the
+    # +-1 dB band, was reported UNREACHABLE because its output level was
+    # already at the cap. It needs no trim at all -- sending the user to fix
+    # gain staging on an already-correct tone is pure noise.
+    _patch(monkeypatch, GAINS)          # Rhythm measures +27.96 dB
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", str(preset), "--seconds", "6",
+              "--target-db", "28.4", "--tolerance-db", "1.0", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    rhythm = [t for t in payload["targets"] if t["name"] == "Rhythm"][0]
+    assert rhythm["trim_db"] == 0.0        # in band
+    assert rhythm["reachable"] is True     # ...so not "unreachable"
+    assert "Rhythm" not in json.dumps(payload["unreachable"])
