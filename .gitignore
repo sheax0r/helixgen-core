@@ -34,3 +34,9 @@ build/
 # ralphex runtime state (`.ralphex/config` stays tracked)
 .ralphex/worktrees/
 .ralphex/progress/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
