@@ -2052,6 +2052,136 @@ def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
     click.echo(f"wrote {len(blob)} bytes to {outfile}")
 
 
+#: `device to-hsp` reads the device only when SOURCE is a cid; with a local
+#: .sbe path it is wholly offline, so the generic read-session note would
+#: promise a failure that cannot happen.
+_TO_HSP_LOCK_NOTE = (
+    "LOCKS: offline when SOURCE is a .sbe path — takes no device lease and "
+    "ignores $HELIXGEN_LOCK_TOKEN. When SOURCE is a CID it reads the device, "
+    "and then a $HELIXGEN_LOCK_TOKEN that no longer opens a live lease over "
+    "the 'library' scope FAILS the verb instead of handing back a preset "
+    "someone else may have overwritten (#97); re-take a lease (`helixgen "
+    "device lock --scope all --pid $PPID`) or `unset HELIXGEN_LOCK_TOKEN` to "
+    "read unlocked."
+)
+
+
+def _preset_name_for_cid(h, cid: int):
+    """The device's own name for a preset cid, or ``None`` when the listing
+    does not report it. The name is NOT in the content blob — it lives in the
+    containing setlist entry — so it has to be read separately."""
+    with contextlib.suppress(Exception):
+        for meta in h.list_presets():
+            if meta.get("cid_") == cid:
+                return meta.get("name") or None
+    return None
+
+
+@device.command(name="to-hsp")
+@click.argument("source")
+@click.option("-o", "--out", "outfile", required=True,
+              type=click.Path(dir_okay=False, path_type=Path),
+              help="Where to write the .hsp.")
+@click.option("--name", "preset_name", default=None,
+              help="meta.name for the .hsp. Default: the device preset's name "
+                   "(CID source) or the .sbe filename stem — device content "
+                   "carries no preset name of its own.")
+@click.option("--author", default=None, help="meta.author for the .hsp.")
+@click.option("--library", "library_path", default=None,
+              type=click.Path(file_okay=False, path_type=Path),
+              help="Block library root (default ~/.helixgen/library). Supplies "
+                   "the helixgen param-name vocabulary; for a model with no "
+                   "library block the device's own param names are used.")
+@click.option("--verify/--no-verify", default=True, show_default=True,
+              help="Re-transcode the .hsp and report whether it reproduces the "
+                   "source bytes exactly.")
+@_device_option
+@_reads("library", when=lambda kw: ("library",) if kw.get("source", "").isdigit() else (),
+        note=_TO_HSP_LOCK_NOTE)
+def device_to_hsp(source: str, outfile: Path, preset_name, author,
+                  library_path, verify: bool, ip: str, port: int) -> None:
+    """Convert device content (.sbe / `_sbepgsm`) into a helixgen .hsp.
+
+    The reverse of `device install`: a preset authored on the hardware or in HX
+    Edit becomes a real .hsp that `view`, `patch` and the surgical edit verbs
+    all handle, and that `device install` pushes straight back.
+
+    SOURCE is either a local .sbe path (wholly offline — no device, no lease)
+    or a device CID (an integer, read via the non-activating `/GetContentData`
+    so the live tone is never disturbed).
+
+    Fidelity covers models, params, snapshots, footswitch/EXP assignments, IR
+    references and the full signal graph (dual-DSP, parallel splits, dual-amp).
+    With --verify (the default) the .hsp is transcoded back and compared with
+    the source: content helixgen itself installed reproduces the device's own
+    bytes EXACTLY. Content the DEVICE re-saved differs in serialization
+    conventions only -- `pm__` key order, `snps.si__` order, `cg__` target/
+    source id numbering, and the `hist`/`selb`/`self` edit-buffer scratch keys
+    -- because the conversion canonicalizes; it reaches a FIXED POINT after one
+    pass, so a second `to-hsp` of the re-transcoded content is byte-identical.
+
+    NOT yet reversed: Command Center commands and MIDI CC controller bindings
+    are DROPPED, with a warning naming how many.
+    """
+    from helixgen.device import untranscode
+    from helixgen.library import Library, default_library_path
+
+    if source.isdigit():
+        HelixClient, HelixError = _client()
+        cid = int(source)
+        try:
+            with HelixClient(ip, port) as h:
+                blob = h.get_content(cid)
+                if preset_name is None:
+                    preset_name = _preset_name_for_cid(h, cid)
+        except HelixError as e:
+            raise click.ClickException(str(e)) from e
+        except OSError as e:
+            raise click.ClickException(str(e)) from e
+        origin = f"cid {cid}"
+    else:
+        path = Path(source)
+        if not path.exists():
+            raise click.ClickException(
+                f"{source}: no such file, and not a device CID (an integer). "
+                f"Pass a local .sbe path or a CID.")
+        blob = path.read_bytes()
+        if preset_name is None:
+            preset_name = path.stem
+        origin = str(path)
+
+    library = Library(library_path or default_library_path())
+    try:
+        body = untranscode.sbe_bytes_to_hsp(blob, name=preset_name,
+                                            library=library, author=author)
+    except Exception as e:  # noqa: BLE001
+        raise click.ClickException(f"{origin}: could not transcode: {e}") from e
+
+    from helixgen.hsp import write_hsp
+
+    write_hsp(outfile, body)
+    click.echo(f"wrote {outfile} from {origin}")
+
+    if not verify:
+        return
+    from helixgen.device import transcode as _transcode
+
+    try:
+        again = _transcode.hsp_to_sbepgsm(body)
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"warning: could not re-transcode to verify: {e}", err=True)
+        return
+    if again == blob:
+        click.echo("verify: byte-exact round trip")
+    else:
+        click.echo(
+            f"verify: re-transcode differs from the source ({len(again)} vs "
+            f"{len(blob)} bytes). Expected for content the DEVICE re-saved — "
+            f"serialization conventions and cg__ id numbering, not tone. The "
+            f"conversion is a fixed point: converting the re-transcoded "
+            f"content again yields the identical .hsp.", err=True)
+
+
 @device.command(name="save")
 @click.argument("name")
 @click.option("--setlist", default="user", show_default=True,

@@ -826,7 +826,7 @@ def synthesize_serial_sfg(paths: List[dict]) -> Tuple[dict, int]:
     return sfg, next_id
 
 
-def _synth_cg(max_id: int) -> dict:
+def _synth_cg(max_id: int, active: int = 0) -> dict:
     """A minimal valid ``cg__``: 8 empty snapshot slots, no controllers, next-id
     counters set past the largest instance id. Volatile (the device recomputes
     counters on save) — not part of the fidelity comparison."""
@@ -834,7 +834,7 @@ def _synth_cg(max_id: int) -> dict:
              "name": f"SNAPSHOT {i + 1}", "si__": i, "tamv": [], "tgls": [],
              "vald": True} for i in range(8)]
     return {
-        "asnp": 0,
+        "asnp": active,
         "entt": {
             "cmnd": [],
             "ctm_": {"htid": [], "ptid": [], "sirt": [], "stid": []},
@@ -1121,6 +1121,19 @@ def _emit_snapshots(tracked, snap_meta):
                      "iras": [], "name": name, "si__": i, "tamv": tamv,
                      "tgls": [], "vald": True})
     return snps
+
+
+def _active_snapshot(recipe: dict) -> int:
+    """The preset's on-load snapshot index (``cg__.asnp``).
+
+    Lifted from the ``.hsp``'s ``preset.params.activesnapshot`` by
+    :func:`hsp_to_sbepgsm`. Previously hardcoded to 0, which silently reset a
+    preset to snapshot 1 on every ``device install``/``sync`` — surfaced by the
+    ``.sbe`` -> ``.hsp`` -> ``.sbe`` round trip (bead hgc-zbl)."""
+    value = recipe.get("active_snapshot")
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 8:
+        return value
+    return 0
 
 
 def _synth_cg_from_recipe(
@@ -1418,12 +1431,12 @@ def _synth_cg_from_recipe(
         recipe, srcs, trgs, next_trg, instance_ids)
 
     if not tracked and not ctrl and not cmnd:
-        return _synth_cg(max_id), bindings
+        return _synth_cg(max_id, _active_snapshot(recipe)), bindings
 
     snps = _emit_snapshots(tracked, snap_meta)
 
     return {
-        "asnp": 0,
+        "asnp": _active_snapshot(recipe),
         "entt": {
             "cmnd": cmnd,
             "ctm_": {"htid": [], "ptid": ptid, "sirt": [], "stid": stid},
@@ -1656,5 +1669,8 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
               if isinstance(preset_params.get(f"{jack}Z"), str)}
     if inst_z:
         recipe["inst_z"] = inst_z
+    active = preset_params.get("activesnapshot")
+    if isinstance(active, int) and not isinstance(active, bool):
+        recipe["active_snapshot"] = active
     doc = recipe_to_sbepgsm(recipe)
     return content.encode_content_data(doc)
