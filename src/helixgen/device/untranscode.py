@@ -50,8 +50,10 @@ from .transcode import _GRID_SLOTS, _ROW0_INPUT, _ROW0_OUTPUT, _ROW1_INPUT, _ROW
 
 # ``.hsp`` block ``type`` string per device model category. The ``.hsp`` side
 # has a coarser vocabulary than ``defs``: everything that is not an endpoint,
-# an amp, a cab or a routing node is simply "fx" (verified against the real
-# export corpus, whose only type strings are input/output/amp/cab/split/join/fx).
+# an amp, a cab or a routing node is simply "fx". The real export corpus only
+# ever shows input/output/amp/cab/split/join/fx — ``looper`` is NOT anchored by
+# an export, it is the obvious spelling for a category the corpus has (one
+# device-authored preset carries a looper block) but no `.hsp` sample of.
 _HSP_TYPE = {
     "input": "input",
     "output": "output",
@@ -266,7 +268,8 @@ class _Cg:
     instance id (``eID_``), params additionally by ``pid_``.
     """
 
-    def __init__(self, doc: dict) -> None:
+    def __init__(self, doc: dict, lost: Optional[List[str]] = None) -> None:
+        lost = [] if lost is None else lost
         entt = (doc.get("cg__") or {}).get("entt") or {}
         # A snapshot's identity is its ``si__``, NOT its position in the list:
         # the device writes the array in DESCENDING si__ order when it saves a
@@ -292,7 +295,15 @@ class _Cg:
             eid = trg.get("eID_")
             values = [m.get(tid) for m in per_snap]
             if any(v is None for v in values) or not values:
-                continue  # a target absent from some snapshot's tamv: unreadable
+                # A snapshot-tracked target the device did not write into every
+                # snapshot's ``tamv``. There is no base value to densify it
+                # with here, so the whole per-snapshot array is unreadable and
+                # this target loses its scenes — never quietly.
+                lost.append(
+                    f"snapshot target {tid} (entity {trg.get('eID_')}, pid "
+                    f"{trg.get('pid_')}) is missing from some snapshots' tamv; "
+                    f"its per-snapshot values were dropped")
+                continue
             if trg.get("type") == 1:
                 # Device polarity: True == bypassed. The ``.hsp`` array is
                 # "@enabled", so it is the inverse (``bridge._snapshot_arrays``).
@@ -314,13 +325,21 @@ class _Cg:
             if not sid:
                 # ``trig == 0`` is a MIDI CC controller (no physical source);
                 # its ``.hsp`` home is the helixgen-namespaced
-                # ``preset._helixgen_midi`` list, not modeled here (hgc-zbl
-                # follow-up).
+                # ``preset._helixgen_midi`` list, not modeled here (bead
+                # hgc-mid).
                 self.dropped_midi += 1
                 continue
             src = srcs.get(sid) or {}
             source = _source_id(src.get("locl"), src.get("ctxt"))
             if source is None:
+                # A physical source with no anchored ``.hsp`` id (EXP3, an
+                # out-of-range stomp locl). Forward-mappable, not
+                # reverse-mappable — so the controller is lost, and saying so
+                # is the difference between "re-author this" and a mystery.
+                lost.append(
+                    f"controller on device source (locl {src.get('locl')}, "
+                    f"ctxt {src.get('ctxt')}) has no .hsp source id; the "
+                    f"assignment was dropped")
                 continue
             self.source_bypass_flag[source] = bool(src.get("byps"))
             meta: Dict[str, Any] = {"source": source}
@@ -360,9 +379,16 @@ def _iter_blocks(flow: dict):
 def _endpoint_pointers(entries: Dict[str, dict]) -> None:
     """Wire the ``.hsp`` routing pointers a real export carries, in place.
 
-    ``b00``/``b13`` reference each other; a split points ``endpoint`` at its
-    join (and vice versa) and both ``branch`` at the lane-1 span they bracket
-    (``view.branch_span`` reads exactly this pair to recover the parallel lane).
+    ``b00``/``b13`` reference each other. Each split points ``endpoint`` at ITS
+    join (and vice versa) and both ``branch`` at the lane-1 span they bracket —
+    ``view.branch_span`` reads exactly that pair to recover the parallel lane,
+    and it is the ONLY way the parallel structure survives into ``view``: the
+    forward transcoder ignores ``endpoint``/``branch`` entirely, so the
+    ``.sbe`` round trip cannot catch a mis-wiring here.
+
+    Splits and joins are paired **in grid order** — pairing the first split
+    with the LAST join reports one giant bogus parallel section when a flow
+    carries two split/join pairs.
     """
     if "b00" in entries and "b13" in entries:
         entries["b00"]["endpoint"] = "b13"
@@ -370,17 +396,63 @@ def _endpoint_pointers(entries: Dict[str, dict]) -> None:
     if "b14" in entries and "b27" in entries:
         entries["b14"]["endpoint"] = "b27"
         entries["b27"]["endpoint"] = "b14"
-    splits = [k for k, e in entries.items() if e.get("type") == "split"]
-    joins = [k for k, e in entries.items() if e.get("type") == "join"]
-    lane1 = sorted(k for k, e in entries.items()
-                   if int(k[1:]) >= 14 and e.get("type") not in ("input", "output"))
-    if not (splits and joins and lane1):
-        return
-    split, join = sorted(splits)[0], sorted(joins)[-1]
-    entries[split]["endpoint"] = join
-    entries[join]["endpoint"] = split
-    entries[split]["branch"] = lane1[0]
-    entries[join]["branch"] = lane1[-1]
+    by_pos = sorted(((int(k[1:]), k, e.get("type")) for k, e in entries.items()
+                     if e.get("type") in ("split", "join")))
+    lane1 = sorted((int(k[1:]), k) for k, e in entries.items()
+                   if int(k[1:]) >= _ROW1_INPUT
+                   and e.get("type") not in ("input", "output"))
+    open_splits: List[str] = []
+    for _, key, kind in by_pos:
+        if kind == "split":
+            open_splits.append(key)
+            continue
+        if not open_splits:
+            continue      # an unbalanced join: leave it unwired rather than guess
+        split = open_splits.pop()
+        entries[split]["endpoint"] = key
+        entries[key]["endpoint"] = split
+        # The lane-1 blocks this pair brackets, by grid position. A pair with an
+        # EMPTY branch lane still gets its endpoint pair wired (that is what
+        # tells `view` the two are partners); it simply has no span.
+        lo, hi = int(split[1:]) + _ROW1_INPUT, int(key[1:]) + _ROW1_INPUT
+        span = [k for pos, k in lane1 if lo <= pos <= hi] or [k for _, k in lane1]
+        if span:
+            entries[split]["branch"] = span[0]
+            entries[key]["branch"] = span[-1]
+
+
+def _nest_stereo_channels(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Fold the device's ``<Name>.1`` / ``<Name>.2`` pairs back into the ``.hsp``
+    per-channel shape ``{"<Name>": {"1": {...}, "2": {...}}}``.
+
+    The stereo input endpoint (``P35_InputInst1_2``) is the only place this
+    occurs — it is the ONLY category in ``defs`` with dotted-channel param
+    names. ``bridge._lift_endpoint_params`` un-nests it on the way out, and it
+    reads the flat spelling too, so the transcode round trip does NOT catch a
+    failure to nest. Everything ELSE does: ``view._lift_input`` and
+    ``mutate``'s ``input`` pseudo-block both address the nested shape, so a
+    flat ``.hsp`` makes ``view`` drop the whole input section and makes
+    ``set-param input pad …`` report success while writing a key the device
+    never reads.
+    """
+    channels: Dict[str, Dict[str, Any]] = {}
+    for name in params:
+        base, _, ch = name.rpartition(".")
+        if base and ch in ("1", "2"):
+            channels.setdefault(base, {})[ch] = name
+    # Only fold a base whose BOTH channels are present; a lone ".1" is not the
+    # per-channel shape and folding it would invent a half-populated wrapper.
+    foldable = {b: chs for b, chs in channels.items() if len(chs) == 2}
+    if not foldable:
+        return params
+    out: Dict[str, Any] = {}
+    for name, wrapper in params.items():
+        base, _, ch = name.rpartition(".")
+        if base in foldable and ch in ("1", "2"):
+            out.setdefault(base, {})[ch] = wrapper
+        else:
+            out[name] = wrapper
+    return out
 
 
 def _slot_params(m0: dict, plan: List[Tuple[int, str]], eid: Any,
@@ -403,13 +475,14 @@ def _slot_params(m0: dict, plan: List[Tuple[int, str]], eid: Any,
         if ctl is not None:
             wrapper["controller"] = dict(ctl)
         params[name] = wrapper
-    return params
+    return _nest_stereo_channels(params)
 
 
 def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
-                 library: Optional[Library],
-                 unresolved: List[int]) -> Optional[dict]:
-    m0 = (blk.get("mdls") or [{}])[0]
+                 library: Optional[Library], unresolved: List[int],
+                 lost: List[str]) -> Optional[dict]:
+    mdls = blk.get("mdls") or [{}]
+    m0 = mdls[0]
     dev_id = m0.get("id__")
     if not isinstance(dev_id, int):
         return None
@@ -417,6 +490,13 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
     if hsp_model is None:
         unresolved.append(dev_id)
         return None
+    if len(mdls) > 1:
+        # A dual-cab block's second model slot. The ``.hsp`` slot list could
+        # carry it, but ``bridge.hsp_to_paths`` reads only ``slot[0]`` and
+        # ``transcode._make_user_block`` emits a single-model block, so it
+        # would not survive a re-install either way. Loud, not silent.
+        lost.append(f"grid slot {gp}: {len(mdls) - 1} extra model slot(s) "
+                    f"(dual-cab) dropped")
     category = defs.category_for(dev_id)
     eid = blk.get("id__")
     lane = 1 if gp >= _ROW1_INPUT else 0
@@ -455,9 +535,11 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
     return entry
 
 
-def _flow_entry(flow: dict, cg: _Cg, rev: Dict[int, str],
-                library: Optional[Library], unresolved: List[int]) -> dict:
+def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
+                library: Optional[Library], unresolved: List[int],
+                lost: List[str]) -> dict:
     entries: Dict[str, dict] = {}
+    user_gps: List[int] = []
     for gp, blk in _iter_blocks(flow):
         if not isinstance(gp, int) or not (0 <= gp < _GRID_SLOTS):
             continue
@@ -466,9 +548,30 @@ def _flow_entry(flow: dict, cg: _Cg, rev: Dict[int, str],
             continue   # forward path re-synthesizes the row-1 endpoint pair
         if gp == _ROW1_OUTPUT and model == _OUTPUT_NONE_MODEL:
             continue
-        entry = _block_entry(gp, blk, cg, rev, library, unresolved)
+        if gp == _ROW1_INPUT:
+            # A row-1 slot carrying a REAL input is emitted, but
+            # ``bridge.hsp_to_paths`` skips category ``input`` for every key
+            # except ``b00``, so a re-install replaces it with InputNone.
+            lost.append(f"flow {fi}: the row-1 input at grid slot {gp} "
+                        f"({defs.model_name_for(model)}) will revert to "
+                        f"InputNone if this .hsp is re-installed")
+        entry = _block_entry(gp, blk, cg, rev, library, unresolved, lost)
         if entry is not None:
             entries[f"b{gp:02d}"] = entry
+            if 0 < gp < _ROW0_OUTPUT:
+                user_gps.append(gp)
+    # A GAP in the row-0 user run: ``transcode._place_serial_flow`` re-packs a
+    # serial row onto consecutive slots 1..n, so a re-install closes the gap.
+    # Harmless to the signal order, but it means the round trip is not a fixed
+    # point for this preset — say so rather than let the caller assume it is.
+    if user_gps and not any(e.get("type") == "split" for e in entries.values()):
+        if user_gps != list(range(1, len(user_gps) + 1)):
+            lost.append(f"flow {fi}: grid slots {user_gps} are not contiguous; "
+                        f"a re-install compacts them onto 1..{len(user_gps)}")
+    if not flow.get("enbl", 1):
+        lost.append(f"flow {fi}: the DSP path is DISABLED on the device, and "
+                    f"a re-install re-enables it (the forward transcoder "
+                    f"always writes enbl=1)")
     _endpoint_pointers(entries)
     out: Dict[str, Any] = {"@enabled": {"value": bool(flow.get("enbl", 1))}}
     out.update({k: entries[k] for k in sorted(entries)})
@@ -487,23 +590,32 @@ def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
     which still round-trips but reads less like a helixgen export. ``name``
     lands in ``meta.name`` — the device blob does not carry the preset name
     (it lives in the containing setlist entry), so the caller supplies it.
+
+    **Everything this cannot carry is reported on stderr**, one line per loss.
+    Silence means nothing was dropped; it does not mean nothing COULD be.
     """
     rev = _reverse_modelmap()
-    cg = _Cg(doc)
+    lost: List[str] = []
+    cg = _Cg(doc, lost)
     pm = _pm_index(doc)
     unresolved: List[int] = []
 
-    flows = [_flow_entry(f, cg, rev, library, unresolved)
-             for f in (doc.get("sfg_") or {}).get("flow") or []]
+    if not (doc.get("sfg_") or {}).get("enbl", 1):
+        lost.append("the whole signal-flow graph is DISABLED on the device, "
+                    "and a re-install re-enables it")
+    flows = [_flow_entry(fi, f, cg, rev, library, unresolved, lost)
+             for fi, f in enumerate((doc.get("sfg_") or {}).get("flow") or [])]
     if unresolved:
         _warn(f"{len(unresolved)} block(s) had no helixgen model for device "
               f"model id(s) {sorted(set(unresolved))}; they were dropped.")
     if cg.dropped_midi:
         _warn(f"{cg.dropped_midi} MIDI CC controller(s) dropped — MIDI bindings "
-              f"are not yet reversed (see bead hgc-zbl follow-up).")
+              f"are not yet reversed (bead hgc-mid).")
     if (doc.get("cg__") or {}).get("entt", {}).get("cmnd"):
         _warn("Command Center commands dropped — not yet reversed "
-              "(see bead hgc-zbl follow-up).")
+              "(bead hgc-mid).")
+    for line in lost:
+        _warn(line)
 
     snapshots = [{
         "name": s.get("name") or f"SNAPSHOT {i + 1}",

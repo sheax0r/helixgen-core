@@ -200,12 +200,21 @@ def test_active_snapshot_survives():
     assert transcode.hsp_to_sbepgsm(body) == content.encode_content_data(doc)
 
 
-def test_active_snapshot_out_of_range_falls_back_to_zero():
-    for bad in (-1, 8, 99, True, "2", None):
-        doc = transcode.recipe_to_sbepgsm(
-            {"name": "x", "active_snapshot": bad,
-             "paths": [{"blocks": [{"block": AMP, "params": {}}]}]})
-        assert doc["cg__"]["asnp"] == 0, bad
+@pytest.mark.parametrize("value,want", [
+    (True, 0), (False, 0),          # bool is not an index
+    ("2", 0), (None, 0), ([], 0),   # non-numeric -> the old default
+    (3.0, 3),                       # an integral float survives JSON round-trips
+    (3.5, 0),                       # a fractional one is not an index
+    (-1, 0), (8, 7), (99, 7),       # CLAMPED, matching mutate._clamped_active_snapshot
+])
+def test_active_snapshot_coercion(value, want):
+    """Out of range is clamped, not zeroed: `mutate._clamped_active_snapshot`
+    clamps to length-1, so zeroing here would give one .hsp two different
+    "active snapshots" depending on whether you edited it or installed it."""
+    doc = transcode.recipe_to_sbepgsm(
+        {"name": "x", "active_snapshot": value,
+         "paths": [{"blocks": [{"block": AMP, "params": {}}]}]})
+    assert doc["cg__"]["asnp"] == want
 
 
 # --- structure the ``.hsp`` must have ----------------------------------------
@@ -279,6 +288,113 @@ def test_does_not_mutate_its_input():
     ref = copy.deepcopy(doc)
     untranscode.sbepgsm_to_hsp(doc, name="x")
     assert doc == ref
+
+
+def test_stereo_input_params_are_nested_per_channel():
+    """The device names the stereo input's params `Pad.1`/`Pad.2`; the `.hsp`
+    nests them. `bridge._lift_endpoint_params` reads BOTH spellings, so the
+    round-trip oracle is blind here — but `view._lift_input` and `mutate`'s
+    `input` pseudo-block only address the nested shape, so a flat `.hsp` makes
+    `view` drop the input section and `set-param input …` a silent no-op."""
+    body = _assert_roundtrip({"name": "stereo", "paths": [{
+        "input": "both",
+        "input_params": {"Trim.1": -6.0, "Trim.2": -6.0,
+                         "noiseGate.1": True, "noiseGate.2": True},
+        "blocks": [{"block": AMP, "params": {}}],
+    }]})
+    params = _flow0(body)["b00"]["slot"][0]["params"]
+    assert params["Trim"] == {"1": {"value": -6.0}, "2": {"value": -6.0}}
+    assert "Trim.1" not in params
+    assert params["StereoLink"] == {"value": False}  # unsuffixed, left alone
+
+
+def test_stereo_nesting_needs_both_channels():
+    """A lone `.1` is not the per-channel shape; folding it would invent a
+    half-populated wrapper the device never wrote."""
+    assert untranscode._nest_stereo_channels({"Trim.1": {"value": 1}}) == \
+        {"Trim.1": {"value": 1}}
+
+
+def test_mono_input_params_are_left_flat():
+    body = _assert_roundtrip({"name": "mono", "paths": [{
+        "input": "inst1", "blocks": [{"block": AMP, "params": {}}]}]})
+    params = _flow0(body)["b00"]["slot"][0]["params"]
+    assert "Trim" in params and isinstance(params["Trim"].get("value"), float)
+
+
+def test_two_split_pairs_are_wired_to_their_own_partners():
+    """`view.branch_span` reads a split's `endpoint` + both `branch` keys to
+    recover the parallel lane. Pairing the first split with the LAST join
+    reports one giant bogus parallel section. The forward path ignores these
+    pointers, so the round trip cannot catch it."""
+    entries = {
+        "b01": {"type": "split"}, "b03": {"type": "join"},
+        "b05": {"type": "split"}, "b07": {"type": "join"},
+        "b16": {"type": "fx"}, "b20": {"type": "fx"},
+    }
+    untranscode._endpoint_pointers(entries)
+    assert entries["b01"]["endpoint"] == "b03"
+    assert entries["b03"]["endpoint"] == "b01"
+    assert entries["b05"]["endpoint"] == "b07"
+    assert entries["b07"]["endpoint"] == "b05"
+
+
+def test_split_with_an_empty_branch_lane_still_pairs():
+    """No lane-1 block is a valid (if pointless) split. Emitting NO pointers
+    at all leaves `view` unable to see the parallel structure exists."""
+    entries = {"b05": {"type": "split"}, "b07": {"type": "join"}}
+    untranscode._endpoint_pointers(entries)
+    assert entries["b05"]["endpoint"] == "b07"
+    assert entries["b07"]["endpoint"] == "b05"
+    assert "branch" not in entries["b05"]
+
+
+# --- preset scalars the forward path used to hardcode -------------------------
+
+@pytest.mark.parametrize("hsp_path,pm_key,value", [
+    (("preset", "params", "tempo"), "preset.tempo.bpm", 145.0),
+    (("meta", "info"), "preset.meta.info", "live version"),
+    (("preset", "params", "activeexpsw"), "preset.expsw.active", 2),
+    (("preset", "xyctrl", "x"), "preset.xyctrl.x", 3),
+    (("preset", "clip", "filename"), "preset.clip.filename", "MY CLIP"),
+])
+def test_preset_scalars_survive_the_forward_transcode(hsp_path, pm_key, value):
+    """`_synth_pm` hardcoded these, so every install/sync silently reset a
+    preset's tempo to 120 and wiped the Preset Info text `device set-info`
+    writes. Same class of bug as the hardcoded `cg__.asnp`."""
+    body = untranscode.sbepgsm_to_hsp(transcode.recipe_to_sbepgsm(
+        {"name": "x", "paths": [{"blocks": [{"block": AMP, "params": {}}]}]}))
+    node = body
+    for k in hsp_path[:-1]:
+        node = node.setdefault(k, {})
+    node[hsp_path[-1]] = value
+    pm = {e["key_"]: e["val_"]
+          for e in content.decode_any(transcode.hsp_to_sbepgsm(body))["pm__"]}
+    assert pm[pm_key] == value
+
+
+def test_preset_scalars_reject_a_wrongly_typed_value():
+    """A hand-edited .hsp must not write a string where the device reads a
+    float — fall back to the default rather than corrupt the slot."""
+    body = untranscode.sbepgsm_to_hsp(transcode.recipe_to_sbepgsm(
+        {"name": "x", "paths": [{"blocks": [{"block": AMP, "params": {}}]}]}))
+    body["preset"]["params"]["tempo"] = "fast"
+    pm = {e["key_"]: e["val_"]
+          for e in content.decode_any(transcode.hsp_to_sbepgsm(body))["pm__"]}
+    assert pm["preset.tempo.bpm"] == 120.0
+
+
+def test_snapshot_colour_survives_the_forward_transcode():
+    body = untranscode.sbepgsm_to_hsp(transcode.recipe_to_sbepgsm({
+        "name": "x", "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [{"block": AMP, "params": {}}]}]}))
+    body["preset"]["snapshots"][0]["color"] = "purple"
+    body["preset"]["snapshots"][1]["valid"] = False
+    snps = content.decode_any(
+        transcode.hsp_to_sbepgsm(body))["cg__"]["entt"]["snps"]
+    by_si = {s["si__"]: s for s in snps}
+    assert by_si[0]["colr"] == 9 and by_si[0]["vald"] is True
+    assert by_si[1]["vald"] is False
 
 
 # --- vocabulary inverses ------------------------------------------------------
@@ -361,6 +477,77 @@ def test_commands_are_dropped_with_a_warning(capsys):
     assert "Command Center" in capsys.readouterr().err
 
 
+def _one_amp_doc() -> dict:
+    return transcode.recipe_to_sbepgsm(
+        {"name": "x", "paths": [{"blocks": [{"block": AMP, "params": {}}]}]})
+
+
+def _first_user_block(doc: dict) -> dict:
+    return next(b for gp, b in untranscode._iter_blocks(doc["sfg_"]["flow"][0])
+                if gp == 1)
+
+
+@pytest.mark.parametrize("phrase,mutate", [
+    # A dual-cab second model slot: bridge reads slot[0] only, so it would not
+    # survive a re-install either way.
+    ("dual-cab",
+     lambda d: _first_user_block(d)["mdls"].append(
+         copy.deepcopy(_first_user_block(d)["mdls"][0]))),
+    # A disabled DSP path: _canonical_flow always writes enbl=1.
+    ("DISABLED", lambda d: d["sfg_"]["flow"][0].__setitem__("enbl", 0)),
+    ("signal-flow graph is DISABLED", lambda d: d["sfg_"].__setitem__("enbl", 0)),
+    # A gap in the row-0 run: _place_serial_flow compacts it on re-install.
+    ("not contiguous", lambda d: _shift_block(d, 1, 5)),
+])
+def test_unreproducible_device_state_warns(phrase, mutate, capsys):
+    """Everything this converter cannot carry has to reach stderr. Silence must
+    mean "nothing was dropped", or the user has no way to know."""
+    doc = _one_amp_doc()
+    mutate(doc)
+    untranscode.sbepgsm_to_hsp(doc, name="x")
+    assert phrase in capsys.readouterr().err
+
+
+def _shift_block(doc: dict, frm: int, to: int) -> None:
+    blks = doc["sfg_"]["flow"][0]["blks"]
+    blks[blks.index(frm)] = to
+
+
+def test_unmappable_controller_source_warns(capsys):
+    """`_controller_locl_ctxt` can PRODUCE (locl, ctxt) pairs `_source_id`
+    cannot invert. Dropping the assignment silently leaves the user hunting a
+    footswitch that stopped working."""
+    doc = transcode.recipe_to_sbepgsm({"name": "x", "paths": [{"blocks": [
+        {"block": DRIVE, "params": {},
+         "fs_bypass": {"source": 0x01010100, "behavior": "latching"}}]}]})
+    doc["cg__"]["entt"]["srcs"][0]["locl"] = 40  # bank A, out of the anchored range
+    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    assert "no .hsp source id" in capsys.readouterr().err
+    assert "controller" not in body["preset"]["flow"][0]["b01"]["@enabled"]
+
+
+def test_partial_snapshot_target_warns(capsys):
+    """A target the device did not write into every snapshot's tamv has no
+    readable per-snapshot array; losing its scenes silently would look like the
+    snapshots simply had no deltas."""
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x", "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [{"block": AMP, "params": {"Bass": 0.4},
+                               "snap_params": {"Bass": [0.4, 0.7] + [0.7] * 6}}]}]})
+    doc["cg__"]["entt"]["snps"][1]["tamv"] = []  # drop one snapshot's values
+    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    assert "missing from some snapshots' tamv" in capsys.readouterr().err
+    params = body["preset"]["flow"][0]["b01"]["slot"][0]["params"]
+    assert "snapshots" not in params["Bass"]
+
+
+def test_clean_conversion_is_silent(capsys):
+    """The contract is "silence means nothing was dropped" — so an ordinary
+    preset must not emit warnings, or the real ones get tuned out."""
+    untranscode.sbepgsm_to_hsp(_one_amp_doc(), name="x")
+    assert capsys.readouterr().err == ""
+
+
 def test_unresolvable_model_is_dropped_with_a_warning(capsys):
     doc = transcode.recipe_to_sbepgsm(
         {"name": "x", "paths": [{"blocks": [{"block": AMP, "params": {}}]}]})
@@ -421,11 +608,31 @@ def _semantics(doc: dict) -> dict:
         blocks = []
         for gp, blk in untranscode._iter_blocks(flow):
             where[blk.get("id__")] = (fi, gp)
-            m0 = (blk.get("mdls") or [{}])[0]
-            blocks.append((gp, m0.get("id__"), blk.get("enbl"),
-                           tuple(sorted((p.get("pid_"), p.get("valu"))
-                                        for p in m0.get("parm") or []))))
-        flows.append(tuple(blocks))
+            # EVERY model slot, not just mdls[0]: a dropped dual-cab second
+            # slot is exactly the kind of loss this projection exists to catch.
+            models = tuple(
+                (m.get("id__"), m.get("enbl"), m.get("vers"), m.get("irmd"),
+                 tuple(sorted((p.get("pid_"), p.get("valu"), p.get("snap"),
+                               # tid_ != 0 is the BINDING that makes the device
+                               # apply a snapshot/controller value at all; a
+                               # preset with intact tamv and zeroed tid_ sounds
+                               # static, so identity-free "is it bound" has to
+                               # be compared, not the id itself.
+                               bool(p.get("tid_")))
+                              for p in m.get("parm") or [])))
+                for m in blk.get("mdls") or [])
+            hrns = blk.get("hrns") or {}
+            blocks.append((
+                gp, blk.get("enbl"), blk.get("type"), blk.get("favo"),
+                blk.get("hasb"), bool(blk.get("tid_")), blk.get("snap"),
+                # split/join partner pointers ARE routing; bflw is a flow
+                # index, bblk an instance id resolved to its grid address.
+                blk.get("bflw"), where.get(blk.get("bblk"), blk.get("bblk")),
+                (hrns.get("id__"), hrns.get("enbl"),
+                 tuple(sorted((p.get("pid_"), p.get("valu"))
+                              for p in hrns.get("parm") or []))),
+                models))
+        flows.append((flow.get("enbl"), tuple(blocks)))
 
     def target(tid):
         t = trgs.get(tid)
@@ -456,9 +663,56 @@ def _semantics(doc: dict) -> dict:
         "snapshot_meta": [(s.get("name"), s.get("exsw"), s.get("bpm_"),
                            s.get("vald")) for s in snaps],
         "active_snapshot": (doc.get("cg__") or {}).get("asnp"),
+        "sfg_enabled": (doc.get("sfg_") or {}).get("enbl"),
         # a key/value list: order is the device's own business, content is not
         "pm": {e.get("key_"): e.get("val_") for e in doc.get("pm__") or []},
     }
+
+
+def _corrupt(doc, mutate):
+    """Deep-copy ``doc``, apply ``mutate`` to the first user block, return it."""
+    d = copy.deepcopy(doc)
+    flow = d["sfg_"]["flow"][0]
+    blk = next(b for gp, b in untranscode._iter_blocks(flow) if gp == 1)
+    mutate(d, flow, blk)
+    return d
+
+
+@pytest.mark.parametrize("name,mutate", [
+    ("dual-cab second model slot deleted",
+     lambda d, f, b: b["mdls"].__delitem__(1)),
+    ("flow re-enabled", lambda d, f, b: f.__setitem__("enbl", 1)),
+    ("sfg re-enabled", lambda d, f, b: d["sfg_"].__setitem__("enbl", 1)),
+    ("harness re-enabled", lambda d, f, b: b["hrns"].__setitem__("enbl", 1)),
+    ("harness parm reset",
+     lambda d, f, b: b["hrns"].__setitem__("parm", [])),
+    ("favorite reset", lambda d, f, b: b.__setitem__("favo", 0)),
+    ("hasb reset", lambda d, f, b: b.__setitem__("hasb", False)),
+    ("model version reset", lambda d, f, b: b["mdls"][0].__setitem__("vers", 0)),
+    ("model instance re-enabled",
+     lambda d, f, b: b["mdls"][0].__setitem__("enbl", 1)),
+    ("split partner pointer moved", lambda d, f, b: b.__setitem__("bblk", 999)),
+    ("snapshot binding unbound",
+     lambda d, f, b: [p.__setitem__("tid_", 0) for p in b["mdls"][0]["parm"]]),
+])
+def test_semantics_catches_the_corruption(name, mutate):
+    """`_semantics` is the acceptance bar, so it has to be shown to FAIL on the
+    things it claims to cover. Each of these once slipped through it."""
+    doc = transcode.recipe_to_sbepgsm({"name": "x", "paths": [{"blocks": [
+        {"block": AMP, "params": {"Bass": 0.4},
+         "snap_params": {"Bass": [0.4, 0.7] + [0.7] * 6}},
+    ]}], "snapshots": [{"name": "A"}, {"name": "B"}]})
+    # give the block the state each corruption then removes
+    flow = doc["sfg_"]["flow"][0]
+    blk = next(b for gp, b in untranscode._iter_blocks(flow) if gp == 1)
+    blk["mdls"].append(copy.deepcopy(blk["mdls"][0]))
+    blk["favo"], blk["hasb"], blk["bblk"] = 1, True, 0
+    blk["mdls"][0]["vers"], blk["mdls"][0]["enbl"] = 3, 0
+    flow["enbl"], doc["sfg_"]["enbl"] = 0, 0
+    blk["hrns"]["enbl"] = 0
+
+    assert _semantics(_corrupt(doc, mutate)) != _semantics(doc), (
+        f"_semantics did not notice: {name}")
 
 
 @pytest.mark.parametrize("path", _corpus() or [None])

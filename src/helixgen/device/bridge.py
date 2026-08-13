@@ -455,16 +455,17 @@ def _lift_endpoint_params(slot: dict) -> Dict[str, Any]:
 
 
 def hsp_snapshot_meta(hsp_body: dict) -> List[Dict[str, Any]]:
-    """Snapshot metadata (``name``/``exsw``/``bpm``) from a ``.hsp`` body, in
-    snapshot order, for the transcoder's ``cg__`` synthesis. ALL slots are
-    returned — the trailing "Snap N" defaults are real snapshot names the
-    device shows, not placeholders to strip."""
+    """Snapshot metadata (``name``/``exsw``/``bpm``/``color``/``valid``) from a
+    ``.hsp`` body, in snapshot order, for the transcoder's ``cg__`` synthesis.
+    ALL slots are returned — the trailing "Snap N" defaults are real snapshot
+    names the device shows, not placeholders to strip."""
     preset = hsp_body.get("preset") or {}
     raw = preset.get("snapshots") or []
     meta: List[Dict[str, Any]] = []
     for s in raw:
         meta.append({"name": s.get("name"), "exsw": s.get("expsw", -1),
-                     "bpm": s.get("tempo", 120.0)})
+                     "bpm": s.get("tempo", 120.0), "color": s.get("color"),
+                     "valid": s.get("valid")})
     return meta
 
 

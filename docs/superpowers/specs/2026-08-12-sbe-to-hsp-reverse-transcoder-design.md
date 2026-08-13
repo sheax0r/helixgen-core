@@ -1,7 +1,7 @@
 # Reverse transcoder: `.sbe` (`_sbepgsm`) → `.hsp`
 
 **Bead:** `hgc-zbl` · **Date:** 2026-08-12 · **Module:** `src/helixgen/device/untranscode.py` ·
-**Verb:** `helixgen device to-hsp` · **Tests:** `tests/test_untranscode.py`
+**Verb:** `helixgen device to-hsp` · **Tests:** `tests/test_untranscode.py`, `tests/test_cli_to_hsp.py`
 
 ## The problem
 
@@ -53,6 +53,17 @@ preset it writes the `snps` array in **descending** `si__` order. Reading it pos
 rotates every snapshot's name and every `tamv` scene onto the wrong slot — a silent,
 tone-changing bug. `_Cg` sorts by `si__` on the way in.
 
+**Stereo input params must be re-nested, and the oracle cannot tell you so.** The device
+names the stereo input endpoint's params `Pad.1`/`Pad.2`; a real `.hsp` nests them as
+`{"Pad": {"1": …, "2": …}}`. `bridge._lift_endpoint_params` reads *both* spellings, so a
+flat emission round-trips byte-exactly — while `view._lift_input` and `mutate`'s `input`
+pseudo-block, which only address the nested shape, quietly break: `view` drops the entire
+input section, and `set-param input trim -- -6` prints `Patched` and writes a key the
+device never reads. This affected 61 of the 66 corpus presets and was invisible to all
+three round-trip assertions. **The oracle proves the device sees the same bytes; it says
+nothing about whether the rest of helixgen can read the `.hsp`.** Anything the forward
+path is tolerant about needs a separate check.
+
 ## A forward-path bug the oracle caught
 
 `cg__.asnp` (the preset's on-load snapshot) was **hardcoded to 0** in both
@@ -65,9 +76,19 @@ fix that only became visible because there was finally something to compare agai
 
 Corpus: 66 real device blobs from `device backup` (gitignored, dropped into
 `tests/fixtures/device_content/`), spanning serial chains, dual-DSP, parallel split/join,
-dual-cab, IR cabs, snapshots, footswitch + EXP controllers, a looper, and — critically —
-five presets the **device itself** re-saved (identified by the `hist`/`selb`/`self`
-edit-buffer keys and, in one case, a `bmap` permutation from a hardware reorder).
+IR cabs, snapshots, footswitch + EXP controllers, a looper, and — critically — five
+presets the **device itself** re-saved. Four of those five are identifiable by the
+`hist`/`selb`/`self` edit-buffer keys (one of them also carries a `bmap` permutation from
+a hardware reorder); the fifth, `04-2A-Blue-Orchid-1.sbe`, carries none of them and
+differs *only* in msgpack map-key order inside its `ctrl` records — it decodes
+byte-for-byte identical. So "byte-exact for content helixgen installed" is a statement
+about the common case, not a law with `hist` as its discriminator.
+
+**Coverage gap worth naming:** the corpus contains **zero** dual-cab blocks (no block
+anywhere has `len(mdls) > 1`), zero disabled DSP flows, zero grid gaps, zero two-split
+flows and zero non-`InputNone` row-1 inputs. Every one of those paths is handled and
+warned about, but none is validated against real hardware output. If the device can
+produce them, they are the first place to look for a bug.
 
 Three assertions, all in `tests/test_untranscode.py`:
 
@@ -80,8 +101,14 @@ Three assertions, all in `tests/test_untranscode.py`:
 3. **Semantic equivalence** — `66/66`. An identity-free projection (blocks addressed by
    grid slot, params by pid, snapshot scenes and controller assignments resolved *through*
    the target graph so id renumbering cancels) is identical before and after. This is what
-   makes "sonically null" an assertion rather than a claim: any real change to a model, a
-   value, a scene or a controller assignment still fails the test.
+   makes "sonically null" an assertion rather than a claim.
+
+   The projection is itself under test: `test_semantics_catches_the_corruption`
+   deliberately breaks a round trip twelve ways — deleting a dual-cab model slot,
+   re-enabling a disabled flow, resetting `favo`/`hasb`/`vers`/`hrns`, moving a split's
+   partner pointer, unbinding a snapshot target's `tid_` — and asserts the projection
+   NOTICES each one. An adversarial review found the first version of it silently passing
+   every one of those; a projection nobody has tried to fool is not a proof.
 
 Plus self-contained round-trip tests (recipe → `.sbe` → `.hsp` → `.sbe`) that need no
 fixtures and no library, covering serial, dual-DSP, split/join, IR, base bypass, snapshot
@@ -104,16 +131,70 @@ footswitch assignments and EXP sweeps all render identically.
 | `hist` / `selb` / `self` top-level keys | edit-buffer scratch state, not preset content |
 | float widening (`0.15` → `0.15000000596046448`) | the device only ever held float32; it re-encodes to the identical float32 |
 
+## A second class of forward-path bug the oracle caught
+
+`asnp` was not alone. `transcode._synth_pm` **hardcoded** the whole non-floorboard `pm__`,
+and `_synth_cg`'s no-variation fallback ignored snapshot metadata entirely. So every
+`install` / `sync` silently reset:
+
+| state | was | now |
+|---|---|---|
+| `preset.tempo.bpm` | pinned to 120.0 | from `preset.params.tempo` |
+| `preset.meta.info` — the Preset Info text **`device set-info` writes** | pinned to `""` | from `meta.info` |
+| `preset.expsw.active` | pinned to 1 | from `preset.params.activeexpsw` |
+| `preset.xyctrl.*`, `preset.clip.*` | pinned | from the `.hsp` |
+| snapshot `colr` / `vald` | pinned to 1 / True | from `preset.snapshots[]` |
+| snapshot names, on a preset with **no** per-snapshot deltas | reset to "SNAPSHOT N" | from `preset.snapshots[]` |
+
+All of these are uniform across the corpus (every blob is tempo 120, empty notes, colour
+1), which is exactly why nothing caught them: the round trip only became a test once
+there was something to round-trip against. A wrongly-typed value from a hand-edited
+`.hsp` falls back to the old hardcoded default rather than writing a string where the
+device reads a float.
+
+## What the adversarial review broke
+
+The first version of this passed all three corpus assertions and was still wrong in
+several ways. Recorded because the pattern generalises:
+
+- **Stereo input flattening** (above) — the round trip was byte-exact and `view` was
+  broken. Fixed by `_nest_stereo_channels`.
+- **`_semantics` laundered real corruption.** It compared `mdls[0]` only, and no
+  `hrns`/`favo`/`hasb`/`vers`/flow-`enbl`/`bblk`/`tid_`-binding. Deleting a dual-cab model
+  slot or re-enabling a disabled DSP path passed. Now twelve corruption cases assert it
+  fails.
+- **`_endpoint_pointers` paired the first split with the LAST join**, so a flow with two
+  split/join pairs rendered in `view` as one giant bogus parallel section — and a pair
+  with an empty branch lane got no pointers at all. The forward path ignores these
+  pointers, so again the oracle was blind.
+- **Everything the converter could not carry vanished in silence.** Now every one of them
+  prints a stderr line, and `test_clean_conversion_is_silent` pins the converse so the
+  warnings stay meaningful.
+- **`--verify` asserted a cause it had never checked**, printing "expected for content the
+  device re-saved" on *any* mismatch. It now re-converts and reports whether the result is
+  actually a fixed point.
+- **The CLI crashed** on a directory SOURCE (`IsADirectoryError`) and on `"²"`
+  (`str.isdigit()` is True, `int()` raises); `"٤٢"` silently parsed as CID 42. SOURCE
+  classification is now ASCII-digits-only, and a filename that is also a valid CID is
+  refused rather than guessed.
+
 ## Deliberately out of scope
 
 - **Command Center commands (#16)** and **MIDI CC controller bindings (#33)** are dropped
   with a warning naming how many. Both are EXPERIMENTAL in the forward direction, both have
   uncaptured slot layouts, and neither appears anywhere in the 66-blob corpus — so there is
   nothing to validate an inverse against. Filed as a follow-up bead.
-- **Per-block `harness` state.** The forward path ignores `.hsp` `harness` entirely and
-  synthesizes a canonical `hrns` from `_HRNS_BY_CATEGORY`; since the round trip is
-  byte-exact, the synthesized harness already matches the device's. Emitting it would add
-  noise with no fidelity gain.
+- **Per-block `harness` state.** Emitted for the input/output endpoints (a real export
+  carries it there) but not for user blocks. The forward path ignores `.hsp` `harness`
+  entirely and synthesizes a canonical `hrns` from `_HRNS_BY_CATEGORY`; since the round
+  trip is byte-exact, the synthesized harness already matches the device's. Emitting it
+  would add noise with no fidelity gain.
+- **Device state the FORWARD path cannot express** — a block's `favo`/`hasb`/`vers`, a
+  model instance's own `enbl`, a disabled DSP flow, a dual-cab second model slot, a
+  snapshot's `camv`/`tgls`/`iras`, `ctrl.togl`. Carrying these into the `.hsp` would be
+  theatre: `bridge.hsp_to_paths` never reads them and the forward synthesis hardcodes
+  them. Each is instead **reported on stderr** when the device actually has it, so the
+  loss is visible rather than silent. Filed as a follow-up bead.
 - **Preserving device instance ids through the forward path.** This would close the last
   structural diff on hardware-reordered presets, but it means changing the
   hardware-validated forward transcoder's output for every preset to fix a cosmetic
