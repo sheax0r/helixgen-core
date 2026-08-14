@@ -826,15 +826,20 @@ def synthesize_serial_sfg(paths: List[dict]) -> Tuple[dict, int]:
     return sfg, next_id
 
 
-def _synth_cg(max_id: int) -> dict:
-    """A minimal valid ``cg__``: 8 empty snapshot slots, no controllers, next-id
-    counters set past the largest instance id. Volatile (the device recomputes
-    counters on save) — not part of the fidelity comparison."""
-    snps = [{"bpm_": 120.0, "camv": [], "colr": 1, "exsw": -1, "iras": [],
-             "name": f"SNAPSHOT {i + 1}", "si__": i, "tamv": [], "tgls": [],
-             "vald": True} for i in range(8)]
+def _synth_cg(max_id: int, active: int = 0,
+              snap_meta: Optional[List[dict]] = None) -> dict:
+    """A ``cg__`` with no targets and no controllers: 8 snapshot slots carrying
+    only their metadata, and next-id counters set past the largest instance id.
+    The counters are volatile (the device recomputes them on save) — not part of
+    the fidelity comparison.
+
+    ``snap_meta`` is the recipe's snapshot metadata. It used to be ignored on
+    this path, so a preset with NAMED snapshots but no per-snapshot deltas had
+    every name, colour, tempo and exp-switch reset to the defaults by any
+    ``install``/``sync`` — the same class of bug as the hardcoded ``asnp``."""
+    snps = _emit_snapshots([], snap_meta or [])
     return {
-        "asnp": 0,
+        "asnp": active,
         "entt": {
             "cmnd": [],
             "ctm_": {"htid": [], "ptid": [], "sirt": [], "stid": []},
@@ -852,16 +857,27 @@ def _synth_cg(max_id: int) -> dict:
     }
 
 
-def _snap_meta(meta: dict, i: int) -> Tuple[str, int, float]:
-    """``(name, exsw, bpm_)`` for snapshot ``i`` from a recipe snapshot-meta dict
-    (accepts both device keys ``exsw``/``bpm_`` and ``.hsp`` keys
-    ``expsw``/``bpm``/``tempo``)."""
+def _snap_meta(meta: dict, i: int) -> Tuple[str, int, float, int, bool]:
+    """``(name, exsw, bpm_, colr, vald)`` for snapshot ``i`` from a recipe
+    snapshot-meta dict (accepts both device keys ``exsw``/``bpm_``/``colr`` and
+    ``.hsp`` keys ``expsw``/``bpm``/``tempo``/``color``)."""
     name = meta.get("name") or f"SNAPSHOT {i + 1}"
     exsw = meta.get("exsw", meta.get("expsw", -1))
     if exsw is None:
         exsw = -1
     bpm = meta.get("bpm", meta.get("bpm_", meta.get("tempo", 120.0)))
-    return name, exsw, float(bpm if bpm is not None else 120.0)
+    colr = meta.get("colr", meta.get("color"))
+    if isinstance(colr, str):
+        from ..controllers import ControllerError, color_int
+        try:
+            colr = color_int(colr)
+        except ControllerError:
+            colr = 1
+    if not isinstance(colr, int) or isinstance(colr, bool):
+        colr = 1
+    vald = meta.get("vald", meta.get("valid"))
+    return (name, exsw, float(bpm if bpm is not None else 120.0), colr,
+            True if vald is None else bool(vald))
 
 
 def _controller_locl_ctxt(source: Any) -> Optional[Tuple[int, int]]:
@@ -1116,11 +1132,34 @@ def _emit_snapshots(tracked, snap_meta):
             v = vals[i] if i < len(vals) else vals[-1]
             tamv.extend([tid, v])
         meta = snap_meta[i] if i < len(snap_meta) else {}
-        name, exsw, bpm = _snap_meta(meta, i)
-        snps.append({"bpm_": bpm, "camv": [], "colr": 1, "exsw": exsw,
+        name, exsw, bpm, colr, vald = _snap_meta(meta, i)
+        snps.append({"bpm_": bpm, "camv": [], "colr": colr, "exsw": exsw,
                      "iras": [], "name": name, "si__": i, "tamv": tamv,
-                     "tgls": [], "vald": True})
+                     "tgls": [], "vald": vald})
     return snps
+
+
+def _active_snapshot(recipe: dict) -> int:
+    """The preset's on-load snapshot index (``cg__.asnp``).
+
+    Lifted from the ``.hsp``'s ``preset.params.activesnapshot`` by
+    :func:`hsp_to_sbepgsm`. Previously hardcoded to 0, which silently reset a
+    preset to snapshot 1 on every ``device install``/``sync`` — surfaced by the
+    ``.sbe`` -> ``.hsp`` -> ``.sbe`` round trip (bead hgc-zbl).
+
+    An integral float (``3.0``, which JSON round-tripping readily produces) is
+    accepted. An out-of-range index is CLAMPED into 0..7 rather than reset to
+    0, matching ``mutate._clamped_active_snapshot`` — otherwise the same
+    ``.hsp`` would have ``set-param --snapshot`` editing slot 7 while
+    ``install`` set the device to slot 0."""
+    value = recipe.get("active_snapshot")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if not isinstance(value, int):
+        return 0
+    return max(0, min(value, 7))
 
 
 def _synth_cg_from_recipe(
@@ -1418,12 +1457,12 @@ def _synth_cg_from_recipe(
         recipe, srcs, trgs, next_trg, instance_ids)
 
     if not tracked and not ctrl and not cmnd:
-        return _synth_cg(max_id), bindings
+        return _synth_cg(max_id, _active_snapshot(recipe), snap_meta), bindings
 
     snps = _emit_snapshots(tracked, snap_meta)
 
     return {
-        "asnp": 0,
+        "asnp": _active_snapshot(recipe),
         "entt": {
             "cmnd": cmnd,
             "ctm_": {"htid": [], "ptid": ptid, "sirt": [], "stid": stid},
@@ -1463,8 +1502,31 @@ def _scribble_for(sources: Optional[Dict[int, dict]]) -> Dict[Tuple[str, int], d
     return out
 
 
+#: ``pm__`` preset scalars the forward path used to HARDCODE, with the value it
+#: hardcoded. Each is real, user-visible preset state — ``preset.meta.info`` is
+#: exactly what ``device set-info`` writes, and ``preset.tempo.bpm`` is the
+#: preset's tempo — so pinning them meant every ``install``/``sync`` silently
+#: reset them. They now ride the recipe (``transcode._preset_scalars``), keeping
+#: these as defaults. Surfaced by the ``.sbe`` -> ``.hsp`` -> ``.sbe`` round trip
+#: (bead hgc-zbl), same class of bug as the hardcoded ``cg__.asnp``.
+_PM_PRESET_DEFAULTS: Dict[str, Any] = {
+    "preset.clip.end": 0.0,
+    "preset.clip.filename": "",
+    "preset.clip.path": "",
+    "preset.clip.start": 0.0,
+    "preset.expsw.active": 1,
+    "preset.meta.info": "",
+    "preset.tempo.bpm": 120.0,
+    "preset.xyctrl.rbtime": 0.5,
+    "preset.xyctrl.rubberband": 1,
+    "preset.xyctrl.x": 0,
+    "preset.xyctrl.y": 0,
+}
+
+
 def _synth_pm(sources: Optional[Dict[int, dict]] = None,
-              inst_z: Optional[Dict[str, str]] = None) -> List[dict]:
+              inst_z: Optional[Dict[str, str]] = None,
+              preset_scalars: Optional[Dict[str, Any]] = None) -> List[dict]:
     """A minimal valid ``pm__`` preset-param list, mirroring the standard key set
     an HX Edit import emits (clip, 2x12 floorboard stomps, tempo, exp-switch,
     instrument impedance, xy-controller). Footswitch scribble-strip colour/label/
@@ -1473,12 +1535,27 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
     ``preset.instN.z`` int is the self-described enum index
     (``flowparams.impedance_device_int``), defaulting to First Enabled (1)."""
     scrib = _scribble_for(sources)
+    vals = dict(_PM_PRESET_DEFAULTS)
+    for key, want in (preset_scalars or {}).items():
+        # Type must match the slot the device expects; a wrongly-typed value
+        # from a hand-edited .hsp falls back to the default rather than
+        # writing a string where the device reads a float.
+        if key in vals and isinstance(want, type(vals[key])) \
+                and not isinstance(want, bool):
+            vals[key] = want
+        elif key in vals and isinstance(vals[key], float) \
+                and isinstance(want, int) and not isinstance(want, bool):
+            vals[key] = float(want)
+
+    def _e(key: str, typ: str) -> dict:
+        return {"key_": key, "type": typ, "val_": vals[key]}
+
     pm: List[dict] = [
-        {"key_": "preset.clip.end", "type": "f", "val_": 0.0},
-        {"key_": "preset.clip.filename", "type": "s", "val_": ""},
-        {"key_": "preset.clip.path", "type": "s", "val_": ""},
-        {"key_": "preset.clip.start", "type": "f", "val_": 0.0},
-        {"key_": "preset.expsw.active", "type": "i", "val_": 1},
+        _e("preset.clip.end", "f"),
+        _e("preset.clip.filename", "s"),
+        _e("preset.clip.path", "s"),
+        _e("preset.clip.start", "f"),
+        _e("preset.expsw.active", "i"),
     ]
     from ..controllers import ControllerError, FS_LABEL_MAX, color_int
     for row in ("a", "b"):
@@ -1510,12 +1587,12 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
     pm += [
         {"key_": "preset.inst1.z", "type": "i", "val_": _z("inst1")},
         {"key_": "preset.inst2.z", "type": "i", "val_": _z("inst2")},
-        {"key_": "preset.meta.info", "type": "s", "val_": ""},
-        {"key_": "preset.tempo.bpm", "type": "f", "val_": 120.0},
-        {"key_": "preset.xyctrl.rbtime", "type": "f", "val_": 0.5},
-        {"key_": "preset.xyctrl.rubberband", "type": "i", "val_": 1},
-        {"key_": "preset.xyctrl.x", "type": "i", "val_": 0},
-        {"key_": "preset.xyctrl.y", "type": "i", "val_": 0},
+        _e("preset.meta.info", "s"),
+        _e("preset.tempo.bpm", "f"),
+        _e("preset.xyctrl.rbtime", "f"),
+        _e("preset.xyctrl.rubberband", "i"),
+        _e("preset.xyctrl.x", "i"),
+        _e("preset.xyctrl.y", "i"),
     ]
     return pm
 
@@ -1538,7 +1615,8 @@ def _synthesize(recipe: dict) -> dict:
     sfg, next_id, instance_ids = synthesize_sfg(paths)
     cg, bindings = _synth_cg_from_recipe(recipe, instance_ids, next_id - 1)
     _bind_snapshot_targets(sfg, bindings)
-    pm = _synth_pm(recipe.get("sources"), recipe.get("inst_z"))
+    pm = _synth_pm(recipe.get("sources"), recipe.get("inst_z"),
+                   recipe.get("preset_scalars"))
     return {"cg__": cg, "pm__": pm, "sfg_": sfg}
 
 
@@ -1609,6 +1687,35 @@ def _build_structural_block(entry: dict) -> dict:
     return scaffold
 
 
+def _hsp_preset_scalars(hsp_body: dict) -> Dict[str, Any]:
+    """The ``pm__`` preset scalars a ``.hsp`` carries — tempo, preset notes,
+    the active exp switch, the clip reference and the XY controller.
+
+    These used to be hardcoded in :func:`_synth_pm`, so every ``install`` /
+    ``sync`` silently reset a preset's tempo to 120 and wiped the Preset Info
+    text that ``device set-info`` writes. See :data:`_PM_PRESET_DEFAULTS`.
+    """
+    preset = hsp_body.get("preset") or {}
+    params = preset.get("params") or {}
+    clip = preset.get("clip") or {}
+    xy = preset.get("xyctrl") or {}
+    info = (hsp_body.get("meta") or {}).get("info")
+    out: Dict[str, Any] = {
+        "preset.clip.end": clip.get("end"),
+        "preset.clip.filename": clip.get("filename"),
+        "preset.clip.path": clip.get("path"),
+        "preset.clip.start": clip.get("start"),
+        "preset.expsw.active": params.get("activeexpsw"),
+        "preset.meta.info": info,
+        "preset.tempo.bpm": params.get("tempo"),
+        "preset.xyctrl.rbtime": xy.get("rbtime"),
+        "preset.xyctrl.rubberband": xy.get("rubberband"),
+        "preset.xyctrl.x": xy.get("x"),
+        "preset.xyctrl.y": xy.get("y"),
+    }
+    return {k: v for k, v in out.items() if v is not None}
+
+
 def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
                    strict: bool = False) -> bytes:
     """Transcode a helixgen ``.hsp`` body into stored device content bytes.
@@ -1656,5 +1763,9 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
               if isinstance(preset_params.get(f"{jack}Z"), str)}
     if inst_z:
         recipe["inst_z"] = inst_z
+    active = preset_params.get("activesnapshot")
+    if isinstance(active, int) and not isinstance(active, bool):
+        recipe["active_snapshot"] = active
+    recipe["preset_scalars"] = _hsp_preset_scalars(hsp_body)
     doc = recipe_to_sbepgsm(recipe)
     return content.encode_content_data(doc)
