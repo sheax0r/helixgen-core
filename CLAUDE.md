@@ -6,7 +6,7 @@ Core library + CLI. Generates Line 6 Helix Stadium `.hsp` presets (plus legacy `
 
 **How this file works:** carries mental models + behavioral rules that must stay in front of agent, plus concise verb indexes. Reference detail lives one pointer away, authoritative there: [`docs/CLI.md`](docs/CLI.md) (every verb, flag, gotcha), [`docs/recipe-reference.md`](docs/recipe-reference.md) (every recipe field), each verb's `--help` (pinned contract). Read pointed-at doc before scripting against verb not used this session.
 
-**Project backlog lives at `docs/BACKLOG.md`** — check before starting new work ("corrected mental models" preamble first); deferred work + punted review findings get numbered entry there, not TODO comment.
+**Project backlog lives in beads** — `bd ready` before starting new work, `bd create` for anything deferred (including punted review findings). Not TodoWrite, not a markdown TODO list, not a TODO comment. [`docs/BACKLOG.md`](docs/BACKLOG.md) is the **legacy archive**: its "corrected mental models" preamble is still required reading, and existing `#N` references throughout this file resolve there, but nothing new gets appended to it.
 
 ## Home directory and git plumbing (`~/.helixgen`)
 
@@ -171,7 +171,7 @@ echo '[{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value":
 
 - `src/helixgen/` — `cli` (core verbs + entry point), `cli_device` (`helixgen device` verb group, imported back into `cli`), `audio_metrics` (offline BS.1770 / crest / FFT-band DSP), `audio_capture` (sox capture of the device's USB output + middle-segment analysis), `ingest`, `hsp`, `chassis`, `library`, `spec` (recipe parser/validator), `mutate` (in-place `.hsp` edit verbs), `recipe` (author `.hsp` from recipe), `view` (read-only `.hsp` → recipe projection), `generate` (shared low-level `.hsp` builders + legacy `.hlx`), `controllers`, `preferences`, `bootstrap`, `ir`, `irhash_cache`, `locks` (machine-local advisory device locks), `home`/`libinit`/`gitops` (`~/.helixgen` home root, auto-init, advisory auto-commit), `naming`, `tone_meta`, `guitars` (guitar profiles), `ir_meta` (per-IR sidecars), `migrate` (library migration), `cli_library` (`helixgen library` verb group)
 - `src/helixgen/device/` — network device control (OSC-over-ZeroMQ client, `transcode`, `modelmap`, `defs`, setlist manifest)
-- `docs/` — `BACKLOG.md` (THE backlog), `CLI.md` (full CLI + per-verb **device** reference), `recipe-reference.md` (exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
+- `docs/` — `BACKLOG.md` (legacy backlog archive; live backlog is beads), `CLI.md` (full CLI + per-verb **device** reference), `recipe-reference.md` (exhaustive recipe field reference), `superpowers/specs/` (design docs + review findings), `superpowers/plans/` (implementation plans), `features/` (per-feature deep dives), protocol references (`helix-protocol.md`, `helix-format-reference.md`, `helix-sftp-access.md`, `ir-hash-algorithm.md`)
 - `tests/` — pytest suite (run with `PYTHONPATH=$PWD/src python -m pytest`); golden-output contract (`tests/golden/`) + 211-export real-device round-trip (`tests/test_decompile_acceptance.py`) pin `.hsp` fidelity. **Runs parallel by default** — `addopts = -ra -n auto` (pytest-xdist, a `[dev]` dep; needs `pip install -e '.[dev]'`, else plain `pytest` errors `unrecognized arguments: -n`). Force serial with `-n0` (debugging: prints/pdb/order-sensitive). Live suite forces itself serial (`tests/live/conftest.py` `pytest_configure`).
 - `tests/live/` — **opt-in live integration suite** (backlog #66): drives real CLI via subprocess against real library + real Stadium. Skipped unless `HELIXGEN_LIVE=1` (device tests also need device reachable). Impact-area markers registered in `pyproject.toml`; after targeted change run its blast radius, e.g. `HELIXGEN_LIVE=1 PYTHONPATH=$PWD/src python -m pytest -m "live and sync" tests/live`. Safety = fixtures (scratch env for ALL local state, upfront `device backup`, before/after device-state diff, `HGTEST`-prefixed artifacts with teardown, session check that real `~/.helixgen` byte-identical after); **`tests/live/conftest.py` documents full safety model**, deliberately excluded verbs, known-gotcha xfails.
 - `tests/fixtures/` — synthetic + real-export fixtures
@@ -180,10 +180,10 @@ echo '[{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value":
 
 ## Development workflow
 
-- **Worktrees, branched from fresh `github/main`.** All non-trivial work in git worktree whose branch starts from freshly-fetched `github/main` (GitHub remote named **`github`**, not `origin`) — never commit directly on local `main`; may be stale. Fetch again before picking release version number (concurrent PR once released 2.10.0 mid-flight, collided with in-progress bump).
-- **Adversarial review before shipping.** Before merging PR, dispatch at least one independent review subagent prompted to *break* change (find bugs, regressions, spec violations — not summarize). Confirmed findings fixed or explicitly deferred to `docs/BACKLOG.md`. Major changes also get committed review doc in `docs/superpowers/specs/` (see PR #31 review for shape).
+- **Worktrees, branched from fresh `origin/main`.** All non-trivial work in git worktree whose branch starts from freshly-fetched `origin/main` (GitHub remote is named **`origin`** — renamed from `github` when beads landed, since beads bootstraps its Dolt data from `refs/dolt/data` on `origin`) — never commit directly on local `main`; may be stale. Fetch again before picking release version number (concurrent PR once released 2.10.0 mid-flight, collided with in-progress bump).
+- **Adversarial review before shipping.** Before merging PR, dispatch at least one independent review subagent prompted to *break* change (find bugs, regressions, spec violations — not summarize). Confirmed findings fixed or explicitly deferred as a bead (`bd create`). Major changes also get committed review doc in `docs/superpowers/specs/` (see PR #31 review for shape).
 - **Agent-facing surfaces ship in sync.** CLI = only engine surface; per-verb `--help` text = agent contract (pinned by `tests/test_cli_parity.py`). Any change to CLI-visible behavior updates, same PR, every surface in this repo describing it: verb's help text, this CLAUDE.md, `docs/CLI.md`. Drift between code + these surfaces = bug, not docs chore. **Division of labor:** reference detail (flags, semantics, gotchas) belongs in `docs/CLI.md` / `docs/recipe-reference.md`; this CLAUDE.md carries mental models, behavioral rules, verb indexes — don't grow per-verb prose here when reference doc is right home. Behavior changes skills describe also need companion PR in plugin repo (`sheax0r/helixgen`, `.claude/skills/*`) — land two together, note cross-repo pairing in both PR descriptions.
-- **Backlog discipline.** `docs/BACKLOG.md` = single project backlog. Deferred work gets numbered entry there — not TODO comment, not side file.
+- **Backlog discipline.** Beads = the single project backlog. `bd ready` to pick work, `bd update <id> --claim` before starting, `bd create` for anything deferred — never a TodoWrite list, a markdown TODO list, a TODO comment, or a new entry in `docs/BACKLOG.md` (archive only).
 - TDD throughout: failing test first, then minimal implementation. See existing test files for established pattern.
 - Pure stdlib + `click` for CLI; no other runtime deps.
 - Real-export fixtures in `tests/fixtures/presets/`, loaded under skip-if-not-present guards so suite stays green on clean clone.
@@ -196,4 +196,60 @@ Plugin releases (`stable` branch + `helixgen--vX.Y.Z` tags) live in **plugin rep
 
 ## ralphex
 
-Implementation tasks driven from helix coordination workspace run via [ralphex](https://github.com/umputun/ralphex) plan files in `docs/plans/` (scaffold: `docs/plans/TEMPLATE.md`); completed plans move to `docs/plans/completed/`. Config = tracked `.ralphex/config` (`default_branch` pinned `main` — remote named `github`, ralphex can't auto-detect from `origin/HEAD`); runtime dirs `.ralphex/worktrees/` + `.ralphex/progress/` gitignored. Launcher syncs local `main` from `github/main` before run. Review = ralphex built-in pipeline (`external_review_tool = none`).
+Implementation tasks driven from helix coordination workspace run via [ralphex](https://github.com/umputun/ralphex) plan files in `docs/plans/` (scaffold: `docs/plans/TEMPLATE.md`); completed plans move to `docs/plans/completed/`. Config = tracked `.ralphex/config` (`default_branch` pinned `main`); runtime dirs `.ralphex/worktrees/` + `.ralphex/progress/` gitignored. Launcher syncs local `main` from `origin/main` before run. Review = ralphex built-in pipeline (`external_review_tool = none`).
+
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
+
+## Agent Context Profiles
+
+The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+
+- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
+- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+
+## Session Completion
+
+This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
+
+1. **File issues for remaining work** - Create beads for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **Handle git/sync by active profile**:
+   ```bash
+   # Conservative/minimal/default: report status and proposed commands; wait for approval.
+   git status
+
+   # Team-maintainer opt-in only, unless current instructions forbid it:
+   git pull --rebase
+   git push
+   git status
+   ```
+5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
+
+**Critical rules:**
+- Explicit user or orchestrator instructions override this Beads block.
+- Do not commit or push without clear authority from the active profile or the current user request.
+- If a required sync or push is blocked, stop and report the exact command and error.
+<!-- END BEADS INTEGRATION -->
