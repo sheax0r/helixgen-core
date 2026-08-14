@@ -106,7 +106,7 @@ Read `.hsp` back into recipe shape (inspection or hand-authoring similar preset)
 
 - `paths` = 1–2 entries (each maps to one DSP).
 - `block` matches display_name from `list-blocks` — case-sensitive. Ambiguous: use model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
-- `params` values floats 0.0–1.0 for most knobs; some ints/bools/Hz. Verify ranges with `show-block`.
+- `params` values are in each param's OWN units — many knobs are 0.0–1.0, but plenty are dB, Hz, seconds, or enum ints, and the same name (`Level`) is 0..1 on one block and dB on the next. **Never assume; read the range + unit `show-block` prints** (hgc-285).
 
 **Exhaustive per-field reference — every optional section, full schema, defaults, ranges, examples — lives in [`docs/recipe-reference.md`](docs/recipe-reference.md).** Optional sections by name: per-path `input` (jack routing + Input-block params) + `output` (level/pan); `split`/`join` in `blocks` (parallel splits + merge-mixer wire params); top-level `snapshots` (≤8 named scenes: per-scene `disable` + `params` deltas + per-snapshot `output` level/pan), `footswitches` (FS1–FS5/FS7–FS11/EXP1Toe; FS6/FS12 reserved), `expression` (EXP1/EXP2 sweeps), `midi` (EXPERIMENTAL #33), `commands` (Command Center; EXPERIMENTAL #16); per-block `ir` (registered user IR by wav basename or 32-hex hash), `trails`, `raw` (verbatim unmodeled state — emitted by `view`, consumed by `generate`; editing existing `.hsp` never needs it). All recipe fields **Stadium-only** unless reference notes otherwise (legacy `.hlx` chassis ignores them).
 

@@ -25,8 +25,10 @@ the enum labels. Two app resources supply it:
 Params the editor does not expose (``IrData``, ``AmpCabPeak*``, ``AmpCabZFir``,
 …) simply have no UIDefs entry. That absence is a signal — "not a knob, don't
 put it in front of an author" — so this script never invents an entry for them.
-The one deliberate exception is ``SyncSelect1``/``SyncSelect2``, which the app
-renders with the ``sync_note`` control but does not list in UIDefs.
+The one deliberate exception is a tempo-syncable param's two companions, which
+the app names on the HOST param's entry (``{"id": "Time", "sync":
+"TempoSync1", "note": "SyncSelect1"}``) instead of listing separately; those
+are derived, so they read as the knobs they are.
 
 Usage::
 
@@ -50,8 +52,14 @@ DEFAULT_RESOURCES = "/Users/michael.shea/Helix Stadium Debug.app/Contents/Resour
 UIDEFS_NAME = "P35ModelUIDefs.json"
 CONTROLS_NAME = "P35Controls.json"
 
-# Params the app renders with a control it never lists in UIDefs.
-IMPLIED_TAGS = {"SyncSelect1": "sync_note", "SyncSelect2": "sync_note"}
+# A tempo-syncable param names its two companion params on its OWN entry
+# (`{"id": "Time", "sync": "TempoSync1", "note": "SyncSelect1"}`) and the
+# companions get no entry of their own. They are knobs the author sets, so
+# derive them rather than letting them read as internal plumbing: the `note`
+# half is the note-division enum, the `sync` half the on/off toggle (left
+# without a control — its type already says bool, and inventing labels for it
+# would be guessing).
+IMPLIED_PARAM_KEYS = {"note": "sync_note", "sync": None}
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = REPO_ROOT / "src" / "helixgen" / "device" / "_param_ui.json"
@@ -59,7 +67,7 @@ OUT_PATH = REPO_ROOT / "src" / "helixgen" / "device" / "_param_ui.json"
 # A printf conversion at the START of the string, followed by the unit text:
 # "%+.1f dB" -> "dB", "%.0f %%" -> "%", "%.2f \"" -> "in". A string whose
 # conversion is NOT leading ("Left %.0f") is a value LABEL, not a unit.
-_UNIT_RE = re.compile(r"^%[-+#0-9.]*[dfsu]\s*(\S.*)$")
+_UNIT_RE = re.compile(r"^%[-+#0-9.]*[bdeEfFgGiosuxX]\s*(\S.*)$")
 
 
 def _unit_from_format(fmt: Any) -> Optional[str]:
@@ -76,17 +84,28 @@ def _unit_from_format(fmt: Any) -> Optional[str]:
 
 
 def _control_unit(control: dict) -> Optional[str]:
-    """First unit the control's format strings mention (in display order)."""
-    candidates: list[Any] = [control.get("formatUnits")]
+    """The control's BASE unit — the one its stored value is actually in.
+
+    A bound-switched control renders the same value in different units at
+    different magnitudes (``time_ms``: ms below 1000, sec above;
+    ``time_sec_DynamicHall``: ms below 1 second, sec above). The bound that
+    rescales carries a ``unitsMultiplier``; the bound that does NOT is the one
+    whose unit matches the stored value, so those win. Taking the first bound
+    instead would call a DynamicHall's 13-second decay "13.2 ms".
+    """
+    plain: list[Any] = [control.get("formatUnits")]
+    rescaled: list[Any] = []
     fmt = control.get("format")
     if isinstance(fmt, list):
         for entry in fmt:
-            if isinstance(entry, dict):
-                candidates.append(entry.get("formatUnits"))
-                candidates.append(entry.get("format"))
+            if not isinstance(entry, dict):
+                continue
+            bucket = rescaled if entry.get("unitsMultiplier") is not None else plain
+            bucket.append(entry.get("formatUnits"))
+            bucket.append(entry.get("format"))
     else:
-        candidates.append(fmt)
-    for cand in candidates:
+        plain.append(fmt)
+    for cand in plain + rescaled:
         unit = _unit_from_format(cand)
         if unit:
             return unit
@@ -114,6 +133,12 @@ def build_controls(controls: dict) -> dict[str, dict]:
         scale = control.get("dspToDisplayScale")
         if isinstance(scale, (int, float)) and scale != 1:
             entry["scale"] = scale
+        # Some controls state the display range outright instead of scaling to
+        # it (`pan`, `tilt`, `amp_sag_ripple`: raw -1..1 shown as -10..10).
+        for src, dst in (("minDisplayValue", "display_min"),
+                         ("maxDisplayValue", "display_max")):
+            if isinstance(control.get(src), (int, float)):
+                entry[dst] = control[src]
         labels = _control_labels(control)
         if labels:
             entry["labels"] = labels
@@ -129,9 +154,14 @@ def build_models(uidefs: dict, controls: dict[str, dict]) -> dict[str, dict]:
         if not isinstance(mdef, dict):
             continue
         params: dict[str, dict] = {}
+        implied: dict[str, dict] = {}
         for pdef in mdef.get("params") or []:
             if not isinstance(pdef, dict):
                 continue
+            for key, tag in IMPLIED_PARAM_KEYS.items():
+                companion = pdef.get(key)
+                if isinstance(companion, str) and companion:
+                    implied[companion] = {"tag": tag} if tag in controls else {}
             pid = pdef.get("id")
             if not isinstance(pid, str):
                 continue
@@ -150,9 +180,8 @@ def build_models(uidefs: dict, controls: dict[str, dict]) -> dict[str, dict]:
             # or labels. Absence from this table is the "internal, don't
             # expose" signal, so never conflate the two.
             params[pid] = entry
-        for pid, tag in IMPLIED_TAGS.items():
-            if pid not in params and tag in controls:
-                params[pid] = {"tag": tag}
+        for pid, entry in implied.items():
+            params.setdefault(pid, entry)
         if params:
             out[model_str] = params
     return out
@@ -181,6 +210,13 @@ def _app_version(resources: Path) -> Optional[str]:
 def build(resources: Path) -> dict:
     uidefs_path = resources / UIDEFS_NAME
     controls_path = resources / CONTROLS_NAME
+    for path in (uidefs_path, controls_path):
+        if not path.is_file():
+            raise SystemExit(
+                f"error: resource not found: {path}. This app version may name "
+                f"it differently — check {resources} and update the constants "
+                f"at the top of this script."
+            )
     uidefs = json.loads(uidefs_path.read_text(encoding="utf-8"))
     raw_controls = json.loads(controls_path.read_text(encoding="utf-8"))
 

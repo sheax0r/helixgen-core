@@ -80,8 +80,11 @@ def test_show_block_makes_the_two_level_params_distinguishable(tmp_path):
     legacy = _show_block(library, "Brit Plexi Brt")
     assert "Level  float -40..10 dB" in agoura
     assert "dB" not in legacy
-    assert "ChVol  float 0..1" in legacy
-    assert "displays 0-10" in legacy
+    assert "float 0..1" in legacy
+    assert "displays 0..10" in legacy
+    # The legacy param is spelled ChVol but LABELLED "Level" on the hardware —
+    # which is precisely why the two get confused. Say so.
+    assert 'ChVol  ("Level" on screen)' in legacy
 
 
 # --- enum labels ------------------------------------------------------------
@@ -95,12 +98,51 @@ def test_enum_labels_render_the_value_not_just_the_number():
     assert paraminfo.label_for(info, None) is None
 
 
+def test_a_scaled_unit_describes_the_display_not_the_raw_value(tmp_path):
+    """A delay's raw Time is SECONDS; `ms` belongs to what the screen shows."""
+    info = paraminfo.param_info(DELAY, "Time")
+    assert (info["min"], info["max"]) == (0, 2.5)
+    assert info["unit"] == "ms" and info["scale"] == 1000
+    library = _library_with(tmp_path, [
+        (DELAY, "delay", "Tape Echo", {"Time": {"type": "float", "default": 0.5}}),
+    ])
+    line = _show_block(library, "Tape Echo")
+    assert "Time  float 0..2.5 (" in line       # raw range carries NO unit...
+    assert "displays 0..2500 ms" in line        # ...the display range does
+
+
+def test_bound_switched_control_reports_its_base_unit_not_its_first_bound():
+    """`time_sec_DynamicHall` renders sub-second values in ms and everything
+    above in sec. Its stored value is SECONDS — calling a 13 s shimmer decay
+    "13.2 ms" would be the very mistake this module exists to prevent."""
+    info = paraminfo.param_info("VIC_ReverbShimmerMono", "Decay")
+    assert info["unit"] == "sec"
+    assert (info["min"], info["max"]) == (0.1, 45.1)
+    assert "scale" not in info
+
+
 def test_syncselect_gets_the_note_divisions_the_uidefs_omit():
     info = paraminfo.param_info(DELAY, "SyncSelect1")
     assert (info["min"], info["max"]) == (1, 19)
     assert len(info["enum_labels"]) == 19
     # Labels are aligned to min, not to zero: 6 is a quarter note, not 1/4 Trip.
     assert paraminfo.label_for(info, 6) == "1/4"
+
+
+def test_the_tempo_sync_toggle_is_a_knob_not_plumbing():
+    """`SyncSelect1` does nothing unless `TempoSync1` is on, and real presets
+    set it — so flagging one a knob and the other internal is incoherent. Both
+    are derived from the HOST param's `sync`/`note` keys."""
+    assert paraminfo.param_info(DELAY, "TempoSync1").get("internal") is None
+    assert paraminfo.param_info(DELAY, "SyncSelect1").get("internal") is None
+
+
+def test_tempo_sync_companions_are_not_invented_for_models_without_them():
+    """Derived, not hardcoded: a block with no tempo-syncable param must not
+    sprout a SyncSelect entry."""
+    models = paraminfo.load_param_ui()["models"]
+    assert "SyncSelect1" not in models[LEGACY_AMP]
+    assert "SyncSelect1" in models[DELAY]
 
 
 def test_show_block_prints_enum_labels(tmp_path):
@@ -120,6 +162,28 @@ def test_internal_param_gets_no_invented_unit():
     assert info["internal"] is True
     assert "unit" not in info and "enum_labels" not in info
     assert "min" in info  # the raw range is still reported
+
+
+def test_a_param_name_the_device_never_heard_of_is_not_called_plumbing():
+    """`internal` means "the editor exposes no control", which is a different
+    claim from "no such param" — don't tell an author to leave alone a name
+    that simply did not resolve."""
+    info = paraminfo.param_info(CAB, "NoSuchParamEver")
+    assert info == {}
+
+
+def test_a_missing_ui_asset_degrades_to_ranges_instead_of_exploding(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(paraminfo, "_UI_PATH", tmp_path / "gone.json")
+    paraminfo.load_param_ui.cache_clear()
+    try:
+        info = paraminfo.param_info(AGOURA_AMP, "Level")
+        assert (info["min"], info["max"], info["default"]) == (-40, 10, -10)
+        assert "unit" not in info          # units are gone...
+        assert "internal" not in info      # ...and nothing is called plumbing
+        assert "param UI asset missing" in capsys.readouterr().err
+    finally:
+        paraminfo.load_param_ui.cache_clear()
 
 
 def test_show_block_flags_internal_params(tmp_path):
@@ -153,6 +217,16 @@ def test_show_block_never_prints_a_degenerate_observed_range(tmp_path):
     assert "[2.7, 2.7]" not in out
 
 
+def test_numbers_are_printed_as_numbers_an_author_can_type(tmp_path):
+    """`2e-05` is not a value anyone copies into a recipe by eye."""
+    library = _library_with(tmp_path, [
+        (CAB, "cab", "Blue Bell", {"Delay": {"type": "float", "default": 0.0}}),
+    ])
+    out = _show_block(library, "Blue Bell")
+    assert "e-" not in out
+    assert "-0.00002..0.05" in out
+
+
 def test_show_block_json_carries_the_resolved_facts(tmp_path):
     library = _library_with(tmp_path, [
         (CAB, "cab", "Blue Bell", {"Mic": {"type": "int", "default": 4},
@@ -178,6 +252,9 @@ def test_every_mapped_model_resolves_a_param_table():
 
 
 def test_every_device_param_of_every_mapped_model_has_a_real_range():
+    """Iterates DEVICE param names, so it holds on a clean clone. The library's
+    own names are covered by the shipped-library test below (skipped without
+    one) — measured 3314/3314 there."""
     missing = []
     for model in _mapped_models():
         for param in defs.model_params_for(paraminfo.model_candidates(model)[0]):
@@ -187,7 +264,7 @@ def test_every_device_param_of_every_mapped_model_has_a_real_range():
     assert missing == [], f"{len(missing)} params lost their range"
 
 
-def test_ui_coverage_stays_around_the_measured_89_percent():
+def test_ui_coverage_stays_around_the_measured_91_percent():
     total = exposed = 0
     for model in _mapped_models():
         for param in defs.model_params_for(paraminfo.model_candidates(model)[0]):
@@ -195,10 +272,11 @@ def test_ui_coverage_stays_around_the_measured_89_percent():
             if not paraminfo.param_info(model, param).get("internal"):
                 exposed += 1
     ratio = exposed / total
-    # Measured 2915/3280 = 88.9% when the asset was built (app 1.3.2.9805).
+    # Measured 2997/3280 = 91.4% when the asset was built (app 1.3.2.9805).
     # The uncovered remainder is internal plumbing; a big move either way means
-    # the UIDefs join broke, not that the editor changed its mind.
-    assert 0.86 <= ratio <= 0.93, f"UI coverage moved to {ratio:.3f}"
+    # the UIDefs join broke, not that the editor changed its mind. Dropping the
+    # Stereo->Mono candidate alone lands around 0.73, well outside the band.
+    assert 0.89 <= ratio <= 0.95, f"UI coverage moved to {ratio:.3f}"
 
 
 def test_enum_labels_always_span_the_declared_range():
@@ -230,7 +308,7 @@ def test_shipped_library_resolves_completely_if_present():
             exposed += not info.get("internal")
     assert total > 0
     assert ranged == total, f"{total - ranged}/{total} library params have no range"
-    assert exposed / total >= 0.86
+    assert exposed / total >= 0.89  # measured 3018/3314 = 91.1%
 
 
 # --- helpers ----------------------------------------------------------------

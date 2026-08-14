@@ -768,10 +768,17 @@ def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | No
 
 
 def _fmt_num(value: Any) -> str:
-    """Compact number rendering (0.36000001430511475 -> 0.36, 20100.0 -> 20100)."""
+    """Compact number rendering (0.36000001430511475 -> 0.36, 20100.0 -> 20100).
+
+    Never scientific notation: `2e-05` is a value nobody can type into a
+    recipe by eye, and these numbers exist to be copied.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return repr(value)
-    return f"{value:g}"
+    out = f"{value:g}"
+    if "e" in out or "E" in out:
+        out = f"{value:.8f}".rstrip("0").rstrip(".") or "0"
+    return out
 
 
 # How many enum labels to spell out on the `values:` line before eliding.
@@ -784,16 +791,21 @@ def _param_lines(name: str, info: dict[str, Any]) -> list[str]:
     has_range = "min" in info and "max" in info and info.get("type") != "bool"
     scale = info.get("scale")
     unit = info.get("unit")
-    # A unit always describes the DISPLAYED value. With no scale, raw ==
-    # displayed, so the unit belongs on the raw range (`-40..10 dB`); with a
-    # scale it does NOT (a delay's raw range is seconds, its display is ms) —
-    # print it on the `displays` segment instead, never on the raw range.
-    scaled = bool(scale) and has_range
+    # A unit always describes the DISPLAYED value. When raw == displayed the
+    # unit belongs on the raw range (`-40..10 dB`); when the control rescales
+    # it does NOT (a delay's raw range is seconds, its display is ms) — print
+    # it on the `displays` segment instead, never on the raw range.
+    if has_range and scale:
+        display = (info["min"] * scale, info["max"] * scale)
+    elif has_range and "display_min" in info and "display_max" in info:
+        display = (info["display_min"], info["display_max"])
+    else:
+        display = None
 
     head = [info.get("type") or "?"]
     if has_range:
         head.append(f"{_fmt_num(info['min'])}..{_fmt_num(info['max'])}")
-    if unit and not scaled:
+    if unit and not display:
         head.append(unit)
 
     def _valued(word: str, key: str) -> str:
@@ -809,13 +821,17 @@ def _param_lines(name: str, info: dict[str, Any]) -> list[str]:
         or _fmt_num(info["sighted"]) != _fmt_num(info["default"])
     ):
         tail.append(_valued("sighted", "sighted"))
-    if scaled:
+    if display and display != (info.get("min"), info.get("max")):
         tail.append(
-            f"displays {_fmt_num(info['min'] * scale)}-{_fmt_num(info['max'] * scale)}"
+            f"displays {_fmt_num(display[0])}..{_fmt_num(display[1])}"
             + (f" {unit}" if unit else "")
         )
+    elif display and unit:
+        head.append(unit)
 
-    line = f"  {name}  {' '.join(head)}"
+    shown_as = info.get("display_name")
+    label = f'  ("{shown_as}" on screen)' if shown_as and shown_as != name else ""
+    line = f"  {name}{label}  {' '.join(head)}"
     if tail:
         line += f" ({', '.join(tail)})"
     if info.get("internal"):
@@ -861,17 +877,17 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
       Mic  int 0..11 (default 11 "67 Cond", sighted 4 "30 Dynamic")
           values: 0=57 Dynamic, 1=421 Dynamic, ...
       Level  float -40..10 dB (default -10)
-      Drive  float 0..1 (default 0.76, displays 0-10)
-      Time  float 0..2.5 (default 0.279, displays 0-2500 ms)
+      ChVol  ("Level" on screen)  float 0..1 (default 0.55, displays 0..10)
+      Time  float 0..2.5 (default 0.279, displays 0..2500 ms)
 
-    `default` is the DEVICE default. `displays X-Y` is what the hardware
-    screen shows for that raw range — write the RAW value, and note that a
-    unit printed there (`ms`) describes the displayed number, not the raw
-    one. `sighted` is the single value the one ingested preset happened to
+    `default` is the DEVICE default. `displays X..Y` is what the hardware
+    screen shows for that raw range — write the RAW value, and note that when
+    a `displays` segment is present the unit belongs to IT, not to the raw
+    range. `sighted` is the single value the one ingested preset happened to
     carry — one sample, not a range, and not a recommendation. Enum labels
     are aligned to the param's min. A param marked `[internal]` (`IrData`,
-    `AmpCabPeak*`, `TempoSync*`) has no control in the editor: it is
-    plumbing, not a knob — leave it alone.
+    `AmpCabPeak*`) has no control in the editor: it is plumbing, not a knob —
+    leave it alone.
     """
     library = _resolved_library(library_path)
     try:

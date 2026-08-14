@@ -38,6 +38,7 @@ Pure stdlib, no device connection — this is vendored data, not a wire query.
 from __future__ import annotations
 
 import json
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
@@ -51,14 +52,18 @@ _UI_PATH = Path(__file__).with_name("_param_ui.json")
 def load_param_ui() -> dict:
     """Load and cache the vendored param-UI asset.
 
-    Raises a clear error if ``_param_ui.json`` is absent (regenerate it with
-    ``tools/build_param_meta.py``).
+    DEGRADES rather than raising when ``_param_ui.json`` is absent: the ranges
+    from ``_defs_data.json`` are still worth printing, so a broken install
+    costs units and labels, not the whole verb. Warns once on stderr.
     """
     if not _UI_PATH.exists():
-        raise FileNotFoundError(
-            f"param UI asset missing: {_UI_PATH}. "
-            "Regenerate it with `python tools/build_param_meta.py`."
+        print(
+            f"warning: param UI asset missing: {_UI_PATH} — showing ranges "
+            f"without units or enum labels. Regenerate it with "
+            f"`python tools/build_param_meta.py`.",
+            file=sys.stderr,
         )
+        return {}
     with _UI_PATH.open(encoding="utf-8") as fh:
         return json.load(fh)
 
@@ -103,10 +108,14 @@ def _defs_entry(model_id: str, param_name: str) -> Optional[dict]:
 def param_info(model_id: str, param_name: str) -> dict[str, Any]:
     """Resolved facts about one param. Keys are present only when known.
 
-    ``{min, max, default, unit, scale, display_name, enum_labels}`` —
-    ``default`` is the DEVICE default (not the library's sighted value),
-    ``scale`` is the raw->display multiplier (``generic_knob`` = 10, so a
-    stored 0.5 displays as 5.0). Returns ``{}`` when nothing is known.
+    ``{min, max, default, unit, scale, display_min, display_max,
+    display_name, enum_labels, internal}`` — ``default`` is the DEVICE default
+    (not the library's sighted value), ``scale`` is the raw->display
+    multiplier (``generic_knob`` = 10, so a stored 0.5 displays as 5.0), and
+    ``display_min``/``display_max`` are a display range the control states
+    outright instead of scaling to (``pan``, ``tilt``). A ``unit`` always
+    describes the DISPLAYED value: with neither a scale nor a display range,
+    raw == displayed. Returns ``{}`` when nothing is known.
     """
     info: dict[str, Any] = {}
     meta = _defs_entry(model_id, param_name)
@@ -115,15 +124,19 @@ def param_info(model_id: str, param_name: str) -> dict[str, Any]:
             if meta.get(src) is not None:
                 info[dst] = meta[src]
 
+    ui = load_param_ui()
     entry = _ui_entry(model_id, param_name)
     if entry is None:
         # The editor exposes no control for this param on any candidate model
         # — it is internal plumbing (IrData, AmpCabPeak*, AmpCabZFir, …), not
-        # a knob. Say so rather than dressing a raw range up as a knob.
-        if model_candidates(model_id):
+        # a knob. Say so rather than dressing a raw range up as a knob. Only
+        # when the device DOES know the param, though: a name the defs never
+        # heard of is unknown, which is not the same claim. And only when the
+        # UI asset actually loaded, else everything would read as plumbing.
+        if meta and ui.get("models"):
             info["internal"] = True
     else:
-        control = load_param_ui().get("controls", {}).get(entry.get("tag"), {})
+        control = ui.get("controls", {}).get(entry.get("tag"), {})
         name = entry.get("name")
         if name:
             info["display_name"] = name
@@ -131,6 +144,9 @@ def param_info(model_id: str, param_name: str) -> dict[str, Any]:
             info["unit"] = control["unit"]
         if control.get("scale"):
             info["scale"] = control["scale"]
+        for key in ("display_min", "display_max"):
+            if control.get(key) is not None:
+                info[key] = control[key]
         labels = entry.get("labels") or control.get("labels")
         if labels:
             info["enum_labels"] = list(labels)
