@@ -55,7 +55,10 @@ def _full_help(cmd) -> str:
 #  the wrapped render), so multi-word phrases are safe.
 PARITY: list[tuple[str, list[str], list[str]]] = [
     ("list_blocks", ["list-blocks"], ["show-block", "amp"]),
-    ("show_block", ["show-block"], ["case-sensitive", "before"]),
+    # hgc-285: real ranges + units are the contract now, not a degenerate
+    # `observed=[v, v]`. The dB-vs-0..1 warning must stay in --help.
+    ("show_block", ["show-block"],
+     ["case-sensitive", "before", "UNIT", "dB", "sighted", "DEVICE default"]),
     ("generate_preset", ["generate"],
      ["Unknown param(s)", "show-block", "source of truth", "recipe-reference"]),
     ("list_irs", ["list-irs"],

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import click
 from click.core import ParameterSource
@@ -741,8 +742,9 @@ def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | No
 
     Each line is `<display_name>  [<model_id>]`. Use the display name (or the
     model_id, if the name is ambiguous) as the `block` value in recipes and
-    edit verbs, then run `show-block` for its exact param names before
-    writing params.
+    edit verbs, then run `show-block` for its exact param names, ranges and
+    UNITS before writing params — two blocks in the same category can spell
+    "channel volume" as a 0..1 knob and as a dB range.
     """
     library = _resolved_library(library_path)
     blocks = library.list_blocks(category=category)
@@ -765,21 +767,127 @@ def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | No
             click.echo(f"  {b.display_name}  [{b.model_id}]")
 
 
+def _fmt_num(value: Any) -> str:
+    """Compact number rendering (0.36000001430511475 -> 0.36, 20100.0 -> 20100).
+
+    Never scientific notation: `2e-05` is a value nobody can type into a
+    recipe by eye, and these numbers exist to be copied.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return repr(value)
+    out = f"{value:g}"
+    if "e" in out or "E" in out:
+        out = f"{value:.8f}".rstrip("0").rstrip(".") or "0"
+    return out
+
+
+# How many enum labels to spell out on the `values:` line before eliding.
+_ENUM_LABELS_SHOWN = 12
+
+
+def _param_lines(name: str, info: dict[str, Any]) -> list[str]:
+    """Render one resolved param as one or two display lines."""
+    # A bool's 0..1 range says nothing ("False..True"); everything else's does.
+    has_range = "min" in info and "max" in info and info.get("type") != "bool"
+    scale = info.get("scale")
+    unit = info.get("unit")
+    # A unit always describes the DISPLAYED value. When raw == displayed the
+    # unit belongs on the raw range (`-40..10 dB`); when the control rescales
+    # it does NOT (a delay's raw range is seconds, its display is ms) — print
+    # it on the `displays` segment instead, never on the raw range.
+    if has_range and scale:
+        display = (info["min"] * scale, info["max"] * scale)
+    elif has_range and "display_min" in info and "display_max" in info:
+        display = (info["display_min"], info["display_max"])
+    else:
+        display = None
+
+    head = [info.get("type") or "?"]
+    if has_range:
+        head.append(f"{_fmt_num(info['min'])}..{_fmt_num(info['max'])}")
+    if unit and not display:
+        head.append(unit)
+
+    def _valued(word: str, key: str) -> str:
+        label = info.get(f"{key}_label")
+        return (f"{word} {_fmt_num(info[key])}"
+                + (f' "{label}"' if label else ""))
+
+    tail: list[str] = []
+    if "default" in info:
+        tail.append(_valued("default", "default"))
+    if "sighted" in info and (
+        "default" not in info
+        or _fmt_num(info["sighted"]) != _fmt_num(info["default"])
+    ):
+        tail.append(_valued("sighted", "sighted"))
+    if display and display != (info.get("min"), info.get("max")):
+        tail.append(
+            f"displays {_fmt_num(display[0])}..{_fmt_num(display[1])}"
+            + (f" {unit}" if unit else "")
+        )
+    elif display and unit:
+        head.append(unit)
+
+    shown_as = info.get("display_name")
+    label = f'  ("{shown_as}" on screen)' if shown_as and shown_as != name else ""
+    line = f"  {name}{label}  {' '.join(head)}"
+    if tail:
+        line += f" ({', '.join(tail)})"
+    if info.get("internal"):
+        line += "  [internal]"
+    lines = [line]
+
+    labels = info.get("enum_labels")
+    if labels:
+        low = int(info["min"]) if isinstance(info.get("min"), (int, float)) else 0
+        shown = [f"{low + i}={lbl}" for i, lbl in enumerate(labels[:_ENUM_LABELS_SHOWN])]
+        more = len(labels) - len(shown)
+        lines.append(
+            f"      values: {', '.join(shown)}"
+            + (f", ... (+{more} more)" if more > 0 else "")
+        )
+    return lines
+
+
 @cli.command(name="show-block")
 @click.argument("name_or_id")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the schema as JSON ({display_name, model_id, "
-                   "category, aliases, params}).")
+                   "category, aliases, params}); each param carries {type, "
+                   "min, max, default, unit, scale, enum_labels, "
+                   "sighted, internal} where known. No `observed_range` — "
+                   "it was one sighted sample, never a range.")
 @_library_option
 def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) -> None:
-    """Print a block's schema: exact param names, types, defaults, ranges.
+    """Print a block's schema: exact param names, types, real ranges, units.
 
     Accepts the display name (e.g. "Brit Plexi Brt"), the model id
     (e.g. "HD2_AmpBritPlexiBrt"), or an alias. ALWAYS run this before
     writing params for a block — param names are case-sensitive and
-    `generate`/`patch` reject unknown ones. Most knob params are floats
-    0.0-1.0; some are ints/bools/Hz — check the type and observed range here
-    rather than guessing.
+    `generate`/`patch` reject unknown ones.
+
+    Read the UNIT, never assume 0.0-1.0. One amp spells channel volume
+    `ChVol` on 0..1, the next spells it `Level` in dB — writing 0.5 into the
+    dB one asks for +0.5 dB, over 10 dB louder than its -10 dB default, and
+    clips the chain. Ranges, defaults, units and enum labels come from the
+    device's own model definitions:
+
+    \b
+      Mic  int 0..11 (default 11 "67 Cond", sighted 4 "30 Dynamic")
+          values: 0=57 Dynamic, 1=421 Dynamic, ...
+      Level  float -40..10 dB (default -10)
+      ChVol  ("Level" on screen)  float 0..1 (default 0.55, displays 0..10)
+      Time  float 0..2.5 (default 0.279, displays 0..2500 ms)
+
+    `default` is the DEVICE default. `displays X..Y` is what the hardware
+    screen shows for that raw range — write the RAW value, and note that when
+    a `displays` segment is present the unit belongs to IT, not to the raw
+    range. `sighted` is the single value the one ingested preset happened to
+    carry — one sample, not a range, and not a recommendation. Enum labels
+    are aligned to the param's min. A param marked `[internal]` (`IrData`,
+    `AmpCabPeak*`) has no control in the editor: it is plumbing, not a knob —
+    leave it alone.
     """
     library = _resolved_library(library_path)
     try:
@@ -787,13 +895,16 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
     except (KeyError, LookupError) as e:
         raise click.ClickException(str(e)) from e
 
+    from helixgen.device.paraminfo import block_param_info
+    params = block_param_info(block.model_id, block.params)
+
     if as_json:
         click.echo(json.dumps({
             "display_name": block.display_name,
             "model_id": block.model_id,
             "category": block.category,
             "aliases": list(block.aliases or []),
-            "params": block.params,
+            "params": params,
         }, indent=2))
         return
 
@@ -802,13 +913,9 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
     if block.aliases:
         click.echo(f"aliases: {', '.join(block.aliases)}")
     click.echo("params:")
-    for name, schema in block.params.items():
-        meta_bits = [schema["type"], f"default={schema.get('default')!r}"]
-        if "observed_range" in schema:
-            meta_bits.append(f"observed={schema['observed_range']}")
-        if "values" in schema:
-            meta_bits.append(f"values={schema['values']}")
-        click.echo(f"  {name}  ({', '.join(meta_bits)})")
+    for name, info in params.items():
+        for line in _param_lines(name, info):
+            click.echo(line)
 
 
 @cli.command(name="controllers")

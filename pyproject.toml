@@ -65,7 +65,9 @@ where = ["src"]
 include = ["helixgen*"]
 
 [tool.setuptools.package-data]
-"helixgen.device" = ["_defs_data.json", "_modelmap.json", "_settings_pages.json"]
+"helixgen.device" = [
+    "_defs_data.json", "_modelmap.json", "_settings_pages.json", "_param_ui.json",
+]
 # The bundled measurement stimulus. It ships INSIDE the package so that
 # replaying a fixed loop is the default for everyone -- not only for users
 # whose agent happened to run a setup skill first. 703 KB, CC0.
