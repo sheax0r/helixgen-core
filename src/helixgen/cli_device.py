@@ -2152,7 +2152,9 @@ def device_to_hsp(source: str, outfile: Path, preset_name, author,
     `./42` for the file.
 
     Fidelity covers models, params, snapshots, footswitch/EXP assignments, IR
-    references and the full signal graph (dual-DSP, parallel splits, dual-amp).
+    references, EVERY model slot of a dual-cab block (the B cab's own mic,
+    level and EQ), and the full signal graph (dual-DSP, parallel splits,
+    dual-amp).
 
     **Anything that cannot be carried is reported on stderr, one line per
     loss** — read those warnings. Silence means nothing was dropped. NOT yet

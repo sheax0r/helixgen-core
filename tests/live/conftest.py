@@ -91,8 +91,6 @@ Deliberately excluded verbs (and why)
   already covered by pull/push.
 * ``device sync --all`` (and ``--gc``) — unscopeable to test artifacts: it
   would reconcile the user's real device setlists.
-* ``bootstrap`` — clones an external repo; not a device/CLI regression
-  surface worth network flakiness here.
 * ``device globaleq set`` — mutates global device config and is WRITE-ONLY
   over the network (no read-back), so even the read/set-same-value/verify
   pattern is impossible; excluded entirely.

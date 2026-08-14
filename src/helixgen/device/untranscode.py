@@ -14,11 +14,12 @@ device                       ``.hsp``
 ``sfg_.flow[i]``             ``preset.flow[i]``
 grid position ``gp``         the ``bNN`` key (``bridge._lane_pos``: lane 1
                              lives at ``14 + pos``)
-``mdls[0].id__``             ``slot[0].model`` (``modelmap`` reversed)
-``parm[].pid_``              ``slot[0].params`` key (``defs`` pid -> device
+``mdls[i].id__``             ``slot[i].model`` (``modelmap`` reversed; ``i``
+                             > 0 is a dual-cab's B model)
+``parm[].pid_``              ``slot[i].params`` key (``defs`` pid -> device
                              name -> helixgen name, inverting
                              ``bridge.param_name_map``)
-``mdls[0].irmd``             ``slot[0].irhash``
+``mdls[i].irmd``             ``slot[i].irhash``
 block ``enbl``               ``@enabled.value``
 ``cg__`` trgs + ``snps``     ``@enabled.snapshots`` / param ``snapshots``
 ``cg__`` ctrl + ``srcs``     ``@enabled.controller`` / param ``controller``
@@ -259,13 +260,27 @@ def _tamv_map(snap: dict) -> Dict[int, Any]:
             if isinstance(tamv[i], int)}
 
 
+def _trg_slot(trg: dict) -> int:
+    """A target's MODEL SLOT index (``trg.slot``) — 0 for every ordinary block,
+    1 for the B model of a dual-cab. Absent/garbage reads as 0, which is what
+    the forward transcoder writes."""
+    slot = trg.get("slot")
+    return slot if isinstance(slot, int) and not isinstance(slot, bool) else 0
+
+
 class _Cg:
     """Decoded ``cg__`` lookups keyed the way the block emitter needs them.
 
     ``snap_bypass``/``snap_params`` hold the per-snapshot arrays for
     snapshot-tracked targets (``ctm_.stid``); ``ctl_bypass``/``ctl_params`` hold
     the controller assignments. All four are keyed by the block's device
-    instance id (``eID_``), params additionally by ``pid_``.
+    instance id (``eID_``), params additionally by the target's MODEL SLOT
+    (``trg.slot``) and ``pid_``.
+
+    The slot half of that key is load-bearing on a dual-cab block: both model
+    slots live under one ``eID_`` and share the cab model's pids, so keying on
+    ``(eid, pid)`` alone hands the B cab's per-snapshot array to the A cab's
+    param (corpus-observed on 5 factory blocks).
     """
 
     def __init__(self, doc: dict, lost: Optional[List[str]] = None) -> None:
@@ -287,7 +302,7 @@ class _Cg:
         per_snap = [_tamv_map(s) for s in self.snapshots]
 
         self.snap_bypass: Dict[int, List[bool]] = {}
-        self.snap_params: Dict[Tuple[int, int], List[Any]] = {}
+        self.snap_params: Dict[Tuple[int, int, int], List[Any]] = {}
         for tid in sorted(tracked):
             trg = trgs.get(tid)
             if not isinstance(trg, dict):
@@ -309,10 +324,10 @@ class _Cg:
                 # "@enabled", so it is the inverse (``bridge._snapshot_arrays``).
                 self.snap_bypass[eid] = [not bool(v) for v in values]
             elif trg.get("type") == 2:
-                self.snap_params[(eid, trg.get("pid_"))] = values
+                self.snap_params[(eid, _trg_slot(trg), trg.get("pid_"))] = values
 
         self.ctl_bypass: Dict[int, dict] = {}
-        self.ctl_params: Dict[Tuple[int, int], dict] = {}
+        self.ctl_params: Dict[Tuple[int, int, int], dict] = {}
         self.source_bypass_flag: Dict[int, bool] = {}
         self.dropped_midi = 0
         for c in (entt.get("ctrl") or []):
@@ -358,7 +373,8 @@ class _Cg:
                 meta["behavior"] = _BEHAVIOR.get(c.get("behv"), "continuous")
                 meta["min"] = c.get("min_", 0.0)
                 meta["max"] = c.get("max_", 1.0)
-                self.ctl_params[(trg.get("eID_"), trg.get("pid_"))] = meta
+                self.ctl_params[(trg.get("eID_"), _trg_slot(trg),
+                                 trg.get("pid_"))] = meta
 
 
 # --- flow / block emission ----------------------------------------------------
@@ -455,12 +471,13 @@ def _nest_stereo_channels(params: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _slot_params(m0: dict, plan: List[Tuple[int, str]], eid: Any,
+def _slot_params(m: dict, plan: List[Tuple[int, str]], eid: Any, si: int,
                  cg: _Cg) -> Dict[str, Any]:
     """One model instance's ``parm`` list -> a ``.hsp`` param wrapper dict,
     in ``.hsp`` param order, re-attaching any per-snapshot array and controller
-    assignment."""
-    leaves = {leaf.get("pid_"): leaf for leaf in (m0.get("parm") or [])
+    assignment. ``si`` is the instance's index in the block's ``mdls`` list —
+    the slot half of the ``cg__`` target key (see :class:`_Cg`)."""
+    leaves = {leaf.get("pid_"): leaf for leaf in (m.get("parm") or [])
               if isinstance(leaf, dict) and "valu" in leaf}
     params: Dict[str, Any] = {}
     for pid, name in plan:
@@ -468,14 +485,41 @@ def _slot_params(m0: dict, plan: List[Tuple[int, str]], eid: Any,
         if leaf is None:
             continue
         wrapper: Dict[str, Any] = {"value": leaf["valu"]}
-        snaps = cg.snap_params.get((eid, pid))
+        snaps = cg.snap_params.get((eid, si, pid))
         if snaps is not None:
             wrapper["snapshots"] = list(snaps)
-        ctl = cg.ctl_params.get((eid, pid))
+        ctl = cg.ctl_params.get((eid, si, pid))
         if ctl is not None:
             wrapper["controller"] = dict(ctl)
         params[name] = wrapper
     return _nest_stereo_channels(params)
+
+
+def _model_slot(m: dict, si: int, eid: Any, cg: _Cg, rev: Dict[int, str],
+                library: Optional[Library]) -> Optional[dict]:
+    """One ``mdls[si]`` model instance -> one ``.hsp`` ``slot[si]`` dict.
+
+    ``None`` when the device model has no helixgen counterpart; the caller
+    decides whether that kills the block (slot 0) or just the extra slot.
+    """
+    dev_id = m.get("id__")
+    if not isinstance(dev_id, int):
+        return None
+    hsp_model = _hsp_model(dev_id, rev)
+    if hsp_model is None:
+        return None
+    slot: Dict[str, Any] = {
+        "model": hsp_model,
+        "@enabled": {"value": bool(m.get("enbl", 1))},
+        "params": _slot_params(m, _param_plan(dev_id, hsp_model, library),
+                               eid, si, cg),
+    }
+    if isinstance(m.get("vers"), int):
+        slot["version"] = m["vers"]
+    irmd_bytes = m.get("irmd")
+    if isinstance(irmd_bytes, (bytes, bytearray)):
+        slot["irhash"] = _irmd.irmd_to_irhash(irmd_bytes)
+    return slot
 
 
 def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
@@ -486,32 +530,37 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
     dev_id = m0.get("id__")
     if not isinstance(dev_id, int):
         return None
-    hsp_model = _hsp_model(dev_id, rev)
-    if hsp_model is None:
+    eid = blk.get("id__")
+    slot = _model_slot(m0, 0, eid, cg, rev, library)
+    if slot is None:
         unresolved.append(dev_id)
         return None
-    if len(mdls) > 1:
-        # A dual-cab block's second model slot. The ``.hsp`` slot list could
-        # carry it, but ``bridge.hsp_to_paths`` reads only ``slot[0]`` and
-        # ``transcode._make_user_block`` emits a single-model block, so it
-        # would not survive a re-install either way. Loud, not silent.
-        lost.append(f"grid slot {gp}: {len(mdls) - 1} extra model slot(s) "
-                    f"(dual-cab) dropped")
     category = defs.category_for(dev_id)
-    eid = blk.get("id__")
     lane = 1 if gp >= _ROW1_INPUT else 0
 
-    slot: Dict[str, Any] = {
-        "model": hsp_model,
-        "@enabled": {"value": bool(m0.get("enbl", 1))},
-        "params": _slot_params(m0, _param_plan(dev_id, hsp_model, library),
-                               eid, cg),
-    }
-    if isinstance(m0.get("vers"), int):
-        slot["version"] = m0["vers"]
-    irmd_bytes = m0.get("irmd")
-    if isinstance(irmd_bytes, (bytes, bytearray)):
-        slot["irhash"] = _irmd.irmd_to_irhash(irmd_bytes)
+    # Every FURTHER model slot — the B cab of a dual-cab block, which carries
+    # its own mic, level and EQ and is the whole point of the pairing. The
+    # ``.hsp`` ``slot`` list is a list precisely so it can hold them (real
+    # exports do; see ``tests/golden/corpus/dual_cab_raw.hsp``), and
+    # ``bridge``/``transcode`` re-emit them, so this is a carry, not a report.
+    slots = [slot]
+    for si, m in enumerate(mdls[1:], start=1):
+        extra = _model_slot(m, si, eid, cg, rev, library)
+        if extra is None:
+            lost.append(f"grid slot {gp}: model slot {si} has no helixgen "
+                        f"model for device model id {m.get('id__')}; it was "
+                        f"dropped")
+            continue
+        # A snapshot scene or controller assignment on a NON-primary slot has
+        # no forward spelling yet (``transcode._bind_snapshot_targets`` stamps
+        # slot 0 only, and every synthesized ``trgs`` entry carries
+        # ``slot: 0``), so it reads here but would not survive a re-install.
+        if any(isinstance(w, dict) and ("snapshots" in w or "controller" in w)
+               for w in extra["params"].values()):
+            lost.append(f"grid slot {gp}: model slot {si} carries snapshot or "
+                        f"controller assignments; they are read into the .hsp "
+                        f"but a re-install drops them (bead hgc-3yc)")
+        slots.append(extra)
 
     enabled: Dict[str, Any] = {"value": bool(blk.get("enbl", 1))}
     snaps = cg.snap_bypass.get(eid)
@@ -527,7 +576,7 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
         "position": gp - _GRID_SLOTS // 2 * lane,
         "path": lane,
         "favorite": blk.get("favo", 0),
-        "slot": [slot],
+        "slot": slots,
     }
     if category in ("input", "output"):
         entry["harness"] = {"@enabled": {"value": bool(

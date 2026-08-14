@@ -76,11 +76,6 @@ def default_library_path() -> Path:
     return home.library_dir()
 
 
-def default_cache_path() -> Path:
-    """Return the cache path used for cloned upstream repos."""
-    return Path.home() / ".helixgen" / ".cache"
-
-
 @dataclass
 class Block:
     """A single Helix block, as stored in the library."""
@@ -199,7 +194,7 @@ class Library:
             )
         raise KeyError(
             f"Block {name_or_id!r} not found in library at {self.root}. "
-            f"Try `helixgen ingest <export.hlx>` or `helixgen bootstrap`."
+            f"Try `helixgen ingest <export.hsp>`."
         )
 
     def rebuild_index(self) -> dict[str, Any]:

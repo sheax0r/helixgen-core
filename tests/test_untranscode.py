@@ -488,11 +488,10 @@ def _first_user_block(doc: dict) -> dict:
 
 
 @pytest.mark.parametrize("phrase,mutate", [
-    # A dual-cab second model slot: bridge reads slot[0] only, so it would not
-    # survive a re-install either way.
-    ("dual-cab",
-     lambda d: _first_user_block(d)["mdls"].append(
-         copy.deepcopy(_first_user_block(d)["mdls"][0]))),
+    # A dual-cab B model with no helixgen counterpart: the A cab still stands,
+    # but the pairing is gone and the user has to be told.
+    ("model slot 1 has no helixgen model",
+     lambda d: _add_second_model_slot(d, 999999, {})),
     # A disabled DSP path: _canonical_flow always writes enbl=1.
     ("DISABLED", lambda d: d["sfg_"]["flow"][0].__setitem__("enbl", 0)),
     ("signal-flow graph is DISABLED", lambda d: d["sfg_"].__setitem__("enbl", 0)),
@@ -511,6 +510,111 @@ def test_unreproducible_device_state_warns(phrase, mutate, capsys):
 def _shift_block(doc: dict, frm: int, to: int) -> None:
     blks = doc["sfg_"]["flow"][0]["blks"]
     blks[blks.index(frm)] = to
+
+
+# --- dual cab: a block with two model slots (bead hgc-q38) --------------------
+
+def _add_second_model_slot(doc: dict, dev_id: int,
+                           params: dict, *, block=None) -> dict:
+    """Append a second ``mdls`` entry to a block, the way the device stores a
+    dual cab: one block instance, two model instances. Returns the new entry.
+
+    ``params`` is keyed by DEVICE param name. Built through the forward
+    transcoder's own synthesis so the entry is shaped exactly like one the
+    device wrote — otherwise the round-trip oracle would be testing the
+    fixture, not the code.
+    """
+    blk = _first_user_block(doc) if block is None else block
+    name = defs.model_name_for(dev_id)
+    _, m = transcode._make_model_instance(name or CAB_A, params, None)
+    m["id__"] = dev_id      # an unresolvable id, when that is the point
+    blk["mdls"].append(m)
+    return m
+
+
+# Two real Stadium cab models: the A and B mics of one dual-cab block.
+CAB_A = "HD2_CabMicIr_4x12SoloLeadEMWithPan"
+CAB_B = "HD2_CabMicIr_1x12OpenCreamWithPan"
+
+
+def _dual_cab_doc() -> dict:
+    """Device content whose single cab block carries two model slots with
+    DIFFERENT models and different mic/level/EQ — the factory shape (corpus:
+    78 such blocks across the 66 Line 6 factory presets)."""
+    doc = transcode.recipe_to_sbepgsm({"name": "dualcab", "paths": [{"blocks": [
+        {"block": AMP, "params": {}},
+        {"block": CAB_A, "params": {"Mic": 3, "LowCut": 50.0, "Level": 1.0}},
+    ]}]})
+    cab = next(b for gp, b in untranscode._iter_blocks(doc["sfg_"]["flow"][0])
+               if gp == 2)
+    _add_second_model_slot(doc, defs.model_id_for(CAB_B),
+                           {"Mic": 9, "LowCut": 90.0, "Level": -3.0},
+                           block=cab)
+    return doc
+
+
+def test_dual_cab_second_slot_survives_the_round_trip():
+    """The B cab is a different mic at a different level — dropping it halved
+    every converted factory preset's cab. It has to reach the ``.hsp`` AND come
+    back out of the forward transcoder unchanged."""
+    doc = _dual_cab_doc()
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="dualcab")
+
+    slots = _flow0(body)["b02"]["slot"]
+    assert [s["model"] for s in slots] == [CAB_A, CAB_B]
+    assert slots[1]["params"]["Mic"]["value"] == 9
+    assert slots[1]["params"]["Level"]["value"] == pytest.approx(-3.0)
+    assert slots[0]["params"]["Level"]["value"] == pytest.approx(1.0)
+
+    assert transcode.hsp_to_sbepgsm(body) == sbe1
+
+
+def test_dual_cab_conversion_is_silent(capsys):
+    """A carried B cab is not a loss, so it must not warn — the contract is
+    that stderr silence means nothing was dropped."""
+    untranscode.sbepgsm_to_hsp(_dual_cab_doc(), name="x")
+    assert capsys.readouterr().err == ""
+
+
+def test_dual_cab_second_slot_bypass_survives():
+    """A B slot the user switched off (``mdls[1].enbl == 0``) is how a dual-cab
+    block runs single — losing the flag would turn the second mic back on."""
+    doc = _dual_cab_doc()
+    cab = next(b for gp, b in untranscode._iter_blocks(doc["sfg_"]["flow"][0])
+               if gp == 2)
+    cab["mdls"][1]["enbl"] = 0
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
+    assert _flow0(body)["b02"]["slot"][1]["@enabled"]["value"] is False
+    assert transcode.hsp_to_sbepgsm(body) == sbe1
+
+
+def test_snapshot_target_on_the_b_slot_is_not_read_onto_the_a_slot(capsys):
+    """Both model slots live under ONE ``eID_`` and share the cab model's pids,
+    so the ``cg__`` target's ``slot`` field is the only thing separating them.
+    Keying on ``(eid, pid)`` alone handed the B cab's per-snapshot array to the
+    A cab's param — silent, wrong, and audible."""
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x", "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [
+            {"block": CAB_A, "params": {"Level": 1.0},
+             "snap_params": {"Level": [1.0, -2.0] + [-2.0] * 6}},
+        ]}]})
+    cab = _first_user_block(doc)
+    _add_second_model_slot(doc, defs.model_id_for(CAB_A), {"Level": -3.0},
+                           block=cab)
+    # Re-point the existing param target at model slot 1 (the B cab).
+    trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
+    trg["slot"] = 1
+
+    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    slots = _flow0(body)["b01"]["slot"]
+    assert "snapshots" not in slots[0]["params"]["Level"]
+    assert slots[1]["params"]["Level"]["snapshots"][:2] == [1.0, -2.0]
+    # ... and the loss it implies (no forward spelling) is reported.
+    assert "model slot 1 carries snapshot or controller assignments" \
+        in capsys.readouterr().err
 
 
 def test_unmappable_controller_source_warns(capsys):

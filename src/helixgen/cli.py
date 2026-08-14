@@ -10,7 +10,6 @@ import click
 from click.core import ParameterSource
 
 from helixgen import gitops, home, ir_meta, libinit, mutate, naming, tone_meta
-from helixgen.bootstrap import bootstrap
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.generate import GenerateError, ParamValidationError, generate_preset
 from helixgen.hsp import HSP_MAGIC, HSP_MAGIC_LEN, read_hsp, write_hsp
@@ -110,7 +109,7 @@ def cli() -> None:
     is the behavioral contract). Verb groups:
 
     \b
-      catalog    ingest, bootstrap, list-blocks, show-block
+      catalog    ingest, list-blocks, show-block
       author     generate (recipe JSON -> .hsp), view (read-only projection)
       edit       patch (batch ops), set-param, enable, disable, add-block,
                  remove-block, swap-model
@@ -935,19 +934,6 @@ def controllers_cmd(as_json: bool, device: str) -> None:
         return
     for row in mapping:
         click.echo(f"{row['id']:<8} {row['english']}")
-
-
-@cli.command(name="bootstrap")
-@click.option("--phelix-ref", "ref", default="main", help="Git ref of sensorium/phelix to clone.")
-@_library_option
-def bootstrap_cmd(ref: str, library_path: Path | None) -> None:
-    """Clone sensorium/phelix and ingest its blocks/ folder."""
-    library = _resolved_library(library_path)
-    try:
-        summary = bootstrap(library, ref=ref)
-    except FileNotFoundError as e:
-        raise click.ClickException(str(e)) from e
-    click.echo(_format_summary(summary, library))
 
 
 @cli.command(name="register-irs")

@@ -1,7 +1,14 @@
 # Test fixtures
 
-These files encode the *hypothesized* shape of Helix `.hlx` exports and
-`sensorium/phelix` block-export JSON. They are synthetic, not real exports.
+These files encode the *hypothesized* shape of Helix `.hlx` exports and of a
+single-block export JSON. They are synthetic, not real exports.
+
+**They were NOT copied from `sensorium/phelix`, whatever earlier revisions of
+this file said.** A real phelix block file is shaped `{SnapshotParams,
+Controller_Dict, Defaults}` with `@model` nested inside `Defaults`, so
+`ingest.detect_shape` reads every one of them as UNKNOWN. That mismatch is why
+the `bootstrap` verb ingested nothing for its whole life and was removed (bead
+hgc-aye); the shipped library was built from real `.hsp` exports instead.
 
 If real exports differ from these shapes, update the fixtures and the code
 that consumes them together. The hot spots are:
