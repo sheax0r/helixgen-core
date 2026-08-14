@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,43 @@ def _isolate_device_ip(monkeypatch: pytest.MonkeyPatch):
     change fail-fast behavior). Tests that assert on env resolution set it
     themselves via monkeypatch."""
     monkeypatch.delenv("HELIXGEN_HELIX_IP", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_host_volume(monkeypatch: pytest.MonkeyPatch):
+    """Never let the offline suite drive the HOST's audio output volume.
+
+    `stimulus.get_output_volume` / `set_output_volume` shell out to
+    `osascript`, and the normalization loop sweeps the volume while it
+    converges. A fixture that stubs `playing`/`preflight`/`_measure_window`
+    but leaves those two real reaches straight through to the machine's
+    speakers: `tests/test_cli_device_normalize.py::fake_stimulus` did exactly
+    that, and one run made 324 live `osascript` calls, audibly oscillating the
+    developer's system volume (and, run in a loop, keeping it that way).
+
+    Guard at the `subprocess` boundary rather than by stubbing the two
+    functions, because `tests/test_stimulus.py` tests those functions
+    *directly* — it asserts on the `osascript` argv they build, and stubs
+    `stimulus.subprocess.run` itself, which overrides this fixture and leaves
+    its assertions intact.
+
+    Returning rc 0 with empty stdout matches what a real `osascript` volume
+    call returns, so no existing test changes behavior: `get_output_volume`
+    parses "" to None, and `set_output_volume` sees success.
+
+    A test that genuinely needs a volume value stubs `get_output_volume` /
+    `set_output_volume` itself (several already do).
+    """
+    from helixgen.device import stimulus as ST
+
+    real_run = ST.subprocess.run
+
+    def guard(cmd, *args, **kwargs):
+        if cmd and str(cmd[0]) == "osascript":
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(ST.subprocess, "run", guard)
 
 
 @pytest.fixture(autouse=True)
