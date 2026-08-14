@@ -14,8 +14,14 @@ import subprocess
 from helixgen.device import stimulus as ST
 
 
-def test_osascript_never_reaches_the_host():
-    """Both volume calls go through the guard, not to the machine."""
+def test_osascript_never_reaches_the_host(monkeypatch):
+    """Both volume calls go through the guard, not to the machine.
+
+    Pin the platform to darwin: the hazard only exists on macOS (both helpers
+    return early elsewhere), but the guard must be proven on every host that
+    runs the suite, CI included.
+    """
+    monkeypatch.setattr(ST.sys, "platform", "darwin")
     calls: list[list[str]] = []
     real_run = ST.subprocess.run
 
