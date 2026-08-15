@@ -25,6 +25,7 @@ from helixgen import controllers, flowparams
 from helixgen.controllers import ControllerError
 from helixgen.generate import (
     HSP_SNAPSHOT_SLOTS,
+    MAX_LANE_SLOTS as _MAX_LANE_SLOTS,
     GenerateError,
     _apply_trails_harness,
     _build_exp_controller,
@@ -65,8 +66,6 @@ __all__ = [
     "wire_expression",
     "wire_wah_toe",
 ]
-
-_MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
 
 # Signal-flow pseudo-block names accepted by `set_param` (routed to
 # `set_flow_param`). These address a path's endpoints / split / merge mixer
@@ -674,7 +673,8 @@ def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str,
     if positions and positions[-1] > _MAX_LANE_SLOTS:
         raise MutateError(
             f"Lane {lane} would have {len(ordered)} blocks; only "
-            f"{_MAX_LANE_SLOTS} user slots (b01..b{_MAX_LANE_SLOTS:02d}) available."
+            f"{_MAX_LANE_SLOTS} user slots "
+            f"(b{14 * lane + 1:02d}..b{14 * lane + _MAX_LANE_SLOTS:02d}) available."
         )
     for k in _bnn_keys(path_dict):
         if _lane_pos(k)[0] == lane:

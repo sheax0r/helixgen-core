@@ -933,21 +933,46 @@ def _reconstruct_path_blocks(path_dict, library, irs):
     lane1 = sorted((k for k in user_keys if int(k[1:]) >= 14), key=lambda k: int(k[1:]))
 
     def branch_span(bnn):
+        """The lane-1 keys a split/join pair's ``branch`` pointers declare."""
         b0, b1 = bnn.get("branch"), path_dict.get(bnn.get("endpoint"), {}).get("branch")
         if not b0 or not b1:
             return []
         lo, hi = sorted((int(b0[1:]), int(b1[1:])))
         return [k for k in lane1 if lo <= int(k[1:]) <= hi]
 
+    def in_columns(bnn, split_key, bk):
+        """True when ``bk`` sits between the pair's own split and join columns
+        — where a branch block physically is on the device's grid."""
+        join_key = bnn.get("endpoint") or ""
+        if not join_key[1:].isdigit():
+            return False
+        return (int(split_key[1:]) + 14 <= int(bk[1:])
+                <= int(join_key[1:]) + 14)
+
+    # Decide which pair OWNS each lane-1 key before emitting anything: a key
+    # emitted under two splits projects one block as two entries at one
+    # coordinate, which `generate` refuses (hgc-x9g). Two pairs' declared spans
+    # do overlap in practice — `untranscode._endpoint_pointers` aims a pair
+    # that brackets nothing at the whole lane-1 row — so a pair whose own
+    # COLUMNS contain the key wins over one merely pointing at it, whichever
+    # comes first. Neither containing it (helixgen's own lane-1 numbering is
+    # independent of the split's column): first split wins.
+    splits = [k for k in lane0 if path_dict[k].get("type") == "split"]
+    owner: dict[str, str] = {}
+    for by_columns in (True, False):
+        for k in splits:
+            for bk in branch_span(path_dict[k]):
+                if not by_columns or in_columns(path_dict[k], k, bk):
+                    owner.setdefault(bk, k)
+
     out = []
+    claimed = set(owner)
     for k in lane0:
         bnn = path_dict[k]
         out.append(_entry_for(k, bnn, library, irs))
         if bnn.get("type") == "split":
-            for bk in branch_span(bnn):
+            for bk in (b for b in lane1 if owner.get(b) == k):
                 out.append(_entry_for(bk, path_dict[bk], library, irs))
-    claimed = {e_key for k in lane0 if path_dict[k].get("type") == "split"
-               for e_key in branch_span(path_dict[k])}
     for bk in lane1:
         if bk not in claimed:
             out.append(_entry_for(bk, path_dict[bk], library, irs))

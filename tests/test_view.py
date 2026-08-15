@@ -203,3 +203,74 @@ def test_view_does_not_create_any_file(hsp_library, tmp_path):
     view(body, lib)
     after = set(os.listdir(tmp_path))
     assert before == after
+
+
+def test_view_lists_a_shared_branch_block_once(hsp_library, tmp_path):
+    # hgc-x9g: a lane-1 key was emitted under EVERY split whose branch span
+    # covers it. Two pairs' spans can overlap — `untranscode._endpoint_pointers`
+    # aims an EMPTY pair's pointers at the whole lane-1 row — and the block then
+    # projected as two entries sharing one (lane, pos), which `generate` refuses.
+    lib = hsp_library
+    spec = parse_spec({"name": "TwoSplits", "paths": [{"blocks": [
+        {"block": "Tube Drive"},
+        {"split": {"type": "y"}},
+        {"block": "Brit Amp", "lane": 1},
+        {"join": {}},
+        {"block": "Tube Drive"},
+        {"split": {"type": "y"}},   # a pair bracketing no lane-1 block
+        {"join": {}},
+    ]}]})
+    p1 = compose_preset(spec, lib, source="t")
+    flow0 = p1["preset"]["flow"][0]
+    # What the reverse transcoder writes for a pair that brackets nothing:
+    # both branch pointers aimed at the lane-1 row.
+    flow0["b05"]["branch"] = flow0["b06"]["branch"] = "b15"
+    body = _write_and_read(tmp_path, p1)
+
+    d = view(body, lib)
+    lane1 = [b for b in d["paths"][0]["blocks"] if b.get("lane") == 1]
+    assert len(lane1) == 1, lane1
+    # ... and the projection still regenerates.
+    compose_preset(parse_spec(d), lib, source="t")
+
+
+def test_view_gives_a_shared_branch_block_to_the_pair_that_brackets_it(
+        hsp_library, tmp_path):
+    # hgc-x9g: same overlap, EMPTY pair FIRST. Handing the block to whichever
+    # split comes first would move it into the empty pair's region, and the
+    # regenerated .hsp would route a parallel amp off the wrong split — a
+    # silently different preset. The pair's own COLUMNS decide.
+    lib = hsp_library
+    spec = parse_spec({"name": "EmptyFirst", "paths": [{"blocks": [
+        {"split": {"type": "y"}},   # b01, brackets nothing
+        {"join": {}},               # b02
+        {"block": "Tube Drive"},    # b03
+        {"split": {"type": "y"}},   # b04
+        # b18 — under the SECOND pair's columns, where the device puts a
+        # branch block (lane-1 pos tracks the lane-0 column, not a counter).
+        {"block": "Brit Amp", "lane": 1, "pos": 4},
+        {"join": {}},               # b05
+    ]}]})
+    p1 = compose_preset(spec, lib, source="t")
+    flow0 = p1["preset"]["flow"][0]
+    before = {k: (v.get("branch"), v.get("endpoint"))
+              for k, v in flow0.items()
+              if isinstance(v, dict) and v.get("type") in ("split", "join")}
+    # The empty pair's pointers, as the reverse transcoder writes them.
+    flow0["b01"]["branch"] = flow0["b02"]["branch"] = "b18"
+    body = _write_and_read(tmp_path, p1)
+
+    d = view(body, lib)
+    blocks = d["paths"][0]["blocks"]
+    lane1 = [b for b in blocks if b.get("lane") == 1]
+    assert len(lane1) == 1, lane1
+    # The branch block is listed between the SECOND split and its join.
+    kinds = [("split" if "split" in b else "join" if "join" in b else "block")
+             for b in blocks if "structural" not in b]
+    assert kinds == ["split", "join", "block", "split", "block", "join"], kinds
+
+    regen = compose_preset(parse_spec(d), lib, source="t")
+    after = {k: (v.get("branch"), v.get("endpoint"))
+             for k, v in regen["preset"]["flow"][0].items()
+             if isinstance(v, dict) and v.get("type") in ("split", "join")}
+    assert after == before, (before, after)

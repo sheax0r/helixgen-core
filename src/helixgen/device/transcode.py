@@ -765,6 +765,11 @@ def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
     position. A scaffold recorded in ROW 1 is refused too: the coords placement
     can only put a split/join in row 0, so its recorded slot and the slot it
     would land on disagree, and the collision set could not be trusted.
+
+    Two MODELED blocks colliding no longer reaches that fallback: the caller's
+    :func:`_claim_coord` refuses the pair outright (hgc-x9g), because the
+    instance-id map is keyed by the same coordinate and packing them onto
+    separate grid slots left both bound to one ``eID_``.
     """
     gps: List[int] = []
     for spec in modeled:
@@ -788,6 +793,26 @@ def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
     return gps if len(set(taken)) == len(taken) else None
 
 
+def _claim_coord(claimed: dict, key, spec) -> None:
+    """Refuse two blocks on one ``(path, lane, pos)`` coordinate (hgc-x9g).
+
+    ``instance_ids`` is keyed by that coordinate and the snapshot/controller
+    synthesis reads it back the same way, so a duplicate silently bound the
+    FIRST block's per-snapshot bypass/params to the SECOND block's ``eID_``
+    and dropped its own. The device cannot host the pair either — the instance
+    id IS the grid coordinate (``28 * flow + gridpos``) — so there is nothing
+    to assign around: the recipe is wrong, and says so here.
+    """
+    name = spec.get("block") or spec.get("model") or "<block>"
+    if key in claimed:
+        raise ValueError(
+            f"path {key[0]} lane {key[1]} pos {key[2]} is claimed by two "
+            f"blocks: {claimed[key]} and {name}. One grid slot holds one "
+            f'block — give them distinct "pos" values.'
+        )
+    claimed[key] = name
+
+
 def _place_serial_flow(placements, instance_ids, pi, base, modeled) -> None:
     """SERIAL / dual-DSP flow: every user block keeps the grid slot its ``.hsp``
     records (row 0 = positions 1..12, row 1 = 15..26 — hardware-confirmed
@@ -799,9 +824,11 @@ def _place_serial_flow(placements, instance_ids, pi, base, modeled) -> None:
     gps = _recorded_grid_slots(modeled)
     if gps is None:
         gps = list(range(1, min(len(modeled), _ROW0_LAST_USER) + 1))
+    claimed: dict = {}
     for bi, (spec, gp) in enumerate(zip(modeled, gps)):
         lane = int(spec.get("lane", 0))
         pos = int(spec.get("pos", bi))
+        _claim_coord(claimed, (pi, lane, pos), spec)
         placements.append((gp, _make_user_block(spec, 0)))
         instance_ids[(pi, lane, pos)] = base + gp
 
@@ -838,10 +865,12 @@ def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, stru
     lane-0 in row 0, lane-1 in row 1, split/join between."""
     lane0 = [s for s in modeled if int(s.get("lane", 0)) == 0]
     lane1 = [s for s in modeled if int(s.get("lane", 0)) == 1]
+    claimed: dict = {}
     gp = 1
     for bi, spec in enumerate(lane0):
         if gp > _ROW0_LAST_USER - 1:
             break
+        _claim_coord(claimed, (pi, 0, int(spec.get("pos", bi))), spec)
         placements.append((gp, _make_user_block(spec, 0)))
         instance_ids[(pi, 0, int(spec.get("pos", bi)))] = base + gp
         gp += 1
@@ -850,6 +879,7 @@ def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, stru
     for bi, spec in enumerate(lane1):
         if gp1 > _ROW1_LAST_USER:
             break
+        _claim_coord(claimed, (pi, 1, int(spec.get("pos", bi))), spec)
         placements.append((gp1, _make_user_block(spec, 0)))
         instance_ids[(pi, 1, int(spec.get("pos", bi)))] = base + gp1
         gp1 += 1

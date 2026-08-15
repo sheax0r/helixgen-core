@@ -45,8 +45,6 @@ from helixgen.hsp import dumps_hsp
 from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.spec import BlockEntry, InputSpec, Spec, parse_spec
 
-_MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
-
 
 def _effective_input(path_entry, path_index: int) -> tuple[str, InputSpec | None]:
     """(effective mode, InputSpec-or-None) for a path's `input` field."""
@@ -330,19 +328,12 @@ def apply_recipe(
                 f"Chassis flow path {path_index} is not an object; cannot place blocks."
             )
         path_entry = spec.paths[path_index]
-        eff = _assign_positions(path_entry)
+        eff = _assign_positions(path_entry, path_index)
+        # Per-lane capacity is enforced by `_assign_positions` itself: a 13th
+        # block (or a 12-block lane plus a split/join) resolves to a pos outside
+        # 1..12 and is refused there, by name — as is an explicit `pos` aimed at
+        # an endpoint slot, which the old count-based guard walked straight past.
         block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
-        # Per-lane capacity guard: a lane has only 12 user-block slots
-        # (b01..b12); a 13th block would otherwise silently overwrite the
-        # endpoint slot (matches the legacy `_compose_preset_hsp` guard).
-        for lane in (0, 1):
-            n = sum(1 for e in block_entries if getattr(e, "lane", 0) == lane)
-            if n > _MAX_LANE_SLOTS:
-                raise GenerateError(
-                    f"Path {path_index} lane {lane} has {n} blocks; only "
-                    f"{_MAX_LANE_SLOTS} user slots (b01..b{_MAX_LANE_SLOTS:02d}) "
-                    f"per lane available."
-                )
         for chain_idx, (block, user_params) in enumerate(chain):
             block_entry = block_entries[chain_idx]
             lane, pos, key = eff[id(block_entry)]
