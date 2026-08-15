@@ -495,8 +495,10 @@ def _first_user_block(doc: dict) -> dict:
     # A disabled DSP path: _canonical_flow always writes enbl=1.
     ("DISABLED", lambda d: d["sfg_"]["flow"][0].__setitem__("enbl", 0)),
     ("signal-flow graph is DISABLED", lambda d: d["sfg_"].__setitem__("enbl", 0)),
-    # A gap in the row-0 run: _place_serial_flow compacts it on re-install.
-    ("not contiguous", lambda d: _shift_block(d, 1, 5)),
+    # Row-1 blocks with no split: they KEEP their slots (bead hgc-8o6) but the
+    # forward path still writes InputNone/OutputNone into row 1, so nothing
+    # feeds them. A second rig going missing must never be silent.
+    ("have no split feeding them", lambda d: _shift_block(d, 1, 16)),
 ])
 def test_unreproducible_device_state_warns(phrase, mutate, capsys):
     """Everything this converter cannot carry has to reach stderr. Silence must
@@ -507,9 +509,30 @@ def test_unreproducible_device_state_warns(phrase, mutate, capsys):
     assert phrase in capsys.readouterr().err
 
 
+def test_a_gapped_serial_row_round_trips_with_its_positions(capsys):
+    """Real device content leaves GAPS in a row — 61 of Line 6's 66 factory
+    presets trip the gap check, and the hardware ships and plays them. The
+    forward path used to
+    re-pack the row onto 1..n, which MOVED the user's layout and cost the round
+    trip its fixed point (bead hgc-8o6)."""
+    doc = _one_amp_doc()
+    _shift_block(doc, 1, 5)                     # the amp sits at grid slot 5
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="RT")
+    assert [k for k in _flow0(body) if k.startswith("b")] == ["b00", "b05", "b13"]
+    assert _flow0(body)["b05"]["position"] == 5
+    assert transcode.hsp_to_sbepgsm(body) == sbe1   # a fixed point, byte-exact
+    assert "not contiguous" not in capsys.readouterr().err
+
+
 def _shift_block(doc: dict, frm: int, to: int) -> None:
-    blks = doc["sfg_"]["flow"][0]["blks"]
-    blks[blks.index(frm)] = to
+    """Move a block to another grid slot the way device content carries it —
+    the ``blks`` coordinate AND the identity id (``bmap[gridpos]``)."""
+    flow = doc["sfg_"]["flow"][0]
+    blks = flow["blks"]
+    i = blks.index(frm)
+    blks[i] = to
+    blks[i + 1]["id__"] = flow["bmap"][to]
 
 
 # --- dual cab: a block with two model slots (bead hgc-q38) --------------------

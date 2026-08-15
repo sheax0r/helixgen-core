@@ -698,18 +698,64 @@ def _append_output_group(placements: List[Tuple[int, dict]], out_params) -> None
     placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
 
 
+def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
+    """The grid slot each modeled block RECORDS in the ``.hsp``, or ``None``
+    when the recorded coordinates cannot be honoured as written.
+
+    A block's ``.hsp`` ``bNN`` key IS its grid coordinate (``bridge._lane_pos``:
+    lane 1 = ``14 + pos``), so the forward path places from it instead of
+    re-packing: real device content leaves GAPS in a row (61 of Line 6's 66
+    factory presets trip the gap check), and compacting them moves the user's
+    layout.
+
+    Returns one grid slot per entry of ``modeled``. ``None`` — the caller falls
+    back to its own contiguous strategy — when any coordinate is missing, is not
+    a user slot (row 0 = 1..12, row 1 = 15..26; 0/13/14/27 are the flow's own
+    endpoints), or collides with another block's, counting the split/join
+    scaffolds' slots. Those are the ways a preserved layout could silently
+    produce an invalid grid, and none can be repaired here without inventing a
+    position. A scaffold recorded in ROW 1 is refused too: the coords placement
+    can only put a split/join in row 0, so its recorded slot and the slot it
+    would land on disagree, and the collision set could not be trusted.
+    """
+    gps: List[int] = []
+    for spec in modeled:
+        pos, lane = spec.get("pos"), spec.get("lane", 0)
+        if not all(isinstance(v, int) and not isinstance(v, bool)
+                   for v in (pos, lane)) or lane not in (0, 1):
+            return None
+        gp = pos + _ROW1_INPUT * lane
+        if not (_ROW0_INPUT < gp <= _ROW0_LAST_USER
+                or _ROW1_INPUT < gp <= _ROW1_LAST_USER):
+            return None
+        gps.append(gp)
+    taken = list(gps)
+    for scaffold in structural:
+        spos = scaffold.get("_pos")
+        if not isinstance(spos, int) or isinstance(spos, bool):
+            return None
+        if scaffold.get("_lane") or not _ROW0_INPUT < spos <= _ROW0_LAST_USER:
+            return None
+        taken.append(spos)
+    return gps if len(set(taken)) == len(taken) else None
+
+
 def _place_serial_flow(placements, instance_ids, pi, base, modeled) -> None:
-    """SERIAL / dual-DSP flow: user blocks fill row 0 (positions 1..12).
-    (Hardware-confirmed 2026-07-13.) Overflow blocks past row 0 are dropped."""
-    gp = 1
-    for bi, spec in enumerate(modeled):
-        if gp > _ROW0_LAST_USER:
-            break  # row 0 is full; overflow blocks are dropped
+    """SERIAL / dual-DSP flow: every user block keeps the grid slot its ``.hsp``
+    records (row 0 = positions 1..12, row 1 = 15..26 — hardware-confirmed
+    2026-07-13), so a gap in the row survives a round trip.
+
+    Coordinates that cannot be honoured as written (see
+    :func:`_recorded_grid_slots`) fall back to the historical contiguous fill of
+    row 0, which drops any block past slot 12."""
+    gps = _recorded_grid_slots(modeled)
+    if gps is None:
+        gps = list(range(1, min(len(modeled), _ROW0_LAST_USER) + 1))
+    for bi, (spec, gp) in enumerate(zip(modeled, gps)):
         lane = int(spec.get("lane", 0))
         pos = int(spec.get("pos", bi))
         placements.append((gp, _make_user_block(spec, 0)))
         instance_ids[(pi, lane, pos)] = base + gp
-        gp += 1
 
 
 def _place_split_flow_coords(placements, instance_ids, pi, base, modeled, structural) -> None:
@@ -822,8 +868,7 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         # then terminates with the same OutputMatrix/InputNone/OutputNone group.
         if not structural:
             _place_serial_flow(placements, instance_ids, pi, base, modeled)
-        elif all("_pos" in s for s in structural) and \
-                all("pos" in s for s in modeled):
+        elif _recorded_grid_slots(modeled, structural) is not None:
             _place_split_flow_coords(placements, instance_ids, pi, base,
                                      modeled, structural)
         else:
@@ -1628,11 +1673,15 @@ def _synthesize(recipe: dict) -> dict:
     recipe = copy.deepcopy(recipe)
     paths = recipe.get("paths") or []
     # Normalize block coordinates so the instance-id map and the snapshot
-    # lookups key off identical ``(path, lane, pos)`` tuples.
+    # lookups key off identical ``(path, lane, pos)`` tuples. A block with no
+    # recorded ``pos`` gets a NEGATIVE placeholder — unique per block, so the
+    # keys stay distinct, but never a grid coordinate, so the placement reads
+    # it as "no layout" and packs the flow instead of mistaking an enumeration
+    # index for a grid slot (bead hgc-8o6).
     for path in paths:
         for bi, spec in enumerate(path.get("blocks") or []):
             spec.setdefault("lane", 0)
-            spec.setdefault("pos", bi)
+            spec.setdefault("pos", -1 - bi)
     sfg, next_id, instance_ids = synthesize_sfg(paths)
     cg, bindings = _synth_cg_from_recipe(recipe, instance_ids, next_id - 1)
     _bind_snapshot_targets(sfg, bindings)
