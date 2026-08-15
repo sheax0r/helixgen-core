@@ -195,13 +195,37 @@ class TestGridPositions:
         doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
         assert sorted(_user_slots(doc)) == [1, 2]
 
-    @pytest.mark.parametrize("blocks", [
-        [{"block": "HD2_DistMinotaurMono", "lane": 0, "pos": 3},
-         {"block": "HD2_DistVerminDistMono", "lane": 0, "pos": 3}],   # collision
-        [{"block": "HD2_DistMinotaurMono", "lane": 0, "pos": 3},
-         {"block": "HD2_DistVerminDistMono", "lane": 0}],             # no pos
-    ])
-    def test_unusable_recipe_coordinates_fall_back(self, blocks):
+    def test_unusable_recipe_coordinates_fall_back(self):
+        blocks = [{"block": "HD2_DistMinotaurMono", "lane": 0, "pos": 3},
+                  {"block": "HD2_DistVerminDistMono", "lane": 0}]  # no pos
         doc = transcode.recipe_to_sbepgsm({"name": "x",
                                            "paths": [{"blocks": blocks}]})
         assert sorted(_user_slots(doc)) == [1, 2]
+
+
+class TestDuplicateCoordinates:
+    """Two blocks on one ``(lane, pos)`` is refused, not papered over
+    (bead hgc-x9g). ``instance_ids`` is keyed by that coordinate, so the pair
+    used to collapse: the first block's snapshot bindings silently bound to the
+    second block's ``eID_`` and its own per-snapshot state was dropped."""
+
+    def test_serial_flow_refuses_the_pair(self):
+        # Pre-fix this transcoded happily: the Minotaur's per-snapshot bypass
+        # bound to the Vermin's eID_ and the Minotaur's own state was dropped.
+        with pytest.raises(ValueError) as e:
+            transcode.recipe_to_sbepgsm({"name": "x", "paths": [{"blocks": [
+                {"block": "HD2_DistMinotaurMono", "lane": 0, "pos": 3},
+                {"block": "HD2_DistVerminDistMono", "lane": 0, "pos": 3},
+            ]}]})
+        msg = str(e.value)
+        assert "HD2_DistMinotaurMono" in msg and "HD2_DistVerminDistMono" in msg
+        assert "path 0 lane 0 pos 3" in msg
+
+    def test_split_flow_without_coordinates_refuses_the_pair(self):
+        # The no-coords placement keys instance ids off the same colliding
+        # ``pos`` even though it packs the grid contiguously.
+        with pytest.raises(ValueError, match="path 0 lane 1 pos 1"):
+            transcode._place_split_flow_nocoords([], {}, 0, 0, [
+                {"block": "HD2_DistMinotaurMono", "lane": 1, "pos": 1},
+                {"block": "HD2_DistVerminDistMono", "lane": 1, "pos": 1},
+            ], [])

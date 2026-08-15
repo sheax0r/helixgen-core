@@ -82,3 +82,27 @@ def test_recipe_lane_over_capacity_raises(tmp_path):
 
     with pytest.raises(GenerateError, match="12 user slots"):
         apply_recipe(recipe, library, chassis=chassis)
+
+
+@pytest.mark.parametrize("blocks", [
+    # both explicit
+    [{"block": "Scream 808", "pos": 1}, {"block": "Brit 2204 Custom", "pos": 1}],
+    # auto-assigned onto a later explicit one (the counter only moves forward)
+    [{"block": "Scream 808"}, {"block": "Brit 2204 Custom", "pos": 1}],
+])
+def test_recipe_two_blocks_on_one_slot_raises(tmp_path, blocks):
+    # bead hgc-x9g: two entries resolving to one bNN key used to collapse —
+    # `path_dict[key] = ...` wrote twice and the loser vanished from the
+    # preset, exit 0, no warning. One grid slot holds one block.
+    from helixgen.generate import GenerateError
+    from helixgen.recipe import apply_recipe
+
+    library = harness.build_corpus_library(tmp_path)
+    chassis = _corpus_chassis()
+    recipe = {"name": "Collide", "paths": [{"blocks": blocks}]}
+
+    with pytest.raises(GenerateError) as e:
+        apply_recipe(recipe, library, chassis=chassis)
+    msg = str(e.value)
+    assert "Scream 808" in msg and "Brit 2204 Custom" in msg
+    assert "path 0 lane 0 pos 1 (b01)" in msg

@@ -841,21 +841,44 @@ def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
     return snaps
 
 
-def _assign_positions(path_entry) -> dict:
+def _entry_label(entry) -> str:
+    """Name an entry for an error message (block display name, split/join
+    model, or `structural` for a verbatim slot)."""
+    return getattr(entry, "block", None) or getattr(entry, "model", None) \
+        or "a structural entry"
+
+
+def _assign_positions(path_entry, path_index: int | None = None) -> dict:
     """Assign effective (lane, pos, key) to every entry in path_entry.blocks
     in a single pass over ALL entry types (BlockEntry, SplitEntry, JoinEntry).
 
     Returns a dict keyed by id(entry) → (lane, pos, key).  Using one shared
     counter for both blocks and structural entries ensures that the placement
     loop and _emit_splits always agree on which slot each entry occupies.
+
+    Two entries resolving to ONE key is refused (hgc-x9g): the bNN key is the
+    grid coordinate, and the device's instance id derives from it, so a
+    duplicate is a slot two blocks cannot share — the writes collapsed onto one
+    key and the loser vanished from the preset without a word.
     """
     next_pos = {0: 1, 1: 1}
     eff: dict[int, tuple[int, int, str]] = {}
+    claimed: dict[str, Any] = {}
     for e in path_entry.blocks:
         lane = getattr(e, "lane", 0)
         pos = e.pos if e.pos is not None else next_pos[lane]
         next_pos[lane] = max(next_pos[lane], pos + 1)
-        eff[id(e)] = (lane, pos, f"b{14 * lane + pos:02d}")
+        key = f"b{14 * lane + pos:02d}"
+        if key in claimed:
+            where = "" if path_index is None else f"path {path_index} "
+            raise GenerateError(
+                f"{where}lane {lane} pos {pos} ({key}) is claimed by two "
+                f"entries: {_entry_label(claimed[key])} and {_entry_label(e)}. "
+                f'One grid slot holds one block — give them distinct "pos" '
+                f"values (or drop \"pos\" to place them in list order)."
+            )
+        claimed[key] = e
+        eff[id(e)] = (lane, pos, key)
     return eff
 
 

@@ -330,7 +330,7 @@ def apply_recipe(
                 f"Chassis flow path {path_index} is not an object; cannot place blocks."
             )
         path_entry = spec.paths[path_index]
-        eff = _assign_positions(path_entry)
+        eff = _assign_positions(path_entry, path_index)
         block_entries = [e for e in path_entry.blocks if isinstance(e, BlockEntry)]
         # Per-lane capacity guard: a lane has only 12 user-block slots
         # (b01..b12); a 13th block would otherwise silently overwrite the
