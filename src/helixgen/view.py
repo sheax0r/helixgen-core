@@ -940,14 +940,19 @@ def _reconstruct_path_blocks(path_dict, library, irs):
         return [k for k in lane1 if lo <= int(k[1:]) <= hi]
 
     out = []
+    # A lane-1 key belongs to the FIRST split whose branch span covers it. Two
+    # pairs' spans CAN overlap — `untranscode._endpoint_pointers` aims an empty
+    # pair's pointers at the whole lane-1 row — and a key emitted under both
+    # projects one block as two entries sharing one coordinate (hgc-x9g).
+    claimed: set[str] = set()
     for k in lane0:
         bnn = path_dict[k]
         out.append(_entry_for(k, bnn, library, irs))
         if bnn.get("type") == "split":
             for bk in branch_span(bnn):
-                out.append(_entry_for(bk, path_dict[bk], library, irs))
-    claimed = {e_key for k in lane0 if path_dict[k].get("type") == "split"
-               for e_key in branch_span(path_dict[k])}
+                if bk not in claimed:
+                    claimed.add(bk)
+                    out.append(_entry_for(bk, path_dict[bk], library, irs))
     for bk in lane1:
         if bk not in claimed:
             out.append(_entry_for(bk, path_dict[bk], library, irs))

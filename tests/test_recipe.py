@@ -66,22 +66,49 @@ def test_generate_from_recipe_returns_hsp_bytes(tmp_path):
     assert out[:8] == HSP_MAGIC
 
 
-def test_recipe_lane_over_capacity_raises(tmp_path):
-    # A lane has only 12 user-block slots (b01..b12). A 13th block on one lane
-    # must raise, not silently overwrite the endpoint slot (b13) — the same
-    # guard the legacy `_compose_preset_hsp` enforced.
+@pytest.mark.parametrize("blocks", [
+    # a 13th block on one lane
+    [{"block": "Scream 808"} for _ in range(13)],
+    # a full lane PLUS a split/join pair — the old count-of-blocks guard let
+    # this through and the scaffolds landed on b13/b14 (hgc-x9g)
+    [{"block": "Scream 808"} for _ in range(12)]
+    + [{"split": {"type": "y"}}, {"join": {}}],
+])
+def test_recipe_lane_over_capacity_raises(tmp_path, blocks):
+    # A lane has only 12 user-block slots (b01..b12). A 13th entry must raise,
+    # not silently overwrite the endpoint slot (b13).
     from helixgen.generate import GenerateError
     from helixgen.recipe import apply_recipe
 
     library = harness.build_corpus_library(tmp_path)
     chassis = _corpus_chassis()
-    recipe = {
-        "name": "Overfull",
-        "paths": [{"blocks": [{"block": "Scream 808"} for _ in range(13)]}],
-    }
+    recipe = {"name": "Overfull", "paths": [{"blocks": blocks}]}
 
     with pytest.raises(GenerateError, match="12 user slots"):
         apply_recipe(recipe, library, chassis=chassis)
+
+
+@pytest.mark.parametrize("pos,lane,key", [
+    (0, 0, "b00"),    # the path's input endpoint
+    (13, 0, "b13"),   # the path's output endpoint
+    (0, 1, "b14"),    # the row-1 input endpoint
+    (99, 0, "b99"),   # no such grid slot at all
+])
+def test_recipe_block_on_a_non_user_slot_raises(tmp_path, pos, lane, key):
+    # hgc-x9g: an explicit `pos` walked past the count-based capacity guard and
+    # overwrote the endpoint — `generate` exited 0 having replaced the path's
+    # input block with a drive, which `view` then reported as no block at all.
+    from helixgen.generate import GenerateError
+    from helixgen.recipe import apply_recipe
+
+    library = harness.build_corpus_library(tmp_path)
+    chassis = _corpus_chassis()
+    recipe = {"name": "OffGrid", "paths": [
+        {"blocks": [{"block": "Scream 808", "lane": lane, "pos": pos}]}]}
+
+    with pytest.raises(GenerateError) as e:
+        apply_recipe(recipe, library, chassis=chassis)
+    assert f"Scream 808 resolves to lane {lane} pos {pos} ({key})" in str(e.value)
 
 
 @pytest.mark.parametrize("blocks", [

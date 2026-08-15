@@ -34,6 +34,8 @@ from helixgen.spec import BlockEntry, JoinEntry, SplitEntry, StructuralEntry, Sp
 
 _HASH_RE = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 
+MAX_LANE_SLOTS = 12  # user-block slots per lane: b01..b12 (lane 0), b15..b26 (lane 1)
+
 
 def _resolve_irhash(block_default: str | None, spec_ir: str | None, irs: "IrMapping") -> str:
     """Decide which irhash to emit on an IR slot.
@@ -842,10 +844,15 @@ def _build_snapshot_metadata(spec: Spec) -> list[dict[str, Any]]:
 
 
 def _entry_label(entry) -> str:
-    """Name an entry for an error message (block display name, split/join
-    model, or `structural` for a verbatim slot)."""
-    return getattr(entry, "block", None) or getattr(entry, "model", None) \
-        or "a structural entry"
+    """Name an entry for an error message: the block's display name, a
+    split/join model, or — for a verbatim structural slot — the model it
+    carries, since that is all the author has to recognize it by."""
+    name = getattr(entry, "block", None) or getattr(entry, "model", None)
+    if name:
+        return name
+    raw = getattr(entry, "raw", None) or {}
+    model = ((raw.get("slot") or [{}])[0] or {}).get("model")
+    return f"structural {model}" if model else "a structural entry"
 
 
 def _assign_positions(path_entry, path_index: int | None = None) -> dict:
@@ -856,10 +863,14 @@ def _assign_positions(path_entry, path_index: int | None = None) -> dict:
     counter for both blocks and structural entries ensures that the placement
     loop and _emit_splits always agree on which slot each entry occupies.
 
-    Two entries resolving to ONE key is refused (hgc-x9g): the bNN key is the
-    grid coordinate, and the device's instance id derives from it, so a
-    duplicate is a slot two blocks cannot share — the writes collapsed onto one
-    key and the loser vanished from the preset without a word.
+    Every entry must land on a REAL, UNCLAIMED user slot (hgc-x9g). The bNN key
+    is the grid coordinate and the device's instance id derives from it, so a
+    key written twice — or written onto a slot that is not a user slot — is not
+    a layout the device can hold. Both used to be silent data loss: the second
+    write to one key made the first entry vanish from the preset, and a `pos` of
+    0 or 13 overwrote the path's own input/output endpoint. A StructuralEntry is
+    exempt from the range check — verbatim endpoints ARE pos 0 / 13, and
+    `_emit_structural` re-emits them at exactly that key.
     """
     next_pos = {0: 1, 1: 1}
     eff: dict[int, tuple[int, int, str]] = {}
@@ -869,8 +880,15 @@ def _assign_positions(path_entry, path_index: int | None = None) -> dict:
         pos = e.pos if e.pos is not None else next_pos[lane]
         next_pos[lane] = max(next_pos[lane], pos + 1)
         key = f"b{14 * lane + pos:02d}"
+        where = "" if path_index is None else f"path {path_index} "
+        if not isinstance(e, StructuralEntry) and not 1 <= pos <= MAX_LANE_SLOTS:
+            raise GenerateError(
+                f"{where}{_entry_label(e)} resolves to lane {lane} pos {pos} "
+                f"({key}), which is not a user slot: a lane has only "
+                f"{MAX_LANE_SLOTS} user slots, at pos 1..{MAX_LANE_SLOTS} "
+                f"(pos 0 and 13 are the path's own input/output endpoints)."
+            )
         if key in claimed:
-            where = "" if path_index is None else f"path {path_index} "
             raise GenerateError(
                 f"{where}lane {lane} pos {pos} ({key}) is claimed by two "
                 f"entries: {_entry_label(claimed[key])} and {_entry_label(e)}. "

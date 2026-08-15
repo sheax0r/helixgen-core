@@ -765,6 +765,11 @@ def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
     position. A scaffold recorded in ROW 1 is refused too: the coords placement
     can only put a split/join in row 0, so its recorded slot and the slot it
     would land on disagree, and the collision set could not be trusted.
+
+    Two MODELED blocks colliding no longer reaches that fallback: the caller's
+    :func:`_claim_coord` refuses the pair outright (hgc-x9g), because the
+    instance-id map is keyed by the same coordinate and packing them onto
+    separate grid slots left both bound to one ``eID_``.
     """
     gps: List[int] = []
     for spec in modeled:

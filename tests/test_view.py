@@ -203,3 +203,32 @@ def test_view_does_not_create_any_file(hsp_library, tmp_path):
     view(body, lib)
     after = set(os.listdir(tmp_path))
     assert before == after
+
+
+def test_view_lists_a_shared_branch_block_once(hsp_library, tmp_path):
+    # hgc-x9g: a lane-1 key was emitted under EVERY split whose branch span
+    # covers it. Two pairs' spans can overlap — `untranscode._endpoint_pointers`
+    # aims an EMPTY pair's pointers at the whole lane-1 row — and the block then
+    # projected as two entries sharing one (lane, pos), which `generate` refuses.
+    lib = hsp_library
+    spec = parse_spec({"name": "TwoSplits", "paths": [{"blocks": [
+        {"block": "Tube Drive"},
+        {"split": {"type": "y"}},
+        {"block": "Brit Amp", "lane": 1},
+        {"join": {}},
+        {"block": "Tube Drive"},
+        {"split": {"type": "y"}},   # a pair bracketing no lane-1 block
+        {"join": {}},
+    ]}]})
+    p1 = compose_preset(spec, lib, source="t")
+    flow0 = p1["preset"]["flow"][0]
+    # What the reverse transcoder writes for a pair that brackets nothing:
+    # both branch pointers aimed at the lane-1 row.
+    flow0["b05"]["branch"] = flow0["b06"]["branch"] = "b15"
+    body = _write_and_read(tmp_path, p1)
+
+    d = view(body, lib)
+    lane1 = [b for b in d["paths"][0]["blocks"] if b.get("lane") == 1]
+    assert len(lane1) == 1, lane1
+    # ... and the projection still regenerates.
+    compose_preset(parse_spec(d), lib, source="t")
