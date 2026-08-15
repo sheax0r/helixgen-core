@@ -673,7 +673,8 @@ def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str,
     if positions and positions[-1] > _MAX_LANE_SLOTS:
         raise MutateError(
             f"Lane {lane} would have {len(ordered)} blocks; only "
-            f"{_MAX_LANE_SLOTS} user slots (b01..b{_MAX_LANE_SLOTS:02d}) available."
+            f"{_MAX_LANE_SLOTS} user slots "
+            f"(b{14 * lane + 1:02d}..b{14 * lane + _MAX_LANE_SLOTS:02d}) available."
         )
     for k in _bnn_keys(path_dict):
         if _lane_pos(k)[0] == lane:

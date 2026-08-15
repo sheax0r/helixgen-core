@@ -46,7 +46,6 @@ from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.spec import BlockEntry, InputSpec, Spec, parse_spec
 
 
-
 def _effective_input(path_entry, path_index: int) -> tuple[str, InputSpec | None]:
     """(effective mode, InputSpec-or-None) for a path's `input` field."""
     inp = path_entry.input

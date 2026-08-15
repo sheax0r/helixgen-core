@@ -851,7 +851,9 @@ def _entry_label(entry) -> str:
     if name:
         return name
     raw = getattr(entry, "raw", None) or {}
-    model = ((raw.get("slot") or [{}])[0] or {}).get("model")
+    slot = raw.get("slot")
+    first = slot[0] if isinstance(slot, list) and slot else None
+    model = first.get("model") if isinstance(first, dict) else None
     return f"structural {model}" if model else "a structural entry"
 
 
