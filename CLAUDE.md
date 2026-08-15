@@ -95,9 +95,9 @@ Read `.hsp` back into recipe shape (inspection or hand-authoring similar preset)
       "blocks": [
         {"block": "Compulsive Drive", "params": {"Gain": 0.45, "Tone": 0.55}},
         {"block": "Brit Plexi Brt",   "params": {"Drive": 0.7, "Master": 0.5}},
-        {"block": "Mic Ir_4x12 Greenback 25 With Pan"},
-        {"block": "Tape Echo Stereo", "params": {"Mix": 0.18}},
-        {"block": "Plate Stereo",     "params": {"Mix": 0.12}}
+        {"block": "4x12 Greenback 25"},
+        {"block": "Tape Echo", "params": {"Mix": 0.18}},
+        {"block": "Plate",     "params": {"Mix": 0.12}}
       ]
     }
   ]
@@ -105,7 +105,7 @@ Read `.hsp` back into recipe shape (inspection or hand-authoring similar preset)
 ```
 
 - `paths` = 1–2 entries (each maps to one DSP).
-- `block` matches display_name from `list-blocks` — case-sensitive. Ambiguous: use model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
+- `block` = display_name from `list-blocks` (case-sensitive) **or** the model_id written plainly (`"HD2_AmpBritPlexiBrt"` — no brackets); both work everywhere a block is named, placement and every snapshot/footswitch/expression/MIDI reference. Display names are the EDITOR's own and unique per library, resolved at read time from the vendored `model_names` table so an existing library self-corrects on upgrade (hgc-3ll) — they are no longer the device's short `@name`, which truncated (`ressor LAStudio Comp Mono`) and collided (`Stereo` named six models). **model_id is the stable handle**: prefer it when scripting. Same-name models are split deterministically (`Woody Blue` / `Woody Blue (Preamp)`, `Ping Pong` / `Ping Pong (Legacy)`); a pre-fix library's old name survives as a **legacy alias**, so old recipes still resolve.
 - `params` values are in each param's OWN units — many knobs are 0.0–1.0, but plenty are dB, Hz, seconds, or enum ints, and the same name (`Level`) is 0..1 on one block and dB on the next. **Never assume; read the range + unit `show-block` prints** (hgc-285).
 
 **Exhaustive per-field reference — every optional section, full schema, defaults, ranges, examples — lives in [`docs/recipe-reference.md`](docs/recipe-reference.md).** Optional sections by name: per-path `input` (jack routing + Input-block params) + `output` (level/pan); `split`/`join` in `blocks` (parallel splits + merge-mixer wire params); top-level `snapshots` (≤8 named scenes: per-scene `disable` + `params` deltas + per-snapshot `output` level/pan), `footswitches` (FS1–FS5/FS7–FS11/EXP1Toe; FS6/FS12 reserved), `expression` (EXP1/EXP2 sweeps), `midi` (EXPERIMENTAL #33), `commands` (Command Center; EXPERIMENTAL #16); per-block `ir` (registered user IR by wav basename or 32-hex hash), `trails`, `raw` (verbatim unmodeled state — emitted by `view`, consumed by `generate`; editing existing `.hsp` never needs it). All recipe fields **Stadium-only** unless reference notes otherwise (legacy `.hlx` chassis ignores them).
@@ -158,8 +158,8 @@ Verbs — full signatures + per-flag detail in [`docs/CLI.md`](docs/CLI.md) "Com
 Multi-edit session: **`helixgen patch <preset.hsp> <ops.json|->`** applies JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`) in one atomic invocation — invalid op anywhere leaves `.hsp` untouched. Op fields mirror single-op verbs' flags. Agent edit loop = single `patch` call on file — no decompile/regenerate round-trip:
 
 ```bash
-echo '[{"op": "set_param", "block": "Tape Echo Stereo", "param": "Mix", "value": 0.3},
-       {"op": "set_enabled", "block": "Plate Stereo", "enabled": false}]' \
+echo '[{"op": "set_param", "block": "Tape Echo", "param": "Mix", "value": 0.3},
+       {"op": "set_enabled", "block": "Plate", "enabled": false}]' \
   | helixgen patch MyTone.hsp -
 ```
 

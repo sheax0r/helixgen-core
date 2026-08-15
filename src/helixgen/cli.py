@@ -205,9 +205,11 @@ def generate_cmd(
     wav basename or 32-hex hash) and "trails". Full field reference:
     docs/recipe-reference.md.
 
-    "block" matches a display_name from `list-blocks` (case-sensitive; use
-    the model_id if ambiguous). On an `Unknown param(s)` error, run
-    `show-block "<block>"` and correct the recipe -- don't guess.
+    "block" matches a display_name from `list-blocks` (case-sensitive) OR a
+    model_id -- everywhere a block is named, including "snapshots",
+    "footswitches", "expression" and "midi" targets. The model_id is the
+    stable handle and is always unambiguous. On an `Unknown param(s)` error,
+    run `show-block "<block>"` and correct the recipe -- don't guess.
 
     Output modes:
 
@@ -739,11 +741,16 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
 def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | None) -> None:
     """List blocks in the library, grouped by category.
 
-    Each line is `<display_name>  [<model_id>]`. Use the display name (or the
-    model_id, if the name is ambiguous) as the `block` value in recipes and
-    edit verbs, then run `show-block` for its exact param names, ranges and
-    UNITS before writing params — two blocks in the same category can spell
-    "channel volume" as a 0..1 knob and as a dB range.
+    Each line is `<display_name>  [<model_id>]`. Either one works as the
+    `block` value in recipes and edit verbs. Display names are the editor's
+    own and are UNIQUE for every model the editor names (hgc-3ll) — they are
+    no longer the device's short `@name`, which truncated and collided — but
+    the model_id is the stable handle: it never changes and never needs
+    disambiguating, so prefer it when you already have it. A block whose old
+    name changed still answers to it (legacy alias). Then run `show-block` for
+    the exact param names, ranges and UNITS before writing params — two blocks
+    in the same category can spell "channel volume" as a 0..1 knob and as a dB
+    range.
     """
     library = _resolved_library(library_path)
     blocks = library.list_blocks(category=category)

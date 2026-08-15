@@ -7,7 +7,7 @@
       "blocks": [
         { "block": "Scream 808" },
         { "block": "Brit 2204 Custom", "params": { "Drive": 0.55 } },
-        { "block": "With Pan" }
+        { "block": "IR" }
       ]
     },
     {

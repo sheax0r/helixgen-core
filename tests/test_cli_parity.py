@@ -54,13 +54,17 @@ def _full_help(cmd) -> str:
 #  the verb's --help). Phrases are checked against the RAW help string (not
 #  the wrapped render), so multi-word phrases are safe.
 PARITY: list[tuple[str, list[str], list[str]]] = [
-    ("list_blocks", ["list-blocks"], ["show-block", "amp"]),
+    # hgc-3ll: display names are the editor's own and UNIQUE within a library;
+    # the model_id is the stable handle. Both facts are the contract.
+    ("list_blocks", ["list-blocks"],
+     ["show-block", "amp", "model_id", "UNIQUE", "stable handle"]),
     # hgc-285: real ranges + units are the contract now, not a degenerate
     # `observed=[v, v]`. The dB-vs-0..1 warning must stay in --help.
     ("show_block", ["show-block"],
      ["case-sensitive", "before", "UNIT", "dB", "sighted", "DEVICE default"]),
     ("generate_preset", ["generate"],
-     ["Unknown param(s)", "show-block", "source of truth", "recipe-reference"]),
+     ["Unknown param(s)", "show-block", "source of truth", "recipe-reference",
+      "model_id", "stable handle"]),
     ("list_irs", ["list-irs"],
      ["stock cab", "basename", "mapping.json", "one-time bridged"]),
     ("compute_irhash", ["irhash"], ["48 kHz", "left channel", "libsndfile"]),

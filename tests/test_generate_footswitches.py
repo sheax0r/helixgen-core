@@ -19,7 +19,7 @@ def _dup_ir_lib(tmp_path, sample_serial_preset_hsp):
     lib = Library(root=tmp_path / "lib")
     ingest_path(chassis, lib)
     lib.save_block(Block(model_id="HX2_ImpulseResponseWithPan", category="cab",
-        display_name="With Pan", params={"Mix": {"type": "float"}},
+        display_name="IR", params={"Mix": {"type": "float"}},
         exemplar={"@model": "HX2_ImpulseResponseWithPan", "@type": "cab", "@enabled": True, "Mix": 1.0},
         first_seen={"preset": "_", "firmware": "_", "date": "x"}, default_irhash="a"*32))
     return lib
@@ -28,9 +28,9 @@ def _dup_ir_lib(tmp_path, sample_serial_preset_hsp):
 def test_footswitch_targets_duplicate_block_by_coordinate(tmp_path, sample_serial_preset_hsp):
     lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
     spec = parse_spec({"name": "n", "paths": [{"blocks": [
-        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1},
-        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 2}]}],
-        "footswitches": [{"switch": "FS1", "block": "With Pan", "pos": 2}]})
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1},
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 2}]}],
+        "footswitches": [{"switch": "FS1", "block": "IR", "pos": 2}]})
     preset = compose_preset(spec, lib, source="t")
     # the FS controller must be attached to the pos-2 slot (b02), not b01
     assert "controller" in preset["preset"]["flow"][0]["b02"]["@enabled"]
@@ -42,8 +42,8 @@ def test_wah_bypass_on_exp1_toe_switch(tmp_path, sample_serial_preset_hsp):
     controller with the toe source (0x01010500) — the real wah auto-engage."""
     lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
     spec = parse_spec({"name": "n", "paths": [{"blocks": [
-        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1}]}],
-        "footswitches": [{"switch": "EXP1Toe", "block": "With Pan"}]})
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "footswitches": [{"switch": "EXP1Toe", "block": "IR"}]})
     preset = compose_preset(spec, lib, source="t")
     ctrl = preset["preset"]["flow"][0]["b01"]["@enabled"]["controller"]
     assert ctrl["source"] == 0x01010500
@@ -62,8 +62,8 @@ def test_fs11_wires_targetbypass_on_correct_source(tmp_path, sample_serial_prese
     """FS11 (the real 5th bottom-row switch) wires a targetbypass on 0x0101010a."""
     lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
     spec = parse_spec({"name": "n", "paths": [{"blocks": [
-        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1}]}],
-        "footswitches": [{"switch": "FS11", "block": "With Pan"}]})
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "footswitches": [{"switch": "FS11", "block": "IR"}]})
     preset = compose_preset(spec, lib, source="t")
     ctrl = preset["preset"]["flow"][0]["b01"]["@enabled"]["controller"]
     assert ctrl["source"] == 0x0101010a
@@ -77,8 +77,8 @@ def test_fs6_authoring_raises_mode_error(tmp_path, sample_serial_preset_hsp):
     from helixgen.mutate import MutateError
     lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
     spec = parse_spec({"name": "n", "paths": [{"blocks": [
-        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1}]}],
-        "footswitches": [{"switch": "FS6", "block": "With Pan"}]})
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "footswitches": [{"switch": "FS6", "block": "IR"}]})
     with pytest.raises((ControllerError, MutateError)) as exc_info:
         compose_preset(spec, lib, source="t")
     msg = str(exc_info.value)

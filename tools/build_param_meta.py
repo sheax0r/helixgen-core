@@ -9,7 +9,9 @@ app at runtime.
 Where ``_defs_data.json`` carries each param's numeric id, type and RAW range
 (``{id,type,min,max,def}``), this asset carries what that raw range MEANS —
 the display name, the unit, the raw->display scale, and, for discrete params,
-the enum labels. Two app resources supply it:
+the enum labels. It also carries the editor's own display name for each MODEL
+(``model_names``), which is the only authoritative source for what a block is
+called (see :func:`build_model_names`). Two app resources supply it:
 
 - ``P35ModelUIDefs.json`` — per model, an ordered ``params`` list whose ``id``
   is the ``.hsp``-compatible param key (``LowCut``) and whose ``name`` is the
@@ -187,6 +189,128 @@ def build_models(uidefs: dict, controls: dict[str, dict]) -> dict[str, dict]:
     return out
 
 
+# --- model display names (hgc-3ll) -----------------------------------------
+#
+# A model's UIDefs entry carries the editor's own `name` ("LA Studio Comp").
+# That name alone is NOT a usable handle, for two reasons this builder fixes so
+# the runtime lookup stays a dumb dict get:
+#
+# 1. It omits the channel: a mono model names its stereo twin in `stereo_model`
+#    and the twin gets NO entry of its own, so both would read "LA Studio
+#    Comp". A model with a twin therefore gets " Mono" / " Stereo" appended.
+#    A model whose id merely ENDS in Mono/Stereo with no twin (`HD2_ReturnMono1`
+#    = "Return 1") is not a variant of anything and keeps its bare name.
+# 2. Genuinely different models share a name: every `HD2_Preamp*` shares its
+#    `HD2_Amp*` sibling's name, and the `Agoura_Amp*` reissues share both.
+#    The plain amp keeps the bare name (it is the one recipes already spell);
+#    the others are qualified " (Preamp)" / " (Agoura)".
+#
+# The emitted table is asserted unique, so a display name resolves to exactly
+# one model and can be used as an unambiguous handle.
+
+# The channel word sits at the end of the id, but a version bump (`...MonoV2`)
+# or a codename tail (`...Stereo_Victoria`) can follow it.
+_CHANNEL_RE = re.compile(r"(Mono|Stereo)(\d*)(?=(?:V\d+|_[A-Za-z0-9]+)?$)")
+
+# Namespaces that are the primary home of a model; anything else (Agoura_, …)
+# is a reissue and loses the bare name in a collision.
+_PRIMARY_NAMESPACES = frozenset({"HD2", "HX2", "VIC", "P35", "L6SPB"})
+
+# Line 6's legacy stompbox modelers, which the editor files under "Legacy".
+# They share names with the modern models they predate (DL4 "Ping Pong" vs
+# Delay "Ping Pong"); the modern one keeps the bare name.
+_LEGACY_FAMILIES = ("DL4", "DM4", "FM4", "MM4")
+
+# Signal-flow endpoints and split nodes, not blocks: `ingest` never catalogs
+# them (see DSP_INFRASTRUCTURE_KEYS) and their names collide with the real
+# Send/Return blocks, so they stay out of the table entirely.
+_NON_BLOCK_PREFIXES = ("C63_", "P35_Input", "P35_Output", "P35_AppDSP")
+
+
+def _base_key(model_str: str) -> str:
+    """Model key with the channel word removed (the model's identity)."""
+    return _CHANNEL_RE.sub("", model_str)
+
+
+def _is_legacy(base_key: str) -> bool:
+    """True for a legacy stompbox model (``HD2_DL4PingPong``)."""
+    _, _, rest = base_key.partition("_")
+    return rest.startswith(_LEGACY_FAMILIES)
+
+
+def _rank(base_key: str) -> tuple:
+    """Sort key: the smallest base key in a collision keeps the bare name."""
+    namespace, _, rest = base_key.partition("_")
+    return (
+        rest.startswith("Preamp"),
+        _is_legacy(base_key),
+        namespace not in _PRIMARY_NAMESPACES,
+        base_key,
+    )
+
+
+def _qualifier(base_key: str) -> str:
+    """Deterministic fragment distinguishing a base key that lost the bare name."""
+    namespace, _, rest = base_key.partition("_")
+    if not rest:
+        return base_key
+    if rest.startswith("Preamp"):
+        return "Preamp"
+    if _is_legacy(base_key):
+        return "Legacy"
+    if namespace in _PRIMARY_NAMESPACES:
+        return base_key
+    return namespace
+
+
+def build_model_names(uidefs: dict) -> dict[str, str]:
+    """``{model_str: display_name}``, unique, covering stereo twins."""
+    raw: dict[str, str] = {}
+    for model_str, mdef in uidefs.items():
+        if not isinstance(mdef, dict) or not model_str:
+            continue
+        if model_str.startswith(_NON_BLOCK_PREFIXES):
+            continue
+        name = mdef.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        raw[model_str] = name
+        twin = mdef.get("stereo_model")
+        if isinstance(twin, str) and twin and twin not in uidefs:
+            raw[twin] = name
+
+    by_name: dict[str, dict[str, list[str]]] = {}
+    for model_str, name in raw.items():
+        by_name.setdefault(name, {}).setdefault(_base_key(model_str), []).append(model_str)
+
+    out: dict[str, str] = {}
+    for name, by_base in by_name.items():
+        ranked = sorted(by_base, key=_rank)
+        for position, base in enumerate(ranked):
+            qualified = name if position == 0 else f"{name} ({_qualifier(base)})"
+            variants = sorted(by_base[base])
+            for model_str in variants:
+                channel = _CHANNEL_RE.search(model_str)
+                if len(variants) > 1 and channel:
+                    suffix = " " + channel.group(1)
+                    if channel.group(2):
+                        suffix += " " + channel.group(2)
+                    out[model_str] = qualified + suffix
+                else:
+                    out[model_str] = qualified
+
+    clashes: dict[str, list[str]] = {}
+    for model_str, name in out.items():
+        clashes.setdefault(name, []).append(model_str)
+    for name, models in sorted(clashes.items()):
+        if len(models) > 1:
+            raise SystemExit(
+                f"error: display name {name!r} is not unique — {sorted(models)}. "
+                f"Extend _qualifier()/_rank() to separate them."
+            )
+    return out
+
+
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
@@ -232,6 +356,7 @@ def build(resources: Path) -> dict:
         },
         "controls": controls,
         "models": models,
+        "model_names": build_model_names(uidefs),
     }
 
 
@@ -255,7 +380,8 @@ def main(argv: list[str]) -> int:
     print(
         f"wrote {OUT_PATH.relative_to(REPO_ROOT)}: "
         f"{len(data['models'])} models, {n_params} params, "
-        f"{len(data['controls'])} control types "
+        f"{len(data['controls'])} control types, "
+        f"{len(data['model_names'])} model names "
         f"(app {data['source']['app_version']})"
     )
     return 0

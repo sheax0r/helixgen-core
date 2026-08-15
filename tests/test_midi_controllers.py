@@ -82,8 +82,8 @@ def test_view_round_trips_midi(tmp_path):
 # synthetic and don't resolve in the device modelmap).
 
 def _real_library(tmp_path):
-    """Library of 3 device-resolvable blocks: Minotaur (drive), Brit Plexi Nrm
-    (amp), DL4 Digital (delay). Param names match the device defs so the
+    """Library of 3 device-resolvable blocks: Minotaur Mono (drive), Brit Plexi Nrm
+    (amp), Digital (delay). Param names match the device defs so the
     bridge's name map is identity."""
     import copy as _copy
     from helixgen.chassis import extract_chassis_from_hsp
@@ -93,11 +93,11 @@ def _real_library(tmp_path):
         _copy.deepcopy(harness._CHASSIS_PAYLOAD)))
     src = {"preset": "midi-test", "firmware": "test", "date": "2026-07-14"}
     for mid, cat, name, params in [
-        ("HD2_DistMinotaurMono", "drive", "Minotaur",
+        ("HD2_DistMinotaurMono", "drive", "Minotaur Mono",
          {"Gain": 0.5, "Level": 0.5, "Tone": 0.5}),
         ("HD2_AmpBritPlexiNrm", "amp", "Brit Plexi Nrm",
          {"Bass": 0.5, "Drive": 0.5, "Mid": 0.5, "Treble": 0.5}),
-        ("HD2_DL4DigDelay", "delay", "DL4 Digital",
+        ("HD2_DL4DigDelay", "delay", "Digital",
          {"Feedback": 0.4, "Level": 0.5, "Mix": 0.3}),
     ]:
         lib.save_block(Block(
@@ -111,16 +111,16 @@ def _real_library(tmp_path):
 
 
 def _author3(tmp_path, midi):
-    """Three-block chain of real device models: Minotaur (pos1) /
-    Brit Plexi Nrm (pos2) / DL4 Digital (pos3)."""
+    """Three-block chain of real device models: Minotaur Mono (pos1) /
+    Brit Plexi Nrm (pos2) / Digital (pos3)."""
     from helixgen.recipe import apply_recipe
     library = _real_library(tmp_path)
     recipe = {
         "name": "midi edit",
         "paths": [{"blocks": [
-            {"block": "Minotaur", "params": {"Gain": 0.3}},
+            {"block": "Minotaur Mono", "params": {"Gain": 0.3}},
             {"block": "Brit Plexi Nrm", "params": {"Drive": 0.6}},
-            {"block": "DL4 Digital", "params": {"Mix": 0.3}},
+            {"block": "Digital", "params": {"Mix": 0.3}},
         ]}],
         "midi": midi,
     }
@@ -145,9 +145,9 @@ def test_remove_block_before_midi_target_shifts_pos(tmp_path):
     from helixgen import mutate
     from helixgen.device import defs
     body, library = _author3(tmp_path, [
-        {"cc": 20, "targets": [{"block": "DL4 Digital", "param": "Mix"}]},
+        {"cc": 20, "targets": [{"block": "Digital", "param": "Mix"}]},
     ])
-    mutate.remove_block(body, "Minotaur", library)
+    mutate.remove_block(body, "Minotaur Mono", library)
     rec = body["preset"]["_helixgen_midi"][0]
     assert rec["pos"] == 2  # delay moved b03 -> b02
     # the transcoded ctrl still targets the DELAY's Mix, not whatever now
@@ -165,9 +165,9 @@ def test_add_block_before_midi_target_shifts_pos(tmp_path):
     from helixgen.device import defs
     body, library = _author3(tmp_path, [
         {"cc": 21, "targets": [{"block": "Brit Plexi Nrm", "param": "Drive"}]},
-        {"cc": 22, "targets": [{"block": "DL4 Digital", "bypass": True}]},
+        {"cc": 22, "targets": [{"block": "Digital", "bypass": True}]},
     ])
-    mutate.add_block(body, "Minotaur", library, after="Minotaur")
+    mutate.add_block(body, "Minotaur Mono", library, after="Minotaur Mono")
     recs = {r["cc"]: r for r in body["preset"]["_helixgen_midi"]}
     assert recs[21]["pos"] == 3  # amp b02 -> b03
     assert recs[22]["pos"] == 4  # delay b03 -> b04
@@ -186,7 +186,7 @@ def test_remove_midi_bound_block_drops_record_with_warning(tmp_path, capsys):
     from helixgen.device import defs
     body, library = _author3(tmp_path, [
         {"cc": 30, "targets": [{"block": "Brit Plexi Nrm", "param": "Drive"}]},
-        {"cc": 31, "targets": [{"block": "DL4 Digital", "bypass": True}]},
+        {"cc": 31, "targets": [{"block": "Digital", "bypass": True}]},
     ])
     mutate.remove_block(body, "Brit Plexi Nrm", library)
     err = capsys.readouterr().err
@@ -202,7 +202,7 @@ def test_remove_midi_bound_block_drops_record_with_warning(tmp_path, capsys):
 
 
 def test_swap_away_midi_bound_param_drops_with_warning(tmp_path):
-    """Swap DL4 Digital (has Bass) for Adriatic (no Bass): the Bass binding is
+    """Swap Digital (has Bass) for Adriatic Delay Mono (no Bass): the Bass binding is
     dropped with a warning; the Mix binding survives with its stored block
     name refreshed AND its transcoded ctrl targeting the NEW model."""
     import copy as _copy
@@ -214,7 +214,7 @@ def test_swap_away_midi_bound_param_drops_with_warning(tmp_path):
     library = _real_library(tmp_path)
     library.save_block(Block(
         model_id="HD2_DelayAdriaticDelayMono", category="delay",
-        display_name="Adriatic",
+        display_name="Adriatic Delay Mono",
         params={k: {"type": "float"} for k in ("Depth", "Feedback", "Level", "Mix")},
         exemplar={"@model": "HD2_DelayAdriaticDelayMono", "@type": "fx",
                   "@enabled": True, "Depth": 0.5, "Feedback": 0.4,
@@ -228,11 +228,11 @@ def test_swap_away_midi_bound_param_drops_with_warning(tmp_path):
         "name": "swap midi",
         "paths": [{"blocks": [
             {"block": "Brit Plexi Nrm"},
-            {"block": "DL4 Digital", "params": {"Mix": 0.3}},
+            {"block": "Digital", "params": {"Mix": 0.3}},
         ]}],
         "midi": [
-            {"cc": 40, "targets": [{"block": "DL4 Digital", "param": "Feedback"}]},
-            {"cc": 41, "targets": [{"block": "DL4 Digital", "param": "Mix"}]},
+            {"cc": 40, "targets": [{"block": "Digital", "param": "Feedback"}]},
+            {"cc": 41, "targets": [{"block": "Digital", "param": "Mix"}]},
         ],
     }, library, chassis=extract_chassis_from_hsp(
         _copy.deepcopy(harness._CHASSIS_PAYLOAD)))
@@ -241,11 +241,11 @@ def test_swap_away_midi_bound_param_drops_with_warning(tmp_path):
     adriatic.params.pop("Feedback")
     library.save_block(adriatic)
     library.rebuild_index()
-    warnings = mutate.swap_model(body, "DL4 Digital", "Adriatic", library)
+    warnings = mutate.swap_model(body, "Digital", "Adriatic Delay Mono", library)
     assert any("MIDI CC 40" in w and "Feedback" in w for w in warnings)
     recs = body["preset"]["_helixgen_midi"]
     assert [r["cc"] for r in recs] == [41]
-    assert recs[0]["block"] == "Adriatic"  # stored name refreshed
+    assert recs[0]["block"] == "Adriatic Delay Mono"  # stored name refreshed
     ctrls = _transcoded_midi_ctrls(body)
     adr = defs.model_id_for("HD2_DelayAdriaticDelayMono")
     _c, trg = ctrls[41]

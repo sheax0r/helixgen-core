@@ -364,7 +364,7 @@ def test_set_enabled_unknown_snapshot_name_raises(snapshots_body, library):
 # --- add_block --------------------------------------------------------------
 
 def test_add_block_appends_new_bnn_with_sequential_position(goldfinger_body, library):
-    key = mutate.add_block(goldfinger_body, "With Pan", library)
+    key = mutate.add_block(goldfinger_body, "IR", library)
 
     assert key == "b06"
     bnn = goldfinger_body["preset"]["flow"][0][key]
@@ -379,13 +379,13 @@ def test_add_block_appends_new_bnn_with_sequential_position(goldfinger_body, lib
 
 
 def test_add_block_applies_params(goldfinger_body, library):
-    key = mutate.add_block(goldfinger_body, "With Pan", library, params={"Mix": 0.5})
+    key = mutate.add_block(goldfinger_body, "IR", library, params={"Mix": 0.5})
     slot = goldfinger_body["preset"]["flow"][0][key]["slot"][0]
     assert slot["params"]["Mix"]["value"] == 0.5
 
 
 def test_add_block_after_inserts_and_renumbers(goldfinger_body, library):
-    key = mutate.add_block(goldfinger_body, "With Pan", library, after="Scream 808")
+    key = mutate.add_block(goldfinger_body, "IR", library, after="Scream 808")
     flow0 = goldfinger_body["preset"]["flow"][0]
 
     assert key == "b02"
@@ -411,7 +411,7 @@ def test_add_block_unknown_model_raises(goldfinger_body, library):
 
 def test_add_block_invalid_path_raises(goldfinger_body, library):
     with pytest.raises(mutate.MutateError):
-        mutate.add_block(goldfinger_body, "With Pan", library, path=5)
+        mutate.add_block(goldfinger_body, "IR", library, path=5)
 
 
 def test_add_block_raises_when_lane_full(library):
@@ -434,12 +434,12 @@ def test_add_block_rejects_parallel_routed_path(split_join_body, library):
     # pointers, and desync lane 1's positions. Not supported yet.
     before = copy.deepcopy(split_join_body)
     with pytest.raises(mutate.MutateError, match="parallel-routed"):
-        mutate.add_block(split_join_body, "With Pan", library)
+        mutate.add_block(split_join_body, "IR", library)
     assert split_join_body == before
 
 
 def test_add_block_round_trips_through_write_and_read_hsp(goldfinger_body, library, tmp_path):
-    mutate.add_block(goldfinger_body, "With Pan", library, after="Scream 808")
+    mutate.add_block(goldfinger_body, "IR", library, after="Scream 808")
     out = tmp_path / "roundtrip_add.hsp"
     write_hsp(out, goldfinger_body)
     reloaded = read_hsp(out)
@@ -488,11 +488,11 @@ def test_remove_block_round_trips_through_write_and_read_hsp(goldfinger_body, li
 # --- swap_model (Task 1f) --------------------------------------------------
 
 def test_swap_model_carries_shared_params_and_warns_on_dropped(goldfinger_body, library):
-    # "4x12 Greenback 25" (Distance/HighCut/LowCut) -> "With Pan"
+    # "4x12 Greenback 25" (Distance/HighCut/LowCut) -> "IR"
     # (HighCut/LowCut/Mix/Pan/Level/Delay/IrData/Polarity): HighCut/LowCut are
     # shared and must carry over; Distance has no home on the target and must
     # be dropped with a warning.
-    warnings = mutate.swap_model(goldfinger_body, "4x12 Greenback 25", "With Pan", library)
+    warnings = mutate.swap_model(goldfinger_body, "4x12 Greenback 25", "IR", library)
 
     slot = goldfinger_body["preset"]["flow"][0]["b03"]["slot"][0]
     assert slot["model"] == "HX2_ImpulseResponseWithPan"
@@ -504,22 +504,22 @@ def test_swap_model_carries_shared_params_and_warns_on_dropped(goldfinger_body, 
 
 def test_swap_model_no_ir_warning_when_target_is_ir_block(goldfinger_body, library):
     # The source block ("4x12 Greenback 25") carries no irhash to begin with,
-    # and the target ("With Pan") IS an IR block, so there's nothing to drop
+    # and the target ("IR") IS an IR block, so there's nothing to drop
     # and no warning about it (default_irhash injection is set_ir's job, not
     # swap_model's).
-    warnings = mutate.swap_model(goldfinger_body, "4x12 Greenback 25", "With Pan", library)
+    warnings = mutate.swap_model(goldfinger_body, "4x12 Greenback 25", "IR", library)
     slot = goldfinger_body["preset"]["flow"][0]["b03"]["slot"][0]
     assert "irhash" not in slot
-    assert not any("IR" in w for w in warnings)
+    assert not any("dropped IR" in w for w in warnings)
 
 
 def test_swap_model_drops_ir_when_target_is_not_ir_block(goldfinger_body, library):
-    # Give the placed "With Pan" an irhash first (as if set_ir had run).
-    mutate.add_block(goldfinger_body, "With Pan", library)
+    # Give the placed "IR" an irhash first (as if set_ir had run).
+    mutate.add_block(goldfinger_body, "IR", library)
     key = "b06"
     goldfinger_body["preset"]["flow"][0][key]["slot"][0]["irhash"] = "ad8182e1ebe9fd95dffde5dd54b6d89c"
 
-    warnings = mutate.swap_model(goldfinger_body, "With Pan", "4x12 Greenback 25", library)
+    warnings = mutate.swap_model(goldfinger_body, "IR", "4x12 Greenback 25", library)
 
     slot = goldfinger_body["preset"]["flow"][0][key]["slot"][0]
     assert slot["model"] == "HD2_Cab4x12Greenback25"
@@ -569,20 +569,20 @@ def irs(tmp_path):
 
 
 def test_set_ir_by_basename(ir_block_body, library, irs):
-    mutate.set_ir(ir_block_body, "With Pan", "West.wav", library, irs)
+    mutate.set_ir(ir_block_body, "IR", "West.wav", library, irs)
     slot = ir_block_body["preset"]["flow"][0]["b02"]["slot"][0]
     assert slot["irhash"] == "1234567890abcdef1234567890abcdef"
 
 
 def test_set_ir_by_hash(ir_block_body, library, irs):
-    mutate.set_ir(ir_block_body, "With Pan", "1234567890abcdef1234567890abcdef", library, irs)
+    mutate.set_ir(ir_block_body, "IR", "1234567890abcdef1234567890abcdef", library, irs)
     slot = ir_block_body["preset"]["flow"][0]["b02"]["slot"][0]
     assert slot["irhash"] == "1234567890abcdef1234567890abcdef"
 
 
 def test_set_ir_unknown_basename_raises(ir_block_body, library, irs):
     with pytest.raises(mutate.MutateError):
-        mutate.set_ir(ir_block_body, "With Pan", "Nope.wav", library, irs)
+        mutate.set_ir(ir_block_body, "IR", "Nope.wav", library, irs)
 
 
 def test_set_ir_non_ir_block_raises(goldfinger_body, library, irs):

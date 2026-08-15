@@ -9,7 +9,9 @@ value 5 MEANS — already ships in this package, unread, in two vendored assets:
 - ``_defs_data.json`` (``defs.py``) — ``{id, type, min, max, def}`` per param,
   the device's own RAW range and default.
 - ``_param_ui.json`` (``tools/build_param_meta.py``) — what that raw range
-  means: display name, unit, raw->display scale, enum labels.
+  means: display name, unit, raw->display scale, enum labels. Its
+  ``model_names`` table also carries the editor's display name for each MODEL,
+  read by :func:`model_display_name` (hgc-3ll).
 
 This module overlays both onto a library block AT READ TIME. It never rewrites
 the library, and ``ingest`` is unchanged: ``.hsp`` files genuinely carry no
@@ -38,6 +40,7 @@ Pure stdlib, no device connection — this is vendored data, not a wire query.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -86,6 +89,35 @@ def model_candidates(model_id: str) -> tuple[str, ...]:
             numeric.append(mid)
     names = [defs.model_name_for(mid) for mid in numeric]
     return tuple(n for n in names if n)
+
+
+_HAS_CHANNEL_RE = re.compile(r"(?:Mono|Stereo)\d*(?:V\d+|_[A-Za-z0-9]+)?$")
+_TRAILING_CHANNEL_RE = re.compile(r" (?:Mono|Stereo)$")
+
+
+@lru_cache(maxsize=1024)
+def model_display_name(model_id: str) -> Optional[str]:
+    """The editor's own display name for a model id, or ``None`` if unknown.
+
+    Read straight out of the vendored ``model_names`` table, which the build
+    script already made unique (see ``tools/build_param_meta.py``). Resolution
+    walks the same candidate chain as the param lookups, so a helixgen model id
+    the device spells differently still finds its name.
+
+    One correction is applied here rather than at build time: a helixgen model
+    id carrying NO channel word (``HD2_DrvScream808``, which the device spells
+    ``HD2_DistScream808Mono``) must not inherit the device variant's trailing
+    " Mono"/" Stereo" — helixgen models that block once, not as a pair.
+    """
+    names = load_param_ui().get("model_names", {})
+    for candidate in (model_id, *model_candidates(model_id)):
+        name = names.get(candidate)
+        if name is None:
+            continue
+        if not _HAS_CHANNEL_RE.search(model_id):
+            name = _TRAILING_CHANNEL_RE.sub("", name)
+        return name
+    return None
 
 
 def _ui_entry(model_id: str, param_name: str) -> Optional[dict]:

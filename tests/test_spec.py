@@ -305,26 +305,26 @@ def test_join_list_raises_spec_error():
 
 def test_block_entry_parses_no_ir():
     s = parse_spec({"name": "P", "paths": [{"blocks": [
-        {"block": "With Pan", "no_ir": True}]}]})
+        {"block": "IR", "no_ir": True}]}]})
     assert s.paths[0].blocks[0].no_ir is True
 
 
 def test_block_entry_no_ir_defaults_false():
     s = parse_spec({"name": "P", "paths": [{"blocks": [
-        {"block": "With Pan"}]}]})
+        {"block": "IR"}]}]})
     assert s.paths[0].blocks[0].no_ir is False
 
 
 def test_block_entry_no_ir_must_be_bool():
     with pytest.raises(SpecError):
         parse_spec({"name": "P", "paths": [{"blocks": [
-            {"block": "With Pan", "no_ir": "yes"}]}]})
+            {"block": "IR", "no_ir": "yes"}]}]})
 
 
 def test_block_entry_rejects_ir_and_no_ir_together():
     with pytest.raises(SpecError, match="at most one"):
         parse_spec({"name": "P", "paths": [{"blocks": [
-            {"block": "With Pan", "ir": "foo.wav", "no_ir": True}]}]})
+            {"block": "IR", "ir": "foo.wav", "no_ir": True}]}]})
 
 
 # ---------------------------------------------------------------------------

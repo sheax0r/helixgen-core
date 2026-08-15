@@ -276,6 +276,23 @@ def _ref_name(block) -> str:
     return block.display_name or block.model_id
 
 
+def _names_same_block(library: Library, stored: Any, block) -> bool:
+    """True if `stored` is another name for this same block.
+
+    Display names are resolved from the vendored editor table at read time
+    (hgc-3ll), so a sidecar written before that fix names the block by its
+    FORMER name — which the library keeps as a legacy alias. That is a rename,
+    not the stale/hand-edited record the caller is about to warn about, so
+    resolve the name and compare model ids instead of blaming the user.
+    """
+    if not isinstance(stored, str) or not stored:
+        return False
+    try:
+        return library.find_block(stored).model_id == block.model_id
+    except (KeyError, LookupError):
+        return False
+
+
 def _name_index(flow: list, library: Library) -> dict:
     """Build a display-name → list-of-(path_idx, lane, pos) index over all placed blocks."""
     from collections import defaultdict
@@ -702,7 +719,9 @@ def _recover_midi(body: dict, library: Library, idx: dict) -> list[dict[str, Any
             )
             continue
         stored = rec.get("block")
-        if stored not in (blk.display_name, blk.model_id):
+        if stored not in (blk.display_name, blk.model_id) and not _names_same_block(
+            library, stored, blk
+        ):
             print(
                 f"warning: MIDI CC {cc} record names block {stored!r} but "
                 f"(path {pi}, lane {lane}, pos {pos}) holds "

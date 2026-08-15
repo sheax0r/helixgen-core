@@ -137,7 +137,7 @@ def _corpus_blocks() -> list[Block]:
         # IR block — carries a canonical default_irhash so recipes can omit
         # the spec `ir` field entirely (no IrMapping / registered wav needed).
         Block(
-            model_id="HX2_ImpulseResponseWithPan", category="cab", display_name="With Pan",
+            model_id="HX2_ImpulseResponseWithPan", category="cab", display_name="IR",
             params={
                 "HighCut": {"type": "float"}, "LowCut": {"type": "float"},
                 "Mix": {"type": "float"}, "Pan": {"type": "float"},

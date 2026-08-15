@@ -52,7 +52,7 @@ needs **libsndfile** (`brew install libsndfile` / `apt install libsndfile1`).
 helixgen list-blocks --category amp        # browse the block library
 helixgen show-block "Brit Plexi Brt"       # exact param names/ranges
 helixgen generate recipe.json -o tone.hsp  # author a preset from a recipe
-helixgen set-param tone.hsp "Tape Echo Stereo" Mix 0.3   # surgical edit
+helixgen set-param tone.hsp "Tape Echo" Mix 0.3   # surgical edit
 helixgen view tone.hsp                     # read a .hsp back as a recipe
 helixgen device list                       # talk to a Stadium on the LAN
 helixgen device sync my-setlist            # mirror a managed setlist onto it
