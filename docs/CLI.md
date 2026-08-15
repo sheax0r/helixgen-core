@@ -134,7 +134,7 @@ skipped).
 Reference an IR by basename in a spec:
 
 ```json
-{"block": "With Pan",
+{"block": "IR",
  "ir": "YA MRSH 412 T75 Mix 03.wav",
  "params": {"HighCut": 6800, "LowCut": 90, "Mix": 1.0}}
 ```
