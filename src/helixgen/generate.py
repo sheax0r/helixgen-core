@@ -621,6 +621,13 @@ def _resolve_spec_block(
 ) -> tuple[int, int, Block]:
     """Locate a block in the resolved spec chains by display_name or model_id.
 
+    A **legacy alias** resolves too, exactly as it does when the block is
+    placed: a recipe written against a pre-hgc-3ll library names its blocks by
+    the old display names, and it must keep working for the WHOLE recipe, not
+    just the ``paths`` section. Matching only the current display name here let
+    a recipe place ``"ressor LAStudio Comp Mono"`` and then fail on its own
+    snapshot's ``disable`` list for the same block.
+
     When ``lane`` or ``pos`` is given, matches are filtered to only those whose
     corresponding ``BlockEntry`` in ``spec`` carries matching coordinates.  A
     bare name reference resolves only when it uniquely identifies one placed
@@ -631,7 +638,9 @@ def _resolve_spec_block(
         if path is not None and path_idx != path:
             continue
         for chain_idx, (block, _) in enumerate(chain):
-            if block.model_id == name_or_id or block.display_name == name_or_id:
+            if (block.model_id == name_or_id
+                    or block.display_name == name_or_id
+                    or name_or_id in getattr(block, "aliases", ())):
                 matches.append((path_idx, chain_idx, block))
 
     if spec is not None and (lane is not None or pos is not None):
