@@ -151,13 +151,20 @@ def resolve_slot(
     """Resolve a display name (or model_id) to a `(flow_index, bnn_key, slot_index)`
     coordinate in `body`, mirroring `patch.resolve_block`'s disambiguation.
 
-    `name` matches a placed block's `display_name` or `model_id`. `path`/
-    `lane`/`pos` narrow the match when the name is ambiguous. Raises
+    `name` matches a placed block's `display_name`, `model_id`, or a **legacy
+    alias** — a display name superseded by hgc-3ll. A recipe or patch written
+    against a pre-rename library must keep working here too, not just at
+    placement: without aliases a footswitch entry naming `Tape Echo Stereo`
+    failed against a preset whose block is now `Tape Echo`.
+
+    `path`/`lane`/`pos` narrow the match when the name is ambiguous. Raises
     `MutateError` if no block matches (message lists every placed block) or
     if more than one does (message says to disambiguate).
     """
     placed = _iter_slots(body, library)
-    name_matches = [t for t in placed if name in (t[3].display_name, t[3].model_id)]
+    name_matches = [t for t in placed
+                    if name in (t[3].display_name, t[3].model_id)
+                    or name in getattr(t[3], "aliases", ())]
 
     matches = name_matches
     if path is not None:
