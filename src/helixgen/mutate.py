@@ -25,6 +25,7 @@ from helixgen import controllers, flowparams
 from helixgen.controllers import ControllerError
 from helixgen.generate import (
     HSP_SNAPSHOT_SLOTS,
+    MAX_LANE_SLOTS as _MAX_LANE_SLOTS,
     GenerateError,
     _apply_trails_harness,
     _build_exp_controller,
@@ -65,8 +66,6 @@ __all__ = [
     "wire_expression",
     "wire_wah_toe",
 ]
-
-_MAX_LANE_SLOTS = 12  # b01..b12 user-block slots per lane
 
 # Signal-flow pseudo-block names accepted by `set_param` (routed to
 # `set_flow_param`). These address a path's endpoints / split / merge mixer
