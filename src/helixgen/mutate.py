@@ -630,9 +630,10 @@ def _is_parallel_routed(path_dict: dict[str, Any]) -> bool:
 
     `split`/`join` blocks live in lane 0 and carry `branch`/`endpoint` keys
     that cross-reference specific `bNN` keys by name (see module docstring).
-    `_renumber_lane` rewrites `bNN` keys wholesale and knows nothing about
-    those pointers, so running it on a parallel-routed path would silently
-    corrupt the split/join wiring and desync lane 1's positions.
+    Nothing in this module reads those pointers: `add_block` still shifts
+    `bNN` keys out from under them, and `remove_block` would happily delete a
+    block one of them names. Both refuse the path rather than silently
+    corrupting the split/join wiring or desyncing lane 1.
     """
     return any(
         isinstance(path_dict.get(k), dict) and path_dict[k].get("type") in ("split", "join")

@@ -644,7 +644,13 @@ def disable_cmd(preset_path, block, snapshot, path_idx, lane, pos, library_path,
 def add_block_cmd(preset_path, block, path_idx, after, library_path, irs_dir):
     """Add a block to a path (append, or --after a named block). BLOCK is a
     library display name or model id — case-sensitive, same rules as
-    `generate` (check with `show-block`)."""
+    `generate` (check with `show-block`).
+
+    The row KEEPS ITS GRID LAYOUT: the new block takes the slot right after
+    its predecessor and only the unbroken run already sitting there shifts
+    one slot right, stopping at the first empty slot — so an insert into a
+    gapped row uses the gap. An insertion point with no empty slot to its
+    right re-packs the lane onto b01..bn instead, warning on stderr."""
     def _mutation(body, library, irs):
         mutate.add_block(body, block, library, path=path_idx, after=after)
 
@@ -660,7 +666,10 @@ def add_block_cmd(preset_path, block, path_idx, after, library_path, irs_dir):
 @_library_option
 @_irs_option
 def remove_block_cmd(preset_path, block, path_idx, lane, pos, library_path, irs_dir):
-    """Remove a block from a path."""
+    """Remove a block from a path.
+
+    The freed GRID SLOT stays a hole — the row is not re-packed, so every
+    other block keeps the slot it is on."""
     def _mutation(body, library, irs):
         mutate.remove_block(body, block, library, path=path_idx, lane=lane, pos=pos)
 

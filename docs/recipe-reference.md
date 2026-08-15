@@ -346,8 +346,9 @@ CC# instead of pedal:
   `preset._helixgen_midi` list that the **transcoder** turns into the device
   `cg__.entt` `ctrl`/`ctm_` records on `device install`/`sync`. `view` lifts it
   back into this `midi` recipe shape. The surgical edit verbs keep the records
-  reconciled: `add-block`/`remove-block` remap their coordinates on renumbering
-  (removing a MIDI-bound block drops its binding with a warning), and
+  reconciled: `add-block` remaps the coordinates of the blocks it shifts (most
+  inserts shift nobody now — hgc-hhp), `remove-block` drops a MIDI-bound
+  block's binding with a warning and leaves every other coordinate alone, and
   `swap-model` drops a binding whose param the new model lacks (warning).
 - **EXPERIMENTAL** until hardware-validated. There is no live `device` verb for
   MIDI assignment yet (author it into the preset). Stadium-only; ignored for
