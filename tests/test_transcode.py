@@ -838,17 +838,22 @@ def test_dsp_b_input_snapshot_bypass_uses_nonzero_eid():
     assert row == [True] + [False] * 7, row
 
 
-def test_input_snapshot_bypass_ignored_without_variation():
-    """No input bypass trg when the input's per-snapshot bypass never varies
-    (avoids spurious targets)."""
+def test_input_snapshot_bypass_target_survives_without_variation():
+    """A per-snapshot array whose 8 values are EQUAL is still a snapshot
+    target (bead hgc-xh3): the array's presence is the signal, not its
+    variation. Real device content keeps such targets, so dropping them made
+    every install rewrite the preset's snapshot assignments."""
     body = _input_bypass_hsp_body(base_bypassed=False, snapshots=True)
     # flatten the input's snapshot array to all-enabled (no variation)
     body["preset"]["flow"][0]["b00"]["@enabled"]["snapshots"] = [True] * 8
     doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
     entt = doc["cg__"]["entt"]
     ip = _input_endpoint(doc)
-    assert not any(t.get("eID_") == ip["id__"] for t in entt["trgs"])
-    assert ip["snap"] is False and ip["tid_"] == 0
+    trg = next(t for t in entt["trgs"] if t.get("eID_") == ip["id__"])
+    assert trg["type"] == 1 and trg["id__"] in entt["ctm_"]["stid"]
+    assert ip["snap"] is True and ip["tid_"] == trg["id__"]
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    assert [_tamv_map(s)[trg["id__"]] for s in snps] == [False] * 8
 
 
 def test_controller_param_leaf_carries_tid_snap_false():

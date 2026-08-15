@@ -173,6 +173,25 @@ def _lane_pos(key: str) -> Tuple[int, int]:
     return lane, num - 14 * lane
 
 
+def is_snapshot_assignment(arr: List[Any], base: Any) -> bool:
+    """Is this ``.hsp`` per-snapshot array a real snapshot ASSIGNMENT?
+
+    A DENSE array (every slot carries a value) is the device's own spelling —
+    it means "this target is snapshot-tracked", whether or not the 8 values
+    differ. Real device content is full of constant ones (532 arrays across 50
+    of Line 6's 66 factory presets), and the forward path must keep them or a
+    re-install silently un-assigns the block (bead hgc-xh3).
+
+    A SPARSE array (some slot is ``None``) is the legacy export spelling, where
+    ``None`` means "not overridden here". One that never overrides the base is
+    an artifact carrying no assignment — every helixgen-authored tone has one
+    on its ``b00`` input — so it is NOT a target.
+    """
+    if all(v is not None for v in arr):
+        return True
+    return any(v is not None and v != base for v in arr)
+
+
 def _snapshot_arrays(slot: dict, bnn: dict,
                      dev_id: int) -> Tuple[Optional[List[Any]], Dict[str, List[Any]]]:
     """Extract a block's per-snapshot bypass + param arrays, mapped to device
@@ -184,16 +203,16 @@ def _snapshot_arrays(slot: dict, bnn: dict,
     (``True`` = bypassed), i.e. the inverse of the ``.hsp`` ``@enabled``
     arrays — a device bypass target's snapshot value is "is it bypassed"
     (hardware-verified against the Stadium app's own import, 2026-07-13).
-    A param whose per-snapshot array is entirely ``None`` (no override) is
-    skipped.
+    An array that is not a real assignment (see
+    :func:`is_snapshot_assignment`) is skipped.
     """
     bypass: Optional[List[Any]] = None
     en = bnn.get("@enabled")
     if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
         arr = en["snapshots"]
-        if any(v is not None for v in arr):
-            bv = en.get("value")
-            base = True if bv is None else bool(bv)  # missing/None = enabled
+        bv = en.get("value")
+        base = True if bv is None else bool(bv)  # missing/None = enabled
+        if is_snapshot_assignment(arr, base):
             bypass = [not bool(base if v is None else v) for v in arr]
 
     src_params = slot.get("params") or {}
@@ -203,12 +222,12 @@ def _snapshot_arrays(slot: dict, bnn: dict,
         if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
             continue
         arr = wrapped["snapshots"]
-        if not any(v is not None for v in arr):
+        base = wrapped.get("value")
+        if not is_snapshot_assignment(arr, base):
             continue
         dev_name = name_map.get(pname)
         if dev_name is None:
             continue
-        base = wrapped.get("value")
         if base is None and any(v is None for v in arr):
             # No base to fill the sparse slots with — a None must never reach
             # the device's tamv (msgpack nil where it expects a value).
@@ -369,9 +388,9 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                                     and isinstance(wrapped.get("snapshots"), list)):
                                 continue
                             arr = wrapped["snapshots"]
-                            if not any(v is not None for v in arr):
-                                continue
                             obase = wrapped.get("value")
+                            if not is_snapshot_assignment(arr, obase):
+                                continue
                             if obase is None and any(v is None for v in arr):
                                 continue  # nothing to densify sparse slots with
                             osnap[pname] = [obase if v is None else v

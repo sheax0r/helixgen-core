@@ -1238,10 +1238,14 @@ def _synth_cg_from_recipe(
 
     Each user block may carry ``snap_bypass`` (per-snapshot bool list, DEVICE
     polarity: ``True`` = bypassed in that snapshot) and ``snap_params``
-    (``{device_param_name: per-snapshot value list}``). For every block/param
-    that ACTUALLY VARIES across snapshots we emit one ``trgs`` target
-    (type1/enty2/pid0 bypass, or type2/enty3/pidN param), keyed by that block's
-    device instance id (``eID_``, from ``instance_ids``). Each snapshot's
+    (``{device_param_name: per-snapshot value list}``). Every such array gets
+    one ``trgs`` target (type1/enty2/pid0 bypass, or type2/enty3/pidN param),
+    keyed by that block's device instance id (``eID_``, from
+    ``instance_ids``) — the ARRAY's presence is the signal, not whether its
+    values vary. Real device content keeps a snapshot target whose 8 values
+    happen to be equal (532 such arrays across 50 of Line 6's 66 factory
+    presets), and dropping them re-wrote the preset's snapshot assignments on
+    every install (bead hgc-xh3). Each snapshot's
     ``tamv`` is the flat ``[trg_id, value, …]`` over every tracked target,
     ``ctm_.stid`` lists them, and ``ctm_.ptid`` packs the param targets
     (``(eID_<<16 | pid_) -> trg_id``).
@@ -1291,14 +1295,14 @@ def _synth_cg_from_recipe(
             if mid is None:
                 continue
             bypass = spec.get("snap_bypass")
-            if isinstance(bypass, list) and len({bool(x) for x in bypass}) > 1:
+            if isinstance(bypass, list) and bypass:
                 tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
                                 "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 1))
                 stid.append(tid)
                 tracked.append((tid, [bool(x) for x in bypass]))
                 bindings["bypass"][eid] = tid
             for pname, pvals in (spec.get("snap_params") or {}).items():
-                if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
+                if not (isinstance(pvals, list) and pvals):
                     continue
                 pid = defs.param_id_for(mid, pname)
                 if pid is None:
@@ -1317,7 +1321,7 @@ def _synth_cg_from_recipe(
     #     polarity: ``True`` = muted) whenever the per-snapshot array varies.
     for pi, path in enumerate(recipe.get("paths") or []):
         ibypass = path.get("input_snap_bypass")
-        if not (isinstance(ibypass, list) and len({bool(x) for x in ibypass}) > 1):
+        if not (isinstance(ibypass, list) and ibypass):
             continue
         eid = instance_ids.get((pi, -1, -1))
         if eid is None:
@@ -1344,7 +1348,7 @@ def _synth_cg_from_recipe(
         if eid is None:
             continue
         for pname, pvals in osnap.items():
-            if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
+            if not (isinstance(pvals, list) and pvals):
                 continue
             pid = defs.param_id_for(out_mid, pname)
             if pid is None:

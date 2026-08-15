@@ -101,15 +101,24 @@ def test_output_gain_snapshots_tracked_and_bound():
     assert row == [0.0, -3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 
-def test_output_gain_snapshots_ignored_without_variation():
+def test_output_gain_snapshot_target_survives_without_variation():
+    """An 8-equal-values trim array is still a snapshot target (bead
+    hgc-xh3) — the array's presence is what makes the param snapshot-tracked,
+    not whether the values differ."""
     body = _output_gain_hsp_body()
     body["preset"]["flow"][0]["b13"]["slot"][0]["params"]["gain"][
         "snapshots"] = [0.0] * 8
     doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
     entt = doc["cg__"]["entt"]
     out = _output_endpoint(doc)
-    assert not any(t.get("eID_") == out["id__"] for t in entt["trgs"])
-    assert out["mdls"][0]["parm"][0]["snap"] is False
+    pid = defs.param_id_for(OUTPUT_MATRIX, "gain")
+    trg = next(t for t in entt["trgs"]
+               if t.get("eID_") == out["id__"] and t.get("pid_") == pid)
+    assert trg["type"] == 2 and trg["id__"] in entt["ctm_"]["stid"]
+    leaf = next(p for p in out["mdls"][0]["parm"] if p["pid_"] == pid)
+    assert leaf["snap"] is True and leaf["tid_"] == trg["id__"]
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    assert [_tamv_map(s)[trg["id__"]] for s in snps] == [0.0] * 8
 
 
 def test_flow1_output_gain_uses_nonzero_eid():

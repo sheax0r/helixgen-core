@@ -137,6 +137,30 @@ def test_snapshot_deltas_roundtrip():
     assert len(names) == 8
 
 
+def test_constant_snapshot_arrays_roundtrip():
+    """A snapshot target whose 8 values are all EQUAL is still a target (bead
+    hgc-xh3).
+
+    Real device content is full of them — 532 such arrays across 50 of Line 6's
+    66 factory presets — because the user assigned the block/param to snapshots
+    and then set the same value in every one. The forward path used to require
+    VARIATION, so a re-install silently un-assigned them and the second read
+    produced a different ``.hsp``."""
+    body = _assert_roundtrip({
+        "name": "flat",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [
+            {"block": DRIVE, "params": {"Gain": 0.4},
+             "snap_bypass": [False] * 8},
+            {"block": AMP, "params": {"Bass": 0.45},
+             "snap_params": {"Bass": [0.45] * 8}},
+        ]}],
+    })
+    flow = _flow0(body)
+    assert flow["b01"]["@enabled"]["snapshots"] == [True] * 8
+    assert flow["b02"]["slot"][0]["params"]["Bass"]["snapshots"] == [0.45] * 8
+
+
 def test_controller_assignments_roundtrip():
     """A footswitch bypass and an EXP1 param sweep come back as ``.hsp``
     controller dicts on the right wrappers."""
