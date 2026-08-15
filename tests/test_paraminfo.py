@@ -73,10 +73,10 @@ def test_legacy_amp_channel_volume_is_a_unit_interval():
 
 def test_show_block_makes_the_two_level_params_distinguishable(tmp_path):
     library = _library_with(tmp_path, [
-        (AGOURA_AMP, "amp", "Brit 2203 MV", {"Level": {"type": "float", "default": 2.7}}),
+        (AGOURA_AMP, "amp", "Brit 2203MV", {"Level": {"type": "float", "default": 2.7}}),
         (LEGACY_AMP, "amp", "Brit Plexi Brt", {"ChVol": {"type": "float", "default": 0.5}}),
     ])
-    agoura = _show_block(library, "Brit 2203 MV")
+    agoura = _show_block(library, "Brit 2203MV")
     legacy = _show_block(library, "Brit Plexi Brt")
     assert "Level  float -40..10 dB" in agoura
     assert "dB" not in legacy
@@ -147,9 +147,9 @@ def test_tempo_sync_companions_are_not_invented_for_models_without_them():
 
 def test_show_block_prints_enum_labels(tmp_path):
     library = _library_with(tmp_path, [
-        (CAB, "cab", "Blue Bell", {"Mic": {"type": "int", "default": 4}}),
+        (CAB, "cab", "1x12 Blue Bell", {"Mic": {"type": "int", "default": 4}}),
     ])
-    out = _show_block(library, "Blue Bell")
+    out = _show_block(library, "1x12 Blue Bell")
     assert 'sighted 4 "30 Dynamic"' in out
     assert "values: 0=57 Dynamic" in out
     assert "5=121 Ribbon" in out
@@ -188,10 +188,10 @@ def test_a_missing_ui_asset_degrades_to_ranges_instead_of_exploding(
 
 def test_show_block_flags_internal_params(tmp_path):
     library = _library_with(tmp_path, [
-        (CAB, "cab", "Blue Bell", {"IrData": {"type": "int", "default": 0},
+        (CAB, "cab", "1x12 Blue Bell", {"IrData": {"type": "int", "default": 0},
                                    "Mic": {"type": "int", "default": 4}}),
     ])
-    lines = {line.split()[0]: line for line in _show_block(library, "Blue Bell").splitlines()
+    lines = {line.split()[0]: line for line in _show_block(library, "1x12 Blue Bell").splitlines()
              if line.startswith("  ")}
     assert "[internal]" in lines["IrData"]
     assert "[internal]" not in lines["Mic"]
@@ -209,10 +209,10 @@ def test_block_param_info_renames_the_single_sample_to_sighted():
 
 def test_show_block_never_prints_a_degenerate_observed_range(tmp_path):
     library = _library_with(tmp_path, [
-        (AGOURA_AMP, "amp", "Brit 2203 MV",
+        (AGOURA_AMP, "amp", "Brit 2203MV",
          {"Level": {"type": "float", "default": 2.7, "observed_range": [2.7, 2.7]}}),
     ])
-    out = _show_block(library, "Brit 2203 MV")
+    out = _show_block(library, "Brit 2203MV")
     assert "observed" not in out
     assert "[2.7, 2.7]" not in out
 
@@ -220,19 +220,19 @@ def test_show_block_never_prints_a_degenerate_observed_range(tmp_path):
 def test_numbers_are_printed_as_numbers_an_author_can_type(tmp_path):
     """`2e-05` is not a value anyone copies into a recipe by eye."""
     library = _library_with(tmp_path, [
-        (CAB, "cab", "Blue Bell", {"Delay": {"type": "float", "default": 0.0}}),
+        (CAB, "cab", "1x12 Blue Bell", {"Delay": {"type": "float", "default": 0.0}}),
     ])
-    out = _show_block(library, "Blue Bell")
+    out = _show_block(library, "1x12 Blue Bell")
     assert "e-" not in out
     assert "-0.00002..0.05" in out
 
 
 def test_show_block_json_carries_the_resolved_facts(tmp_path):
     library = _library_with(tmp_path, [
-        (CAB, "cab", "Blue Bell", {"Mic": {"type": "int", "default": 4},
+        (CAB, "cab", "1x12 Blue Bell", {"Mic": {"type": "int", "default": 4},
                                    "Level": {"type": "float", "default": 6.0}}),
     ])
-    data = json.loads(_show_block(library, "Blue Bell", "--json"))
+    data = json.loads(_show_block(library, "1x12 Blue Bell", "--json"))
     mic = data["params"]["Mic"]
     assert mic["min"] == 0 and mic["max"] == 11 and mic["default"] == 11
     assert mic["sighted"] == 4 and mic["sighted_label"] == "30 Dynamic"

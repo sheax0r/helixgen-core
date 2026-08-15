@@ -352,7 +352,7 @@ def test_ir_block_no_default_hash_emits_raw_hash(tmp_path, sample_serial_preset_
     lib.save_block(Block(
         model_id=f"{IR_MODEL_PREFIX}WithPan",
         category="cab",
-        display_name="With Pan",
+        display_name="IR",
         params={},
         exemplar={"@model": f"{IR_MODEL_PREFIX}WithPan", "@type": "cab",
                   "@enabled": True, "params": {}},
@@ -498,10 +498,10 @@ def test_duplicate_block_footswitches_roundtrip(tmp_path, sample_serial_preset_h
     from tests.test_generate_footswitches import _dup_ir_lib  # reuse helper
     lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
     spec = {"name": "n", "paths": [{"blocks": [
-        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 1},
-        {"block": "With Pan", "ir": "a"*32, "lane": 0, "pos": 2}]}],
-        "footswitches": [{"switch": "FS1", "block": "With Pan", "pos": 1},
-                         {"switch": "FS2", "block": "With Pan", "pos": 2}]}
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1},
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 2}]}],
+        "footswitches": [{"switch": "FS1", "block": "IR", "pos": 1},
+                         {"switch": "FS2", "block": "IR", "pos": 2}]}
     p1 = compose_preset(parse_spec(spec), lib, source="t")
     spec2 = parse_spec(view(p1, lib))
     p2 = compose_preset(spec2, lib, source="t")

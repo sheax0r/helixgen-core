@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -97,11 +98,33 @@ class Block:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Block":
+        # Resolve the display name at READ time rather than trusting what is
+        # on disk: blocks ingested before hgc-3ll stored the DEVICE's own short
+        # `@name`, which truncates ("ressor LAStudio Comp Mono") and collides
+        # ("Stereo" named six models, one of them the most-used reverb in the
+        # factory setlist). Overlaying here corrects an existing library on
+        # upgrade with no migration — the block files are never rewritten. The
+        # stored name is still the fallback for a model the editor's own table
+        # has never heard of, so a curated name survives; and when it IS
+        # superseded it becomes a legacy alias, so recipes written against the
+        # old name keep resolving across the upgrade.
+        from helixgen.ingest import (  # circular at import time
+            legacy_alias,
+            resolve_display_name,
+        )
+
+        model_id = data["model_id"]
+        stored_name = data.get("display_name")
+        aliases = list(data.get("aliases", []))
+        legacy = legacy_alias(model_id, stored_name)
+        if legacy is not None and legacy not in aliases:
+            aliases.append(legacy)
+
         return cls(
-            model_id=data["model_id"],
+            model_id=model_id,
             category=data["category"],
-            display_name=data["display_name"],
-            aliases=list(data.get("aliases", [])),
+            display_name=resolve_display_name(model_id, stored_name),
+            aliases=aliases,
             params=dict(data.get("params", {})),
             exemplar=dict(data.get("exemplar", {})),
             first_seen=dict(data.get("first_seen", {})),
@@ -179,11 +202,13 @@ class Library:
         for block in all_blocks:
             if block.model_id == name_or_id:
                 return block
-        # Then collect all blocks whose display_name or aliases match.
-        matches = [
-            b for b in all_blocks
-            if b.display_name == name_or_id or name_or_id in b.aliases
-        ]
+        # Then display names, which are unique per model; only if none match
+        # do aliases get a say, so one block's alias can never shadow
+        # another's real name (`Woody Blue` is the amp, even though it is also
+        # the preamp's legacy alias -- hgc-3ll).
+        matches = [b for b in all_blocks if b.display_name == name_or_id]
+        if not matches:
+            matches = [b for b in all_blocks if name_or_id in b.aliases]
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
@@ -194,20 +219,44 @@ class Library:
             )
         raise KeyError(
             f"Block {name_or_id!r} not found in library at {self.root}. "
-            f"Try `helixgen ingest <export.hsp>`."
+            f"Display names come from the editor's own model table and some "
+            f"changed in hgc-3ll (e.g. 'Plate Stereo' is now 'Plate') -- run "
+            f"`helixgen list-blocks` to see the current names, and prefer the "
+            f"model_id, which never changes. An empty library instead needs "
+            f"`helixgen ingest <export.hsp>`."
         )
 
     def rebuild_index(self) -> dict[str, Any]:
-        """Re-derive index.json from the on-disk block files."""
+        """Re-derive index.json from the on-disk block files.
+
+        Warns if two models resolve to the SAME display name. That cannot
+        happen for models the vendored editor table names (it is unique by
+        construction, hgc-3ll) — a warning here means a model the table has
+        never heard of, e.g. one a firmware update added, and the fix is to
+        regenerate the asset with `tools/build_param_meta.py`.
+        """
         names: dict[str, list[str]] = {}
         categories: dict[str, str] = {}
+        display: dict[str, list[str]] = {}
 
         for block in self.list_blocks():
             categories[block.model_id] = block.category
+            if block.display_name:
+                display.setdefault(block.display_name, []).append(block.model_id)
             for name in [block.display_name, *block.aliases]:
                 if not name:
                     continue
                 names.setdefault(name, []).append(block.model_id)
+
+        for name, model_ids in sorted(display.items()):
+            if len(model_ids) > 1:
+                print(
+                    f"warning: display name {name!r} is shared by "
+                    f"{', '.join(sorted(model_ids))} — reference these by "
+                    f"model_id, and regenerate the editor name table "
+                    f"(`python tools/build_param_meta.py`).",
+                    file=sys.stderr,
+                )
 
         index = {"names": names, "categories": categories}
         index_path = self.root / "index.json"

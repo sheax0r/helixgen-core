@@ -25,9 +25,9 @@ are case-sensitive and `generate` rejects unknown ones.
       "blocks": [
         {"block": "Compulsive Drive", "params": {"Gain": 0.45, "Tone": 0.55}},
         {"block": "Brit Plexi Brt",   "params": {"Drive": 0.7, "Master": 0.5}},
-        {"block": "Mic Ir_4x12 Greenback 25 With Pan"},
-        {"block": "Tape Echo Stereo", "params": {"Mix": 0.18}},
-        {"block": "Plate Stereo",     "params": {"Mix": 0.12}}
+        {"block": "4x12 Greenback 25"},
+        {"block": "Tape Echo", "params": {"Mix": 0.18}},
+        {"block": "Plate",     "params": {"Mix": 0.12}}
       ]
     }
   ]
@@ -35,7 +35,10 @@ are case-sensitive and `generate` rejects unknown ones.
 ```
 
 - `paths` is 1–2 entries (each maps to one DSP). Parallel splits inside a path use `split`/`join` entries (see "parallel splits" below).
-- `block` matches the display_name from `list-blocks` (e.g. "Brit Plexi Brt") — case-sensitive. If ambiguous, use the model_id in brackets (e.g. "HD2_AmpBritPlexiBrt").
+- `block` is **either** the display_name from `list-blocks` (e.g. `"Brit Plexi Brt"`) — case-sensitive — **or** the model_id (e.g. `"HD2_AmpBritPlexiBrt"`), written plainly, not in brackets. The same two spellings work in every later reference to that block: `snapshots` param deltas and `disable` lists, `footswitches`, `expression` and `midi` targets.
+  - Display names are the editor's own and are **unique within the library** (hgc-3ll) — they are no longer the device's short `@name`, which truncated (`ressor LAStudio Comp Mono`) and collided (`Stereo` named six different models, `VIC_DynPlateStereo` among them). Two models that genuinely share the editor's name are separated deterministically: `Woody Blue` vs `Woody Blue (Preamp)`, `Ping Pong` vs `Ping Pong (Legacy)`.
+  - **The model_id is the stable handle** — it never changes and never needs disambiguating. Prefer it when you already have it, and always when scripting. An ambiguous name errors with every candidate model id listed.
+  - A recipe written against a **pre-fix** library still resolves: the old name survives as a legacy alias (`"Tape Echo Stereo"` → `Tape Echo`, `"With Pan"` → `IR`). Aliases never outrank a real display name.
 - `params` values are in each param's own units. Many knobs are floats 0.0–1.0, but plenty are dB, Hz, seconds, or enum ints — and the same param name can be 0..1 on one block and dB on the next (a legacy amp's `ChVol` is 0..1; an Agoura amp's `Level` is -40..10 **dB**). **Always read the range and unit from `show-block "<block>"`** before writing a value; never assume 0.0–1.0.
 
 ## Optional: per-path input routing + input block params
@@ -120,7 +123,7 @@ per-type params; the join is the merge mixer:
 
 ```json
 {"split": {"type": "crossover", "params": {"Frequency": 800.0, "Reverse": false}}},
-{"block": "Tape Echo Stereo", "lane": 1},
+{"block": "Tape Echo", "lane": 1},
 {"join": {"params": {"A Level": 0.0, "B Level": -2.0, "B Pan": 0.5,
                      "B Polarity": false, "Level": 0.0}}}
 ```
@@ -148,7 +151,7 @@ Add a top-level `snapshots` array (up to 8 entries) to define named scenes that 
 ```json
 "snapshots": [
   {"name": "Rhythm"},
-  {"name": "Lead",  "params": {"Brit Plexi Brt": {"Drive": 0.85}, "Tape Echo Stereo": {"Mix": 0.30}}},
+  {"name": "Lead",  "params": {"Brit Plexi Brt": {"Drive": 0.85}, "Tape Echo": {"Mix": 0.30}}},
   {"name": "Clean", "disable": ["Compulsive Drive"], "params": {"Brit Plexi Brt": {"Drive": 0.30}}}
 ]
 ```
@@ -160,14 +163,14 @@ Add a top-level `snapshots` array (up to 8 entries) to define named scenes that 
   that snapshot — see "Per-snapshot output level/pan" below.
 - Omit `snapshots` entirely to use the device's defaults (8 unnamed slots, no variation).
 
-When a snapshot references a block whose display name is ambiguous (multiple
-placed blocks humanize to the same name, e.g. two "Stereo" blocks across a
-split), carry a `(lane, pos)` coordinate:
+When a snapshot reference is ambiguous — the SAME model placed more than once,
+e.g. a `Plate` in each lane of a split — neither the name nor the model_id can
+separate the two, so carry a `(lane, pos)` coordinate:
 
 - `disable` entries may be objects instead of bare strings:
-  `"disable": [{"block": "Stereo", "lane": 1, "pos": 2}]`
+  `"disable": [{"block": "Plate", "lane": 1, "pos": 2}]`
 - `params` may be a list instead of a name-keyed object:
-  `"params": [{"block": "Stereo", "lane": 1, "pos": 2, "params": {"Mix": 0.3}}]`
+  `"params": [{"block": "Plate", "lane": 1, "pos": 2, "params": {"Mix": 0.3}}]`
 
 Coordinates are only needed to disambiguate; the bare string / name-keyed object
 forms remain valid for uniquely-named blocks. `path` (0 or 1) is added only when
@@ -224,7 +227,7 @@ pedal fully forward to click it).
 ```json
 "footswitches": [
   {"switch": "FS3", "block": "Compulsive Drive", "label": "DRIVE", "color": "red"},
-  {"switch": "FS3", "block": "Tape Echo Stereo"},
+  {"switch": "FS3", "block": "Tape Echo"},
   {"switch": "FS4", "block": "Brit Plexi Brt", "param": "Drive",
    "min": 0.45, "max": 0.7, "behavior": "momentary"},
   {"switch": "EXP1Toe", "block": "Teardrop 310 Mono"}
@@ -290,7 +293,7 @@ exposes `EXP1` and `EXP2`.
     "pedal": "EXP2",
     "targets": [
       {"block": "Brit Plexi Brt",   "param": "Master", "min": 0.0, "max": 0.7},
-      {"block": "Tape Echo Stereo", "param": "Mix",    "min": 0.0, "max": 0.4}
+      {"block": "Tape Echo", "param": "Mix",    "min": 0.0, "max": 0.4}
     ]
   }
 ]
@@ -316,7 +319,7 @@ CC# instead of pedal:
 "midi": [
   {"cc": 61, "targets": [{"block": "Brit Plexi Brt", "param": "Drive",
                           "min": 0.0, "max": 1.0}]},
-  {"cc": 79, "targets": [{"block": "Tape Echo Stereo", "bypass": true}]}
+  {"cc": 79, "targets": [{"block": "Tape Echo", "bypass": true}]}
 ]
 ```
 
@@ -425,8 +428,8 @@ harness spillover — whether the block's echoes / reverb tail keep ringing when
 the block is **bypassed** (manually or via a footswitch):
 
 ```json
-{"block": "Tape Echo Stereo", "params": {"Mix": 0.25}, "trails": true},
-{"block": "Plate Stereo",     "params": {"Mix": 0.15}, "trails": true}
+{"block": "Tape Echo", "params": {"Mix": 0.25}, "trails": true},
+{"block": "Plate",     "params": {"Mix": 0.15}, "trails": true}
 ```
 
 - `trails: true` / `false` sets the block's bNN `harness.params.Trails`.

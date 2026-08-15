@@ -50,7 +50,7 @@ def test_generate_uses_canonical_irhash_when_spec_omits_ir(stadium_library_with_
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps({
         "name": "canon",
-        "paths": [{"blocks": [{"block": "With Pan"}]}],
+        "paths": [{"blocks": [{"block": "IR"}]}],
     }))
     out = tmp_path / "out.hsp"
     generate_preset(spec, out, stadium_library_with_ir)
@@ -73,7 +73,7 @@ def test_generate_uses_spec_ir_field_by_basename(stadium_library_with_ir, tmp_pa
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps({
         "name": "sugar",
-        "paths": [{"blocks": [{"block": "With Pan", "ir": "Mix 05.wav"}]}],
+        "paths": [{"blocks": [{"block": "IR", "ir": "Mix 05.wav"}]}],
     }))
     out = tmp_path / "out.hsp"
     generate_preset(spec, out, stadium_library_with_ir)
@@ -94,7 +94,7 @@ def test_generate_uses_spec_ir_field_by_hash(stadium_library_with_ir, tmp_path, 
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps({
         "name": "byhash",
-        "paths": [{"blocks": [{"block": "With Pan",
+        "paths": [{"blocks": [{"block": "IR",
                                 "ir": "e93d155aedcf99109f7193f607707815"}]}],
     }))
     out = tmp_path / "out.hsp"
@@ -137,7 +137,7 @@ def test_generate_errors_when_no_canonical_and_no_spec_ir(tmp_library, sample_se
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps({
         "name": "broken",
-        "paths": [{"blocks": [{"block": "With Pan"}]}],
+        "paths": [{"blocks": [{"block": "IR"}]}],
     }))
     out = tmp_path / "out.hsp"
     with pytest.raises(GenerateError, match="irhash"):
@@ -180,7 +180,7 @@ def test_generate_no_ir_block_omits_irhash(tmp_library, sample_serial_preset_hsp
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps({
         "name": "no-ir",
-        "paths": [{"blocks": [{"block": "With Pan", "no_ir": True}]}],
+        "paths": [{"blocks": [{"block": "IR", "no_ir": True}]}],
     }))
     out = tmp_path / "out.hsp"
     generate_preset(spec, out, lib)  # must not raise

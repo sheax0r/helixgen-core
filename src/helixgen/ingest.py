@@ -121,27 +121,117 @@ def infer_category(model_id: str) -> str:
 
 
 # Strip a known category prefix; insert a space before any uppercase letter
-# that follows a lowercase letter or digit; insert a space before digits that
-# follow a lowercase letter (except 'x' for unit specs like "4x12").
-# Finally collapse whitespace.
-_HUMANIZE_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<![x])(?<=[a-z])(?=[0-9])")
+# that follows a lowercase letter or digit; split a run of capitals before a
+# capitalised word ("LAStudioComp" -> "LA Studio Comp", "CaliQMono" -> "Cali Q
+# Mono"); insert a space before digits that follow a lowercase letter (except
+# 'x' for unit specs like "4x12"). Finally collapse whitespace.
+_HUMANIZE_SPLIT_RE = re.compile(
+    r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<![x])(?<=[a-z])(?=[0-9])"
+)
+
+# A trailing channel word, with the optional index Send/Return blocks carry.
+_CHANNEL_SUFFIX_RE = re.compile(r"(?:Mono|Stereo)\d*$")
+
+# Namespaces that are never a category prefix, only a vendor tag.
+_RAW_NAMESPACES = ("HD2_", "HX2_", "P35_", "VIC_", "L6SPB_", "Agoura_")
+
+
+def _strippable(prefix: str, model_id: str) -> bool:
+    """True if removing `prefix` from `model_id` still leaves an identity.
+
+    `_CATEGORY_PREFIXES` is a category-inference table, not a word list, so its
+    entries happily cut a model id mid-word or down to nothing: `HX2_Comp` ate
+    the "Comp" out of `HX2_CompressorLAStudioCompMono` ("ressor LAStudio Comp
+    Mono"), and `TapeEater` / `HD2_DM4BassOctaver` are themselves entries, so
+    stripping left the empty string (hgc-3ll). A cut is only safe when what
+    remains starts a fresh word AND says more than which channel it is.
+    """
+    body = model_id[len(prefix):]
+    if not body or not (body[0].isupper() or body[0].isdigit()):
+        return False
+    return bool(_CHANNEL_SUFFIX_RE.sub("", body))
 
 
 def humanize_model_id(model_id: str) -> str:
-    """Turn a model_id like 'HD2_AmpBrit2204Custom' into 'Brit 2204 Custom'."""
+    """Turn a model_id like 'HD2_AmpBrit2204Custom' into 'Brit 2204 Custom'.
+
+    Fallback only — the authoritative name comes from the vendored editor
+    table (:func:`resolve_display_name`). Never returns the empty string for a
+    non-empty model id.
+    """
     body = model_id
     for prefix, _ in _CATEGORY_PREFIXES:
-        if body.startswith(prefix):
+        if body.startswith(prefix) and _strippable(prefix, body):
             body = body[len(prefix):]
             break
     else:
-        # No known prefix: also strip any leading "HD2_"/"HX2_"/"P35_" if present
-        for raw_prefix in ("HD2_", "HX2_", "P35_"):
-            if body.startswith(raw_prefix):
+        # No usable category prefix: strip the bare vendor namespace instead.
+        for raw_prefix in _RAW_NAMESPACES:
+            if body.startswith(raw_prefix) and _strippable(raw_prefix, body):
                 body = body[len(raw_prefix):]
                 break
     spaced = _HUMANIZE_SPLIT_RE.sub(" ", body)
     return " ".join(spaced.split())
+
+
+# A name that says nothing but which channel this is. The DEVICE writes these
+# as a block's `@name` ("Stereo" named six different models, one of them the
+# most-used reverb in the factory setlist), so they are never worth keeping.
+_DEGENERATE_NAME_RE = re.compile(r"^(?:Mono|Stereo)(?:\s*\d+)?$")
+
+
+def resolve_display_name(model_id: str, stored_name: str | None = None) -> str:
+    """The display name a block is referenced by, best source first.
+
+    1. the vendored editor table (``paraminfo.model_display_name``) — the only
+       authoritative source, and unique per model by construction. It covers
+       every model the shipped library contains, so the DEVICE's own short
+       ``@name`` never wins any more (hgc-3ll);
+    2. ``stored_name`` — what the library file already says — but only when it
+       says something: a bare "Mono"/"Stereo"/"" is the device's degenerate
+       short name and is dropped. This rung is what preserves a name YOU chose
+       for a block the editor has never heard of;
+    3. :func:`humanize_model_id`, derived from the model id;
+    4. the model id itself.
+
+    Read-time resolution: applied by ``Library.Block.from_dict`` as well as at
+    ingest, so an existing library is corrected on upgrade with no migration
+    (same shape as ``paraminfo``'s param overlay, hgc-285).
+    """
+    if not isinstance(model_id, str) or not model_id:
+        return (stored_name or "").strip() or str(model_id)
+    vendored = None
+    try:
+        from helixgen.device.paraminfo import model_display_name
+
+        vendored = model_display_name(model_id)
+    except Exception:  # noqa: BLE001 - a name is never worth failing a read for
+        # A broken install — missing/corrupt vendored asset, a device
+        # subpackage that will not import — costs accurate names, never the
+        # whole library. Every read path (generate, view, patch, list-blocks)
+        # comes through here.
+        pass
+    if vendored:
+        return vendored
+    stored = (stored_name or "").strip()
+    if stored and not _DEGENERATE_NAME_RE.match(stored):
+        return stored
+    return humanize_model_id(model_id) or model_id
+
+
+def legacy_alias(model_id: str, stored_name: str | None) -> str | None:
+    """The name a pre-hgc-3ll library file used for this block, if it differs.
+
+    A library written before the display names were corrected names its blocks
+    the way the recipes and scripts of that era do ("Tape Echo Stereo", "With
+    Pan"). Carrying that forward as an alias keeps those working across the
+    upgrade, at no cost to a library ingested since. A degenerate name
+    ("Stereo") is NOT bridged — it never identified one block anyway.
+    """
+    stored = (stored_name or "").strip()
+    if not stored or _DEGENERATE_NAME_RE.match(stored):
+        return None
+    return stored if stored != resolve_display_name(model_id, stored) else None
 
 
 class Shape(Enum):
@@ -260,7 +350,7 @@ def block_from_raw(raw: dict[str, Any], source_info: dict[str, str]) -> Block:
     """Build a Block dataclass from a single raw block dict + source provenance."""
     model_id = raw[RAW_BLOCK_MODEL_KEY]
     category = raw.get(RAW_BLOCK_CATEGORY_KEY) or infer_category(model_id)
-    display_name = raw.get(RAW_BLOCK_NAME_KEY) or humanize_model_id(model_id)
+    display_name = resolve_display_name(model_id, raw.get(RAW_BLOCK_NAME_KEY))
     params = extract_schema(raw)
     default_irhash = raw.get("irhash") if str(model_id).startswith(IR_MODEL_PREFIX) else None
     return Block(
