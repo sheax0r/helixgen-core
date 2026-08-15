@@ -141,7 +141,7 @@ def _transcoded_midi_ctrls(body):
     return out
 
 
-def test_remove_block_before_midi_target_shifts_pos(tmp_path):
+def test_remove_block_before_midi_target_leaves_pos_alone(tmp_path):
     from helixgen import mutate
     from helixgen.device import defs
     body, library = _author3(tmp_path, [
@@ -149,7 +149,7 @@ def test_remove_block_before_midi_target_shifts_pos(tmp_path):
     ])
     mutate.remove_block(body, "Minotaur Mono", library)
     rec = body["preset"]["_helixgen_midi"][0]
-    assert rec["pos"] == 2  # delay moved b03 -> b02
+    assert rec["pos"] == 3  # delay keeps b03; the removal leaves a gap (hgc-hhp)
     # the transcoded ctrl still targets the DELAY's Mix, not whatever now
     # sits at the old coordinate
     ctrls = _transcoded_midi_ctrls(body)
@@ -193,7 +193,7 @@ def test_remove_midi_bound_block_drops_record_with_warning(tmp_path, capsys):
     assert "MIDI CC 30" in err and "dropped" in err
     recs = body["preset"]["_helixgen_midi"]
     assert [r["cc"] for r in recs] == [31]
-    assert recs[0]["pos"] == 2  # delay compacted b03 -> b02
+    assert recs[0]["pos"] == 3  # delay keeps b03; the removal leaves a gap
     ctrls = _transcoded_midi_ctrls(body)
     assert set(ctrls) == {31}
     _c, trg = ctrls[31]

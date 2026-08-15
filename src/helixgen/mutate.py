@@ -630,9 +630,10 @@ def _is_parallel_routed(path_dict: dict[str, Any]) -> bool:
 
     `split`/`join` blocks live in lane 0 and carry `branch`/`endpoint` keys
     that cross-reference specific `bNN` keys by name (see module docstring).
-    `_renumber_lane` rewrites `bNN` keys wholesale and knows nothing about
-    those pointers, so running it on a parallel-routed path would silently
-    corrupt the split/join wiring and desync lane 1's positions.
+    Nothing in this module reads those pointers: `add_block` still shifts
+    `bNN` keys out from under them, and `remove_block` would happily delete a
+    block one of them names. Both refuse the path rather than silently
+    corrupting the split/join wiring or desyncing lane 1.
     """
     return any(
         isinstance(path_dict.get(k), dict) and path_dict[k].get("type") in ("split", "join")
@@ -648,15 +649,29 @@ def _find_block(model: str, library: Library) -> Block:
         raise MutateError(str(exc)) from exc
 
 
-def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str, Any]]) -> dict[int, str]:
+def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str, Any]],
+                   positions: list[int] | None = None) -> dict[int, str]:
     """Replace every `bNN` entry in `path_dict` for `lane` with `ordered`
-    (already in the desired final sequence), assigning sequential
-    `position` (1-based) and `bNN` keys (`b01..b12` for lane 0, `b15..b25`
-    for lane 1 -- lane 1 numbering starts at pos=1, i.e. `b15`; `b14` is
-    never assigned, matching `generate._assign_positions`). Returns
-    {index-in-ordered: new_key} for caller bookkeeping.
+    (already in the desired final sequence), assigning each entry its
+    `position` and `bNN` key (`b01..b12` for lane 0, `b15..b26` for lane 1 --
+    lane 1 numbering starts at pos=1, i.e. `b15`; `b14` is never assigned,
+    matching `generate._assign_positions`). Returns {index-in-ordered:
+    new_key} for caller bookkeeping.
+
+    `positions` gives the grid position for each entry of `ordered` and must
+    be strictly increasing -- this is how a lane keeps its recorded layout
+    (gaps included) across an edit. `None` re-packs the lane onto 1..n,
+    which is what `generate` authors and the only shape a caller with no
+    layout to preserve can produce.
     """
-    if len(ordered) > _MAX_LANE_SLOTS:
+    if positions is None:
+        positions = list(range(1, len(ordered) + 1))
+    if len(positions) != len(ordered):
+        # A zip() here would silently DELETE the tail of the lane.
+        raise MutateError(
+            f"Lane {lane}: {len(ordered)} blocks but {len(positions)} positions."
+        )
+    if positions and positions[-1] > _MAX_LANE_SLOTS:
         raise MutateError(
             f"Lane {lane} would have {len(ordered)} blocks; only "
             f"{_MAX_LANE_SLOTS} user slots (b01..b{_MAX_LANE_SLOTS:02d}) available."
@@ -666,12 +681,66 @@ def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str,
             del path_dict[k]
 
     new_keys: dict[int, str] = {}
-    for i, bnn in enumerate(ordered, start=1):
-        bnn["position"] = i
-        new_key = f"b{14 * lane + i:02d}"
+    for i, (bnn, pos) in enumerate(zip(ordered, positions)):
+        bnn["position"] = pos
+        new_key = f"b{14 * lane + pos:02d}"
         path_dict[new_key] = bnn
-        new_keys[i - 1] = new_key
+        new_keys[i] = new_key
     return new_keys
+
+
+def _insert_positions(positions: list[int], insert_at: int) -> list[int] | None:
+    """Grid positions for a lane after inserting one block at chain index
+    `insert_at`, keeping every existing block on the slot it already
+    occupies wherever the row has room.
+
+    `positions` is the lane's current occupied slots, ascending. The new
+    block goes next to its predecessor and the unbroken run of blocks in the
+    way slides ONE slot into the nearest empty one, stopping there -- which
+    is what the hardware does when you insert into a row, and why a gap gets
+    used instead of the whole row moving. 64 of Line 6's 66 factory presets
+    ship a gapped row, so "preserve" is the common case, not the exotic one.
+
+    The run can slide either way, and the shorter move wins (ties go right,
+    the historical direction). Sliding LEFT matters more than it sounds: a
+    row like `[1,2,3,4,5,6,12]` (factory 2A) is boxed in on the right for an
+    append, and without the left slide the whole row re-packs -- one block
+    moving beats seven, and on this corpus the right-only version fell back
+    for two thirds of appends.
+
+    Returns `None` for coordinates it cannot reason about (not ascending,
+    duplicated, below slot 1) and for a lane with no empty slot at all --
+    the caller re-packs, which for a FULL lane is the pre-existing
+    "12 user slots" error rather than a silent move. Boxed in on both sides
+    and the lane not full cannot happen: exhausted over all 4096 subsets of
+    slots 1..12 x every insert index, the only `None`s are the 12-block
+    rows, and 46% of inserts move nobody at all.
+    """
+    if positions and (positions != sorted(set(positions)) or positions[0] < 1):
+        return None
+    lo = positions[insert_at - 1] if insert_at else 0
+
+    right = lo + 1                       # nearest empty slot above `lo`
+    for p in positions[insert_at:]:
+        if p != right:
+            break
+        right += 1
+    left = lo                            # nearest empty slot below `lo`
+    for p in reversed(positions[:insert_at]):
+        if p != left:
+            break
+        left -= 1
+
+    can_right, can_left = right <= _MAX_LANE_SLOTS, left >= 1
+    if can_right and (not can_left or right - lo - 1 <= lo - left):
+        # new block at lo+1; the run (lo, right) each move up one.
+        return (positions[:insert_at] + [lo + 1]
+                + [p + 1 if p < right else p for p in positions[insert_at:]])
+    if can_left:
+        # new block at lo; the run [left, lo] each move down one.
+        return ([p - 1 if p > left else p for p in positions[:insert_at]]
+                + [lo] + positions[insert_at:])
+    return None
 
 
 def _midi_records(body: dict[str, Any]) -> list:
@@ -694,11 +763,10 @@ def _remap_midi_positions(
     mis-targets whatever lands on the old coordinate).
 
     ``pos_map`` maps each surviving block's OLD key-derived position to its
-    NEW position (identity-based, so pre-existing key gaps in a raw device
-    export compact correctly). ``removed_pos`` (if given) is the deleted
-    block's old position: records targeting it are DROPPED with a stderr
-    warning naming the CC. Records at a position in neither set were already
-    dangling and are left untouched.
+    NEW position; a block that did not move needs no entry. ``removed_pos``
+    (if given) is the deleted block's old position: records targeting it are
+    DROPPED with a stderr warning naming the CC. Records at a position in
+    neither set were already dangling and are left untouched.
     """
     recs = _midi_records(body)
     if not recs:
@@ -734,6 +802,7 @@ def add_block(
     path: int = 0,
     after: str | None = None,
     params: dict[str, Any] | None = None,
+    warnings_out: list[str] | None = None,
 ) -> str:
     """Insert a new block into `body.preset.flow[path]`'s main (lane-0)
     chain, in place, and return its new `bNN` key.
@@ -746,9 +815,21 @@ def add_block(
     `after=None` appends to the end of the chain; `after="<name>"` inserts
     immediately following that block (resolved the same way `resolve_slot`
     resolves any other block reference, narrowed to this `path`/lane 0).
-    Every block at or after the insertion point is renumbered — both its
-    `position` and its `bNN` key — so key order keeps matching chain order
-    (device- and decompile-relied-upon; see `decompile._bnn_keys`).
+
+    The lane keeps the grid layout it records: the new block goes next to its
+    predecessor and only the unbroken run of blocks in the way slides one
+    slot into the nearest gap (see `_insert_positions` — the same thing the
+    hardware does, and what keeps a `device to-hsp` import from being
+    re-packed by its first edit, bead hgc-hhp). Key order therefore keeps
+    matching chain order either way (device- and decompile-relied-upon; see
+    `decompile._bnn_keys`).
+
+    A lane whose coordinates cannot be honoured at all (see
+    `_insert_positions`) re-packs onto `b01..bn` — the historical behaviour,
+    since the alternative is refusing an edit that used to work — reported
+    on stderr, or appended to `warnings_out` when given (the `patch --json`
+    warnings list), because a re-pack is the one outcome here that moves
+    blocks the caller did not ask to move. A FULL lane still raises.
     """
     flow = (body.get("preset") or {}).get("flow") or []
     if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
@@ -778,13 +859,25 @@ def add_block(
     new_bnn = _to_hsp_bnn(block, params or {}, position=0, path_index=lane)
     ordered.insert(insert_at, new_bnn)
 
-    # Old key-derived position -> new 1-based position for every pre-existing
-    # block (index j in existing_keys lands at j+1, +1 more past the insert).
-    pos_map = {
-        _lane_pos(k)[1]: (j + 1 if j < insert_at else j + 2)
-        for j, k in enumerate(existing_keys)
-    }
-    new_keys = _renumber_lane(path_dict, lane, ordered)
+    old_positions = [_lane_pos(k)[1] for k in existing_keys]
+    positions = _insert_positions(old_positions, insert_at)
+    if positions is None:
+        new_keys = _renumber_lane(path_dict, lane, ordered)   # raises if lane full
+        msg = (f"path {path} records grid coordinates that cannot be honoured "
+               f"(not ascending, duplicated, or off-grid); re-packing its "
+               f"blocks onto b01..b{len(ordered):02d}.")
+        if warnings_out is None:
+            import sys
+            print(f"warning: {msg}", file=sys.stderr)
+        else:
+            warnings_out.append(msg)
+        # Re-packed: index j in existing_keys lands at j+1, +1 more past the insert.
+        pos_map = {p: (j + 1 if j < insert_at else j + 2)
+                   for j, p in enumerate(old_positions)}
+    else:
+        new_keys = _renumber_lane(path_dict, lane, ordered, positions)
+        pos_map = dict(zip(old_positions,
+                           positions[:insert_at] + positions[insert_at + 1:]))
     _remap_midi_positions(body, path, lane, pos_map)
     return new_keys[insert_at]
 
@@ -798,9 +891,15 @@ def remove_block(
     lane: int | None = None,
     pos: int | None = None,
 ) -> None:
-    """Delete a placed block from `body`, in place, and renumber the
-    `position`/`bNN` keys of every block that followed it in the same lane
-    so key order keeps matching chain order.
+    """Delete a placed block from `body`, in place, leaving the rest of the
+    lane exactly where it is.
+
+    Removing a block frees its grid slot and nothing else needs to move —
+    key order still matches chain order with a hole in it, which is what a
+    real preset looks like (64 of Line 6's 66 factory presets ship a gapped
+    row) and what the hardware leaves behind when you delete a block. The
+    lane used to be re-packed onto `b01..bn` here, which silently moved
+    every later block off the slot the user put it on (bead hgc-hhp).
     """
     fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     path_dict = body["preset"]["flow"][fi]
@@ -810,17 +909,10 @@ def remove_block(
             f"{fi} contains a split/join)."
         )
     del_lane, del_pos = _lane_pos(key)
-
-    remaining_keys = sorted(
-        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == del_lane and k != key),
-        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
-    )
-    # Old key-derived position -> new sequential position (identity-based, so
-    # pre-existing key gaps compact correctly), for the MIDI-record remap.
-    pos_map = {_lane_pos(k)[1]: i for i, k in enumerate(remaining_keys, start=1)}
-    ordered = [path_dict[k] for k in remaining_keys]
-    _renumber_lane(path_dict, del_lane, ordered)
-    _remap_midi_positions(body, fi, del_lane, pos_map, removed_pos=del_pos)
+    del path_dict[key]
+    # Nothing moved, so the only MIDI records to reconcile are the removed
+    # block's own — they are dropped, with a warning.
+    _remap_midi_positions(body, fi, del_lane, {}, removed_pos=del_pos)
 
 
 # --- swap_model --------------------------------------------------------------
@@ -1486,11 +1578,13 @@ def _op_set_enabled(body: dict, library: Library, o: dict) -> list[str]:
 
 
 def _op_add_block(body: dict, library: Library, o: dict) -> list[str]:
+    warnings: list[str] = []
     add_block(
         body, o["block"], library,
         path=o.get("path", 0), after=o.get("after"), params=o.get("params"),
+        warnings_out=warnings,
     )
-    return []
+    return warnings
 
 
 def _op_remove_block(body: dict, library: Library, o: dict) -> list[str]:

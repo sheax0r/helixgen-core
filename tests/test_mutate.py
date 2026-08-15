@@ -467,17 +467,18 @@ def test_add_block_round_trips_through_write_and_read_hsp(goldfinger_body, libra
 
 # --- remove_block ------------------------------------------------------------
 
-def test_remove_block_deletes_and_renumbers(goldfinger_body, library):
+def test_remove_block_frees_its_slot_and_leaves_the_rest_alone(goldfinger_body, library):
+    # The removed block's slot becomes a gap; nothing else moves (hgc-hhp).
     mutate.remove_block(goldfinger_body, "Brit 2204 Custom", library)
     flow0 = goldfinger_body["preset"]["flow"][0]
 
-    assert flow0["b02"]["slot"][0]["model"] == "HD2_Cab4x12Greenback25"  # was b03
-    assert flow0["b02"]["position"] == 2
-    assert flow0["b03"]["slot"][0]["model"] == "HD2_DlyDigital"  # was b04
+    assert "b02" not in flow0
+    assert flow0["b03"]["slot"][0]["model"] == "HD2_Cab4x12Greenback25"
     assert flow0["b03"]["position"] == 3
-    assert flow0["b04"]["slot"][0]["model"] == "HD2_RvbPlate"  # was b05
+    assert flow0["b04"]["slot"][0]["model"] == "HD2_DlyDigital"
     assert flow0["b04"]["position"] == 4
-    assert "b05" not in flow0
+    assert flow0["b05"]["slot"][0]["model"] == "HD2_RvbPlate"
+    assert flow0["b05"]["position"] == 5
     assert not any(
         isinstance(v, dict) and v.get("slot", [{}])[0].get("model") == "HD2_AmpBrit2204Custom"
         for k, v in flow0.items() if k not in ("b00", "b13")
@@ -502,6 +503,173 @@ def test_remove_block_round_trips_through_write_and_read_hsp(goldfinger_body, li
     write_hsp(out, goldfinger_body)
     reloaded = read_hsp(out)
     assert reloaded == goldfinger_body
+
+
+# --- gapped grid rows (hgc-hhp) ----------------------------------------------
+#
+# A preset pulled off the hardware with `device to-hsp` keeps the grid slots it
+# records (hgc-8o6), and real content is full of holes: 64 of Line 6's 66
+# factory presets ship a lane-0 row that is not 1..n. An edit must not quietly
+# close those holes.
+
+def _regrid(body, slots, path=0):
+    """Move path `path`'s lane-0 blocks onto `slots` (ascending grid
+    positions), preserving chain order — a gapped row without needing a
+    device export as a fixture."""
+    path_dict = body["preset"]["flow"][path]
+    keys = sorted(k for k in path_dict
+                  if k.startswith("b") and k[1:].isdigit() and k not in ("b00", "b13"))
+    assert len(keys) == len(slots)
+    blocks = [path_dict.pop(k) for k in keys]
+    for bnn, slot in zip(blocks, slots):
+        bnn["position"] = slot
+        path_dict[f"b{slot:02d}"] = bnn
+    return path_dict
+
+
+# "Orange Fall" (factory 7D) — a real Stadium row: b01, b03, b04, b05, b08.
+ORANGE_FALL_SLOTS = [1, 3, 4, 5, 8]
+
+
+def _gapped_names(path_dict):
+    return {k: v["slot"][0]["model"] for k, v in path_dict.items()
+            if k.startswith("b") and k[1:].isdigit() and k not in ("b00", "b13")}
+
+
+def test_gapped_row_survives_remove_add_and_patch(goldfinger_body, library):
+    flow0 = _regrid(goldfinger_body, ORANGE_FALL_SLOTS)
+    assert sorted(_gapped_names(flow0)) == ["b01", "b03", "b04", "b05", "b08"]
+
+    # remove: the block's slot becomes a hole, nobody else moves.
+    mutate.remove_block(goldfinger_body, "Digital", library)     # was b05
+    assert sorted(_gapped_names(flow0)) == ["b01", "b03", "b04", "b08"]
+
+    # add into the hole left by b02: uses the gap, shifts nothing.
+    key = mutate.add_block(goldfinger_body, "IR", library, after="Scream 808")
+    assert key == "b02"
+    assert sorted(_gapped_names(flow0)) == ["b01", "b02", "b03", "b04", "b08"]
+
+    # param patch: pure param write, no grid change at all.
+    mutate.set_param(goldfinger_body, "Plate", "Mix", 0.42, library)
+    assert sorted(_gapped_names(flow0)) == ["b01", "b02", "b03", "b04", "b08"]
+    assert flow0["b08"]["slot"][0]["params"]["Mix"]["value"] == 0.42
+    # Every surviving block still records the position its key encodes.
+    assert all(flow0[k]["position"] == int(k[1:]) for k in _gapped_names(flow0))
+
+
+def test_add_block_into_gapped_row_shifts_only_up_to_the_first_hole(goldfinger_body, library):
+    flow0 = _regrid(goldfinger_body, ORANGE_FALL_SLOTS)
+
+    # Row is Scream=b01, Brit=b03, 4x12=b04, Digital=b05, Plate=b08. Inserting
+    # after 4x12 wants b05, which is taken, and b06 is free — so Digital slides
+    # one slot right and the run stops there. Plate never moves.
+    key = mutate.add_block(goldfinger_body, "IR", library, after="4x12 Greenback 25")
+    assert key == "b05"
+    assert _gapped_names(flow0) == {
+        "b01": "HD2_DistScream808Mono",
+        "b03": "HD2_AmpBrit2204Custom",
+        "b04": "HD2_Cab4x12Greenback25",
+        "b05": "HX2_ImpulseResponseWithPan",
+        "b06": "HD2_DlyDigital",          # was b05
+        "b08": "HD2_RvbPlate",
+    }
+    assert [flow0[k]["position"] for k in ("b04", "b06", "b08")] == [4, 6, 8]
+
+
+def test_append_to_gapped_row_takes_the_slot_after_the_last_block(goldfinger_body, library):
+    flow0 = _regrid(goldfinger_body, ORANGE_FALL_SLOTS)
+    key = mutate.add_block(goldfinger_body, "IR", library)
+    assert key == "b09"
+    assert sorted(_gapped_names(flow0)) == ["b01", "b03", "b04", "b05", "b08", "b09"]
+
+
+def test_append_to_a_row_boxed_in_on_the_right_slides_it_left(goldfinger_body, library):
+    # "Knife Fight" (factory 2A) shape: a block parked on the last slot, so an
+    # append has nowhere to go on the right. Moving that ONE block down to b11
+    # beats re-packing the row, so that is what happens.
+    flow0 = _regrid(goldfinger_body, [1, 3, 4, 5, 12])
+    key = mutate.add_block(goldfinger_body, "IR", library)
+
+    assert key == "b12"
+    assert sorted(_gapped_names(flow0)) == ["b01", "b03", "b04", "b05", "b11", "b12"]
+    assert flow0["b11"]["slot"][0]["model"] == "HD2_RvbPlate"   # was b12
+    assert flow0["b11"]["position"] == 11
+
+
+def _scramble_positions(flow0):
+    """Make the row's `position` fields disagree with its keys, so chain order
+    and grid order contradict each other — the only shape left that the
+    placement cannot reason about (a full lane raises instead)."""
+    for k, want in (("b01", 9), ("b03", 2)):
+        flow0[k]["position"] = want
+
+
+def test_add_block_repacks_and_warns_on_coordinates_it_cannot_honour(
+    goldfinger_body, library, capsys
+):
+    flow0 = _regrid(goldfinger_body, ORANGE_FALL_SLOTS)
+    _scramble_positions(flow0)
+    capsys.readouterr()
+
+    mutate.add_block(goldfinger_body, "IR", library)
+
+    assert sorted(_gapped_names(flow0)) == [f"b{i:02d}" for i in range(1, 7)]
+    assert "re-packing" in capsys.readouterr().err
+
+
+def test_repack_warning_reaches_the_patch_warnings_list(goldfinger_body, library):
+    # The one outcome that moves blocks nobody asked to move must be visible
+    # to `patch --json`, not only on stderr.
+    _scramble_positions(_regrid(goldfinger_body, ORANGE_FALL_SLOTS))
+    warnings = mutate.apply_operations(
+        goldfinger_body, [{"op": "add_block", "block": "IR"}], library)
+    assert any("re-packing" in w for w in warnings), warnings
+
+
+def test_full_lane_still_raises_rather_than_repacking(library):
+    path_dict = {}
+    for i in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
+        path_dict[f"b{i:02d}"] = {
+            "type": "fx", "position": i, "path": 0,
+            "@enabled": {"value": True},
+            "slot": [{"model": "HD2_DlyDigital", "@enabled": {"value": True}, "params": {}}],
+        }
+    body = {"preset": {"flow": [path_dict]}}
+    before = copy.deepcopy(body)
+    with pytest.raises(mutate.MutateError, match="12 user slots"):
+        mutate.add_block(body, "Digital", library)
+    assert body == before
+
+
+def test_gapped_row_survives_write_and_read_hsp(goldfinger_body, library, tmp_path):
+    _regrid(goldfinger_body, ORANGE_FALL_SLOTS)
+    mutate.add_block(goldfinger_body, "IR", library, after="Scream 808")
+    mutate.remove_block(goldfinger_body, "Digital", library)
+    out = tmp_path / "gapped.hsp"
+    write_hsp(out, goldfinger_body)
+    reloaded = read_hsp(out)
+    assert reloaded == goldfinger_body
+    # ... and the gaps are actually still there on the way back in.
+    assert sorted(_gapped_names(reloaded["preset"]["flow"][0])) == [
+        "b01", "b02", "b03", "b04", "b08"]
+
+
+def test_remove_block_in_lane_1_leaves_the_other_lanes_alone(goldfinger_body, library):
+    # A row-1 block with no split feeding it is real device content (factory
+    # 14A ships one). The old re-pack rewrote lane 1 wholesale and destroyed
+    # b14/b27, which ENDPOINT_KEYS does not cover.
+    flow0 = goldfinger_body["preset"]["flow"][0]
+    flow0["b19"] = copy.deepcopy(flow0["b04"])      # Digital, lane 1 pos 5
+    flow0["b19"]["position"], flow0["b19"]["path"] = 5, 1
+    flow0["b21"] = copy.deepcopy(flow0["b05"])      # Plate, lane 1 pos 7
+    flow0["b21"]["position"], flow0["b21"]["path"] = 7, 1
+
+    mutate.remove_block(goldfinger_body, "Digital", library, lane=1)
+
+    assert "b19" not in flow0
+    assert flow0["b21"]["slot"][0]["model"] == "HD2_RvbPlate"
+    assert flow0["b21"]["position"] == 7
+    assert sorted(_gapped_names(flow0)) == ["b01", "b02", "b03", "b04", "b05", "b21"]
 
 
 # --- swap_model (Task 1f) --------------------------------------------------
