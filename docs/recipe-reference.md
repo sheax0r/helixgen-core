@@ -247,7 +247,9 @@ pedal fully forward to click it).
   param units — a Level is in dB, a knob 0..1) and the switch toggles that
   param between the two values instead of the block's bypass. A single-knob
   stomp is a param toggle; a multi-param change is a snapshot.
-- **Scribble strip**: `label` (device shows ≤12 chars; longer warns) and
+- **Scribble strip**: `label` (stored in full — Line 6's own factory presets
+  carry up to 16 chars; the strip only *displays* ~12, so a longer label
+  warns but is written verbatim) and
   `color` — one of `none auto red dkorange ltorange yellow green turquoise
   blue purple pink white`. Per switch: on a merged switch set label/color on
   one entry (or identically on all); conflicting values are a spec error.

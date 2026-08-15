@@ -551,15 +551,6 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
                         f"model for device model id {m.get('id__')}; it was "
                         f"dropped")
             continue
-        # A snapshot scene or controller assignment on a NON-primary slot has
-        # no forward spelling yet (``transcode._bind_snapshot_targets`` stamps
-        # slot 0 only, and every synthesized ``trgs`` entry carries
-        # ``slot: 0``), so it reads here but would not survive a re-install.
-        if any(isinstance(w, dict) and ("snapshots" in w or "controller" in w)
-               for w in extra["params"].values()):
-            lost.append(f"grid slot {gp}: model slot {si} carries snapshot or "
-                        f"controller assignments; they are read into the .hsp "
-                        f"but a re-install drops them (bead hgc-3yc)")
         slots.append(extra)
 
     enabled: Dict[str, Any] = {"value": bool(blk.get("enbl", 1))}
@@ -596,13 +587,6 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
             continue   # forward path re-synthesizes the row-1 endpoint pair
         if gp == _ROW1_OUTPUT and model == _OUTPUT_NONE_MODEL:
             continue
-        if gp == _ROW1_INPUT:
-            # A row-1 slot carrying a REAL input is emitted, but
-            # ``bridge.hsp_to_paths`` skips category ``input`` for every key
-            # except ``b00``, so a re-install replaces it with InputNone.
-            lost.append(f"flow {fi}: the row-1 input at grid slot {gp} "
-                        f"({defs.model_name_for(model)}) will revert to "
-                        f"InputNone if this .hsp is re-installed")
         entry = _block_entry(gp, blk, cg, rev, library, unresolved, lost)
         if entry is not None:
             entries[f"b{gp:02d}"] = entry
@@ -611,18 +595,21 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
     # (bead hgc-8o6), so gaps — which 61 of the 66 factory presets trip the gap
     # check on — survive a re-install and no longer belong in ``lost``.
     #
-    # Row-1 blocks in a flow with NO split are a different matter. They keep
-    # their slots now (better than being spliced into the row-0 chain, and
-    # forward-compatible with bead hgc-ikp), but the forward path still writes
-    # InputNone/OutputNone into row 1, so nothing feeds them: say it plainly
-    # rather than let a silent second rig go missing.
+    # Row-1 blocks still need something feeding them. Since bead hgc-ikp that
+    # is EITHER a split in the flow OR a real row-1 input at b14, both of which
+    # the forward path now reproduces. Neither: the forward path writes the
+    # InputNone/OutputNone pair into row 1, so the blocks keep their grid slots
+    # and nothing reaches them — say it plainly rather than let a silent second
+    # rig go missing.
     row1 = sorted(k for k in entries
                   if _ROW1_INPUT < int(k[1:]) < _ROW1_OUTPUT)
-    if row1 and not any(e.get("type") == "split" for e in entries.values()):
-        lost.append(f"flow {fi}: the row-1 blocks at {row1} have no split "
-                    f"feeding them, and a re-install writes InputNone/"
-                    f"OutputNone into row 1 — they keep their grid slots but "
-                    f"nothing reaches them (bead hgc-ikp)")
+    fed = ("b14" in entries
+           or any(e.get("type") == "split" for e in entries.values()))
+    if row1 and not fed:
+        lost.append(f"flow {fi}: the row-1 blocks at {row1} have neither a "
+                    f"split nor a row-1 input feeding them, and a re-install "
+                    f"writes InputNone/OutputNone into row 1 — they keep their "
+                    f"grid slots but nothing reaches them")
     if not flow.get("enbl", 1):
         lost.append(f"flow {fi}: the DSP path is DISABLED on the device, and "
                     f"a re-install re-enables it (the forward transcoder "

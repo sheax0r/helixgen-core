@@ -838,17 +838,22 @@ def test_dsp_b_input_snapshot_bypass_uses_nonzero_eid():
     assert row == [True] + [False] * 7, row
 
 
-def test_input_snapshot_bypass_ignored_without_variation():
-    """No input bypass trg when the input's per-snapshot bypass never varies
-    (avoids spurious targets)."""
+def test_input_snapshot_bypass_target_survives_without_variation():
+    """A per-snapshot array whose 8 values are EQUAL is still a snapshot
+    target (bead hgc-xh3): the array's presence is the signal, not its
+    variation. Real device content keeps such targets, so dropping them made
+    every install rewrite the preset's snapshot assignments."""
     body = _input_bypass_hsp_body(base_bypassed=False, snapshots=True)
     # flatten the input's snapshot array to all-enabled (no variation)
     body["preset"]["flow"][0]["b00"]["@enabled"]["snapshots"] = [True] * 8
     doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
     entt = doc["cg__"]["entt"]
     ip = _input_endpoint(doc)
-    assert not any(t.get("eID_") == ip["id__"] for t in entt["trgs"])
-    assert ip["snap"] is False and ip["tid_"] == 0
+    trg = next(t for t in entt["trgs"] if t.get("eID_") == ip["id__"])
+    assert trg["type"] == 1 and trg["id__"] in entt["ctm_"]["stid"]
+    assert ip["snap"] is True and ip["tid_"] == trg["id__"]
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    assert [_tamv_map(s)[trg["id__"]] for s in snps] == [False] * 8
 
 
 def test_controller_param_leaf_carries_tid_snap_false():
@@ -1023,19 +1028,26 @@ def test_src_byps_follows_hsp_sources():
     assert by_locl[26]["byps"] is True    # default for a bypass-driving source
 
 
-def test_pm_color_name_mapping_and_label_truncation():
-    """.hsp color names map to the anchored palette ints; labels truncate to
-    the device's 12-char scribble limit."""
+def test_pm_color_name_mapping_and_full_length_labels():
+    """.hsp color names map to the anchored palette ints; scribble labels are
+    emitted VERBATIM (bead hgc-cd2).
+
+    ``.8th VintDigi`` (13 chars) and ``Ampeg Opto Comps`` (16) are real Line 6
+    factory labels — the device stores them, so truncating to the 12 chars the
+    strip DISPLAYS rewrote the user's scribble strip on every install and cost
+    the ``.sbe`` round trip its fixed point on 7 factory presets."""
     recipe = {"name": "pm",
               "sources": {0x01010104: {"fs_color": "red",
                                        "fs_label": ".8th VintDigi",
                                        "fs_topidx": 0},
+                          0x01010105: {"fs_label": "Ampeg Opto Comps"},
                           0x01010108: {"fs_color": "purple", "fs_label": "KoT"}},
               "paths": [{"blocks": []}]}
     doc = transcode.recipe_to_sbepgsm(recipe)
     pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
     assert pm["preset.floorboard.stomp.a.5.color"] == 2       # red
-    assert pm["preset.floorboard.stomp.a.5.label"] == ".8th VintDig"  # 12 chars
+    assert pm["preset.floorboard.stomp.a.5.label"] == ".8th VintDigi"
+    assert pm["preset.floorboard.stomp.a.6.label"] == "Ampeg Opto Comps"
     assert pm["preset.floorboard.stomp.a.9.color"] == 9       # purple
 
 

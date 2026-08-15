@@ -551,6 +551,30 @@ def _make_output_matrix(inst_id: int,
     return ep
 
 
+def _make_output_endpoint(inst_id: int, params: Optional[Dict[str, Any]] = None,
+                          model: Optional[str] = None) -> dict:
+    """An output endpoint block for the device model the ``.hsp`` RECORDS.
+
+    A flow's row-0 output is not always ``P35_OutputMatrix``: when DSP1 feeds
+    DSP2 it is ``P35_OutputPath2A`` (41 of Line 6's 66 factory presets' flows).
+    Re-typing it to the matrix on install is a ROUTING change, not a layout
+    one, so the recorded model wins (bead hgc-ikp). ``None``/unresolvable falls
+    back to the captured OutputMatrix template."""
+    mid = _resolve_model_id(model) if model else None
+    if mid is None or mid == _OUTPUT_MATRIX["mdls"][0]["id__"]:
+        return _make_output_matrix(inst_id, params)
+    m0 = _make_endpoint_model(mid)
+    if params:
+        m0["parm"] = _synth_parm(mid, params)
+    return {
+        "cid_": 0, "enbl": 1, "favo": 0, "hasb": False,
+        "hrns": _hrns_for("output"),
+        "id__": inst_id,
+        "mdls": [m0],
+        "snap": False, "tid_": 0, "type": 9,
+    }
+
+
 def _synth_parm(model_id: int, params: Dict[str, Any]) -> List[dict]:
     """Full parm list for ``model_id`` from ``defs``, in pid order.
 
@@ -644,6 +668,11 @@ _ROW1_OUTPUT = 27
 _ROW0_LAST_USER = 12   # row 0 user blocks live at grid positions 1..12
 _ROW1_LAST_USER = 26   # row 1 user blocks live at grid positions 15..26
 
+# ``instance_ids`` keys for a flow's four ENDPOINTS, which have no ``(lane,
+# pos)`` coordinate of their own: row-0 input, row-0 output, row-1 input,
+# row-1 output. The snapshot synthesis looks each one up to bind its targets.
+_ENDPOINT_SENTINELS = ((-1, -1), (-2, -2), (-3, -3), (-4, -4))
+
 
 def _canonical_flow(placements: List[Tuple[int, dict]], base: int) -> dict:
     """Assemble a flow from ``(gridpos, block)`` placements onto the real 28-slot
@@ -689,13 +718,32 @@ def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
     return blk
 
 
-def _append_output_group(placements: List[Tuple[int, dict]], out_params) -> None:
-    """Append the row-0 OutputMatrix + row-1 InputNone/OutputNone endpoint
-    group that terminates every synthesized flow (identical across the serial
-    and both split placement strategies)."""
-    placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
-    placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
-    placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+def _append_output_group(placements: List[Tuple[int, dict]], out_params,
+                         path: Optional[dict] = None) -> None:
+    """Append the endpoint group that terminates every synthesized flow — the
+    row-0 output plus the row-1 input/output pair (identical across the serial
+    and both split placement strategies).
+
+    All three come from what the ``.hsp`` RECORDS (``bridge.hsp_to_paths``)
+    rather than being pinned to OutputMatrix + the InputNone/OutputNone pair:
+    a row-0 ``P35_OutputPath2A`` (DSP1 -> DSP2) and a row-1 slot carrying a
+    REAL input with its own output are routing the ``.hsp`` carries and the
+    forward path used to discard (bead hgc-ikp). A flow that records nothing
+    keeps the historical defaults."""
+    path = path or {}
+    placements.append((_ROW0_OUTPUT,
+                       _make_output_endpoint(0, out_params,
+                                             path.get("output_model"))))
+    row1_in = path.get("row1_input")
+    placements.append((_ROW1_INPUT,
+                       _make_input_endpoint(row1_in.get("mode"), 0,
+                                            row1_in.get("params"))
+                       if row1_in else _endpoint(_INPUT_NONE, 0)))
+    row1_out = path.get("row1_output")
+    placements.append((_ROW1_OUTPUT,
+                       _make_output_endpoint(0, row1_out.get("params"),
+                                             row1_out.get("model"))
+                       if row1_out else _endpoint(_OUTPUT_NONE, 0)))
 
 
 def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
@@ -780,6 +828,7 @@ def _place_split_flow_coords(placements, instance_ids, pi, base, modeled, struct
             blk["bblk"], blk["bflw"] = base + first_lane1_gp, pi
         elif blk.get("type") == 4:    # join <- row-1 slot beneath it
             blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
+        scaffold["_eid"] = base + spos   # its cg__ target key (bead hgc-rq3)
         placements.append((spos, blk))
 
 
@@ -812,6 +861,7 @@ def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, stru
             blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
         elif typ == 4:
             blk["bblk"], blk["bflw"] = base + join_gp, pi
+        scaffold["_eid"] = base + slot   # its cg__ target key (bead hgc-rq3)
         placements.append((slot, blk))
 
 
@@ -849,18 +899,19 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         out_params = path.get("output_params") or None
 
         # (gridpos, block) placements on this flow's 28-slot grid. The input
-        # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed)
-        # and is registered in ``instance_ids`` under the ``(pi, -1, -1)``
-        # sentinel so the snapshot synthesis can bind it as a bypass target
-        # (the Stadium app snapshot-tracks the DSP input).
+        # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed).
         input_block = _make_input_endpoint(mode, 0, in_params)
         if path.get("input_enabled") is False:
             input_block["enbl"] = 0
-        instance_ids[(pi, -1, -1)] = base + _ROW0_INPUT
-        # The row-0 OutputMatrix endpoint gets the ``(pi, -2, -2)`` sentinel:
-        # its gain/pan can be snapshot-tracked param targets (#62 phase 2 —
-        # per-snapshot output-level trims).
-        instance_ids[(pi, -2, -2)] = base + _ROW0_OUTPUT
+        # All FOUR endpoints are registered in ``instance_ids`` under their own
+        # sentinel (they have no ``(lane, pos)`` of their own), because every
+        # one of them can be a snapshot target on real device content: the DSP
+        # input's bypass (#23), the output's gain/pan (#62 phase 2), and — bead
+        # hgc-5us — the outputs' bypass and the whole row-1 pair.
+        for sentinel, gp in zip(_ENDPOINT_SENTINELS,
+                                (_ROW0_INPUT, _ROW0_OUTPUT,
+                                 _ROW1_INPUT, _ROW1_OUTPUT)):
+            instance_ids[(pi,) + sentinel] = base + gp
         placements: List[Tuple[int, dict]] = [(_ROW0_INPUT, input_block)]
 
         # Three mutually-exclusive placement strategies, each populating
@@ -874,7 +925,7 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         else:
             _place_split_flow_nocoords(placements, instance_ids, pi, base,
                                        modeled, structural)
-        _append_output_group(placements, out_params)
+        _append_output_group(placements, out_params, path)
 
         flows.append(_canonical_flow(placements, base))
 
@@ -1228,6 +1279,52 @@ def _active_snapshot(recipe: dict) -> int:
     return max(0, min(value, 7))
 
 
+def _ptid_key(eid: int, slot: int, pid: int) -> Optional[int]:
+    """The ``cg__.ctm_.ptid`` lookup key for a param target, or ``None`` when
+    the device's packing cannot represent it.
+
+    The key packs three fields — ``eID_ << 16 | slot << 8 | pid_`` — which is
+    what 889 of the 890 ``ptid`` entries across Line 6's 66 factory presets
+    decode to (the one miss is a stale key the device left behind in
+    ``55-14D-BAS-4-PRO-4-Pros``). The SLOT byte is the half helixgen used to
+    omit, so a dual-cab B-slot target was registered under the A slot's key and
+    collided with it (bead hgc-3yc).
+
+    ``pid_`` therefore has only 8 bits. Every corpus ``ptid`` entry fits, but
+    the model vocabulary reaches much higher (``Agoura_AmpUSDoubleBlack``'s
+    ``VibTreb`` is pid 1111), and such a pid would silently carry into the slot
+    byte — a binding pointing at a DIFFERENT slot and param. There is no
+    captured device content showing how the firmware encodes one, so the entry
+    is skipped rather than corrupted; the target still reaches ``stid`` and the
+    parm leaf still carries its ``tid_``. See bead hgc-3d1.
+    """
+    if not 0 <= pid <= 0xFF or not 0 <= slot <= 0xFF:
+        return None
+    return (eid << 16) | (slot << 8) | pid
+
+
+def _model_slots(spec: dict, mid: int):
+    """``(slot index, device model id, slot spec)`` for a block's model slots.
+
+    Slot 0 is the block spec itself; every further slot is an ``extra_slots``
+    entry — a dual-cab's B cab, which carries its own snapshot arrays and
+    controller assignments under the SAME block instance id (bead hgc-3yc).
+
+    An unresolvable extra model yields no slot. That cannot happen today —
+    ``_make_user_block`` builds the same list through ``_make_model_instance``,
+    which RAISES on an unresolvable model, so the emit fails before this runs —
+    but were that ever softened to skip, ``si`` here (an ``extra_slots`` index)
+    would stop matching the emitted ``mdls`` index that
+    :func:`_bind_snapshot_targets` enumerates, and the target would bind to
+    nothing. Keep the two in step.
+    """
+    yield 0, mid, spec
+    for si, extra in enumerate(spec.get("extra_slots") or [], start=1):
+        smid = _resolve_model_id(extra.get("block", ""))
+        if smid is not None:
+            yield si, smid, extra
+
+
 def _synth_cg_from_recipe(
     recipe: dict,
     instance_ids: Dict[Tuple[int, int, int], int],
@@ -1238,17 +1335,29 @@ def _synth_cg_from_recipe(
 
     Each user block may carry ``snap_bypass`` (per-snapshot bool list, DEVICE
     polarity: ``True`` = bypassed in that snapshot) and ``snap_params``
-    (``{device_param_name: per-snapshot value list}``). For every block/param
-    that ACTUALLY VARIES across snapshots we emit one ``trgs`` target
-    (type1/enty2/pid0 bypass, or type2/enty3/pidN param), keyed by that block's
-    device instance id (``eID_``, from ``instance_ids``). Each snapshot's
+    (``{device_param_name: per-snapshot value list}``). Every such array gets
+    one ``trgs`` target (type1/enty2/pid0 bypass, or type2/enty3/pidN param),
+    keyed by that block's device instance id (``eID_``, from
+    ``instance_ids``) — the ARRAY's presence is the signal, not whether its
+    values vary. Real device content keeps a snapshot target whose 8 values
+    happen to be equal (532 such arrays across 50 of Line 6's 66 factory
+    presets), and dropping them re-wrote the preset's snapshot assignments on
+    every install (bead hgc-xh3). Each snapshot's
     ``tamv`` is the flat ``[trg_id, value, …]`` over every tracked target,
     ``ctm_.stid`` lists them, and ``ctm_.ptid`` packs the param targets
     (``(eID_<<16 | pid_) -> trg_id``).
 
+    A block's NON-primary model slots (``extra_slots`` — a dual-cab's B cab)
+    carry their own ``snap_params``/``ctl_params``. Both slots live under one
+    ``eID_`` and share the cab model's pids, so the device separates them with
+    the target's ``slot`` field — in the ``trgs`` entry AND in the ``ptid`` key,
+    which packs the slot byte (see :func:`_ptid_key`). All 11 slot-1 targets in
+    Line 6's factory corpus are registered in ``ptid`` under that key
+    (bead hgc-3yc).
+
     Returns ``(cg__, bindings)`` where ``bindings`` maps the snapshot-tracked
     entities back to their target ids — ``{"bypass": {eID_: trg_id},
-    "param": {(eID_, pid_): trg_id}}`` — so the caller can stamp
+    "param": {(eID_, slot, pid_): trg_id}}`` — so the caller can stamp
     ``snap=True, tid_=<trg id>`` onto the tracked block dicts / parm leaves
     (the device applies snapshot values through that binding; controller-only
     targets are NOT bound). A tone with no snapshot variation falls back to
@@ -1259,7 +1368,8 @@ def _synth_cg_from_recipe(
     stid: List[int] = []
     ptid: List[int] = []
     tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
-    trg_index: Dict[Tuple[int, int, int], int] = {}  # (eID_, pid_, type) -> trg id
+    # (eID_, model slot, pid_, type) -> trg id
+    trg_index: Dict[Tuple[int, int, int, int], int] = {}
     # ``bypass``/``param`` hold snapshot-tracked targets (bound with
     # ``snap=True``); ``param_ctl`` holds controller-ONLY param targets (#24:
     # bound with ``snap=False`` — a controller-driven param leaf still carries
@@ -1270,7 +1380,7 @@ def _synth_cg_from_recipe(
     # confirmed against HX Edit's own encoding, 2026-07-13).
     next_trg = 1
 
-    def _new_trg(entry: dict, key: Tuple[int, int, int]) -> int:
+    def _new_trg(entry: dict, key: Tuple[int, int, int, int]) -> int:
         nonlocal next_trg
         tid = next_trg
         next_trg += 1
@@ -1278,6 +1388,41 @@ def _synth_cg_from_recipe(
         trgs.append(entry)
         trg_index[key] = tid
         return tid
+
+    def _bypass_trg(eid: int, mid: int) -> int:
+        """Get or create a user block's BYPASS target.
+
+        ``mmid`` is stamped unconditionally, which does NOT match the device's
+        own rule: across Line 6's 66 factory presets a CONTROLLER-driven bypass
+        target carries ``mmid`` 571 times and omits it once, while a
+        snapshot-ONLY one omits it 382 times and carries it 9 (1062 of 1072
+        either way). Emitting it always was rare enough to ignore until hgc-xh3
+        made every constant array a target and multiplied it ~230x.
+
+        It stays anyway: the always-``mmid`` shape is what every helixgen tone
+        on the user's hardware was installed with and plays fine, so it is
+        field-proven, while "omit it for a snapshot-only target" is only
+        corpus-attested — and switching changes the emitted bytes of ALL 32
+        local library tones. Matching the device here needs a hardware check
+        first. See bead hgc-ufu.
+        """
+        tid = trg_index.get((eid, 0, 0, 1))
+        if tid is None:
+            return _new_trg({"eID_": eid, "enty": 2, "mmid": mid, "pid_": 0,
+                             "slot": 0, "type": 1}, (eid, 0, 0, 1))
+        return tid
+
+    def _register_ptid(eid: int, slot: int, pid: int, tid: int) -> None:
+        """Add a param target to ``ctm_.ptid`` under the device's packed key."""
+        key = _ptid_key(eid, slot, pid)
+        if key is None:
+            import sys
+            print(f"warning: param id {pid} does not fit the device's ptid key "
+                  f"(8 bits); the snapshot/controller target still applies via "
+                  f"the parm leaf, but it is not registered in ptid "
+                  f"(bead hgc-3d1).", file=sys.stderr)
+            return
+        ptid.extend([key, tid])
 
     # 1) Snapshot-tracked targets (Part A).
     for pi, path in enumerate(recipe.get("paths") or []):
@@ -1291,71 +1436,87 @@ def _synth_cg_from_recipe(
             if mid is None:
                 continue
             bypass = spec.get("snap_bypass")
-            if isinstance(bypass, list) and len({bool(x) for x in bypass}) > 1:
-                tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
-                                "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 1))
+            if isinstance(bypass, list) and bypass:
+                tid = _bypass_trg(eid, mid)
                 stid.append(tid)
                 tracked.append((tid, [bool(x) for x in bypass]))
                 bindings["bypass"][eid] = tid
-            for pname, pvals in (spec.get("snap_params") or {}).items():
-                if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
-                    continue
-                pid = defs.param_id_for(mid, pname)
-                if pid is None:
-                    continue
-                tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid, "pid_": pid,
-                                "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
-                               (eid, pid, 2))
-                stid.append(tid)
-                ptid.extend([(eid << 16) | pid, tid])
-                tracked.append((tid, list(pvals)))
-                bindings["param"][(eid, pid)] = tid
+            for si, smid, sslot in _model_slots(spec, mid):
+                for pname, pvals in (sslot.get("snap_params") or {}).items():
+                    if not (isinstance(pvals, list) and pvals):
+                        continue
+                    pid = defs.param_id_for(smid, pname)
+                    if pid is None:
+                        continue
+                    tid = _new_trg({"eID_": eid, "enty": 3, "mmid": smid,
+                                    "pid_": pid, "pmid": smid, "ppid": pid,
+                                    "slot": si, "type": 2}, (eid, si, pid, 2))
+                    stid.append(tid)
+                    _register_ptid(eid, si, pid, tid)
+                    tracked.append((tid, list(pvals)))
+                    bindings["param"][(eid, si, pid)] = tid
 
-    # 1b) Input-endpoint snapshot bypass (#23). The DSP input is a bypass
-    #     target too — its instance id is stashed under the ``(pi, -1, -1)``
-    #     sentinel by :func:`synthesize_sfg`. Emit a bypass trg (device
-    #     polarity: ``True`` = muted) whenever the per-snapshot array varies.
-    for pi, path in enumerate(recipe.get("paths") or []):
-        ibypass = path.get("input_snap_bypass")
-        if not (isinstance(ibypass, list) and len({bool(x) for x in ibypass}) > 1):
-            continue
-        eid = instance_ids.get((pi, -1, -1))
-        if eid is None:
-            continue
-        tid = _new_trg({"eID_": eid, "enty": 2, "pid_": 0, "slot": 0,
-                        "type": 1}, (eid, 0, 1))
-        stid.append(tid)
-        tracked.append((tid, [bool(x) for x in ibypass]))
-        bindings["bypass"][eid] = tid
-
-    # 1c) Output-endpoint snapshot params (#62 phase 2). Per-snapshot
-    #     output-level trims ride ``output_snap_params`` (lifted by
-    #     ``bridge.hsp_to_paths`` from the b13 gain/pan ``snapshots``
-    #     arrays); the OutputMatrix instance id is stashed under the
-    #     ``(pi, -2, -2)`` sentinel. Emit a param trg per varying array —
-    #     the values are raw device units (dB for ``gain``), exactly like a
-    #     user-block ``snap_params`` row.
-    out_mid = _OUTPUT_MATRIX["mdls"][0]["id__"]  # 783 = P35_OutputMatrix
-    for pi, path in enumerate(recipe.get("paths") or []):
-        osnap = path.get("output_snap_params")
-        if not isinstance(osnap, dict):
-            continue
-        eid = instance_ids.get((pi, -2, -2))
-        if eid is None:
-            continue
-        for pname, pvals in osnap.items():
-            if not (isinstance(pvals, list) and len({repr(x) for x in pvals}) > 1):
+    # 1b) FLOW ENDPOINTS. All four are snapshot targets on real device content:
+    #     the DSP input's bypass (#23), the row-0 output's gain/pan (#62 phase
+    #     2 per-snapshot level trims) and — bead hgc-5us — the outputs' bypass
+    #     plus the whole row-1 pair (38 arrays across the 66 factory presets).
+    #     Their instance ids sit under ``_ENDPOINT_SENTINELS``. The model is
+    #     whatever the flow RECORDS (matrix or OutputPath2A, bead hgc-ikp), not
+    #     a fixed 783. A bypass trg on an endpoint carries NO ``mmid``, matching
+    #     all 122 such targets in the factory corpus.
+    def _endpoint_trgs(eid: int, mid: int, bypass: Any, params: Any) -> None:
+        if isinstance(bypass, list) and bypass:
+            tid = _new_trg({"eID_": eid, "enty": 2, "pid_": 0, "slot": 0,
+                            "type": 1}, (eid, 0, 0, 1))
+            stid.append(tid)
+            tracked.append((tid, [bool(x) for x in bypass]))
+            bindings["bypass"][eid] = tid
+        for pname, pvals in (params or {}).items():
+            if not (isinstance(pvals, list) and pvals):
                 continue
-            pid = defs.param_id_for(out_mid, pname)
+            pid = defs.param_id_for(mid, pname)
             if pid is None:
                 continue
-            tid = _new_trg({"eID_": eid, "enty": 3, "mmid": out_mid,
-                            "pid_": pid, "pmid": out_mid, "ppid": pid,
-                            "slot": 0, "type": 2}, (eid, pid, 2))
+            tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid, "pid_": pid,
+                            "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
+                           (eid, 0, pid, 2))
             stid.append(tid)
-            ptid.extend([(eid << 16) | pid, tid])
+            _register_ptid(eid, 0, pid, tid)
             tracked.append((tid, list(pvals)))
-            bindings["param"][(eid, pid)] = tid
+            bindings["param"][(eid, 0, pid)] = tid
+
+    for pi, path in enumerate(recipe.get("paths") or []):
+        row1_in = path.get("row1_input") or {}
+        row1_out = path.get("row1_output") or {}
+        for sentinel, model, bypass, params in (
+            (_ENDPOINT_SENTINELS[0], None,
+             path.get("input_snap_bypass"), None),
+            (_ENDPOINT_SENTINELS[1], path.get("output_model"),
+             path.get("output_snap_bypass"), path.get("output_snap_params")),
+            (_ENDPOINT_SENTINELS[2], None, row1_in.get("snap_bypass"), None),
+            (_ENDPOINT_SENTINELS[3], row1_out.get("model"),
+             row1_out.get("snap_bypass"), row1_out.get("snap_params")),
+        ):
+            eid = instance_ids.get((pi,) + sentinel)
+            if eid is None:
+                continue
+            _endpoint_trgs(eid, _resolve_model_id(model or "")
+                           or _OUTPUT_MATRIX["mdls"][0]["id__"],
+                           bypass, params)
+
+    # 1c) SPLIT / JOIN routing nodes (bead hgc-rq3). They are ordinary target
+    #     entities too — 35 bypass arrays and 2 param arrays across the 66
+    #     factory presets — but they live in ``path["structural"]``, not in
+    #     ``blocks``, so they have no ``(lane, pos)`` key in ``instance_ids``;
+    #     the placement stamps each one's assigned id as ``_eid`` instead.
+    for path in recipe.get("paths") or []:
+        for scaffold in path.get("structural") or []:
+            eid = scaffold.get("_eid")
+            mid = ((scaffold.get("mdls") or [{}])[0]).get("id__")
+            if not isinstance(eid, int) or not isinstance(mid, int):
+                continue
+            _endpoint_trgs(eid, mid, scaffold.get("_snap_bypass"),
+                           scaffold.get("_snap_params"))
 
     # 2) Controller graph (Part B): source->bypass + source->param (EXP sweeps
     #    and footswitch param toggles). One physical source gets ONE ``srcs``
@@ -1422,7 +1583,45 @@ def _synth_cg_from_recipe(
         entry["trig"] = 0
         ctrl.append(entry)
 
+    def _ctl_param_trgs(eid: int, si: int, mid: int, params_ctl: dict) -> None:
+        """One entity's ``param``-type controller assignments -> trgs + ctrl.
+
+        Shared by user blocks, their non-primary model slots (``si`` > 0, bead
+        hgc-3yc) and the split/join routing nodes (bead hgc-rq3) — a split's
+        ``RouteTo`` swept from EXP1 is a real crossfade, corpus-observed.
+        """
+        for pname, meta in params_ctl.items():
+            pid = defs.param_id_for(mid, pname)
+            if pid is None:
+                continue
+            sid = _src_for(meta.get("source"), drives_bypass=False)
+            if sid is None:
+                continue
+            tid = trg_index.get((eid, si, pid, 2))
+            if tid is None:
+                tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
+                                "pid_": pid, "pmid": mid, "ppid": pid,
+                                "slot": si, "type": 2}, (eid, si, pid, 2))
+                _register_ptid(eid, si, pid, tid)
+                # #24: a controller-ONLY param target still binds its leaf
+                # (``tid_``) — but with ``snap=False`` (it is not snapshot-
+                # tracked). A param that is ALSO snapshot-tracked already sits
+                # in ``bindings["param"]`` (snap=True), which wins.
+                bindings["param_ctl"][(eid, si, pid)] = tid
+            _new_ctrl({"behv": _behv(meta.get("behavior", "continuous"), 2),
+                       "curv": _curv(meta), "dlay": 0, "goid": 0,
+                       "max_": meta.get("max", 1.0),
+                       "min_": meta.get("min", 0.0),
+                       "thrs": _thrs(meta), "tid_": tid,
+                       "togl": False, "type": 3}, sid)
+
     for pi, path in enumerate(recipe.get("paths") or []):
+        for scaffold in path.get("structural") or []:
+            seid = scaffold.get("_eid")
+            smid = ((scaffold.get("mdls") or [{}])[0]).get("id__")
+            if isinstance(seid, int) and isinstance(smid, int):
+                _ctl_param_trgs(seid, 0, smid,
+                                scaffold.get("_ctl_params") or {})
         for bi, spec in enumerate(path.get("blocks") or []):
             lane = int(spec.get("lane", 0))
             pos = int(spec.get("pos", bi))
@@ -1436,11 +1635,7 @@ def _synth_cg_from_recipe(
             if isinstance(fsb, dict):
                 sid = _src_for(fsb.get("source"), drives_bypass=True)
                 if sid is not None:
-                    tid = trg_index.get((eid, 0, 1))
-                    if tid is None:
-                        tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
-                                        "pid_": 0, "slot": 0, "type": 1},
-                                       (eid, 0, 1))
+                    tid = _bypass_trg(eid, mid)
                     _new_ctrl({"behv": _behv(fsb.get("behavior"), 0),
                                "curv": _curv(fsb), "dlay": 0, "goid": 0,
                                "max_": True, "min_": False,
@@ -1449,32 +1644,10 @@ def _synth_cg_from_recipe(
             # ``ctl_params``: EXP sweeps AND footswitch param toggles (the
             # behavior string tells them apart; min/max are raw param units
             # either way). ``exp_params`` is the pre-#21 spelling, still read.
-            params_ctl = spec.get("ctl_params") or spec.get("exp_params") or {}
-            for pname, meta in params_ctl.items():
-                pid = defs.param_id_for(mid, pname)
-                if pid is None:
-                    continue
-                behavior = meta.get("behavior", "continuous")
-                sid = _src_for(meta.get("source"), drives_bypass=False)
-                if sid is None:
-                    continue
-                tid = trg_index.get((eid, pid, 2))
-                if tid is None:
-                    tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
-                                    "pid_": pid, "pmid": mid, "ppid": pid,
-                                    "slot": 0, "type": 2}, (eid, pid, 2))
-                    ptid.extend([(eid << 16) | pid, tid])
-                    # #24: a controller-ONLY param target still binds its leaf
-                    # (``tid_``) — but with ``snap=False`` (it is not snapshot-
-                    # tracked). A param that is ALSO snapshot-tracked already
-                    # sits in ``bindings["param"]`` (snap=True), which wins.
-                    bindings["param_ctl"][(eid, pid)] = tid
-                _new_ctrl({"behv": _behv(behavior, 2), "curv": _curv(meta),
-                           "dlay": 0, "goid": 0,
-                           "max_": meta.get("max", 1.0),
-                           "min_": meta.get("min", 0.0),
-                           "thrs": _thrs(meta), "tid_": tid,
-                           "togl": False, "type": 3}, sid)
+            for si, smid, sslot in _model_slots(spec, mid):
+                _ctl_param_trgs(eid, si, smid,
+                                sslot.get("ctl_params")
+                                or sslot.get("exp_params") or {})
 
             # MIDI CC controllers (#33). ``midi_bypass`` = a CC toggling this
             # block's bypass; ``midi_params`` = {device_param: {cc,min,max}}
@@ -1484,11 +1657,7 @@ def _synth_cg_from_recipe(
             if isinstance(midi_byp, dict):
                 cc = midi_byp.get("cc")
                 if isinstance(cc, int) and not isinstance(cc, bool):
-                    tid = trg_index.get((eid, 0, 1))
-                    if tid is None:
-                        tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
-                                        "pid_": 0, "slot": 0, "type": 1},
-                                       (eid, 0, 1))
+                    tid = _bypass_trg(eid, mid)
                     _new_midi_ctrl({"behv": 0, "cnt2": cc, "curv": 5,
                                     "dlay": 0, "goid": 0, "max_": True,
                                     "midi": 0xB000 | cc, "min_": False,
@@ -1501,13 +1670,13 @@ def _synth_cg_from_recipe(
                 pid = defs.param_id_for(mid, pname)
                 if pid is None:
                     continue
-                tid = trg_index.get((eid, pid, 2))
+                tid = trg_index.get((eid, 0, pid, 2))
                 if tid is None:
                     tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
                                     "pid_": pid, "pmid": mid, "ppid": pid,
-                                    "slot": 0, "type": 2}, (eid, pid, 2))
-                    ptid.extend([(eid << 16) | pid, tid])
-                    bindings["param_ctl"][(eid, pid)] = tid
+                                    "slot": 0, "type": 2}, (eid, 0, pid, 2))
+                    _register_ptid(eid, 0, pid, tid)
+                    bindings["param_ctl"][(eid, 0, pid)] = tid
                 _new_midi_ctrl({"behv": 2, "cnt2": cc, "curv": 5, "dlay": 0,
                                 "goid": 0, "max_": meta.get("max", 1.0),
                                 "midi": 0xB000 | cc, "min_": meta.get("min", 0.0),
@@ -1623,7 +1792,8 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
         _e("preset.clip.start", "f"),
         _e("preset.expsw.active", "i"),
     ]
-    from ..controllers import ControllerError, FS_LABEL_MAX, color_int
+    from ..controllers import (ControllerError, FS_LABEL_STORED_MAX,
+                               color_int)
     for row in ("a", "b"):
         for n in range(1, 13):
             base = f"preset.floorboard.stomp.{row}.{n}"
@@ -1639,9 +1809,16 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
                     color = 1  # unknown name -> "auto" palette slot
             if not isinstance(color, int) or isinstance(color, bool):
                 color = 1  # unknown -> "auto" palette slot
-            # The device stores at most 12 scribble chars (a 13-char .hsp
-            # label was observed truncated on the hardware).
-            label = str(cfg.get("fs_label", ""))[:FS_LABEL_MAX]
+            # ``FS_LABEL_MAX`` is what the strip DISPLAYS, not what the device
+            # stores — Line 6's own factory presets carry 13-to-16-char labels,
+            # and clipping to 12 here made every install rewrite the user's
+            # scribble strip (bead hgc-cd2). Clip at the longest length a real
+            # blob attests rather than not clipping at all: a ``.hsp`` is a
+            # trust boundary and nothing shows what the device does with a
+            # 200-char label. A missing/``None`` label is "", not "None".
+            raw_label = cfg.get("fs_label")
+            label = ("" if raw_label is None
+                     else str(raw_label)[:FS_LABEL_STORED_MAX])
             pm.append({"key_": f"{base}.color", "type": "i", "val_": color})
             pm.append({"key_": f"{base}.label", "type": "s", "val_": label})
             pm.append({"key_": f"{base}.topidx", "type": "i",
@@ -1718,17 +1895,18 @@ def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
             if tid:
                 item["snap"] = True
                 item["tid_"] = tid
-            # Only the primary model slot: a future second slot (dual-cab)
-            # could share a pid with the tracked param and must not be stamped.
-            for mdl in (item.get("mdls") or [])[:1]:
+            # EVERY model slot, keyed by its index: a dual-cab's two slots
+            # share the cab model's pids under one ``eID_``, so the binding
+            # must not be stamped by pid alone (bead hgc-3yc).
+            for si, mdl in enumerate(item.get("mdls") or []):
                 for leaf in mdl.get("parm") or []:
                     pid = leaf.get("pid_")
-                    ptid = by_param.get((eid, pid))
+                    ptid = by_param.get((eid, si, pid))
                     if ptid:
                         leaf["snap"] = True
                         leaf["tid_"] = ptid
                         continue
-                    cptid = by_param_ctl.get((eid, pid))
+                    cptid = by_param_ctl.get((eid, si, pid))
                     if cptid:
                         leaf["snap"] = False
                         leaf["tid_"] = cptid
@@ -1811,10 +1989,14 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
             for e in path["structural"]:
                 blk = _build_structural_block(e)
                 # Carry the .hsp grid coordinate so synthesize_sfg can place the
-                # split/join faithfully (private keys, stripped before emit).
+                # split/join faithfully (private keys, stripped before emit),
+                # plus its snapshot/controller assignments (bead hgc-rq3).
                 if e.get("pos") is not None:
                     blk["_pos"] = int(e["pos"])
                     blk["_lane"] = int(e.get("lane", 0))
+                for k in ("snap_bypass", "snap_params", "ctl_params"):
+                    if e.get(k):
+                        blk["_" + k] = e[k]
                 built.append(blk)
             path["structural"] = built
     recipe: Dict[str, Any] = {"name": None, "paths": paths or [{"blocks": []}]}

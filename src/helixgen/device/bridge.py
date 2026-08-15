@@ -173,6 +173,75 @@ def _lane_pos(key: str) -> Tuple[int, int]:
     return lane, num - 14 * lane
 
 
+def is_snapshot_assignment(arr: List[Any], base: Any) -> bool:
+    """Is this ``.hsp`` per-snapshot array a real snapshot ASSIGNMENT?
+
+    A DENSE array (every slot carries a value) is the device's own spelling —
+    it means "this target is snapshot-tracked", whether or not the 8 values
+    differ. Real device content is full of constant ones (532 arrays across 50
+    of Line 6's 66 factory presets), and the forward path must keep them or a
+    re-install silently un-assigns the block (bead hgc-xh3).
+
+    A SPARSE array (some slot is ``None``) is the legacy export spelling, where
+    ``None`` means "not overridden here". One that never overrides the base is
+    an artifact carrying no assignment — every helixgen-authored tone has one
+    on its ``b00`` input — so it is NOT a target.
+
+    That last rule is deliberately blunt, and it discards one real case along
+    with the artifact: a sparse array whose only non-``None`` entries RESTATE
+    the base (``[null, null, true, null, …]`` with ``value: true``) is an
+    explicit "this snapshot too" assignment, and it is dropped. Nothing at this
+    layer distinguishes it from the artifact. Not a regression — the old "must
+    vary" gate dropped it as well — and no device-written ``.hsp`` can reach
+    it, because ``untranscode`` only ever emits DENSE arrays.
+    """
+    if all(v is not None for v in arr):
+        return True
+    return any(v is not None and v != base for v in arr)
+
+
+def _snap_bypass(bnn: dict) -> Optional[List[Any]]:
+    """A block's per-snapshot BYPASS array in DEVICE polarity (``True`` =
+    bypassed), i.e. the inverse of its ``.hsp`` ``@enabled`` array — a device
+    bypass target's snapshot value is "is it bypassed" (hardware-verified
+    against the Stadium app's own import, 2026-07-13). ``None`` when the block
+    records no real assignment (see :func:`is_snapshot_assignment`).
+
+    Works for ANY block: user blocks, the split/join routing nodes, and the
+    flow's own endpoints all carry bypass targets in real device content.
+    """
+    en = bnn.get("@enabled")
+    if not (isinstance(en, dict) and isinstance(en.get("snapshots"), list)):
+        return None
+    arr = en["snapshots"]
+    bv = en.get("value")
+    base = True if bv is None else bool(bv)  # missing/None = enabled
+    if not is_snapshot_assignment(arr, base):
+        return None
+    return [not bool(base if v is None else v) for v in arr]
+
+
+def _endpoint_snap_params(slot: dict) -> Dict[str, List[Any]]:
+    """An ENDPOINT slot's per-snapshot param arrays, keyed by device param name.
+
+    Like :func:`_snapshot_arrays`' param half but without the user-block name
+    map: an endpoint's ``.hsp`` param names ARE the device names.
+    """
+    out: Dict[str, List[Any]] = {}
+    for pname, wrapped in (slot.get("params") or {}).items():
+        if not (isinstance(wrapped, dict)
+                and isinstance(wrapped.get("snapshots"), list)):
+            continue
+        arr = wrapped["snapshots"]
+        base = wrapped.get("value")
+        if not is_snapshot_assignment(arr, base):
+            continue
+        if base is None and any(v is None for v in arr):
+            continue  # nothing to densify the sparse slots with
+        out[pname] = [base if v is None else v for v in arr]
+    return out
+
+
 def _snapshot_arrays(slot: dict, bnn: dict,
                      dev_id: int) -> Tuple[Optional[List[Any]], Dict[str, List[Any]]]:
     """Extract a block's per-snapshot bypass + param arrays, mapped to device
@@ -180,21 +249,10 @@ def _snapshot_arrays(slot: dict, bnn: dict,
 
     The FULL dense arrays are read (all 8 snapshots — the trailing "Snap N"
     slots carry real state, not placeholders). ``None`` entries (legacy sparse
-    exports) fall back to the base value. The bypass list is DEVICE polarity
-    (``True`` = bypassed), i.e. the inverse of the ``.hsp`` ``@enabled``
-    arrays — a device bypass target's snapshot value is "is it bypassed"
-    (hardware-verified against the Stadium app's own import, 2026-07-13).
-    A param whose per-snapshot array is entirely ``None`` (no override) is
-    skipped.
+    exports) fall back to the base value. An array that is not a real
+    assignment (see :func:`is_snapshot_assignment`) is skipped.
     """
-    bypass: Optional[List[Any]] = None
-    en = bnn.get("@enabled")
-    if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
-        arr = en["snapshots"]
-        if any(v is not None for v in arr):
-            bv = en.get("value")
-            base = True if bv is None else bool(bv)  # missing/None = enabled
-            bypass = [not bool(base if v is None else v) for v in arr]
+    bypass = _snap_bypass(bnn)
 
     src_params = slot.get("params") or {}
     name_map = param_name_map(dev_id, list(src_params.keys()))
@@ -203,12 +261,12 @@ def _snapshot_arrays(slot: dict, bnn: dict,
         if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
             continue
         arr = wrapped["snapshots"]
-        if not any(v is not None for v in arr):
+        base = wrapped.get("value")
+        if not is_snapshot_assignment(arr, base):
             continue
         dev_name = name_map.get(pname)
         if dev_name is None:
             continue
-        base = wrapped.get("value")
         if base is None and any(v is None for v in arr):
             # No base to fill the sparse slots with — a None must never reach
             # the device's tamv (msgpack nil where it expects a value).
@@ -231,17 +289,40 @@ def _ctl_meta(c: dict, *, behavior_default: str) -> Dict[str, Any]:
     return meta
 
 
-def _extra_slots(slot_list: List[Any],
-                 resolve_model) -> List[Dict[str, Any]]:
+def _ctl_params(slot: dict, name_map: Dict[str, str]) -> Dict[str, Any]:
+    """A model slot's ``param``-type controller assignments, keyed by DEVICE
+    param name (spec 2 Part B): EXP sweeps AND footswitch param toggles —
+    both are ``param`` controllers, the behavior string tells them apart."""
+    ctl: Dict[str, Any] = {}
+    for pname, wrapped in (slot.get("params") or {}).items():
+        if not (isinstance(wrapped, dict)
+                and isinstance(wrapped.get("controller"), dict)):
+            continue
+        cc = wrapped["controller"]
+        if cc.get("type") != "param" or cc.get("source") is None:
+            continue
+        dev_name = name_map.get(pname)
+        if dev_name is None:
+            continue
+        meta = _ctl_meta(cc, behavior_default="continuous")
+        meta["min"] = cc.get("min", 0.0)
+        meta["max"] = cc.get("max", 1.0)
+        ctl[dev_name] = meta
+    return ctl
+
+
+def _extra_slots(slot_list: List[Any], resolve_model, *,
+                 has_snaps: bool = False) -> List[Dict[str, Any]]:
     """A block's NON-primary ``.hsp`` model slots (``slot[1:]``) as transcoder
     specs — the B cab of a dual-cab block.
 
     One entry per resolvable slot: ``{"block": <device model name>, "params":
-    {device_param: value}, "irhash": …, "enabled": bool}``. Unresolvable slots
-    are skipped rather than raising: an unknown B cab must not fail an install
-    whose A cab is fine. Snapshot/controller state on a non-primary slot is NOT
-    lifted — the ``cg__`` synthesis only ever emits ``slot: 0`` targets (bead
-    hgc-3yc); ``untranscode`` warns when it sees such state.
+    {device_param: value}, "irhash": …, "enabled": bool}``, plus its own
+    ``snap_params`` / ``ctl_params`` (bead hgc-3yc: both model slots live under
+    one block instance and share the cab model's pids, so the device keys their
+    targets by ``trg.slot`` — 11 such targets across 4 of Line 6's 66 factory
+    presets). Unresolvable slots are skipped rather than raising: an unknown B
+    cab must not fail an install whose A cab is fine.
     """
     out: List[Dict[str, Any]] = []
     for s in slot_list[1:]:
@@ -268,6 +349,14 @@ def _extra_slots(slot_list: List[Any],
             entry["enabled"] = False
         if isinstance(s.get("version"), int):
             entry["version"] = s["version"]
+        if has_snaps:
+            _, snap_params = _snapshot_arrays(s, {}, dev_id)
+            if snap_params:
+                entry["snap_params"] = snap_params
+        ctl = _ctl_params(s, param_name_map(dev_id,
+                                            list((s.get("params") or {}).keys())))
+        if ctl:
+            entry["ctl_params"] = ctl
         out.append(entry)
     return out
 
@@ -290,6 +379,13 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
     ``output_params``. Signal order within a lane is preserved; endpoints (b00
     input / outputs / looper / None) are skipped as user blocks (the b00 input
     mode drives ``input``).
+
+    The flow's own ENDPOINTS are carried too, because the forward path used to
+    re-synthesize them from fixed templates and so re-ROUTED the preset (bead
+    hgc-ikp): ``output_model`` is b13's recorded model (``P35_OutputPath2A``
+    when this DSP feeds the next one, not always the matrix), and
+    ``row1_input`` / ``row1_output`` (``{"mode"/"model", "params"}``) are a
+    real row-1 endpoint pair, which used to revert to InputNone/OutputNone.
     """
     preset = hsp_body.get("preset") or {}
     flows = preset.get("flow") or []
@@ -310,7 +406,11 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         input_enabled: Optional[bool] = None
         input_snap_bypass: Optional[List[Any]] = None
         output_params: Dict[str, Any] = {}
+        output_model: Optional[str] = None
+        output_snap_bypass: Optional[List[Any]] = None
         output_snap_params: Dict[str, List[Any]] = {}
+        row1_input: Optional[Dict[str, Any]] = None
+        row1_output: Optional[Dict[str, Any]] = None
         for key in sorted(k for k in flow if isinstance(k, str)
                           and k.startswith("b") and k[1:].isdigit()):
             b = flow[key]
@@ -329,8 +429,25 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 sp = {n: (w.get("value") if isinstance(w, dict) else w)
                       for n, w in (slot.get("params") or {}).items()}
                 slane, spos = _lane_pos(key)
-                structural.append({"kind": typ, "model": model, "params": sp,
-                                   "lane": slane, "pos": spos})
+                entry: Dict[str, Any] = {"kind": typ, "model": model,
+                                         "params": sp,
+                                         "lane": slane, "pos": spos}
+                # A routing node is a snapshot/controller target like any other
+                # block — the device snapshot-tracks a split's bypass and
+                # sweeps its RouteTo from EXP1 (bead hgc-rq3).
+                sdev = resolve_model(model)
+                if sdev is not None:
+                    if has_snaps:
+                        sbyp, sparams = _snapshot_arrays(slot, b, sdev)
+                        if sbyp is not None:
+                            entry["snap_bypass"] = sbyp
+                        if sparams:
+                            entry["snap_params"] = sparams
+                    sctl = _ctl_params(slot, param_name_map(
+                        sdev, list((slot.get("params") or {}).keys())))
+                    if sctl:
+                        entry["ctl_params"] = sctl
+                structural.append(entry)
                 continue
             if key == "b00":
                 input_mode = _controllers.input_mode_for_model(device_id, model)
@@ -346,38 +463,33 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 if base_en0 is not None and not base_en0:
                     input_enabled = False
                 if has_snaps:
-                    ibypass, _ = _snapshot_arrays(slot, b, 0)
-                    if ibypass is not None:
-                        input_snap_bypass = ibypass
+                    input_snap_bypass = _snap_bypass(b)
                 continue
             if typ == "output":
                 # The lane-0 primary output (b13) carries the path's level/pan;
                 # the device param names (gain/pan) match the .hsp names.
                 if key == "b13":
                     output_params = _lift_endpoint_params(slot)
+                    # ... and its MODEL: a flow feeding the next DSP ends in
+                    # `P35_OutputPath2A`, not the matrix (bead hgc-ikp).
+                    output_model = model
                     # #62 phase 2: per-snapshot output-gain trims ride the b13
                     # param wrappers' `snapshots` arrays (dense, base-filled —
-                    # written by `mutate.set_flow_param(..., snapshot=)`).
-                    # Lifted like `_snapshot_arrays`' param half, but without
-                    # the user-block name map (the .hsp names ARE the device
-                    # names here); the transcoder emits the matching snapshot
-                    # param target keyed by the OutputMatrix instance id.
+                    # written by `mutate.set_flow_param(..., snapshot=)`). The
+                    # output endpoint is a BYPASS target too (bead hgc-5us: 35
+                    # such arrays across the 66 factory presets).
                     if has_snaps:
-                        osnap: Dict[str, List[Any]] = {}
-                        for pname, wrapped in (slot.get("params") or {}).items():
-                            if not (isinstance(wrapped, dict)
-                                    and isinstance(wrapped.get("snapshots"), list)):
-                                continue
-                            arr = wrapped["snapshots"]
-                            if not any(v is not None for v in arr):
-                                continue
-                            obase = wrapped.get("value")
-                            if obase is None and any(v is None for v in arr):
-                                continue  # nothing to densify sparse slots with
-                            osnap[pname] = [obase if v is None else v
-                                            for v in arr]
-                        if osnap:
-                            output_snap_params = osnap
+                        output_snap_params = _endpoint_snap_params(slot)
+                        output_snap_bypass = _snap_bypass(b)
+                elif key == "b27":
+                    # The row-1 output. The forward path used to pin row 1 to
+                    # the InputNone/OutputNone pair, so a real second rig's
+                    # output was replaced on every install (bead hgc-ikp).
+                    row1_output = {"model": model,
+                                   "params": _lift_endpoint_params(slot)}
+                    if has_snaps:
+                        row1_output["snap_params"] = _endpoint_snap_params(slot)
+                        row1_output["snap_bypass"] = _snap_bypass(b)
                 continue
             dev_id = resolve_model(model)
             if dev_id is None:
@@ -386,6 +498,17 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 continue
             cat = device_category(dev_id)
             if cat in (None, "input", "output"):
+                if cat == "input" and key == "b14":
+                    # A REAL row-1 input (a second rig fed from its own jack).
+                    # Every key but b00 used to be skipped outright, so a
+                    # re-install replaced it with InputNone (bead hgc-ikp).
+                    row1_input = {
+                        "mode": _controllers.input_mode_for_model(device_id,
+                                                                  model),
+                        "params": _lift_endpoint_params(slot),
+                    }
+                    if has_snaps:
+                        row1_input["snap_bypass"] = _snap_bypass(b)
                 continue
             raw = {}
             for name, wrapped in (slot.get("params") or {}).items():
@@ -402,7 +525,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             irhash = slot.get("irhash") or None
             if irhash:
                 spec["irhash"] = irhash
-            extra = _extra_slots(slot_list, resolve_model)
+            extra = _extra_slots(slot_list, resolve_model, has_snaps=has_snaps)
             if extra:
                 spec["extra_slots"] = extra
             if has_snaps:
@@ -426,21 +549,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 c = en["controller"]
                 if c.get("type") == "targetbypass" and c.get("source") is not None:
                     spec["fs_bypass"] = _ctl_meta(c, behavior_default="latching")
-            ctl: Dict[str, Any] = {}
-            for pname, wrapped in (slot.get("params") or {}).items():
-                if not (isinstance(wrapped, dict)
-                        and isinstance(wrapped.get("controller"), dict)):
-                    continue
-                cc = wrapped["controller"]
-                if cc.get("type") != "param" or cc.get("source") is None:
-                    continue
-                dev_name = name_map.get(pname)
-                if dev_name is None:
-                    continue
-                meta = _ctl_meta(cc, behavior_default="continuous")
-                meta["min"] = cc.get("min", 0.0)
-                meta["max"] = cc.get("max", 1.0)
-                ctl[dev_name] = meta
+            ctl = _ctl_params(slot, name_map)
             if ctl:
                 spec["ctl_params"] = ctl
             # MIDI CC controller bindings (#33): lifted from the helixgen-
@@ -472,8 +581,16 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             path_entry["input_snap_bypass"] = input_snap_bypass
         if output_params:
             path_entry["output_params"] = output_params
+        if output_model is not None:
+            path_entry["output_model"] = output_model
+        if output_snap_bypass is not None:
+            path_entry["output_snap_bypass"] = output_snap_bypass
         if output_snap_params:
             path_entry["output_snap_params"] = output_snap_params
+        if row1_input is not None:
+            path_entry["row1_input"] = row1_input
+        if row1_output is not None:
+            path_entry["row1_output"] = row1_output
         if structural:
             path_entry["structural"] = structural
         out.append(path_entry)

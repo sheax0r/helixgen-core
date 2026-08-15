@@ -107,3 +107,46 @@ def test_check_irs_does_not_read_the_listing_when_no_irs_are_referenced():
 
     status = bridge.check_irs(Exploding(), body)
     assert status == {"present": set(), "missing": set()}
+
+
+def test_dense_constant_snapshot_array_is_an_assignment():
+    """A DENSE 8-slot array is the device's own spelling for "snapshot-
+    tracked" — whether or not the values differ (bead hgc-xh3)."""
+    assert bridge.is_snapshot_assignment([0.45] * 8, 0.45) is True
+    assert bridge.is_snapshot_assignment([True] * 8, True) is True
+
+
+def test_sparse_never_overriding_snapshot_array_is_not_an_assignment():
+    """The legacy SPARSE spelling uses ``None`` for "not overridden here". One
+    that never overrides the base carries no assignment — every
+    helixgen-authored tone has one on its ``b00`` input, and treating it as a
+    target would snapshot-assign every DSP input on the device."""
+    assert bridge.is_snapshot_assignment([True] * 6 + [None, None], True) is False
+    assert bridge.is_snapshot_assignment([None] * 8, 0.3) is False
+    # ... but a sparse array that DOES override is still real.
+    assert bridge.is_snapshot_assignment([True, False] + [None] * 6, True) is True
+
+
+def test_ptid_key_packs_the_model_slot():
+    """`ctm_.ptid` is keyed `eID_ << 16 | slot << 8 | pid_` — what 889 of the
+    890 ptid entries across Line 6's 66 factory presets decode to (bead
+    hgc-3yc). Dropping the slot byte filed a dual-cab B-slot target under the
+    A slot's key, so the two collided."""
+    from helixgen.device import transcode
+
+    assert transcode._ptid_key(4, 0, 1) == (4 << 16) | 1
+    assert transcode._ptid_key(4, 1, 1) == 262401       # 34-9C-Ichor, verbatim
+    assert transcode._ptid_key(33, 1, 1) == 2162945     # 16-5A-Reflection
+    assert transcode._ptid_key(4, 0, 1) != transcode._ptid_key(4, 1, 1)
+
+
+def test_ptid_key_refuses_a_pid_too_wide_for_its_field():
+    """`pid_` gets 8 bits, but the vocabulary goes higher
+    (`Agoura_AmpUSDoubleBlack` `VibTreb` is pid 1111). Packing it would carry
+    into the slot byte and bind a DIFFERENT slot+param, and no captured blob
+    shows how the firmware really encodes one — so there is no key (bead
+    hgc-3d1)."""
+    from helixgen.device import transcode
+
+    assert transcode._ptid_key(4, 0, 1111) is None
+    assert transcode._ptid_key(4, 0, 255) == (4 << 16) | 255

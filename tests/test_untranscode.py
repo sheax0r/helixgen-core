@@ -99,6 +99,36 @@ def test_parallel_split_roundtrips():
     assert flow["b15"]["path"] == 1 and flow["b15"]["position"] == 1
 
 
+def test_split_join_snapshot_and_controller_state_roundtrips():
+    """A split/join is a snapshot and controller target like any other block
+    (bead hgc-rq3).
+
+    They live in ``path["structural"]``, not in ``blocks``, so they had no
+    ``cg__`` entity key at all: 35 bypass arrays and 2 param arrays across the
+    66 factory presets were dropped, and a split's ``RouteTo`` swept from EXP1
+    is a crossfade the user hears."""
+    split = {**copy.deepcopy(transcode._SPLIT_SCAFFOLD), "_pos": 5, "_lane": 0,
+             "_snap_bypass": [False, True] + [False] * 6,
+             "_snap_params": {"BalanceA": [0.5, 0.125] + [0.5] * 6},
+             "_ctl_params": {"BalanceA": {"source": 0x01020100, "min": 1.0,
+                                          "max": 0.0}}}
+    join = {**copy.deepcopy(transcode._JOIN_SCAFFOLD), "_pos": 7, "_lane": 0,
+            "_snap_bypass": [False] * 8}
+    body = _assert_roundtrip({"name": "split", "paths": [{
+        "blocks": [
+            {"block": AMP, "params": {}, "lane": 0, "pos": 4},
+            {"block": CAB, "params": {}, "lane": 1, "pos": 1},
+        ],
+        "structural": [split, join],
+    }], "snapshots": [{"name": "A"}, {"name": "B"}]})
+    flow = _flow0(body)
+    assert flow["b05"]["@enabled"]["snapshots"][:2] == [True, False]
+    assert flow["b07"]["@enabled"]["snapshots"] == [True] * 8
+    route = flow["b05"]["slot"][0]["params"]["BalanceA"]
+    assert route["snapshots"][:2] == [0.5, 0.125]
+    assert route["controller"]["source"] == 0x01020100
+
+
 def test_ir_reference_roundtrips():
     body = _assert_roundtrip({"name": "ir", "paths": [{"blocks": [
         {"block": CAB, "params": {}, "irhash": IRHASH},
@@ -135,6 +165,30 @@ def test_snapshot_deltas_roundtrip():
     names = [s["name"] for s in body["preset"]["snapshots"]]
     assert names[:2] == ["Rhythm", "Lead"]
     assert len(names) == 8
+
+
+def test_constant_snapshot_arrays_roundtrip():
+    """A snapshot target whose 8 values are all EQUAL is still a target (bead
+    hgc-xh3).
+
+    Real device content is full of them — 532 such arrays across 50 of Line 6's
+    66 factory presets — because the user assigned the block/param to snapshots
+    and then set the same value in every one. The forward path used to require
+    VARIATION, so a re-install silently un-assigned them and the second read
+    produced a different ``.hsp``."""
+    body = _assert_roundtrip({
+        "name": "flat",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [
+            {"block": DRIVE, "params": {"Gain": 0.4},
+             "snap_bypass": [False] * 8},
+            {"block": AMP, "params": {"Bass": 0.45},
+             "snap_params": {"Bass": [0.45] * 8}},
+        ]}],
+    })
+    flow = _flow0(body)
+    assert flow["b01"]["@enabled"]["snapshots"] == [True] * 8
+    assert flow["b02"]["slot"][0]["params"]["Bass"]["snapshots"] == [0.45] * 8
 
 
 def test_controller_assignments_roundtrip():
@@ -239,6 +293,67 @@ def test_row1_none_endpoints_are_dropped():
     body = _assert_roundtrip({"name": "x", "paths": [{"blocks": [
         {"block": AMP, "params": {}}]}]})
     assert "b14" not in _flow0(body) and "b27" not in _flow0(body)
+
+
+def test_endpoint_snapshot_targets_round_trip():
+    """Every one of a flow's four endpoints can be a snapshot target (bead
+    hgc-5us).
+
+    The forward path could only spell the row-0 input's bypass (#23) and the
+    row-0 output's gain/pan (#62 phase 2). Real device content also
+    snapshot-tracks the OUTPUTS' bypass and the whole row-1 pair — 38 arrays
+    across Line 6's 66 factory presets — and all of them were dropped."""
+    body = _assert_roundtrip({
+        "name": "ep",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "output_snap_bypass": [False, True] + [False] * 6,
+            "row1_input": {"mode": "inst2", "params": {},
+                           "snap_bypass": [True, False] + [True] * 6},
+            "row1_output": {"model": "P35_OutputMatrix", "params": {},
+                            "snap_params": {"gain": [0.0, -6.0] + [0.0] * 6}},
+        }],
+    })
+    flow = _flow0(body)
+    # device True == bypassed -> .hsp @enabled False
+    assert flow["b13"]["@enabled"]["snapshots"][:2] == [True, False]
+    assert flow["b14"]["@enabled"]["snapshots"][:2] == [False, True]
+    assert flow["b27"]["slot"][0]["params"]["gain"]["snapshots"][:2] == [0.0, -6.0]
+
+
+def _replace_endpoint(doc: dict, gp: int, block: dict, flow: int = 0) -> None:
+    """Swap the block at grid slot ``gp`` for ``block``, keeping the identity
+    ``id__ == bmap[gp]`` the device's canonical numbering uses."""
+    blks = doc["sfg_"]["flow"][flow]["blks"]
+    block["id__"] = doc["sfg_"]["flow"][flow]["bmap"][gp]
+    blks[blks.index(gp) + 1] = block
+
+
+def test_real_flow_endpoints_survive_the_round_trip():
+    """A flow's endpoints are what the ``.hsp`` RECORDS, not fixed templates
+    (bead hgc-ikp).
+
+    ``_append_output_group`` used to pin every flow to OutputMatrix at b13 plus
+    the InputNone/OutputNone pair in row 1. Real content routes otherwise: 41
+    of Line 6's 66 factory presets end row 0 in ``P35_OutputPath2A`` (DSP1
+    feeding DSP2), and 3 carry a REAL row-1 input with its own output. Both
+    were re-synthesized away — a ROUTING change, not a layout one."""
+    doc = _one_amp_doc()
+    _replace_endpoint(doc, 13, transcode._make_output_endpoint(
+        0, {"gain": -3.0, "pan": 0.5}, "P35_OutputPath2A"))
+    _replace_endpoint(doc, 14, transcode._make_input_endpoint(
+        "inst2", 0, {"Trim": -1.5}))
+    _replace_endpoint(doc, 27, transcode._make_output_endpoint(
+        0, {"gain": -6.0, "pan": 0.5}, "P35_OutputMatrix"))
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="ep")
+
+    flow = _flow0(body)
+    assert flow["b13"]["slot"][0]["model"] == "P35_OutputPath2A"
+    assert flow["b14"]["slot"][0]["model"] == "P35_InputInst2"
+    assert flow["b27"]["slot"][0]["model"] == "P35_OutputMatrix"
+    assert transcode.hsp_to_sbepgsm(body) == sbe1   # a fixed point, byte-exact
 
 
 def test_block_types_use_the_hsp_vocabulary():
@@ -495,10 +610,13 @@ def _first_user_block(doc: dict) -> dict:
     # A disabled DSP path: _canonical_flow always writes enbl=1.
     ("DISABLED", lambda d: d["sfg_"]["flow"][0].__setitem__("enbl", 0)),
     ("signal-flow graph is DISABLED", lambda d: d["sfg_"].__setitem__("enbl", 0)),
-    # Row-1 blocks with no split: they KEEP their slots (bead hgc-8o6) but the
-    # forward path still writes InputNone/OutputNone into row 1, so nothing
-    # feeds them. A second rig going missing must never be silent.
-    ("have no split feeding them", lambda d: _shift_block(d, 1, 16)),
+    # Row-1 blocks with neither a split nor a real row-1 input: they KEEP their
+    # slots (bead hgc-8o6) but the forward path writes InputNone/OutputNone
+    # into row 1, so nothing feeds them. A second rig going missing must never
+    # be silent. (A flow that HAS a b14 input is fed — bead hgc-ikp — and is
+    # covered by test_real_flow_endpoints_survive_the_round_trip.)
+    ("neither a split nor a row-1 input feeding them",
+     lambda d: _shift_block(d, 1, 16)),
 ])
 def test_unreproducible_device_state_warns(phrase, mutate, capsys):
     """Everything this converter cannot carry has to reach stderr. Silence must
@@ -613,31 +731,67 @@ def test_dual_cab_second_slot_bypass_survives():
     assert transcode.hsp_to_sbepgsm(body) == sbe1
 
 
-def test_snapshot_target_on_the_b_slot_is_not_read_onto_the_a_slot(capsys):
+def test_snapshot_target_on_the_b_slot_round_trips_on_the_b_slot(capsys):
     """Both model slots live under ONE ``eID_`` and share the cab model's pids,
     so the ``cg__`` target's ``slot`` field is the only thing separating them.
     Keying on ``(eid, pid)`` alone handed the B cab's per-snapshot array to the
-    A cab's param — silent, wrong, and audible."""
+    A cab's param — silent, wrong, and audible.
+
+    The forward path now spells slot-N targets too (bead hgc-3yc), so this is a
+    byte-exact fixed point and no longer a reported loss."""
     doc = transcode.recipe_to_sbepgsm({
         "name": "x", "snapshots": [{"name": "A"}, {"name": "B"}],
         "paths": [{"blocks": [
             {"block": CAB_A, "params": {"Level": 1.0},
-             "snap_params": {"Level": [1.0, -2.0] + [-2.0] * 6}},
+             "extra_slots": [
+                 {"block": CAB_B, "params": {"Level": -3.0},
+                  "snap_params": {"Level": [1.0, -2.0] + [-2.0] * 6}}]},
         ]}]})
-    cab = _first_user_block(doc)
-    _add_second_model_slot(doc, defs.model_id_for(CAB_A), {"Level": -3.0},
-                           block=cab)
-    # Re-point the existing param target at model slot 1 (the B cab).
     trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
-    trg["slot"] = 1
+    assert trg["slot"] == 1 and trg["mmid"] == defs.model_id_for(CAB_B)
+    assert trg["id__"] in doc["cg__"]["entt"]["ctm_"]["stid"]
+    # The B cab's leaf carries the binding; the A cab's shares the pid and
+    # must NOT.
+    cab = _first_user_block(doc)
+    pid = _pid(CAB_B, "Level")
+    assert [next(l for l in m["parm"] if l["pid_"] == pid)["tid_"]
+            for m in cab["mdls"]] == [0, trg["id__"]]
+    sbe1 = content.encode_content_data(doc)
 
-    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
     slots = _flow0(body)["b01"]["slot"]
     assert "snapshots" not in slots[0]["params"]["Level"]
     assert slots[1]["params"]["Level"]["snapshots"][:2] == [1.0, -2.0]
-    # ... and the loss it implies (no forward spelling) is reported.
-    assert "model slot 1 carries snapshot or controller assignments" \
-        in capsys.readouterr().err
+    assert capsys.readouterr().err == ""
+    assert transcode.hsp_to_sbepgsm(body) == sbe1
+
+
+def test_controller_on_the_b_slot_round_trips_on_the_b_slot():
+    """A dual-cab B slot can carry an EXP sweep too; it needs the same
+    per-slot target spelling (bead hgc-3yc)."""
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x", "paths": [{"blocks": [
+            {"block": CAB_A, "params": {"Level": 1.0},
+             "extra_slots": [{"block": CAB_B, "params": {"Level": -3.0},
+                              "ctl_params": {"Level": {"source": 0x01020100,
+                                                       "min": -6.0,
+                                                       "max": 0.0}}}]},
+        ]}]})
+    trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
+    assert trg["slot"] == 1 and trg["mmid"] == defs.model_id_for(CAB_B)
+    # ... and it is registered in ptid under the SLOT-BEARING key
+    # `eID_ << 16 | slot << 8 | pid_` — what 889 of the 890 ptid entries in the
+    # factory corpus decode to, including all 11 slot-1 ones. Omitting the slot
+    # byte filed the B cab's target under the A cab's key.
+    ptid = doc["cg__"]["entt"]["ctm_"]["ptid"]
+    eid = _first_user_block(doc)["id__"]
+    assert dict(zip(ptid[::2], ptid[1::2]))[
+        transcode._ptid_key(eid, 1, trg["pid_"])] == trg["id__"]
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
+    ctl = _flow0(body)["b01"]["slot"][1]["params"]["Level"]["controller"]
+    assert ctl["type"] == "param" and ctl["source"] == 0x01020100
+    assert transcode.hsp_to_sbepgsm(body) == sbe1
 
 
 def test_unmappable_controller_source_warns(capsys):
