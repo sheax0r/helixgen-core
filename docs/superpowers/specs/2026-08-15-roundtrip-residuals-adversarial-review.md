@@ -6,7 +6,7 @@ scoped to the diff and its invariants; one was scoped to a single question —
 **could this write device content a real Stadium would reject or play wrong?**
 — with the 66 Line 6 factory `.sbe` blobs as ground truth.
 
-Verdict: **1 blocker, fixed in-branch. 1 high + 3 medium/low deferred as
+Verdict: **1 blocker, fixed in-branch. 1 high + 6 medium/low deferred as
 beads**, none of them regressions introduced here.
 
 The blocker is the important one: it was a claim the branch asserted as
@@ -39,6 +39,32 @@ Worth keeping — several of these are the anchors the code now cites:
 - **Longest stored scribble label is 16** (`"Parallel Reverbs"` 38-10C, `"Ampeg Opto Comps"` 63-16D). Confirms hgc-cd2 and bounds the fix.
 - **`bmap[gridpos] == id__` holds for all 1382 corpus blocks** — the identity permutation helixgen assigns is the right one, not a shortcut.
 - Row-0 outputs: 91 `P35_OutputMatrix` + 41 `P35_OutputPath2A` across 132 flows; `bcnt` always 28. Confirms hgc-ikp.
+
+## Round 2 — the diff-scoped reviewer
+
+The first reviewer stalled and was relaunched with a tighter brief. Its report
+landed after the blocker fix and independently cleared the four classes it was
+pointed at, then added one finding that matters and three that are docs:
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| 9 | MEDIUM | `mmid` on a bypass target follows a **sharp** device rule the branch does not: the device stamps it **iff a CONTROLLER drives the target** — 571 with / 1 without for controller-driven, 382 without / 9 with for snapshot-only, **1062 of 1072**. helixgen stamps it always. Rare enough to ignore until hgc-xh3 made every constant array a target and multiplied it ~230x, so this branch is what made it common. (Finding 5's cab-vs-fx correlation was a shadow of this — cabs rarely get a footswitch bypass.) | **Attempted, measured, reverted.** The fix is 3 lines and scores 860/860 on the corpus, but it changes the emitted bytes of **all 32** local library tones, because every authored tone has snapshot-only bypass targets. The always-`mmid` shape is field-proven — the user's whole library is installed and playing with it — while omitting the field is only corpus-attested. Not worth trading known-working for better-shaped without a hardware check. `_bypass_trg` now centralises all three call sites and documents the rule so the flip is one line when someone can test it; evidence and repro recorded on **hgc-ufu**. |
+| 10 | LOW | The new entities carry their per-snapshot bypass but not their BASE bypass: `_make_output_endpoint` hardcodes `enbl: 1`, the `row1_input` branch ignores `@enabled.value`, and the structural entry has no `enabled` key. A `.hsp` with a bypassed split installs enabled — with a snapshot array saying "bypassed everywhere", contradicting itself. | Deferred: **hgc-b5y** (P3). 0 endpoints and 0 structural blocks in the corpus carry `enbl=0`, so it needs a user-bypassed split to surface. |
+| 11 | LOW | `_model_slots` docstring claimed an unresolvable extra model is "skipped, matching `_make_user_block`" — `_make_user_block` RAISES. Latent hazard: `si` is an `extra_slots` index, `_bind_snapshot_targets` enumerates emitted `mdls`, so softening the raise would desync them. | Docstring corrected to say exactly that, and why the two must stay in step. |
+| 12 | LOW | `is_snapshot_assignment`'s docstring oversold the sparse rule: it also discards a sparse array whose only non-`None` entries RESTATE the base, which is a real "this snapshot too" assignment. | Docstring corrected. Not a regression (the old "must vary" gate dropped it too) and unreachable from device-written content, which is always dense. |
+| — | INFO | The two new endpoint sentinels raise `max(instance_ids.values())`, so `_synth_commands`' `next_cmd_entity` shifts on presets with Command Center commands. | Accepted — it moves command entity ids off the row-1 block id range they could previously collide with. No test or corpus preset depends on the old value. |
+| — | wrong | Claimed `mutate.set_fs_label` "hard-rejects" labels over 12 chars, so a decompiled 13-16 char label could not be re-set. It **warns**; the label is written either way. | No change. |
+
+Classes it cleared, with what it checked: **arity migration** (every
+`trg_index` 4-tuple and `bindings` 3-tuple site, plus 0 duplicate
+`(eID_, pid_, slot, type)` trgs and 0 duplicate `ptid` keys over the corpus);
+**`_eid` aliasing** (written and read on the same deepcopy, never escapes to
+the caller, and both placements strip `_`-prefixed keys before emit);
+**ordering** (src ids are `len(srcs)+1` so `srcs[sid-1]` is self-consistent,
+`sm__.scid` is rebuilt from `sorted(src_cids)`); **`None` in `tamv`**
+(unreachable — every lifter densifies or bails). It also confirmed that
+reusing the no-`mmid` `_endpoint_trgs` for split/join bypass targets matches
+the corpus exactly, 39 without / 0 with.
 
 ## Why the oracle missed the blocker
 

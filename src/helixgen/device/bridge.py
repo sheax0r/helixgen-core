@@ -186,6 +186,14 @@ def is_snapshot_assignment(arr: List[Any], base: Any) -> bool:
     ``None`` means "not overridden here". One that never overrides the base is
     an artifact carrying no assignment — every helixgen-authored tone has one
     on its ``b00`` input — so it is NOT a target.
+
+    That last rule is deliberately blunt, and it discards one real case along
+    with the artifact: a sparse array whose only non-``None`` entries RESTATE
+    the base (``[null, null, true, null, …]`` with ``value: true``) is an
+    explicit "this snapshot too" assignment, and it is dropped. Nothing at this
+    layer distinguishes it from the artifact. Not a regression — the old "must
+    vary" gate dropped it as well — and no device-written ``.hsp`` can reach
+    it, because ``untranscode`` only ever emits DENSE arrays.
     """
     if all(v is not None for v in arr):
         return True

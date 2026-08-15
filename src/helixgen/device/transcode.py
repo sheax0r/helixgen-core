@@ -1309,7 +1309,14 @@ def _model_slots(spec: dict, mid: int):
     Slot 0 is the block spec itself; every further slot is an ``extra_slots``
     entry — a dual-cab's B cab, which carries its own snapshot arrays and
     controller assignments under the SAME block instance id (bead hgc-3yc).
-    An unresolvable extra model is skipped, matching ``_make_user_block``.
+
+    An unresolvable extra model yields no slot. That cannot happen today —
+    ``_make_user_block`` builds the same list through ``_make_model_instance``,
+    which RAISES on an unresolvable model, so the emit fails before this runs —
+    but were that ever softened to skip, ``si`` here (an ``extra_slots`` index)
+    would stop matching the emitted ``mdls`` index that
+    :func:`_bind_snapshot_targets` enumerates, and the target would bind to
+    nothing. Keep the two in step.
     """
     yield 0, mid, spec
     for si, extra in enumerate(spec.get("extra_slots") or [], start=1):
@@ -1382,6 +1389,29 @@ def _synth_cg_from_recipe(
         trg_index[key] = tid
         return tid
 
+    def _bypass_trg(eid: int, mid: int) -> int:
+        """Get or create a user block's BYPASS target.
+
+        ``mmid`` is stamped unconditionally, which does NOT match the device's
+        own rule: across Line 6's 66 factory presets a CONTROLLER-driven bypass
+        target carries ``mmid`` 571 times and omits it once, while a
+        snapshot-ONLY one omits it 382 times and carries it 9 (1062 of 1072
+        either way). Emitting it always was rare enough to ignore until hgc-xh3
+        made every constant array a target and multiplied it ~230x.
+
+        It stays anyway: the always-``mmid`` shape is what every helixgen tone
+        on the user's hardware was installed with and plays fine, so it is
+        field-proven, while "omit it for a snapshot-only target" is only
+        corpus-attested — and switching changes the emitted bytes of ALL 32
+        local library tones. Matching the device here needs a hardware check
+        first. See bead hgc-ufu.
+        """
+        tid = trg_index.get((eid, 0, 0, 1))
+        if tid is None:
+            return _new_trg({"eID_": eid, "enty": 2, "mmid": mid, "pid_": 0,
+                             "slot": 0, "type": 1}, (eid, 0, 0, 1))
+        return tid
+
     def _register_ptid(eid: int, slot: int, pid: int, tid: int) -> None:
         """Add a param target to ``ctm_.ptid`` under the device's packed key."""
         key = _ptid_key(eid, slot, pid)
@@ -1407,8 +1437,7 @@ def _synth_cg_from_recipe(
                 continue
             bypass = spec.get("snap_bypass")
             if isinstance(bypass, list) and bypass:
-                tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
-                                "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 0, 1))
+                tid = _bypass_trg(eid, mid)
                 stid.append(tid)
                 tracked.append((tid, [bool(x) for x in bypass]))
                 bindings["bypass"][eid] = tid
@@ -1606,11 +1635,7 @@ def _synth_cg_from_recipe(
             if isinstance(fsb, dict):
                 sid = _src_for(fsb.get("source"), drives_bypass=True)
                 if sid is not None:
-                    tid = trg_index.get((eid, 0, 0, 1))
-                    if tid is None:
-                        tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
-                                        "pid_": 0, "slot": 0, "type": 1},
-                                       (eid, 0, 0, 1))
+                    tid = _bypass_trg(eid, mid)
                     _new_ctrl({"behv": _behv(fsb.get("behavior"), 0),
                                "curv": _curv(fsb), "dlay": 0, "goid": 0,
                                "max_": True, "min_": False,
@@ -1632,11 +1657,7 @@ def _synth_cg_from_recipe(
             if isinstance(midi_byp, dict):
                 cc = midi_byp.get("cc")
                 if isinstance(cc, int) and not isinstance(cc, bool):
-                    tid = trg_index.get((eid, 0, 0, 1))
-                    if tid is None:
-                        tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
-                                        "pid_": 0, "slot": 0, "type": 1},
-                                       (eid, 0, 0, 1))
+                    tid = _bypass_trg(eid, mid)
                     _new_midi_ctrl({"behv": 0, "cnt2": cc, "curv": 5,
                                     "dlay": 0, "goid": 0, "max_": True,
                                     "midi": 0xB000 | cc, "min_": False,
