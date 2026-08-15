@@ -63,6 +63,25 @@ def test_resolve_slot_finds_each_placed_block(goldfinger_body, library):
     assert mutate.resolve_slot(goldfinger_body, "Plate", library) == (0, "b05", 0)
 
 
+def test_resolve_slot_accepts_a_legacy_alias(goldfinger_body, library):
+    """A patch or footswitch entry written against a pre-hgc-3ll library names
+    blocks by their OLD display names. Placement and the spec resolver honor
+    those aliases; this layer must too, or a pre-rename recipe places its
+    blocks fine and then dies wiring a footswitch to one of them.
+    """
+    from dataclasses import replace
+
+    blk = library.find_block("Plate")
+    assert blk is not None
+    old_name = "Plate Stereo"
+    library.save_block(replace(blk, aliases=[old_name]))
+    reloaded = type(library)(root=library.root)
+    assert old_name in reloaded.find_block("Plate").aliases, (
+        "stored aliases must survive a load, or this test proves nothing")
+
+    assert mutate.resolve_slot(goldfinger_body, old_name, reloaded) == (0, "b05", 0)
+
+
 def test_resolve_slot_missing_raises(goldfinger_body, library):
     with pytest.raises(mutate.MutateError) as exc:
         mutate.resolve_slot(goldfinger_body, "Nope Amp", library)
