@@ -12,8 +12,10 @@ the fidelity notes below (carried over from decompile.py).
 
 The fidelity bar is *round-trip stability*: composing the returned spec must
 reproduce the source preset body (modulo the generated_at provenance stamp).
-Only values that differ from the library exemplar are emitted, so specs stay
-minimal and readable.
+Only values that differ from ``generate.authoring_defaults`` — the model's own
+device default, the same baseline the generator fills an unmentioned param
+from — are emitted, so specs stay minimal and readable and an absent param
+means "at the factory position" (hgc-x7i).
 
 Limitations
 -----------
@@ -34,7 +36,7 @@ import sys
 from typing import Any
 
 from helixgen import controllers, flowparams
-from helixgen.generate import _coerce_param_value
+from helixgen.generate import _coerce_param_value, authoring_defaults
 from helixgen.hsp import ENDPOINT_KEYS as _ENDPOINT_KEYS, _translate_model_id, _unwrap_value
 from helixgen.ir import IR_MODEL_PREFIX, IrMapping
 from helixgen.library import Block, Library
@@ -980,11 +982,15 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
     entry: dict[str, Any] = {"block": name}
 
     params: dict[str, Any] = {}
+    baseline = authoring_defaults(block)
     for param_name, wrapped in (slot.get("params") or {}).items():
         value = _unwrap_value(wrapped)
-        default = block.exemplar.get(param_name)
-        # Coerce the exemplar default to the same type before comparing, so a
-        # float-vs-int mismatch doesn't spuriously register as an override.
+        default = baseline.get(param_name)
+        # Same baseline the generator fills an unmentioned param from — the
+        # model default, falling back to the library's sighted value (hgc-x7i)
+        # — so omitting a param here regenerates the same value. Coerce it to
+        # the param's type before comparing, so a float-vs-int mismatch doesn't
+        # spuriously register as an override.
         if default is not None:
             default = _coerce_param_value(block, param_name, default)
         coerced = _coerce_param_value(block, param_name, value)

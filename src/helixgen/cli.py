@@ -211,6 +211,11 @@ def generate_cmd(
     stable handle and is always unambiguous. On an `Unknown param(s)` error,
     run `show-block "<block>"` and correct the recipe -- don't guess.
 
+    A param the recipe does NOT mention comes out at the MODEL DEFAULT --
+    `show-block`'s `default`, the device's own -- not at its `sighted` value
+    (hgc-x7i). Leaving a knob out means "factory position", so name only the
+    params you actually want moved.
+
     Output modes:
 
     \b
@@ -469,6 +474,11 @@ def view_cmd(
     edit the .hsp itself with `patch` / `set-param` / etc. Controllers that
     can't be mapped are preserved under a top-level `unknown_controllers`
     list rather than dropped.
+
+    Params are listed only where they differ from the MODEL DEFAULT (the same
+    baseline `generate` fills an unmentioned param from), so an absent param
+    means "at the factory position", and feeding the projection back to
+    `generate` reproduces the preset.
     """
     library = _resolved_library(library_path)
     irs = _resolved_irs(irs_dir)
@@ -890,7 +900,8 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
     screen shows for that raw range — write the RAW value, and note that when
     a `displays` segment is present the unit belongs to IT, not to the raw
     range. `sighted` is the single value the one ingested preset happened to
-    carry — one sample, not a range, and not a recommendation. Enum labels
+    carry — one sample, not a range, and not a recommendation: a param your
+    recipe leaves out generates at `default`, never at `sighted`. Enum labels
     are aligned to the param's min. A param marked `[internal]` (`IrData`,
     `AmpCabPeak*`) has no control in the editor: it is plumbing, not a knob —
     leave it alone.
