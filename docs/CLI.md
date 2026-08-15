@@ -63,7 +63,7 @@ A tone spec is a JSON document. Minimal example:
   "paths": [
     {
       "blocks": [
-        { "block": "Noise Gate", "params": { "Threshold": 0.4 } },
+        { "block": "Noise Gate Mono", "params": { "Threshold": 0.4 } },
         { "block": "Brit 2204",  "params": { "Drive": 0.6, "Bass": 0.5 } },
         { "block": "4x12 Greenback 25" }
       ]
