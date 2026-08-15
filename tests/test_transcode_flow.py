@@ -229,3 +229,21 @@ class TestDuplicateCoordinates:
                 {"block": "HD2_DistMinotaurMono", "lane": 1, "pos": 1},
                 {"block": "HD2_DistVerminDistMono", "lane": 1, "pos": 1},
             ], [])
+
+
+def test_synthesize_serial_sfg_is_gone():
+    """`synthesize_serial_sfg` was a back-compat shim with no callers left, and
+    keeping it was actively harmful: it forwarded `paths[:1]` to
+    `synthesize_sfg` WITHOUT the `pos` normalization that its callee relies on,
+    so anything that picked it up would silently synthesize a single path with
+    un-normalized coordinates — the same class of silent loss as hgc-x9g.
+
+    Its docstring claimed it was "retained so existing callers / tests keep
+    working"; there were none, in src, tests, or the sibling plugin repo.
+    Pinned so it does not come back as a convenience wrapper (hgc-64h).
+    """
+    from helixgen.device import transcode
+
+    assert not hasattr(transcode, "synthesize_serial_sfg"), (
+        "the dead serial shim is back — callers should use synthesize_sfg, "
+        "which reads every DSP path and returns the instance-id map")
