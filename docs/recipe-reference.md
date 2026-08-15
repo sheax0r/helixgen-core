@@ -404,11 +404,11 @@ block. Add a top-level `commands` list:
 
 ## Optional: per-block IR reference
 
-For IR blocks (`"block": "With Pan"` and other `HX2_ImpulseResponse*` variants),
+For IR blocks (`"block": "IR"` and other `HX2_ImpulseResponse*` variants),
 add an optional `ir` field to load a registered user IR:
 
 ```json
-{"block": "With Pan", "ir": "YA DXVB 112 Mix 01.wav",
+{"block": "IR", "ir": "YA DXVB 112 Mix 01.wav",
  "params": {"HighCut": 6500.0, "LowCut": 90.0, "Mix": 1.0}}
 ```
 
