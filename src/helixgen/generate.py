@@ -10,6 +10,7 @@ import copy
 import datetime
 import json
 import re
+import struct
 import sys
 from pathlib import Path
 from typing import Any
@@ -148,6 +149,63 @@ def _coerce_param_value(block: Block, key: str, value: Any) -> Any:
     return value
 
 
+def authoring_defaults(block: Block) -> dict[str, Any]:
+    """The flat block dict authoring starts from before a recipe says anything.
+
+    The library exemplar is the block's STRUCTURE — which params exist, the
+    `@model`/`@type`/`@enabled` metadata — and that part is kept verbatim. Its
+    param VALUES are something much weaker: a single sighting, whatever the one
+    preset that happened to seed the library had on that knob. Treating those
+    as "unset" silently authored a stranger's settings onto every knob a recipe
+    left alone (hgc-x7i): a bare Parametric EQ came out at HighGain 0.6 /
+    LowFreq 80 / MidGain 1.0 where the model's own defaults are 0 / 150 / 0,
+    values Line 6 never ships.
+
+    So every KNOB the vendored device defs know is re-based onto the DEVICE's
+    own default (`paraminfo.param_info(...)["default"]`, out of
+    `device/_defs_data.json`). Two carve-outs keep the sighted value, because
+    for them the exemplar is better evidence than the asset:
+
+    - a param the defs have never heard of — the sighting is the only thing
+      known about it;
+    - a param the editor exposes NO control for (`internal`: `IrData`,
+      `AmpCabPeak*`, `AmpCabZFir`). These are plumbing, not knobs, so no author
+      ever set them and the sighting IS the device's own value; and the asset's
+      `def` for some of them is plainly a placeholder — across the 26 Agoura
+      amps `AmpCabShelfF`/`AmpCabPeakQ` vary per model while `AmpCabPeakG` /
+      `AmpCabShelfG` / `AmpCabPeak2G` are a blanket 0, which would flatten a
+      +12 dB shelf the device itself reported.
+
+    Defaults are pushed through `_coerce_param_value` (the defs store a float
+    param's default as a bare `1`, and an int where the Stadium expects a float
+    can corrupt the block on-device) and then through float32, which is the
+    precision the device stores and exports — so a default compares EQUAL to
+    the same value read back off a real export (`0.707` vs `0.7070000171661377`)
+    instead of reading as a moved knob.
+
+    Every `.hsp` writer (`_to_hsp_bnn`, `mutate.swap_model`) and the reader
+    (`view._block_entry`, which omits params equal to this baseline) go through
+    here, so `view` -> `generate` stays a round-trip. The legacy `.hlx` writer
+    deliberately does NOT: these are Stadium definitions, and that path has no
+    reader to stay symmetric with.
+    """
+    from helixgen.device import paraminfo  # local: keeps this module import-light
+
+    flat = copy.deepcopy(block.exemplar)
+    for key in list(flat):
+        if key not in block.params:
+            continue  # @model/@type/@enabled/irhash: structure, not a knob
+        info = paraminfo.param_info(block.model_id, key)
+        default = info.get("default")
+        if default is None or info.get("internal"):
+            continue
+        default = _coerce_param_value(block, key, default)
+        if isinstance(default, float):
+            default = struct.unpack("<f", struct.pack("<f", default))[0]
+        flat[key] = default
+    return flat
+
+
 def _is_amp(block: Block) -> bool:
     return block.category == "amp"
 
@@ -228,6 +286,9 @@ def _compose_preset_hlx(
         last_amp_slot: str | None = None
         block_entries_hlx = [e for e in spec.paths[path_index].blocks if isinstance(e, BlockEntry)]
         for (block, user_params), block_entry in zip(chain, block_entries_hlx):
+            # Exemplar, NOT authoring_defaults: `_defs_data.json` is Stadium
+            # firmware, this is the legacy Helix writer, and it has no `view`
+            # counterpart to stay symmetric with (hgc-x7i review F5).
             placed = copy.deepcopy(block.exemplar)
             if block_entry.enabled is not None:
                 placed["@enabled"] = block_entry.enabled
@@ -540,7 +601,7 @@ def _to_hsp_bnn(
     is emitted directly onto the slot dict. Any may be None / empty when not
     relevant.
     """
-    flat = copy.deepcopy(block.exemplar)
+    flat = authoring_defaults(block)
     for k, v in user_params.items():
         flat[k] = _coerce_param_value(block, k, v)
 

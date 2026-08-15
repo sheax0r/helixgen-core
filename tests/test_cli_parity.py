@@ -60,11 +60,13 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
      ["show-block", "amp", "model_id", "UNIQUE", "stable handle"]),
     # hgc-285: real ranges + units are the contract now, not a degenerate
     # `observed=[v, v]`. The dB-vs-0..1 warning must stay in --help.
+    # hgc-x7i: an unmentioned param generates at `default`, never `sighted`.
     ("show_block", ["show-block"],
-     ["case-sensitive", "before", "UNIT", "dB", "sighted", "DEVICE default"]),
+     ["case-sensitive", "before", "UNIT", "dB", "sighted", "DEVICE default",
+      "never at `sighted`"]),
     ("generate_preset", ["generate"],
      ["Unknown param(s)", "show-block", "source of truth", "recipe-reference",
-      "model_id", "stable handle"]),
+      "model_id", "stable handle", "MODEL DEFAULT"]),
     ("list_irs", ["list-irs"],
      ["stock cab", "basename", "mapping.json", "one-time bridged"]),
     ("compute_irhash", ["irhash"], ["48 kHz", "left channel", "libsndfile"]),
@@ -72,7 +74,8 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
     ("register_ir", ["register-irs"], ["Stadium", "hash"]),
     ("register_irs", ["ir-scan"],
      ["Recursively", "cache", "conflicts", "failed"]),
-    ("view_preset", ["view"], ["read-only", "NOT authoritative", "unknown_controllers"]),
+    ("view_preset", ["view"],
+     ["read-only", "NOT authoritative", "unknown_controllers", "MODEL DEFAULT"]),
     ("controller_mapping", ["controllers"], ["English", "reserved"]),
     ("patch_preset", ["patch"],
      ["atomically", "untouched", "set_param", "set_enabled", "add_block",

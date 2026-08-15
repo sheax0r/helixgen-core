@@ -36,6 +36,7 @@ from helixgen.generate import (
     _resolve_irhash,
     _rewrite_input_endpoint,
     _to_hsp_bnn,
+    authoring_defaults,
     validate_params,
 )
 from helixgen.hsp import (
@@ -875,7 +876,9 @@ def swap_model(
         )
 
     new_params: dict[str, Any] = {
-        k: {"value": v} for k, v in new_block.exemplar.items() if k in new_block.params
+        k: {"value": v}
+        for k, v in authoring_defaults(new_block).items()
+        if k in new_block.params
     }
     new_params.update({k: v for k, v in old_params.items() if k in new_keys})
 

@@ -13,7 +13,7 @@ from helixgen.generate import (
     validate_params,
 )
 from helixgen.ingest import block_from_raw
-from helixgen.library import Library
+from helixgen.library import Block, Library
 from helixgen.spec import parse_spec
 
 
@@ -540,10 +540,85 @@ def test_compose_preset_hsp_wraps_params_in_value_envelope(tmp_library, tmp_path
     slot = preset["preset"]["flow"][0]["b01"]["slot"][0]
     # User override applied AND rewrapped
     assert slot["params"]["Drive"] == {"value": 0.9}
-    # Exemplar params survive and are also wrapped
-    assert slot["params"]["Master"] == {"value": 0.36}
+    # Params the recipe never mentions survive and are also wrapped -- at the
+    # MODEL default (0.8, stored at the device's float32 precision), not at the
+    # exemplar's sighted 0.36 (hgc-x7i).
+    assert slot["params"]["Master"]["value"] == pytest.approx(0.8)
     # @enabled also wrapped
     assert slot["@enabled"] == {"value": True}
+
+
+def test_unspecified_param_takes_model_default_not_sighted(tmp_library, tmp_path):
+    """hgc-x7i: a knob the recipe never mentions comes out at the MODEL's own
+    default, not at the library exemplar's single sighted value.
+
+    The exemplar records what the one preset that seeded the library happened
+    to have on that knob; before the fix that value was authored onto every
+    generated preset, so "I didn't touch that" produced settings Line 6 never
+    ships. The `view` side is asserted too: it must drop the same params the
+    generator refills, or the round-trip stops being one.
+
+    The default is written at the device's float32 precision, so `struct` here
+    is the exact expectation, not a tolerance.
+    """
+    import struct
+
+    from helixgen.device.paraminfo import param_info
+    from helixgen.view import view
+
+    lib = Library(tmp_library)
+    _populate_hsp_library(lib, tmp_path)
+    block = lib.find_block("Brit 2204")
+    sighted = block.exemplar["Master"]
+    default = param_info(block.model_id, "Master")["default"]
+    assert sighted != default, "fixture no longer exercises the bug"
+    default32 = struct.unpack("<f", struct.pack("<f", default))[0]
+
+    spec = parse_spec({
+        "name": "S",
+        "paths": [{"blocks": [{"block": "Brit 2204", "params": {"Drive": 0.9}}]}],
+    }, source="t.json")
+    preset = compose_preset(spec, lib, source="t.json")
+    params = preset["preset"]["flow"][0]["b01"]["slot"][0]["params"]
+
+    assert params["Master"]["value"] == default32  # untouched knob: model default
+    assert params["Master"]["value"] != sighted
+    assert params["Drive"]["value"] == 0.9         # named knob: unaffected
+
+    # view drops exactly the params generate refills, so `view` -> `generate`
+    # reproduces the same values.
+    projected = view(preset, lib)
+    assert projected["paths"][0]["blocks"][0].get("params") == {"Drive": 0.9}
+
+
+def test_internal_plumbing_params_keep_the_device_sighting():
+    """hgc-x7i: `internal` params are NOT knobs, so they keep the sighting.
+
+    The editor exposes no control for them, so no author ever moved one and the
+    sighted value came off the device itself. The vendored asset is the weaker
+    source here: its `def` for the AmpCab gains is a blanket 0 across all 26
+    Agoura amps while the matching frequencies and Qs are per-model, so
+    rebasing would flatten a shelf the device reported at +12 dB.
+    """
+    from helixgen.device.paraminfo import param_info
+    from helixgen.generate import authoring_defaults
+
+    mid = "Agoura_AmpUSLuxeBlack"
+    plumbing = param_info(mid, "AmpCabShelfG")
+    assert plumbing["internal"] and plumbing["default"] == 0
+    assert param_info(mid, "Drive")["default"] == 0.4  # a real knob, for contrast
+
+    block = Block(
+        model_id=mid, category="amp", display_name="US Luxe Black",
+        params={"AmpCabShelfG": {"type": "float", "default": 12.0},
+                "Drive": {"type": "float", "default": 0.1}},
+        exemplar={"@model": mid, "@type": "amp", "@enabled": True,
+                  "AmpCabShelfG": 12.0, "Drive": 0.1},
+        first_seen={},
+    )
+    flat = authoring_defaults(block)
+    assert flat["AmpCabShelfG"] == 12.0            # plumbing: sighting survives
+    assert flat["Drive"] == pytest.approx(0.4)     # knob: rebased to the default
 
 
 def test_compose_preset_hsp_translates_library_id_back_to_stadium(tmp_library, tmp_path):
