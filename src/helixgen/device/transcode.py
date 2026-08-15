@@ -571,33 +571,54 @@ def _synth_parm(model_id: int, params: Dict[str, Any]) -> List[dict]:
     return parm
 
 
-def _make_user_block(spec: dict, inst_id: int) -> dict:
-    """Synthesize a device block dict for a modeled recipe block."""
-    name = spec["block"]
-    params = spec.get("params") or {}
+def _make_model_instance(name: str, params: Dict[str, Any],
+                         irhash: Optional[str], *, enbl: int = 1,
+                         vers: int = 0) -> Tuple[int, Dict[str, Any]]:
+    """One ``mdls`` entry from a model name + DEVICE-named params."""
     mid = _resolve_model_id(name)
     if mid is None:
         raise ValueError(f"cannot resolve device model id for {name!r}")
-    category = _category_for(mid)
-    m0: Dict[str, Any] = {
-        "cid_": 0, "enbl": 1, "id__": mid, "lbid": -1,
+    m: Dict[str, Any] = {
+        "cid_": 0, "enbl": enbl, "id__": mid, "lbid": -1,
         "parm": _synth_parm(mid, params),
-        "snap": False, "tid_": 0, "vers": 0,
+        "snap": False, "tid_": 0, "vers": vers,
     }
     # An IR cab references its impulse response by the model instance's ``irmd``
     # = the 16-byte IR hash (``bytes.fromhex(irhash)``). Inject it so the
     # synthesized cab resolves on the device instead of dropping to no-IR.
-    irhash = spec.get("irhash")
-    if irhash and category == "ir":
-        m0["irmd"] = _irmd.irhash_to_irmd(irhash)
+    if irhash and _category_for(mid) == "ir":
+        m["irmd"] = _irmd.irhash_to_irmd(irhash)
+    return mid, m
+
+
+def _make_user_block(spec: dict, inst_id: int) -> dict:
+    """Synthesize a device block dict for a modeled recipe block.
+
+    ``spec["extra_slots"]`` — lifted by ``bridge._extra_slots`` from a ``.hsp``
+    whose ``slot`` list holds more than one model — becomes the further
+    ``mdls`` entries. That is a dual-cab block: the B cab has its own mic,
+    level and EQ but lives under the SAME block instance id as the A cab.
+    """
+    mid, m0 = _make_model_instance(spec["block"], spec.get("params") or {},
+                                   spec.get("irhash"))
+    category = _category_for(mid)
+    mdls = [m0]
+    for extra in (spec.get("extra_slots") or []):
+        vers = extra.get("version")
+        _, m = _make_model_instance(
+            extra["block"], extra.get("params") or {}, extra.get("irhash"),
+            enbl=0 if extra.get("enabled") is False else 1,
+            vers=vers if isinstance(vers, int) else 0)
+        mdls.append(m)
     # Block-level ``enbl`` is the BASE bypass (0 = the block loads bypassed);
-    # the model instance's ``enbl`` stays 1 regardless (device-verified).
+    # the PRIMARY model instance's ``enbl`` stays 1 regardless
+    # (device-verified) — a non-primary slot carries its own.
     return {
         "cid_": 0, "enbl": 0 if spec.get("enabled") is False else 1,
         "favo": 0, "hasb": False,
         "hrns": _hrns_for(category),
         "id__": inst_id,
-        "mdls": [m0],
+        "mdls": mdls,
         "snap": False,
         "tid_": 0,
         "type": _block_type(category),

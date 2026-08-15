@@ -36,10 +36,11 @@ pip install 'helixgen[device]'
 Extras: `device` (network device control: pyzmq, msgpack, paramiko),
 `dev` (pytest).
 
-A standalone install starts with an empty block library — seed it first:
+A standalone install starts with an empty block library — seed it first from
+your own device exports (or point `$HELIXGEN_LIBRARY` at an existing library):
 
 ```bash
-helixgen bootstrap
+helixgen ingest ~/MyPresets/
 ```
 
 Computing IR hashes from WAVs (`register-irs <wav>`, `ir-scan`) additionally
@@ -116,12 +117,12 @@ list of deliberately excluded verbs.
 
 ## Acknowledgments
 
-helixgen leans **heavily** on
 [**sensorium/phelix**](https://github.com/sensorium/phelix) — a
-community-maintained, hand-curated repository of Helix block JSON files. The
-`helixgen bootstrap` command clones phelix and ingests its `blocks/`
-directory; without that pre-extracted catalog the cold-start experience of
-this tool would be considerably worse.
+community-maintained, hand-curated repository of Helix block JSON files — was
+the reference that made the block/param vocabulary legible while helixgen's
+own ingest was being written. helixgen no longer reads it: the shipped block
+library is built from real `.hsp` device exports (`helixgen ingest`), and
+model/param ranges come from `src/helixgen/device/_defs_data.json`.
 
 ## Trademark notice
 

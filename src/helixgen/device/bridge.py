@@ -231,6 +231,47 @@ def _ctl_meta(c: dict, *, behavior_default: str) -> Dict[str, Any]:
     return meta
 
 
+def _extra_slots(slot_list: List[Any],
+                 resolve_model) -> List[Dict[str, Any]]:
+    """A block's NON-primary ``.hsp`` model slots (``slot[1:]``) as transcoder
+    specs — the B cab of a dual-cab block.
+
+    One entry per resolvable slot: ``{"block": <device model name>, "params":
+    {device_param: value}, "irhash": …, "enabled": bool}``. Unresolvable slots
+    are skipped rather than raising: an unknown B cab must not fail an install
+    whose A cab is fine. Snapshot/controller state on a non-primary slot is NOT
+    lifted — the ``cg__`` synthesis only ever emits ``slot: 0`` targets (bead
+    hgc-3yc); ``untranscode`` warns when it sees such state.
+    """
+    out: List[Dict[str, Any]] = []
+    for s in slot_list[1:]:
+        if not isinstance(s, dict):
+            continue
+        model = s.get("model")
+        if not model:
+            continue
+        dev_id = resolve_model(model)
+        if dev_id is None:
+            continue
+        raw = {}
+        for name, wrapped in (s.get("params") or {}).items():
+            val = wrapped.get("value") if isinstance(wrapped, dict) else wrapped
+            if isinstance(val, (int, float)):
+                raw[name] = val
+        entry: Dict[str, Any] = {"block": defs.model_name_for(dev_id),
+                                 "params": map_params(dev_id, raw)}
+        if s.get("irhash"):
+            entry["irhash"] = s["irhash"]
+        en = s.get("@enabled")
+        base_en = en.get("value") if isinstance(en, dict) else en
+        if base_en is not None and not base_en:
+            entry["enabled"] = False
+        if isinstance(s.get("version"), int):
+            entry["version"] = s["version"]
+        out.append(entry)
+    return out
+
+
 def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                  strict: bool = True) -> List[Dict[str, Any]]:
     """Read EVERY DSP flow of a ``.hsp`` body into per-path recipe entries
@@ -239,7 +280,9 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
     Each returned path dict is ``{"blocks": [...], "input": <mode|None>,
     "structural": [...]}`` where every block carries its device model-name
     string, mapped params, ``irhash``, ``(lane, pos)`` coordinate, and (when it
-    varies) ``snap_bypass`` / ``snap_params`` arrays. ``structural`` holds each
+    varies) ``snap_bypass`` / ``snap_params`` arrays. A block whose ``.hsp``
+    ``slot`` list holds more than one model (a dual-cab) also carries
+    ``extra_slots`` (see :func:`_extra_slots`). ``structural`` holds each
     split/join as ``{"kind", "model", "params"}`` for the transcoder to
     materialize. A b13 output endpoint whose ``gain``/``pan`` wrappers carry
     per-snapshot arrays (#62 phase 2 trims) contributes
@@ -359,6 +402,9 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             irhash = slot.get("irhash") or None
             if irhash:
                 spec["irhash"] = irhash
+            extra = _extra_slots(slot_list, resolve_model)
+            if extra:
+                spec["extra_slots"] = extra
             if has_snaps:
                 bypass, snap_params = _snapshot_arrays(slot, b, dev_id)
                 if bypass is not None:

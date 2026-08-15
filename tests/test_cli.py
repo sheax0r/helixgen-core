@@ -1,19 +1,31 @@
 import json
-from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from helixgen.chassis import extract_chassis
 from helixgen.cli import cli
-from helixgen.ingest import IngestSummary, block_from_raw
+from helixgen.ingest import block_from_raw
 from helixgen.library import Library
 
 
 def test_cli_help_lists_subcommands():
     result = CliRunner().invoke(cli, ["--help"])
     assert result.exit_code == 0
-    for cmd in ["ingest", "generate", "list-blocks", "show-block", "bootstrap", "register-irs", "list-irs"]:
+    for cmd in ["ingest", "generate", "list-blocks", "show-block", "register-irs", "list-irs"]:
         assert cmd in result.output
+
+
+def test_cli_has_no_bootstrap_verb():
+    """`bootstrap` cloned sensorium/phelix and ingested its `blocks/` — except
+    every phelix block file nests `@model` under `Defaults`, so `detect_shape`
+    classified all 369 as UNKNOWN and the verb printed an empty summary and
+    exited 0. Removed rather than taught the shape: the shipped library was
+    built from real `.hsp` exports (every block's `first_seen.preset` is a
+    `data/*.hsp` path), and phelix's `Controller_Dict` ranges are a lossy
+    subset of what `device/_defs_data.json` already provides (369 models vs
+    801, no units, no enum labels). Bead hgc-aye."""
+    assert "bootstrap" not in cli.commands
+    assert CliRunner().invoke(cli, ["bootstrap"]).exit_code != 0
 
 
 def test_cli_controllers_human_output():
@@ -220,26 +232,3 @@ def test_cli_show_block_missing_user_error(tmp_library):
     assert "not found" in result.output.lower()
 
 
-@patch("helixgen.cli.bootstrap")
-def test_cli_bootstrap_invokes_bootstrap(mock_bootstrap, tmp_library):
-    mock_bootstrap.return_value = IngestSummary(new=12)
-
-    result = CliRunner().invoke(
-        cli, ["bootstrap", "--library", str(tmp_library)]
-    )
-    assert result.exit_code == 0
-    mock_bootstrap.assert_called_once()
-    args, kwargs = mock_bootstrap.call_args
-    assert kwargs.get("ref") == "main"
-    assert "12 new blocks" in result.output or "+12" in result.output
-
-
-@patch("helixgen.cli.bootstrap")
-def test_cli_bootstrap_passes_ref(mock_bootstrap, tmp_library):
-    mock_bootstrap.return_value = IngestSummary(new=0)
-
-    CliRunner().invoke(
-        cli, ["bootstrap", "--phelix-ref", "v2.0", "--library", str(tmp_library)]
-    )
-    _, kwargs = mock_bootstrap.call_args
-    assert kwargs.get("ref") == "v2.0"
