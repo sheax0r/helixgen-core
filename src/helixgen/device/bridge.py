@@ -309,6 +309,13 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
     ``output_params``. Signal order within a lane is preserved; endpoints (b00
     input / outputs / looper / None) are skipped as user blocks (the b00 input
     mode drives ``input``).
+
+    The flow's own ENDPOINTS are carried too, because the forward path used to
+    re-synthesize them from fixed templates and so re-ROUTED the preset (bead
+    hgc-ikp): ``output_model`` is b13's recorded model (``P35_OutputPath2A``
+    when this DSP feeds the next one, not always the matrix), and
+    ``row1_input`` / ``row1_output`` (``{"mode"/"model", "params"}``) are a
+    real row-1 endpoint pair, which used to revert to InputNone/OutputNone.
     """
     preset = hsp_body.get("preset") or {}
     flows = preset.get("flow") or []
@@ -329,7 +336,10 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         input_enabled: Optional[bool] = None
         input_snap_bypass: Optional[List[Any]] = None
         output_params: Dict[str, Any] = {}
+        output_model: Optional[str] = None
         output_snap_params: Dict[str, List[Any]] = {}
+        row1_input: Optional[Dict[str, Any]] = None
+        row1_output: Optional[Dict[str, Any]] = None
         for key in sorted(k for k in flow if isinstance(k, str)
                           and k.startswith("b") and k[1:].isdigit()):
             b = flow[key]
@@ -374,13 +384,16 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 # the device param names (gain/pan) match the .hsp names.
                 if key == "b13":
                     output_params = _lift_endpoint_params(slot)
+                    # ... and its MODEL: a flow feeding the next DSP ends in
+                    # `P35_OutputPath2A`, not the matrix (bead hgc-ikp).
+                    output_model = model
                     # #62 phase 2: per-snapshot output-gain trims ride the b13
                     # param wrappers' `snapshots` arrays (dense, base-filled —
                     # written by `mutate.set_flow_param(..., snapshot=)`).
                     # Lifted like `_snapshot_arrays`' param half, but without
                     # the user-block name map (the .hsp names ARE the device
                     # names here); the transcoder emits the matching snapshot
-                    # param target keyed by the OutputMatrix instance id.
+                    # param target keyed by the output endpoint's instance id.
                     if has_snaps:
                         osnap: Dict[str, List[Any]] = {}
                         for pname, wrapped in (slot.get("params") or {}).items():
@@ -397,6 +410,12 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                                             for v in arr]
                         if osnap:
                             output_snap_params = osnap
+                elif key == "b27":
+                    # The row-1 output. The forward path used to pin row 1 to
+                    # the InputNone/OutputNone pair, so a real second rig's
+                    # output was replaced on every install (bead hgc-ikp).
+                    row1_output = {"model": model,
+                                   "params": _lift_endpoint_params(slot)}
                 continue
             dev_id = resolve_model(model)
             if dev_id is None:
@@ -405,6 +424,15 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 continue
             cat = device_category(dev_id)
             if cat in (None, "input", "output"):
+                if cat == "input" and key == "b14":
+                    # A REAL row-1 input (a second rig fed from its own jack).
+                    # Every key but b00 used to be skipped outright, so a
+                    # re-install replaced it with InputNone (bead hgc-ikp).
+                    row1_input = {
+                        "mode": _controllers.input_mode_for_model(device_id,
+                                                                  model),
+                        "params": _lift_endpoint_params(slot),
+                    }
                 continue
             raw = {}
             for name, wrapped in (slot.get("params") or {}).items():
@@ -491,8 +519,14 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             path_entry["input_snap_bypass"] = input_snap_bypass
         if output_params:
             path_entry["output_params"] = output_params
+        if output_model is not None:
+            path_entry["output_model"] = output_model
         if output_snap_params:
             path_entry["output_snap_params"] = output_snap_params
+        if row1_input is not None:
+            path_entry["row1_input"] = row1_input
+        if row1_output is not None:
+            path_entry["row1_output"] = row1_output
         if structural:
             path_entry["structural"] = structural
         out.append(path_entry)

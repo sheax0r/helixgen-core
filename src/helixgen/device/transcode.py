@@ -551,6 +551,30 @@ def _make_output_matrix(inst_id: int,
     return ep
 
 
+def _make_output_endpoint(inst_id: int, params: Optional[Dict[str, Any]] = None,
+                          model: Optional[str] = None) -> dict:
+    """An output endpoint block for the device model the ``.hsp`` RECORDS.
+
+    A flow's row-0 output is not always ``P35_OutputMatrix``: when DSP1 feeds
+    DSP2 it is ``P35_OutputPath2A`` (41 of Line 6's 66 factory presets' flows).
+    Re-typing it to the matrix on install is a ROUTING change, not a layout
+    one, so the recorded model wins (bead hgc-ikp). ``None``/unresolvable falls
+    back to the captured OutputMatrix template."""
+    mid = _resolve_model_id(model) if model else None
+    if mid is None or mid == _OUTPUT_MATRIX["mdls"][0]["id__"]:
+        return _make_output_matrix(inst_id, params)
+    m0 = _make_endpoint_model(mid)
+    if params:
+        m0["parm"] = _synth_parm(mid, params)
+    return {
+        "cid_": 0, "enbl": 1, "favo": 0, "hasb": False,
+        "hrns": _hrns_for("output"),
+        "id__": inst_id,
+        "mdls": [m0],
+        "snap": False, "tid_": 0, "type": 9,
+    }
+
+
 def _synth_parm(model_id: int, params: Dict[str, Any]) -> List[dict]:
     """Full parm list for ``model_id`` from ``defs``, in pid order.
 
@@ -689,13 +713,32 @@ def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
     return blk
 
 
-def _append_output_group(placements: List[Tuple[int, dict]], out_params) -> None:
-    """Append the row-0 OutputMatrix + row-1 InputNone/OutputNone endpoint
-    group that terminates every synthesized flow (identical across the serial
-    and both split placement strategies)."""
-    placements.append((_ROW0_OUTPUT, _make_output_matrix(0, out_params)))
-    placements.append((_ROW1_INPUT, _endpoint(_INPUT_NONE, 0)))
-    placements.append((_ROW1_OUTPUT, _endpoint(_OUTPUT_NONE, 0)))
+def _append_output_group(placements: List[Tuple[int, dict]], out_params,
+                         path: Optional[dict] = None) -> None:
+    """Append the endpoint group that terminates every synthesized flow — the
+    row-0 output plus the row-1 input/output pair (identical across the serial
+    and both split placement strategies).
+
+    All three come from what the ``.hsp`` RECORDS (``bridge.hsp_to_paths``)
+    rather than being pinned to OutputMatrix + the InputNone/OutputNone pair:
+    a row-0 ``P35_OutputPath2A`` (DSP1 -> DSP2) and a row-1 slot carrying a
+    REAL input with its own output are routing the ``.hsp`` carries and the
+    forward path used to discard (bead hgc-ikp). A flow that records nothing
+    keeps the historical defaults."""
+    path = path or {}
+    placements.append((_ROW0_OUTPUT,
+                       _make_output_endpoint(0, out_params,
+                                             path.get("output_model"))))
+    row1_in = path.get("row1_input")
+    placements.append((_ROW1_INPUT,
+                       _make_input_endpoint(row1_in.get("mode"), 0,
+                                            row1_in.get("params"))
+                       if row1_in else _endpoint(_INPUT_NONE, 0)))
+    row1_out = path.get("row1_output")
+    placements.append((_ROW1_OUTPUT,
+                       _make_output_endpoint(0, row1_out.get("params"),
+                                             row1_out.get("model"))
+                       if row1_out else _endpoint(_OUTPUT_NONE, 0)))
 
 
 def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
@@ -874,7 +917,7 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         else:
             _place_split_flow_nocoords(placements, instance_ids, pi, base,
                                        modeled, structural)
-        _append_output_group(placements, out_params)
+        _append_output_group(placements, out_params, path)
 
         flows.append(_canonical_flow(placements, base))
 
@@ -1335,12 +1378,14 @@ def _synth_cg_from_recipe(
     # 1c) Output-endpoint snapshot params (#62 phase 2). Per-snapshot
     #     output-level trims ride ``output_snap_params`` (lifted by
     #     ``bridge.hsp_to_paths`` from the b13 gain/pan ``snapshots``
-    #     arrays); the OutputMatrix instance id is stashed under the
-    #     ``(pi, -2, -2)`` sentinel. Emit a param trg per varying array —
-    #     the values are raw device units (dB for ``gain``), exactly like a
-    #     user-block ``snap_params`` row.
-    out_mid = _OUTPUT_MATRIX["mdls"][0]["id__"]  # 783 = P35_OutputMatrix
+    #     arrays); the output endpoint's instance id is stashed under the
+    #     ``(pi, -2, -2)`` sentinel. Emit a param trg per array — the values
+    #     are raw device units (dB for ``gain``), exactly like a user-block
+    #     ``snap_params`` row. The model is whatever the flow's row-0 output
+    #     RECORDS (matrix or OutputPath2A, bead hgc-ikp), not a fixed 783.
     for pi, path in enumerate(recipe.get("paths") or []):
+        out_mid = (_resolve_model_id(path.get("output_model") or "")
+                   or _OUTPUT_MATRIX["mdls"][0]["id__"])
         osnap = path.get("output_snap_params")
         if not isinstance(osnap, dict):
             continue

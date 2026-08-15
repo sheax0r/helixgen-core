@@ -265,6 +265,40 @@ def test_row1_none_endpoints_are_dropped():
     assert "b14" not in _flow0(body) and "b27" not in _flow0(body)
 
 
+def _replace_endpoint(doc: dict, gp: int, block: dict, flow: int = 0) -> None:
+    """Swap the block at grid slot ``gp`` for ``block``, keeping the identity
+    ``id__ == bmap[gp]`` the device's canonical numbering uses."""
+    blks = doc["sfg_"]["flow"][flow]["blks"]
+    block["id__"] = doc["sfg_"]["flow"][flow]["bmap"][gp]
+    blks[blks.index(gp) + 1] = block
+
+
+def test_real_flow_endpoints_survive_the_round_trip():
+    """A flow's endpoints are what the ``.hsp`` RECORDS, not fixed templates
+    (bead hgc-ikp).
+
+    ``_append_output_group`` used to pin every flow to OutputMatrix at b13 plus
+    the InputNone/OutputNone pair in row 1. Real content routes otherwise: 41
+    of Line 6's 66 factory presets end row 0 in ``P35_OutputPath2A`` (DSP1
+    feeding DSP2), and 3 carry a REAL row-1 input with its own output. Both
+    were re-synthesized away — a ROUTING change, not a layout one."""
+    doc = _one_amp_doc()
+    _replace_endpoint(doc, 13, transcode._make_output_endpoint(
+        0, {"gain": -3.0, "pan": 0.5}, "P35_OutputPath2A"))
+    _replace_endpoint(doc, 14, transcode._make_input_endpoint(
+        "inst2", 0, {"Trim": -1.5}))
+    _replace_endpoint(doc, 27, transcode._make_output_endpoint(
+        0, {"gain": -6.0, "pan": 0.5}, "P35_OutputMatrix"))
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="ep")
+
+    flow = _flow0(body)
+    assert flow["b13"]["slot"][0]["model"] == "P35_OutputPath2A"
+    assert flow["b14"]["slot"][0]["model"] == "P35_InputInst2"
+    assert flow["b27"]["slot"][0]["model"] == "P35_OutputMatrix"
+    assert transcode.hsp_to_sbepgsm(body) == sbe1   # a fixed point, byte-exact
+
+
 def test_block_types_use_the_hsp_vocabulary():
     body = _assert_roundtrip({"name": "types", "paths": [{"blocks": [
         {"block": DRIVE, "params": {}},
