@@ -779,9 +779,14 @@ def test_controller_on_the_b_slot_round_trips_on_the_b_slot():
         ]}]})
     trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
     assert trg["slot"] == 1 and trg["mmid"] == defs.model_id_for(CAB_B)
-    # slot-N targets stay OUT of ptid, which is keyed (eID_ << 16 | pid_) and
-    # has no room for a second slot (device-observed on all 11 factory ones).
-    assert trg["id__"] not in doc["cg__"]["entt"]["ctm_"]["ptid"]
+    # ... and it is registered in ptid under the SLOT-BEARING key
+    # `eID_ << 16 | slot << 8 | pid_` — what 889 of the 890 ptid entries in the
+    # factory corpus decode to, including all 11 slot-1 ones. Omitting the slot
+    # byte filed the B cab's target under the A cab's key.
+    ptid = doc["cg__"]["entt"]["ctm_"]["ptid"]
+    eid = _first_user_block(doc)["id__"]
+    assert dict(zip(ptid[::2], ptid[1::2]))[
+        transcode._ptid_key(eid, 1, trg["pid_"])] == trg["id__"]
     sbe1 = content.encode_content_data(doc)
     body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
     ctl = _flow0(body)["b01"]["slot"][1]["params"]["Level"]["controller"]

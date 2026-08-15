@@ -140,6 +140,13 @@ FS_COLORS = {
 # factory presets (bead hgc-cd2).
 FS_LABEL_MAX = 12
 
+# The longest label the device is ATTESTED to store: 16 chars ("Ampeg Opto
+# Comps" in 63-16D, "Parallel Reverbs" in 38-10C). Nothing above that appears
+# in any real blob, so the transcoder clips there rather than writing an
+# unbounded string into ``pm__`` — 13-to-16 now survives (which is the hgc-cd2
+# fix), and a hand-edited 200-char label still cannot reach the hardware.
+FS_LABEL_STORED_MAX = 16
+
 
 def curve_index(name: str) -> int:
     """0-based device enum index for a curve name. Raises ControllerError."""

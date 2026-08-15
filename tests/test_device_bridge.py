@@ -125,3 +125,28 @@ def test_sparse_never_overriding_snapshot_array_is_not_an_assignment():
     assert bridge.is_snapshot_assignment([None] * 8, 0.3) is False
     # ... but a sparse array that DOES override is still real.
     assert bridge.is_snapshot_assignment([True, False] + [None] * 6, True) is True
+
+
+def test_ptid_key_packs_the_model_slot():
+    """`ctm_.ptid` is keyed `eID_ << 16 | slot << 8 | pid_` — what 889 of the
+    890 ptid entries across Line 6's 66 factory presets decode to (bead
+    hgc-3yc). Dropping the slot byte filed a dual-cab B-slot target under the
+    A slot's key, so the two collided."""
+    from helixgen.device import transcode
+
+    assert transcode._ptid_key(4, 0, 1) == (4 << 16) | 1
+    assert transcode._ptid_key(4, 1, 1) == 262401       # 34-9C-Ichor, verbatim
+    assert transcode._ptid_key(33, 1, 1) == 2162945     # 16-5A-Reflection
+    assert transcode._ptid_key(4, 0, 1) != transcode._ptid_key(4, 1, 1)
+
+
+def test_ptid_key_refuses_a_pid_too_wide_for_its_field():
+    """`pid_` gets 8 bits, but the vocabulary goes higher
+    (`Agoura_AmpUSDoubleBlack` `VibTreb` is pid 1111). Packing it would carry
+    into the slot byte and bind a DIFFERENT slot+param, and no captured blob
+    shows how the firmware really encodes one — so there is no key (bead
+    hgc-3d1)."""
+    from helixgen.device import transcode
+
+    assert transcode._ptid_key(4, 0, 1111) is None
+    assert transcode._ptid_key(4, 0, 255) == (4 << 16) | 255

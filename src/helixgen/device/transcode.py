@@ -1279,6 +1279,30 @@ def _active_snapshot(recipe: dict) -> int:
     return max(0, min(value, 7))
 
 
+def _ptid_key(eid: int, slot: int, pid: int) -> Optional[int]:
+    """The ``cg__.ctm_.ptid`` lookup key for a param target, or ``None`` when
+    the device's packing cannot represent it.
+
+    The key packs three fields — ``eID_ << 16 | slot << 8 | pid_`` — which is
+    what 889 of the 890 ``ptid`` entries across Line 6's 66 factory presets
+    decode to (the one miss is a stale key the device left behind in
+    ``55-14D-BAS-4-PRO-4-Pros``). The SLOT byte is the half helixgen used to
+    omit, so a dual-cab B-slot target was registered under the A slot's key and
+    collided with it (bead hgc-3yc).
+
+    ``pid_`` therefore has only 8 bits. Every corpus ``ptid`` entry fits, but
+    the model vocabulary reaches much higher (``Agoura_AmpUSDoubleBlack``'s
+    ``VibTreb`` is pid 1111), and such a pid would silently carry into the slot
+    byte — a binding pointing at a DIFFERENT slot and param. There is no
+    captured device content showing how the firmware encodes one, so the entry
+    is skipped rather than corrupted; the target still reaches ``stid`` and the
+    parm leaf still carries its ``tid_``. See bead hgc-3d1.
+    """
+    if not 0 <= pid <= 0xFF or not 0 <= slot <= 0xFF:
+        return None
+    return (eid << 16) | (slot << 8) | pid
+
+
 def _model_slots(spec: dict, mid: int):
     """``(slot index, device model id, slot spec)`` for a block's model slots.
 
@@ -1319,10 +1343,10 @@ def _synth_cg_from_recipe(
     A block's NON-primary model slots (``extra_slots`` — a dual-cab's B cab)
     carry their own ``snap_params``/``ctl_params``. Both slots live under one
     ``eID_`` and share the cab model's pids, so the device separates them with
-    the target's ``slot`` field; a slot-N target is registered in ``stid`` but
-    NOT in ``ptid``, which is keyed ``(eID_<<16 | pid_)`` and has no room for a
-    second slot (device-observed on all 11 slot-1 targets in Line 6's factory
-    corpus, bead hgc-3yc).
+    the target's ``slot`` field — in the ``trgs`` entry AND in the ``ptid`` key,
+    which packs the slot byte (see :func:`_ptid_key`). All 11 slot-1 targets in
+    Line 6's factory corpus are registered in ``ptid`` under that key
+    (bead hgc-3yc).
 
     Returns ``(cg__, bindings)`` where ``bindings`` maps the snapshot-tracked
     entities back to their target ids — ``{"bypass": {eID_: trg_id},
@@ -1358,6 +1382,18 @@ def _synth_cg_from_recipe(
         trg_index[key] = tid
         return tid
 
+    def _register_ptid(eid: int, slot: int, pid: int, tid: int) -> None:
+        """Add a param target to ``ctm_.ptid`` under the device's packed key."""
+        key = _ptid_key(eid, slot, pid)
+        if key is None:
+            import sys
+            print(f"warning: param id {pid} does not fit the device's ptid key "
+                  f"(8 bits); the snapshot/controller target still applies via "
+                  f"the parm leaf, but it is not registered in ptid "
+                  f"(bead hgc-3d1).", file=sys.stderr)
+            return
+        ptid.extend([key, tid])
+
     # 1) Snapshot-tracked targets (Part A).
     for pi, path in enumerate(recipe.get("paths") or []):
         for bi, spec in enumerate(path.get("blocks") or []):
@@ -1387,8 +1423,7 @@ def _synth_cg_from_recipe(
                                     "pid_": pid, "pmid": smid, "ppid": pid,
                                     "slot": si, "type": 2}, (eid, si, pid, 2))
                     stid.append(tid)
-                    if si == 0:
-                        ptid.extend([(eid << 16) | pid, tid])
+                    _register_ptid(eid, si, pid, tid)
                     tracked.append((tid, list(pvals)))
                     bindings["param"][(eid, si, pid)] = tid
 
@@ -1417,7 +1452,7 @@ def _synth_cg_from_recipe(
                             "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
                            (eid, 0, pid, 2))
             stid.append(tid)
-            ptid.extend([(eid << 16) | pid, tid])
+            _register_ptid(eid, 0, pid, tid)
             tracked.append((tid, list(pvals)))
             bindings["param"][(eid, 0, pid)] = tid
 
@@ -1538,8 +1573,7 @@ def _synth_cg_from_recipe(
                 tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
                                 "pid_": pid, "pmid": mid, "ppid": pid,
                                 "slot": si, "type": 2}, (eid, si, pid, 2))
-                if si == 0:
-                    ptid.extend([(eid << 16) | pid, tid])
+                _register_ptid(eid, si, pid, tid)
                 # #24: a controller-ONLY param target still binds its leaf
                 # (``tid_``) — but with ``snap=False`` (it is not snapshot-
                 # tracked). A param that is ALSO snapshot-tracked already sits
@@ -1620,7 +1654,7 @@ def _synth_cg_from_recipe(
                     tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
                                     "pid_": pid, "pmid": mid, "ppid": pid,
                                     "slot": 0, "type": 2}, (eid, 0, pid, 2))
-                    ptid.extend([(eid << 16) | pid, tid])
+                    _register_ptid(eid, 0, pid, tid)
                     bindings["param_ctl"][(eid, 0, pid)] = tid
                 _new_midi_ctrl({"behv": 2, "cnt2": cc, "curv": 5, "dlay": 0,
                                 "goid": 0, "max_": meta.get("max", 1.0),
@@ -1737,7 +1771,8 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
         _e("preset.clip.start", "f"),
         _e("preset.expsw.active", "i"),
     ]
-    from ..controllers import ControllerError, color_int
+    from ..controllers import (ControllerError, FS_LABEL_STORED_MAX,
+                               color_int)
     for row in ("a", "b"):
         for n in range(1, 13):
             base = f"preset.floorboard.stomp.{row}.{n}"
@@ -1753,11 +1788,16 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
                     color = 1  # unknown name -> "auto" palette slot
             if not isinstance(color, int) or isinstance(color, bool):
                 color = 1  # unknown -> "auto" palette slot
-            # Emitted VERBATIM: ``controllers.FS_LABEL_MAX`` is what the strip
-            # DISPLAYS, not what the device stores — Line 6's own factory
-            # presets carry 13-to-16-char labels, and truncating them here made
-            # every install rewrite the user's scribble strip (bead hgc-cd2).
-            label = str(cfg.get("fs_label", ""))
+            # ``FS_LABEL_MAX`` is what the strip DISPLAYS, not what the device
+            # stores — Line 6's own factory presets carry 13-to-16-char labels,
+            # and clipping to 12 here made every install rewrite the user's
+            # scribble strip (bead hgc-cd2). Clip at the longest length a real
+            # blob attests rather than not clipping at all: a ``.hsp`` is a
+            # trust boundary and nothing shows what the device does with a
+            # 200-char label. A missing/``None`` label is "", not "None".
+            raw_label = cfg.get("fs_label")
+            label = ("" if raw_label is None
+                     else str(raw_label)[:FS_LABEL_STORED_MAX])
             pm.append({"key_": f"{base}.color", "type": "i", "val_": color})
             pm.append({"key_": f"{base}.label", "type": "s", "val_": label})
             pm.append({"key_": f"{base}.topidx", "type": "i",
