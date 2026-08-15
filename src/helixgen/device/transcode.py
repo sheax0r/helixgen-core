@@ -1271,6 +1271,21 @@ def _active_snapshot(recipe: dict) -> int:
     return max(0, min(value, 7))
 
 
+def _model_slots(spec: dict, mid: int):
+    """``(slot index, device model id, slot spec)`` for a block's model slots.
+
+    Slot 0 is the block spec itself; every further slot is an ``extra_slots``
+    entry — a dual-cab's B cab, which carries its own snapshot arrays and
+    controller assignments under the SAME block instance id (bead hgc-3yc).
+    An unresolvable extra model is skipped, matching ``_make_user_block``.
+    """
+    yield 0, mid, spec
+    for si, extra in enumerate(spec.get("extra_slots") or [], start=1):
+        smid = _resolve_model_id(extra.get("block", ""))
+        if smid is not None:
+            yield si, smid, extra
+
+
 def _synth_cg_from_recipe(
     recipe: dict,
     instance_ids: Dict[Tuple[int, int, int], int],
@@ -1293,9 +1308,17 @@ def _synth_cg_from_recipe(
     ``ctm_.stid`` lists them, and ``ctm_.ptid`` packs the param targets
     (``(eID_<<16 | pid_) -> trg_id``).
 
+    A block's NON-primary model slots (``extra_slots`` — a dual-cab's B cab)
+    carry their own ``snap_params``/``ctl_params``. Both slots live under one
+    ``eID_`` and share the cab model's pids, so the device separates them with
+    the target's ``slot`` field; a slot-N target is registered in ``stid`` but
+    NOT in ``ptid``, which is keyed ``(eID_<<16 | pid_)`` and has no room for a
+    second slot (device-observed on all 11 slot-1 targets in Line 6's factory
+    corpus, bead hgc-3yc).
+
     Returns ``(cg__, bindings)`` where ``bindings`` maps the snapshot-tracked
     entities back to their target ids — ``{"bypass": {eID_: trg_id},
-    "param": {(eID_, pid_): trg_id}}`` — so the caller can stamp
+    "param": {(eID_, slot, pid_): trg_id}}`` — so the caller can stamp
     ``snap=True, tid_=<trg id>`` onto the tracked block dicts / parm leaves
     (the device applies snapshot values through that binding; controller-only
     targets are NOT bound). A tone with no snapshot variation falls back to
@@ -1306,7 +1329,8 @@ def _synth_cg_from_recipe(
     stid: List[int] = []
     ptid: List[int] = []
     tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
-    trg_index: Dict[Tuple[int, int, int], int] = {}  # (eID_, pid_, type) -> trg id
+    # (eID_, model slot, pid_, type) -> trg id
+    trg_index: Dict[Tuple[int, int, int, int], int] = {}
     # ``bypass``/``param`` hold snapshot-tracked targets (bound with
     # ``snap=True``); ``param_ctl`` holds controller-ONLY param targets (#24:
     # bound with ``snap=False`` — a controller-driven param leaf still carries
@@ -1317,7 +1341,7 @@ def _synth_cg_from_recipe(
     # confirmed against HX Edit's own encoding, 2026-07-13).
     next_trg = 1
 
-    def _new_trg(entry: dict, key: Tuple[int, int, int]) -> int:
+    def _new_trg(entry: dict, key: Tuple[int, int, int, int]) -> int:
         nonlocal next_trg
         tid = next_trg
         next_trg += 1
@@ -1340,23 +1364,25 @@ def _synth_cg_from_recipe(
             bypass = spec.get("snap_bypass")
             if isinstance(bypass, list) and bypass:
                 tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
-                                "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 1))
+                                "pid_": 0, "slot": 0, "type": 1}, (eid, 0, 0, 1))
                 stid.append(tid)
                 tracked.append((tid, [bool(x) for x in bypass]))
                 bindings["bypass"][eid] = tid
-            for pname, pvals in (spec.get("snap_params") or {}).items():
-                if not (isinstance(pvals, list) and pvals):
-                    continue
-                pid = defs.param_id_for(mid, pname)
-                if pid is None:
-                    continue
-                tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid, "pid_": pid,
-                                "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
-                               (eid, pid, 2))
-                stid.append(tid)
-                ptid.extend([(eid << 16) | pid, tid])
-                tracked.append((tid, list(pvals)))
-                bindings["param"][(eid, pid)] = tid
+            for si, smid, sslot in _model_slots(spec, mid):
+                for pname, pvals in (sslot.get("snap_params") or {}).items():
+                    if not (isinstance(pvals, list) and pvals):
+                        continue
+                    pid = defs.param_id_for(smid, pname)
+                    if pid is None:
+                        continue
+                    tid = _new_trg({"eID_": eid, "enty": 3, "mmid": smid,
+                                    "pid_": pid, "pmid": smid, "ppid": pid,
+                                    "slot": si, "type": 2}, (eid, si, pid, 2))
+                    stid.append(tid)
+                    if si == 0:
+                        ptid.extend([(eid << 16) | pid, tid])
+                    tracked.append((tid, list(pvals)))
+                    bindings["param"][(eid, si, pid)] = tid
 
     # 1b) Input-endpoint snapshot bypass (#23). The DSP input is a bypass
     #     target too — its instance id is stashed under the ``(pi, -1, -1)``
@@ -1370,7 +1396,7 @@ def _synth_cg_from_recipe(
         if eid is None:
             continue
         tid = _new_trg({"eID_": eid, "enty": 2, "pid_": 0, "slot": 0,
-                        "type": 1}, (eid, 0, 1))
+                        "type": 1}, (eid, 0, 0, 1))
         stid.append(tid)
         tracked.append((tid, [bool(x) for x in ibypass]))
         bindings["bypass"][eid] = tid
@@ -1400,11 +1426,11 @@ def _synth_cg_from_recipe(
                 continue
             tid = _new_trg({"eID_": eid, "enty": 3, "mmid": out_mid,
                             "pid_": pid, "pmid": out_mid, "ppid": pid,
-                            "slot": 0, "type": 2}, (eid, pid, 2))
+                            "slot": 0, "type": 2}, (eid, 0, pid, 2))
             stid.append(tid)
             ptid.extend([(eid << 16) | pid, tid])
             tracked.append((tid, list(pvals)))
-            bindings["param"][(eid, pid)] = tid
+            bindings["param"][(eid, 0, pid)] = tid
 
     # 2) Controller graph (Part B): source->bypass + source->param (EXP sweeps
     #    and footswitch param toggles). One physical source gets ONE ``srcs``
@@ -1485,11 +1511,11 @@ def _synth_cg_from_recipe(
             if isinstance(fsb, dict):
                 sid = _src_for(fsb.get("source"), drives_bypass=True)
                 if sid is not None:
-                    tid = trg_index.get((eid, 0, 1))
+                    tid = trg_index.get((eid, 0, 0, 1))
                     if tid is None:
                         tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
                                         "pid_": 0, "slot": 0, "type": 1},
-                                       (eid, 0, 1))
+                                       (eid, 0, 0, 1))
                     _new_ctrl({"behv": _behv(fsb.get("behavior"), 0),
                                "curv": _curv(fsb), "dlay": 0, "goid": 0,
                                "max_": True, "min_": False,
@@ -1498,32 +1524,37 @@ def _synth_cg_from_recipe(
             # ``ctl_params``: EXP sweeps AND footswitch param toggles (the
             # behavior string tells them apart; min/max are raw param units
             # either way). ``exp_params`` is the pre-#21 spelling, still read.
-            params_ctl = spec.get("ctl_params") or spec.get("exp_params") or {}
-            for pname, meta in params_ctl.items():
-                pid = defs.param_id_for(mid, pname)
-                if pid is None:
-                    continue
-                behavior = meta.get("behavior", "continuous")
-                sid = _src_for(meta.get("source"), drives_bypass=False)
-                if sid is None:
-                    continue
-                tid = trg_index.get((eid, pid, 2))
-                if tid is None:
-                    tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
-                                    "pid_": pid, "pmid": mid, "ppid": pid,
-                                    "slot": 0, "type": 2}, (eid, pid, 2))
-                    ptid.extend([(eid << 16) | pid, tid])
-                    # #24: a controller-ONLY param target still binds its leaf
-                    # (``tid_``) — but with ``snap=False`` (it is not snapshot-
-                    # tracked). A param that is ALSO snapshot-tracked already
-                    # sits in ``bindings["param"]`` (snap=True), which wins.
-                    bindings["param_ctl"][(eid, pid)] = tid
-                _new_ctrl({"behv": _behv(behavior, 2), "curv": _curv(meta),
-                           "dlay": 0, "goid": 0,
-                           "max_": meta.get("max", 1.0),
-                           "min_": meta.get("min", 0.0),
-                           "thrs": _thrs(meta), "tid_": tid,
-                           "togl": False, "type": 3}, sid)
+            for si, smid, sslot in _model_slots(spec, mid):
+                params_ctl = (sslot.get("ctl_params")
+                              or sslot.get("exp_params") or {})
+                for pname, meta in params_ctl.items():
+                    pid = defs.param_id_for(smid, pname)
+                    if pid is None:
+                        continue
+                    behavior = meta.get("behavior", "continuous")
+                    sid = _src_for(meta.get("source"), drives_bypass=False)
+                    if sid is None:
+                        continue
+                    tid = trg_index.get((eid, si, pid, 2))
+                    if tid is None:
+                        tid = _new_trg({"eID_": eid, "enty": 3, "mmid": smid,
+                                        "pid_": pid, "pmid": smid, "ppid": pid,
+                                        "slot": si, "type": 2},
+                                       (eid, si, pid, 2))
+                        if si == 0:
+                            ptid.extend([(eid << 16) | pid, tid])
+                        # #24: a controller-ONLY param target still binds its
+                        # leaf (``tid_``) — but with ``snap=False`` (it is not
+                        # snapshot-tracked). A param that is ALSO snapshot-
+                        # tracked already sits in ``bindings["param"]``
+                        # (snap=True), which wins.
+                        bindings["param_ctl"][(eid, si, pid)] = tid
+                    _new_ctrl({"behv": _behv(behavior, 2), "curv": _curv(meta),
+                               "dlay": 0, "goid": 0,
+                               "max_": meta.get("max", 1.0),
+                               "min_": meta.get("min", 0.0),
+                               "thrs": _thrs(meta), "tid_": tid,
+                               "togl": False, "type": 3}, sid)
 
             # MIDI CC controllers (#33). ``midi_bypass`` = a CC toggling this
             # block's bypass; ``midi_params`` = {device_param: {cc,min,max}}
@@ -1533,11 +1564,11 @@ def _synth_cg_from_recipe(
             if isinstance(midi_byp, dict):
                 cc = midi_byp.get("cc")
                 if isinstance(cc, int) and not isinstance(cc, bool):
-                    tid = trg_index.get((eid, 0, 1))
+                    tid = trg_index.get((eid, 0, 0, 1))
                     if tid is None:
                         tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid,
                                         "pid_": 0, "slot": 0, "type": 1},
-                                       (eid, 0, 1))
+                                       (eid, 0, 0, 1))
                     _new_midi_ctrl({"behv": 0, "cnt2": cc, "curv": 5,
                                     "dlay": 0, "goid": 0, "max_": True,
                                     "midi": 0xB000 | cc, "min_": False,
@@ -1550,13 +1581,13 @@ def _synth_cg_from_recipe(
                 pid = defs.param_id_for(mid, pname)
                 if pid is None:
                     continue
-                tid = trg_index.get((eid, pid, 2))
+                tid = trg_index.get((eid, 0, pid, 2))
                 if tid is None:
                     tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
                                     "pid_": pid, "pmid": mid, "ppid": pid,
-                                    "slot": 0, "type": 2}, (eid, pid, 2))
+                                    "slot": 0, "type": 2}, (eid, 0, pid, 2))
                     ptid.extend([(eid << 16) | pid, tid])
-                    bindings["param_ctl"][(eid, pid)] = tid
+                    bindings["param_ctl"][(eid, 0, pid)] = tid
                 _new_midi_ctrl({"behv": 2, "cnt2": cc, "curv": 5, "dlay": 0,
                                 "goid": 0, "max_": meta.get("max", 1.0),
                                 "midi": 0xB000 | cc, "min_": meta.get("min", 0.0),
@@ -1769,17 +1800,18 @@ def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
             if tid:
                 item["snap"] = True
                 item["tid_"] = tid
-            # Only the primary model slot: a future second slot (dual-cab)
-            # could share a pid with the tracked param and must not be stamped.
-            for mdl in (item.get("mdls") or [])[:1]:
+            # EVERY model slot, keyed by its index: a dual-cab's two slots
+            # share the cab model's pids under one ``eID_``, so the binding
+            # must not be stamped by pid alone (bead hgc-3yc).
+            for si, mdl in enumerate(item.get("mdls") or []):
                 for leaf in mdl.get("parm") or []:
                     pid = leaf.get("pid_")
-                    ptid = by_param.get((eid, pid))
+                    ptid = by_param.get((eid, si, pid))
                     if ptid:
                         leaf["snap"] = True
                         leaf["tid_"] = ptid
                         continue
-                    cptid = by_param_ctl.get((eid, pid))
+                    cptid = by_param_ctl.get((eid, si, pid))
                     if cptid:
                         leaf["snap"] = False
                         leaf["tid_"] = cptid

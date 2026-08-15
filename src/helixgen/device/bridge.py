@@ -250,17 +250,40 @@ def _ctl_meta(c: dict, *, behavior_default: str) -> Dict[str, Any]:
     return meta
 
 
-def _extra_slots(slot_list: List[Any],
-                 resolve_model) -> List[Dict[str, Any]]:
+def _ctl_params(slot: dict, name_map: Dict[str, str]) -> Dict[str, Any]:
+    """A model slot's ``param``-type controller assignments, keyed by DEVICE
+    param name (spec 2 Part B): EXP sweeps AND footswitch param toggles —
+    both are ``param`` controllers, the behavior string tells them apart."""
+    ctl: Dict[str, Any] = {}
+    for pname, wrapped in (slot.get("params") or {}).items():
+        if not (isinstance(wrapped, dict)
+                and isinstance(wrapped.get("controller"), dict)):
+            continue
+        cc = wrapped["controller"]
+        if cc.get("type") != "param" or cc.get("source") is None:
+            continue
+        dev_name = name_map.get(pname)
+        if dev_name is None:
+            continue
+        meta = _ctl_meta(cc, behavior_default="continuous")
+        meta["min"] = cc.get("min", 0.0)
+        meta["max"] = cc.get("max", 1.0)
+        ctl[dev_name] = meta
+    return ctl
+
+
+def _extra_slots(slot_list: List[Any], resolve_model, *,
+                 has_snaps: bool = False) -> List[Dict[str, Any]]:
     """A block's NON-primary ``.hsp`` model slots (``slot[1:]``) as transcoder
     specs — the B cab of a dual-cab block.
 
     One entry per resolvable slot: ``{"block": <device model name>, "params":
-    {device_param: value}, "irhash": …, "enabled": bool}``. Unresolvable slots
-    are skipped rather than raising: an unknown B cab must not fail an install
-    whose A cab is fine. Snapshot/controller state on a non-primary slot is NOT
-    lifted — the ``cg__`` synthesis only ever emits ``slot: 0`` targets (bead
-    hgc-3yc); ``untranscode`` warns when it sees such state.
+    {device_param: value}, "irhash": …, "enabled": bool}``, plus its own
+    ``snap_params`` / ``ctl_params`` (bead hgc-3yc: both model slots live under
+    one block instance and share the cab model's pids, so the device keys their
+    targets by ``trg.slot`` — 11 such targets across 4 of Line 6's 66 factory
+    presets). Unresolvable slots are skipped rather than raising: an unknown B
+    cab must not fail an install whose A cab is fine.
     """
     out: List[Dict[str, Any]] = []
     for s in slot_list[1:]:
@@ -287,6 +310,14 @@ def _extra_slots(slot_list: List[Any],
             entry["enabled"] = False
         if isinstance(s.get("version"), int):
             entry["version"] = s["version"]
+        if has_snaps:
+            _, snap_params = _snapshot_arrays(s, {}, dev_id)
+            if snap_params:
+                entry["snap_params"] = snap_params
+        ctl = _ctl_params(s, param_name_map(dev_id,
+                                            list((s.get("params") or {}).keys())))
+        if ctl:
+            entry["ctl_params"] = ctl
         out.append(entry)
     return out
 
@@ -449,7 +480,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             irhash = slot.get("irhash") or None
             if irhash:
                 spec["irhash"] = irhash
-            extra = _extra_slots(slot_list, resolve_model)
+            extra = _extra_slots(slot_list, resolve_model, has_snaps=has_snaps)
             if extra:
                 spec["extra_slots"] = extra
             if has_snaps:
@@ -473,21 +504,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 c = en["controller"]
                 if c.get("type") == "targetbypass" and c.get("source") is not None:
                     spec["fs_bypass"] = _ctl_meta(c, behavior_default="latching")
-            ctl: Dict[str, Any] = {}
-            for pname, wrapped in (slot.get("params") or {}).items():
-                if not (isinstance(wrapped, dict)
-                        and isinstance(wrapped.get("controller"), dict)):
-                    continue
-                cc = wrapped["controller"]
-                if cc.get("type") != "param" or cc.get("source") is None:
-                    continue
-                dev_name = name_map.get(pname)
-                if dev_name is None:
-                    continue
-                meta = _ctl_meta(cc, behavior_default="continuous")
-                meta["min"] = cc.get("min", 0.0)
-                meta["max"] = cc.get("max", 1.0)
-                ctl[dev_name] = meta
+            ctl = _ctl_params(slot, name_map)
             if ctl:
                 spec["ctl_params"] = ctl
             # MIDI CC controller bindings (#33): lifted from the helixgen-

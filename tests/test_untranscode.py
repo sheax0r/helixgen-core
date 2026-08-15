@@ -671,31 +671,62 @@ def test_dual_cab_second_slot_bypass_survives():
     assert transcode.hsp_to_sbepgsm(body) == sbe1
 
 
-def test_snapshot_target_on_the_b_slot_is_not_read_onto_the_a_slot(capsys):
+def test_snapshot_target_on_the_b_slot_round_trips_on_the_b_slot(capsys):
     """Both model slots live under ONE ``eID_`` and share the cab model's pids,
     so the ``cg__`` target's ``slot`` field is the only thing separating them.
     Keying on ``(eid, pid)`` alone handed the B cab's per-snapshot array to the
-    A cab's param — silent, wrong, and audible."""
+    A cab's param — silent, wrong, and audible.
+
+    The forward path now spells slot-N targets too (bead hgc-3yc), so this is a
+    byte-exact fixed point and no longer a reported loss."""
     doc = transcode.recipe_to_sbepgsm({
         "name": "x", "snapshots": [{"name": "A"}, {"name": "B"}],
         "paths": [{"blocks": [
             {"block": CAB_A, "params": {"Level": 1.0},
-             "snap_params": {"Level": [1.0, -2.0] + [-2.0] * 6}},
+             "extra_slots": [
+                 {"block": CAB_B, "params": {"Level": -3.0},
+                  "snap_params": {"Level": [1.0, -2.0] + [-2.0] * 6}}]},
         ]}]})
-    cab = _first_user_block(doc)
-    _add_second_model_slot(doc, defs.model_id_for(CAB_A), {"Level": -3.0},
-                           block=cab)
-    # Re-point the existing param target at model slot 1 (the B cab).
     trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
-    trg["slot"] = 1
+    assert trg["slot"] == 1 and trg["mmid"] == defs.model_id_for(CAB_B)
+    assert trg["id__"] in doc["cg__"]["entt"]["ctm_"]["stid"]
+    # The B cab's leaf carries the binding; the A cab's shares the pid and
+    # must NOT.
+    cab = _first_user_block(doc)
+    pid = _pid(CAB_B, "Level")
+    assert [next(l for l in m["parm"] if l["pid_"] == pid)["tid_"]
+            for m in cab["mdls"]] == [0, trg["id__"]]
+    sbe1 = content.encode_content_data(doc)
 
-    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
     slots = _flow0(body)["b01"]["slot"]
     assert "snapshots" not in slots[0]["params"]["Level"]
     assert slots[1]["params"]["Level"]["snapshots"][:2] == [1.0, -2.0]
-    # ... and the loss it implies (no forward spelling) is reported.
-    assert "model slot 1 carries snapshot or controller assignments" \
-        in capsys.readouterr().err
+    assert capsys.readouterr().err == ""
+    assert transcode.hsp_to_sbepgsm(body) == sbe1
+
+
+def test_controller_on_the_b_slot_round_trips_on_the_b_slot():
+    """A dual-cab B slot can carry an EXP sweep too; it needs the same
+    per-slot target spelling (bead hgc-3yc)."""
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x", "paths": [{"blocks": [
+            {"block": CAB_A, "params": {"Level": 1.0},
+             "extra_slots": [{"block": CAB_B, "params": {"Level": -3.0},
+                              "ctl_params": {"Level": {"source": 0x01020100,
+                                                       "min": -6.0,
+                                                       "max": 0.0}}}]},
+        ]}]})
+    trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
+    assert trg["slot"] == 1 and trg["mmid"] == defs.model_id_for(CAB_B)
+    # slot-N targets stay OUT of ptid, which is keyed (eID_ << 16 | pid_) and
+    # has no room for a second slot (device-observed on all 11 factory ones).
+    assert trg["id__"] not in doc["cg__"]["entt"]["ctm_"]["ptid"]
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
+    ctl = _flow0(body)["b01"]["slot"][1]["params"]["Level"]["controller"]
+    assert ctl["type"] == "param" and ctl["source"] == 0x01020100
+    assert transcode.hsp_to_sbepgsm(body) == sbe1
 
 
 def test_unmappable_controller_source_warns(capsys):

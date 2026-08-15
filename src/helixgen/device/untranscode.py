@@ -551,15 +551,6 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
                         f"model for device model id {m.get('id__')}; it was "
                         f"dropped")
             continue
-        # A snapshot scene or controller assignment on a NON-primary slot has
-        # no forward spelling yet (``transcode._bind_snapshot_targets`` stamps
-        # slot 0 only, and every synthesized ``trgs`` entry carries
-        # ``slot: 0``), so it reads here but would not survive a re-install.
-        if any(isinstance(w, dict) and ("snapshots" in w or "controller" in w)
-               for w in extra["params"].values()):
-            lost.append(f"grid slot {gp}: model slot {si} carries snapshot or "
-                        f"controller assignments; they are read into the .hsp "
-                        f"but a re-install drops them (bead hgc-3yc)")
         slots.append(extra)
 
     enabled: Dict[str, Any] = {"value": bool(blk.get("enbl", 1))}
