@@ -157,8 +157,8 @@ def _user_slots(doc, flow=0):
 
 class TestGridPositions:
     """A serial flow keeps the grid slot the ``.hsp`` records (bead hgc-8o6).
-    Real device content leaves gaps — 61 of Line 6's 66 factory presets do —
-    and re-packing them onto 1..n moves the user's layout."""
+    Real device content leaves gaps — 61 of Line 6's 66 factory presets trip
+    the gap check — and re-packing onto 1..n moves the user's layout."""
 
     def test_gaps_in_the_row_are_preserved(self):
         body = _hsp_body("P35_InputInst1", {}, extra_blocks={
@@ -167,12 +167,24 @@ class TestGridPositions:
         assert _user_slots(doc) == {2: 304, 9: 307}
 
     def test_a_lane_1_block_stays_in_row_1(self):
-        # A row-1 block with no split: two factory bass presets ship exactly
-        # this. It belongs at 14 + pos, never merged into the row-0 chain.
+        # A row-1 block with no split (two factory bass presets ship it) keeps
+        # its slot rather than being spliced into the row-0 chain. Nothing
+        # feeds it until bead hgc-ikp carries the row-1 endpoints — which is
+        # exactly why it must NOT land in row 0: an amp+cab pushed into the
+        # series chain changes the tone that DOES play. `to-hsp` says so on
+        # stderr (test_untranscode.py).
         body = _hsp_body("P35_InputInst1", {}, extra_blocks={
             "b02": _drive(2), "b16": _drive(2, lane=1)})
         doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
-        assert sorted(_user_slots(doc)) == [2, 16]
+        assert _user_slots(doc) == {2: 304, 16: 304}
+
+    def test_a_row_1_split_scaffold_falls_back(self):
+        # The coords placement can only put a split/join in row 0, so a
+        # scaffold recorded in row 1 must not be trusted as a row-0 slot.
+        assert transcode._recorded_grid_slots(
+            [{"lane": 0, "pos": 3}], [{"_pos": 6, "_lane": 1}]) is None
+        assert transcode._recorded_grid_slots(
+            [{"lane": 0, "pos": 3}], [{"_pos": 6, "_lane": 0}]) == [3]
 
     def test_an_off_grid_coordinate_falls_back_to_a_contiguous_row(self):
         # b27 is the row-1 OUTPUT slot, not a user slot. A coordinate that

@@ -705,15 +705,18 @@ def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
     A block's ``.hsp`` ``bNN`` key IS its grid coordinate (``bridge._lane_pos``:
     lane 1 = ``14 + pos``), so the forward path places from it instead of
     re-packing: real device content leaves GAPS in a row (61 of Line 6's 66
-    factory presets do), and compacting them moves the user's layout.
+    factory presets trip the gap check), and compacting them moves the user's
+    layout.
 
     Returns one grid slot per entry of ``modeled``. ``None`` — the caller falls
     back to its own contiguous strategy — when any coordinate is missing, is not
     a user slot (row 0 = 1..12, row 1 = 15..26; 0/13/14/27 are the flow's own
     endpoints), or collides with another block's, counting the split/join
-    scaffolds' row-0 slots. Those are the three ways a preserved layout could
-    silently produce an invalid grid, and none can be repaired here without
-    inventing a position.
+    scaffolds' slots. Those are the ways a preserved layout could silently
+    produce an invalid grid, and none can be repaired here without inventing a
+    position. A scaffold recorded in ROW 1 is refused too: the coords placement
+    can only put a split/join in row 0, so its recorded slot and the slot it
+    would land on disagree, and the collision set could not be trusted.
     """
     gps: List[int] = []
     for spec in modeled:
@@ -731,7 +734,7 @@ def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
         spos = scaffold.get("_pos")
         if not isinstance(spos, int) or isinstance(spos, bool):
             return None
-        if not _ROW0_INPUT < spos <= _ROW0_LAST_USER:
+        if scaffold.get("_lane") or not _ROW0_INPUT < spos <= _ROW0_LAST_USER:
             return None
         taken.append(spos)
     return gps if len(set(taken)) == len(taken) else None

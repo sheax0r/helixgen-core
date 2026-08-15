@@ -608,8 +608,21 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
             entries[f"b{gp:02d}"] = entry
     # A GAP in the row-0 user run used to be a loss: the forward path re-packed
     # a serial row onto 1..n. It now places from the recorded ``bNN`` coordinate
-    # (bead hgc-8o6), so gaps — which 61 of the 66 factory presets have —
-    # survive a re-install and no longer belong in ``lost``.
+    # (bead hgc-8o6), so gaps — which 61 of the 66 factory presets trip the gap
+    # check on — survive a re-install and no longer belong in ``lost``.
+    #
+    # Row-1 blocks in a flow with NO split are a different matter. They keep
+    # their slots now (better than being spliced into the row-0 chain, and
+    # forward-compatible with bead hgc-ikp), but the forward path still writes
+    # InputNone/OutputNone into row 1, so nothing feeds them: say it plainly
+    # rather than let a silent second rig go missing.
+    row1 = sorted(k for k in entries
+                  if _ROW1_INPUT < int(k[1:]) < _ROW1_OUTPUT)
+    if row1 and not any(e.get("type") == "split" for e in entries.values()):
+        lost.append(f"flow {fi}: the row-1 blocks at {row1} have no split "
+                    f"feeding them, and a re-install writes InputNone/"
+                    f"OutputNone into row 1 — they keep their grid slots but "
+                    f"nothing reaches them (bead hgc-ikp)")
     if not flow.get("enbl", 1):
         lost.append(f"flow {fi}: the DSP path is DISABLED on the device, and "
                     f"a re-install re-enables it (the forward transcoder "
