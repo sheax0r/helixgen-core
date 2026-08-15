@@ -610,10 +610,13 @@ def _first_user_block(doc: dict) -> dict:
     # A disabled DSP path: _canonical_flow always writes enbl=1.
     ("DISABLED", lambda d: d["sfg_"]["flow"][0].__setitem__("enbl", 0)),
     ("signal-flow graph is DISABLED", lambda d: d["sfg_"].__setitem__("enbl", 0)),
-    # Row-1 blocks with no split: they KEEP their slots (bead hgc-8o6) but the
-    # forward path still writes InputNone/OutputNone into row 1, so nothing
-    # feeds them. A second rig going missing must never be silent.
-    ("have no split feeding them", lambda d: _shift_block(d, 1, 16)),
+    # Row-1 blocks with neither a split nor a real row-1 input: they KEEP their
+    # slots (bead hgc-8o6) but the forward path writes InputNone/OutputNone
+    # into row 1, so nothing feeds them. A second rig going missing must never
+    # be silent. (A flow that HAS a b14 input is fed — bead hgc-ikp — and is
+    # covered by test_real_flow_endpoints_survive_the_round_trip.)
+    ("neither a split nor a row-1 input feeding them",
+     lambda d: _shift_block(d, 1, 16)),
 ])
 def test_unreproducible_device_state_warns(phrase, mutate, capsys):
     """Everything this converter cannot carry has to reach stderr. Silence must
