@@ -47,7 +47,7 @@ from ..library import Library
 from . import defs
 from . import irmd as _irmd
 from . import modelmap
-from .transcode import _GRID_SLOTS, _ROW0_INPUT, _ROW0_OUTPUT, _ROW1_INPUT, _ROW1_OUTPUT
+from .transcode import _GRID_SLOTS, _ROW1_INPUT, _ROW1_OUTPUT
 
 # ``.hsp`` block ``type`` string per device model category. The ``.hsp`` side
 # has a coarser vocabulary than ``defs``: everything that is not an endpoint,
@@ -588,7 +588,6 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
                 library: Optional[Library], unresolved: List[int],
                 lost: List[str]) -> dict:
     entries: Dict[str, dict] = {}
-    user_gps: List[int] = []
     for gp, blk in _iter_blocks(flow):
         if not isinstance(gp, int) or not (0 <= gp < _GRID_SLOTS):
             continue
@@ -607,16 +606,10 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
         entry = _block_entry(gp, blk, cg, rev, library, unresolved, lost)
         if entry is not None:
             entries[f"b{gp:02d}"] = entry
-            if 0 < gp < _ROW0_OUTPUT:
-                user_gps.append(gp)
-    # A GAP in the row-0 user run: ``transcode._place_serial_flow`` re-packs a
-    # serial row onto consecutive slots 1..n, so a re-install closes the gap.
-    # Harmless to the signal order, but it means the round trip is not a fixed
-    # point for this preset — say so rather than let the caller assume it is.
-    if user_gps and not any(e.get("type") == "split" for e in entries.values()):
-        if user_gps != list(range(1, len(user_gps) + 1)):
-            lost.append(f"flow {fi}: grid slots {user_gps} are not contiguous; "
-                        f"a re-install compacts them onto 1..{len(user_gps)}")
+    # A GAP in the row-0 user run used to be a loss: the forward path re-packed
+    # a serial row onto 1..n. It now places from the recorded ``bNN`` coordinate
+    # (bead hgc-8o6), so gaps — which 61 of the 66 factory presets have —
+    # survive a re-install and no longer belong in ``lost``.
     if not flow.get("enbl", 1):
         lost.append(f"flow {fi}: the DSP path is DISABLED on the device, and "
                     f"a re-install re-enables it (the forward transcoder "

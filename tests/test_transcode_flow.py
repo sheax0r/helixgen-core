@@ -140,3 +140,56 @@ class TestTranscodeSynthesis:
         assert jpids[1] == -2.0      # A Level
         assert jpids[4] == 0.1       # B Pan
         assert jpids[5] is True      # B Polarity
+
+
+def _drive(pos, model="HD2_DistMinotaurMono", lane=0):
+    return {"type": "distort", "position": pos, "path": lane,
+            "slot": [{"model": model, "params": {}}]}
+
+
+def _user_slots(doc, flow=0):
+    """``{grid slot: device model id}`` for the flow's user blocks."""
+    blks = doc["sfg_"]["flow"][flow]["blks"]
+    return {blks[i]: blks[i + 1]["mdls"][0]["id__"]
+            for i in range(0, len(blks), 2)
+            if blks[i + 1].get("type") not in (8, 9)}
+
+
+class TestGridPositions:
+    """A serial flow keeps the grid slot the ``.hsp`` records (bead hgc-8o6).
+    Real device content leaves gaps — 61 of Line 6's 66 factory presets do —
+    and re-packing them onto 1..n moves the user's layout."""
+
+    def test_gaps_in_the_row_are_preserved(self):
+        body = _hsp_body("P35_InputInst1", {}, extra_blocks={
+            "b02": _drive(2), "b09": _drive(9, "HD2_DistVerminDistMono")})
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+        assert _user_slots(doc) == {2: 304, 9: 307}
+
+    def test_a_lane_1_block_stays_in_row_1(self):
+        # A row-1 block with no split: two factory bass presets ship exactly
+        # this. It belongs at 14 + pos, never merged into the row-0 chain.
+        body = _hsp_body("P35_InputInst1", {}, extra_blocks={
+            "b02": _drive(2), "b16": _drive(2, lane=1)})
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+        assert sorted(_user_slots(doc)) == [2, 16]
+
+    def test_an_off_grid_coordinate_falls_back_to_a_contiguous_row(self):
+        # b27 is the row-1 OUTPUT slot, not a user slot. A coordinate that
+        # cannot be honoured as written must never reach the device as an
+        # invalid grid — the whole flow compacts instead.
+        body = _hsp_body("P35_InputInst1", {}, extra_blocks={
+            "b02": _drive(2), "b27": _drive(13, lane=1)})
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+        assert sorted(_user_slots(doc)) == [1, 2]
+
+    @pytest.mark.parametrize("blocks", [
+        [{"block": "HD2_DistMinotaurMono", "lane": 0, "pos": 3},
+         {"block": "HD2_DistVerminDistMono", "lane": 0, "pos": 3}],   # collision
+        [{"block": "HD2_DistMinotaurMono", "lane": 0, "pos": 3},
+         {"block": "HD2_DistVerminDistMono", "lane": 0}],             # no pos
+    ])
+    def test_unusable_recipe_coordinates_fall_back(self, blocks):
+        doc = transcode.recipe_to_sbepgsm({"name": "x",
+                                           "paths": [{"blocks": blocks}]})
+        assert sorted(_user_slots(doc)) == [1, 2]
