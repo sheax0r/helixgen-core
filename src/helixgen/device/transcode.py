@@ -828,6 +828,7 @@ def _place_split_flow_coords(placements, instance_ids, pi, base, modeled, struct
             blk["bblk"], blk["bflw"] = base + first_lane1_gp, pi
         elif blk.get("type") == 4:    # join <- row-1 slot beneath it
             blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
+        scaffold["_eid"] = base + spos   # its cg__ target key (bead hgc-rq3)
         placements.append((spos, blk))
 
 
@@ -860,6 +861,7 @@ def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, stru
             blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
         elif typ == 4:
             blk["bblk"], blk["bflw"] = base + join_gp, pi
+        scaffold["_eid"] = base + slot   # its cg__ target key (bead hgc-rq3)
         placements.append((slot, blk))
 
 
@@ -1438,6 +1440,20 @@ def _synth_cg_from_recipe(
                            or _OUTPUT_MATRIX["mdls"][0]["id__"],
                            bypass, params)
 
+    # 1c) SPLIT / JOIN routing nodes (bead hgc-rq3). They are ordinary target
+    #     entities too — 35 bypass arrays and 2 param arrays across the 66
+    #     factory presets — but they live in ``path["structural"]``, not in
+    #     ``blocks``, so they have no ``(lane, pos)`` key in ``instance_ids``;
+    #     the placement stamps each one's assigned id as ``_eid`` instead.
+    for path in recipe.get("paths") or []:
+        for scaffold in path.get("structural") or []:
+            eid = scaffold.get("_eid")
+            mid = ((scaffold.get("mdls") or [{}])[0]).get("id__")
+            if not isinstance(eid, int) or not isinstance(mid, int):
+                continue
+            _endpoint_trgs(eid, mid, scaffold.get("_snap_bypass"),
+                           scaffold.get("_snap_params"))
+
     # 2) Controller graph (Part B): source->bypass + source->param (EXP sweeps
     #    and footswitch param toggles). One physical source gets ONE ``srcs``
     #    entry no matter how many controllers it drives (a merge switch);
@@ -1503,7 +1519,46 @@ def _synth_cg_from_recipe(
         entry["trig"] = 0
         ctrl.append(entry)
 
+    def _ctl_param_trgs(eid: int, si: int, mid: int, params_ctl: dict) -> None:
+        """One entity's ``param``-type controller assignments -> trgs + ctrl.
+
+        Shared by user blocks, their non-primary model slots (``si`` > 0, bead
+        hgc-3yc) and the split/join routing nodes (bead hgc-rq3) — a split's
+        ``RouteTo`` swept from EXP1 is a real crossfade, corpus-observed.
+        """
+        for pname, meta in params_ctl.items():
+            pid = defs.param_id_for(mid, pname)
+            if pid is None:
+                continue
+            sid = _src_for(meta.get("source"), drives_bypass=False)
+            if sid is None:
+                continue
+            tid = trg_index.get((eid, si, pid, 2))
+            if tid is None:
+                tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
+                                "pid_": pid, "pmid": mid, "ppid": pid,
+                                "slot": si, "type": 2}, (eid, si, pid, 2))
+                if si == 0:
+                    ptid.extend([(eid << 16) | pid, tid])
+                # #24: a controller-ONLY param target still binds its leaf
+                # (``tid_``) — but with ``snap=False`` (it is not snapshot-
+                # tracked). A param that is ALSO snapshot-tracked already sits
+                # in ``bindings["param"]`` (snap=True), which wins.
+                bindings["param_ctl"][(eid, si, pid)] = tid
+            _new_ctrl({"behv": _behv(meta.get("behavior", "continuous"), 2),
+                       "curv": _curv(meta), "dlay": 0, "goid": 0,
+                       "max_": meta.get("max", 1.0),
+                       "min_": meta.get("min", 0.0),
+                       "thrs": _thrs(meta), "tid_": tid,
+                       "togl": False, "type": 3}, sid)
+
     for pi, path in enumerate(recipe.get("paths") or []):
+        for scaffold in path.get("structural") or []:
+            seid = scaffold.get("_eid")
+            smid = ((scaffold.get("mdls") or [{}])[0]).get("id__")
+            if isinstance(seid, int) and isinstance(smid, int):
+                _ctl_param_trgs(seid, 0, smid,
+                                scaffold.get("_ctl_params") or {})
         for bi, spec in enumerate(path.get("blocks") or []):
             lane = int(spec.get("lane", 0))
             pos = int(spec.get("pos", bi))
@@ -1531,36 +1586,9 @@ def _synth_cg_from_recipe(
             # behavior string tells them apart; min/max are raw param units
             # either way). ``exp_params`` is the pre-#21 spelling, still read.
             for si, smid, sslot in _model_slots(spec, mid):
-                params_ctl = (sslot.get("ctl_params")
-                              or sslot.get("exp_params") or {})
-                for pname, meta in params_ctl.items():
-                    pid = defs.param_id_for(smid, pname)
-                    if pid is None:
-                        continue
-                    behavior = meta.get("behavior", "continuous")
-                    sid = _src_for(meta.get("source"), drives_bypass=False)
-                    if sid is None:
-                        continue
-                    tid = trg_index.get((eid, si, pid, 2))
-                    if tid is None:
-                        tid = _new_trg({"eID_": eid, "enty": 3, "mmid": smid,
-                                        "pid_": pid, "pmid": smid, "ppid": pid,
-                                        "slot": si, "type": 2},
-                                       (eid, si, pid, 2))
-                        if si == 0:
-                            ptid.extend([(eid << 16) | pid, tid])
-                        # #24: a controller-ONLY param target still binds its
-                        # leaf (``tid_``) — but with ``snap=False`` (it is not
-                        # snapshot-tracked). A param that is ALSO snapshot-
-                        # tracked already sits in ``bindings["param"]``
-                        # (snap=True), which wins.
-                        bindings["param_ctl"][(eid, si, pid)] = tid
-                    _new_ctrl({"behv": _behv(behavior, 2), "curv": _curv(meta),
-                               "dlay": 0, "goid": 0,
-                               "max_": meta.get("max", 1.0),
-                               "min_": meta.get("min", 0.0),
-                               "thrs": _thrs(meta), "tid_": tid,
-                               "togl": False, "type": 3}, sid)
+                _ctl_param_trgs(eid, si, smid,
+                                sslot.get("ctl_params")
+                                or sslot.get("exp_params") or {})
 
             # MIDI CC controllers (#33). ``midi_bypass`` = a CC toggling this
             # block's bypass; ``midi_params`` = {device_param: {cc,min,max}}
@@ -1900,10 +1928,14 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
             for e in path["structural"]:
                 blk = _build_structural_block(e)
                 # Carry the .hsp grid coordinate so synthesize_sfg can place the
-                # split/join faithfully (private keys, stripped before emit).
+                # split/join faithfully (private keys, stripped before emit),
+                # plus its snapshot/controller assignments (bead hgc-rq3).
                 if e.get("pos") is not None:
                     blk["_pos"] = int(e["pos"])
                     blk["_lane"] = int(e.get("lane", 0))
+                for k in ("snap_bypass", "snap_params", "ctl_params"):
+                    if e.get(k):
+                        blk["_" + k] = e[k]
                 built.append(blk)
             path["structural"] = built
     recipe: Dict[str, Any] = {"name": None, "paths": paths or [{"blocks": []}]}

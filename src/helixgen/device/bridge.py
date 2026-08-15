@@ -421,8 +421,25 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 sp = {n: (w.get("value") if isinstance(w, dict) else w)
                       for n, w in (slot.get("params") or {}).items()}
                 slane, spos = _lane_pos(key)
-                structural.append({"kind": typ, "model": model, "params": sp,
-                                   "lane": slane, "pos": spos})
+                entry: Dict[str, Any] = {"kind": typ, "model": model,
+                                         "params": sp,
+                                         "lane": slane, "pos": spos}
+                # A routing node is a snapshot/controller target like any other
+                # block — the device snapshot-tracks a split's bypass and
+                # sweeps its RouteTo from EXP1 (bead hgc-rq3).
+                sdev = resolve_model(model)
+                if sdev is not None:
+                    if has_snaps:
+                        sbyp, sparams = _snapshot_arrays(slot, b, sdev)
+                        if sbyp is not None:
+                            entry["snap_bypass"] = sbyp
+                        if sparams:
+                            entry["snap_params"] = sparams
+                    sctl = _ctl_params(slot, param_name_map(
+                        sdev, list((slot.get("params") or {}).keys())))
+                    if sctl:
+                        entry["ctl_params"] = sctl
+                structural.append(entry)
                 continue
             if key == "b00":
                 input_mode = _controllers.input_mode_for_model(device_id, model)

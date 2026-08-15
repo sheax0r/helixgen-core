@@ -99,6 +99,36 @@ def test_parallel_split_roundtrips():
     assert flow["b15"]["path"] == 1 and flow["b15"]["position"] == 1
 
 
+def test_split_join_snapshot_and_controller_state_roundtrips():
+    """A split/join is a snapshot and controller target like any other block
+    (bead hgc-rq3).
+
+    They live in ``path["structural"]``, not in ``blocks``, so they had no
+    ``cg__`` entity key at all: 35 bypass arrays and 2 param arrays across the
+    66 factory presets were dropped, and a split's ``RouteTo`` swept from EXP1
+    is a crossfade the user hears."""
+    split = {**copy.deepcopy(transcode._SPLIT_SCAFFOLD), "_pos": 5, "_lane": 0,
+             "_snap_bypass": [False, True] + [False] * 6,
+             "_snap_params": {"BalanceA": [0.5, 0.125] + [0.5] * 6},
+             "_ctl_params": {"BalanceA": {"source": 0x01020100, "min": 1.0,
+                                          "max": 0.0}}}
+    join = {**copy.deepcopy(transcode._JOIN_SCAFFOLD), "_pos": 7, "_lane": 0,
+            "_snap_bypass": [False] * 8}
+    body = _assert_roundtrip({"name": "split", "paths": [{
+        "blocks": [
+            {"block": AMP, "params": {}, "lane": 0, "pos": 4},
+            {"block": CAB, "params": {}, "lane": 1, "pos": 1},
+        ],
+        "structural": [split, join],
+    }], "snapshots": [{"name": "A"}, {"name": "B"}]})
+    flow = _flow0(body)
+    assert flow["b05"]["@enabled"]["snapshots"][:2] == [True, False]
+    assert flow["b07"]["@enabled"]["snapshots"] == [True] * 8
+    route = flow["b05"]["slot"][0]["params"]["BalanceA"]
+    assert route["snapshots"][:2] == [0.5, 0.125]
+    assert route["controller"]["source"] == 0x01020100
+
+
 def test_ir_reference_roundtrips():
     body = _assert_roundtrip({"name": "ir", "paths": [{"blocks": [
         {"block": CAB, "params": {}, "irhash": IRHASH},
