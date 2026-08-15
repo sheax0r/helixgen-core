@@ -666,6 +666,11 @@ def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str,
     """
     if positions is None:
         positions = list(range(1, len(ordered) + 1))
+    if len(positions) != len(ordered):
+        # A zip() here would silently DELETE the tail of the lane.
+        raise MutateError(
+            f"Lane {lane}: {len(ordered)} blocks but {len(positions)} positions."
+        )
     if positions and positions[-1] > _MAX_LANE_SLOTS:
         raise MutateError(
             f"Lane {lane} would have {len(ordered)} blocks; only "
@@ -690,28 +695,52 @@ def _insert_positions(positions: list[int], insert_at: int) -> list[int] | None:
     occupies wherever the row has room.
 
     `positions` is the lane's current occupied slots, ascending. The new
-    block lands immediately after its predecessor (slot 1 when inserting at
-    the head); the run of blocks sitting on the slots it displaces shifts
-    right by one and STOPS at the first empty slot -- which is what the
-    hardware does when you insert into a row, and why a gap gets used
-    instead of the whole row moving. 64 of Line 6's 66 factory presets ship
-    a gapped row, so "preserve" is the common case, not the exotic one.
+    block goes next to its predecessor and the unbroken run of blocks in the
+    way slides ONE slot into the nearest empty one, stopping there -- which
+    is what the hardware does when you insert into a row, and why a gap gets
+    used instead of the whole row moving. 64 of Line 6's 66 factory presets
+    ship a gapped row, so "preserve" is the common case, not the exotic one.
 
-    Returns `None` when the insertion point has no empty slot to its right
-    (nothing to shift into): the caller falls back to re-packing the lane,
-    the historical behaviour, rather than dropping the block or silently
-    inserting it somewhere else in the chain.
+    The run can slide either way, and the shorter move wins (ties go right,
+    the historical direction). Sliding LEFT matters more than it sounds: a
+    row like `[1,2,3,4,5,6,12]` (factory 2A) is boxed in on the right for an
+    append, and without the left slide the whole row re-packs -- one block
+    moving beats seven, and on this corpus the right-only version fell back
+    for two thirds of appends.
+
+    Returns `None` for coordinates it cannot reason about (not ascending,
+    duplicated, below slot 1) and for a lane with no empty slot at all --
+    the caller re-packs, which for a FULL lane is the pre-existing
+    "12 user slots" error rather than a silent move. Boxed in on both sides
+    and the lane not full cannot happen: exhausted over all 4096 subsets of
+    slots 1..12 x every insert index, the only `None`s are the 12-block
+    rows, and 46% of inserts move nobody at all.
     """
-    lo = positions[insert_at - 1] if insert_at else 0
-    free = lo + 1
-    for p in positions[insert_at:]:
-        if p != free:
-            break
-        free += 1
-    if free > _MAX_LANE_SLOTS:
+    if positions and (positions != sorted(set(positions)) or positions[0] < 1):
         return None
-    shifted = [p + 1 if lo < p < free else p for p in positions]
-    return shifted[:insert_at] + [lo + 1] + shifted[insert_at:]
+    lo = positions[insert_at - 1] if insert_at else 0
+
+    right = lo + 1                       # nearest empty slot above `lo`
+    for p in positions[insert_at:]:
+        if p != right:
+            break
+        right += 1
+    left = lo                            # nearest empty slot below `lo`
+    for p in reversed(positions[:insert_at]):
+        if p != left:
+            break
+        left -= 1
+
+    can_right, can_left = right <= _MAX_LANE_SLOTS, left >= 1
+    if can_right and (not can_left or right - lo - 1 <= lo - left):
+        # new block at lo+1; the run (lo, right) each move up one.
+        return (positions[:insert_at] + [lo + 1]
+                + [p + 1 if p < right else p for p in positions[insert_at:]])
+    if can_left:
+        # new block at lo; the run [left, lo] each move down one.
+        return ([p - 1 if p > left else p for p in positions[:insert_at]]
+                + [lo] + positions[insert_at:])
+    return None
 
 
 def _midi_records(body: dict[str, Any]) -> list:
@@ -773,6 +802,7 @@ def add_block(
     path: int = 0,
     after: str | None = None,
     params: dict[str, Any] | None = None,
+    warnings_out: list[str] | None = None,
 ) -> str:
     """Insert a new block into `body.preset.flow[path]`'s main (lane-0)
     chain, in place, and return its new `bNN` key.
@@ -786,18 +816,20 @@ def add_block(
     immediately following that block (resolved the same way `resolve_slot`
     resolves any other block reference, narrowed to this `path`/lane 0).
 
-    The lane keeps the grid layout it records: the new block takes the slot
-    right after its predecessor, and only the unbroken run of blocks already
-    sitting there shifts right, stopping at the first empty slot (see
-    `_insert_positions` — the same thing the hardware does, and what keeps a
-    `device to-hsp` import from being re-packed by its first edit, bead
-    hgc-hhp). Key order therefore keeps matching chain order either way
-    (device- and decompile-relied-upon; see `decompile._bnn_keys`).
+    The lane keeps the grid layout it records: the new block goes next to its
+    predecessor and only the unbroken run of blocks in the way slides one
+    slot into the nearest gap (see `_insert_positions` — the same thing the
+    hardware does, and what keeps a `device to-hsp` import from being
+    re-packed by its first edit, bead hgc-hhp). Key order therefore keeps
+    matching chain order either way (device- and decompile-relied-upon; see
+    `decompile._bnn_keys`).
 
-    When the insertion point has no empty slot to its right the whole lane
-    re-packs onto `b01..bn` instead — the historical behaviour — with a
-    stderr warning, since the alternative is refusing an edit that used to
-    work.
+    A lane whose coordinates cannot be honoured at all (see
+    `_insert_positions`) re-packs onto `b01..bn` — the historical behaviour,
+    since the alternative is refusing an edit that used to work — reported
+    on stderr, or appended to `warnings_out` when given (the `patch --json`
+    warnings list), because a re-pack is the one outcome here that moves
+    blocks the caller did not ask to move. A FULL lane still raises.
     """
     flow = (body.get("preset") or {}).get("flow") or []
     if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
@@ -828,17 +860,17 @@ def add_block(
     ordered.insert(insert_at, new_bnn)
 
     old_positions = [_lane_pos(k)[1] for k in existing_keys]
-    positions = (_insert_positions(old_positions, insert_at)
-                 if old_positions == sorted(set(old_positions)) else None)
+    positions = _insert_positions(old_positions, insert_at)
     if positions is None:
         new_keys = _renumber_lane(path_dict, lane, ordered)   # raises if lane full
-        import sys
-        print(
-            f"warning: path {path} has no free grid slot at the insertion "
-            f"point; its blocks were re-packed onto b01..b{len(ordered):02d} "
-            f"to make room.",
-            file=sys.stderr,
-        )
+        msg = (f"path {path} records grid coordinates that cannot be honoured "
+               f"(not ascending, duplicated, or off-grid); re-packing its "
+               f"blocks onto b01..b{len(ordered):02d}.")
+        if warnings_out is None:
+            import sys
+            print(f"warning: {msg}", file=sys.stderr)
+        else:
+            warnings_out.append(msg)
         # Re-packed: index j in existing_keys lands at j+1, +1 more past the insert.
         pos_map = {p: (j + 1 if j < insert_at else j + 2)
                    for j, p in enumerate(old_positions)}
@@ -1546,11 +1578,13 @@ def _op_set_enabled(body: dict, library: Library, o: dict) -> list[str]:
 
 
 def _op_add_block(body: dict, library: Library, o: dict) -> list[str]:
+    warnings: list[str] = []
     add_block(
         body, o["block"], library,
         path=o.get("path", 0), after=o.get("after"), params=o.get("params"),
+        warnings_out=warnings,
     )
-    return []
+    return warnings
 
 
 def _op_remove_block(body: dict, library: Library, o: dict) -> list[str]:

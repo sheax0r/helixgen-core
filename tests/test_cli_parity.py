@@ -185,7 +185,8 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     # hgc-hhp: an edit keeps the row's grid layout; only a boxed-in insert
     # re-packs. Both halves of that are the contract.
     (["add-block"],
-     ["KEEPS ITS GRID LAYOUT", "first empty slot", "re-packs"]),
+     ["KEEPS ITS GRID LAYOUT", "nearest empty slot", "shorter move wins",
+      "re-packs"]),
     (["remove-block"], ["GRID SLOT", "not re-packed"]),
     (["device", "blocks"], ["grid slot", "13/27"]),
     (["device", "bypass"], ["grid slot"]),

@@ -646,13 +646,17 @@ def add_block_cmd(preset_path, block, path_idx, after, library_path, irs_dir):
     library display name or model id — case-sensitive, same rules as
     `generate` (check with `show-block`).
 
-    The row KEEPS ITS GRID LAYOUT: the new block takes the slot right after
-    its predecessor and only the unbroken run already sitting there shifts
-    one slot right, stopping at the first empty slot — so an insert into a
-    gapped row uses the gap. An insertion point with no empty slot to its
-    right re-packs the lane onto b01..bn instead, warning on stderr."""
+    The row KEEPS ITS GRID LAYOUT: the new block goes next to its
+    predecessor and only the unbroken run of blocks in the way slides one
+    slot into the nearest empty slot — either direction, shorter move wins —
+    so an insert into a gapped row uses the gap instead of moving the row. A
+    run boxed in on both sides re-packs the lane onto b01..bn instead, and
+    says so (stderr, and the `patch --json` warnings list)."""
     def _mutation(body, library, irs):
-        mutate.add_block(body, block, library, path=path_idx, after=after)
+        warnings: list[str] = []
+        mutate.add_block(body, block, library, path=path_idx, after=after,
+                         warnings_out=warnings)
+        return warnings
 
     _run_mutation(preset_path, library_path, irs_dir, _mutation)
 
