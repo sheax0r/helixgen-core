@@ -265,6 +265,33 @@ def test_row1_none_endpoints_are_dropped():
     assert "b14" not in _flow0(body) and "b27" not in _flow0(body)
 
 
+def test_endpoint_snapshot_targets_round_trip():
+    """Every one of a flow's four endpoints can be a snapshot target (bead
+    hgc-5us).
+
+    The forward path could only spell the row-0 input's bypass (#23) and the
+    row-0 output's gain/pan (#62 phase 2). Real device content also
+    snapshot-tracks the OUTPUTS' bypass and the whole row-1 pair — 38 arrays
+    across Line 6's 66 factory presets — and all of them were dropped."""
+    body = _assert_roundtrip({
+        "name": "ep",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "output_snap_bypass": [False, True] + [False] * 6,
+            "row1_input": {"mode": "inst2", "params": {},
+                           "snap_bypass": [True, False] + [True] * 6},
+            "row1_output": {"model": "P35_OutputMatrix", "params": {},
+                            "snap_params": {"gain": [0.0, -6.0] + [0.0] * 6}},
+        }],
+    })
+    flow = _flow0(body)
+    # device True == bypassed -> .hsp @enabled False
+    assert flow["b13"]["@enabled"]["snapshots"][:2] == [True, False]
+    assert flow["b14"]["@enabled"]["snapshots"][:2] == [False, True]
+    assert flow["b27"]["slot"][0]["params"]["gain"]["snapshots"][:2] == [0.0, -6.0]
+
+
 def _replace_endpoint(doc: dict, gp: int, block: dict, flow: int = 0) -> None:
     """Swap the block at grid slot ``gp`` for ``block``, keeping the identity
     ``id__ == bmap[gp]`` the device's canonical numbering uses."""

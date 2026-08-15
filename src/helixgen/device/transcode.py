@@ -668,6 +668,11 @@ _ROW1_OUTPUT = 27
 _ROW0_LAST_USER = 12   # row 0 user blocks live at grid positions 1..12
 _ROW1_LAST_USER = 26   # row 1 user blocks live at grid positions 15..26
 
+# ``instance_ids`` keys for a flow's four ENDPOINTS, which have no ``(lane,
+# pos)`` coordinate of their own: row-0 input, row-0 output, row-1 input,
+# row-1 output. The snapshot synthesis looks each one up to bind its targets.
+_ENDPOINT_SENTINELS = ((-1, -1), (-2, -2), (-3, -3), (-4, -4))
+
 
 def _canonical_flow(placements: List[Tuple[int, dict]], base: int) -> dict:
     """Assemble a flow from ``(gridpos, block)`` placements onto the real 28-slot
@@ -892,18 +897,19 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
         out_params = path.get("output_params") or None
 
         # (gridpos, block) placements on this flow's 28-slot grid. The input
-        # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed)
-        # and is registered in ``instance_ids`` under the ``(pi, -1, -1)``
-        # sentinel so the snapshot synthesis can bind it as a bypass target
-        # (the Stadium app snapshot-tracks the DSP input).
+        # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed).
         input_block = _make_input_endpoint(mode, 0, in_params)
         if path.get("input_enabled") is False:
             input_block["enbl"] = 0
-        instance_ids[(pi, -1, -1)] = base + _ROW0_INPUT
-        # The row-0 OutputMatrix endpoint gets the ``(pi, -2, -2)`` sentinel:
-        # its gain/pan can be snapshot-tracked param targets (#62 phase 2 —
-        # per-snapshot output-level trims).
-        instance_ids[(pi, -2, -2)] = base + _ROW0_OUTPUT
+        # All FOUR endpoints are registered in ``instance_ids`` under their own
+        # sentinel (they have no ``(lane, pos)`` of their own), because every
+        # one of them can be a snapshot target on real device content: the DSP
+        # input's bypass (#23), the output's gain/pan (#62 phase 2), and — bead
+        # hgc-5us — the outputs' bypass and the whole row-1 pair.
+        for sentinel, gp in zip(_ENDPOINT_SENTINELS,
+                                (_ROW0_INPUT, _ROW0_OUTPUT,
+                                 _ROW1_INPUT, _ROW1_OUTPUT)):
+            instance_ids[(pi,) + sentinel] = base + gp
         placements: List[Tuple[int, dict]] = [(_ROW0_INPUT, input_block)]
 
         # Three mutually-exclusive placement strategies, each populating
@@ -1384,53 +1390,53 @@ def _synth_cg_from_recipe(
                     tracked.append((tid, list(pvals)))
                     bindings["param"][(eid, si, pid)] = tid
 
-    # 1b) Input-endpoint snapshot bypass (#23). The DSP input is a bypass
-    #     target too — its instance id is stashed under the ``(pi, -1, -1)``
-    #     sentinel by :func:`synthesize_sfg`. Emit a bypass trg (device
-    #     polarity: ``True`` = muted) whenever the per-snapshot array varies.
-    for pi, path in enumerate(recipe.get("paths") or []):
-        ibypass = path.get("input_snap_bypass")
-        if not (isinstance(ibypass, list) and ibypass):
-            continue
-        eid = instance_ids.get((pi, -1, -1))
-        if eid is None:
-            continue
-        tid = _new_trg({"eID_": eid, "enty": 2, "pid_": 0, "slot": 0,
-                        "type": 1}, (eid, 0, 0, 1))
-        stid.append(tid)
-        tracked.append((tid, [bool(x) for x in ibypass]))
-        bindings["bypass"][eid] = tid
-
-    # 1c) Output-endpoint snapshot params (#62 phase 2). Per-snapshot
-    #     output-level trims ride ``output_snap_params`` (lifted by
-    #     ``bridge.hsp_to_paths`` from the b13 gain/pan ``snapshots``
-    #     arrays); the output endpoint's instance id is stashed under the
-    #     ``(pi, -2, -2)`` sentinel. Emit a param trg per array — the values
-    #     are raw device units (dB for ``gain``), exactly like a user-block
-    #     ``snap_params`` row. The model is whatever the flow's row-0 output
-    #     RECORDS (matrix or OutputPath2A, bead hgc-ikp), not a fixed 783.
-    for pi, path in enumerate(recipe.get("paths") or []):
-        out_mid = (_resolve_model_id(path.get("output_model") or "")
-                   or _OUTPUT_MATRIX["mdls"][0]["id__"])
-        osnap = path.get("output_snap_params")
-        if not isinstance(osnap, dict):
-            continue
-        eid = instance_ids.get((pi, -2, -2))
-        if eid is None:
-            continue
-        for pname, pvals in osnap.items():
+    # 1b) FLOW ENDPOINTS. All four are snapshot targets on real device content:
+    #     the DSP input's bypass (#23), the row-0 output's gain/pan (#62 phase
+    #     2 per-snapshot level trims) and — bead hgc-5us — the outputs' bypass
+    #     plus the whole row-1 pair (38 arrays across the 66 factory presets).
+    #     Their instance ids sit under ``_ENDPOINT_SENTINELS``. The model is
+    #     whatever the flow RECORDS (matrix or OutputPath2A, bead hgc-ikp), not
+    #     a fixed 783. A bypass trg on an endpoint carries NO ``mmid``, matching
+    #     all 122 such targets in the factory corpus.
+    def _endpoint_trgs(eid: int, mid: int, bypass: Any, params: Any) -> None:
+        if isinstance(bypass, list) and bypass:
+            tid = _new_trg({"eID_": eid, "enty": 2, "pid_": 0, "slot": 0,
+                            "type": 1}, (eid, 0, 0, 1))
+            stid.append(tid)
+            tracked.append((tid, [bool(x) for x in bypass]))
+            bindings["bypass"][eid] = tid
+        for pname, pvals in (params or {}).items():
             if not (isinstance(pvals, list) and pvals):
                 continue
-            pid = defs.param_id_for(out_mid, pname)
+            pid = defs.param_id_for(mid, pname)
             if pid is None:
                 continue
-            tid = _new_trg({"eID_": eid, "enty": 3, "mmid": out_mid,
-                            "pid_": pid, "pmid": out_mid, "ppid": pid,
-                            "slot": 0, "type": 2}, (eid, 0, pid, 2))
+            tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid, "pid_": pid,
+                            "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
+                           (eid, 0, pid, 2))
             stid.append(tid)
             ptid.extend([(eid << 16) | pid, tid])
             tracked.append((tid, list(pvals)))
             bindings["param"][(eid, 0, pid)] = tid
+
+    for pi, path in enumerate(recipe.get("paths") or []):
+        row1_in = path.get("row1_input") or {}
+        row1_out = path.get("row1_output") or {}
+        for sentinel, model, bypass, params in (
+            (_ENDPOINT_SENTINELS[0], None,
+             path.get("input_snap_bypass"), None),
+            (_ENDPOINT_SENTINELS[1], path.get("output_model"),
+             path.get("output_snap_bypass"), path.get("output_snap_params")),
+            (_ENDPOINT_SENTINELS[2], None, row1_in.get("snap_bypass"), None),
+            (_ENDPOINT_SENTINELS[3], row1_out.get("model"),
+             row1_out.get("snap_bypass"), row1_out.get("snap_params")),
+        ):
+            eid = instance_ids.get((pi,) + sentinel)
+            if eid is None:
+                continue
+            _endpoint_trgs(eid, _resolve_model_id(model or "")
+                           or _OUTPUT_MATRIX["mdls"][0]["id__"],
+                           bypass, params)
 
     # 2) Controller graph (Part B): source->bypass + source->param (EXP sweeps
     #    and footswitch param toggles). One physical source gets ONE ``srcs``
