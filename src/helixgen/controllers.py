@@ -132,8 +132,12 @@ FS_COLORS = {
     "pink": 10, "white": 11,
 }
 
-# The device stores at most 12 scribble-strip characters (a 13-char .hsp
-# label was observed truncated to 12 on the hardware).
+# How many scribble-strip characters the device DISPLAYS. It STORES more:
+# Line 6's own factory presets carry labels up to 16 chars ("Ampeg Opto Comps",
+# "Parallel Reverbs"), so this is an advisory for ``set-fs-label``, NOT a
+# truncation the transcoder may apply — clipping a stored label to 12 cost the
+# ``.sbe`` -> ``.hsp`` -> ``.sbe`` round trip its fixed point on 7 of the 66
+# factory presets (bead hgc-cd2).
 FS_LABEL_MAX = 12
 
 

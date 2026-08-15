@@ -1023,19 +1023,26 @@ def test_src_byps_follows_hsp_sources():
     assert by_locl[26]["byps"] is True    # default for a bypass-driving source
 
 
-def test_pm_color_name_mapping_and_label_truncation():
-    """.hsp color names map to the anchored palette ints; labels truncate to
-    the device's 12-char scribble limit."""
+def test_pm_color_name_mapping_and_full_length_labels():
+    """.hsp color names map to the anchored palette ints; scribble labels are
+    emitted VERBATIM (bead hgc-cd2).
+
+    ``.8th VintDigi`` (13 chars) and ``Ampeg Opto Comps`` (16) are real Line 6
+    factory labels — the device stores them, so truncating to the 12 chars the
+    strip DISPLAYS rewrote the user's scribble strip on every install and cost
+    the ``.sbe`` round trip its fixed point on 7 factory presets."""
     recipe = {"name": "pm",
               "sources": {0x01010104: {"fs_color": "red",
                                        "fs_label": ".8th VintDigi",
                                        "fs_topidx": 0},
+                          0x01010105: {"fs_label": "Ampeg Opto Comps"},
                           0x01010108: {"fs_color": "purple", "fs_label": "KoT"}},
               "paths": [{"blocks": []}]}
     doc = transcode.recipe_to_sbepgsm(recipe)
     pm = {p["key_"]: p["val_"] for p in doc["pm__"]}
     assert pm["preset.floorboard.stomp.a.5.color"] == 2       # red
-    assert pm["preset.floorboard.stomp.a.5.label"] == ".8th VintDig"  # 12 chars
+    assert pm["preset.floorboard.stomp.a.5.label"] == ".8th VintDigi"
+    assert pm["preset.floorboard.stomp.a.6.label"] == "Ampeg Opto Comps"
     assert pm["preset.floorboard.stomp.a.9.color"] == 9       # purple
 
 

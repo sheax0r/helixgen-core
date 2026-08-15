@@ -1623,7 +1623,7 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
         _e("preset.clip.start", "f"),
         _e("preset.expsw.active", "i"),
     ]
-    from ..controllers import ControllerError, FS_LABEL_MAX, color_int
+    from ..controllers import ControllerError, color_int
     for row in ("a", "b"):
         for n in range(1, 13):
             base = f"preset.floorboard.stomp.{row}.{n}"
@@ -1639,9 +1639,11 @@ def _synth_pm(sources: Optional[Dict[int, dict]] = None,
                     color = 1  # unknown name -> "auto" palette slot
             if not isinstance(color, int) or isinstance(color, bool):
                 color = 1  # unknown -> "auto" palette slot
-            # The device stores at most 12 scribble chars (a 13-char .hsp
-            # label was observed truncated on the hardware).
-            label = str(cfg.get("fs_label", ""))[:FS_LABEL_MAX]
+            # Emitted VERBATIM: ``controllers.FS_LABEL_MAX`` is what the strip
+            # DISPLAYS, not what the device stores — Line 6's own factory
+            # presets carry 13-to-16-char labels, and truncating them here made
+            # every install rewrite the user's scribble strip (bead hgc-cd2).
+            label = str(cfg.get("fs_label", ""))
             pm.append({"key_": f"{base}.color", "type": "i", "val_": color})
             pm.append({"key_": f"{base}.label", "type": "s", "val_": label})
             pm.append({"key_": f"{base}.topidx", "type": "i",
