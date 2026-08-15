@@ -962,17 +962,6 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
     sfg = {"enbl": 1, "fcnt": n_flows, "flow": flows}
     return sfg, _GRID_SLOTS * n_flows, instance_ids
 
-
-def synthesize_serial_sfg(paths: List[dict]) -> Tuple[dict, int]:
-    """Back-compat shim: single-path serial synthesis (drops the instance map).
-
-    Superseded by :func:`synthesize_sfg`, which reads every DSP path and returns
-    the ``(path, lane, pos) -> instance id`` map. Retained so existing callers /
-    tests that only want ``(sfg, next_id)`` keep working."""
-    sfg, next_id, _ = synthesize_sfg(paths[:1] if paths else [])
-    return sfg, next_id
-
-
 def _synth_cg(max_id: int, active: int = 0,
               snap_meta: Optional[List[dict]] = None) -> dict:
     """A ``cg__`` with no targets and no controllers: 8 snapshot slots carrying
