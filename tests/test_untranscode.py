@@ -817,9 +817,13 @@ def test_snapshot_target_on_the_b_slot_round_trips_on_the_b_slot(capsys):
         "name": "x", "snapshots": [{"name": "A"}, {"name": "B"}],
         "paths": [{"blocks": [
             {"block": CAB_A, "params": {"Level": 1.0},
+             # Base Level == the ACTIVE snapshot's slot, the way the device
+             # normally saves it: a fixture where the two disagree is a
+             # hgc-0d7 advisory, and this test's stderr-silence assertion is
+             # about DROPS.
              "extra_slots": [
                  {"block": CAB_B, "params": {"Level": -3.0},
-                  "snap_params": {"Level": [1.0, -2.0] + [-2.0] * 6}}]},
+                  "snap_params": {"Level": [-3.0, -2.0] + [-2.0] * 6}}]},
         ]}]})
     trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
     assert trg["slot"] == 1 and trg["mmid"] == defs.model_id_for(CAB_B)
@@ -835,7 +839,7 @@ def test_snapshot_target_on_the_b_slot_round_trips_on_the_b_slot(capsys):
     body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
     slots = _flow0(body)["b01"]["slot"]
     assert "snapshots" not in slots[0]["params"]["Level"]
-    assert slots[1]["params"]["Level"]["snapshots"][:2] == [1.0, -2.0]
+    assert slots[1]["params"]["Level"]["snapshots"][:2] == [-3.0, -2.0]
     assert capsys.readouterr().err == ""
     assert transcode.hsp_to_sbepgsm(body) == sbe1
 
@@ -929,6 +933,43 @@ def test_an_invalid_snapshots_empty_tamv_keeps_every_scene(capsys):
     assert b01["@enabled"]["snapshots"][2:] == [True] * 6
     assert capsys.readouterr().err == ""
     assert transcode.hsp_to_sbepgsm(body) == sbe1   # byte-exact fixed point
+
+
+def test_a_live_value_that_differs_from_the_active_snapshot_is_kept_and_reported(
+        capsys):
+    """The device saves the value a knob was LIVE at (``parm.valu``) beside the
+    snapshot scenes (``tamv``), and the two need not agree (bead hgc-0d7).
+
+    Both halves are carried, because both are real on the hardware: it applies
+    ``valu`` on load and the scene only once you SELECT a snapshot, so
+    normalizing ``value`` onto ``snapshots[activesnapshot]`` here would change
+    what the preset sounds like the moment it loads. Every other helixgen
+    surface assumes they agree, though — a base-level ``set-param`` re-syncs
+    the array, ``mutate._write_snapshot_slot`` re-syncs the value — so the
+    divergence is REPORTED rather than repaired or ignored. Real: 2 of this
+    user's 66 device backups, 22 wrappers (0 of the 66 Line 6 factory presets).
+    """
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x", "active_snapshot": 1,
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [
+            {"block": AMP, "params": {"Bass": 0.5},
+             "snap_params": {"Bass": [0.5, 0.75] + [0.75] * 6}},
+        ]}]})
+    # the live value the device stored is neither snapshot's
+    leaf = next(l for l in _first_user_block(doc)["mdls"][0]["parm"]
+                if l["pid_"] == _pid(AMP, "Bass"))
+    leaf["valu"] = 0.25
+    sbe1 = content.encode_content_data(doc)
+
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
+    wrapper = _flow0(body)["b01"]["slot"][0]["params"]["Bass"]
+    assert wrapper["value"] == 0.25                  # the live value is kept
+    assert wrapper["snapshots"][:2] == [0.5, 0.75]   # ... and so is the scene
+    assert transcode.hsp_to_sbepgsm(body) == sbe1    # byte-exact fixed point
+    err = capsys.readouterr().err
+    assert "differ from the value snapshot 1 holds" in err
+    assert "b01 Bass" in err
 
 
 def test_clean_conversion_is_silent(capsys):

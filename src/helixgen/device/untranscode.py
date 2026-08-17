@@ -674,6 +674,50 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
 
 # --- top level ----------------------------------------------------------------
 
+def _live_value_divergence(preset: dict) -> List[str]:
+    """Wrappers whose ``value`` does NOT equal ``snapshots[activesnapshot]``.
+
+    The device stores the value a knob was LIVE at when the preset was saved
+    (``parm.valu``) beside the snapshot scenes (``tamv``), and the two need
+    not agree — a Stadium whose global "Snapshot Edits" is DISCARD saves knob
+    moves into ``valu`` without touching the scene. Both halves are real: the
+    hardware applies ``valu`` on load, and the scene only once you SELECT a
+    snapshot, which is why the conversion carries both rather than repairing
+    one into the other (repairing would change what the preset sounds like the
+    moment it loads). Every OTHER helixgen surface assumes they agree, though,
+    so a later base-level ``set-param``/``enable`` collapses them — say so
+    (bead hgc-0d7).
+    """
+    active = (preset.get("params") or {}).get("activesnapshot")
+    if not isinstance(active, int) or isinstance(active, bool) or active < 0:
+        return []
+    out: List[str] = []
+
+    def check(where: str, wrapper: Any) -> None:
+        if not isinstance(wrapper, dict):
+            return
+        snaps = wrapper.get("snapshots")
+        if isinstance(snaps, list) and active < len(snaps) \
+                and snaps[active] != wrapper.get("value"):
+            out.append(where)
+
+    for fi, flow in enumerate(preset.get("flow") or []):
+        if not isinstance(flow, dict):
+            continue
+        for key, entry in sorted(flow.items()):
+            if not (key.startswith("b") and isinstance(entry, dict)):
+                continue
+            check(f"flow {fi} {key} @enabled", entry.get("@enabled"))
+            for slot in entry.get("slot") or []:
+                for pname, wrapper in (slot.get("params") or {}).items():
+                    if isinstance(wrapper, dict) and "value" not in wrapper:
+                        for ch, sub in wrapper.items():   # stereo <Name>.1/.2
+                            check(f"flow {fi} {key} {pname}.{ch}", sub)
+                    else:
+                        check(f"flow {fi} {key} {pname}", wrapper)
+    return out
+
+
 def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
                    library: Optional[Library] = None,
                    author: Optional[str] = None) -> dict:
@@ -747,6 +791,16 @@ def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
             "y": pm.get("preset.xyctrl.y", 0),
         },
     }
+    diverged = _live_value_divergence(preset)
+    if diverged:
+        shown = ", ".join(diverged[:3])
+        more = f" (+{len(diverged) - 3} more)" if len(diverged) > 3 else ""
+        _warn(f"{len(diverged)} value(s) differ from the value snapshot "
+              f"{preset['params']['activesnapshot']} holds — {shown}{more}. "
+              f"BOTH are carried (the device applies the plain value on load "
+              f"and the snapshot's only when you select it), but a base-level "
+              f"set-param/enable on one of these re-syncs the other.")
+
     meta: Dict[str, Any] = {
         "color": "auto",
         "device_id": STADIUM_DEVICE_ID,
