@@ -2160,6 +2160,12 @@ def device_to_hsp(source: str, outfile: Path, preset_name, author,
     loss** — read those warnings. Silence means nothing was dropped. NOT yet
     reversed at all: Command Center commands and MIDI CC controller bindings.
 
+    Not every stderr line is a loss, though: device state the rest of helixgen
+    does not model is reported there too. One case exists today — a block or
+    param whose plain value differs from the one its ACTIVE snapshot holds,
+    which the hardware allows and this conversion carries verbatim, but which
+    a later base-level `set-param`/`enable` will collapse.
+
     With --verify (the default) the .hsp is transcoded back and compared:
     content helixgen itself installed reproduces the device's own bytes
     EXACTLY. Otherwise the verify re-converts and reports which case it is --

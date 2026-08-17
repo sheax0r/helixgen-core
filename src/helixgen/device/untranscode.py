@@ -260,6 +260,23 @@ def _tamv_map(snap: dict) -> Dict[int, Any]:
             if isinstance(tamv[i], int)}
 
 
+def _densify(values: List[Any], base: Any) -> List[Any]:
+    """The ``.hsp``'s per-snapshot array is DENSE — every slot carries a value.
+    The device's is not: an invalid (unused) snapshot has no ``tamv`` entry,
+    which :class:`_Cg` leaves as ``None``. Fill those slots with the target's
+    base value.
+
+    The fill is a placeholder, not a claim about the hardware: it never
+    reaches the device (``transcode._emit_snapshots`` writes no ``tamv`` for
+    an invalid snapshot), and marking that snapshot valid is what makes it
+    real — which is exactly what ``mutate`` does when you edit the slot. Base
+    is used for ``@enabled`` too, deliberately unlike ``mutate.set_enabled``'s
+    densify-to-True: that fills UNSET slots of a live snapshot, this fills
+    slots of a snapshot that does not exist yet.
+    """
+    return [base if v is None else v for v in values]
+
+
 def _trg_slot(trg: dict) -> int:
     """A target's MODEL SLOT index (``trg.slot``) — 0 for every ordinary block,
     1 for the B model of a dual-cab. Absent/garbage reads as 0, which is what
@@ -300,20 +317,36 @@ class _Cg:
         tracked = {t for t in (entt.get("ctm_") or {}).get("stid") or []
                    if isinstance(t, int)}
         per_snap = [_tamv_map(s) for s in self.snapshots]
+        # An UNUSED snapshot carries ``vald: False`` and an EMPTY ``tamv`` —
+        # the device only stores scenes for snapshots that exist. Its missing
+        # values are not a loss, they are the device's own shape, so they are
+        # left as ``None`` here and densified with the target's BASE value by
+        # the block emitter (which is the half that knows it). Requiring a
+        # value in all 8 dropped every scene on 16 of Line 6's 66 factory
+        # presets (bead hgc-oqd).
+        valid = [bool(s.get("vald", True)) for s in self.snapshots]
 
         self.snap_bypass: Dict[int, List[bool]] = {}
         self.snap_params: Dict[Tuple[int, int, int], List[Any]] = {}
         for tid in sorted(tracked):
             trg = trgs.get(tid)
             if not isinstance(trg, dict):
+                # ``ctm_.stid`` names a target ``trgs`` does not define.
+                # Nothing can be recovered from it, but the module's contract
+                # is that silence means nothing was dropped, and this was the
+                # one path that swallowed a target without a word. (0 of 132
+                # real blobs carry one — a dangling BLOCK-level ``tid_`` does
+                # occur, which is bead hgc-pnp, not this.)
+                lost.append(
+                    f"snapshot target {tid} is listed in ctm_.stid but has no "
+                    f"trgs record; its per-snapshot values were dropped")
                 continue
             eid = trg.get("eID_")
             values = [m.get(tid) for m in per_snap]
-            if any(v is None for v in values) or not values:
-                # A snapshot-tracked target the device did not write into every
-                # snapshot's ``tamv``. There is no base value to densify it
-                # with here, so the whole per-snapshot array is unreadable and
-                # this target loses its scenes — never quietly.
+            if not values or any(v is None for v, ok in zip(values, valid) if ok):
+                # A snapshot-tracked target missing from a VALID snapshot's
+                # ``tamv``: that scene really is unreadable, and this target
+                # loses its per-snapshot values — never quietly.
                 lost.append(
                     f"snapshot target {tid} (entity {trg.get('eID_')}, pid "
                     f"{trg.get('pid_')}) is missing from some snapshots' tamv; "
@@ -322,7 +355,8 @@ class _Cg:
             if trg.get("type") == 1:
                 # Device polarity: True == bypassed. The ``.hsp`` array is
                 # "@enabled", so it is the inverse (``bridge._snapshot_arrays``).
-                self.snap_bypass[eid] = [not bool(v) for v in values]
+                self.snap_bypass[eid] = [None if v is None else not bool(v)
+                                         for v in values]
             elif trg.get("type") == 2:
                 self.snap_params[(eid, _trg_slot(trg), trg.get("pid_"))] = values
 
@@ -375,6 +409,15 @@ class _Cg:
                 meta["max"] = c.get("max_", 1.0)
                 self.ctl_params[(trg.get("eID_"), _trg_slot(trg),
                                  trg.get("pid_"))] = meta
+
+    def has_state(self, eid: Any) -> bool:
+        """Does this block instance carry ANY ``cg__`` state — a per-snapshot
+        array or a controller assignment, on its bypass or on any of its
+        params? Asked of the row-1 None endpoints, which are otherwise dropped
+        as noise the forward path re-synthesizes."""
+        return (eid in self.snap_bypass or eid in self.ctl_bypass
+                or any(k[0] == eid for k in self.snap_params)
+                or any(k[0] == eid for k in self.ctl_params))
 
 
 # --- flow / block emission ----------------------------------------------------
@@ -487,7 +530,7 @@ def _slot_params(m: dict, plan: List[Tuple[int, str]], eid: Any, si: int,
         wrapper: Dict[str, Any] = {"value": leaf["valu"]}
         snaps = cg.snap_params.get((eid, si, pid))
         if snaps is not None:
-            wrapper["snapshots"] = list(snaps)
+            wrapper["snapshots"] = _densify(snaps, leaf["valu"])
         ctl = cg.ctl_params.get((eid, si, pid))
         if ctl is not None:
             wrapper["controller"] = dict(ctl)
@@ -556,7 +599,7 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
     enabled: Dict[str, Any] = {"value": bool(blk.get("enbl", 1))}
     snaps = cg.snap_bypass.get(eid)
     if snaps is not None:
-        enabled["snapshots"] = list(snaps)
+        enabled["snapshots"] = _densify(snaps, enabled["value"])
     ctl = cg.ctl_bypass.get(eid)
     if ctl is not None:
         enabled["controller"] = dict(ctl)
@@ -602,14 +645,30 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
                 library: Optional[Library], unresolved: List[int],
                 lost: List[str]) -> dict:
     entries: Dict[str, dict] = {}
+    none_endpoints: set = set()
     for gp, blk in _iter_blocks(flow):
         if not isinstance(gp, int) or not (0 <= gp < _GRID_SLOTS):
             continue
         model = ((blk.get("mdls") or [{}])[0]).get("id__")
-        if gp == _ROW1_INPUT and model == _INPUT_NONE_MODEL:
-            continue   # forward path re-synthesizes the row-1 endpoint pair
-        if gp == _ROW1_OUTPUT and model == _OUTPUT_NONE_MODEL:
-            continue
+        if ((gp == _ROW1_INPUT and model == _INPUT_NONE_MODEL)
+                or (gp == _ROW1_OUTPUT and model == _OUTPUT_NONE_MODEL)):
+            # The forward path re-synthesizes the row-1 endpoint pair, so
+            # emitting a bare None endpoint would be noise it discards anyway
+            # — UNLESS it carries snapshot/controller state, which the forward
+            # path CAN spell (``bridge``'s ``row1_input``/``row1_output``) and
+            # which is otherwise silently dropped (bead hgc-6av). Inaudible (a
+            # None endpoint passes no audio) but it is real device state, and
+            # a re-install used to clear it.
+            #
+            # PARAM targets count as well as bypass ones: an OutputNone's gain
+            # can be snapshot-tracked, ``bridge`` spells it forward as
+            # ``row1_output.snap_params``, and skipping the block cost the
+            # round trip its byte-exactness with no warning at all. (An
+            # InputNone's params have no forward spelling, so no such target
+            # ever reaches this test.)
+            if not cg.has_state(blk.get("id__")):
+                continue
+            none_endpoints.add(f"b{gp:02d}")
         entry = _block_entry(gp, blk, cg, rev, library, unresolved, lost)
         if entry is not None:
             entries[f"b{gp:02d}"] = entry
@@ -626,7 +685,9 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
     # rig go missing.
     row1 = sorted(k for k in entries
                   if _ROW1_INPUT < int(k[1:]) < _ROW1_OUTPUT)
-    fed = ("b14" in entries
+    # An InputNone at b14 is emitted only to carry its snapshot/controller
+    # state (above); it feeds nothing, so it must not silence the warning.
+    fed = (("b14" in entries and "b14" not in none_endpoints)
            or any(e.get("type") == "split" for e in entries.values()))
     if row1 and not fed:
         lost.append(f"flow {fi}: the row-1 blocks at {row1} have neither a "
@@ -644,6 +705,55 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
 
 
 # --- top level ----------------------------------------------------------------
+
+def _live_value_divergence(preset: dict) -> List[str]:
+    """Wrappers whose ``value`` does NOT equal ``snapshots[activesnapshot]``.
+
+    The device stores the value a knob was LIVE at when the preset was saved
+    (``parm.valu``) beside the snapshot scenes (``tamv``), and the two need
+    not agree — a Stadium whose global "Snapshot Edits" is DISCARD saves knob
+    moves into ``valu`` without touching the scene. Both halves are real: the
+    hardware applies ``valu`` on load, and the scene only once you SELECT a
+    snapshot, which is why the conversion carries both rather than repairing
+    one into the other (repairing would change what the preset sounds like the
+    moment it loads). Every OTHER helixgen surface assumes they agree, though,
+    so a later base-level ``set-param``/``enable`` collapses them — say so
+    (bead hgc-0d7).
+
+    The active index is resolved the way ``mutate._clamped_active_snapshot``
+    resolves it — non-integer reads as 0, out of range CLAMPS into the array
+    — because the point of this report is to predict what ``mutate`` will
+    collapse, and a different rule here would miss exactly those cases.
+    """
+    raw = (preset.get("params") or {}).get("activesnapshot")
+    active = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+    out: List[str] = []
+
+    def check(where: str, wrapper: Any) -> None:
+        if not isinstance(wrapper, dict):
+            return
+        snaps = wrapper.get("snapshots")
+        if not (isinstance(snaps, list) and snaps):
+            return
+        if snaps[min(max(active, 0), len(snaps) - 1)] != wrapper.get("value"):
+            out.append(where)
+
+    for fi, flow in enumerate(preset.get("flow") or []):
+        if not isinstance(flow, dict):
+            continue
+        for key, entry in sorted(flow.items()):
+            if not (key.startswith("b") and isinstance(entry, dict)):
+                continue
+            check(f"flow {fi} {key} @enabled", entry.get("@enabled"))
+            for slot in entry.get("slot") or []:
+                for pname, wrapper in (slot.get("params") or {}).items():
+                    if isinstance(wrapper, dict) and "value" not in wrapper:
+                        for ch, sub in wrapper.items():   # stereo <Name>.1/.2
+                            check(f"flow {fi} {key} {pname}.{ch}", sub)
+                    else:
+                        check(f"flow {fi} {key} {pname}", wrapper)
+    return out
+
 
 def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
                    library: Optional[Library] = None,
@@ -718,6 +828,16 @@ def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
             "y": pm.get("preset.xyctrl.y", 0),
         },
     }
+    diverged = _live_value_divergence(preset)
+    if diverged:
+        shown = ", ".join(diverged[:3])
+        more = f" (+{len(diverged) - 3} more)" if len(diverged) > 3 else ""
+        _warn(f"{len(diverged)} value(s) differ from the value snapshot "
+              f"{preset['params']['activesnapshot']} holds — {shown}{more}. "
+              f"BOTH are carried (the device applies the plain value on load "
+              f"and the snapshot's only when you select it), but a base-level "
+              f"set-param/enable on one of these re-syncs the other.")
+
     meta: Dict[str, Any] = {
         "color": "auto",
         "device_id": STADIUM_DEVICE_ID,

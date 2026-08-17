@@ -322,6 +322,76 @@ def test_endpoint_snapshot_targets_round_trip():
     assert flow["b27"]["slot"][0]["params"]["gain"]["snapshots"][:2] == [0.0, -6.0]
 
 
+def test_a_none_row1_endpoint_carrying_a_snapshot_target_is_emitted():
+    """The row-1 None pair is normally dropped (the forward path re-synthesizes
+    it), but the device snapshot-tracks its bypass anyway — 41 such targets
+    across Line 6's 66 factory presets — and dropping the block dropped the
+    target with it, leaving hgc-5us shipped forward-only (bead hgc-6av).
+
+    Audibly null: a None endpoint passes no audio either way. It is still
+    device state a re-install used to clear.
+    """
+    body = _assert_roundtrip({
+        "name": "x",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "row1_input": {"mode": "none", "params": {},
+                           "snap_bypass": [True, False] + [True] * 6},
+            "row1_output": {"model": "P35_OutputNone", "params": {},
+                            "snap_bypass": [False, True] + [False] * 6},
+        }],
+    })
+    flow = _flow0(body)
+    assert flow["b14"]["slot"][0]["model"] == "P35_InputNone"
+    assert flow["b27"]["slot"][0]["model"] == "P35_OutputNone"
+    # device True == bypassed -> .hsp @enabled is the inverse
+    assert flow["b14"]["@enabled"]["snapshots"][:2] == [False, True]
+    assert flow["b27"]["@enabled"]["snapshots"][:2] == [True, False]
+
+
+def test_a_none_row1_endpoint_carrying_a_snapshot_PARAM_target_is_emitted():
+    """The same for a PARAM target, not just a bypass one (bead hgc-6av,
+    adversarial review).
+
+    `bridge` spells an `OutputNone`'s snapshot-tracked gain forward as
+    `row1_output.snap_params`, so a guard that consulted only the bypass maps
+    dropped it — silently, and it cost the round trip its byte-exactness.
+    (An `InputNone`'s params have no forward spelling at all, so no such
+    target can exist on b14 to begin with.)
+    """
+    body = _assert_roundtrip({
+        "name": "x",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "row1_output": {"model": "P35_OutputNone", "params": {},
+                            "snap_params": {"gain": [0.0, -12.0] + [0.0] * 6}},
+        }],
+    })
+    b27 = _flow0(body)["b27"]
+    assert b27["slot"][0]["model"] == "P35_OutputNone"
+    assert b27["slot"][0]["params"]["gain"]["snapshots"][:2] == [0.0, -12.0]
+
+
+def test_a_none_row1_input_emitted_for_its_target_still_does_not_feed_row_1(capsys):
+    """The b14 the test above emits is still an InputNone: it carries a
+    snapshot target, not audio, so it must NOT silence the "nothing reaches
+    row 1" report that a real b14 input rightly does."""
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "row1_input": {"mode": "none", "params": {},
+                           "snap_bypass": [True, False] + [True] * 6},
+        }]})
+    _shift_block(doc, 1, 16)      # a row-1 block, with no split feeding it
+    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    assert "b14" in body["preset"]["flow"][0]
+    assert "nothing reaches them" in capsys.readouterr().err
+
+
 def _replace_endpoint(doc: dict, gp: int, block: dict, flow: int = 0) -> None:
     """Swap the block at grid slot ``gp`` for ``block``, keeping the identity
     ``id__ == bmap[gp]`` the device's canonical numbering uses."""
@@ -462,6 +532,42 @@ def test_split_with_an_empty_branch_lane_still_pairs():
     assert entries["b05"]["endpoint"] == "b07"
     assert entries["b07"]["endpoint"] == "b05"
     assert "branch" not in entries["b05"]
+
+
+def test_a_pair_whose_columns_bracket_nothing_still_claims_the_lane():
+    """The `or [k for _, k in lane1]` fallback in `_endpoint_pointers` stays
+    (bead hgc-1qs).
+
+    helixgen's own forward path pins a parallel lane's blocks at lane-1
+    position 1 (`transcode`'s split placement) no matter which row-0 column
+    the split lands on, so its OWN installed content routinely has a
+    split/join pair whose columns bracket no lane-1 grid slot — a real
+    dual-cab preset in this user's library does (`tool-sober-dual-cab`, split
+    b05 / join b07, lone branch cab at b15), and only this fallback gives that
+    pair its `branch` pointers.
+
+    Encoding such a pair as an empty region instead — what hgc-1qs proposed —
+    was run over that preset. NOTHING IS LOST: the cab keeps `lane: 1` and all
+    its params, because `view._reconstruct_path_blocks` emits an unclaimed
+    lane-1 key at its own coordinate anyway. What changes is that the pair
+    loses its `branch` pointers and the cab moves from between the split and
+    join to the END of the projected block list — a cosmetic loss of structure
+    in `view`, not a lost or re-laned cab.
+
+    The case hgc-1qs actually worried about — TWO pairs, one of them empty,
+    both claiming the same lane-1 blocks — does not occur in 330 real flows
+    (66 Line 6 factory `.sbe`, 66 device backups, 32 library tones): the one
+    flow with two pairs brackets its lane-1 blocks correctly, and the
+    empty-column pairs found are lone pairs. `view._reconstruct_path_blocks`
+    resolves span overlap anyway (hgc-x9g), so nothing downstream needs it
+    fixed. Unreachable, plus a cosmetic regression on real content, so the
+    device-facing path is left alone.
+    """
+    entries = {"b05": {"type": "split"}, "b07": {"type": "join"},
+               "b15": {"type": "cab"}}
+    untranscode._endpoint_pointers(entries)
+    assert entries["b05"]["branch"] == "b15"
+    assert entries["b07"]["branch"] == "b15"
 
 
 # --- preset scalars the forward path used to hardcode -------------------------
@@ -743,9 +849,13 @@ def test_snapshot_target_on_the_b_slot_round_trips_on_the_b_slot(capsys):
         "name": "x", "snapshots": [{"name": "A"}, {"name": "B"}],
         "paths": [{"blocks": [
             {"block": CAB_A, "params": {"Level": 1.0},
+             # Base Level == the ACTIVE snapshot's slot, the way the device
+             # normally saves it: a fixture where the two disagree is a
+             # hgc-0d7 advisory, and this test's stderr-silence assertion is
+             # about DROPS.
              "extra_slots": [
                  {"block": CAB_B, "params": {"Level": -3.0},
-                  "snap_params": {"Level": [1.0, -2.0] + [-2.0] * 6}}]},
+                  "snap_params": {"Level": [-3.0, -2.0] + [-2.0] * 6}}]},
         ]}]})
     trg = next(t for t in doc["cg__"]["entt"]["trgs"] if t.get("type") == 2)
     assert trg["slot"] == 1 and trg["mmid"] == defs.model_id_for(CAB_B)
@@ -761,7 +871,7 @@ def test_snapshot_target_on_the_b_slot_round_trips_on_the_b_slot(capsys):
     body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
     slots = _flow0(body)["b01"]["slot"]
     assert "snapshots" not in slots[0]["params"]["Level"]
-    assert slots[1]["params"]["Level"]["snapshots"][:2] == [1.0, -2.0]
+    assert slots[1]["params"]["Level"]["snapshots"][:2] == [-3.0, -2.0]
     assert capsys.readouterr().err == ""
     assert transcode.hsp_to_sbepgsm(body) == sbe1
 
@@ -820,6 +930,78 @@ def test_partial_snapshot_target_warns(capsys):
     assert "missing from some snapshots' tamv" in capsys.readouterr().err
     params = body["preset"]["flow"][0]["b01"]["slot"][0]["params"]
     assert "snapshots" not in params["Bass"]
+
+
+def test_an_invalid_snapshots_empty_tamv_keeps_every_scene(capsys):
+    """An UNUSED snapshot carries ``vald: False`` and an EMPTY ``tamv`` — that
+    is the device's own shape, not a loss (bead hgc-oqd).
+
+    Requiring a value in all 8 snapshots dropped the ENTIRE ``ctm_.stid`` on
+    every preset with an unused snapshot: 16 of Line 6's 66 factory presets,
+    242 targets, so a re-installed 1C/2B/3D/4C came back with its snapshot
+    footswitches doing nothing. The ``.sbe`` round trip cannot see it — the
+    loss is symmetric, so all 66 stay a fixed point.
+    """
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x",
+        "snapshots": [{"name": "A"}, {"name": "B"}]
+                     + [{"name": f"S{i}", "valid": False} for i in range(3, 9)],
+        "paths": [{"blocks": [
+            {"block": AMP, "params": {"Bass": 0.5},
+             "snap_params": {"Bass": [0.5, 0.75] + [0.75] * 6},
+             "snap_bypass": [False, True] + [True] * 6},
+        ]}]})
+    # the device shape: only the VALID snapshots carry a tamv at all
+    assert [bool(s["tamv"]) for s in doc["cg__"]["entt"]["snps"]] == \
+        [True, True] + [False] * 6
+
+    sbe1 = content.encode_content_data(doc)
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
+    b01 = _flow0(body)["b01"]
+    # the two real scenes survive; the unused slots densify to the BASE value,
+    # which is what the device would apply were that snapshot ever selected
+    assert b01["slot"][0]["params"]["Bass"]["snapshots"] == [0.5, 0.75] + [0.5] * 6
+    assert b01["@enabled"]["snapshots"][:2] == [True, False]
+    assert b01["@enabled"]["snapshots"][2:] == [True] * 6
+    assert capsys.readouterr().err == ""
+    assert transcode.hsp_to_sbepgsm(body) == sbe1   # byte-exact fixed point
+
+
+def test_a_live_value_that_differs_from_the_active_snapshot_is_kept_and_reported(
+        capsys):
+    """The device saves the value a knob was LIVE at (``parm.valu``) beside the
+    snapshot scenes (``tamv``), and the two need not agree (bead hgc-0d7).
+
+    Both halves are carried, because both are real on the hardware: it applies
+    ``valu`` on load and the scene only once you SELECT a snapshot, so
+    normalizing ``value`` onto ``snapshots[activesnapshot]`` here would change
+    what the preset sounds like the moment it loads. Every other helixgen
+    surface assumes they agree, though — a base-level ``set-param`` re-syncs
+    the array, ``mutate._write_snapshot_slot`` re-syncs the value — so the
+    divergence is REPORTED rather than repaired or ignored. Real: 2 of this
+    user's 66 device backups, 22 wrappers (0 of the 66 Line 6 factory presets).
+    """
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x", "active_snapshot": 1,
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [
+            {"block": AMP, "params": {"Bass": 0.5},
+             "snap_params": {"Bass": [0.5, 0.75] + [0.75] * 6}},
+        ]}]})
+    # the live value the device stored is neither snapshot's
+    leaf = next(l for l in _first_user_block(doc)["mdls"][0]["parm"]
+                if l["pid_"] == _pid(AMP, "Bass"))
+    leaf["valu"] = 0.25
+    sbe1 = content.encode_content_data(doc)
+
+    body = untranscode.sbe_bytes_to_hsp(sbe1, name="x")
+    wrapper = _flow0(body)["b01"]["slot"][0]["params"]["Bass"]
+    assert wrapper["value"] == 0.25                  # the live value is kept
+    assert wrapper["snapshots"][:2] == [0.5, 0.75]   # ... and so is the scene
+    assert transcode.hsp_to_sbepgsm(body) == sbe1    # byte-exact fixed point
+    err = capsys.readouterr().err
+    assert "differ from the value snapshot 1 holds" in err
+    assert "b01 Bass" in err
 
 
 def test_clean_conversion_is_silent(capsys):
