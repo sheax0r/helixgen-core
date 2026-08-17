@@ -510,6 +510,34 @@ def test_split_with_an_empty_branch_lane_still_pairs():
     assert "branch" not in entries["b05"]
 
 
+def test_a_pair_whose_columns_bracket_nothing_still_claims_the_lane():
+    """The `or [k for _, k in lane1]` fallback in `_endpoint_pointers` is
+    LOAD-BEARING, not a papered-over bug (bead hgc-1qs).
+
+    helixgen's own forward path pins a parallel lane's blocks at lane-1
+    position 1 (`transcode._split_placement`'s `gp1`) no matter which row-0
+    column the split lands on, so its OWN installed content routinely has a
+    split/join pair whose columns bracket no lane-1 grid slot. Encoding that
+    pair as an empty region instead — what hgc-1qs proposed — drops the branch
+    pointers, and `view` then projects the branch block AFTER the join, as a
+    serial block: a real dual-cab preset in this user's library
+    (`tool-sober-dual-cab`, split b05 / join b07, branch cab at b15) loses its
+    parallel cab that way. Verified by running the proposed variant over it.
+
+    The case hgc-1qs actually worried about — TWO pairs, one of them empty,
+    both claiming the same lane-1 blocks — does not occur in 328 real flows
+    (66 Line 6 factory `.sbe`, 66 device backups, 32 library tones): the one
+    flow with two pairs brackets its lane-1 blocks correctly, and the one
+    empty-column pair is a lone pair. `view._reconstruct_path_blocks` resolves
+    the overlap anyway (hgc-x9g), so nothing downstream needs it fixed.
+    """
+    entries = {"b05": {"type": "split"}, "b07": {"type": "join"},
+               "b15": {"type": "cab"}}
+    untranscode._endpoint_pointers(entries)
+    assert entries["b05"]["branch"] == "b15"
+    assert entries["b07"]["branch"] == "b15"
+
+
 # --- preset scalars the forward path used to hardcode -------------------------
 
 @pytest.mark.parametrize("hsp_path,pm_key,value", [
