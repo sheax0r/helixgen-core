@@ -521,6 +521,23 @@ def _resolve_snapshot_index(body: dict[str, Any], snapshot: Any) -> int:
     raise MutateError(f"Snapshot {snapshot!r} not found. Known snapshots: {names}.")
 
 
+def _mark_snapshot_valid(body: dict[str, Any], idx: int) -> None:
+    """Flag `preset.snapshots[idx]` as a snapshot that EXISTS.
+
+    A preset imported from the device (`device to-hsp`) carries `valid: false`
+    for every snapshot nobody has used, and the transcoder writes no `tamv`
+    for one of those — the shape the device itself stores. Editing that slot
+    is exactly the act of bringing the snapshot into existence, which is what
+    the hardware does when you first select and touch an unused snapshot, so
+    say so here; otherwise the edit lands in the `.hsp` and is dropped again
+    on the next `device install`/`sync`, silently (bead hgc-oqd).
+    """
+    snaps = (body.get("preset") or {}).get("snapshots")
+    if isinstance(snaps, list) and 0 <= idx < len(snaps) \
+            and isinstance(snaps[idx], dict):
+        snaps[idx]["valid"] = True
+
+
 def _write_snapshot_slot(
     body: dict[str, Any], wrapped: dict[str, Any], idx: int, value: Any
 ) -> None:
@@ -557,6 +574,7 @@ def _write_snapshot_slot(
     snaps = [base if s is None else s for s in snaps]
     wrapped["snapshots"] = snaps
     wrapped["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
+    _mark_snapshot_valid(body, idx)
 
 
 def set_enabled(
@@ -619,6 +637,7 @@ def set_enabled(
     snaps = [True if s is None else s for s in snaps]
     wrapped["snapshots"] = snaps
     wrapped["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
+    _mark_snapshot_valid(body, idx)
 
 
 # --- add_block / remove_block -----------------------------------------------

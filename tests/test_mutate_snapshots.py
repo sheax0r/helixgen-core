@@ -282,3 +282,28 @@ def test_snapshot_param_edit_round_trips_through_view(snapshots_body, library):
     # non-edited snapshots gained no phantom Bass override
     assert "Bass" not in (projection["snapshots"][2].get("params") or {}).get(
         "Brit 2204 Custom", {})
+
+
+def test_editing_an_unused_snapshot_marks_it_valid(snapshots_body, library):
+    """A preset imported with `device to-hsp` carries `valid: false` for every
+    snapshot nobody has used, and the transcoder writes no `tamv` for one of
+    those — the shape the device itself stores (bead hgc-oqd). Editing that
+    slot is the act of bringing the snapshot into existence, so it has to flip
+    the flag; otherwise the edit lands in the `.hsp` and the next `device
+    install`/`sync` drops it again, silently.
+    """
+    snapshots_body["preset"]["snapshots"][4]["valid"] = False
+    mutate.set_param(snapshots_body, "Brit 2204 Custom", "Bass", 0.7,
+                     library, snapshot=4)
+    assert snapshots_body["preset"]["snapshots"][4]["valid"] is True
+    assert _bass(snapshots_body)["snapshots"][4] == 0.7
+
+
+def test_editing_an_unused_snapshots_bypass_marks_it_valid(snapshots_body,
+                                                           library):
+    """Same for `enable`/`disable --snapshot`, which densifies to True and so
+    does not go through `_write_snapshot_slot`."""
+    snapshots_body["preset"]["snapshots"][5]["valid"] = False
+    mutate.set_enabled(snapshots_body, "Brit 2204 Custom", False, library,
+                       snapshot=5)
+    assert snapshots_body["preset"]["snapshots"][5]["valid"] is True
