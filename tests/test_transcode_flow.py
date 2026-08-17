@@ -243,6 +243,30 @@ class TestTrailsHarness:
         assert h["id__"] == 133  # P35_AppFxHarnessTrailsMono
         assert {p["pid_"]: p["valu"] for p in h["parm"]}[1] is True
 
+    def test_a_suffixless_model_is_not_assumed_mono(self):
+        # The DL4 family carries neither word and is stereo throughout the
+        # factory corpus, so the test is for the ABSENCE of "Mono", not the
+        # presence of "Stereo" — which sent HD2_DL4DigDelay (a block in the
+        # owner's own library) to the mono harness.
+        assert self._hrns("HD2_DL4DigDelay", harness=self.ON)["id__"] == 97
+
+    def test_trails_survives_the_install_readback_install_cycle(self):
+        # The forward fix alone made `install -> to-hsp -> install` LOSE
+        # trails, because untranscode recorded a harness only for the flow
+        # endpoints — turning spillover back off on the second install and
+        # breaking the byte-exactness `to-hsp --verify` promises.
+        from helixgen.device import untranscode
+        body = _hsp_body("P35_InputInst1", {}, extra_blocks={
+            "b02": {"type": "delay", "position": 2, "path": 0,
+                    "harness": self.ON,
+                    "slot": [{"model": "HD2_DelayTransistorTapeStereo",
+                              "params": {}}]}})
+        first = transcode.hsp_to_sbepgsm(body)
+        back = untranscode.sbe_bytes_to_hsp(first, name="t")
+        assert (back["preset"]["flow"][0]["b02"]["harness"]["params"]["Trails"]
+                == {"value": True})
+        assert transcode.hsp_to_sbepgsm(back) == first
+
     def test_trails_off_keeps_the_plain_fx_harness(self):
         for extra in ({}, {"harness": {"params": {"Trails": {"value": False}}}}):
             h = self._hrns("HD2_ReverbPlateStereo", **extra)

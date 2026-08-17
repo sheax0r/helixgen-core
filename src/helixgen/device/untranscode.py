@@ -572,7 +572,30 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
     if category in ("input", "output"):
         entry["harness"] = {"@enabled": {"value": bool(
             (blk.get("hrns") or {}).get("enbl", 1))}}
+    elif _hrns_trails(blk):
+        # Delay/reverb spillover. Only the ``…HarnessTrails…`` harness models
+        # carry a ``Trails`` param, and the forward path now emits one when the
+        # ``.hsp`` asks for it (bead hgc-1yx) — so it has to come back out here
+        # too, or ``install -> to-hsp -> install`` would turn a tone's
+        # spillover off. 83 blocks across Line 6's 66 factory presets carry it.
+        entry["harness"] = {"params": {"Trails": {"value": True}}}
     return entry
+
+
+def _hrns_trails(blk: dict) -> bool:
+    """True when a block's harness carries ``Trails`` and it is on.
+
+    The pid is per harness MODEL (1 on the Trails variants — where the
+    sidechain and dynamics harnesses use that same pid for ``ControlSource``),
+    so it is resolved through ``defs`` rather than hardcoded."""
+    hrns = blk.get("hrns")
+    if not isinstance(hrns, dict):
+        return False
+    meta = defs.model_params_for(hrns.get("id__")).get("Trails") or {}
+    pid = meta.get("id")
+    return pid is not None and any(
+        p.get("pid_") == pid and bool(p.get("valu"))
+        for p in hrns.get("parm") or [])
 
 
 def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],

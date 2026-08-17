@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from helixgen import flowparams
+
 from . import defs
 
 
@@ -568,13 +570,17 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     spec["snap_bypass"] = bypass
                 if snap_params:
                     spec["snap_params"] = snap_params
-            # Delay/reverb spillover. It rides the bNN ``harness`` (the .hsp's
-            # own name for the device's ``hrns``), which the forward path used
-            # to synthesize from a fixed template — so `trails: true` never
+            # Delay/reverb/FX-loop spillover. It rides the bNN ``harness`` (the
+            # .hsp's own name for the device's ``hrns``), which the forward path
+            # used to synthesize from a fixed template — so `trails: true` never
             # reached the hardware (bead hgc-1yx). Only True is carried: the
             # transcoder's default harness cannot express Trails at all, so
-            # False and absent are already the same emitted shape.
-            if _hsp_trails(b) is True:
+            # False and absent are already the same emitted shape. Scope is the
+            # same ``flowparams.trails_capable`` gate ``generate`` validates and
+            # ``view`` projects with, so a stray flag on a block that has no
+            # Trails knob does not re-point its harness.
+            if (_hsp_trails(b) is True
+                    and flowparams.trails_capable(cat, defs.model_name_for(dev_id))):
                 spec["trails"] = True
             # Controller assignments (spec 2 Part B): source->bypass +
             # source->param (EXP sweeps AND footswitch param toggles — both

@@ -1179,13 +1179,18 @@ class TestPtidKeyOverflow:
         assert "Agoura_AmpUSDoubleBlack.VibTreb" in err
         assert "1111" in err and "hgc-3d1" in err
 
-    def test_it_warns_once_per_knob(self, capsys):
+    def test_every_affected_block_is_named(self, capsys):
+        # Two instances of the amp -> BOTH are reported. An earlier draft of
+        # this fix deduped on "<model>.<knob>", which told a user with two
+        # Agoura amps about one of them.
         recipe = copy.deepcopy(self.RECIPE)
-        # Same knob snapshot-tracked AND swept from EXP1: two registrations.
-        recipe["paths"][0]["blocks"][0]["ctl_params"] = {
-            "VibTreb": {"source": "EXP1", "min": 0.0, "max": 1.0}}
+        second = copy.deepcopy(recipe["paths"][0]["blocks"][0])
+        second["pos"] = 2
+        recipe["paths"][0]["blocks"][0]["pos"] = 1
+        recipe["paths"][0]["blocks"].append(second)
         transcode.recipe_to_sbepgsm(recipe)
-        assert capsys.readouterr().err.count("Agoura_AmpUSDoubleBlack.VibTreb") == 1
+        assert capsys.readouterr().err.count(
+            "Agoura_AmpUSDoubleBlack.VibTreb") == 2
 
 
 class TestBypassTargetMmidIsPinned:

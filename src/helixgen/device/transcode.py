@@ -381,12 +381,19 @@ def _hrns(hid: int, shape: str) -> dict:
 # delay or reverb with `trails: true` installed with spillover off, silently
 # (bead hgc-1yx). 83 blocks across Line 6's 66 factory presets carry
 # ``Trails=True``, on harness 97 for a stereo model and 133 for a mono one.
-# ``"Stereo" in <model name>`` reproduces Line 6's own mono/stereo harness
-# choice on 600 of the 605 corpus blocks that use a mono/stereo harness pair
-# (the 5 misses are models carrying neither word). The mono/stereo axis is not
-# a regression risk either way: today EVERY effect gets mono 420. (Line 6 also
-# ships `8x` variants — 495/504 — on some models; the id is tolerant, which is
-# exactly why the constant 420 has worked at all.)
+# ``"Mono" not in <model name>`` reproduces Line 6's own mono/stereo choice on
+# 148 of the 148 corpus blocks that sit on a Trails harness — the suffix-less
+# models (the whole DL4 family) are all stereo, so testing for the ABSENCE of
+# Mono beats testing for the presence of Stereo, which misses them.
+#
+# The mono/stereo pair is not the only axis: Line 6 also ships `8x` variants
+# (495/504) and picks them per MODEL from a table the vendored defs asset does
+# not carry, so e.g. VIC_DynPlateStereo is always 495 on real content and gets
+# 97 here. That divergence is NOT new — every effect used to get 420, which is
+# equally unattested for those models — but it is real, and it is why the
+# harness id generally is bead hgc-mn3 rather than something claimed solved.
+# What IS byte-identical to real device content is the emitted harness dict
+# itself, for both 97 and 133.
 _TRAILS_HRNS = {False: defs.model_id_for("P35_AppFxHarnessTrailsMono"),
                 True: defs.model_id_for("P35_AppFxHarnessTrailsStereo")}
 assert all(isinstance(v, int) for v in _TRAILS_HRNS.values()), _TRAILS_HRNS
@@ -668,7 +675,7 @@ def _make_user_block(spec: dict, inst_id: int) -> dict:
         "cid_": 0, "enbl": 0 if spec.get("enabled") is False else 1,
         "favo": 0, "hasb": False,
         "hrns": _hrns_for(category, trails=spec.get("trails") is True,
-                          stereo="Stereo" in str(defs.model_name_for(mid) or "")),
+                          stereo="Mono" not in str(defs.model_name_for(mid) or "")),
         "id__": inst_id,
         "mdls": mdls,
         "snap": False,
@@ -981,9 +988,9 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
 
         # (gridpos, block) placements on this flow's 28-slot grid. The input
         # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed).
-        input_block = _make_input_endpoint(mode, 0, in_params)
-        if path.get("input_enabled") is False:
-            input_block["enbl"] = 0
+        input_block = _apply_base_bypass(
+            _make_input_endpoint(mode, 0, in_params),
+            {"enabled": path.get("input_enabled")})
         # All FOUR endpoints are registered in ``instance_ids`` under their own
         # sentinel (they have no ``(lane, pos)`` of their own), because every
         # one of them can be a snapshot target on real device content: the DSP
@@ -1454,7 +1461,6 @@ def _synth_cg_from_recipe(
     trgs: List[dict] = []
     stid: List[int] = []
     ptid: List[int] = []
-    _ptid_skipped: set = set()  # warn once per model.param, not per binding
     tracked: List[Tuple[int, List[Any]]] = []  # (trg_id, per-snapshot values)
     # (eID_, model slot, pid_, type) -> trg id
     trg_index: Dict[Tuple[int, int, int, int], int] = {}
@@ -1505,24 +1511,25 @@ def _synth_cg_from_recipe(
                        pname: Optional[str] = None) -> None:
         """Add a param target to ``ctm_.ptid`` under the device's packed key.
 
-        A pid the key cannot hold is skipped and NAMED — an anonymous "param id
-        1111" is not something a user can act on. See :func:`_ptid_key` for why
-        skipping is the safe half of the trade."""
+        A target the key cannot hold is skipped and NAMED — an anonymous
+        "param id 1111" is not something a user can act on, and one warning per
+        affected BLOCK is what tells you how much of your preset is involved.
+        See :func:`_ptid_key` for why skipping is the safe half of the trade."""
         key = _ptid_key(eid, slot, pid)
         if key is None:
             import sys
             model = defs.model_name_for(mid) if mid is not None else None
             what = ".".join(x for x in (model, pname) if x) or f"pid {pid}"
-            if what not in _ptid_skipped:
-                _ptid_skipped.add(what)
-                print(f"warning: {what} has param id {pid}, which does not fit "
-                      f"the device's 8-bit ptid key; its snapshot/controller "
-                      f"binding is emitted (trgs + ctm_.stid + the parm leaf's "
-                      f"tid_) but NOT indexed in ctm_.ptid. No device content "
-                      f"has ever been captured registering a pid above 110, so "
-                      f"there is no attested key to write instead — writing a "
-                      f"wrapped one would bind a different slot and param. "
-                      f"Bead hgc-3d1.", file=sys.stderr)
+            why = (f"param id {pid}" if not 0 <= pid <= 0xFF
+                   else f"model slot {slot}")
+            print(f"warning: {what} has {why}, which does not fit the device's "
+                  f"packed ptid key (8 bits each for the model slot and the "
+                  f"param id); its snapshot/controller binding is emitted "
+                  f"(trgs + ctm_.stid + the parm leaf's tid_) but NOT indexed "
+                  f"in ctm_.ptid. No device content has ever been captured "
+                  f"registering a pid above 110, so there is no attested key "
+                  f"to write instead — writing a wrapped one would bind a "
+                  f"different slot and param. Bead hgc-3d1.", file=sys.stderr)
             return
         ptid.extend([key, tid])
 
