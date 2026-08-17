@@ -1186,3 +1186,58 @@ class TestPtidKeyOverflow:
             "VibTreb": {"source": "EXP1", "min": 0.0, "max": 1.0}}
         transcode.recipe_to_sbepgsm(recipe)
         assert capsys.readouterr().err.count("Agoura_AmpUSDoubleBlack.VibTreb") == 1
+
+
+class TestBypassTargetMmidIsPinned:
+    """The bypass-target `mmid` shape is PINNED, deliberately (bead hgc-ufu).
+
+    The device's own rule is `mmid` iff a CONTROLLER drives the target. Across
+    Line 6's 66 factory presets: controller-driven 580 with / 1 without;
+    snapshot-only 382 without / 9 with; neither 100 without / 0 with — 1062 of
+    1072 either way. helixgen stamps `mmid` on every USER-block bypass target
+    regardless, which is a shape the corpus never shows for a snapshot-only one.
+
+    It stays that way on purpose, and this test exists so it is not "fixed" by
+    accident a third time. The always-`mmid` output is what every helixgen tone
+    on the owner's hardware was installed with and plays fine — field-proven —
+    while omitting the field is only corpus-attested. Matching the corpus is a
+    3-line change in `transcode._bypass_trg` that scores 860/860 on the corpus
+    round trip AND changes the emitted bytes of ALL 32 local library tones, so
+    the trade is known-working for better-shaped, on the write path, with no
+    way to tell offline which the firmware actually wants.
+
+    To flip it, run the hardware check first: install one tone with `mmid`
+    omitted on a snapshot-only bypass, confirm on the Stadium that the snapshot
+    still recalls that bypass, THEN change `_bypass_trg` and this test together.
+
+    ENDPOINT bypass targets are a different case and already match the device:
+    they carry no `mmid` at all, matching 122 of 122 in the corpus.
+    """
+
+    def _entt(self, **block):
+        spec = {"block": "HD2_DistMinotaurMono", "snap_bypass": [True, False]}
+        spec.update(block)
+        return transcode.recipe_to_sbepgsm({
+            "name": "b", "snapshots": [{"name": "A"}, {"name": "B"}],
+            "paths": [{"blocks": [spec],
+                       "input_snap_bypass": [True, False]}],
+        })["cg__"]["entt"]
+
+    def test_a_snapshot_only_user_bypass_still_carries_mmid(self):
+        entt = self._entt()
+        mid = defs.model_id_for("HD2_DistMinotaurMono")
+        byp = [t for t in entt["trgs"] if t.get("type") == 1 and "mmid" in t]
+        assert [t["mmid"] for t in byp] == [mid]
+
+    def test_a_controller_driven_bypass_carries_mmid_too(self):
+        entt = self._entt(fs_bypass={"source": 0x01010101,
+                                     "behavior": "latching"})
+        mid = defs.model_id_for("HD2_DistMinotaurMono")
+        assert [t["mmid"] for t in entt["trgs"]
+                if t.get("type") == 1 and "mmid" in t] == [mid]
+
+    def test_an_endpoint_bypass_never_carries_mmid(self):
+        entt = self._entt()
+        # The DSP input's own bypass target: no mmid, matching 122/122.
+        assert [t for t in entt["trgs"]
+                if t.get("type") == 1 and "mmid" not in t]
