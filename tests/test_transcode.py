@@ -1128,3 +1128,121 @@ def test_marshall_vh4_exp3_not_merged_onto_exp2():
     assert len(on_exp2) == n_exp2, (
         f"(42,1) drives {len(on_exp2)} ctrls but the .hsp has {n_exp2} EXP2 "
         f"controllers — EXP3 leaked onto EXP2")
+
+
+class TestPtidKeyOverflow:
+    """A param whose pid does not fit the device's 8-bit ``ptid`` key is
+    skipped LOUDLY and NAMED, never packed into a wrapped key (bead hgc-3d1).
+
+    Five real knobs are affected — the vibrato channel of the two Agoura
+    black-panel amps, which the tone skill favours — so this is reachable, not
+    theoretical. No captured device content registers a pid above 110 in
+    ``ptid``, so there is no attested encoding to write instead; a wrapped key
+    would carry into the SLOT byte and bind a different slot and param.
+    """
+
+    RECIPE = {
+        "name": "vib",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [
+            {"block": "Agoura_AmpUSDoubleBlack",
+             "snap_params": {"VibTreb": [0.42, 0.6],   # pid 1111 — no key
+                             "Bass": [0.58, 0.7]}},    # pid 4 — keyed
+        ]}],
+    }
+
+    def _entt(self):
+        return transcode.recipe_to_sbepgsm(copy.deepcopy(self.RECIPE))["cg__"]["entt"]
+
+    def test_the_binding_still_reaches_the_device(self):
+        entt = self._entt()
+        vib = _trg_by(entt, pid_=1111)
+        assert vib["type"] == 2 and vib["slot"] == 0
+        # trgs carries the FULL pid, and stid tracks it: the snapshot values
+        # still apply. Only the ptid index entry is missing.
+        assert vib["id__"] in entt["ctm_"]["stid"]
+
+    def test_no_wrapped_key_is_written(self):
+        entt = self._entt()
+        ptid = dict(zip(entt["ctm_"]["ptid"][::2], entt["ctm_"]["ptid"][1::2]))
+        by_id = {t["id__"]: t for t in entt["trgs"]}
+        # Every key that IS written decodes back to its own target exactly.
+        for key, tid in ptid.items():
+            t = by_id[tid]
+            assert key == (t["eID_"] << 16) | (t["slot"] << 8) | t["pid_"]
+        assert _trg_by(entt, pid_=1111)["id__"] not in ptid.values()
+        assert _trg_by(entt, pid_=4)["id__"] in ptid.values()
+
+    def test_the_skip_names_the_model_and_the_knob(self, capsys):
+        self._entt()
+        err = capsys.readouterr().err
+        assert "Agoura_AmpUSDoubleBlack.VibTreb" in err
+        assert "1111" in err and "hgc-3d1" in err
+
+    def test_every_affected_block_is_named(self, capsys):
+        # Two instances of the amp -> BOTH are reported. An earlier draft of
+        # this fix deduped on "<model>.<knob>", which told a user with two
+        # Agoura amps about one of them.
+        recipe = copy.deepcopy(self.RECIPE)
+        second = copy.deepcopy(recipe["paths"][0]["blocks"][0])
+        second["pos"] = 2
+        recipe["paths"][0]["blocks"][0]["pos"] = 1
+        recipe["paths"][0]["blocks"].append(second)
+        transcode.recipe_to_sbepgsm(recipe)
+        assert capsys.readouterr().err.count(
+            "Agoura_AmpUSDoubleBlack.VibTreb") == 2
+
+
+class TestBypassTargetMmidIsPinned:
+    """The bypass-target `mmid` shape is PINNED, deliberately (bead hgc-ufu).
+
+    The device's own rule is `mmid` iff a CONTROLLER drives the target. Across
+    Line 6's 66 factory presets: controller-driven 580 with / 1 without;
+    snapshot-only 382 without / 9 with; neither 100 without / 0 with — 1062 of
+    1072 either way. helixgen stamps `mmid` on every USER-block bypass target
+    regardless, which is a shape the corpus never shows for a snapshot-only one.
+
+    It stays that way on purpose, and this test exists so it is not "fixed" by
+    accident a third time. The always-`mmid` output is what every helixgen tone
+    on the owner's hardware was installed with and plays fine — field-proven —
+    while omitting the field is only corpus-attested. Matching the corpus is a
+    3-line change in `transcode._bypass_trg` that scores 860/860 on the corpus
+    round trip AND changes the emitted bytes of ALL 32 local library tones, so
+    the trade is known-working for better-shaped, on the write path, with no
+    way to tell offline which the firmware actually wants.
+
+    To flip it, run the hardware check first: install one tone with `mmid`
+    omitted on a snapshot-only bypass, confirm on the Stadium that the snapshot
+    still recalls that bypass, THEN change `_bypass_trg` and this test together.
+
+    ENDPOINT bypass targets are a different case and already match the device:
+    they carry no `mmid` at all, matching 122 of 122 in the corpus.
+    """
+
+    def _entt(self, **block):
+        spec = {"block": "HD2_DistMinotaurMono", "snap_bypass": [True, False]}
+        spec.update(block)
+        return transcode.recipe_to_sbepgsm({
+            "name": "b", "snapshots": [{"name": "A"}, {"name": "B"}],
+            "paths": [{"blocks": [spec],
+                       "input_snap_bypass": [True, False]}],
+        })["cg__"]["entt"]
+
+    def test_a_snapshot_only_user_bypass_still_carries_mmid(self):
+        entt = self._entt()
+        mid = defs.model_id_for("HD2_DistMinotaurMono")
+        byp = [t for t in entt["trgs"] if t.get("type") == 1 and "mmid" in t]
+        assert [t["mmid"] for t in byp] == [mid]
+
+    def test_a_controller_driven_bypass_carries_mmid_too(self):
+        entt = self._entt(fs_bypass={"source": 0x01010101,
+                                     "behavior": "latching"})
+        mid = defs.model_id_for("HD2_DistMinotaurMono")
+        assert [t["mmid"] for t in entt["trgs"]
+                if t.get("type") == 1 and "mmid" in t] == [mid]
+
+    def test_an_endpoint_bypass_never_carries_mmid(self):
+        entt = self._entt()
+        # The DSP input's own bypass target: no mmid, matching 122/122.
+        assert [t for t in entt["trgs"]
+                if t.get("type") == 1 and "mmid" not in t]

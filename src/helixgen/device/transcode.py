@@ -374,7 +374,41 @@ def _hrns(hid: int, shape: str) -> dict:
             "snap": False, "tid_": 0, "vers": 0}
 
 
-def _hrns_for(category: Optional[str]) -> dict:
+# The fx harness family splits Mono/Stereo and, orthogonally, Trails-capable
+# or not: only ``P35_AppFxHarnessTrails{Mono,Stereo}`` carry a ``Trails``
+# param at all. The constant ``P35_AppFxHarnessMono`` (420) this module emits
+# for every effect therefore CANNOT hold Trails — so a ``.hsp`` authoring a
+# delay or reverb with `trails: true` installed with spillover off, silently
+# (bead hgc-1yx). 83 blocks across Line 6's 66 factory presets carry
+# ``Trails=True``, on harness 97 for a stereo model and 133 for a mono one.
+# ``"Mono" not in <model name>`` reproduces Line 6's own mono/stereo choice on
+# 148 of the 148 corpus blocks that sit on a Trails harness — the suffix-less
+# models (the whole DL4 family) are all stereo, so testing for the ABSENCE of
+# Mono beats testing for the presence of Stereo, which misses them.
+#
+# The mono/stereo pair is not the only axis: Line 6 also ships `8x` variants
+# (495/504) and picks them per MODEL from a table the vendored defs asset does
+# not carry, so e.g. VIC_DynPlateStereo is always 495 on real content and gets
+# 97 here. That divergence is NOT new — every effect used to get 420, which is
+# equally unattested for those models — but it is real, and it is why the
+# harness id generally is bead hgc-mn3 rather than something claimed solved.
+# What IS byte-identical to real device content is the emitted harness dict
+# itself, for both 97 and 133.
+_TRAILS_HRNS = {False: defs.model_id_for("P35_AppFxHarnessTrailsMono"),
+                True: defs.model_id_for("P35_AppFxHarnessTrailsStereo")}
+assert all(isinstance(v, int) for v in _TRAILS_HRNS.values()), _TRAILS_HRNS
+
+
+def _hrns_for(category: Optional[str], *, trails: bool = False,
+              stereo: bool = False) -> dict:
+    if trails and category not in _HRNS_BY_CATEGORY:
+        hid = _TRAILS_HRNS[stereo]
+        # Straight from the defs asset: {Trails: True, bypass: False,
+        # upper: True, EvtIdx: -1} — byte-identical to the 50 harness-97
+        # blocks in the factory corpus.
+        return {"cid_": 0, "enbl": 1, "id__": hid, "lbid": -1,
+                "parm": _synth_parm(hid, {"Trails": True}),
+                "snap": False, "tid_": 0, "vers": 0}
     hid, shape = _HRNS_BY_CATEGORY.get(category, _DEFAULT_FX_HRNS)
     return _hrns(hid, shape)
 
@@ -640,7 +674,8 @@ def _make_user_block(spec: dict, inst_id: int) -> dict:
     return {
         "cid_": 0, "enbl": 0 if spec.get("enabled") is False else 1,
         "favo": 0, "hasb": False,
-        "hrns": _hrns_for(category),
+        "hrns": _hrns_for(category, trails=spec.get("trails") is True,
+                          stereo="Mono" not in str(defs.model_name_for(mid) or "")),
         "id__": inst_id,
         "mdls": mdls,
         "snap": False,
@@ -718,6 +753,25 @@ def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
     return blk
 
 
+def _apply_base_bypass(block: dict, spec: Optional[dict]) -> dict:
+    """Carry a ``.hsp`` entry's BASE bypass onto an emitted device block.
+
+    ``enbl`` at block level is the base bypass (0 = loads bypassed) — the same
+    field, with the same two-value domain, that 294 user blocks across Line 6's
+    66 factory presets carry. The device registers flow ENDPOINTS and split/join
+    nodes as bypass targets too (32 b13, 18 split and 17 join per-snapshot
+    bypass arrays in that corpus, bead hgc-5us/hgc-rq3), so their ``enbl`` is
+    the same knob; Line 6 simply never shipped one bypassed. Without this a
+    ``.hsp`` whose endpoint or split records ``@enabled {value: false}`` —
+    which ``device to-hsp`` DOES read off real device content — installed
+    enabled, and, when the block also carried a snapshot array, contradicted
+    itself (base on, every snapshot bypassed). Bead hgc-b5y.
+    """
+    if spec and spec.get("enabled") is False:
+        block["enbl"] = 0
+    return block
+
+
 def _append_output_group(placements: List[Tuple[int, dict]], out_params,
                          path: Optional[dict] = None) -> None:
     """Append the endpoint group that terminates every synthesized flow — the
@@ -732,17 +786,21 @@ def _append_output_group(placements: List[Tuple[int, dict]], out_params,
     keeps the historical defaults."""
     path = path or {}
     placements.append((_ROW0_OUTPUT,
-                       _make_output_endpoint(0, out_params,
-                                             path.get("output_model"))))
+                       _apply_base_bypass(
+                           _make_output_endpoint(0, out_params,
+                                                 path.get("output_model")),
+                           {"enabled": path.get("output_enabled")})))
     row1_in = path.get("row1_input")
     placements.append((_ROW1_INPUT,
-                       _make_input_endpoint(row1_in.get("mode"), 0,
-                                            row1_in.get("params"))
+                       _apply_base_bypass(
+                           _make_input_endpoint(row1_in.get("mode"), 0,
+                                                row1_in.get("params")), row1_in)
                        if row1_in else _endpoint(_INPUT_NONE, 0)))
     row1_out = path.get("row1_output")
     placements.append((_ROW1_OUTPUT,
-                       _make_output_endpoint(0, row1_out.get("params"),
-                                             row1_out.get("model"))
+                       _apply_base_bypass(
+                         _make_output_endpoint(0, row1_out.get("params"),
+                                               row1_out.get("model")), row1_out)
                        if row1_out else _endpoint(_OUTPUT_NONE, 0)))
 
 
@@ -930,9 +988,9 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
 
         # (gridpos, block) placements on this flow's 28-slot grid. The input
         # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed).
-        input_block = _make_input_endpoint(mode, 0, in_params)
-        if path.get("input_enabled") is False:
-            input_block["enbl"] = 0
+        input_block = _apply_base_bypass(
+            _make_input_endpoint(mode, 0, in_params),
+            {"enabled": path.get("input_enabled")})
         # All FOUR endpoints are registered in ``instance_ids`` under their own
         # sentinel (they have no ``(lane, pos)`` of their own), because every
         # one of them can be a snapshot target on real device content: the DSP
@@ -1309,13 +1367,30 @@ def _ptid_key(eid: int, slot: int, pid: int) -> Optional[int]:
     omit, so a dual-cab B-slot target was registered under the A slot's key and
     collided with it (bead hgc-3yc).
 
-    ``pid_`` therefore has only 8 bits. Every corpus ``ptid`` entry fits, but
-    the model vocabulary reaches much higher (``Agoura_AmpUSDoubleBlack``'s
-    ``VibTreb`` is pid 1111), and such a pid would silently carry into the slot
-    byte — a binding pointing at a DIFFERENT slot and param. There is no
-    captured device content showing how the firmware encodes one, so the entry
-    is skipped rather than corrupted; the target still reaches ``stid`` and the
-    parm leaf still carries its ``tid_``. See bead hgc-3d1.
+    ``pid_`` therefore has only 8 bits, and 5 REAL knobs exceed it: the vibrato
+    channel of the two Agoura black-panel amps (``Agoura_AmpUSLuxeBlack``'s
+    ``VibratoVolume``/``VibBass``/``VibTreb`` = 555/666/777 and
+    ``Agoura_AmpUSDoubleBlack``'s ``VibMid``/``VibTreb`` = 1010/1111 — Line 6
+    hand-picked repdigit ids there). Packing one carries into the SLOT byte and
+    yields a key the device reads as a different slot and param, so the entry is
+    SKIPPED, loudly (:func:`_register_ptid` names the model and knob).
+
+    Skipping is safe, not a coin flip: ``ptid`` is a device-maintained INDEX
+    over ``trgs``, not the authority. The corpus says so twice — one key in
+    ``55-14D-BAS-4-PRO-4-Pros`` is stale (it decodes to entity 12 while the
+    target it points at is entity 40) and one of the 891 param targets is
+    registered nowhere at all — and helixgen never reads it back (``to-hsp``
+    reconstructs from ``ctm_.stid`` + ``trgs``). The target still reaches
+    ``stid``, still exists in ``trgs`` with its FULL unpacked ``pid_``, and the
+    parm leaf still carries its ``tid_``/``snap``, which is how the device
+    applies the value. Writing a wrapped key would be the only way to actually
+    break something.
+
+    Emitting some other encoding instead would be invention: 0 of the 890
+    corpus ``ptid`` entries registers a pid above 110, so there is no captured
+    evidence of how the firmware spells one. Closing bead hgc-3d1 for real
+    needs a hardware capture — snapshot-track ``Agoura_AmpUSDoubleBlack``
+    ``VibTreb`` in HX Edit, save, read the ``ptid`` entry back.
     """
     if not 0 <= pid <= 0xFF or not 0 <= slot <= 0xFF:
         return None
@@ -1431,15 +1506,30 @@ def _synth_cg_from_recipe(
                              "slot": 0, "type": 1}, (eid, 0, 0, 1))
         return tid
 
-    def _register_ptid(eid: int, slot: int, pid: int, tid: int) -> None:
-        """Add a param target to ``ctm_.ptid`` under the device's packed key."""
+    def _register_ptid(eid: int, slot: int, pid: int, tid: int,
+                       mid: Optional[int] = None,
+                       pname: Optional[str] = None) -> None:
+        """Add a param target to ``ctm_.ptid`` under the device's packed key.
+
+        A target the key cannot hold is skipped and NAMED — an anonymous
+        "param id 1111" is not something a user can act on, and one warning per
+        affected BLOCK is what tells you how much of your preset is involved.
+        See :func:`_ptid_key` for why skipping is the safe half of the trade."""
         key = _ptid_key(eid, slot, pid)
         if key is None:
             import sys
-            print(f"warning: param id {pid} does not fit the device's ptid key "
-                  f"(8 bits); the snapshot/controller target still applies via "
-                  f"the parm leaf, but it is not registered in ptid "
-                  f"(bead hgc-3d1).", file=sys.stderr)
+            model = defs.model_name_for(mid) if mid is not None else None
+            what = ".".join(x for x in (model, pname) if x) or f"pid {pid}"
+            why = (f"param id {pid}" if not 0 <= pid <= 0xFF
+                   else f"model slot {slot}")
+            print(f"warning: {what} has {why}, which does not fit the device's "
+                  f"packed ptid key (8 bits each for the model slot and the "
+                  f"param id); its snapshot/controller binding is emitted "
+                  f"(trgs + ctm_.stid + the parm leaf's tid_) but NOT indexed "
+                  f"in ctm_.ptid. No device content has ever been captured "
+                  f"registering a pid above 110, so there is no attested key "
+                  f"to write instead — writing a wrapped one would bind a "
+                  f"different slot and param. Bead hgc-3d1.", file=sys.stderr)
             return
         ptid.extend([key, tid])
 
@@ -1471,7 +1561,7 @@ def _synth_cg_from_recipe(
                                     "pid_": pid, "pmid": smid, "ppid": pid,
                                     "slot": si, "type": 2}, (eid, si, pid, 2))
                     stid.append(tid)
-                    _register_ptid(eid, si, pid, tid)
+                    _register_ptid(eid, si, pid, tid, smid, pname)
                     tracked.append((tid, list(pvals)))
                     bindings["param"][(eid, si, pid)] = tid
 
@@ -1500,7 +1590,7 @@ def _synth_cg_from_recipe(
                             "pmid": mid, "ppid": pid, "slot": 0, "type": 2},
                            (eid, 0, pid, 2))
             stid.append(tid)
-            _register_ptid(eid, 0, pid, tid)
+            _register_ptid(eid, 0, pid, tid, mid, pname)
             tracked.append((tid, list(pvals)))
             bindings["param"][(eid, 0, pid)] = tid
 
@@ -1621,7 +1711,7 @@ def _synth_cg_from_recipe(
                 tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
                                 "pid_": pid, "pmid": mid, "ppid": pid,
                                 "slot": si, "type": 2}, (eid, si, pid, 2))
-                _register_ptid(eid, si, pid, tid)
+                _register_ptid(eid, si, pid, tid, mid, pname)
                 # #24: a controller-ONLY param target still binds its leaf
                 # (``tid_``) — but with ``snap=False`` (it is not snapshot-
                 # tracked). A param that is ALSO snapshot-tracked already sits
@@ -1694,7 +1784,7 @@ def _synth_cg_from_recipe(
                     tid = _new_trg({"eID_": eid, "enty": 3, "mmid": mid,
                                     "pid_": pid, "pmid": mid, "ppid": pid,
                                     "slot": 0, "type": 2}, (eid, 0, pid, 2))
-                    _register_ptid(eid, 0, pid, tid)
+                    _register_ptid(eid, 0, pid, tid, mid, pname)
                     bindings["param_ctl"][(eid, 0, pid)] = tid
                 _new_midi_ctrl({"behv": 2, "cnt2": cc, "curv": 5, "dlay": 0,
                                 "goid": 0, "max_": meta.get("max", 1.0),
@@ -1941,6 +2031,7 @@ def _build_structural_block(entry: dict) -> dict:
     instance id and re-points the split<->join partners."""
     kind = entry.get("kind")
     scaffold = copy.deepcopy(_SPLIT_SCAFFOLD if kind == "split" else _JOIN_SCAFFOLD)
+    _apply_base_bypass(scaffold, entry)
     mid = _resolve_model_id(entry.get("model", ""))
     if mid is not None:
         scaffold["mdls"][0]["id__"] = mid

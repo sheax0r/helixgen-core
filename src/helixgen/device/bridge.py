@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from helixgen import flowparams
+
 from . import defs
 
 
@@ -361,6 +363,33 @@ def _extra_slots(slot_list: List[Any], resolve_model, *,
     return out
 
 
+def _base_bypassed(bnn: dict) -> bool:
+    """True when a ``.hsp`` ``bNN`` entry's BASE bypass says "loads bypassed".
+
+    The base bypass lives in the ``bNN``-level ``@enabled`` wrapper's ``value``
+    (device-validated; the slot-level one is not read). Falsy — ``False`` or a
+    degenerate ``0`` — means bypassed; missing/``None`` means enabled, matching
+    :func:`_snapshot_arrays`'s base-polarity default. Shared by user blocks,
+    flow endpoints and split/join nodes: all four are ``enbl`` on the device
+    and only the user-block one used to be carried (bead hgc-b5y).
+    """
+    en = bnn.get("@enabled")
+    base = en.get("value") if isinstance(en, dict) else en
+    return base is not None and not base
+
+
+def _hsp_trails(bnn: dict) -> Any:
+    """A ``bNN``'s harness ``Trails`` value, or ``None`` when it has none.
+
+    The wrapper is optional in the wild: ``generate`` writes ``{"value": ...}``
+    but a hand-edited ``.hsp`` can carry a bare bool, and ``harness`` /
+    ``params`` are only dicts by convention."""
+    h = bnn.get("harness")
+    p = h.get("params") if isinstance(h, dict) else None
+    t = p.get("Trails") if isinstance(p, dict) else None
+    return t.get("value") if isinstance(t, dict) else t
+
+
 def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                  strict: bool = True) -> List[Dict[str, Any]]:
     """Read EVERY DSP flow of a ``.hsp`` body into per-path recipe entries
@@ -407,6 +436,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         input_snap_bypass: Optional[List[Any]] = None
         output_params: Dict[str, Any] = {}
         output_model: Optional[str] = None
+        output_enabled: Optional[bool] = None
         output_snap_bypass: Optional[List[Any]] = None
         output_snap_params: Dict[str, List[Any]] = {}
         row1_input: Optional[Dict[str, Any]] = None
@@ -432,6 +462,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 entry: Dict[str, Any] = {"kind": typ, "model": model,
                                          "params": sp,
                                          "lane": slane, "pos": spos}
+                if _base_bypassed(b):
+                    entry["enabled"] = False
                 # A routing node is a snapshot/controller target like any other
                 # block — the device snapshot-tracks a split's bypass and
                 # sweeps its RouteTo from EXP1 (bead hgc-rq3).
@@ -458,9 +490,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 # a bypass target). Capture both so the transcoder can reproduce
                 # them; without this an input muted per-snapshot / bypassed at
                 # load silently reverts on ``device install``/``sync``.
-                en0 = b.get("@enabled")
-                base_en0 = en0.get("value") if isinstance(en0, dict) else en0
-                if base_en0 is not None and not base_en0:
+                if _base_bypassed(b):
                     input_enabled = False
                 if has_snaps:
                     input_snap_bypass = _snap_bypass(b)
@@ -473,6 +503,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     # ... and its MODEL: a flow feeding the next DSP ends in
                     # `P35_OutputPath2A`, not the matrix (bead hgc-ikp).
                     output_model = model
+                    if _base_bypassed(b):
+                        output_enabled = False
                     # #62 phase 2: per-snapshot output-gain trims ride the b13
                     # param wrappers' `snapshots` arrays (dense, base-filled —
                     # written by `mutate.set_flow_param(..., snapshot=)`). The
@@ -487,6 +519,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     # output was replaced on every install (bead hgc-ikp).
                     row1_output = {"model": model,
                                    "params": _lift_endpoint_params(slot)}
+                    if _base_bypassed(b):
+                        row1_output["enabled"] = False
                     if has_snaps:
                         row1_output["snap_params"] = _endpoint_snap_params(slot)
                         row1_output["snap_bypass"] = _snap_bypass(b)
@@ -507,6 +541,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                                                                   model),
                         "params": _lift_endpoint_params(slot),
                     }
+                    if _base_bypassed(b):
+                        row1_input["enabled"] = False
                     if has_snaps:
                         row1_input["snap_bypass"] = _snap_bypass(b)
                 continue
@@ -534,16 +570,23 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     spec["snap_bypass"] = bypass
                 if snap_params:
                     spec["snap_params"] = snap_params
+            # Delay/reverb/FX-loop spillover. It rides the bNN ``harness`` (the
+            # .hsp's own name for the device's ``hrns``), which the forward path
+            # used to synthesize from a fixed template — so `trails: true` never
+            # reached the hardware (bead hgc-1yx). Only True is carried: the
+            # transcoder's default harness cannot express Trails at all, so
+            # False and absent are already the same emitted shape. Scope is the
+            # same ``flowparams.trails_capable`` gate ``generate`` validates and
+            # ``view`` projects with, so a stray flag on a block that has no
+            # Trails knob does not re-point its harness.
+            if (_hsp_trails(b) is True
+                    and flowparams.trails_capable(cat, defs.model_name_for(dev_id))):
+                spec["trails"] = True
             # Controller assignments (spec 2 Part B): source->bypass +
             # source->param (EXP sweeps AND footswitch param toggles — both
             # are `param`-type controllers; behavior tells them apart).
             en = b.get("@enabled")
-            # Base bypass: a block whose ``@enabled.value`` is falsy (False or
-            # a degenerate 0) loads bypassed — carried so the transcoder can
-            # emit ``enbl=0``. Missing/None means enabled, matching
-            # ``_snapshot_arrays``'s base-polarity default.
-            base_en = en.get("value") if isinstance(en, dict) else en
-            if base_en is not None and not base_en:
+            if _base_bypassed(b):
                 spec["enabled"] = False
             if isinstance(en, dict) and isinstance(en.get("controller"), dict):
                 c = en["controller"]
@@ -583,6 +626,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             path_entry["output_params"] = output_params
         if output_model is not None:
             path_entry["output_model"] = output_model
+        if output_enabled is False:
+            path_entry["output_enabled"] = False
         if output_snap_bypass is not None:
             path_entry["output_snap_bypass"] = output_snap_bypass
         if output_snap_params:
