@@ -142,6 +142,62 @@ class TestTranscodeSynthesis:
         assert jpids[5] is True      # B Polarity
 
 
+class TestBaseBypassOnEndpointsAndRoutingNodes:
+    """A flow endpoint or split/join that RECORDS ``@enabled {value: false}``
+    must install bypassed (bead hgc-b5y).
+
+    ``enbl`` at block level is the base bypass; only the b00 input carried it,
+    so a ``.hsp`` imported from hardware with a bypassed split/output — which
+    ``device to-hsp`` reads and writes as ``@enabled: false`` — re-installed
+    ENABLED, and, when the block also carried a snapshot bypass array,
+    contradicted itself (base on, every snapshot bypassed).
+    """
+
+    def _body(self):
+        extra = {
+            "b02": {"type": "split", "position": 2, "path": 0,
+                    "branch": "b15", "endpoint": "b04",
+                    "@enabled": {"value": False},
+                    "slot": [{"model": "P35_AppDSPSplitXOver", "params": {}}]},
+            "b04": {"type": "join", "position": 4, "path": 0,
+                    "branch": "b15", "endpoint": "b02",
+                    "@enabled": {"value": False},
+                    "slot": [{"model": "P35_AppDSPJoin", "params": {}}]},
+            "b14": {"type": "input", "position": 14, "path": 0,
+                    "@enabled": {"value": False},
+                    "slot": [{"model": "P35_InputInst2", "params": {}}]},
+            "b27": {"type": "output", "position": 27, "path": 0,
+                    "@enabled": {"value": False},
+                    "slot": [{"model": "P35_OutputMatrix", "params": {}}]},
+        }
+        body = _hsp_body("P35_InputInst1", {}, extra_blocks=extra)
+        body["preset"]["flow"][0]["b13"]["@enabled"] = {"value": False}
+        body["preset"]["flow"][0]["b00"]["@enabled"] = {"value": False}
+        return body
+
+    def test_bridge_carries_every_base_bypass(self):
+        path = bridge.hsp_to_paths(self._body(), strict=False)[0]
+        assert path["input_enabled"] is False           # b00 (pre-existing)
+        assert path["output_enabled"] is False          # b13
+        assert path["row1_input"]["enabled"] is False   # b14
+        assert path["row1_output"]["enabled"] is False  # b27
+        assert [s.get("enabled") for s in path["structural"]] == [False, False]
+
+    def test_every_endpoint_and_routing_node_installs_bypassed(self):
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(self._body()))
+        by_type = _blocks_by_type(doc)
+        assert [b["enbl"] for b in by_type[8]] == [0, 0]  # b00 + b14
+        assert [b["enbl"] for b in by_type[9]] == [0, 0]  # b13 + b27
+        assert by_type[3][0]["enbl"] == 0                 # split
+        assert by_type[4][0]["enbl"] == 0                 # join
+
+    def test_an_unbypassed_flow_is_untouched(self):
+        doc = content.decode_any(
+            transcode.hsp_to_sbepgsm(_hsp_body("P35_InputInst1", {})))
+        assert {b["enbl"] for b in _blocks_by_type(doc)[8]} == {1}
+        assert {b["enbl"] for b in _blocks_by_type(doc)[9]} == {1}
+
+
 def _drive(pos, model="HD2_DistMinotaurMono", lane=0):
     return {"type": "distort", "position": pos, "path": lane,
             "slot": [{"model": model, "params": {}}]}

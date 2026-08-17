@@ -718,6 +718,25 @@ def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
     return blk
 
 
+def _apply_base_bypass(block: dict, spec: Optional[dict]) -> dict:
+    """Carry a ``.hsp`` entry's BASE bypass onto an emitted device block.
+
+    ``enbl`` at block level is the base bypass (0 = loads bypassed) — the same
+    field, with the same two-value domain, that 294 user blocks across Line 6's
+    66 factory presets carry. The device registers flow ENDPOINTS and split/join
+    nodes as bypass targets too (32 b13, 18 split and 17 join per-snapshot
+    bypass arrays in that corpus, bead hgc-5us/hgc-rq3), so their ``enbl`` is
+    the same knob; Line 6 simply never shipped one bypassed. Without this a
+    ``.hsp`` whose endpoint or split records ``@enabled {value: false}`` —
+    which ``device to-hsp`` DOES read off real device content — installed
+    enabled, and, when the block also carried a snapshot array, contradicted
+    itself (base on, every snapshot bypassed). Bead hgc-b5y.
+    """
+    if spec and spec.get("enabled") is False:
+        block["enbl"] = 0
+    return block
+
+
 def _append_output_group(placements: List[Tuple[int, dict]], out_params,
                          path: Optional[dict] = None) -> None:
     """Append the endpoint group that terminates every synthesized flow — the
@@ -732,17 +751,21 @@ def _append_output_group(placements: List[Tuple[int, dict]], out_params,
     keeps the historical defaults."""
     path = path or {}
     placements.append((_ROW0_OUTPUT,
-                       _make_output_endpoint(0, out_params,
-                                             path.get("output_model"))))
+                       _apply_base_bypass(
+                           _make_output_endpoint(0, out_params,
+                                                 path.get("output_model")),
+                           {"enabled": path.get("output_enabled")})))
     row1_in = path.get("row1_input")
     placements.append((_ROW1_INPUT,
-                       _make_input_endpoint(row1_in.get("mode"), 0,
-                                            row1_in.get("params"))
+                       _apply_base_bypass(
+                           _make_input_endpoint(row1_in.get("mode"), 0,
+                                                row1_in.get("params")), row1_in)
                        if row1_in else _endpoint(_INPUT_NONE, 0)))
     row1_out = path.get("row1_output")
     placements.append((_ROW1_OUTPUT,
-                       _make_output_endpoint(0, row1_out.get("params"),
-                                             row1_out.get("model"))
+                       _apply_base_bypass(
+                         _make_output_endpoint(0, row1_out.get("params"),
+                                               row1_out.get("model")), row1_out)
                        if row1_out else _endpoint(_OUTPUT_NONE, 0)))
 
 
@@ -1941,6 +1964,7 @@ def _build_structural_block(entry: dict) -> dict:
     instance id and re-points the split<->join partners."""
     kind = entry.get("kind")
     scaffold = copy.deepcopy(_SPLIT_SCAFFOLD if kind == "split" else _JOIN_SCAFFOLD)
+    _apply_base_bypass(scaffold, entry)
     mid = _resolve_model_id(entry.get("model", ""))
     if mid is not None:
         scaffold["mdls"][0]["id__"] = mid
