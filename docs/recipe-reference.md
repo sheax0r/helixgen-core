@@ -459,6 +459,11 @@ the block is **bypassed** (manually or via a footswitch):
   first-class setting. If both `trails` and a `raw.harness` are present,
   `trails` wins.
 - Stadium-only; ignored for `.hlx` (legacy Helix) chassis (no harness emitted).
+- `device install` / `device sync` carry it onto the hardware: the transcoder
+  emits a Trails-capable harness model (`P35_AppFxHarnessTrails{Mono,Stereo}`)
+  when the block asks for trails. Before bead hgc-1yx it pinned every effect to
+  `P35_AppFxHarnessMono`, which has no `Trails` param at all, so a `.hsp` with
+  `trails: true` installed with spillover OFF.
 - Editing an existing `.hsp` never needs `trails`: `set-param`/edit verbs
   preserve the block's `harness` (and its `Trails`) verbatim in place.
 

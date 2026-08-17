@@ -374,7 +374,34 @@ def _hrns(hid: int, shape: str) -> dict:
             "snap": False, "tid_": 0, "vers": 0}
 
 
-def _hrns_for(category: Optional[str]) -> dict:
+# The fx harness family splits Mono/Stereo and, orthogonally, Trails-capable
+# or not: only ``P35_AppFxHarnessTrails{Mono,Stereo}`` carry a ``Trails``
+# param at all. The constant ``P35_AppFxHarnessMono`` (420) this module emits
+# for every effect therefore CANNOT hold Trails — so a ``.hsp`` authoring a
+# delay or reverb with `trails: true` installed with spillover off, silently
+# (bead hgc-1yx). 83 blocks across Line 6's 66 factory presets carry
+# ``Trails=True``, on harness 97 for a stereo model and 133 for a mono one.
+# ``"Stereo" in <model name>`` reproduces Line 6's own mono/stereo harness
+# choice on 600 of the 605 corpus blocks that use a mono/stereo harness pair
+# (the 5 misses are models carrying neither word). The mono/stereo axis is not
+# a regression risk either way: today EVERY effect gets mono 420. (Line 6 also
+# ships `8x` variants — 495/504 — on some models; the id is tolerant, which is
+# exactly why the constant 420 has worked at all.)
+_TRAILS_HRNS = {False: defs.model_id_for("P35_AppFxHarnessTrailsMono"),
+                True: defs.model_id_for("P35_AppFxHarnessTrailsStereo")}
+assert all(isinstance(v, int) for v in _TRAILS_HRNS.values()), _TRAILS_HRNS
+
+
+def _hrns_for(category: Optional[str], *, trails: bool = False,
+              stereo: bool = False) -> dict:
+    if trails and category not in _HRNS_BY_CATEGORY:
+        hid = _TRAILS_HRNS[stereo]
+        # Straight from the defs asset: {Trails: True, bypass: False,
+        # upper: True, EvtIdx: -1} — byte-identical to the 50 harness-97
+        # blocks in the factory corpus.
+        return {"cid_": 0, "enbl": 1, "id__": hid, "lbid": -1,
+                "parm": _synth_parm(hid, {"Trails": True}),
+                "snap": False, "tid_": 0, "vers": 0}
     hid, shape = _HRNS_BY_CATEGORY.get(category, _DEFAULT_FX_HRNS)
     return _hrns(hid, shape)
 
@@ -640,7 +667,8 @@ def _make_user_block(spec: dict, inst_id: int) -> dict:
     return {
         "cid_": 0, "enbl": 0 if spec.get("enabled") is False else 1,
         "favo": 0, "hasb": False,
-        "hrns": _hrns_for(category),
+        "hrns": _hrns_for(category, trails=spec.get("trails") is True,
+                          stereo="Stereo" in str(defs.model_name_for(mid) or "")),
         "id__": inst_id,
         "mdls": mdls,
         "snap": False,

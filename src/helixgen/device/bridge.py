@@ -376,6 +376,18 @@ def _base_bypassed(bnn: dict) -> bool:
     return base is not None and not base
 
 
+def _hsp_trails(bnn: dict) -> Any:
+    """A ``bNN``'s harness ``Trails`` value, or ``None`` when it has none.
+
+    The wrapper is optional in the wild: ``generate`` writes ``{"value": ...}``
+    but a hand-edited ``.hsp`` can carry a bare bool, and ``harness`` /
+    ``params`` are only dicts by convention."""
+    h = bnn.get("harness")
+    p = h.get("params") if isinstance(h, dict) else None
+    t = p.get("Trails") if isinstance(p, dict) else None
+    return t.get("value") if isinstance(t, dict) else t
+
+
 def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                  strict: bool = True) -> List[Dict[str, Any]]:
     """Read EVERY DSP flow of a ``.hsp`` body into per-path recipe entries
@@ -556,6 +568,14 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     spec["snap_bypass"] = bypass
                 if snap_params:
                     spec["snap_params"] = snap_params
+            # Delay/reverb spillover. It rides the bNN ``harness`` (the .hsp's
+            # own name for the device's ``hrns``), which the forward path used
+            # to synthesize from a fixed template — so `trails: true` never
+            # reached the hardware (bead hgc-1yx). Only True is carried: the
+            # transcoder's default harness cannot express Trails at all, so
+            # False and absent are already the same emitted shape.
+            if _hsp_trails(b) is True:
+                spec["trails"] = True
             # Controller assignments (spec 2 Part B): source->bypass +
             # source->param (EXP sweeps AND footswitch param toggles — both
             # are `param`-type controllers; behavior tells them apart).

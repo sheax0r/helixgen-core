@@ -198,6 +198,73 @@ class TestBaseBypassOnEndpointsAndRoutingNodes:
         assert {b["enbl"] for b in _blocks_by_type(doc)[9]} == {1}
 
 
+class TestTrailsHarness:
+    """Delay/reverb spillover survives the forward path (bead hgc-1yx).
+
+    Trails rides the block's ``hrns``, and only the ``…HarnessTrails…`` models
+    carry a ``Trails`` param at all. The transcoder pinned every effect to
+    ``P35_AppFxHarnessMono`` (420), which has no such param, so `trails: true`
+    was structurally unrepresentable and installed as spillover OFF.
+
+    Attested: 83 blocks across Line 6's 66 factory presets carry Trails=True,
+    on harness 97 for a ``…Stereo`` model and 133 for a ``…Mono`` one, and the
+    dict emitted here is byte-identical to the one Line 6 ships for the same
+    block model (e.g. HD2_ReverbPlateStereo in 03-1D-Brit-MegaGuitar).
+    """
+
+    def _hrns(self, model, **extra):
+        block = {"type": "delay", "position": 2, "path": 0,
+                 "slot": [{"model": model, "params": {}}]}
+        block.update(extra)
+        body = _hsp_body("P35_InputInst1", {}, extra_blocks={"b02": block})
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+        blk = [b for b in doc["sfg_"]["flow"][0]["blks"]
+               if isinstance(b, dict) and b.get("type") not in (8, 9)][0]
+        return blk["hrns"]
+
+    ON = {"params": {"Trails": {"value": True}}}
+
+    def test_a_stereo_block_gets_the_stereo_trails_harness(self):
+        h = self._hrns("HD2_ReverbPlateStereo", harness=self.ON)
+        assert h["id__"] == 97  # P35_AppFxHarnessTrailsStereo
+        assert h == {"cid_": 0, "enbl": 1, "id__": 97, "lbid": -1, "parm": [
+            {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 1,
+             "snap": False, "tid_": 0, "valu": True},    # Trails
+            {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 11,
+             "snap": False, "tid_": 0, "valu": False},   # bypass
+            {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 12,
+             "snap": False, "tid_": 0, "valu": True},    # upper
+            {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 13,
+             "snap": False, "tid_": 0, "valu": -1},      # EvtIdx
+        ], "snap": False, "tid_": 0, "vers": 0}
+
+    def test_a_mono_block_gets_the_mono_trails_harness(self):
+        h = self._hrns("HD2_DelayElephantManMono", harness=self.ON)
+        assert h["id__"] == 133  # P35_AppFxHarnessTrailsMono
+        assert {p["pid_"]: p["valu"] for p in h["parm"]}[1] is True
+
+    def test_trails_off_keeps_the_plain_fx_harness(self):
+        for extra in ({}, {"harness": {"params": {"Trails": {"value": False}}}}):
+            h = self._hrns("HD2_ReverbPlateStereo", **extra)
+            assert h["id__"] == 420  # P35_AppFxHarnessMono, unchanged
+            assert 1 not in {p["pid_"] for p in h["parm"]}
+
+    def test_an_unwrapped_or_malformed_harness_does_not_explode(self):
+        # generate writes {"value": ...}; a hand-edited .hsp can carry a bare
+        # bool, and `harness`/`params` are dicts only by convention.
+        assert self._hrns("HD2_ReverbPlateStereo",
+                          harness={"params": {"Trails": True}})["id__"] == 97
+        for bad in ({}, {"harness": []}, {"harness": {"params": "nope"}},
+                    {"harness": {"params": {"Trails": None}}}):
+            assert self._hrns("HD2_ReverbPlateStereo", **bad)["id__"] == 420
+
+    def test_an_amp_keeps_its_own_harness(self):
+        # Only the fx family has Trails variants; a category with a captured
+        # harness must not be re-pointed even if a stray flag says trails.
+        h = self._hrns("HD2_AmpBritPlexiNrm", harness=self.ON)
+        assert h["id__"] == 760  # P35_AppAmpHarness
+
+
 def _drive(pos, model="HD2_DistMinotaurMono", lane=0):
     return {"type": "distort", "position": pos, "path": lane,
             "slot": [{"model": model, "params": {}}]}
