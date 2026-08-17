@@ -1128,3 +1128,61 @@ def test_marshall_vh4_exp3_not_merged_onto_exp2():
     assert len(on_exp2) == n_exp2, (
         f"(42,1) drives {len(on_exp2)} ctrls but the .hsp has {n_exp2} EXP2 "
         f"controllers — EXP3 leaked onto EXP2")
+
+
+class TestPtidKeyOverflow:
+    """A param whose pid does not fit the device's 8-bit ``ptid`` key is
+    skipped LOUDLY and NAMED, never packed into a wrapped key (bead hgc-3d1).
+
+    Five real knobs are affected — the vibrato channel of the two Agoura
+    black-panel amps, which the tone skill favours — so this is reachable, not
+    theoretical. No captured device content registers a pid above 110 in
+    ``ptid``, so there is no attested encoding to write instead; a wrapped key
+    would carry into the SLOT byte and bind a different slot and param.
+    """
+
+    RECIPE = {
+        "name": "vib",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{"blocks": [
+            {"block": "Agoura_AmpUSDoubleBlack",
+             "snap_params": {"VibTreb": [0.42, 0.6],   # pid 1111 — no key
+                             "Bass": [0.58, 0.7]}},    # pid 4 — keyed
+        ]}],
+    }
+
+    def _entt(self):
+        return transcode.recipe_to_sbepgsm(copy.deepcopy(self.RECIPE))["cg__"]["entt"]
+
+    def test_the_binding_still_reaches_the_device(self):
+        entt = self._entt()
+        vib = _trg_by(entt, pid_=1111)
+        assert vib["type"] == 2 and vib["slot"] == 0
+        # trgs carries the FULL pid, and stid tracks it: the snapshot values
+        # still apply. Only the ptid index entry is missing.
+        assert vib["id__"] in entt["ctm_"]["stid"]
+
+    def test_no_wrapped_key_is_written(self):
+        entt = self._entt()
+        ptid = dict(zip(entt["ctm_"]["ptid"][::2], entt["ctm_"]["ptid"][1::2]))
+        by_id = {t["id__"]: t for t in entt["trgs"]}
+        # Every key that IS written decodes back to its own target exactly.
+        for key, tid in ptid.items():
+            t = by_id[tid]
+            assert key == (t["eID_"] << 16) | (t["slot"] << 8) | t["pid_"]
+        assert _trg_by(entt, pid_=1111)["id__"] not in ptid.values()
+        assert _trg_by(entt, pid_=4)["id__"] in ptid.values()
+
+    def test_the_skip_names_the_model_and_the_knob(self, capsys):
+        self._entt()
+        err = capsys.readouterr().err
+        assert "Agoura_AmpUSDoubleBlack.VibTreb" in err
+        assert "1111" in err and "hgc-3d1" in err
+
+    def test_it_warns_once_per_knob(self, capsys):
+        recipe = copy.deepcopy(self.RECIPE)
+        # Same knob snapshot-tracked AND swept from EXP1: two registrations.
+        recipe["paths"][0]["blocks"][0]["ctl_params"] = {
+            "VibTreb": {"source": "EXP1", "min": 0.0, "max": 1.0}}
+        transcode.recipe_to_sbepgsm(recipe)
+        assert capsys.readouterr().err.count("Agoura_AmpUSDoubleBlack.VibTreb") == 1
