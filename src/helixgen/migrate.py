@@ -241,6 +241,7 @@ def place_tone(
     move: bool,
     description_md: Optional[str],
     tags: Optional[List[str]] = None,
+    variant_fields: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Place one ``.hsp`` into the tone library and record its metadata.
 
@@ -250,7 +251,13 @@ def place_tone(
     :class:`ToneCollision` if the destination already exists (never overwrites).
     The caller owns manifest registration + committing. Does not verify a
     logical-identity mismatch — callers that need generate's identity-equality
-    guard (``library import``) enforce it before calling."""
+    guard (``library import``) enforce it before calling.
+
+    ``variant_fields`` sets extra attributes on the just-upserted Variant
+    (``library fork`` uses it for ``forked_from`` and an inherited
+    ``notes_md``) BEFORE the single metadata save, so a caller never needs a
+    second load → mutate → save round (which would double the advisory
+    commit)."""
     libinit.ensure_initialized()
     tones = home.tones_dir()
     tones.mkdir(parents=True, exist_ok=True)
@@ -277,6 +284,10 @@ def place_tone(
     )
     if description_md is not None:
         meta.description_md = description_md
+    if variant_fields:
+        variant = meta.variants[guitar_slug if guitar_slug is not None else "generic"]
+        for key, value in variant_fields.items():
+            setattr(variant, key, value)
     tone_meta.save_tone_meta(meta)
     return dest
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -194,6 +195,18 @@ def _normalized_brief(rec: Dict[str, Any], *, verbose: bool = False) -> str:
     return f"{head}, " + ", ".join(parts) + suffix
 
 
+def _forked_from_brief(rec: Dict[str, Any]) -> str:
+    """One-line summary of a variant's ``forked_from`` record (written by
+    `library fork`): which variant of which tone it was copied off, and when.
+    The full record -- source .hsp path, helixgen version -- is in `library
+    show --json`."""
+    variant = rec.get("variant") or "?"
+    tone = rec.get("tone")
+    at = str(rec.get("at") or "")[:10]
+    where = f"{variant} ({tone})" if tone else f"{rec.get('hsp') or variant}"
+    return f"forked from {where}" + (f", {at}" if at else "")
+
+
 def _guitar_summary(p: "guitars.GuitarProfile") -> Dict[str, Any]:
     """The JSON shape for one guitar in ``library list --json``: slug, full
     name, display short_name, and type."""
@@ -277,6 +290,7 @@ def library() -> None:
       list        enumerate tones, guitar profiles, and IRs (all populated)
       show        one tone's metadata, human summary or raw --json
       doc         set a tone's description_md, or one variant's notes_md
+      fork        copy a variant's .hsp onto another guitar (or another song)
       validate    shape + cross-link checks across every tone's metadata
       add-guitar  scaffold + commit a new guitar profile JSON
 
@@ -378,7 +392,8 @@ def show_cmd(name: str, as_json: bool) -> None:
     note naming the shadowed profile, so the collision is never silent --
     address the guitar by a label that only it matches (its slug, full
     name, or short name) to see the profile. Human output is a compact summary -- each
-    variant line notes its `normalized` record (written by `device normalize
+    variant line notes its `forked_from` provenance (written by `library
+    fork`: source variant + date) and its `normalized` record (written by `device normalize
     --yes`: date, trim count or "in band", scope) when one exists; the
     record's full per-target measurement telemetry is in the --json dump,
     which emits the exact bytes stored on disk (the tone or guitar JSON).
@@ -404,7 +419,9 @@ def show_cmd(name: str, as_json: bool) -> None:
         for key, variant in meta.variants.items():
             norm = (f"  -- {_normalized_brief(variant.normalized)}"
                     if variant.normalized else "")
-            click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]{norm}")
+            fork = (f"  -- {_forked_from_brief(variant.forked_from)}"
+                    if variant.forked_from else "")
+            click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]{norm}{fork}")
         return
 
     # Not a tone -- try a guitar profile (slug / name / short_name).
@@ -689,8 +706,12 @@ def import_cmd(source: Path, artist: str | None, song: str | None,
 
     Naming flags drive identity with the SAME validation + collision rules as
     `generate`: exactly one of (--artist + --song) OR --descriptor (each
-    requires the other where paired), plus an optional --guitar. With no
-    identity flag the .hsp's own meta.name becomes the descriptor. A target
+    requires the other where paired), plus an optional --guitar. An explicit
+    --descriptor carrying a smuggled identity -- a " - " separator, or a
+    trailing guitar name -- is REFUSED (exit 1) naming the flags to use
+    instead. With no identity flag the .hsp's own meta.name becomes the
+    descriptor (unguarded: an existing artifact's name is not a naming choice
+    you just made). A target
     slug that already exists is refused (exit 1) -- the existing .hsp is never
     overwritten. When SOURCE is a directory, every *.hsp under it is imported
     self-named from its meta.name (per-tone identity flags aren't allowed for a
@@ -785,6 +806,11 @@ def _resolve_import(src: Path, artist: str | None, song: str | None,
     with everything ``_place_and_register`` needs."""
     src = Path(src)
     if artist or song or descriptor:
+        # Guard the EXPLICIT flag only -- the meta.name fallback below is an
+        # existing artifact's name, not a naming choice the caller just made.
+        problem = guitars.descriptor_identity_problem(descriptor)
+        if problem:
+            raise click.ClickException(problem)
         r_artist, r_song, r_descriptor = artist, song, descriptor
     else:
         try:
@@ -927,6 +953,374 @@ def _place_and_register(r: Dict[str, Any], keep_source: bool,
     click.echo(f"Preset name: {r['preset_name']}")
 
 
+# ---------------------------------------------------------------------------
+# fork (hgc-2ja)
+# ---------------------------------------------------------------------------
+
+
+# The chain params the tone skill reconsiders when the target guitar's pickups
+# differ in class. Keyed by the block's `type` in the .hsp flow so a
+# compressor's makeup `Gain` isn't reported as drive into the amp, and a cab's
+# `Level` isn't reported as the amp's. ADVISORY ONLY -- fork never touches a
+# param; this table only decides what to REMIND the author about.
+_ADAPT_GROUPS: tuple[tuple[str, Dict[str, tuple[str, ...]]], ...] = (
+    ("drive into the amp", {"amp": ("Drive",), "fx": ("Gain",)}),
+    ("brightness / treble pull",
+     {"amp": ("Treble", "Presence", "Bright"), "cab": ("HighCut",)}),
+    ("input stage", {"input": ("Pad", "Trim")}),
+    ("level", {"amp": ("Master", "MasterVol", "ChVol", "Level"),
+               "output": ("gain",)}),
+)
+
+
+def _chain_params(hsp_path: Path) -> List[tuple[str, str, str]]:
+    """``(block_type, block_label, param_name)`` for every param in the .hsp's
+    chain, read straight off the raw body -- no Library, no block-library
+    lookup, so it works on any .hsp. The label is the editor's own display
+    name (vendored table) plus the grid coordinate, e.g.
+    ``"Brit 2203MV [0:b05]"``."""
+    from helixgen.device.paraminfo import model_display_name
+
+    def _slot(bnn: Any) -> Dict[str, Any] | None:
+        """A bNN entry's model dict, or None when it isn't a block at all --
+        a path dict also carries non-block keys (``@enabled``)."""
+        if not isinstance(bnn, dict):
+            return None
+        slot = bnn.get("slot")
+        if not isinstance(slot, list) or not slot or not isinstance(slot[0], dict):
+            return None
+        return slot[0]
+
+    body = read_hsp(hsp_path)
+    rows: List[tuple[str, str, str]] = []
+    for pi, path_dict in enumerate((body.get("preset") or {}).get("flow") or []):
+        if not isinstance(path_dict, dict):
+            continue
+        # An EMPTY path (endpoints only) has nothing to adapt -- reporting its
+        # input Trim / output gain is noise, and every Stadium preset using
+        # one DSP carries such a path.
+        if not any(_slot(b) is not None and b.get("type") not in ("input", "output")
+                   for b in path_dict.values()):
+            continue
+        for key in sorted(path_dict):
+            entry = _slot(path_dict[key])
+            if entry is None:
+                continue
+            model = entry.get("model")
+            label = (model_display_name(model) if model else None) or model or key
+            for param in (entry.get("params") or {}):
+                rows.append((str(path_dict[key].get("type") or ""),
+                             f"{label} [{pi}:{key}]", str(param)))
+    return rows
+
+
+def _adaptation_checklist(hsp_path: Path) -> List[str]:
+    """The advisory "reconsider these" lines for a fork whose target guitar's
+    pickups differ in class -- one line per group in ``_ADAPT_GROUPS`` that
+    this particular chain actually has params for. A chain with no matching
+    params yields no lines (and an unreadable .hsp yields none either: the
+    checklist is advice, never a reason to fail a fork)."""
+    try:
+        rows = _chain_params(hsp_path)
+    except (OSError, ValueError, KeyError):
+        return []
+    lines: List[str] = []
+    for title, wanted in _ADAPT_GROUPS:
+        hits = [f"{label} `{param}`" for btype, label, param in rows
+                if param in wanted.get(btype, ())]
+        if hits:
+            lines.append(f"{title}: " + ", ".join(dict.fromkeys(hits)))
+    return lines
+
+
+def _inherited_note(source_label: str, target_label: str, when: str,
+                    inherited: str | None) -> str:
+    """The forked variant's ``notes_md``: an unmissable inherited-from banner,
+    then the source's own notes verbatim (when it had any).
+
+    Written on EVERY fork, not only when there is text to carry: a same-tone
+    fork shares the logical tone's ``description_md``, which was written for
+    the SOURCE variant -- and an agent reading that write-up as if it
+    described the fork is exactly the failure this verb exists to stop."""
+    banner = (
+        f"> **Inherited from the `{source_label}` variant "
+        f"(`helixgen library fork`, {when}).** This write-up -- and the tone's "
+        f"`description_md` -- was written for the SOURCE. Update it for "
+        f"{target_label} before treating it as a description of this variant."
+    )
+    return f"{banner}\n\n{inherited}" if inherited else banner + "\n"
+
+
+def _resolve_fork_source(source: str) -> tuple[tone_meta.ToneMeta | None, str | None, Path]:
+    """Resolve SOURCE to ``(meta, variant_key, hsp_path)``.
+
+    An existing ``.hsp`` PATH is taken as-is (and matched back to a library
+    variant when it is one, so a path and a slug fork identically); anything
+    else resolves through the shared ``library show`` name resolution."""
+    p = Path(source)
+    if p.suffix.lower() == ".hsp" and p.exists():
+        found = tone_meta.find_variant_by_hsp(p)
+        return (found[0], found[1], p) if found else (None, None, p)
+
+    slug = _resolve_slug(source)
+    meta = _load_meta_for(slug)
+    keys = [k for k, v in meta.variants.items() if v.preset_name == source]
+    if not keys:
+        keys = sorted(meta.variants)
+    if not keys:
+        raise click.ClickException(f"tone {slug!r} has no variants to fork")
+    if len(keys) > 1:
+        raise click.ClickException(
+            f"{source!r} names the tone {slug!r}, which has {len(keys)} "
+            f"variants ({', '.join(keys)}) -- name the exact variant to fork by "
+            "its preset_name: "
+            + ", ".join(repr(meta.variants[k].preset_name) for k in keys))
+    key = keys[0]
+    # Same stored-path convention every other library surface uses.
+    hsp = tone_meta._resolve_variant_hsp(meta.variants[key].hsp, home.library_dir())
+    if hsp is None or not hsp.is_file():
+        raise click.ClickException(
+            f"variant {key!r} of {slug!r} points at a missing .hsp "
+            f"({meta.variants[key].hsp!r}) -- run `helixgen library validate`")
+    return meta, key, hsp
+
+
+@library.command(name="fork")
+@click.argument("source")
+@click.option("--guitar", "guitar", default=None,
+              help="Target guitar label (slug / name / short_name). Defaults to "
+                   "the SOURCE variant's own guitar, which then only makes sense "
+                   "with a new identity.")
+@click.option("--artist", default=None, help="New identity: artist (needs --song).")
+@click.option("--song", default=None, help="New identity: song title (needs --artist).")
+@click.option("--descriptor", default=None,
+              help="New descriptor identity (mutually exclusive with "
+                   "--artist/--song). Must be the tone name ALONE -- no ' - ' "
+                   "separator, no trailing guitar name.")
+@click.option("--dry-run", "dry_run", is_flag=True, default=False,
+              help="Print exactly what would be written and write NOTHING.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the fork record as JSON instead of a human summary.")
+def fork_cmd(source: str, guitar: str | None, artist: str | None,
+             song: str | None, descriptor: str | None, dry_run: bool,
+             as_json: bool) -> None:
+    """Fork a tone onto another guitar (or another song) from its .hsp.
+
+    THE .hsp IS THE SOURCE. The forked preset is a byte-for-byte copy of the
+    source variant's .hsp with only its `meta.name` rewritten, so every block,
+    param, snapshot, footswitch, expression assignment and IR reference comes
+    across VERBATIM -- including anything helixgen does not model. A tone's
+    `description_md` / `notes_md` is NEVER read for values: re-authoring a
+    fork from the write-up is how stale, pre-rewrite settings come back.
+
+    SOURCE resolves the same way `library show` does -- a logical slug, the
+    metadata filename, or a variant's exact `preset_name` -- and may also be a
+    path to an .hsp (so something not yet in the library can be forked). A
+    logical slug with more than one variant is ambiguous and exits 1, naming
+    each variant's preset_name.
+
+    \b
+    Identity:
+      * --guitar ALONE keeps the source's artist/song (or descriptor) and adds
+        a SECOND VARIANT of the SAME LOGICAL TONE -- one metadata JSON, two
+        entries under `variants`.
+      * --artist/--song or --descriptor makes it a NEW LOGICAL TONE (the "same
+        rig, different song" case); --guitar then defaults to the source's.
+      * SOURCE given as an .hsp path that is not a registered variant has no
+        identity to inherit, so an identity flag is REQUIRED.
+
+    An existing target variant is an ERROR naming the existing .hsp -- nothing
+    is overwritten and nothing is written. Pick a different --guitar, or edit
+    the existing .hsp in place with the surgical verbs.
+
+    PROVENANCE is recorded on the new variant (`forked_from`: source tone,
+    source variant, source .hsp, helixgen version, date) and shown by
+    `describe` / `library show --json`. The source's write-up is carried over
+    into the new variant's `notes_md` behind an INHERITED banner -- a starting
+    point, never a description of the fork.
+
+    ADAPTATION IS ADVISORY. helixgen does NOT re-voice anything: pickups are a
+    judgement call the corpus cannot make for you. When the two guitars'
+    pickup classes differ (active vs passive, humbucker vs single-coil), a
+    checklist prints on STDERR naming the params THIS chain actually has --
+    drive into the amp, treble pull, input pad, level. Matching pickups print
+    nothing. `guitar_settings` are NOT copied: they describe the source
+    guitar's own controls.
+    """
+    src_meta, src_key, src_hsp = _resolve_fork_source(source)
+
+    # --- target identity -------------------------------------------------
+    if artist or song or descriptor:
+        problem = guitars.descriptor_identity_problem(descriptor)
+        if problem:
+            raise click.ClickException(problem)
+        t_artist, t_song, t_descriptor = artist, song, descriptor
+    elif src_meta is not None:
+        t_artist, t_song, t_descriptor = (
+            src_meta.artist, src_meta.song, src_meta.descriptor)
+    else:
+        raise click.ClickException(
+            f"{source} is not a registered library variant, so there is no "
+            "identity to inherit -- give --artist/--song or --descriptor "
+            "(and --guitar) for the fork.")
+
+    # --- target guitar ---------------------------------------------------
+    from helixgen.cli import _resolve_guitar  # lazy: avoids a cli import cycle
+
+    if guitar:
+        guitar_slug, guitar_short = _resolve_guitar(guitar)
+        if not guitar_slug:
+            raise click.ClickException(
+                f"--guitar {guitar!r} has no slug-able characters (needs letters "
+                "or digits) -- pick a different guitar label.")
+    elif src_key and src_key != "generic":
+        guitar_slug, guitar_short = _resolve_guitar(src_key)
+    else:
+        guitar_slug = guitar_short = None
+
+    try:
+        preset_name = naming.display_name(
+            artist=t_artist, song=t_song, descriptor=t_descriptor,
+            guitar_short=guitar_short)
+        logical = naming.logical_slug(
+            artist=t_artist, song=t_song, descriptor=t_descriptor)
+    except ValueError as err:
+        raise click.ClickException(str(err)) from err
+    if not logical:
+        raise click.ClickException(
+            "the tone identity has no slug-able characters (letters or digits) "
+            "-- give a --descriptor/--artist/--song with real text.")
+    new_slug = naming.variant_slug(logical, guitar_slug)
+
+    # --- collision + identity guards (BEFORE anything is written) --------
+    existing = (tone_meta.load_tone_meta(logical)
+                if tone_meta.meta_path(logical).exists() else None)
+    if existing is not None:
+        def _norm(v: str | None) -> str | None:
+            return v.strip() if v and v.strip() else None
+        if (_norm(t_artist), _norm(t_song), _norm(t_descriptor)) != (
+                _norm(existing.artist), _norm(existing.song),
+                _norm(existing.descriptor)):
+            raise click.ClickException(
+                f"logical slug {logical!r} already belongs to a different tone "
+                f"identity ({existing.display_base!r}); rename this fork "
+                "(--artist/--song/--descriptor) to disambiguate.")
+
+    manifest = SetlistManifest.load()
+    r = {"new_slug": new_slug, "preset_name": preset_name}
+    reason = _import_collision_reason(r, manifest, tones_dir=home.tones_dir())
+    if reason:
+        raise click.ClickException(
+            reason + " (Or edit the existing .hsp in place -- `helixgen "
+            "set-param` / `patch` -- instead of forking over it.)")
+    dest = home.tones_dir() / f"{new_slug}.hsp"
+
+    # --- provenance + inherited write-ups --------------------------------
+    from helixgen import __version__ as helixgen_version
+
+    when = date.today().isoformat()
+    source_label = src_key or Path(source).name
+    forked_from = {
+        "tone": src_meta.logical_slug if src_meta is not None else None,
+        "variant": src_key,
+        "hsp": tone_meta._to_library_relative(src_hsp),
+        "helixgen_version": helixgen_version,
+        "at": when,
+    }
+    src_variant = (src_meta.variants[src_key]
+                   if src_meta is not None and src_key else None)
+    notes_md = _inherited_note(
+        source_label, guitar_short or "this variant", when,
+        src_variant.notes_md if src_variant else None)
+    # description_md belongs to the LOGICAL tone. A same-tone fork shares the
+    # one already on disk (copying it onto itself would be a no-op at best and
+    # a clobber at worst); only a NEW logical tone gets an inherited copy.
+    new_logical = existing is None
+    description_md = None
+    if new_logical and src_meta is not None and src_meta.description_md:
+        description_md = _inherited_note(
+            source_label, guitar_short or "this tone", when,
+            src_meta.description_md)
+
+    # --- adaptation checklist (advisory) ---------------------------------
+    src_profile = (guitars.find_profile(src_key) if src_key else None)
+    dst_profile = (guitars.find_profile(guitar_slug) if guitar_slug else None)
+    pickups_differ = (guitars.pickup_class(src_profile)
+                      != guitars.pickup_class(dst_profile))
+    checklist = _adaptation_checklist(src_hsp) if pickups_differ else []
+
+    record = {
+        "dry_run": dry_run,
+        "source": {"tone": forked_from["tone"], "variant": src_key,
+                   "hsp": str(src_hsp)},
+        "target": {"tone": logical, "variant": guitar_slug or "generic",
+                   "preset_name": preset_name, "hsp": str(dest),
+                   "new_logical_tone": new_logical},
+        "forked_from": forked_from,
+        "adaptation": {
+            "pickups_differ": pickups_differ,
+            "from": guitars.describe_pickups(src_profile),
+            "to": guitars.describe_pickups(dst_profile),
+            "checklist": checklist,
+        },
+    }
+
+    if not dry_run:
+        try:
+            written = migrate.place_tone(
+                src_hsp, artist=t_artist, song=t_song, descriptor=t_descriptor,
+                guitar_slug=guitar_slug, guitar_short=guitar_short,
+                new_name=preset_name, logical=logical, new_slug=new_slug,
+                move=False, description_md=description_md,
+                variant_fields={"notes_md": notes_md,
+                                "forked_from": forked_from})
+        except migrate.ToneCollision:
+            raise click.ClickException(
+                f"a tone already exists at {dest} -- refusing to overwrite. "
+                "Pick a different --guitar, or edit the existing .hsp in place.")
+        try:
+            manifest.register_tone(written, source="authored")
+        except Exception as err:  # noqa: BLE001 -- the .hsp is already placed
+            raise click.ClickException(
+                f"{err}\nThe fork was written to {written} (metadata recorded) "
+                "but could NOT be registered in the manifest. After fixing the "
+                f"conflict, run `helixgen register {written}`.") from err
+        manifest.save()
+        gitops.auto_commit(home.helixgen_home(), f"helixgen: fork tone {new_slug}")
+
+    _report_fork(record, as_json=as_json)
+
+
+def _report_fork(record: Dict[str, Any], *, as_json: bool) -> None:
+    """Human summary on stdout (or the JSON record), adaptation checklist on
+    stderr -- so a `--json` consumer's stdout stays parseable either way."""
+    adapt = record["adaptation"]
+    if adapt["pickups_differ"]:
+        click.echo(
+            f"Pickups differ -- {adapt['from']} -> {adapt['to']}. The .hsp was "
+            "copied VERBATIM; helixgen re-voices nothing. Reconsider:", err=True)
+        for line in adapt["checklist"]:
+            click.echo(f"  - {line}", err=True)
+        if not adapt["checklist"]:
+            click.echo("  - (this chain has none of the usual "
+                       "drive/treble/pad/level params)", err=True)
+
+    if as_json:
+        click.echo(json.dumps(record, indent=2))
+        return
+
+    tgt, prov = record["target"], record["forked_from"]
+    prefix = "Would fork" if record["dry_run"] else "Forked"
+    click.echo(f"{prefix} {record['source']['hsp']} -> {tgt['hsp']}")
+    click.echo(f"Preset name: {tgt['preset_name']}")
+    kind = ("NEW logical tone" if tgt["new_logical_tone"]
+            else "second variant of the same logical tone")
+    click.echo(f"Logical tone: {tgt['tone']}  ({kind}, variant {tgt['variant']})")
+    click.echo(f"Provenance: forked from {prov['variant']} "
+               f"({prov['tone']}), {prov['at']}")
+    if record["dry_run"]:
+        click.echo("Dry run -- nothing was written.")
+
 
 # ---------------------------------------------------------------------------
 # ir-backfill (Task 12 -- scaffold metadata for library IRs lacking it)
@@ -1041,7 +1435,9 @@ def describe(tone: str) -> None:
     TONE resolves the same way as `library show` (logical slug, metadata
     filename, or any variant's preset_name; unknown/ambiguous exits 1). The
     header is "Artist - Song" or the descriptor; a variants table lists each
-    variant's guitar key, preset_name, guitar_settings, and (when `device
+    variant's guitar key, preset_name, guitar_settings, its `forked_from`
+    provenance when `library fork` made it (source variant + date), whether it
+    carries its own `notes_md`, and (when `device
     normalize --yes` has recorded one) a brief `normalized` summary -- date,
     target count, trim count or "in band", the hottest chain-out dBFS (over
     0 = in-chain clipping), scope; the full per-target telemetry lives in
@@ -1062,9 +1458,13 @@ def describe(tone: str) -> None:
         click.echo(f"  {key}")
         click.echo(f"    preset_name: {variant.preset_name}")
         click.echo(f"    guitar_settings: {settings if settings else '(none)'}")
+        if variant.forked_from:
+            click.echo(f"    {_forked_from_brief(variant.forked_from)}")
         if variant.normalized:
             click.echo(
                 f"    {_normalized_brief(variant.normalized, verbose=True)}")
+        if variant.notes_md:
+            click.echo(f"    notes_md: set ({len(variant.notes_md)} chars)")
 
     if meta.description_md:
         click.echo("")

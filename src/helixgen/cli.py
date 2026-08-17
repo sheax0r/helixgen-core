@@ -228,11 +228,21 @@ def generate_cmd(
         the resolved display name, the logical tone JSON gains a variant, and
         the tone auto-registers in the library manifest. A slug collision
         (the target .hsp already exists) is an error with a rename suggestion
-        -- the existing file is never overwritten.
+        -- the existing file is never overwritten. An explicit --descriptor
+        must be the tone name ALONE: one carrying a smuggled identity -- a
+        " - " separator (the display schema's own), or a trailing guitar name
+        -- is REFUSED, since it yields a slug that will not group with the
+        tone it belongs to. (The recipe-name fallback is not guarded.)
       * LEGACY (-o OUT): writes the .hsp exactly at OUT and auto-registers it,
-        but writes NO metadata JSON; naming flags are ignored. Output
+        but writes NO metadata JSON; naming flags are ignored -- combining -o
+        with --artist/--song/--descriptor/--guitar WARNS on stderr rather than
+        discarding them silently. Output
         extension picks the format: .hsp = Stadium (8-byte magic + JSON),
         .hlx = legacy Helix pretty JSON.
+
+    To make a second variant of a tone that already exists -- another guitar,
+    or the same rig on another song -- use `library fork`, not a re-author: it
+    copies the source .hsp verbatim, so nothing is rebuilt from a write-up.
 
     After generating with user IRs, the same WAVs must also be on the device
     for the cabs to resolve (`device install --auto-irs` / `device sync`
@@ -251,7 +261,19 @@ def generate_cmd(
 
         if output_path is not None:
             # LEGACY -o: exactly today's behavior. No metadata; naming flags
-            # (if any) are ignored by design.
+            # (if any) are ignored by design -- but say so out loud. Passing
+            # both means the caller wanted an identity that is about to be
+            # silently discarded (no metadata JSON, no library variant), and
+            # the silence is how a tone ends up outside the library entirely.
+            named = [f"--{f}" for f, v in (("artist", artist), ("song", song),
+                                           ("descriptor", descriptor),
+                                           ("guitar", guitar)) if v]
+            if named:
+                click.echo(
+                    f"warning: -o/--output IGNORES {', '.join(named)} -- the "
+                    "preset is written to the given path with NO metadata JSON "
+                    "and NO library variant. Drop -o to author into the tone "
+                    "library under those names.", err=True)
             output_path = Path(output_path)
             if shape == "hsp":
                 data = generate_from_recipe(
@@ -291,6 +313,13 @@ def generate_cmd(
             )
         # Flags win; otherwise the recipe's own name becomes the descriptor.
         if artist or song or descriptor:
+            # Guard the EXPLICIT flag only: the recipe-name fallback below is
+            # an existing artifact's name, not a naming choice just made here.
+            from helixgen import guitars as _guitars
+
+            problem = _guitars.descriptor_identity_problem(descriptor)
+            if problem:
+                raise click.ClickException(problem)
             r_artist, r_song, r_descriptor = artist, song, descriptor
         else:
             r_artist, r_song, r_descriptor = None, None, spec.name
