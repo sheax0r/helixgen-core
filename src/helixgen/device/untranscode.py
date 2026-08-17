@@ -260,6 +260,15 @@ def _tamv_map(snap: dict) -> Dict[int, Any]:
             if isinstance(tamv[i], int)}
 
 
+def _densify(values: List[Any], base: Any) -> List[Any]:
+    """The ``.hsp``'s per-snapshot array is DENSE — every slot carries a value,
+    and ``value``/``@enabled.value`` mirrors ``snapshots[activesnapshot]``. The
+    device's is not: an invalid (unused) snapshot has no ``tamv`` entry, which
+    :class:`_Cg` leaves as ``None``. Fill those slots with the target's base
+    value, the state the device would apply were that snapshot ever used."""
+    return [base if v is None else v for v in values]
+
+
 def _trg_slot(trg: dict) -> int:
     """A target's MODEL SLOT index (``trg.slot``) — 0 for every ordinary block,
     1 for the B model of a dual-cab. Absent/garbage reads as 0, which is what
@@ -300,6 +309,14 @@ class _Cg:
         tracked = {t for t in (entt.get("ctm_") or {}).get("stid") or []
                    if isinstance(t, int)}
         per_snap = [_tamv_map(s) for s in self.snapshots]
+        # An UNUSED snapshot carries ``vald: False`` and an EMPTY ``tamv`` —
+        # the device only stores scenes for snapshots that exist. Its missing
+        # values are not a loss, they are the device's own shape, so they are
+        # left as ``None`` here and densified with the target's BASE value by
+        # the block emitter (which is the half that knows it). Requiring a
+        # value in all 8 dropped every scene on 16 of Line 6's 66 factory
+        # presets (bead hgc-oqd).
+        valid = [bool(s.get("vald", True)) for s in self.snapshots]
 
         self.snap_bypass: Dict[int, List[bool]] = {}
         self.snap_params: Dict[Tuple[int, int, int], List[Any]] = {}
@@ -309,11 +326,10 @@ class _Cg:
                 continue
             eid = trg.get("eID_")
             values = [m.get(tid) for m in per_snap]
-            if any(v is None for v in values) or not values:
-                # A snapshot-tracked target the device did not write into every
-                # snapshot's ``tamv``. There is no base value to densify it
-                # with here, so the whole per-snapshot array is unreadable and
-                # this target loses its scenes — never quietly.
+            if not values or any(v is None for v, ok in zip(values, valid) if ok):
+                # A snapshot-tracked target missing from a VALID snapshot's
+                # ``tamv``: that scene really is unreadable, and this target
+                # loses its per-snapshot values — never quietly.
                 lost.append(
                     f"snapshot target {tid} (entity {trg.get('eID_')}, pid "
                     f"{trg.get('pid_')}) is missing from some snapshots' tamv; "
@@ -322,7 +338,8 @@ class _Cg:
             if trg.get("type") == 1:
                 # Device polarity: True == bypassed. The ``.hsp`` array is
                 # "@enabled", so it is the inverse (``bridge._snapshot_arrays``).
-                self.snap_bypass[eid] = [not bool(v) for v in values]
+                self.snap_bypass[eid] = [None if v is None else not bool(v)
+                                         for v in values]
             elif trg.get("type") == 2:
                 self.snap_params[(eid, _trg_slot(trg), trg.get("pid_"))] = values
 
@@ -487,7 +504,7 @@ def _slot_params(m: dict, plan: List[Tuple[int, str]], eid: Any, si: int,
         wrapper: Dict[str, Any] = {"value": leaf["valu"]}
         snaps = cg.snap_params.get((eid, si, pid))
         if snaps is not None:
-            wrapper["snapshots"] = list(snaps)
+            wrapper["snapshots"] = _densify(snaps, leaf["valu"])
         ctl = cg.ctl_params.get((eid, si, pid))
         if ctl is not None:
             wrapper["controller"] = dict(ctl)
@@ -556,7 +573,7 @@ def _block_entry(gp: int, blk: dict, cg: _Cg, rev: Dict[int, str],
     enabled: Dict[str, Any] = {"value": bool(blk.get("enbl", 1))}
     snaps = cg.snap_bypass.get(eid)
     if snaps is not None:
-        enabled["snapshots"] = list(snaps)
+        enabled["snapshots"] = _densify(snaps, enabled["value"])
     ctl = cg.ctl_bypass.get(eid)
     if ctl is not None:
         enabled["controller"] = dict(ctl)

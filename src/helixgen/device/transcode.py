@@ -1318,15 +1318,19 @@ def _synth_commands(recipe, srcs, trgs, next_trg, instance_ids):
 def _emit_snapshots(tracked, snap_meta):
     """Build the 8 ``snps`` dicts. Each snapshot's ``tamv`` is the flat
     ``[trg_id, value, …]`` over every snapshot-tracked target (an unset trailing
-    value reuses the last), plus its name/exsw/bpm metadata."""
+    value reuses the last), plus its name/exsw/bpm metadata.
+
+    An INVALID snapshot gets an empty ``tamv`` — the shape the device itself
+    writes for a snapshot nobody has used. Snapshots default to valid, so this
+    only affects content that came off the device (bead hgc-oqd)."""
     snps: List[dict] = []
     for i in range(8):
         tamv: List[Any] = []
-        for tid, vals in tracked:
-            v = vals[i] if i < len(vals) else vals[-1]
-            tamv.extend([tid, v])
         meta = snap_meta[i] if i < len(snap_meta) else {}
         name, exsw, bpm, colr, vald = _snap_meta(meta, i)
+        for tid, vals in tracked if vald else ():
+            v = vals[i] if i < len(vals) else vals[-1]
+            tamv.extend([tid, v])
         snps.append({"bpm_": bpm, "camv": [], "colr": colr, "exsw": exsw,
                      "iras": [], "name": name, "si__": i, "tamv": tamv,
                      "tgls": [], "vald": vald})
