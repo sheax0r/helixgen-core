@@ -322,6 +322,52 @@ def test_endpoint_snapshot_targets_round_trip():
     assert flow["b27"]["slot"][0]["params"]["gain"]["snapshots"][:2] == [0.0, -6.0]
 
 
+def test_a_none_row1_endpoint_carrying_a_snapshot_target_is_emitted():
+    """The row-1 None pair is normally dropped (the forward path re-synthesizes
+    it), but the device snapshot-tracks its bypass anyway — 41 such targets
+    across Line 6's 66 factory presets — and dropping the block dropped the
+    target with it, leaving hgc-5us shipped forward-only (bead hgc-6av).
+
+    Audibly null: a None endpoint passes no audio either way. It is still
+    device state a re-install used to clear.
+    """
+    body = _assert_roundtrip({
+        "name": "x",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "row1_input": {"mode": "none", "params": {},
+                           "snap_bypass": [True, False] + [True] * 6},
+            "row1_output": {"model": "P35_OutputNone", "params": {},
+                            "snap_bypass": [False, True] + [False] * 6},
+        }],
+    })
+    flow = _flow0(body)
+    assert flow["b14"]["slot"][0]["model"] == "P35_InputNone"
+    assert flow["b27"]["slot"][0]["model"] == "P35_OutputNone"
+    # device True == bypassed -> .hsp @enabled is the inverse
+    assert flow["b14"]["@enabled"]["snapshots"][:2] == [False, True]
+    assert flow["b27"]["@enabled"]["snapshots"][:2] == [True, False]
+
+
+def test_a_none_row1_input_emitted_for_its_target_still_does_not_feed_row_1(capsys):
+    """The b14 the test above emits is still an InputNone: it carries a
+    snapshot target, not audio, so it must NOT silence the "nothing reaches
+    row 1" report that a real b14 input rightly does."""
+    doc = transcode.recipe_to_sbepgsm({
+        "name": "x",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "row1_input": {"mode": "none", "params": {},
+                           "snap_bypass": [True, False] + [True] * 6},
+        }]})
+    _shift_block(doc, 1, 16)      # a row-1 block, with no split feeding it
+    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    assert "b14" in body["preset"]["flow"][0]
+    assert "nothing reaches them" in capsys.readouterr().err
+
+
 def _replace_endpoint(doc: dict, gp: int, block: dict, flow: int = 0) -> None:
     """Swap the block at grid slot ``gp`` for ``block``, keeping the identity
     ``id__ == bmap[gp]`` the device's canonical numbering uses."""

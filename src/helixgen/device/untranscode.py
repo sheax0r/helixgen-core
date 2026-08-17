@@ -619,14 +619,24 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
                 library: Optional[Library], unresolved: List[int],
                 lost: List[str]) -> dict:
     entries: Dict[str, dict] = {}
+    none_endpoints: set = set()
     for gp, blk in _iter_blocks(flow):
         if not isinstance(gp, int) or not (0 <= gp < _GRID_SLOTS):
             continue
         model = ((blk.get("mdls") or [{}])[0]).get("id__")
-        if gp == _ROW1_INPUT and model == _INPUT_NONE_MODEL:
-            continue   # forward path re-synthesizes the row-1 endpoint pair
-        if gp == _ROW1_OUTPUT and model == _OUTPUT_NONE_MODEL:
-            continue
+        if ((gp == _ROW1_INPUT and model == _INPUT_NONE_MODEL)
+                or (gp == _ROW1_OUTPUT and model == _OUTPUT_NONE_MODEL)):
+            # The forward path re-synthesizes the row-1 endpoint pair, so
+            # emitting a bare None endpoint would be noise it discards anyway
+            # — UNLESS it carries snapshot/controller state, which the forward
+            # path CAN spell (``bridge``'s ``row1_input``/``row1_output``) and
+            # which is otherwise silently dropped (bead hgc-6av). Inaudible (a
+            # None endpoint passes no audio) but it is real device state, and
+            # a re-install used to clear it.
+            eid = blk.get("id__")
+            if eid not in cg.snap_bypass and eid not in cg.ctl_bypass:
+                continue
+            none_endpoints.add(f"b{gp:02d}")
         entry = _block_entry(gp, blk, cg, rev, library, unresolved, lost)
         if entry is not None:
             entries[f"b{gp:02d}"] = entry
@@ -643,7 +653,9 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
     # rig go missing.
     row1 = sorted(k for k in entries
                   if _ROW1_INPUT < int(k[1:]) < _ROW1_OUTPUT)
-    fed = ("b14" in entries
+    # An InputNone at b14 is emitted only to carry its snapshot/controller
+    # state (above); it feeds nothing, so it must not silence the warning.
+    fed = (("b14" in entries and "b14" not in none_endpoints)
            or any(e.get("type") == "split" for e in entries.values()))
     if row1 and not fed:
         lost.append(f"flow {fi}: the row-1 blocks at {row1} have neither a "
