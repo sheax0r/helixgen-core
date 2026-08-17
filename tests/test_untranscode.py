@@ -350,6 +350,30 @@ def test_a_none_row1_endpoint_carrying_a_snapshot_target_is_emitted():
     assert flow["b27"]["@enabled"]["snapshots"][:2] == [True, False]
 
 
+def test_a_none_row1_endpoint_carrying_a_snapshot_PARAM_target_is_emitted():
+    """The same for a PARAM target, not just a bypass one (bead hgc-6av,
+    adversarial review).
+
+    `bridge` spells an `OutputNone`'s snapshot-tracked gain forward as
+    `row1_output.snap_params`, so a guard that consulted only the bypass maps
+    dropped it — silently, and it cost the round trip its byte-exactness.
+    (An `InputNone`'s params have no forward spelling at all, so no such
+    target can exist on b14 to begin with.)
+    """
+    body = _assert_roundtrip({
+        "name": "x",
+        "snapshots": [{"name": "A"}, {"name": "B"}],
+        "paths": [{
+            "blocks": [{"block": AMP, "params": {}}],
+            "row1_output": {"model": "P35_OutputNone", "params": {},
+                            "snap_params": {"gain": [0.0, -12.0] + [0.0] * 6}},
+        }],
+    })
+    b27 = _flow0(body)["b27"]
+    assert b27["slot"][0]["model"] == "P35_OutputNone"
+    assert b27["slot"][0]["params"]["gain"]["snapshots"][:2] == [0.0, -12.0]
+
+
 def test_a_none_row1_input_emitted_for_its_target_still_does_not_feed_row_1(capsys):
     """The b14 the test above emits is still an InputNone: it carries a
     snapshot target, not audio, so it must NOT silence the "nothing reaches
@@ -511,25 +535,33 @@ def test_split_with_an_empty_branch_lane_still_pairs():
 
 
 def test_a_pair_whose_columns_bracket_nothing_still_claims_the_lane():
-    """The `or [k for _, k in lane1]` fallback in `_endpoint_pointers` is
-    LOAD-BEARING, not a papered-over bug (bead hgc-1qs).
+    """The `or [k for _, k in lane1]` fallback in `_endpoint_pointers` stays
+    (bead hgc-1qs).
 
     helixgen's own forward path pins a parallel lane's blocks at lane-1
-    position 1 (`transcode._split_placement`'s `gp1`) no matter which row-0
-    column the split lands on, so its OWN installed content routinely has a
-    split/join pair whose columns bracket no lane-1 grid slot. Encoding that
-    pair as an empty region instead — what hgc-1qs proposed — drops the branch
-    pointers, and `view` then projects the branch block AFTER the join, as a
-    serial block: a real dual-cab preset in this user's library
-    (`tool-sober-dual-cab`, split b05 / join b07, branch cab at b15) loses its
-    parallel cab that way. Verified by running the proposed variant over it.
+    position 1 (`transcode`'s split placement) no matter which row-0 column
+    the split lands on, so its OWN installed content routinely has a
+    split/join pair whose columns bracket no lane-1 grid slot — a real
+    dual-cab preset in this user's library does (`tool-sober-dual-cab`, split
+    b05 / join b07, lone branch cab at b15), and only this fallback gives that
+    pair its `branch` pointers.
+
+    Encoding such a pair as an empty region instead — what hgc-1qs proposed —
+    was run over that preset. NOTHING IS LOST: the cab keeps `lane: 1` and all
+    its params, because `view._reconstruct_path_blocks` emits an unclaimed
+    lane-1 key at its own coordinate anyway. What changes is that the pair
+    loses its `branch` pointers and the cab moves from between the split and
+    join to the END of the projected block list — a cosmetic loss of structure
+    in `view`, not a lost or re-laned cab.
 
     The case hgc-1qs actually worried about — TWO pairs, one of them empty,
-    both claiming the same lane-1 blocks — does not occur in 328 real flows
+    both claiming the same lane-1 blocks — does not occur in 330 real flows
     (66 Line 6 factory `.sbe`, 66 device backups, 32 library tones): the one
-    flow with two pairs brackets its lane-1 blocks correctly, and the one
-    empty-column pair is a lone pair. `view._reconstruct_path_blocks` resolves
-    the overlap anyway (hgc-x9g), so nothing downstream needs it fixed.
+    flow with two pairs brackets its lane-1 blocks correctly, and the
+    empty-column pairs found are lone pairs. `view._reconstruct_path_blocks`
+    resolves span overlap anyway (hgc-x9g), so nothing downstream needs it
+    fixed. Unreachable, plus a cosmetic regression on real content, so the
+    device-facing path is left alone.
     """
     entries = {"b05": {"type": "split"}, "b07": {"type": "join"},
                "b15": {"type": "cab"}}

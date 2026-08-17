@@ -261,11 +261,19 @@ def _tamv_map(snap: dict) -> Dict[int, Any]:
 
 
 def _densify(values: List[Any], base: Any) -> List[Any]:
-    """The ``.hsp``'s per-snapshot array is DENSE — every slot carries a value,
-    and ``value``/``@enabled.value`` mirrors ``snapshots[activesnapshot]``. The
-    device's is not: an invalid (unused) snapshot has no ``tamv`` entry, which
-    :class:`_Cg` leaves as ``None``. Fill those slots with the target's base
-    value, the state the device would apply were that snapshot ever used."""
+    """The ``.hsp``'s per-snapshot array is DENSE — every slot carries a value.
+    The device's is not: an invalid (unused) snapshot has no ``tamv`` entry,
+    which :class:`_Cg` leaves as ``None``. Fill those slots with the target's
+    base value.
+
+    The fill is a placeholder, not a claim about the hardware: it never
+    reaches the device (``transcode._emit_snapshots`` writes no ``tamv`` for
+    an invalid snapshot), and marking that snapshot valid is what makes it
+    real — which is exactly what ``mutate`` does when you edit the slot. Base
+    is used for ``@enabled`` too, deliberately unlike ``mutate.set_enabled``'s
+    densify-to-True: that fills UNSET slots of a live snapshot, this fills
+    slots of a snapshot that does not exist yet.
+    """
     return [base if v is None else v for v in values]
 
 
@@ -323,6 +331,15 @@ class _Cg:
         for tid in sorted(tracked):
             trg = trgs.get(tid)
             if not isinstance(trg, dict):
+                # ``ctm_.stid`` names a target ``trgs`` does not define.
+                # Nothing can be recovered from it, but the module's contract
+                # is that silence means nothing was dropped, and this was the
+                # one path that swallowed a target without a word. (0 of 132
+                # real blobs carry one — a dangling BLOCK-level ``tid_`` does
+                # occur, which is bead hgc-pnp, not this.)
+                lost.append(
+                    f"snapshot target {tid} is listed in ctm_.stid but has no "
+                    f"trgs record; its per-snapshot values were dropped")
                 continue
             eid = trg.get("eID_")
             values = [m.get(tid) for m in per_snap]
@@ -392,6 +409,15 @@ class _Cg:
                 meta["max"] = c.get("max_", 1.0)
                 self.ctl_params[(trg.get("eID_"), _trg_slot(trg),
                                  trg.get("pid_"))] = meta
+
+    def has_state(self, eid: Any) -> bool:
+        """Does this block instance carry ANY ``cg__`` state — a per-snapshot
+        array or a controller assignment, on its bypass or on any of its
+        params? Asked of the row-1 None endpoints, which are otherwise dropped
+        as noise the forward path re-synthesizes."""
+        return (eid in self.snap_bypass or eid in self.ctl_bypass
+                or any(k[0] == eid for k in self.snap_params)
+                or any(k[0] == eid for k in self.ctl_params))
 
 
 # --- flow / block emission ----------------------------------------------------
@@ -633,8 +659,14 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
             # which is otherwise silently dropped (bead hgc-6av). Inaudible (a
             # None endpoint passes no audio) but it is real device state, and
             # a re-install used to clear it.
-            eid = blk.get("id__")
-            if eid not in cg.snap_bypass and eid not in cg.ctl_bypass:
+            #
+            # PARAM targets count as well as bypass ones: an OutputNone's gain
+            # can be snapshot-tracked, ``bridge`` spells it forward as
+            # ``row1_output.snap_params``, and skipping the block cost the
+            # round trip its byte-exactness with no warning at all. (An
+            # InputNone's params have no forward spelling, so no such target
+            # ever reaches this test.)
+            if not cg.has_state(blk.get("id__")):
                 continue
             none_endpoints.add(f"b{gp:02d}")
         entry = _block_entry(gp, blk, cg, rev, library, unresolved, lost)
@@ -687,18 +719,23 @@ def _live_value_divergence(preset: dict) -> List[str]:
     moment it loads). Every OTHER helixgen surface assumes they agree, though,
     so a later base-level ``set-param``/``enable`` collapses them — say so
     (bead hgc-0d7).
+
+    The active index is resolved the way ``mutate._clamped_active_snapshot``
+    resolves it — non-integer reads as 0, out of range CLAMPS into the array
+    — because the point of this report is to predict what ``mutate`` will
+    collapse, and a different rule here would miss exactly those cases.
     """
-    active = (preset.get("params") or {}).get("activesnapshot")
-    if not isinstance(active, int) or isinstance(active, bool) or active < 0:
-        return []
+    raw = (preset.get("params") or {}).get("activesnapshot")
+    active = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
     out: List[str] = []
 
     def check(where: str, wrapper: Any) -> None:
         if not isinstance(wrapper, dict):
             return
         snaps = wrapper.get("snapshots")
-        if isinstance(snaps, list) and active < len(snaps) \
-                and snaps[active] != wrapper.get("value"):
+        if not (isinstance(snaps, list) and snaps):
+            return
+        if snaps[min(max(active, 0), len(snaps) - 1)] != wrapper.get("value"):
             out.append(where)
 
     for fi, flow in enumerate(preset.get("flow") or []):
