@@ -202,6 +202,13 @@ def _apply_output(path_dict: dict[str, Any], output_spec,
             values["gain"] = float(output_spec.level)
         if output_spec.pan is not None:
             values["pan"] = float(output_spec.pan)
+        if output_spec.to is not None:
+            # The destination IS the endpoint model (b13 carries no routing
+            # param). Same "explicit recipe wins over a stale structural copy"
+            # rule the level/pan values follow -- this runs after
+            # `_emit_structural`.
+            b13["slot"][0]["model"] = \
+                flowparams.OUTPUT_DESTINATIONS[output_spec.to]
     params = b13["slot"][0].setdefault("params", {})
     for name, v in values.items():
         wrapped = params.get(name)

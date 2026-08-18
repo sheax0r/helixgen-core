@@ -160,6 +160,20 @@ class TestOutput:
         with pytest.raises(SpecError, match="pan"):
             _parse_path0({"output": {"pan": 2.0}, "blocks": []})
 
+    def test_output_destination_parsed(self):
+        p = _parse_path0({"output": {"to": "xlr"}, "blocks": []})
+        assert p.output.to == "xlr"
+
+    def test_output_destination_unknown_rejected_with_valid_set(self):
+        with pytest.raises(SpecError, match="path2a"):
+            _parse_path0({"output": {"to": "headphones"}, "blocks": []})
+
+    def test_output_destination_alone_is_not_a_level_pan_override(self):
+        # `has_output_override` gates the NORMALIZATION actuator (level/pan);
+        # a routing choice must not read as a volume trim.
+        p = _parse_path0({"output": {"to": "qtr"}, "blocks": []})
+        assert p.has_output_override is False
+
     def test_has_output_override_false_when_default(self):
         # `output` absent -> at device defaults, NOT a real override.
         p = _parse_path0({"blocks": []})

@@ -143,6 +143,22 @@ class TestOutputLift:
         assert out["paths"][0]["output"] == {"level": 2.0}
 
 
+    def test_destination_lifts_and_regenerates(self, tmp_path):
+        library = _library(tmp_path)
+        body = _compose(library, [{"output": {"to": "qtr"}, "blocks": []}])
+        out = view(body, library)
+        assert out["paths"][0]["output"] == {"to": "qtr"}
+        again = _compose(library, out["paths"])
+        assert again["preset"]["flow"][0]["b13"]["slot"][0]["model"] \
+            == "P35_OutputQtrInch"
+
+    def test_default_matrix_destination_not_emitted(self, tmp_path):
+        library = _library(tmp_path)
+        body = _compose(library, [{"output": {"to": "matrix"}, "blocks": []}])
+        out = view(body, library)
+        assert "output" not in out["paths"][0]
+
+
 class TestSplitTypeLift:
     def test_known_split_model_gains_type(self, tmp_path):
         library = _library(tmp_path)

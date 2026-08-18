@@ -259,6 +259,8 @@ def _compose_preset_hlx(
     """
     if (any(p.input is not None for p in spec.paths)
             or any(p.has_output_override for p in spec.paths)
+            or any(p.output is not None and p.output.to is not None
+                   for p in spec.paths)
             or spec.footswitches or spec.expression or spec.midi
             or spec.commands):
         print(

@@ -237,8 +237,9 @@ def _output_base(wrapped: Any) -> Any:
 def _lift_output(path_dict: dict) -> dict | None:
     """The path's `output` field: `{"level", "pan"}` for whichever of the
     lane-0 output endpoint's gain/pan differ from the device defaults
-    (0.0 dB / 0.5). None when both are default (the endpoint still
-    round-trips verbatim as a structural entry)."""
+    (0.0 dB / 0.5), plus `"to"` when the endpoint model is a destination
+    other than the default matrix. None when all three are default (the
+    endpoint still round-trips verbatim as a structural entry)."""
     b13 = path_dict.get("b13")
     if not (isinstance(b13, dict) and b13.get("type") == "output"
             and b13.get("slot")):
@@ -253,6 +254,10 @@ def _lift_output(path_dict: dict) -> dict | None:
         p = _output_base(params["pan"])
         if isinstance(p, (int, float)) and _flow_differs(p, 0.5):
             out["pan"] = p
+    dest = flowparams.OUTPUT_DESTINATION_BY_MODEL.get(
+        b13["slot"][0].get("model"))
+    if dest is not None and dest != flowparams.OUTPUT_DESTINATION_DEFAULT:
+        out["to"] = dest
     return out or None
 
 
