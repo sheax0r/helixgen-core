@@ -185,6 +185,19 @@ class TestOutput:
         assert params["gain"]["value"] == -4.5
         assert params["pan"]["value"] == 0.25
 
+    def test_destination_sets_the_endpoint_model(self, tmp_path):
+        preset = _compose(_library(tmp_path), [{
+            "output": {"to": "xlr", "level": -3.0}, "blocks": []}])
+        b13 = preset["preset"]["flow"][0]["b13"]["slot"][0]
+        assert b13["model"] == "P35_OutputXLR"
+        assert b13["params"]["gain"]["value"] == -3.0
+
+    def test_destination_omitted_leaves_the_chassis_matrix(self, tmp_path):
+        preset = _compose(_library(tmp_path), [{
+            "output": {"level": -3.0}, "blocks": []}])
+        assert preset["preset"]["flow"][0]["b13"]["slot"][0]["model"] \
+            == "P35_OutputMatrix"
+
     def test_partial_output(self, tmp_path):
         preset = _compose(_library(tmp_path), [{
             "output": {"level": 2.0}, "blocks": []}])

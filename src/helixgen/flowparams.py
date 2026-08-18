@@ -154,6 +154,41 @@ def validate_output_field(field: str, value: Any) -> None:
     _check_kind(field, value, "float", lo, hi)
 
 
+# The endpoint MODEL is the path's physical destination -- the one routing
+# choice the b13 slot carries that is not a param. Names are the device's own
+# `P35_Output*` models (`device/_defs_data.json` ids 779-792); the default,
+# `matrix`, is the Stadium's output matrix (everything, routed globally) and
+# is what the chassis ships. `path2a`/`path2b`/`path2a_b` feed the NEXT DSP --
+# how 41 of Line 6's 66 factory presets cascade DSP1 into DSP2.
+OUTPUT_DESTINATIONS: dict[str, str] = {
+    "matrix":    "P35_OutputMatrix",
+    "xlr":       "P35_OutputXLR",
+    "qtr":       "P35_OutputQtrInch",
+    "phones":    "P35_OutputPhones",
+    "send1_2":   "P35_OutputSend1_2",
+    "send3_4":   "P35_OutputSend3_4",
+    "spdif":     "P35_OutputSPDIF",
+    "usb1_2":    "P35_OutputUSB1_2",
+    "usb3_4":    "P35_OutputUSB3_4",
+    "usb5_6":    "P35_OutputUSB5_6",
+    "path2a":    "P35_OutputPath2A",
+    "path2b":    "P35_OutputPath2B",
+    "path2a_b":  "P35_OutputPath2A_B",
+    "none":      "P35_OutputNone",
+}
+OUTPUT_DESTINATION_BY_MODEL = {m: d for d, m in OUTPUT_DESTINATIONS.items()}
+OUTPUT_DESTINATION_DEFAULT = "matrix"
+
+
+def validate_output_destination(value: Any) -> None:
+    """Raise ValueError unless `value` names a known output destination."""
+    if not isinstance(value, str) or value not in OUTPUT_DESTINATIONS:
+        raise ValueError(
+            f'invalid output "to" {value!r}; valid destinations: '
+            f"{sorted(OUTPUT_DESTINATIONS)}."
+        )
+
+
 # --- split / join (wire param schemas) ----------------------------------------
 
 SPLIT_TYPES: dict[str, str] = {

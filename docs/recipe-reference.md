@@ -96,10 +96,10 @@ keep their chassis values — only their endpoint params are normalized.)
 
 Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
 
-## Optional: per-path output level/pan
+## Optional: per-path output level/pan/destination
 
 ```json
-"output": {"level": -3.0, "pan": 0.4}
+"output": {"level": -3.0, "pan": 0.4, "to": "xlr"}
 ```
 
 - `level` — float dB, −120..20 (the output block's `gain`). The +20 ceiling is
@@ -108,17 +108,37 @@ Stadium-only; ignored with a warning for `.hlx` (legacy Helix) chassis.
   enforces it on the live write path too (`device set-param`); raising it would
   buy level by amplifying the noise floor, so gain-stage in-chain instead.
 - `pan` — float 0..1 (0.5 = center).
-- Applies to the path's primary (lane-0 `b13`) output block. The output
-  **destination** (Matrix/XLR/1/4"/Path-2 feed…) is not authored here — it
-  round-trips verbatim via `structural` entries; an explicit `output` wins
-  over a stale structural copy.
+- `to` — the path's physical **destination**. The destination is the b13
+  endpoint's MODEL, not a param, so this field re-types the block. Valid
+  values (the device's own `P35_Output*` models):
+  `matrix` (default — the Stadium's output matrix, i.e. everything, routed
+  globally), `xlr`, `qtr`, `phones`, `send1_2`, `send3_4`, `spdif`,
+  `usb1_2`, `usb3_4`, `usb5_6`, `path2a`, `path2b`, `path2a_b`, `none`.
+  - **What it is for:** one preset feeding two different rigs — `xlr` on the
+    path that ends in a cab/IR (to FOH) and `qtr` on a cab-less path (into a
+    real power amp), or a wet/dry rig with the wet path on `send1_2`.
+  - `path2a` / `path2b` / `path2a_b` feed the **next DSP** instead of a jack:
+    that is how 41 of Line 6's 66 factory presets cascade DSP1 into DSP2
+    (`paths[1].input` is then `"none"` — the feed comes from this field, not
+    from a jack).
+  - Omitting `to` leaves whatever the chassis or a verbatim `structural`
+    entry carries (normally the matrix). An explicit `to` wins over a stale
+    structural copy — the same rule `level`/`pan` follow.
+  - **Not hardware-validated.** The models come from the device's own defs and
+    transcode into device content correctly (byte-level checked), but no
+    routing combination has been played through a Stadium yet. The device is
+    the authority on which destinations a given layout accepts.
+  - There is no `set-param output to <dest>`: `set-param` writes params, and
+    the destination is a model. Re-author, or edit the b13 model directly.
+- Applies to the path's primary (lane-0 `b13`) output block.
 - **`output` absent or `null` means the output block is at device defaults
   (0.0 dB / 0.5 pan), NOT that the path has no output block.** Every DSP path
   terminates in a `b13` output endpoint whose `gain` (Level) always exists;
   `view` just omits the `output` object when both level and pan are default.
   Normalization / volume readers must gate on intent, not `None`-vs-value:
   use `PathEntry.has_output_override` (truthy only when a `level` or `pan`
-  override is present), not a `path.output is None` check.
+  override is present — a `to`-only output is a routing choice, not a volume
+  trim, and deliberately does NOT set it), not a `path.output is None` check.
 
 ## Optional: parallel splits — split TYPE + merge mixer
 

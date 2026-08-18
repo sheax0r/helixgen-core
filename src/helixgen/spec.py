@@ -73,11 +73,13 @@ class InputSpec:
 @dataclass
 class OutputSpec:
     """Object form of a path's ``output`` field: primary (lane-0) output
-    endpoint level (dB) and pan (0..1). Destination routing (the endpoint
-    model) is deliberately not modeled — it round-trips verbatim via
-    structural entries."""
+    endpoint level (dB), pan (0..1) and ``to`` — the physical destination
+    (the endpoint MODEL: ``xlr`` / ``qtr`` / ``path2a`` / …, see
+    ``flowparams.OUTPUT_DESTINATIONS``). ``to`` omitted leaves whatever the
+    chassis or a verbatim structural entry carries (normally the matrix)."""
     level: float | None = None
     pan: float | None = None
+    to: str | None = None
 
 
 @dataclass
@@ -1072,14 +1074,19 @@ def _parse_output(raw: Any, *, source: str) -> OutputSpec | None:
         return None
     if not isinstance(raw, dict):
         raise _err(source, '"output" must be an object like '
-                           '{"level": -3.0, "pan": 0.5} (destination routing '
-                           'is carried verbatim via structural entries, not '
-                           'authored here).')
-    unknown = sorted(set(raw) - {"level", "pan"})
+                           '{"level": -3.0, "pan": 0.5, "to": "xlr"}.')
+    unknown = sorted(set(raw) - {"level", "pan", "to"})
     if unknown:
         raise _err(source, f'unknown output key(s) {unknown}; valid keys: '
-                           f"['level', 'pan'].")
+                           f"['level', 'pan', 'to'].")
     out = OutputSpec()
+    to = raw.get("to")
+    if to is not None:
+        try:
+            flowparams.validate_output_destination(to)
+        except ValueError as e:
+            raise _err(source, f"output: {e}") from e
+        out.to = to
     for fieldname in ("level", "pan"):
         v = raw.get(fieldname)
         if v is None:
