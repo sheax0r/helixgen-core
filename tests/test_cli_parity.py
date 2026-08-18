@@ -66,7 +66,9 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
       "never at `sighted`"]),
     ("generate_preset", ["generate"],
      ["Unknown param(s)", "show-block", "source of truth", "recipe-reference",
-      "model_id", "stable handle", "MODEL DEFAULT"]),
+      "model_id", "stable handle", "MODEL DEFAULT",
+      # hgc-2ja: the two identity guards + the pointer at `library fork`
+      "smuggled identity", "WARNS on stderr", "library fork"]),
     ("list_irs", ["list-irs"],
      ["stock cab", "basename", "mapping.json", "one-time bridged"]),
     ("compute_irhash", ["irhash"], ["48 kHz", "left channel", "libsndfile"]),
@@ -206,7 +208,7 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
      ["auto", "REJECTED", "backlog #30", "lowest empty slot"]),
     # --- library metadata group + describe (Task 8) ---
     (["library"], ["logical slug", "preset_name", "cross-link", "describe",
-                   "all populated"]),
+                   "all populated", "another guitar"]),
     (["library", "list"], ["guitar profiles", "grouped", "per-IR metadata"]),
     (["library", "show"], ["metadata filename", "ambiguous", "describe", "guitar profile"]),
     (["library", "doc"], ["mutually exclusive", "advisory-commits", "notes_md"]),
@@ -218,7 +220,18 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
      ["IDEMPOTENT", "COPIED", "slug collision", "--dry-run", "--plan",
       "SEEDED", "guitar profile", "preset_output_dir", "default_guitar"]),
     (["library", "import"],
-     ["MOVED", "--keep-source", "description_md", "overwritten"]),
+     ["MOVED", "--keep-source", "description_md", "overwritten",
+      # hgc-2ja: an explicit --descriptor may not smuggle an identity
+      "REFUSED", "trailing guitar name"]),
+    # --- library fork (hgc-2ja) ---
+    # The whole point of the verb is that the .hsp is the source and nothing
+    # is re-voiced; both must stay in --help, plus the identity rule that
+    # decides "second variant of the same tone" vs "new logical tone".
+    (["library", "fork"],
+     ["THE .hsp IS THE SOURCE", "VERBATIM", "NEVER read for values",
+      "SECOND VARIANT", "SAME LOGICAL TONE", "NEW LOGICAL TONE",
+      "ADAPTATION IS ADVISORY", "does NOT re-voice", "STDERR", "forked_from",
+      "INHERITED banner", "write NOTHING", "guitar_settings"]),
     # --- IR metadata: copy-by-default + backfill (Task 12) ---
     (["register-irs"],
      ["COPIED", "--no-copy", "imported_from", "one-time bridged"]),

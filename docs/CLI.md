@@ -183,7 +183,10 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
   - `default` is the **device** default; `sighted` is the single value the ingested preset happened to carry — one sample, not a range, and not a recommendation. Printed only when it differs from the default. **A param your recipe leaves out is generated at `default`, never at `sighted`** (hgc-x7i) — `sighted` is trivia about how the library was seeded, not a value anything writes.
   - `[internal]` marks a param the editor exposes no control for (`IrData`, `AmpCabPeak*`, `AmpCabZFir`): plumbing, not a knob — leave it alone. A tempo-syncable param's companions (`TempoSync1`/`SyncSelect1`) are NOT internal — the editor attaches them to the host knob, and presets set them.
   - `--json` carries the same facts per param — `{type, sighted, min, max, default, unit, scale, display_min, display_max, display_name, enum_labels, sighted_label, default_label, internal}`, each key present only when known. **Two `--json` contract changes:** `observed_range` is gone (it was always `[v, v]` from a single preset — a range it never was), and `default` now means the DEVICE default; the library's sighted value moved to `sighted`.
-- `helixgen generate <spec.json> [-o <out.hsp>]` — generate a preset. `-o` is now **optional**. Default (no `-o`): writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON — name the tone with `--artist`/`--song` (paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (resolved to a guitar **profile** — see "Guitar profiles / resolution" under Library commands — and its `short_name` appended to the display name + slug); with no naming flag, the recipe's bare `name` becomes the descriptor. A slug collision (target `.hsp` already exists) errors with a rename suggestion — never overwrites. Explicit `-o <out.hsp>` preserves the legacy behavior exactly: writes there, auto-registers, naming flags ignored, **no metadata JSON written**. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix. **Every param the recipe does not mention is written at the model's own device default** (`show-block`'s `default`) — leaving a knob out means "factory position", so name only the params you want moved. Before hgc-x7i it inherited the block library's `sighted` value instead, which put settings Line 6 never ships onto knobs nobody touched.
+- `helixgen generate <spec.json> [-o <out.hsp>]` — generate a preset. `-o` is now **optional**. Default (no `-o`): writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON — name the tone with `--artist`/`--song` (paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (resolved to a guitar **profile** — see "Guitar profiles / resolution" under Library commands — and its `short_name` appended to the display name + slug); with no naming flag, the recipe's bare `name` becomes the descriptor. A slug collision (target `.hsp` already exists) errors with a rename suggestion — never overwrites. Explicit `-o <out.hsp>` preserves the legacy behavior exactly: writes there, auto-registers, naming flags ignored, **no metadata JSON written**. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix.
+  - **Two identity guards (hgc-2ja).** An explicit `--descriptor` must be the tone name **alone**: one carrying a smuggled identity — a `" - "` / `" -- "` / en/em-dash separator (the display schema's own), or a slug ending in a known guitar's slug or `short_name` — is **refused** (exit 1) naming the flags to use instead, because it yields a display name with a doubled separator and a logical slug that will not group with the tone it belongs to. The same guard runs on `library import --descriptor` and `library fork --descriptor`. The *implicit* fallbacks are deliberately **not** guarded (a recipe's own `name`, an `.hsp`'s `meta.name`): those are existing artifacts' names, not a naming choice made at the CLI, and dashes in them are legitimate.
+  - Combining `-o` with `--artist`/`--song`/`--descriptor`/`--guitar` now **warns on stderr** (still exit 0) naming the flags being discarded, instead of dropping them silently — passing both means the caller wanted an identity that is about to be thrown away with the metadata JSON.
+  - To make a **second variant** of a tone that already exists — another guitar, or the same rig on another song — use `library fork`, not a re-author: it copies the source `.hsp` verbatim so nothing is rebuilt from a write-up. **Every param the recipe does not mention is written at the model's own device default** (`show-block`'s `default`) — leaving a knob out means "factory position", so name only the params you want moved. Before hgc-x7i it inherited the block library's `sighted` value instead, which put settings Line 6 never ships onto knobs nobody touched.
 - `helixgen patch <preset.hsp> <ops.json|-> [--json]` — apply a JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`) to the `.hsp` in one atomic invocation: all ops are applied in memory and the file is written once at the end, so an invalid op anywhere in the list leaves the file untouched. `-` reads the ops from stdin. Preferred over repeated single-op verbs for multi-edit sessions.
 - `helixgen set-param <preset> <block> <param> <value> [--snapshot NAME_OR_INDEX] [--path/--lane/--pos]` — surgical edit of one param, in place. Besides library blocks, accepts the signal-flow pseudo-blocks `input` / `output` / `split` / `join` (`merge` alias) — e.g. `helixgen set-param t.hsp input impedance 1M`, `helixgen set-param t.hsp output level -- -3`, `helixgen set-param t.hsp join "A Level" -- -2`. **Negative values need the `--` sentinel** (else the shell-style parser reads `-3` as an option); put any `--path`/`--lane`/`--pos` flags *before* the `--`. **`--snapshot <name-or-0-based-index>`** (names win over a digit index; the same resolver backs `enable`/`disable --snapshot`, which therefore also take an index) writes the value into that ONE snapshot's slot of the param's 8-slot per-snapshot overrides array instead of the base — the param must already carry a base value (untouched slots densify to it; the base re-syncs to the active snapshot), and the preset must define snapshots (`preset.snapshots` meta — otherwise the transcoder would silently drop the array, so `set-param` errors instead). Snapshot overrides on library-block params round-trip through `view`; overrides on the `output` pseudo-block round-trip too, surfacing as the recipe's snapshot-level `output` field (#76 — see `docs/recipe-reference.md`); both kinds are realized on the device by `device install`/`sync`. Once a param's per-snapshot array varies, the device applies it on every snapshot — a later plain base edit of that param is inaudible on-device, and `set-param` warns when this happens (use `--snapshot`, or edit all 8 slots). On pseudo-blocks only `output` supports `--snapshot` (per-snapshot level/pan — the `device normalize` actuator). The companion surgical verbs are listed below; CLAUDE.md "Surgical edits" carries the mental model.
 - `helixgen enable <preset> <block> [--snapshot NAME-or-INDEX] [--path/--lane/--pos]` — un-bypass a block at base level, or (with `--snapshot`) enable it in that one snapshot (name or 0-based index; names win — the same resolver as `set-param --snapshot`).
@@ -219,13 +222,13 @@ Manage the artifact library: tones (`library/tones/*.json` — one JSON per
 (`library/guitars/*.json`), and **per-IR metadata** (`library/irs/**/*.json`
 sidecars). See "Tone naming and the library" and "Guitar profiles" in
 CLAUDE.md for the naming schema, the logical-tone/variant model, and the
-guitar-profile schema. Every library-mutating verb (`import`, `migrate`,
-`doc`, `ir-backfill`, and `generate`'s default no-`-o` path) auto-commits the
-home repo afterward — advisory, gated by the `git_commit_tones` preference,
-same posture as tone auto-registration.
+guitar-profile schema. Every library-mutating verb (`import`, `fork`,
+`migrate`, `doc`, `ir-backfill`, and `generate`'s default no-`-o` path)
+auto-commits the home repo afterward — advisory, gated by the
+`git_commit_tones` preference, same posture as tone auto-registration.
 
-**Guitar profiles / resolution.** A `--guitar <label>` (on `generate` and
-`library import`) resolves to a guitar profile by slug / name / short_name
+**Guitar profiles / resolution.** A `--guitar <label>` (on `generate`,
+`library import` and `library fork`) resolves to a guitar profile by slug / name / short_name
 (case-insensitive, most-specific tier first): a match uses that profile's slug
 + short_name; profiles exist but none matches → error listing the known
 guitars; the label matches 2+ distinct profiles → error to disambiguate by the
@@ -251,7 +254,9 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   presence, each variant's key/preset_name/hsp path, plus a summary of the
   variant's `normalized` record when `device normalize --yes` has written
   one — date, non-zero-trim count or "in band", scope; the record's full
-  per-target measurement telemetry is in the `--json` dump); if no tone
+  per-target measurement telemetry is in the `--json` dump — plus its
+  `forked_from` provenance when `library fork` made it, e.g. `forked from
+  ibanez-prestige (aerosmith-dream-on), 2026-08-16`); if no tone
   matches it is
   tried as a GUITAR profile (slug / name / short_name — name, type, pickups,
   construction, genres, character presence, and the control inventory).
@@ -260,7 +265,9 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   — address the guitar by a label only it matches to see the profile.
 - `helixgen describe <tone>` — human-oriented write-up: header ("Artist -
   Song" or the descriptor), a variants table (guitar key, preset_name,
-  guitar_settings, and a brief `normalized` summary when `device normalize
+  guitar_settings, the `forked_from` provenance when `library fork` made the
+  variant, whether it carries its own `notes_md`, and a brief `normalized`
+  summary when `device normalize
   --yes` has recorded one — e.g. `normalized 2026-07-16, 3 targets, 1 trim,
   max chain-out -0.2 dBFS (snapshots)`; over 0 dBFS = in-chain clipping),
   then the full `description_md` verbatim below a
@@ -318,6 +325,49 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   is always saved, and the command exits nonzero if any file failed; a
   failure after a file was placed (manifest registration) names the exact
   recovery command (`helixgen register <placed .hsp>`).
+- `helixgen library fork <source> [--guitar G] [--artist --song | --descriptor]
+  [--dry-run] [--json]` — fork a tone onto another guitar (or another song).
+  **The `.hsp` is the source**: the forked preset is a copy of the source
+  variant's `.hsp` with only `meta.name` rewritten, so every block, param,
+  snapshot, footswitch, expression assignment and IR reference comes across
+  verbatim — including anything helixgen doesn't model. A tone's
+  `description_md`/`notes_md` is **never** read for values (re-authoring a fork
+  from its write-up is how stale, pre-rewrite settings come back).
+  `<source>` resolves the same way `library show` does (logical slug, metadata
+  filename, or a variant's exact `preset_name`) and may also be a path to an
+  `.hsp`; a logical slug with more than one variant is ambiguous and exits 1,
+  naming each variant's `preset_name`.
+  **Identity:** `--guitar` alone keeps the source's artist/song (or descriptor)
+  and adds a **second variant of the same logical tone** — one metadata JSON,
+  two entries under `variants`. `--artist`/`--song` or `--descriptor` makes it
+  a **new logical tone** (the "same rig, different song" case), with `--guitar`
+  defaulting to the source variant's guitar. A SOURCE `.hsp` path that isn't a
+  registered variant has no identity to inherit, so an identity flag is
+  required there. An existing target variant is an error naming the existing
+  `.hsp` — nothing is overwritten and nothing is written. There is no
+  `--force`: every library write path refuses overwrites, and editing the
+  existing `.hsp` in place (`set-param` / `patch`) is the intended alternative.
+  **Provenance:** the new variant gets a `forked_from` record (source tone,
+  source variant, source `.hsp`, helixgen version, date), shown by `describe`
+  and `library show` (the full record in `--json`). The source's write-up is
+  carried into the new variant's `notes_md` behind an **inherited** banner — a
+  starting point, never a description of the fork; a fork to a *new* logical
+  tone also inherits a banner-marked copy of the source tone's
+  `description_md` (a same-tone fork shares the one already on disk and never
+  rewrites it). `guitar_settings` are **not** copied — they describe the source
+  guitar's own controls.
+  **Adaptation is advisory.** helixgen re-voices nothing. When the two guitars'
+  pickup classes differ — active vs passive, humbucker vs single-coil, read
+  from each profile's `active` flag and free-text `pickups` — a checklist
+  prints on **stderr** naming the params *this* chain actually has, grouped as
+  drive into the amp / brightness / input stage / level and addressed by grid
+  coordinate (e.g. ``Brit 2203MV [0:b05] `Drive` ``). Matching classes print
+  nothing; a guitar with no profile (or no pickup info) classifies as
+  *unknown*, which deliberately differs from every populated class, so it
+  earns the checklist rather than silently passing. `--dry-run` prints exactly
+  what would be written (paths, identity, provenance, checklist) and writes
+  nothing; `--json` emits the fork record on stdout (the checklist stays on
+  stderr, so stdout is parseable either way).
 - `helixgen library migrate [--dry-run | --plan <plan.json>]` — one-shot,
   idempotent migration of a pre-library `~/.helixgen` into the tone library:
   moves each manifest tone's `.hsp` into `library/tones/<slug>.hsp` under the

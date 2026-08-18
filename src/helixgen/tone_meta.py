@@ -110,6 +110,20 @@ class Variant:
     see the module docstring), so no version fence is needed for a purely
     additive, advisory field.
 
+    ``forked_from`` is the provenance record ``library fork`` writes when
+    this variant was copied off another one -- what makes a fork auditable
+    months later::
+
+        {"tone": "aerosmith-dream-on",         # source LOGICAL slug
+         "variant": "ibanez-prestige",         # source variant key
+         "hsp": "tones/aerosmith-dream-on-ibanez-prestige.hsp",
+         "helixgen_version": "0.49.0",
+         "at": "2026-08-16"}
+
+    Same rules as ``normalized``: optional, advisory, schema stays 1, and an
+    older reader round-trips it through ``extra``. Absent on a variant that
+    was authored rather than forked.
+
     ``extra`` holds any on-disk keys this dataclass doesn't model
     (hand-edits, future fields); they are written back verbatim on save.
     """
@@ -119,6 +133,7 @@ class Variant:
     guitar_settings: Dict[str, str] = field(default_factory=dict)
     notes_md: Optional[str] = None
     normalized: Optional[Dict[str, Any]] = None
+    forked_from: Optional[Dict[str, Any]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -165,6 +180,7 @@ class ToneMeta:
 # never strips a hand-edit (backlog #83b).
 _VARIANT_KEYS = frozenset({
     "hsp", "preset_name", "guitar_settings", "notes_md", "normalized",
+    "forked_from",
 })
 _META_KEYS = frozenset({
     "schema", "artist", "song", "descriptor", "tags", "description_md",
@@ -181,6 +197,7 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
         # deep copy: the record's nested target entries are OPEN dicts and
         # must serialize verbatim (unknown per-target keys included)
         "normalized": copy.deepcopy(v.normalized) if v.normalized else None,
+        "forked_from": copy.deepcopy(v.forked_from) if v.forked_from else None,
     }
     for k, val in v.extra.items():
         d.setdefault(k, copy.deepcopy(val))
@@ -189,6 +206,7 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
 
 def _variant_from_dict(d: Dict[str, Any]) -> Variant:
     normalized = d.get("normalized")
+    forked_from = d.get("forked_from")
     return Variant(
         hsp=d["hsp"],
         preset_name=d["preset_name"],
@@ -196,6 +214,8 @@ def _variant_from_dict(d: Dict[str, Any]) -> Variant:
         notes_md=d.get("notes_md"),
         normalized=(copy.deepcopy(normalized)
                     if isinstance(normalized, dict) else None),
+        forked_from=(copy.deepcopy(forked_from)
+                     if isinstance(forked_from, dict) else None),
         extra={k: copy.deepcopy(v) for k, v in d.items()
                if k not in _VARIANT_KEYS},
     )

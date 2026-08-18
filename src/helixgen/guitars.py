@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,6 +40,23 @@ from typing import Any, Dict, List, Optional
 from helixgen import gitops, home, libinit, naming
 
 _CONTROL_KINDS = ("knob", "switch", "push-pull", "other")
+
+# --- pickup classification (read by `library fork`'s adaptation checklist) ---
+# Free-text `pickups` prose plus the first-class `active` flag, reduced to the
+# only distinction the tone skill actually adapts to: output level (active vs
+# passive) and coil type (humbucker vs single-coil).
+_ACTIVE_WORDS = ("active", "emg", "blackout", "fluence", "battery", "preamp")
+_HUMBUCKER_WORDS = ("humbucker", "hum-bucker", "bucker", "paf", "emg",
+                    "blackout", "mini-hum")
+_SINGLE_WORDS = ("single", "p-90", "p90", "soapbar", "lipstick", "strat",
+                 "tele", "jazzmaster", "gold foil")
+# A pickup CONFIG code -- "HH", "HSS", "SSS", "HSH" -- as a standalone token.
+_CONFIG_CODE = re.compile(r"\b([hs]{2,3})\b")
+
+# " - " / " -- " / " – " / " — " with surrounding whitespace: the separator the
+# display-name schema owns (`naming.display_name`). A descriptor carrying one
+# is an identity the author meant to put in --artist/--song/--guitar.
+_SMUGGLED_SEPARATOR = re.compile(r"\s+[-–—]{1,2}\s+")
 
 
 @dataclass
@@ -329,3 +347,119 @@ def profile_from_instrument(d: Dict[str, Any]) -> GuitarProfile:
         genres=list(d.get("genres") or []),
         controls=controls,
     )
+
+
+# ---------------------------------------------------------------------------
+# pickup_class  (the data behind `library fork`'s adaptation checklist)
+# ---------------------------------------------------------------------------
+
+
+def pickup_class(p: Optional[GuitarProfile]) -> tuple[Optional[str], frozenset]:
+    """``(output_level, coil_types)`` for one guitar -- the coarse pickup class
+    the tone skill adapts a chain to.
+
+    - ``output_level`` is ``"active"`` / ``"passive"`` from the profile's
+      first-class ``active`` flag, falling back to active-pickup words in the
+      free-text ``pickups`` prose (``"active EMG HH"``, Fishman Fluence, ...).
+      ``None`` when neither says.
+    - ``coil_types`` is a subset of ``{"humbucker", "single-coil"}``, read from
+      the prose two ways: keywords (``humbucker``, ``P-90``, ``soapbar``, ...)
+      and the standalone CONFIG CODE convention (``HH`` / ``HSS`` / ``HSH`` /
+      ``SSS``), where each letter names one pickup. Empty when the prose says
+      nothing recognizable.
+
+    A profile with neither signal classifies as ``(None, frozenset())``, which
+    is deliberately DIFFERENT from every populated class -- an unknown target
+    must earn the adaptation checklist, not silently pass as a match.
+
+    Heuristic by construction: ``pickups`` is free prose and always will be.
+    Used only to decide whether to PRINT advice; nothing is ever re-voiced off
+    it, so a miss costs a spurious (or missing) reminder, never a wrong param.
+    """
+    if p is None:
+        return (None, frozenset())
+    text = (p.pickups or "").lower()
+
+    level: Optional[str]
+    if p.active is True:
+        level = "active"
+    elif p.active is False:
+        level = "passive"
+    elif any(w in text for w in _ACTIVE_WORDS):
+        level = "active"
+    else:
+        level = None
+
+    coils = set()
+    if any(w in text for w in _HUMBUCKER_WORDS):
+        coils.add("humbucker")
+    if any(w in text for w in _SINGLE_WORDS):
+        coils.add("single-coil")
+    for code in _CONFIG_CODE.findall(text):
+        if "h" in code:
+            coils.add("humbucker")
+        if "s" in code:
+            coils.add("single-coil")
+    return (level, frozenset(coils))
+
+
+def describe_pickups(p: Optional[GuitarProfile]) -> str:
+    """One human phrase for a guitar's pickup class + its own prose, e.g.
+    ``"active humbucker (active EMG HH)"`` -- the checklist's header line."""
+    level, coils = pickup_class(p)
+    parts = [x for x in (level, "/".join(sorted(coils)) or None) if x]
+    label = " ".join(parts) or "unknown pickups"
+    prose = (p.pickups or "").strip() if p is not None else ""
+    return f"{label} ({prose})" if prose else label
+
+
+# ---------------------------------------------------------------------------
+# descriptor identity guard (shared by generate / library import / library fork)
+# ---------------------------------------------------------------------------
+
+
+def descriptor_identity_problem(descriptor: Optional[str]) -> Optional[str]:
+    """A human error message when an EXPLICIT ``--descriptor`` has an identity
+    smuggled into it, or ``None`` when it is a clean descriptor.
+
+    The display-name schema is ``"$Descriptor - $Guitar"``, so the ``" - "``
+    separator and the trailing guitar segment are the schema's, not the
+    descriptor's. A descriptor that carries either produces a display name
+    with a doubled separator, a guitar string that is not the profile's
+    ``short_name``, and a logical slug that will NOT group with the tone it
+    was forked from (which is exactly how six near-identical tones appear).
+
+    Two checks:
+
+    1. the descriptor contains a schema separator (``" - "`` / ``" -- "`` /
+       en/em dash), or
+    2. its slug ends in a known guitar profile's slug or ``short_name`` slug.
+
+    Only ever applied to an EXPLICIT ``--descriptor`` flag. The implicit
+    fallbacks -- a recipe's own ``name`` in ``generate``, an ``.hsp``'s
+    ``meta.name`` in ``library import`` -- are NOT guarded: those are existing
+    artifacts whose names legitimately contain dashes, and rejecting them
+    would break authoring for a naming choice the caller did not just make.
+    """
+    if descriptor is None or not descriptor.strip():
+        return None
+    text = descriptor.strip()
+    flags_hint = ("Put the song identity in --artist/--song and the guitar in "
+                  "--guitar; --descriptor is the tone name ALONE.")
+    if _SMUGGLED_SEPARATOR.search(text):
+        return (f"--descriptor {descriptor!r} contains a ' - ' separator, which "
+                "is the display-name schema's own (\"$Descriptor - $Guitar\"). "
+                + flags_hint)
+
+    slug = naming.slugify(text)
+    try:
+        profiles = load_all_profiles()
+    except Exception:  # noqa: BLE001 -- a broken profile never blocks authoring
+        profiles = []
+    for prof in profiles:
+        for tail in {prof.slug, naming.slugify(prof.short_name)}:
+            if tail and slug.endswith(f"-{tail}"):
+                return (f"--descriptor {descriptor!r} ends in the guitar "
+                        f"{prof.short_name!r}, which the display name appends "
+                        "itself. " + flags_hint)
+    return None
