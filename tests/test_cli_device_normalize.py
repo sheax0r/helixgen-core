@@ -1701,3 +1701,18 @@ def test_normalize_flags_drift_from_the_calibrated_reference(
     assert "was calibrated against" in result.output
     assert "not\ncomparable" in result.output or "not comparable" in " ".join(
         result.output.split())
+
+
+def test_normalize_setlist_refuses_two_library_tones_of_the_same_name(
+        monkeypatch, gig_setlist, tmp_path):
+    """Two library .hsp files claiming one meta.name used to resolve first-wins,
+    so trims landed in an arbitrary one (adversarial review, SUSPECTED)."""
+    from helixgen import home
+    name_a, _ = gig_setlist["names"]
+    dup = home.tones_dir() / "duplicate-of-a.hsp"
+    dup.write_bytes(gig_setlist["paths"][0].read_bytes())
+    _patch_gig(monkeypatch, gig_setlist)
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", "--setlist", "Gig", "--seconds", "6"])
+    assert result.exit_code != 0
+    assert "are named" in result.output and name_a in result.output

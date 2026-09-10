@@ -242,6 +242,27 @@ def test_colliding_names_do_not_overwrite_each_other():
     assert len(set(got)) == 2, got
 
 
+def test_case_differing_names_do_not_collide_on_a_case_insensitive_fs():
+    """macOS and Windows filesystems are case-insensitive by default, so
+    "Lead" and "lead" are ONE file. Comparing with a case-SENSITIVE set said
+    these were distinct, and the second silently clobbered the first
+    (adversarial review, HIGH 4)."""
+    got = S.assign_filenames(["Lead", "lead"], ".sbe")
+    assert len({g.casefold() for g in got}) == 2, got
+
+
+def test_case_differing_presets_both_survive_a_real_backup(tmp_path):
+    c = StubClient(
+        pool=[{"cid_": 1, "name": "Lead", "posi": 0},
+              {"cid_": 2, "name": "lead", "posi": 1}],
+        blobs={1: content(), 2: b"_sbepgsm-two"},
+    )
+    S.take(c, tmp_path)
+    files = list((tmp_path / "SN-TEST-1" / "pool").glob("*.sbe"))
+    assert len(files) == 2, [f.name for f in files]
+    assert len({f.read_bytes() for f in files}) == 2
+
+
 def test_two_presets_that_sanitise_alike_both_survive(tmp_path):
     c = StubClient(
         pool=[{"cid_": 1, "name": "A/B", "posi": 0},
@@ -396,3 +417,84 @@ def test_ensure_git_textconv_keeps_unrelated_lines(tmp_path):
     text = (tmp_path / ".gitattributes").read_text()
     assert "*.png binary" in text
     assert "*.sbe" in text
+
+
+# ---------------------------------------------------------------------------
+# adversarial-review regressions (2026-09-09)
+# ---------------------------------------------------------------------------
+
+def test_a_failed_IR_pull_never_prunes_an_already_backed_up_wav(tmp_path,
+                                                                monkeypatch):
+    """CRITICAL 2: IR failures land in irs["missing"], not errors[], so the
+    `if not errors` prune guard let one flaky /IrPathForHashGet delete a
+    verified .wav this backup may be the only copy of."""
+    payload = b"\x01\x02\x03\x04" * 8
+    h = irhash_of(payload)
+    sftp = StubSFTP({"cab.wav": wav(payload)})
+    import helixgen.device.sftp as _s
+    monkeypatch.setattr(_s, "HelixSFTP", sftp)
+    kw = dict(pool=[{"cid_": 1, "name": "Tone", "posi": 0}],
+              blobs={1: content([irmd_for(h)])},
+              ir_paths={h: "/data/ir/cab.wav"})
+    S.take(StubClient(**kw), tmp_path)
+    stored = tmp_path / "SN-TEST-1" / "irs" / f"{h}.wav"
+    assert stored.is_file()
+
+    class Flaky(StubClient):
+        def ir_path_for_hash(self, hh, *, strict=False):
+            raise HelixError("timed out")
+
+    res = S.take(Flaky(**kw), tmp_path)
+    assert res["irs"]["missing"]
+    assert stored.is_file(), "a transient IR failure deleted the backup"
+    assert not any(c.startswith("- irs/") for c in res["changed"])
+
+
+def test_prune_refuses_a_snapshot_with_no_index(tmp_path, two_presets):
+    """CRITICAL 3: a missing/corrupt index.json read as "the snapshot has no
+    presets", so --prune emitted a delete for every live preset and reported
+    zero errors."""
+    S.take(StubClient(**two_presets), tmp_path)
+    (tmp_path / "SN-TEST-1" / "index.json").unlink()
+    plan = S.plan_restore(StubClient(**two_presets), tmp_path,
+                          serial="SN-TEST-1", prune=True)
+    assert plan["ops"] == []
+    assert plan["errors"] and "index.json" in plan["errors"][0]
+
+
+def test_prune_refuses_an_empty_pool_index(tmp_path, two_presets):
+    S.take(StubClient(**two_presets), tmp_path)
+    idx = tmp_path / "SN-TEST-1" / "index.json"
+    idx.write_text(json.dumps({"pool": {}, "setlists": {}}))
+    plan = S.plan_restore(StubClient(**two_presets), tmp_path,
+                          serial="SN-TEST-1", prune=True)
+    assert not [o for o in plan["ops"] if "delete" in o["op"]]
+    assert plan["errors"]
+
+
+def test_restore_refuses_a_snapshot_from_another_device(tmp_path, two_presets):
+    """HIGH 5: nothing compared the snapshot's serial to the connected device,
+    so `restore --prune --yes` could wipe and repopulate the WRONG Helix."""
+    S.take(StubClient(**two_presets), tmp_path)
+    dev = tmp_path / "SN-TEST-1" / "device.json"
+    doc = json.loads(dev.read_text())
+    doc["serial"] = "SOME-OTHER-HELIX"
+    dev.write_text(json.dumps(doc))
+    plan = S.plan_restore(StubClient(**two_presets), tmp_path,
+                          serial="SN-TEST-1", prune=True)
+    assert plan["ops"] == []
+    assert any("across devices" in e for e in plan["errors"])
+
+
+def test_backup_wires_the_git_textconv(tmp_path, two_presets):
+    """MEDIUM 8: ensure_git_textconv was never called, so the documented
+    readable .sbe diffs did not actually happen."""
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True,
+                   capture_output=True)
+    S.take(StubClient(**two_presets), tmp_path)
+    assert "*.sbe" in (tmp_path / ".gitattributes").read_text()
+    got = subprocess.run(
+        ["git", "-C", str(tmp_path), "config", "--get",
+         "diff.helixgen-sbe.textconv"], capture_output=True, text=True)
+    assert "device decode" in got.stdout

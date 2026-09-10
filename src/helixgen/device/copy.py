@@ -118,6 +118,14 @@ def resolve_target(client, name: str, *, setlist: Optional[str] = None,
         if hits:
             raise AmbiguousName(
                 name, [dict(c, setlist=scope) for c in hits])
+    if cid is not None:
+        # An explicit --cid exists ONLY to disambiguate a duplicate name.
+        # Falling through to None would read as "absent", and copy_tone would
+        # CREATE a third preset — the opposite of what the flag is for. A cid
+        # that matches nothing is a typo, and typos must not write.
+        raise ValueError(
+            f"--cid {cid} matches no preset"
+            + (f" in setlist {setlist!r} or the pool" if setlist else " in the pool"))
     return None
 
 
@@ -257,6 +265,28 @@ def _reference(client, sl_cid: int, setlist: str, pool_cid: int,
     return {"cid": ref_cid, "posi": pos}
 
 
+def _other_setlists_referencing(client, pool_cid: int, *,
+                                exclude_setlist: str) -> List[str]:
+    """Names of setlists (other than ``exclude_setlist``) referencing ``pool_cid``.
+
+    Guards ``rm --also-pool`` against orphaning: deleting a pool preset another
+    setlist still points at leaves that setlist referencing a dead cid. The
+    listing is strict (#40) — an unreadable setlist must block the delete, not
+    read as "nobody references it".
+    """
+    want = (exclude_setlist or "").strip().casefold()
+    holders: List[str] = []
+    for sl in client.list_setlists(strict=True):
+        name = str(sl.get("name") or "")
+        if not name or name.casefold() == want:
+            continue
+        for m in client.list_container(sl.get("cid_"), strict=True):
+            if m.get("cctp") == Cctp.REFERENCE and m.get("rcid") == pool_cid:
+                holders.append(name)
+                break
+    return holders
+
+
 def remove_tone(client, name: str, *, setlist: str, also_pool: bool = False,
                 cid: Optional[int] = None) -> Dict[str, Any]:
     """Drop ``name``'s reference from ``setlist``; the pool preset survives
@@ -285,8 +315,19 @@ def remove_tone(client, name: str, *, setlist: str, also_pool: bool = False,
                         f"device refused to remove reference cid "
                         f"{target['cid']} from setlist {setlist!r}")
             if also_pool:
-                if client._raw.delete(int(Container.POOL),
-                                      [target["pool_cid"]]):
+                # NEVER orphan: another setlist referencing this pool preset
+                # would be left pointing at a dead cid. The reference we just
+                # dropped is excluded from the scan.
+                holders = _other_setlists_referencing(
+                    client, target["pool_cid"], exclude_setlist=setlist)
+                if holders:
+                    errors.append(
+                        f"refusing to delete pool preset {target['name']!r} "
+                        f"(cid {target['pool_cid']}): still referenced by "
+                        + ", ".join(repr(h) for h in sorted(holders))
+                        + " — remove it there first")
+                elif client._raw.delete(int(Container.POOL),
+                                        [target["pool_cid"]]):
                     res["removed_pool"] = target["pool_cid"]
                 else:
                     errors.append(

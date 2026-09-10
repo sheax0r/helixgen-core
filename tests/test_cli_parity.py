@@ -112,7 +112,10 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
      ["NOT idempotent", "offline", "PATHLESS"]),
     ("device_export_hss", ["device", "setlist", "export-hss"],
      ["SKIPPED", "local `.hsp`"]),
-    ("device_setlist_list", ["device", "setlist", "list"], ["setlist"]),
+    # NOT "setlist" — that appears in the usage line, so the row asserted
+    # nothing at all (adversarial review, MEDIUM 9).
+    ("device_setlist_list", ["device", "setlist", "list"],
+     ["IN ORDER", "Read-only", "device state"]),
     # The manifest and its sync are retired (2026-09-09 file-copy design):
     # membership and order are device state now, so the old membership tools
     # map onto the per-preset device verbs that replaced them.
@@ -131,13 +134,13 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
      ["color", "notes", "non-activating"]),
     ("device_setlist_create", ["device", "setlist", "create"],
      ["already", "device"]),
-    ("device_setlist_rename", ["device", "setlist", "rename"], ["manifest"]),
+    ("device_setlist_rename", ["device", "setlist", "rename"], ["ON THE DEVICE"]),
     ("device_setlist_delete", ["device", "setlist", "delete"],
      ["never-orphan", "pool"]),
     ("device_setlist_duplicate", ["device", "setlist", "duplicate"],
      ["shared, not copied"]),
     ("device_reorder", ["device", "reorder"],
-     ["DEVICE-side", "cid-first", "slots reorder"]),
+     ["DEVICE-side", "cid-first", "device move"]),
     ("device_meters", ["device", "meters"], ["telemetry", "Read-only"]),
     ("device_measure", ["device", "measure"],
      ["level-matching", "read-only", "PLAY STEADILY",

@@ -102,14 +102,23 @@ def _library_hsp_for(name: str):
     if not d.is_dir():
         return None
     want = (name or "").strip().casefold()
+    hits = []
     for path in sorted(d.glob("*.hsp")):
         try:
             body = read_hsp(path)
         except Exception:  # noqa: BLE001 - a bad file must not break lookup
             continue
         if str((body.get("meta") or {}).get("name", "")).strip().casefold() == want:
-            return path
-    return None
+            hits.append(path)
+    if len(hits) > 1:
+        # Everywhere else in this design an ambiguous name is a hard error;
+        # first-wins here would write normalize's trims into an arbitrary one
+        # of two library files claiming the same tone.
+        raise click.ClickException(
+            f"{len(hits)} library tones are named {name!r}: "
+            + ", ".join(str(h) for h in hits)
+            + " — rename one so the name identifies exactly one .hsp")
+    return hits[0] if hits else None
 
 
 # --- device: network control of a Line 6 Helix Stadium --------------------
@@ -488,7 +497,7 @@ def _resolve_setlist_dest(h, name: str):
             f"no device setlist named {name!r}; device setlists: {have}. "
             "Also valid: 'user' (the preset pool) and 'factory'.")
     # Return the setlist's CANONICAL display name, not the user's typed case
-    # (the match is case-insensitive but the local manifest's setlist keys
+    # (the match is case-insensitive but the device's setlist names
     # are case-sensitive — a typed-case label would mint a duplicate).
     label = name
     try:
@@ -582,7 +591,7 @@ def _auto_upload_irs(ip: str, hashes) -> None:
 
     Thin echo-formatting wrapper around the shared core in
     ``helixgen.device.ir_upload`` (backlog #6 — the same core also backs
-    ``device sync``). Unlike ``device sync``, which tolerates a per-IR upload
+    ``device copy``). Unlike ``device copy``, which tolerates a per-IR upload
     failure and keeps going (a sync run shouldn't be all-or-nothing on IR
     trouble), ``device install --auto-irs`` **aborts the whole install** on a
     hard upload error (``push_ir`` itself failing, e.g. a dropped
@@ -688,7 +697,7 @@ def device() -> None:
     THE DEVICE IS THE TRUTH about what is loaded and in what order. There is
     no local intent file: read membership and order with `device setlist list`
     / `device list`. The retired ~/.helixgen/setlists/manifest.json and
-    `device sync` are GONE — if you have a legacy manifest, the migration is
+    `device copy` are GONE — if you have a legacy manifest, the migration is
     `device backup`, commit, delete the file. The tone LIBRARY
     ($HELIXGEN_HOME/library/tones/*.hsp) is just a directory; a tone is in it
     exactly when its .hsp is there.
@@ -1965,10 +1974,11 @@ def device_reorder(setlist: str, target: str, to_index: int,
     real cid) when it doesn't. --to is bounds-validated against the
     container's current length.
 
-    This is a direct, immediate DEVICE-side write — distinct from the local
-    manifest's `device slots reorder`, which only edits the tone library's
-    recorded order and takes effect on the device on the next `device sync`
-    (which may then reorder things right back to the manifest's order).
+    This is a direct, immediate DEVICE-side write. For the ordinary
+    name-addressed form of the same move, prefer `device move <name> --in
+    <setlist> --to <N>`; this verb is the cid-first / container-level escape
+    hatch (reordering the setlist list itself, or an item whose display name
+    is ambiguous).
     """
     HelixClient, HelixError = _client()
     from helixgen.device import reorder as R
@@ -2757,13 +2767,13 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
 
 @device.group(name="setlist")
 def device_setlist() -> None:
-    """Manage the local setlist manifest (~/.helixgen/setlists/manifest.json,
-    override $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json
-    auto-migrates on first load).
+    """Manage the DEVICE's setlists (create / rename / delete / duplicate),
+    and list what they reference.
 
-    A tone is added to a setlist here (desired membership); `device sync` then
-    pushes that membership onto the device as a preset pool + references. The
-    manifest is never hand-edited — use these verbs.
+    Membership and order are device state (2026-09-09 file-copy design) —
+    there is no local manifest. Put a preset into a setlist with
+    `device copy <tone.hsp> --to <setlist>`, take one out with `device rm`,
+    and reposition one with `device move`.
     """
 
 
@@ -2819,7 +2829,7 @@ def device_setlist_list(setlist, as_json: bool, ip: str, port: int) -> None:
 @_device_option
 @_locked("library", verb="setlist create")
 def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
-    """Create a new empty setlist ON THE DEVICE (and in the local manifest).
+    """Create a new empty setlist ON THE DEVICE.
 
     Uses the device's own create command (/CreateContent under the setlists
     root) — no Stadium app needed. Errors if a setlist with that name already
@@ -2850,7 +2860,7 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
 @_device_option
 @_locked("library", verb="setlist rename")
 def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -> None:
-    """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked)."""
+    """Rename a setlist ON THE DEVICE."""
     HelixClient, HelixError = _client()
 
     try:
@@ -2881,8 +2891,6 @@ def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> No
     """Delete a setlist ON THE DEVICE. Its references die with it — the pool
     presets they pointed at are NEVER deleted (never-orphan).
 
-    A local manifest setlist of the same name is kept as a local-only draft
-    (marked unsynced).
     """
     HelixClient, HelixError = _client()
 
@@ -2963,7 +2971,7 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     installed into the device POOL (non-activating) and referenced into a
     device setlist (created if absent) in the bundle's slot order — reusing the
     same install + setlist-create + reference primitives as `device install` /
-    `device sync`.
+    `device copy`.
 
     Both the container framing (header/gzip/tar/manifest/128-slot/empty-sentinel)
     and the FILLED-slot framing are pinned against real captured exports. A
@@ -3090,10 +3098,13 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     slot must be empty (checked strictly — backlog #40 — so a listing timeout
     raises instead of reading as empty). With a NAMED --setlist the content
     lands in the POOL (lowest empty slot) and a REFERENCE is added to the
-    setlist at --pos. The .sbe is recorded as the tone's local source in the
-    tone library: it already IS device content, so `device sync` re-pushes
-    those bytes verbatim (no transcode) and `ir-prune` decodes them for IR
-    references — neither reads it as a .hsp.
+    setlist at --pos. The .sbe already IS device content, so it is written
+    verbatim (no transcode). Nothing local records the push: the device is the
+    record of what is on it, so re-photograph with `device backup` afterwards
+    if you want it captured. NOTE `ir-prune` protects IRs referenced by the
+    tone LIBRARY ($HELIXGEN_HOME/library/tones) — a .sbe pushed from elsewhere
+    is not scanned, so its IRs are protected only while a device preset
+    references them.
     """
     HelixClient, HelixError = _client()
 
@@ -3985,7 +3996,7 @@ def _normalize_settings(flags: dict):
 @click.argument("preset", required=False,
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--setlist", default=None, metavar="NAME",
-              help="Level-match every tone of this LOCAL manifest setlist "
+              help="Level-match every preset this DEVICE setlist references "
                    "instead of one preset's snapshots (mutually exclusive "
                    "with the PRESET argument).")
 @click.option("--target-db", type=float, default=None,
@@ -4116,7 +4127,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
     active preset's name is verified against the .hsp before anything is
     measured; a mismatch aborts the run (an unverifiable name only warns).
     `device normalize --setlist <name>` level-matches every tone of a local
-    manifest setlist that has a local .hsp and an observed device placement
+    manifest setlist that has a local .hsp and a matching .hsp in the tone library
     (loads each by CID and verifies the loaded preset's name matches the
     tone — a mismatch means a stale observation and that tone is SKIPPED;
     tones without a local .hsp or a placement are SKIPPED too). The
@@ -4129,15 +4140,14 @@ def device_normalize(preset: Path | None, setlist: str | None,
     snapshot scope; a whole-preset shift, base plus any per-snapshot array,
     in setlist scope — a uniform shift that preserves the preset's own
     scene-to-scene and path-to-path balance). The device copy is NOT
-    written by this verb: run `device sync <setlist>` (or `device install`)
-    afterwards to rebuild it from the .hsp. If a mid-run write fails, the
+    written by this verb: run `device copy` for it first.hsp. If a mid-run write fails, the
     error lists the files already written. Recalling snapshots / loading
     presets does change the device's ACTIVE tone selection while measuring.
 
     The output block's `level` is dB-native, so a trim is EXACT by
     construction and lands in ONE move. Both measurement paths sit
     DOWNSTREAM of that gain, so a written trim IS visible once the device
-    copy is rebuilt (`device sync` / `device install`): re-measuring is a
+    copy is rebuilt (`device copy` / `device install`): re-measuring is a
     valid way to CONFIRM a trim, and re-running the whole loop is a no-op
     that reports in-band zeros rather than compounding.
 
@@ -4548,7 +4558,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
             # Membership comes from the DEVICE and the .hsp from the library
             # directory (2026-09-09 design). The retired path read desired
             # membership from the manifest and the CID from a per-device
-            # observation file that only `device sync` ever refreshed — so a
+            # observation file that only `device copy` ever refreshed — so a
             # reorganised Helix silently measured the WRONG preset until the
             # name guard below caught it. Resolving live removes the staleness
             # class entirely; the guard stays, because names are not unique.

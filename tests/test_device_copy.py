@@ -293,13 +293,57 @@ def test_remove_drops_reference_and_keeps_the_pool_preset():
     assert [m["cid_"] for m in c.pool] == [101]
 
 
-def test_remove_also_pool_deletes_the_pool_preset():
+def test_remove_also_pool_REFUSES_when_another_setlist_references_it():
+    """`--also-pool` must never orphan: deleting a pool preset another setlist
+    still points at leaves that setlist referencing a dead cid, and the verb's
+    own help promises it can't happen. (Adversarial review, CRITICAL 1 — the
+    original single-setlist fixture passed on the broken behavior.)"""
+    c = StubClient(
+        pool=[{"cid_": 101, "name": "Back In Black", "posi": 0,
+               "cctp": Cctp.PRESET}],
+        setlists={"Gigs": 1234, "Studio": 1235},
+        refs={1234: [{"cid_": 501, "rcid": 101, "posi": 0,
+                      "cctp": Cctp.REFERENCE}],
+              1235: [{"cid_": 502, "rcid": 101, "posi": 0,
+                      "cctp": Cctp.REFERENCE}]},
+    )
+    res = C.remove_tone(c, "Back In Black", setlist="Gigs", also_pool=True)
+    assert res["removed_ref"] == 501          # the reference still goes
+    assert res["removed_pool"] is None        # the pool preset does NOT
+    assert res["ok"] is False
+    assert "Studio" in " ".join(res["errors"])
+    assert c.pool != []                       # still there for Studio
+    assert not any(k == "delete" for k, *_ in c.calls)
+
+
+def test_remove_also_pool_deletes_when_nothing_else_references_it():
     c = _gigs()
     res = C.remove_tone(c, "Back In Black", setlist="Gigs", also_pool=True)
     assert res["removed_ref"] == 501 and res["removed_pool"] == 101
     assert c.calls == [("remove_reference", 1234, 501),
                        ("delete", int(Container.POOL), [101])]
     assert c.pool == []
+
+
+def test_explicit_cid_that_matches_nothing_is_an_error_not_a_create(hsp):
+    """--cid exists ONLY to disambiguate a duplicate name. A typo'd cid used to
+    read as "absent" and CREATE a third preset (adversarial review, HIGH 6)."""
+    c = StubClient(
+        pool=[{"cid_": 101, "name": "Dream On", "posi": 0, "cctp": Cctp.PRESET},
+              {"cid_": 102, "name": "Dream On", "posi": 1, "cctp": Cctp.PRESET}],
+        setlists={"Gigs": 1234}, refs={1234: []},
+    )
+    with pytest.raises(ValueError, match="matches no preset"):
+        C.resolve_target(c, "Dream On", setlist="Gigs", cid=10)
+    # Through copy_tone the same miss surfaces as a failed run (the module's
+    # catch-all turns bad input into errors[], and the CLI exits 1) — what
+    # matters is that it does NOT fall through to "absent" and create a third.
+    before = list(c.pool)
+    res = C.copy_tone(c, hsp("Dream On"), setlist="Gigs", cid=10)
+    assert res["ok"] is False
+    assert "matches no preset" in " ".join(res["errors"])
+    assert c.pool == before          # nothing written
+    assert not any(k == "install_into_pool" for k, *_ in c.calls)
 
 
 def test_remove_absent_name_reports_error_without_touching_the_device():

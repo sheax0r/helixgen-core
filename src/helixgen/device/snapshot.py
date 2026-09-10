@@ -89,18 +89,25 @@ def assign_filenames(names: Sequence[str], ext: str) -> List[str]:
     The exact name is recovered from ``index.json``, not from the filename.
     """
     slugs = [_slug(n) for n in names]
-    slug_n = Counter(slugs)
-    name_n = Counter(names)
+    # Case-fold the collision keys: macOS (and Windows) filesystems are
+    # case-insensitive by default, so "Lead" and "lead" are ONE file on disk.
+    # Counting case-sensitively let the second silently clobber the first —
+    # losing a preset from the photograph, and then restoring one preset's
+    # bytes under both names.
+    slug_n = Counter(s.casefold() for s in slugs)
+    name_n = Counter((n or "").casefold() for n in names)
     stems = []
     for n, s in zip(names, slugs):
-        if slug_n[s] > name_n[n]:  # a *different* name shares this slug
+        if slug_n[s.casefold()] > name_n[(n or "").casefold()]:
+            # a *different* name shares this slug (case-insensitively)
             s = f"{s}~{hashlib.sha256((n or '').encode('utf-8')).hexdigest()[:8]}"
         stems.append(s)
     seen: Counter = Counter()
     out = []
     for s in stems:
-        seen[s] += 1
-        out.append(f"{s}{ext}" if seen[s] == 1 else f"{s}~{seen[s]}{ext}")
+        seen[s.casefold()] += 1
+        n_ = seen[s.casefold()]
+        out.append(f"{s}{ext}" if n_ == 1 else f"{s}~{n_}{ext}")
     return out
 
 
@@ -392,10 +399,13 @@ def take(client, root: Path, *, dry_run: bool = False, now: Optional[str] = None
             section["written"].append(rel.split("/", 1)[1])
         result["changed"].append(f"{'+' if old is None else '~'} {rel}")
 
-    # A partial read must never prune: a preset we failed to fetch would look
-    # deleted and take its previous backup down with it.
+    # A partial read must never prune: anything we failed to fetch would look
+    # deleted and take its previous backup down with it. IR misses count —
+    # they live in irs["missing"], not errors, and a transient path-lookup or
+    # SFTP failure would otherwise unlink an already-verified .wav that this
+    # backup may be the only remaining copy of.
     stale: List[str] = []
-    if not errors:
+    if not errors and not irs["missing"]:
         for d, pat in (("pool", "*.sbe"), ("setlists", "*.json"), ("irs", "*.wav")):
             for f in sorted((base / d).glob(pat)) if (base / d).is_dir() else []:
                 rel = f"{d}/{f.name}"
@@ -405,6 +415,11 @@ def take(client, root: Path, *, dry_run: bool = False, now: Optional[str] = None
                     if isinstance(section, dict):
                         section.setdefault("removed", []).append(f.name)
                     result["changed"].append(f"- {rel}")
+
+    if irs["missing"] and not errors:
+        logger.warning(
+            "%d IR(s) could not be collected; pruning is disabled for this "
+            "run so nothing already backed up is removed", len(irs["missing"]))
 
     if dry_run:
         return result
@@ -417,6 +432,10 @@ def take(client, root: Path, *, dry_run: bool = False, now: Optional[str] = None
         p.write_bytes(data)
     for rel in stale:
         (base / rel).unlink()
+    # Wire the textconv so `git diff` renders these .sbe blobs as JSON rather
+    # than "Binary files differ". Idempotent, advisory: a repo-less root or a
+    # missing git just leaves the diffs binary.
+    result["textconv"] = ensure_git_textconv(root)
     return result
 
 
@@ -477,9 +496,41 @@ def plan_restore(client, root: Path, *, serial: Optional[str] = None,
         return {"serial": serial, "ops": [], "summary": [],
                 "errors": [f"no snapshot at {base}"]}
 
-    index = _read_json(base / "index.json", {})
+    index = _read_json(base / "index.json", None)
+    if not isinstance(index, dict):
+        # A missing/corrupt index is NOT an empty device. Without this a
+        # `--prune` run computes "the snapshot has no presets" and emits a
+        # delete for every live preset, reporting zero errors — reachable via
+        # `--from <ref>` predating the tree, a partial clone, or a renamed
+        # directory.
+        return {"serial": base.name, "root": str(base), "prune": bool(prune),
+                "ops": [], "summary": [],
+                "errors": [f"{base / 'index.json'} is missing or unreadable — "
+                           f"refusing to plan a restore from it"]}
     pool_index = index.get("pool") or {}
     sl_index = index.get("setlists") or {}
+    if prune and not pool_index:
+        return {"serial": base.name, "root": str(base), "prune": True,
+                "ops": [], "summary": [],
+                "errors": ["refusing to --prune against a snapshot with an "
+                           "empty pool index: that would delete every preset "
+                           "on the device"]}
+
+    # The snapshot must belong to the device we are about to write to. A
+    # second Helix, a warranty replacement, or an ip-<addr> fallback directory
+    # would otherwise let `--prune` wipe and repopulate the WRONG device.
+    snap_serial = str((_read_json(base / "device.json", {}) or {}).get("serial")
+                      or "")
+    try:
+        live_serial = _serial_of(client)
+    except Exception:  # noqa: BLE001 - an unreadable serial is not fatal here
+        live_serial = ""
+    if snap_serial and live_serial and snap_serial != live_serial:
+        return {"serial": snap_serial, "root": str(base), "prune": bool(prune),
+                "ops": [], "summary": [],
+                "errors": [f"snapshot is from device {snap_serial!r} but the "
+                           f"connected device is {live_serial!r} — refusing "
+                           f"to restore across devices"]}
 
     # -- IRs first ----------------------------------------------------------
     ir_index = _read_json(base / "irs" / "index.json", {})
