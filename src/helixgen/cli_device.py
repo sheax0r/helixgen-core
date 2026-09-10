@@ -678,31 +678,49 @@ def device() -> None:
     resolves the IP automatically (--ip > $HELIXGEN_HELIX_IP > the persisted
     device record — no built-in default; with none set, verbs fail fast).
 
+    THE MODEL IS FILE COPY, NOT SYNC. `device copy <tone.hsp> --to <setlist>`
+    puts one authored preset on the device, upserting by the file's meta.name:
+    if that name is already there its content is updated IN PLACE, otherwise
+    it is pooled and referenced. `device rm` takes one out, `device move`
+    repositions one. Each call touches exactly the preset you name — nothing
+    reconciles a whole library in the background.
+
+    THE DEVICE IS THE TRUTH about what is loaded and in what order. There is
+    no local intent file: read membership and order with `device setlist list`
+    / `device list`. The retired ~/.helixgen/setlists/manifest.json and
+    `device sync` are GONE — if you have a legacy manifest, the migration is
+    `device backup`, commit, delete the file. The tone LIBRARY
+    ($HELIXGEN_HOME/library/tones/*.hsp) is just a directory; a tone is in it
+    exactly when its .hsp is there.
+
+    IDENTITY IS THE DISPLAY NAME, and device names are not unique — an
+    ambiguous name is an ERROR naming the competing cids, never a guess.
+    Pass --cid to disambiguate.
+
+    BACKUP / RESTORE: `device backup` photographs the device into
+    $HELIXGEN_HOME/backup/<serial>/ (pool/*.sbe = the device's own bytes,
+    setlists/*.json = order, plus IRs) — git-trackable, and `--dry-run` is the
+    diff against the live device. `device restore` replays one; `--prune`
+    (which DELETES presets absent from the snapshot) is the one destructive
+    path here. `device decode` renders a .sbe as JSON for git diffs.
+
     READ vs WRITE: verbs that only read/list device state are safe (info,
-    active, read, list, setlists, list-irs, blocks, params, settings
-    list/get, tuner, meters, measure, watch, backup, pull, pull-ir, plus the
-    offline verbs local-list, library, slots list, globaleq list and
-    --list/--dry-run modes).
+    active, read, list, setlists, setlist list, list-irs, blocks, params,
+    settings list/get, tuner, meters, measure, watch, backup, pull, pull-ir,
+    plus the offline verbs decode, globaleq list and --list/--dry-run modes).
     Everything else MUTATES the device — and the live-ops verbs (snapshot,
     bypass, model, set-param) change the ACTIVE tone immediately. Prefer an
     empty/expendable slot when testing writes.
 
-    The Stadium's network stack is flaky: if a verb/sync drops or stalls,
-    re-run it — `sync` and the live-ops verbs are idempotent +
-    auto-reconnecting; the slot-writing verbs (install/save/push/create)
-    fail safe on an occupied slot instead; `setlist import-hss` is the one
-    NOT-idempotent retry (see its --help). If it keeps dropping, reboot
-    the Helix.
+    The Stadium's network stack is flaky: if a verb drops or stalls, re-run it
+    — `copy` and the live-ops verbs are idempotent + auto-reconnecting, and
+    the slot-writing verbs fail safe on an occupied slot instead;
+    `setlist import-hss` is the one NOT-idempotent retry (see its --help). If
+    it keeps dropping, reboot the Helix.
 
-    The tone library manifest (~/.helixgen/setlists/manifest.json, override
-    $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json auto-migrates on
-    first load) is the single management record: every generated tone
-    auto-registers there; "on the device" ⟺ the tone has a slot; `device
-    sync` mirrors ONLY managed tones and never touches untracked device
-    presets. Presets live once in the pool (cid container -2) and setlists
-    hold references to them. A specific Helix's OBSERVED placement (cid/posi)
-    lives separately, in ~/.helixgen/devices/<serial>.json — not in the
-    manifest.
+    Presets live once in the pool (cid container -2) and setlists hold
+    references to them, so one tone can be in many setlists at once and
+    removing it from one leaves the others untouched.
 
     SEE ALSO: docs/CLI.md "Device commands" for the full per-verb reference.
 

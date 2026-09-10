@@ -414,9 +414,14 @@ def test_top_level_help_orients_agents():
 def test_device_group_help_carries_mental_models():
     raw = _resolve(["device"]).help or ""
     for phrase in ["READ vs WRITE", "MUTATES", "ACTIVE tone", "flaky",
-                   "re-run", "idempotent", "tone library",
-                   "never touches untracked", "docs/CLI.md",
-                   "LOCKING", "auto-acquires", "device lock"]:
+                   "re-run", "idempotent", "tone LIBRARY", "docs/CLI.md",
+                   "LOCKING", "auto-acquires", "device lock",
+                   # the file-copy mental models (2026-09-09): an agent reads
+                   # this group help before any verb, so it must not describe
+                   # the retired manifest/sync world.
+                   "FILE COPY, NOT SYNC", "THE DEVICE IS THE TRUTH",
+                   "IDENTITY IS THE DISPLAY NAME", "--cid",
+                   "device backup", "--prune"]:
         assert phrase in raw, f"device group help lost {phrase!r}"
 
 
