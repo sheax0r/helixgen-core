@@ -417,26 +417,6 @@ def test_device_save_into_named_setlist(monkeypatch):
     assert ("reference_into_setlist", 816, 901, 4) in calls
 
 
-def test_device_slots_restore_named_setlist_requires_pos(monkeypatch, tmp_path):
-    """Review finding 2: a tone's recorded slot/posi is a POOL position;
-    restoring into a named setlist without an explicit --pos must refuse."""
-    sbe = tmp_path / "t.sbe"
-    sbe.write_bytes(b"_sbepgsm-fake")
-    manifest = tmp_path / "setlists.json"
-    manifest.write_text(json.dumps({
-        "version": 2,
-        "tones": {"T": {"path": str(sbe), "content_hash": None, "doc": None,
-                        "source": "push", "slot": "3A", "device": None}},
-        "setlists": {},
-    }))
-    monkeypatch.setenv("HELIXGEN_SETLISTS", str(manifest))
-    _patch_client(monkeypatch, SetlistFakeClient)
-    result = CliRunner().invoke(
-        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway"])
-    assert result.exit_code != 0
-    assert "--pos" in result.output and "POOL position" in result.output
-
-
 def _seed_v2_manifest(tmp_path, monkeypatch, *, name="T", slot="3A"):
     """A minimal v2 manifest with one .sbe-sourced tone, env-isolated."""
     sbe = tmp_path / "t.sbe"
@@ -460,66 +440,6 @@ class OccupiedSetlistFake(SetlistFakeClient):
         if container == self.SETLIST_CID and pos == 0:
             return dict(self.REFS[0])
         return None
-
-
-def test_device_slots_restore_force_refuses_occupied_setlist_pos(
-        monkeypatch, tmp_path):
-    """Backlog #69: --force must NOT stack a second reference at an occupied
-    named-setlist position — the outcome on the device is uncataloged. The
-    refusal happens before ANY device write (no pool push, no reference)."""
-    _seed_v2_manifest(tmp_path, monkeypatch)
-    holder = {}
-
-    class Recorder(OccupiedSetlistFake):
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            holder["client"] = self
-
-    _patch_client(monkeypatch, Recorder)
-    result = CliRunner().invoke(
-        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway",
-              "--pos", "0", "--force"])
-    assert result.exit_code != 0
-    assert "#69" in result.output
-    assert "already holds a reference" in result.output
-    assert "device delete 5001 --setlist 'Throwaway'" in result.output
-    calls = holder["client"].calls
-    assert not any(c[0] == "push_to_slot" for c in calls)
-    assert not any(c[0] == "reference_into_setlist" for c in calls)
-
-
-def test_device_slots_restore_occupied_setlist_pos_still_refused_without_force(
-        monkeypatch, tmp_path):
-    """The non-force refusal of an occupied setlist position is unchanged."""
-    _seed_v2_manifest(tmp_path, monkeypatch)
-    _patch_client(monkeypatch, OccupiedSetlistFake)
-    result = CliRunner().invoke(
-        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway",
-              "--pos", "0"])
-    assert result.exit_code != 0
-    assert "not empty" in result.output
-
-
-def test_device_slots_restore_force_into_free_setlist_pos_proceeds(
-        monkeypatch, tmp_path):
-    """--force at a FREE named-setlist position stays allowed (it is a no-op
-    there): content pools at the lowest empty posi + a reference is added."""
-    _seed_v2_manifest(tmp_path, monkeypatch)
-    holder = {}
-
-    class Recorder(OccupiedSetlistFake):
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            holder["client"] = self
-
-    _patch_client(monkeypatch, Recorder)
-    result = CliRunner().invoke(
-        cli, ["device", "slots", "restore", "T", "--setlist", "Throwaway",
-              "--pos", "3", "--force"])
-    assert result.exit_code == 0, result.output
-    calls = holder["client"].calls
-    assert ("push_to_slot", -2, 7, "T") in calls
-    assert ("reference_into_setlist", 816, 900, 3) in calls
 
 
 def test_device_write_verbs_refuse_factory(monkeypatch):
@@ -637,58 +557,6 @@ def test_device_delete_yes_skips_prompt(monkeypatch):
 # -- Minor 5: rename/delete keep the per-device observation file's `tones`
 #    key in sync, not just the manifest ------------------------------------
 
-
-def test_device_rename_updates_observation_tones_key(monkeypatch):
-    from helixgen.device import observations as obsmod
-    from helixgen.device.manifest import SetlistManifest
-
-    obs = obsmod.DeviceObservations(serial="SN-INT-RENAME")
-    obs.record_pool("Old Name", cid=102, posi=1)
-    obsmod.save_observations(obs)
-
-    m = SetlistManifest.load()
-    m.register_pathless("Old Name", source="save")
-    m.mark_on_device("Old Name", "auto")
-    m.save()
-
-    _patch_client(monkeypatch, FakeClient)
-    result = CliRunner().invoke(cli, ["device", "rename", "102", "New Name"])
-    assert result.exit_code == 0
-
-    back = obsmod.load_observations("SN-INT-RENAME")
-    assert "Old Name" not in back.tones
-    assert back.tones["New Name"] == {"cid": 102, "posi": 1}
-
-    reloaded = SetlistManifest.load()
-    assert "New Name" in reloaded.tones
-    assert "Old Name" not in reloaded.tones
-
-
-def test_device_delete_updates_observation_tones_key(monkeypatch):
-    from helixgen.device import observations as obsmod
-    from helixgen.device.manifest import SetlistManifest
-
-    obs = obsmod.DeviceObservations(serial="SN-INT-DELETE")
-    obs.record_pool("Doomed Tone", cid=101, posi=0)
-    obsmod.save_observations(obs)
-
-    m = SetlistManifest.load()
-    m.register_pathless("Doomed Tone", source="save")
-    m.mark_on_device("Doomed Tone", "auto")
-    m.save()
-
-    _patch_client(monkeypatch, FakeClient)
-    result = CliRunner().invoke(cli, ["device", "delete", "101", "--yes"])
-    assert result.exit_code == 0
-
-    back = obsmod.load_observations("SN-INT-DELETE")
-    assert "Doomed Tone" not in back.tones
-
-    reloaded = SetlistManifest.load()
-    assert reloaded.tones["Doomed Tone"]["slot"] is None
-
-
-# -- auto-load IRs (_auto_upload_irs) -----------------------------------------
 
 class _FakeMapping:
     def __init__(self, table):
@@ -841,175 +709,6 @@ def _make_hsp(path, name):
     write_hsp(path, {"meta": {"name": name}})
     return path
 
-
-def test_device_setlist_group_registers(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    result = CliRunner().invoke(cli, ["device", "setlist", "--help"])
-    assert result.exit_code == 0
-    for sub in ("list", "add", "remove", "create-local"):
-        assert sub in result.output
-
-
-def test_device_setlist_add_and_list(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    hsp = _make_hsp(tmp_path / "tone.hsp", "White Limo Lead")
-    add = CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
-    assert add.exit_code == 0, add.output
-    assert "White Limo Lead" in add.output
-
-    lst = CliRunner().invoke(cli, ["device", "setlist", "list"])
-    assert lst.exit_code == 0
-    assert "helixgen  (1 tone)" in lst.output
-    assert "White Limo Lead" in lst.output
-
-
-def test_device_setlist_list_json(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    hsp = _make_hsp(tmp_path / "tone.hsp", "Tone X")
-    CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
-    lst = CliRunner().invoke(cli, ["device", "setlist", "list", "--json"])
-    assert lst.exit_code == 0
-    doc = json.loads(lst.output)
-    assert doc["setlists"] == {"helixgen": {"tones": ["Tone X"], "synced": False}}
-
-
-def test_device_setlist_remove(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    hsp = _make_hsp(tmp_path / "tone.hsp", "Tone X")
-    CliRunner().invoke(cli, ["device", "setlist", "add", "helixgen", str(hsp)])
-    rm = CliRunner().invoke(cli, ["device", "setlist", "remove", "helixgen", "Tone X"])
-    assert rm.exit_code == 0
-    assert "removed" in rm.output.lower()
-    # gone now
-    rm2 = CliRunner().invoke(cli, ["device", "setlist", "remove", "helixgen", "Tone X"])
-    assert rm2.exit_code != 0
-
-
-def test_device_setlist_create_local(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    res = CliRunner().invoke(cli, ["device", "setlist", "create-local", "helixgen"])
-    assert res.exit_code == 0
-    lst = CliRunner().invoke(cli, ["device", "setlist", "list"])
-    assert "helixgen  (0 tones)" in lst.output
-
-
-# -- device sync (manifest-driven, reference-based) ---------------------------
-
-def _patch_sync(monkeypatch, seen, result=None):
-    """Stub `setlist_sync.sync_setlists` to record kwargs and return canned."""
-    from helixgen.device import setlist_sync as _ss
-    canned = result or {
-        "ok": True, "setlists": ["helixgen"],
-        "pool": {"installed": ["Tone A"], "updated": [], "skipped": ["Tone B"]},
-        "references": {"helixgen": {"added": [9000], "removed": []}},
-        "gc": {"deleted": []}, "irs": [], "errors": [],
-    }
-    monkeypatch.setattr(_ss, "sync_setlists",
-                        lambda manifest, **kw: seen.update(kw) or canned)
-
-
-def test_device_sync_one_setlist_prints_summary(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    res = CliRunner().invoke(cli, ["device", "sync", "helixgen"])
-    assert res.exit_code == 0, res.output
-    assert seen["setlists"] == ["helixgen"]
-    assert seen["gc"] is False
-    assert "pool: 1 installed, 0 updated, 1 skipped" in res.output
-    assert "setlist 'helixgen': +1 references, -0 references" in res.output
-    assert "synced 1 setlist(s): helixgen" in res.output
-
-
-def test_device_sync_all_flag(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    res = CliRunner().invoke(cli, ["device", "sync", "--all", "--gc"])
-    assert res.exit_code == 0, res.output
-    assert seen["setlists"] is None
-    assert seen["gc"] is True
-
-
-def test_device_sync_requires_exactly_one_of_setlist_or_all(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    # neither
-    r1 = CliRunner().invoke(cli, ["device", "sync"])
-    assert r1.exit_code != 0
-    assert "exactly one" in r1.output
-    # both
-    r2 = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--all"])
-    assert r2.exit_code != 0
-    assert "exactly one" in r2.output
-    assert seen == {}  # engine never called
-
-
-def test_device_sync_repush_flag_threads_through(monkeypatch, tmp_path):
-    # #25 residual: `device sync <setlist> --repush` forces content refresh
-    # of already-synced tones (hash-based change detection never re-pushes
-    # a tone whose .hsp is unchanged but whose transcoder output would differ).
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    res = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--repush"])
-    assert res.exit_code == 0, res.output
-    assert seen["repush"] is True
-
-
-def test_device_sync_repush_defaults_false(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    res = CliRunner().invoke(cli, ["device", "sync", "helixgen"])
-    assert res.exit_code == 0, res.output
-    assert seen["repush"] is False
-
-
-def test_device_sync_repush_with_all(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    res = CliRunner().invoke(cli, ["device", "sync", "--all", "--repush"])
-    assert res.exit_code == 0, res.output
-    assert seen["setlists"] is None
-    assert seen["repush"] is True
-
-
-def test_device_sync_gc_ignored_without_all(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    res = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--gc"])
-    assert res.exit_code == 0, res.output
-    assert "ignored" in res.output  # warning surfaced (stderr merged by CliRunner)
-    assert seen["gc"] is False
-
-
-def test_device_sync_json_passthrough(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen)
-    res = CliRunner().invoke(cli, ["device", "sync", "helixgen", "--json"])
-    assert res.exit_code == 0, res.output
-    assert json.loads(res.output)["ok"] is True
-
-
-def test_device_sync_errors_surface(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    seen = {}
-    _patch_sync(monkeypatch, seen, result={
-        "ok": False, "setlists": [], "pool": {"installed": [], "updated": [], "skipped": []},
-        "references": {}, "gc": {"deleted": []}, "irs": [],
-        "errors": ["setlist 'helixgen' not found on device; create it in the Stadium app first"],
-    })
-    res = CliRunner().invoke(cli, ["device", "sync", "helixgen"])
-    assert res.exit_code == 0, res.output
-    assert "not found on device" in res.output
-
-
-# -- IR maintenance: delete-ir / rename-ir / ir-prune -------------------------
 
 CANNED_IRS = [
     {"cid_": 1159, "name": "YA KW 412 M25 Mix 05", "hash": "aa" * 16,
@@ -1201,31 +900,6 @@ def test_device_setlist_create_existing_errors(monkeypatch, tmp_path):
     assert result.exit_code != 0
     assert "already exists" in result.output
     assert SetlistClient.created == []
-
-
-def test_device_setlist_rename_device_and_manifest(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    _reset_setlist_client()
-    seen = {}
-
-    class Recorder(SetlistClient):
-        def rename(self, cid, name):
-            seen["args"] = (cid, name)
-            return True
-
-    # seed a manifest record under the old name
-    from helixgen.device.manifest import SetlistManifest
-    m = SetlistManifest.load()
-    m.create_setlist("helixgen")
-    m.save()
-
-    _patch_client(monkeypatch, Recorder)
-    result = CliRunner().invoke(
-        cli, ["device", "setlist", "rename", "helixgen", "gigs"])
-    assert result.exit_code == 0, result.output
-    assert seen["args"] == (988, "gigs")
-    m2 = SetlistManifest.load()
-    assert "gigs" in m2.setlists() and "helixgen" not in m2.setlists()
 
 
 def test_device_setlist_rename_unknown_errors(monkeypatch, tmp_path):
@@ -1425,28 +1099,6 @@ def test_device_set_info_continues_past_failures(monkeypatch):
     assert calls == [101, 102]  # kept going after 101 failed
     assert "102" in result.output and "failed" in result.output.lower()
 
-
-def test_device_setlist_duplicate_records_created_target(monkeypatch, tmp_path):
-    """An auto-created duplicate target is recorded in the local manifest,
-    like `setlist create` (finding 7)."""
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    _reset_setlist_client()
-
-    class Creator(SetlistClient):
-        def create_setlist(self, name, pos=None):
-            type(self).created.append(name)
-            type(self).SETLISTS = dict(type(self).SETLISTS, **{name: 1189})
-            return 1189
-
-    Creator.SETLISTS = {"helixgen": 988}
-    _patch_client(monkeypatch, Creator)
-    result = CliRunner().invoke(
-        cli, ["device", "setlist", "duplicate", "helixgen", "ZZC-copy"])
-    assert result.exit_code == 0, result.output
-    from helixgen.device.manifest import SetlistManifest
-    assert "ZZC-copy" in SetlistManifest.load().setlists()
-
-# --- device info --------------------------------------------------------------
 
 CANNED_INFO = {
     "model": "stadium", "device_id": 2490368, "helixgen_model": "stadium_xl",
@@ -1679,23 +1331,6 @@ def test_device_push_checks_emptiness_under_a_subscription(monkeypatch, tmp_path
     assert holder["client"].push_kwargs[0]["prechecked_empty"] is True
 
 
-def test_device_install_aborts_on_listing_failure_no_write(monkeypatch, tmp_path):
-    """Same #40 gate for `device install` (transcodes a .hsp straight onto the
-    device) — the emptiness check runs before transcoding, so a listing
-    timeout aborts before any device write is attempted."""
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    hsp = _make_hsp(tmp_path / "tone.hsp", "White Limo Lead")
-    RaisingFindByPosClient.WRITE_CALLS = []
-    RaisingFindByPosClient.STRICT_SEEN = []
-    _patch_client(monkeypatch, RaisingFindByPosClient)
-    result = CliRunner().invoke(
-        cli, ["device", "install", str(hsp), "White Limo Lead", "--pos", "3"])
-    assert result.exit_code != 0
-    assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
-    assert RaisingFindByPosClient.WRITE_CALLS == []
-    assert RaisingFindByPosClient.STRICT_SEEN == [True]
-
-
 class PushRecordingClient(FakeClient):
     """Records push_to_slot's cleanup-ownership flag at class level (#38).
 
@@ -1735,65 +1370,6 @@ def _stub_install_pipeline(monkeypatch):
     monkeypatch.setattr(bridge, "check_irs", lambda h, body: {"missing": set()})
     monkeypatch.setattr("helixgen.device.transcode.hsp_to_sbepgsm",
                         lambda body, strict=True: b"XCODED")
-
-
-def test_device_install_into_pool_owns_its_stub(monkeypatch, tmp_path):
-    """The pool path checks the slot empty itself, so a failed content write
-    created the entry sitting there and must clean it up (#38)."""
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    _stub_install_pipeline(monkeypatch)
-    hsp = _make_hsp(tmp_path / "tone.hsp", "Pool Tone")
-    PushRecordingClient.PUSHES = []
-    _patch_client(monkeypatch, PushRecordingClient)
-    result = CliRunner().invoke(
-        cli, ["device", "install", str(hsp), "Pool Tone", "--pos", "3"])
-    assert result.exit_code == 0, result.output
-    pushes = PushRecordingClient.PUSHES
-    assert pushes and pushes[-1]["prechecked_empty"] is True
-
-
-def test_device_install_into_setlist_owns_its_stub(monkeypatch, tmp_path):
-    """The setlist path skips the emptiness check because it just computed a
-    FRESH lowest-empty pool posi — that is known_empty, not force. Passing
-    force here orphaned an empty pool stub on every failed write (#38)."""
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    _stub_install_pipeline(monkeypatch)
-    hsp = _make_hsp(tmp_path / "tone.hsp", "Setlist Tone")
-    PushRecordingSetlistClient.PUSHES = []
-    _patch_client(monkeypatch, PushRecordingSetlistClient)
-    result = CliRunner().invoke(
-        cli, ["device", "install", str(hsp), "Setlist Tone", "--pos", "3",
-              "--setlist", "Gigs"])
-    assert result.exit_code == 0, result.output
-    pushes = PushRecordingSetlistClient.PUSHES
-    assert pushes, "install never reached push_to_slot"
-    assert pushes[-1]["container"] == -2, "the setlist path writes into the POOL"
-    assert pushes[-1]["pos"] == 7, "should use the freshly computed empty posi"
-    assert pushes[-1]["prechecked_empty"] is True
-
-
-def test_device_slots_restore_sbe_aborts_on_listing_failure_no_write(
-        monkeypatch, tmp_path):
-    """#40 gate for the `device slots restore` .sbe branch — the one
-    hardened call site that previously had no dedicated regression test."""
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    from helixgen.device.manifest import SetlistManifest
-
-    sbe = tmp_path / "lead.sbe"
-    sbe.write_bytes(b"_sbepgsm-fake")
-    m = SetlistManifest.load()
-    m.tones["Lead"] = {"path": str(sbe), "content_hash": None,
-                       "source": "push", "slot": "2B"}
-    m.save()
-
-    RaisingFindByPosClient.WRITE_CALLS = []
-    RaisingFindByPosClient.STRICT_SEEN = []
-    _patch_client(monkeypatch, RaisingFindByPosClient)
-    result = CliRunner().invoke(cli, ["device", "slots", "restore", "Lead"])
-    assert result.exit_code != 0
-    assert "no reply" in result.output.lower() or "timeout" in result.output.lower()
-    assert RaisingFindByPosClient.WRITE_CALLS == []
-    assert RaisingFindByPosClient.STRICT_SEEN == [True]
 
 
 def test_device_list_irs_lists_strictly(monkeypatch):
@@ -1840,51 +1416,3 @@ def _register_tone(tmp_path, name="Slot Tone"):
     return name
 
 
-def _loaded_manifest():
-    from helixgen.device.manifest import SetlistManifest
-    return SetlistManifest.load()
-
-
-def test_device_add_rejects_an_explicit_slot_label(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    name = _register_tone(tmp_path)
-
-    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "20A"])
-
-    assert res.exit_code != 0, res.output
-    # names the backlog entry that reserves real placement
-    assert "#30" in res.output
-    assert "20A" in res.output
-    assert "auto" in res.output
-    # and the manifest was NOT touched (no silently-ignored placement)
-    assert _loaded_manifest().tones[name]["slot"] is None
-
-
-def test_device_add_slot_auto_still_works(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    name = _register_tone(tmp_path)
-
-    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "auto"])
-
-    assert res.exit_code == 0, res.output
-    assert _loaded_manifest().tones[name]["slot"] == "auto"
-
-
-def test_device_add_bare_form_still_works(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    name = _register_tone(tmp_path)
-
-    res = CliRunner().invoke(cli, ["device", "add", name])
-
-    assert res.exit_code == 0, res.output
-    assert _loaded_manifest().tones[name]["slot"] == "auto"
-
-
-def test_device_add_rejects_a_bogus_slot_before_the_manifest(monkeypatch, tmp_path):
-    _fresh_manifest_env(monkeypatch, tmp_path)
-    name = _register_tone(tmp_path)
-
-    res = CliRunner().invoke(cli, ["device", "add", name, "--slot", "999Z"])
-
-    assert res.exit_code != 0, res.output
-    assert _loaded_manifest().tones[name]["slot"] is None

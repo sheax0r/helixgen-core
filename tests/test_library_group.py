@@ -21,7 +21,6 @@ from click.testing import CliRunner
 
 from helixgen import guitars, home, naming, tone_meta
 from helixgen.cli import cli
-from helixgen.device.manifest import SetlistManifest
 
 
 @pytest.fixture(autouse=True)
@@ -300,15 +299,20 @@ def test_validate_reports_missing_hsp_on_disk(tmp_home, hsp_library, tmp_path):
     assert any(slug in p for p in data["problems"])
 
 
-def test_validate_reports_preset_name_not_in_manifest(tmp_home, hsp_library, tmp_path):
-    slug, _, preset_name = _make_tone(hsp_library, tmp_path, descriptor="Warm Jazz Clean")
-    m = SetlistManifest.load()
-    del m.tones[preset_name]
-    m.save()
+def test_validate_reports_a_variant_whose_hsp_is_missing(tmp_home, hsp_library,
+                                                         tmp_path):
+    """`library validate` used to flag a variant whose preset_name was absent
+    from the setlist manifest. That manifest is gone (2026-09-09 file-copy
+    design) and the library DIRECTORY is the index, so the equivalent — and
+    now the only — way a variant can be unreal is its `.hsp` not being there."""
+    slug, _, preset_name = _make_tone(hsp_library, tmp_path,
+                                      descriptor="Warm Jazz Clean")
+    for hsp in home.tones_dir().glob("*.hsp"):
+        hsp.unlink()
 
     res = CliRunner().invoke(cli, ["library", "validate"])
     assert res.exit_code == 1
-    assert "manifest" in res.output.lower()
+    assert "not found" in res.output.lower(), res.output
 
 
 def test_validate_reports_malformed_json_and_exits_1(tmp_home):

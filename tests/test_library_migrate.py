@@ -30,7 +30,6 @@ import pytest
 from helixgen import guitars, home, migrate, naming, tone_meta
 from helixgen.hsp import read_hsp, write_hsp
 from helixgen.ir import IrMapping
-from helixgen.device.manifest import SetlistManifest
 
 pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git not available on PATH"
@@ -59,11 +58,31 @@ def _write_prefs(home_dir: Path, monkeypatch, instruments: list[dict]) -> None:
 
 
 def _register(hsp_path: Path, *, source: str = "authored", slot=None) -> str:
-    m = SetlistManifest.load()
-    name = m.register_tone(hsp_path, source=source)
-    if slot is not None:
-        m.tones[name]["slot"] = slot
-    m.save()
+    """Write a legacy manifest record for ``hsp_path``, as plain JSON.
+
+    `SetlistManifest` is gone (2026-09-09 file-copy design). These tests
+    migrate FROM the old world, so they still have to build it — but they now
+    build it as the on-disk data it always was, which is also what
+    `migrate._legacy_manifest_tones` reads.
+    """
+    import hashlib as _h
+    from helixgen import home as _home
+
+    path = _home.manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        doc = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        doc = {"version": 3, "tones": {}, "setlists": {}}
+    name = read_hsp(hsp_path)["meta"]["name"]
+    doc.setdefault("tones", {})[name] = {
+        "path": str(Path(hsp_path).resolve()),
+        "content_hash": "sha256:" + _h.sha256(
+            Path(hsp_path).read_bytes()).hexdigest(),
+        "source": source,
+        "slot": slot,
+    }
+    path.write_text(json.dumps(doc, indent=2))
     return name
 
 
@@ -179,14 +198,10 @@ def test_run_migration_moves_folds_and_rekeys(tmp_home, monkeypatch):
     assert meta1.description_md is not None and "full write-up" in meta1.description_md
     assert meta1.descriptor == "White Limo Lead"
 
-    # manifest re-keyed to new_name at new path, slot preserved, old key gone
-    m = SetlistManifest.load()
-    assert "White Limo Lead - Les Paul Jr" in m.tones
-    rec = m.tones["White Limo Lead - Les Paul Jr"]
-    assert rec["slot"] == "1A"
-    assert Path(rec["path"]).resolve() == dest1.resolve()
-    assert rec["content_hash"] is not None
-
+    # The manifest re-key assertions retired with the manifest itself: a tone
+    # is registered exactly when its .hsp is in tones_dir() under the new slug,
+    # which dest1/dest2 above already prove, with meta.name carrying the new
+    # display name.
     assert summary["tones"]["moved"]
     assert not summary["tones"]["errors"]
 
@@ -601,45 +616,6 @@ def test_migrate_irs_disambiguates_cross_pack_basename_collision(tmp_home, monke
 # ---------------------------------------------------------------------------
 
 
-def test_run_migration_rekeys_when_name_changes(tmp_home, monkeypatch):
-    """A legacy em-dash name migrates to a hyphen display name: the OLD manifest
-    key must be gone, the NEW key present at the new path, and any setlist
-    membership rewritten to the new key."""
-    _write_prefs(tmp_home, monkeypatch, [{"name": "Les Paul Jr", "type": "guitar"}])
-    exports = tmp_home / "exports"
-    exports.mkdir()
-    hsp = exports / "old.hsp"
-    old_name = "White Limo — Les Paul Jr"  # em-dash separator
-    _write_hsp(hsp, old_name)
-
-    m = SetlistManifest.load()
-    name = m.register_tone(hsp, source="authored")
-    assert name == old_name
-    m.tones[name]["slot"] = "2B"
-    m.create_setlist("Live")
-    m.add_to_setlist("Live", name)
-    m.save()
-
-    migrate.run_migration(migrate.plan_migration())
-
-    new_name = "White Limo - Les Paul Jr"  # hyphen separator (re-key)
-    assert new_name != old_name
-
-    m2 = SetlistManifest.load()
-    assert old_name not in m2.tones  # old key gone
-    assert new_name in m2.tones  # new key present
-    dest = home.tones_dir() / "white-limo-les-paul-jr.hsp"
-    assert Path(m2.tones[new_name]["path"]).resolve() == dest.resolve()
-    assert m2.tones[new_name]["slot"] == "2B"  # slot preserved
-    # setlist membership rewritten to the new key
-    assert m2.setlists_map["Live"]["tones"] == [new_name]
-
-
-# ---------------------------------------------------------------------------
-# test net: verify-failure data safety (source preserved, no partial dest)
-# ---------------------------------------------------------------------------
-
-
 def test_data_safe_place_preserves_source_on_verify_failure(tmp_home, monkeypatch):
     """If the copy's byte-verify fails, the SOURCE must be preserved (never
     deleted) and no partial destination left behind."""
@@ -674,38 +650,27 @@ def test_run_migration_self_heals_after_post_move_failure(tmp_home, monkeypatch)
     h1, _h2 = _build_two_tone_home(tmp_home, monkeypatch)
     plan = migrate.plan_migration()
 
-    # First run: die AFTER the move (during the manifest re-key) for every
-    # tone -- recorded as errors, files placed, manifest not re-keyed.
+    # First run: die during placement for every tone -- recorded as errors.
+    # (The old crash point was the manifest re-key, which no longer exists;
+    # what still matters is that a run dying mid-migration is recoverable.)
     def _boom(*a, **k):
-        raise RuntimeError("simulated crash during re-key")
+        raise RuntimeError("simulated crash during placement")
 
     # scoped context: NEVER monkeypatch.undo() here -- that would also undo
     # the tmp_home env isolation and point run 2 at the REAL ~/.helixgen
     with monkeypatch.context() as mp:
-        mp.setattr(migrate, "_rekey_manifest_tone", _boom)
+        mp.setattr(migrate, "place_tone", _boom)
         summary1 = migrate.run_migration(plan)
     assert len(summary1["tones"]["errors"]) == 2
     dest1 = home.tones_dir() / "white-limo-lead-les-paul-jr.hsp"
-    assert dest1.exists() and not h1.exists()  # placed, source gone
-    # not re-keyed: the manifest record still points at the OLD (moved-away)
-    # location (old display name == new display name here, so key by path)
-    m = SetlistManifest.load()
-    rec = m.tones["White Limo Lead - Les Paul Jr"]
-    assert Path(rec["path"]).resolve() != dest1.resolve()
+    assert not dest1.exists() and h1.exists()  # nothing placed, source intact
 
-    # Second run (healthy): heals the bookkeeping without touching the file.
-    bytes_before = dest1.read_bytes()
+    # Second run (healthy): completes the migration the crash interrupted.
     summary2 = migrate.run_migration(plan)
     assert not summary2["tones"]["errors"]
-    healed = [t for t in summary2["tones"]["moved"] if t.get("healed")]
-    assert len(healed) == 2
-    assert dest1.read_bytes() == bytes_before
-
-    m = SetlistManifest.load()
-    rec = m.tones["White Limo Lead - Les Paul Jr"]
-    assert Path(rec["path"]).resolve() == dest1.resolve()
-    assert rec["slot"] == "1A"  # preserved through the heal
-    # metadata (written by the first run's place_tone) still intact + folded md
+    assert len(summary2["tones"]["moved"]) == 2
+    assert dest1.exists() and not h1.exists()
+    # metadata written by the successful run
     meta1 = tone_meta.load_tone_meta("white-limo-lead")
     assert "les-paul-jr" in meta1.variants
     assert meta1.description_md and "full write-up" in meta1.description_md
@@ -726,16 +691,9 @@ def test_heal_preserves_hand_edited_variant_metadata(tmp_home, monkeypatch):
     meta = tone_meta.load_tone_meta("white-limo-lead")
     meta.variants["les-paul-jr"].guitar_settings = {"tone": "7"}
     tone_meta.save_tone_meta(meta)
-    m = SetlistManifest.load()
-    del m.tones["White Limo Lead - Les Paul Jr"]
-    m.save()
-
+    # A re-run over an already-placed tone must not clobber the hand edit.
     summary = migrate.run_migration(plan)
-    healed = [t for t in summary["tones"]["moved"] if t.get("healed")]
-    assert [t["new_name"] for t in healed] == ["White Limo Lead - Les Paul Jr"]
-    # the heal re-registered the tone WITHOUT clobbering the hand edit
-    m = SetlistManifest.load()
-    assert "White Limo Lead - Les Paul Jr" in m.tones
+    assert not summary["tones"]["errors"]
     meta = tone_meta.load_tone_meta("white-limo-lead")
     assert meta.variants["les-paul-jr"].guitar_settings == {"tone": "7"}
 
@@ -784,7 +742,7 @@ def test_heal_refuses_to_adopt_foreign_file_at_destination(tmp_home, monkeypatch
 
 def test_guitars_save_profile_cleans_tmp_on_failure(tmp_home, monkeypatch):
     # save_profile (add-guitar's writer) gets the same tmp-cleanup guarantee
-    # as save_tone_meta / SetlistManifest.save.
+    # as save_tone_meta.
     import helixgen.guitars as guitars_mod
 
     p = guitars.GuitarProfile(

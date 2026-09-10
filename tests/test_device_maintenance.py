@@ -3,7 +3,7 @@ the preset color/notes drivers.
 
 Device-free throughout: the pure planning functions take plain data; the
 device-driving entry points run against a FakeClient (the
-``test_setlist_sync.py`` pattern) with ``maintenance.HelixClient``
+the plain-data pattern) with ``maintenance.HelixClient``
 monkeypatched.
 """
 from __future__ import annotations
@@ -283,15 +283,20 @@ def fake_client(monkeypatch, tmp_path):
     return FakeClient
 
 
-def _manifest_with_local_h2(tmp_path):
-    """A manifest whose one tone references H2 via a real .hsp on disk."""
+def _library_with_local_h2(tmp_path):
+    """A tone LIBRARY dir whose one .hsp references H2.
+
+    The library directory is the index now (2026-09-09 file-copy design), so
+    IR protection is proven by the files present, not by a manifest record.
+    """
     import json
 
-    hsp = tmp_path / "t.hsp"
+    d = tmp_path / "tones"
+    d.mkdir(exist_ok=True)
     body = {"meta": {"name": "Local Tone"}, "preset": {"flow": [
         {"b0": {"slot": [{"irhash": H2}]}}]}}
-    hsp.write_bytes(b"rpshnosj" + json.dumps(body).encode())
-    return FakeManifest(tones={"Local Tone": {"path": str(hsp)}})
+    (d / "Local Tone.hsp").write_bytes(b"rpshnosj" + json.dumps(body).encode())
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +304,7 @@ def _manifest_with_local_h2(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_ir_prune_dry_run_by_default(fake_client, tmp_path):
-    res = mt.ir_prune(ip="x", manifest=_manifest_with_local_h2(tmp_path))
+    res = mt.ir_prune(ip="x", tones_dir=_library_with_local_h2(tmp_path))
     assert res["ok"] is True
     assert res["dry_run"] is True
     assert [m["name"] for m in res["orphans"]] == ["ZZC-orphan"]
@@ -309,7 +314,7 @@ def test_ir_prune_dry_run_by_default(fake_client, tmp_path):
 
 def test_ir_prune_execute_deletes_orphans_only(fake_client, tmp_path):
     res = mt.ir_prune(ip="x", execute=True,
-                      manifest=_manifest_with_local_h2(tmp_path))
+                      tones_dir=_library_with_local_h2(tmp_path))
     assert res["dry_run"] is False
     assert [m["name"] for m in res["deleted"]] == ["ZZC-orphan"]
     # protected (locally referenced) IR was NOT deleted
@@ -318,14 +323,14 @@ def test_ir_prune_execute_deletes_orphans_only(fake_client, tmp_path):
 
 def test_ir_prune_force_also_deletes_protected(fake_client, tmp_path):
     res = mt.ir_prune(ip="x", execute=True, force=True,
-                      manifest=_manifest_with_local_h2(tmp_path))
+                      tones_dir=_library_with_local_h2(tmp_path))
     assert sorted(m["name"] for m in res["deleted"]) == [
         "ZZC-orphan", "local-only"]
 
 
 def test_ir_prune_only_narrows_to_one_ir(fake_client, tmp_path):
     res = mt.ir_prune(ip="x", execute=True, force=True, only="ZZC-orphan",
-                      manifest=_manifest_with_local_h2(tmp_path))
+                      tones_dir=_library_with_local_h2(tmp_path))
     assert [m["name"] for m in res["deleted"]] == ["ZZC-orphan"]
 
 
@@ -333,12 +338,12 @@ def test_ir_prune_only_never_matches_referenced(fake_client, tmp_path):
     # `only` naming a device-referenced IR is an error, not a deletion
     with pytest.raises(ValueError, match="referenced"):
         mt.ir_prune(ip="x", execute=True, only="on-device-ref",
-                    manifest=_manifest_with_local_h2(tmp_path))
+                    tones_dir=_library_with_local_h2(tmp_path))
 
 
 def test_ir_prune_never_activates(fake_client, tmp_path):
     res = mt.ir_prune(ip="x", execute=True,
-                      manifest=_manifest_with_local_h2(tmp_path))
+                      tones_dir=_library_with_local_h2(tmp_path))
     assert res["ok"]  # FakeClient.load_preset raises if ever called
 
 
@@ -351,7 +356,7 @@ def test_ir_prune_aborts_on_content_read_failure(fake_client, tmp_path, monkeypa
     monkeypatch.setattr(FakeClient, "get_content", boom)
     with pytest.raises(HelixError):
         mt.ir_prune(ip="x", execute=True,
-                    manifest=_manifest_with_local_h2(tmp_path))
+                    tones_dir=_library_with_local_h2(tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +504,7 @@ def test_ir_prune_lists_strictly(fake_client, tmp_path):
 
     FakeClient.__init__ = spy_init
     try:
-        mt.ir_prune(ip="x", manifest=_manifest_with_local_h2(tmp_path))
+        mt.ir_prune(ip="x", tones_dir=_library_with_local_h2(tmp_path))
     finally:
         FakeClient.__init__ = orig_init
     calls = c_holder["client"].strict_calls
@@ -517,7 +522,7 @@ def test_ir_prune_cross_check_catches_incomplete_pool(fake_client, tmp_path):
     FakeClient.EXISTING_EXTRA_CIDS = [999]  # but the device still has it
     with pytest.raises(HelixError, match="incomplete"):
         mt.ir_prune(ip="x", execute=True,
-                    manifest=_manifest_with_local_h2(tmp_path))
+                    tones_dir=_library_with_local_h2(tmp_path))
 
 
 def test_ir_prune_detects_dangling_reference(fake_client, tmp_path):
@@ -530,7 +535,7 @@ def test_ir_prune_detects_dangling_reference(fake_client, tmp_path):
     FakeClient.EXISTING_EXTRA_CIDS = []  # get_ref(999) -> None => dangling
     with pytest.raises(HelixError, match="dangling") as ei:
         mt.ir_prune(ip="x", execute=True,
-                    manifest=_manifest_with_local_h2(tmp_path))
+                    tones_dir=_library_with_local_h2(tmp_path))
     msg = str(ei.value)
     assert "999" in msg and "user" in msg  # names the stale reference
     assert "reboot" not in msg.lower()     # not the old misleading advice
@@ -562,7 +567,7 @@ def test_ir_prune_execute_rescans_and_aborts_on_disagreement(
     try:
         with pytest.raises(HelixError, match="changed between"):
             mt.ir_prune(ip="x", execute=True,
-                        manifest=_manifest_with_local_h2(tmp_path))
+                        tones_dir=_library_with_local_h2(tmp_path))
     finally:
         FakeClient.__init__ = orig_init
     assert c_holder["client"].deleted_irs == []
@@ -572,7 +577,7 @@ def test_ir_prune_counts_edit_buffer_references(fake_client, tmp_path):
     """An IR referenced only by the live edit buffer is NOT an orphan
     (finding 9)."""
     FakeClient.EDIT_BUFFER_HASHES = ["33" * 16]  # ZZC-orphan's hash
-    res = mt.ir_prune(ip="x", manifest=_manifest_with_local_h2(tmp_path))
+    res = mt.ir_prune(ip="x", tones_dir=_library_with_local_h2(tmp_path))
     assert res["orphans"] == []
     ref = [m for m in res["referenced"] if m["hash"] == "33" * 16]
     assert ref and ref[0]["presets"] == ["(edit buffer)"]
@@ -586,7 +591,7 @@ def test_ir_prune_edit_buffer_read_failure_fails_closed(fake_client, tmp_path,
     monkeypatch.setattr(FakeClient, "get_edit_buffer", boom)
     with pytest.raises(HelixError, match="edit buffer"):
         mt.ir_prune(ip="x", execute=True,
-                    manifest=_manifest_with_local_h2(tmp_path))
+                    tones_dir=_library_with_local_h2(tmp_path))
 
 
 def test_local_refs_warn_and_fail_closed_on_unreadable_paths(fake_client,
@@ -599,23 +604,25 @@ def test_local_refs_warn_and_fail_closed_on_unreadable_paths(fake_client,
     body = {"meta": {"name": "Local Tone"}, "preset": {"flow": [
         {"b0": {"slot": [{"irhash": H2}]}}]}}
     hsp.write_bytes(b"rpshnosj" + json.dumps(body).encode())
-    manifest = FakeManifest(tones={
-        "Local Tone": {"path": str(hsp)},
-        "Ghost Tone": {"path": str(tmp_path / "missing.hsp")},
-    })
-    hashes, warnings = mt.local_referenced_ir_hashes(manifest)
+    d = tmp_path / "tones"
+    d.mkdir(exist_ok=True)
+    (d / "Local Tone.hsp").write_bytes(hsp.read_bytes())
+    # A *missing* recorded path can't happen once the directory is the index;
+    # the surviving unverifiable case is a file that's there but unreadable.
+    (d / "Ghost Tone.hsp").write_bytes(b"not a preset at all")
+    hashes, warnings = mt.local_referenced_ir_hashes(d)
     assert H2 in hashes
     assert warnings and "Ghost Tone" in warnings[0]
 
     # dry-run reports the warning
-    res = mt.ir_prune(ip="x", manifest=manifest)
+    res = mt.ir_prune(ip="x", tones_dir=d)
     assert res["warnings"] and "Ghost Tone" in res["warnings"][0]
     # execute without ignore_warnings refuses (fail closed)
     with pytest.raises(ValueError, match="Ghost Tone"):
-        mt.ir_prune(ip="x", execute=True, manifest=manifest)
+        mt.ir_prune(ip="x", execute=True, tones_dir=d)
     # ignore_warnings overrides the warning gate (deletes the orphan)
     res = mt.ir_prune(ip="x", execute=True, ignore_warnings=True,
-                      manifest=manifest)
+                      tones_dir=d)
     assert [m["name"] for m in res["deleted"]] != []
 
 
@@ -624,21 +631,19 @@ def test_local_refs_decode_sbe_sources(fake_client, tmp_path):
     record `device push` writes) is decoded as device content — its irmd
     hashes protect IRs, and there is no bogus "missing rpshnosj magic"
     warning for a perfectly normal push flow."""
-    sbe = tmp_path / "pushed.sbe"
+    sbe = (tmp_path / "lib"); sbe.mkdir(exist_ok=True); sbe = sbe / "pushed.sbe"
     sbe.write_bytes(_content.encode_content_data(
         {"sfg_": {"flow": [{"blks": {"b1": {
             "mdls": [{"irmd": bytes.fromhex(H2)}]}}}]}}))
-    manifest = FakeManifest(tones={"Pushed Tone": {"path": str(sbe)}})
-    hashes, warnings = mt.local_referenced_ir_hashes(manifest)
+    hashes, warnings = mt.local_referenced_ir_hashes(sbe.parent)
     assert warnings == []
-    assert hashes.get(H2) == ["Pushed Tone"]
+    assert hashes.get(H2) == ["pushed"]
 
 
 def test_local_refs_unreadable_sbe_warns_accurately(fake_client, tmp_path):
-    sbe = tmp_path / "corrupt.sbe"
+    sbe = (tmp_path / "lib2"); sbe.mkdir(exist_ok=True); sbe = sbe / "corrupt.sbe"
     sbe.write_bytes(b"not a content blob at all")
-    manifest = FakeManifest(tones={"Bad Push": {"path": str(sbe)}})
-    hashes, warnings = mt.local_referenced_ir_hashes(manifest)
+    hashes, warnings = mt.local_referenced_ir_hashes(sbe.parent)
     assert hashes == {}
     assert warnings and ".sbe device-content source" in warnings[0]
     assert "rpshnosj" not in warnings[0]
@@ -654,29 +659,23 @@ def test_ir_prune_force_and_ignore_warnings_are_independent(fake_client,
     """
     import json
 
-    hsp = tmp_path / "t.hsp"
-    body = {"meta": {"name": "Local Tone"}, "preset": {"flow": [
-        {"b0": {"slot": [{"irhash": H2}]}}]}}
-    hsp.write_bytes(b"rpshnosj" + json.dumps(body).encode())
-    manifest = FakeManifest(tones={
-        "Local Tone": {"path": str(hsp)},                       # protects H2
-        "Ghost Tone": {"path": str(tmp_path / "missing.hsp")},  # warning
-    })
+    d = _library_with_local_h2(tmp_path)                    # protects H2
+    (d / "Ghost Tone.hsp").write_bytes(b"not a preset at all")  # warning
 
     # force but NOT ignore_warnings: still blocked by the warning
     with pytest.raises(ValueError, match="Ghost Tone"):
-        mt.ir_prune(ip="x", execute=True, force=True, manifest=manifest)
+        mt.ir_prune(ip="x", execute=True, force=True, tones_dir=d)
 
     # ignore_warnings but NOT force: proceeds, deletes only the orphan
     # (the protected local-only IR is left alone)
     res = mt.ir_prune(ip="x", execute=True, ignore_warnings=True,
-                      manifest=manifest)
+                      tones_dir=d)
     names = [m["name"] for m in res["deleted"]]
     assert "ZZC-orphan" in names and "local-only" not in names
 
     # both consents: deletes the protected IR too
     res = mt.ir_prune(ip="x", execute=True, force=True, ignore_warnings=True,
-                      manifest=manifest)
+                      tones_dir=d)
     assert sorted(m["name"] for m in res["deleted"]) == ["ZZC-orphan",
                                                          "local-only"]
 

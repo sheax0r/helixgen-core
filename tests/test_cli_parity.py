@@ -106,22 +106,22 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
     ("device_bypass", ["device", "bypass"], ["volatile", "ACTIVE tone"]),
     ("device_model", ["device", "model"], ["cross-category", "ACTIVE tone"]),
     ("device_save_preset", ["device", "save"], ["edit buffer", "empty"]),
-    ("device_install_preset", ["device", "install"],
-     ["Transcodes", "empty", "auto-irs", "SILENT"]),
+    ("device_install_preset", ["device", "copy"],
+     ["Transcodes", "UPDATED", "IN PLACE", "no-irs"]),
     ("device_import_hss", ["device", "setlist", "import-hss"],
      ["NOT idempotent", "offline", "PATHLESS"]),
     ("device_export_hss", ["device", "setlist", "export-hss"],
      ["SKIPPED", "local `.hsp`"]),
-    ("device_setlist_list", ["device", "setlist", "list"], ["manifest"]),
-    ("device_setlist_add", ["device", "setlist", "add"],
-     ["many setlists", "Idempotent"]),
-    ("device_setlist_remove", ["device", "setlist", "remove"],
-     ["membership", "Local-only"]),
-    ("device_sync_setlist", ["device", "sync"],
-     ["never orphaning", "Idempotent", "re-run", "untracked",
-      "progress display", "--no-progress", "stdout",
-      "recomputes", "sync time", "unchanged-bytes"]),
-    ("device_sync_all", ["device", "sync"], ["every setlist", "--all"]),
+    ("device_setlist_list", ["device", "setlist", "list"], ["setlist"]),
+    # The manifest and its sync are retired (2026-09-09 file-copy design):
+    # membership and order are device state now, so the old membership tools
+    # map onto the per-preset device verbs that replaced them.
+    ("device_setlist_add", ["device", "copy"], ["Upserts", "referenced"]),
+    ("device_setlist_remove", ["device", "rm"], ["REFERENCE", "--also-pool"]),
+    ("device_sync_setlist", ["device", "copy"],
+     ["UPDATED", "IN PLACE", "no separate update verb", "ambiguous"]),
+    ("device_sync_all", ["device", "backup"],
+     ["Photograph", "cross-checks", "NON-ACTIVATING"]),
     ("device_delete_ir", ["device", "delete-ir"],
      ["silent cab", "wedge", "lagging"]),
     ("device_rename_ir", ["device", "rename-ir"], ["hash", "display name"]),
@@ -198,14 +198,13 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "delete"], ["reference", "never touched"]),
     (["device", "save"], ["POOL", "REFERENCE"]),
     (["device", "push"], ["POOL", "REFERENCE"]),
-    (["device", "install"], ["POOL", "REFERENCE"]),
-    (["device", "backup"], ["named", "references"]),
+    (["device", "copy"], ["POOL", "reference"]),
+    (["device", "backup"], ["pool", "setlists", "IRs"]),
+    (["device", "restore"], ["Additive-and-update", "--prune", "no undo"]),
+    (["device", "decode"], ["OFFLINE", "losslessly", "textconv"]),
     (["device", "pull-ir"], ["list-irs --json", "file", "DISPLAY name"]),
     (["device", "list-irs"], ["file", "pull-ir"]),
-    (["device", "unsync"], ["SYNCED setlist", "membership"]),
     # --slot takes only 'auto'; an explicit label is refused, not ignored (#30)
-    (["device", "add"],
-     ["auto", "REJECTED", "backlog #30", "lowest empty slot"]),
     # --- library metadata group + describe (Task 8) ---
     (["library"], ["logical slug", "preset_name", "cross-link", "describe",
                    "all populated", "another guitar"]),
@@ -276,7 +275,7 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
     # own help must say so, not just docs/CLI.md
     (["device", "load"], ["machine-local advisory device lock", "DANGEROUS",
                           "skips the $HELIXGEN_LOCK_TOKEN session check"]),
-    (["device", "sync"], ["machine-local advisory device lock"]),
+    (["device", "copy"], ["machine-local advisory device lock"]),
     (["device", "push-ir"], ["machine-local advisory device lock"]),
     (["device", "settings", "set"], ["machine-local advisory device lock"]),
     # #97: read-only verbs take no lease but now FAIL under a dangling
@@ -297,8 +296,6 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
     # mode, so promising an unconditional failure is equally wrong
     (["device", "settings", "list"],
      ["LOCKS: offline without --values", "no longer opens a live"]),
-    (["device", "slots", "list"],
-     ["LOCKS: offline without --verify", "no longer opens a live"]),
 ]
 
 
@@ -321,7 +318,7 @@ def test_lock_surfaces_keep_contract_phrases(path, phrases):
 #: and left this surface behind.)
 NORMALIZE_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "normalize"],
-     ["DRY-RUN", "--yes", "anchor", "source of truth", "device sync",
+     ["DRY-RUN", "--yes", "anchor", "source of truth", "device copy",
       "NAMED snapshots", "SKIPPED", "dB-native", "DOWNSTREAM",
       "CONFIRM a trim", "double-count", "PLAY", "--target-db",
       # hc-57h: the capture path — its dependencies are checked BEFORE the
@@ -384,12 +381,12 @@ DISCOVER_SURFACES: list[tuple[list[str], list[str]]] = [
       "direct-to-IP", "most recently discovered",
       "never probes beyond the local subnet", "Read-only", "--forget"]),
     # the shared --ip help (any verb carrying it) pins the resolution chain
+    (["device", "copy"],
+     ["helixgen device discover", "NO built-in default"]),
     (["device", "info"],
      ["helixgen device discover", "$HELIXGEN_HELIX_IP",
       "NO built-in default", "fails fast",
       "empty or whitespace-only --ip is rejected"]),
-    (["device", "sync"],
-     ["helixgen device discover", "NO built-in default"]),
 ]
 
 
@@ -477,24 +474,19 @@ def test_json_view_stdout(tmp_path, hsp_library):
 
 
 def test_json_device_offline_verbs():
-    """Offline (manifest/catalog) device verbs emit valid JSON."""
+    """Offline (catalog) device verbs emit valid JSON.
+
+    `device setlist list` left this set with the file-copy design: membership
+    and order are device state now, so it reads the device and can no longer
+    answer offline.
+    """
     for args, check in [
-        (["device", "setlist", "list", "--json"], dict),
-        (["device", "library", "--json"], list),
-        (["device", "slots", "list", "--json"], list),
         (["device", "globaleq", "list", "--json"], list),
         (["device", "settings", "list", "--json"], dict),
     ]:
         res = CliRunner().invoke(cli, args)
         assert res.exit_code == 0, (args, res.output)
         assert isinstance(json.loads(res.stdout), check), args
-
-
-def test_json_device_local_list(tmp_path):
-    res = CliRunner().invoke(
-        cli, ["device", "local-list", "--json", "--dir", str(tmp_path)])
-    assert res.exit_code == 0, res.output
-    assert isinstance(json.loads(res.stdout), list)
 
 
 def test_json_device_networked_verbs(monkeypatch):

@@ -498,8 +498,12 @@ class TestFailFastCoverage:
         assert "Traceback" not in r.output
         assert not isinstance(r.exception, discovery.IPResolutionError)
 
-    def test_sync_no_lock_fails_fast_not_traceback(self):
-        r = CliRunner().invoke(cli, ["device", "sync", "--all", "--no-lock"])
+    def test_rm_no_lock_fails_fast_not_traceback(self):
+        # `device sync --all` used to stand here; the file-copy design
+        # (2026-09-09) retired it, so the guard rides a surviving @_locked
+        # verb — the property under test is the IP resolution chain, not sync.
+        r = CliRunner().invoke(
+            cli, ["device", "rm", "Tone", "--from", "Gigs", "--no-lock"])
         assert r.exit_code == 1, r.output
         assert "helixgen device discover" in r.output
         assert "Traceback" not in r.output

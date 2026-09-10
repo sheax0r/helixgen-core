@@ -36,7 +36,6 @@ from typing import Any, Dict, List
 import click
 
 from helixgen import gitops, guitars, home, ir_meta, migrate, naming, tone_meta
-from helixgen.device.manifest import SetlistManifest
 from helixgen.ir import IrMapping
 from helixgen.hsp import read_hsp
 
@@ -505,8 +504,7 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
     separate guitar_settings warnings channel.
 
     Runs ``validate_tone_meta`` over every ``library/tones/*.json`` against
-    the setlist manifest (each variant's ``preset_name`` must be registered)
-    and the known guitar-profile slugs (``library/guitars/*.json``); each
+    the known guitar-profile slugs (``library/guitars/*.json``); each
     variant key must be a known guitar slug or the special ``generic`` key.
     When NO guitar profiles exist yet, the guitar-key check falls back to the
     variant keys already present across the library (so guitar-targeted tones
@@ -539,7 +537,6 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
     logical slug by) and forces a nonzero exit, instead of silently
     vanishing from the report.
     """
-    manifest = SetlistManifest.load()
     tones_dir = home.tones_dir()
     metas = tone_meta.load_all_tone_metas()
 
@@ -572,7 +569,7 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
     warnings: List[str] = []
     for meta in metas:
         for p in tone_meta.validate_tone_meta(
-            meta, tones_dir=tones_dir, manifest=manifest, guitar_slugs=guitar_slugs
+            meta, tones_dir=tones_dir, guitar_slugs=guitar_slugs
         ):
             problems.append(f"{meta.logical_slug}: {p}")
         for w in tone_meta.guitar_settings_warnings(
@@ -623,19 +620,19 @@ def validate_cmd(ctx: click.Context, as_json: bool) -> None:
 def migrate_cmd(dry_run: bool, plan_file: Path | None) -> None:
     """One-shot migration of a pre-library ~/.helixgen into the tone library.
 
-    Inspects the manifest + preferences + IR mapping and, for every tone with a
-    backing .hsp, MOVES it into ~/.helixgen/library/tones/<slug>.hsp under the
-    new naming schema, rewrites its meta.name, folds a sibling .md into
-    description_md, writes the per-tone metadata JSON, and re-keys the manifest
-    (slot + source preserved, content_hash recomputed). Each mapped IR WAV is
+    Inspects the pre-library ~/.helixgen + preferences + IR mapping and, for
+    every tone with a backing .hsp, MOVES it into
+    ~/.helixgen/library/tones/<slug>.hsp under the new naming schema, rewrites
+    its meta.name, folds a sibling .md into description_md, and writes the
+    per-tone metadata JSON. Each mapped IR WAV is
     COPIED (never moved -- paid packs stay in place) into
     library/irs/<pack>/ with a scaffolded sidecar, and mapping.json is
     rewritten to the library copy.
 
     IDEMPOTENT + data-safe: re-running is all skips (no duplicate files, no
-    manifest/mapping churn); a tone move is copy -> byte-verify -> remove-source;
+    mapping churn); a tone move is copy -> byte-verify -> remove-source;
     a per-tone/IR error is recorded and the run CONTINUES. A tone whose .hsp
-    already sits at its destination but whose metadata/manifest bookkeeping
+    already sits at its destination but whose metadata bookkeeping
     is incomplete (a prior run died mid-tone) is SELF-HEALED on re-run --
     file untouched, bookkeeping recreated. A slug collision (two
     tones -> one destination) is recorded with a rename suggestion and NEITHER
@@ -701,8 +698,9 @@ def import_cmd(source: Path, artist: str | None, song: str | None,
     original in place). A sibling .md (same stem) is folded into the tone's
     description_md; a MISSING .md leaves description_md null and prints a
     warning. meta.name is rewritten to the resolved display name, the per-tone
-    metadata JSON is written, the tone is registered in the manifest, and the
-    home is advisory-committed.
+    metadata JSON is written (placing the .hsp in library/tones/ IS the
+    registration -- the directory is the index), and the home is
+    advisory-committed.
 
     Naming flags drive identity with the SAME validation + collision rules as
     `generate`: exactly one of (--artist + --song) OR --descriptor (each
@@ -721,11 +719,8 @@ def import_cmd(source: Path, artist: str | None, song: str | None,
     pre-validated (identities + target slugs) and refused -- moving NOTHING --
     if any two files collide or clash with the existing library. During the
     move pass, an unexpected per-file error is recorded and the run CONTINUES,
-    and the manifest is always saved, so tones that already succeeded are
-    registered on disk (never left in an unreconcilable half-imported state);
-    the command exits nonzero when any file failed. A failure AFTER a file
-    was placed (manifest registration) names the exact recovery command
-    (`helixgen register <placed .hsp>`).
+    so tones that already landed in library/tones/ stay imported (a placed
+    file IS an imported tone); the command exits nonzero when any file failed.
     """
     source = Path(source)
     if source.is_dir():
@@ -741,18 +736,14 @@ def import_cmd(source: Path, artist: str | None, song: str | None,
 def _import_single(source: Path, artist: str | None, song: str | None,
                    descriptor: str | None, guitar: str | None,
                    keep_source: bool) -> None:
-    """Import one .hsp. Collisions are pre-checked BEFORE any move so a
-    manifest/slug clash can't strand a moved file; the manifest is saved in a
-    ``finally`` so a post-move register failure never silently loses progress."""
-    manifest = SetlistManifest.load()
+    """Import one .hsp. Collisions are pre-checked BEFORE any move so a naming
+    clash can't strand a moved file; placing the file in library/tones/ IS the
+    registration, so there is no second bookkeeping step to lose."""
     r = _resolve_import(source, artist, song, descriptor, guitar)
-    reason = _import_collision_reason(r, manifest, tones_dir=home.tones_dir())
+    reason = _import_collision_reason(r, tones_dir=home.tones_dir())
     if reason:
         raise click.ClickException(reason)  # nothing moved yet
-    try:
-        _place_and_register(r, keep_source, manifest)
-    finally:
-        manifest.save()
+    _place_tone(r, keep_source)
     gitops.auto_commit(home.helixgen_home(), "helixgen: import tone(s) into library")
 
 
@@ -762,37 +753,34 @@ def _import_directory(source: Path, guitar: str | None, keep_source: bool) -> No
     hsps = sorted(source.rglob("*.hsp"))
     if not hsps:
         raise click.ClickException(f"no .hsp files found under {source}")
-    manifest = SetlistManifest.load()
     tones_dir = home.tones_dir()
 
     # PHASE A -- pre-validate the WHOLE batch before moving anything. Resolve
     # each file's identity + target slug, then refuse atomically on any
     # intra-batch OR existing-library naming collision (MOVE NOTHING).
     resolved = [_resolve_import(h, None, None, None, guitar) for h in hsps]
-    collisions = _detect_batch_collisions(resolved, manifest, tones_dir)
+    collisions = _detect_batch_collisions(resolved, tones_dir)
     if collisions:
         raise click.ClickException(
             "refusing to import -- naming collisions (nothing moved):\n  "
             + "\n  ".join(collisions))
 
-    # PHASE B -- move pass: record-and-continue, and ALWAYS save (finally) so
-    # tones already moved+registered are persisted even if a later file fails.
+    # PHASE B -- move pass: record-and-continue. The placed file IS the
+    # registration (the directory is the index), so a later file's failure
+    # can't un-import the ones already moved.
     failures: List[tuple[Path, Exception]] = []
-    try:
-        for r in resolved:
-            try:
-                _place_and_register(r, keep_source, manifest)
-            except Exception as exc:  # noqa: BLE001 - record + continue (C1)
-                failures.append((r["src"], exc))
-                click.echo(f"error: failed to import {r['src'].name}: {exc}", err=True)
-    finally:
-        manifest.save()
+    for r in resolved:
+        try:
+            _place_tone(r, keep_source)
+        except Exception as exc:  # noqa: BLE001 - record + continue (C1)
+            failures.append((r["src"], exc))
+            click.echo(f"error: failed to import {r['src'].name}: {exc}", err=True)
     gitops.auto_commit(home.helixgen_home(), "helixgen: import tone(s) into library")
 
     if failures:
         raise click.ClickException(
             f"{len(failures)} of {len(resolved)} file(s) failed to import "
-            "(the rest were saved): "
+            "(the rest were imported): "
             + ", ".join(f"{src.name} ({exc})" for src, exc in failures))
 
 
@@ -803,7 +791,7 @@ def _resolve_import(src: Path, artist: str | None, song: str | None,
 
     Raises ``ClickException`` on a bad identity combo / empty slug / an
     identity-equality mismatch against an existing logical JSON. Returns a dict
-    with everything ``_place_and_register`` needs."""
+    with everything ``_place_tone`` needs."""
     src = Path(src)
     if artist or song or descriptor:
         # Guard the EXPLICIT flag only -- the meta.name fallback below is an
@@ -873,29 +861,55 @@ def _resolve_import(src: Path, artist: str | None, song: str | None,
     }
 
 
-def _import_collision_reason(r: Dict[str, Any], manifest: SetlistManifest, *,
-                             tones_dir: Path) -> str | None:
+def _library_names(tones_dir: Path) -> Dict[str, Path]:
+    """``casefolded meta.name -> .hsp path`` for every tone in the library.
+
+    The DIRECTORY is the index (2026-09-09 file-copy design) -- there is no
+    registry file to consult, so "is this name already taken?" is answered by
+    reading the library's own ``.hsp`` files. Names are compared
+    case-insensitively (device and library both treat the display name as
+    identity); each file's own ``meta.name`` spelling is left untouched. A
+    file that won't open/parse is skipped: it can't claim a name."""
+    names: Dict[str, Path] = {}
+    if not tones_dir.is_dir():
+        return names
+    for p in sorted(tones_dir.glob("*.hsp")):
+        try:
+            name = (read_hsp(p).get("meta") or {}).get("name")
+        except (OSError, ValueError):
+            continue
+        if isinstance(name, str) and name.strip():
+            names.setdefault(name.strip().casefold(), p)
+    return names
+
+
+def _import_collision_reason(r: Dict[str, Any], *, tones_dir: Path,
+                             names: Dict[str, Path] | None = None) -> str | None:
     """A human message when placing ``r`` would overwrite an existing tone .hsp
-    or clash with a differently-pathed manifest name; else ``None``. Checked
-    BEFORE any move so a collision never strands a moved source."""
+    or duplicate another library tone's ``meta.name``; else ``None``. Checked
+    BEFORE any move so a collision never strands a moved source.
+
+    ``names`` is an already-built :func:`_library_names` index (a batch builds
+    it once); omit it for a one-shot check."""
     dest = tones_dir / f"{r['new_slug']}.hsp"
     if dest.exists():
         return (f"a tone already exists at {dest} -- refusing to overwrite. "
                 "Rename this one (change --descriptor/--artist/--song or --guitar).")
-    existing = manifest.tones.get(r["preset_name"])
-    if existing is not None and existing.get("path") not in (None, str(dest.resolve())):
-        return (f"the manifest already registers a tone named {r['preset_name']!r} "
-                f"at a different path ({existing.get('path')}) -- refusing to "
-                "overwrite. Rename this one (--descriptor/--artist/--song/--guitar).")
+    if names is None:
+        names = _library_names(tones_dir)
+    taken = names.get(r["preset_name"].strip().casefold())
+    if taken is not None:
+        return (f"the library tone {taken} is already named {r['preset_name']!r} "
+                "-- refusing to add a second tone under that name. Rename this "
+                "one (--descriptor/--artist/--song/--guitar).")
     return None
 
 
 def _detect_batch_collisions(resolved: List[Dict[str, Any]],
-                             manifest: SetlistManifest,
                              tones_dir: Path) -> List[str]:
     """Every naming collision in a directory batch, as human strings (empty ==
     safe): two files sharing a target slug (intra-batch), or a file clashing
-    with the existing library/manifest."""
+    with the existing library."""
     problems: List[str] = []
     by_slug: Dict[str, List[Dict[str, Any]]] = {}
     for r in resolved:
@@ -905,20 +919,20 @@ def _detect_batch_collisions(resolved: List[Dict[str, Any]],
             names = ", ".join(sorted(x["src"].name for x in group))
             problems.append(
                 f"{len(group)} files map to the same target slug {slug!r}: {names}")
+    names = _library_names(tones_dir)  # one directory scan for the whole batch
     for r in resolved:
         if len(by_slug[r["new_slug"]]) > 1:
             continue  # already reported as an intra-batch slug collision
-        reason = _import_collision_reason(r, manifest, tones_dir=tones_dir)
+        reason = _import_collision_reason(r, tones_dir=tones_dir, names=names)
         if reason:
             problems.append(f"{r['src'].name}: {reason}")
     return problems
 
 
-def _place_and_register(r: Dict[str, Any], keep_source: bool,
-                        manifest: SetlistManifest) -> None:
-    """Place one resolved tone into the library and register it into ``manifest``
-    (in memory -- the caller saves). Warns on a missing sibling .md; converts
-    ``place_tone``/``register_tone`` failure modes to ``ClickException``."""
+def _place_tone(r: Dict[str, Any], keep_source: bool) -> None:
+    """Place one resolved tone into the library -- which IS its registration,
+    the directory being the index. Warns on a missing sibling .md; converts
+    ``place_tone`` failure modes to ``ClickException``."""
     if r["md_missing"]:
         click.echo(
             f"warning: no sibling .md for {r['src'].name}; description_md left null",
@@ -934,20 +948,6 @@ def _place_and_register(r: Dict[str, Any], keep_source: bool,
             f"a tone already exists at {home.tones_dir() / (r['new_slug'] + '.hsp')} "
             "-- refusing to overwrite. Rename this one (change "
             "--descriptor/--artist/--song or --guitar).")
-
-    try:
-        manifest.register_tone(dest, source="import-local")
-    except Exception as err:  # noqa: BLE001 -- the file is already placed
-        # The .hsp + metadata are already placed; only the manifest
-        # registration failed. A plain re-import would refuse (the
-        # destination now exists), so name the exact recovery command
-        # (backlog #79e).
-        raise click.ClickException(
-            f"{err}\nThe tone was already placed at {dest} (metadata "
-            "written) but could NOT be registered in the manifest. After "
-            "fixing the conflict, run `helixgen register "
-            f"{dest}` to complete the import."
-        ) from err
 
     click.echo(f"Imported {r['src'].name} -> {dest}")
     click.echo(f"Preset name: {r['preset_name']}")
@@ -1206,9 +1206,8 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
                 f"identity ({existing.display_base!r}); rename this fork "
                 "(--artist/--song/--descriptor) to disambiguate.")
 
-    manifest = SetlistManifest.load()
     r = {"new_slug": new_slug, "preset_name": preset_name}
-    reason = _import_collision_reason(r, manifest, tones_dir=home.tones_dir())
+    reason = _import_collision_reason(r, tones_dir=home.tones_dir())
     if reason:
         raise click.ClickException(
             reason + " (Or edit the existing .hsp in place -- `helixgen "
@@ -1267,7 +1266,7 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
 
     if not dry_run:
         try:
-            written = migrate.place_tone(
+            migrate.place_tone(
                 src_hsp, artist=t_artist, song=t_song, descriptor=t_descriptor,
                 guitar_slug=guitar_slug, guitar_short=guitar_short,
                 new_name=preset_name, logical=logical, new_slug=new_slug,
@@ -1278,14 +1277,6 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
             raise click.ClickException(
                 f"a tone already exists at {dest} -- refusing to overwrite. "
                 "Pick a different --guitar, or edit the existing .hsp in place.")
-        try:
-            manifest.register_tone(written, source="authored")
-        except Exception as err:  # noqa: BLE001 -- the .hsp is already placed
-            raise click.ClickException(
-                f"{err}\nThe fork was written to {written} (metadata recorded) "
-                "but could NOT be registered in the manifest. After fixing the "
-                f"conflict, run `helixgen register {written}`.") from err
-        manifest.save()
         gitops.auto_commit(home.helixgen_home(), f"helixgen: fork tone {new_slug}")
 
     _report_fork(record, as_json=as_json)

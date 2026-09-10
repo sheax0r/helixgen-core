@@ -14,7 +14,8 @@ over a ``$HELIXGEN_HOME``-derived default — this module never overrides that
 precedence, only what a bare default computes to.
 
 Note: ``manifest_path()`` is the current default manifest location
-(``setlists/manifest.json``) and IS what ``SetlistManifest.load`` uses; a v2
+(``setlists/manifest.json``) — the RETIRED manifest's location, read only by
+the one-shot ``library migrate``; a v2
 manifest found at ``legacy_manifest_path()`` is migrated up to it (manifest
 v3). Likewise ``library_irs_dir()`` (``library/irs``) is now ``ir.py``'s
 default IR dir (``ir.default_irs_path()`` returns it), with a one-time bridge
@@ -69,9 +70,10 @@ def manifest_path() -> Path:
     """The tone-library manifest: ``$HELIXGEN_SETLISTS`` or
     ``helixgen_home()/"setlists"/"manifest.json"``.
 
-    This is ``SetlistManifest``'s default location; the old default was
+    The retired manifest's default location, kept so ``library migrate`` can
+    still find a legacy file. The older default was
     ``~/.helixgen/setlists.json`` (see :func:`legacy_manifest_path`), which
-    ``SetlistManifest.load`` migrates up to here (manifest v3).
+    ``migrate._legacy_manifest_tones`` also checks.
     """
     env = os.environ.get("HELIXGEN_SETLISTS")
     if env:

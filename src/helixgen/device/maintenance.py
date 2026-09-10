@@ -17,7 +17,7 @@ Implements the capture-free subset of backlog #20 (design:
 
 The pure planning helpers (``plan_ir_prune`` / ``resolve_device_ir`` /
 ``content_ir_hashes`` / ``color_index``) are separated from device I/O so they
-unit-test against plain data (the ``setlist_sync`` pattern).
+unit-test against plain data.
 """
 from __future__ import annotations
 
@@ -216,40 +216,39 @@ def _verify_pool_covers_references(client, pool_cids) -> None:
                 f"retry (reboot the Helix if it persists)")
 
 
-def local_referenced_ir_hashes(manifest=None):
-    """IR hashes referenced by the tone library's local sources — ``.hsp``
-    files AND ``.sbe`` device-content blobs (the source ``device push``
-    records) — plus warnings for tones whose protection could NOT be
-    verified.
+def local_referenced_ir_hashes(tones_dir=None):
+    """IR hashes referenced by the local tone LIBRARY, plus warnings for any
+    tone whose protection could NOT be verified.
 
+    The library directory IS the index (2026-09-09 file-copy design) — this
+    walks ``home.tones_dir()/*.hsp`` rather than a manifest's ``tones`` map.
     Local references protect an IR from pruning even when no on-device preset
-    references it (the tone may be off-device today and synced back
-    tomorrow). A ``.sbe`` source is decoded as device content and its
-    ``irmd`` hashes collected directly (backlog/live-validation #68i — it
-    used to be force-parsed as a ``.hsp`` and warn about a missing
-    ``rpshnosj`` magic on a perfectly normal ``device push`` flow). A tone
-    with a **recorded but missing/unreadable** source can't prove which IRs
-    it would protect — skipping it silently would make the prune MORE
-    aggressive, so each such tone is surfaced as a warning and ``ir_prune``
-    refuses to execute over warnings without ``force`` (fail closed).
+    references it (the tone may be off the device today and copied back
+    tomorrow).
+
+    A tone whose file is unreadable can't prove which IRs it would protect,
+    and skipping it silently would make the prune MORE aggressive — so each
+    is surfaced as a warning and ``ir_prune`` refuses to execute over warnings
+    without ``force`` (fail closed). ``.sbe`` sources are decoded as device
+    content (#68i: they used to be force-parsed as ``.hsp`` and warn about a
+    missing ``rpshnosj`` magic on a perfectly normal pushed preset).
     Returns ``(hashes, warnings)``.
     """
     from . import bridge
+    from .. import home
 
-    if manifest is None:
-        from .manifest import SetlistManifest
-        manifest = SetlistManifest.load()
+    d = Path(tones_dir) if tones_dir is not None else home.tones_dir()
     out: Dict[str, List[str]] = {}
     warnings: List[str] = []
-    for name, rec in getattr(manifest, "tones", {}).items():
-        path = rec.get("path") if isinstance(rec, dict) else None
-        if not path:
-            continue  # pathless tones (device-origin) record no local IRs
-        is_sbe = str(path).endswith(".sbe")
+    if not d.is_dir():
+        return out, warnings
+    for path in sorted(list(d.glob("*.hsp")) + list(d.glob("*.sbe"))):
+        name = path.stem
+        is_sbe = path.suffix == ".sbe"
         try:
             if is_sbe:
                 hashes = content_ir_hashes(
-                    _content.decode_any(Path(path).read_bytes()))
+                    _content.decode_any(path.read_bytes()))
             else:
                 hashes = bridge.hsp_ir_hashes(read_hsp(path))
         except Exception as e:  # noqa: BLE001 — any unreadable source is a
@@ -455,7 +454,7 @@ def ir_prune(
     force: bool = False,
     ignore_warnings: bool = False,
     only: Optional[str] = None,
-    manifest=None,
+    tones_dir=None,
 ) -> Dict[str, Any]:
     """Delete device IRs no preset references any more (backlog #11).
 
@@ -511,7 +510,7 @@ def ir_prune(
         "referenced": [], "protected": [], "orphans": [], "deleted": [],
         "warnings": [], "errors": [],
     }
-    local_ref, local_warnings = local_referenced_ir_hashes(manifest)
+    local_ref, local_warnings = local_referenced_ir_hashes(tones_dir)
     result["warnings"] = list(local_warnings)
 
     def _scan(client):
@@ -557,7 +556,8 @@ def ir_prune(
                 raise ValueError(
                     "refusing to execute: some local tones' IR references "
                     "could not be verified (their protection is unknown) — "
-                    "fix the manifest paths or re-run with ignore_warnings "
+                    "fix the unreadable library files or re-run with "
+                    "ignore_warnings "
                     "(--ignore-warnings). "
                     + "; ".join(local_warnings))
             # Re-scan and re-plan immediately before deleting; a disagreement

@@ -62,6 +62,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import pathlib
 import struct
 import tarfile
 import time
@@ -502,47 +503,6 @@ def import_bundle(client: Any, bundle: HssBundle, *,
             "errors": errors}
 
 
-def record_import_in_manifest(manifest: Any, result: Dict[str, Any]) -> List[str]:
-    """Record a successful :func:`import_bundle` ``result`` in the tone-library
-    manifest (a :class:`~helixgen.device.manifest.SetlistManifest` instance —
-    caller loads and saves it). Returns a list of warning strings (empty when
-    everything recorded cleanly).
-
-    **This is load-bearing, not bookkeeping.** ``device sync <setlist>`` (the
-    explicit, targeted form — not gated by the ``synced`` flag) mirrors the
-    device setlist's references to the manifest's membership. If the imported
-    presets aren't in the manifest's membership, the next targeted sync of
-    that setlist computes ``desired=[]`` and **strips every reference the
-    import just wrote**. So each successfully installed+referenced preset is
-    registered as a PATHLESS tone (``source="import-hss"`` — its content came
-    from the bundle, no local ``.hsp`` exists, so `device slots restore`
-    can't re-author it) and appended to the setlist's membership, mirroring
-    ``_record_placement``'s pattern for device-born presets.
-
-    A name that's already registered to a **path-backed** tone is reported as
-    a warning and left out of the membership (recording it would make the next
-    sync overwrite the imported device preset with the local ``.hsp``'s
-    content; leaving it out means that sync strips its reference instead —
-    the user must rename one of the two, and the warning says so).
-    """
-    from .manifest import ManifestError
-
-    warnings: List[str] = []
-    manifest.create_setlist(result["setlist"])  # idempotent, keeps membership
-    for name in result["installed"]:
-        try:
-            manifest.register_pathless(name, source="import-hss")
-        except ManifestError as e:
-            warnings.append(
-                f"{name!r}: not recorded in the tone library ({e}) — the next "
-                f"`device sync {result['setlist']}` will DROP its reference; "
-                f"rename the conflicting local tone (or the imported preset) "
-                f"and re-import to keep both")
-            continue
-        manifest.add_to_setlist(result["setlist"], name)
-    return warnings
-
-
 # --- byte-faithful writer -----------------------------------------------------
 #
 # The tar the Stadium app embeds uses the classic libarchive/GNU octal header
@@ -719,18 +679,18 @@ def _device_header_fields(client: Any) -> tuple:
 
 
 def export_setlist_to_hss(client: Any, setlist_name: str, *,
-                          manifest: Any = None,
+                          tones_dir: Any = None,
                           mtime: Optional[int] = None) -> Dict[str, Any]:
     """Build a byte-faithful ``.hss`` from a **device** setlist. EXPERIMENTAL.
 
     Reads the device setlist's references (order + slot ``posi``) and embeds
-    each referenced preset's **local ``.hsp``** — resolved by preset name via
-    the tone-library manifest (:meth:`SetlistManifest.tone_path`) — verbatim,
+    each referenced preset's **local ``.hsp``** — resolved by preset name
+    against the tone LIBRARY directory (the index, 2026-09-09 design) — verbatim,
     at the matching slot (``.{posi+1}``). This mirrors the app, which embeds a
     ``.hsp`` per preset; helixgen's ``.hsp`` is the source of truth.
 
-    A referenced preset with **no local ``.hsp``** (device-born, or untracked
-    by the manifest) is reported in ``skipped`` and left out — helixgen has no
+    A referenced preset with **no local ``.hsp``** (device-born, or simply not
+    in the library) is reported in ``skipped`` and left out — helixgen has no
     ``_sbepgsm`` → ``.hsp`` converter, so a device-only preset can't be
     re-embedded as a ``.hsp`` (backlog #31 residual). Device id/version for the
     header come from ``/ProductInfoGet``.
@@ -741,9 +701,19 @@ def export_setlist_to_hss(client: Any, setlist_name: str, *,
     """
     from .client import Cctp, Container, HelixError
 
-    if manifest is None:
-        from .manifest import SetlistManifest
-        manifest = SetlistManifest.load()
+    from .. import home
+    from ..hsp import read_hsp as _read_hsp
+
+    d = pathlib.Path(tones_dir) if tones_dir is not None else home.tones_dir()
+    by_name = {}
+    if d.is_dir():
+        for _p in sorted(d.glob("*.hsp")):
+            try:
+                nm = str((_read_hsp(_p).get("meta") or {}).get("name", "")).strip()
+            except Exception:  # noqa: BLE001 - an unreadable file claims no name
+                continue
+            if nm:
+                by_name.setdefault(nm.casefold(), _p)
 
     setlist_cid = client.resolve_setlist_cid(setlist_name, strict=True)
     if setlist_cid is None:
@@ -770,7 +740,7 @@ def export_setlist_to_hss(client: Any, setlist_name: str, *,
         if name is None:
             skipped.append(f"posi {posi}: reference target not found in the pool")
             continue
-        path = manifest.tone_path(name)
+        path = by_name.get(str(name).strip().casefold())
         if not path or not Path(path).exists():
             skipped.append(
                 f"{name!r}: no local .hsp in the tone library (device-born or "

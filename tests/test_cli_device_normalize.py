@@ -16,6 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 from helixgen.cli import cli
+from helixgen.device.client import Cctp
 from helixgen.hsp import read_hsp
 from tests.golden import harness
 
@@ -111,6 +112,14 @@ class FakeClient:
     names = {}                        # cid -> device preset display name
     active = {"cid": 7, "name": None}
 
+    # --- live setlist resolution (2026-09-09 file-copy model) ---------------
+    # `device normalize --setlist` reads membership, ORDER and every tone's
+    # cid straight off the device: there is no manifest and no per-device
+    # observation file left to go stale.
+    setlists = {}      # setlist name -> setlist container cid
+    members = {}       # setlist cid -> [pool cid, ...] in playing order
+    pool_names = {}    # pool cid -> the name the POOL listing reports
+
     def __init__(self, *args, **kwargs):
         pass
 
@@ -139,9 +148,35 @@ class FakeClient:
     def product_info(self):
         return {"serial": "FAKE123"}
 
+    def resolve_setlist_cid(self, name, *, strict=True):
+        want = (name or "").strip().casefold()
+        for n, cid in type(self).setlists.items():
+            if n.strip().casefold() == want:
+                return cid
+        return None
+
+    def list_presets(self, container=None, *, strict=False):
+        return [{"cid_": cid, "name": name}
+                for cid, name in type(self).pool_names.items()]
+
+    def list_container(self, cid, *, strict=False):
+        """A setlist's rows, deliberately returned OUT of playing order and
+        with a non-REFERENCE decoy mixed in: the verb has to sort by ``posi``
+        and keep only ``cctp == REFERENCE`` (a broken filter would measure
+        the decoy's target twice)."""
+        mem = type(self).members.get(cid, [])
+        rows = [{"cctp": Cctp.REFERENCE, "cid_": 500 + i, "posi": i,
+                 "rcid": rcid} for i, rcid in enumerate(mem)]
+        rows.reverse()
+        if mem:
+            rows.append({"cctp": Cctp.PRESET, "cid_": 998, "posi": 0,
+                         "rcid": mem[0], "name": "decoy"})
+        return rows
+
 
 def _patch(monkeypatch, script, active_name="Snapshots Corpus", names=None,
-           loop=False, in_level=None):
+           loop=False, in_level=None, setlists=None, members=None,
+           pool_names=None):
     import helixgen.device as device_mod
     from helixgen.device import subscribe as sub_mod
 
@@ -152,6 +187,12 @@ def _patch(monkeypatch, script, active_name="Snapshots Corpus", names=None,
     FakeClient.calls = []
     FakeClient.names = dict(names or {})
     FakeClient.active = {"cid": 7, "name": active_name}
+    FakeClient.setlists = dict(setlists or {})
+    FakeClient.members = dict(members or {})
+    # the POOL listing reports the same names the device reports on load,
+    # unless a test deliberately drives the two apart (identity guard)
+    FakeClient.pool_names = (dict(FakeClient.names) if pool_names is None
+                             else dict(pool_names))
     monkeypatch.setattr(sub_mod, "HelixSubscriber", ScriptedSubscriber)
     monkeypatch.setattr(device_mod, "HelixClient", FakeClient)
 
@@ -417,37 +458,46 @@ def test_normalize_setlist_source_loop_uses_output_db(
 
 # --- setlist scope -----------------------------------------------------------
 
+GIG_CID = 900          # the setlist's own container cid on the fake device
+
+
+def _into_library(corpus_name: str, filename: str) -> Path:
+    """Copy a corpus preset into the library tone directory — the library
+    DIRECTORY is the tone index (2026-09-09), so this is the whole of what
+    it takes to make a device preset resolvable to a local .hsp."""
+    from helixgen import home
+    tones = home.tones_dir()
+    tones.mkdir(parents=True, exist_ok=True)
+    dst = tones / filename
+    shutil.copy(harness.CORPUS_DIR / corpus_name, dst)
+    return dst
+
+
 @pytest.fixture
-def gig_setlist(tmp_path):
-    """A local manifest setlist 'Gig' with two tones that have local .hsp
-    sources and observed placements on the fake device (serial FAKE123)."""
-    from helixgen.device import observations
-    from helixgen.device.manifest import SetlistManifest
+def gig_setlist():
+    """Setlist 'Gig' as the DEVICE reports it: two presets in the pool, both
+    with a matching .hsp in the library directory.
 
-    # two DIFFERENT corpus presets (tone names come from meta.name and must
-    # be unique in the manifest); flow_params carries a non-zero base output
-    # level (-4.5 dB) so total-loudness sizing has to account for it
-    a = tmp_path / "ToneA.hsp"
-    b = tmp_path / "ToneB.hsp"
-    shutil.copy(harness.CORPUS_DIR / "goldfinger.hsp", a)
-    shutil.copy(harness.CORPUS_DIR / "flow_params.hsp", b)
-    m = SetlistManifest.load()
-    name_a = m.add_tone("Gig", a)
-    name_b = m.add_tone("Gig", b)
-    m.save()
-    obs = observations.load_observations("FAKE123")
-    obs.tones[name_a] = {"cid": 101, "posi": 0}
-    obs.tones[name_b] = {"cid": 102, "posi": 1}
-    observations.save_observations(obs)
-    return {"names": (name_a, name_b), "paths": (a, b)}
+    Two DIFFERENT corpus presets, because the device pool name is matched
+    against `meta.name`; flow_params carries a non-zero base output level
+    (-4.5 dB) so total-loudness sizing has to account for it.
+    """
+    a = _into_library("goldfinger.hsp", "ToneA.hsp")
+    b = _into_library("flow_params.hsp", "ToneB.hsp")
+    names = (read_hsp(a)["meta"]["name"], read_hsp(b)["meta"]["name"])
+    return {"names": names, "paths": (a, b)}
 
 
-def _patch_gig(monkeypatch, gig_setlist, script=None, names=None):
+def _patch_gig(monkeypatch, gig_setlist, script=None, names=None,
+               pool_names=None, members=None):
     name_a, name_b = gig_setlist["names"]
     _patch(monkeypatch,
            script if script is not None else {("cid", 101): 0.5,
                                               ("cid", 102): 1.0},
-           names=names if names is not None else {101: name_a, 102: name_b})
+           names=names if names is not None else {101: name_a, 102: name_b},
+           pool_names=pool_names,
+           setlists={"Gig": GIG_CID},
+           members={GIG_CID: members if members is not None else [101, 102]})
 
 
 def test_normalize_setlist_trims_equalize_total_loudness(
@@ -457,8 +507,9 @@ def test_normalize_setlist_trims_equalize_total_loudness(
         cli, ["device", "normalize", "--setlist", "Gig",
               "--seconds", "6", "--yes"])
     assert result.exit_code == 0, result.output
-    assert ("load_preset", 101) in FakeClient.calls
-    assert ("load_preset", 102) in FakeClient.calls
+    # membership, ORDER and cid all come from the device listing: each pool
+    # preset is loaded once, in `posi` order (the fake lists them reversed)
+    assert FakeClient.calls[:2] == [("load_preset", 101), ("load_preset", 102)]
     a, b = gig_setlist["paths"]
     assert _gain(a)["value"] == 0.0     # anchor untouched
     # hc-daz: ToneB MEASURES +6.02 dB hotter, and that measurement already
@@ -489,11 +540,13 @@ def test_normalize_setlist_yes_rerun_is_noop(monkeypatch, gig_setlist):
 
 def test_normalize_setlist_skips_tone_with_mismatched_device_name(
         monkeypatch, gig_setlist):
-    # I1: a stale observed CID that now points at a DIFFERENT preset must
-    # not be silently measured — the tone is skipped into the exit-1 path.
+    # I1: device preset names are NOT unique, so the guard survives the move
+    # to live resolution — if the preset that actually loads reports a
+    # different name than the listing did, it must not be silently measured.
     name_a, name_b = gig_setlist["names"]
     _patch_gig(monkeypatch, gig_setlist,
-               names={101: name_a, 102: "Renamed On Device"})
+               names={101: name_a, 102: "Renamed On Device"},
+               pool_names={101: name_a, 102: name_b})
     b_before = gig_setlist["paths"][1].read_bytes()
     result = CliRunner().invoke(
         cli, ["device", "normalize", "--setlist", "Gig",
@@ -507,26 +560,19 @@ def test_normalize_setlist_skips_tone_with_mismatched_device_name(
 
 
 def test_normalize_setlist_write_failure_reports_written_files(
-        monkeypatch, gig_setlist, tmp_path):
+        monkeypatch, gig_setlist):
     # M6: a mid-run write failure must say which files were ALREADY written
     from helixgen import hsp as hsp_mod
-    from helixgen.device.manifest import SetlistManifest
-    from helixgen.device import observations
 
-    c = tmp_path / "ToneC.hsp"
-    shutil.copy(harness.CORPUS_DIR / "snapshots.hsp", c)
-    m = SetlistManifest.load()
-    name_c = m.add_tone("Gig", c)
-    m.save()
-    obs = observations.load_observations("FAKE123")
-    obs.tones[name_c] = {"cid": 103, "posi": 2}
-    observations.save_observations(obs)
+    c = _into_library("snapshots.hsp", "ToneC.hsp")
+    name_c = read_hsp(c)["meta"]["name"]
 
     name_a, name_b = gig_setlist["names"]
     _patch_gig(monkeypatch, gig_setlist,
                script={("cid", 101): 0.5, ("cid", 102): 1.0,
                        ("cid", 103): 1.0},
-               names={101: name_a, 102: name_b, 103: name_c})
+               names={101: name_a, 102: name_b, 103: name_c},
+               members=[101, 102, 103])
     real_write = hsp_mod.write_hsp
 
     def failing_write(path, body):
@@ -543,13 +589,15 @@ def test_normalize_setlist_write_failure_reports_written_files(
     assert str(gig_setlist["paths"][1]) in result.output  # already written
 
 
-def test_normalize_setlist_skips_tone_without_placement(
+def test_normalize_setlist_skips_device_preset_with_no_local_hsp(
         monkeypatch, gig_setlist):
-    from helixgen.device import observations
+    # normalize writes trims into the LOCAL .hsp, so a preset on the device
+    # with nothing matching in the library has nowhere to land: skip it into
+    # the exit-1 path rather than measuring it for nothing. (This replaces
+    # the old "no observed placement" skip — the cid is live now, so that
+    # condition cannot arise.)
     name_a, name_b = gig_setlist["names"]
-    obs = observations.load_observations("FAKE123")
-    del obs.tones[name_b]
-    observations.save_observations(obs)
+    gig_setlist["paths"][1].unlink()          # ToneB no longer in the library
     _patch_gig(monkeypatch, gig_setlist)
     result = CliRunner().invoke(
         cli, ["device", "normalize", "--setlist", "Gig",
@@ -558,15 +606,49 @@ def test_normalize_setlist_skips_tone_without_placement(
     payload = json.loads(result.stdout)
     by_tone = {t["tone"]: t for t in payload["targets"]}
     assert by_tone[name_b]["ok"] is False
+    assert by_tone[name_b]["reason"] == "no local .hsp"
+    assert by_tone[name_b]["path"] is None
+    assert by_tone[name_a]["ok"] is True
+    # never selected on the device: there was nothing to write the trim into
     assert not any(c == ("load_preset", 102) for c in FakeClient.calls)
 
 
-def test_normalize_setlist_unknown_setlist(monkeypatch, gig_setlist):
-    _patch(monkeypatch, {})
+def test_normalize_setlist_reports_a_dangling_reference(monkeypatch,
+                                                       gig_setlist):
+    """A setlist reference whose pool row is missing must be REPORTED as a
+    skip, not silently dropped.
+
+    Dropping it would let the run report clean success while quietly ignoring
+    a preset that is in the setlist — the silent-wrong-answer failure the
+    file-copy design exists to remove. Every other unmeasurable case in this
+    branch (no local .hsp, name mismatch) is recorded, so this one must be too.
+    """
+    name_a, _name_b = gig_setlist["names"]
+    # 999 is referenced by the setlist but absent from the pool listing
+    _patch_gig(monkeypatch, gig_setlist, members=[101, 999])
+    result = CliRunner().invoke(
+        cli, ["device", "normalize", "--setlist", "Gig",
+              "--seconds", "6", "--yes", "--json"])
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)
+    dangling = [t for t in payload["targets"]
+                if t.get("reason") == "dangling setlist reference"]
+    assert len(dangling) == 1, payload["targets"]
+    assert dangling[0]["cid"] == 999
+    assert dangling[0]["ok"] is False
+    # the healthy sibling still measured
+    assert any(t["tone"] == name_a and t["ok"] for t in payload["targets"])
+
+
+def test_normalize_setlist_unknown_setlist(monkeypatch):
+    # the device is the truth about membership: a setlist it doesn't have is
+    # an error even though other setlists exist
+    _patch(monkeypatch, {}, setlists={"Gig": GIG_CID})
     result = CliRunner().invoke(
         cli, ["device", "normalize", "--setlist", "Nope"])
     assert result.exit_code != 0
     assert "Nope" in result.output
+    assert "not found on the device" in result.output
 
 
 # --- library metadata recording (`normalized` on the tone's variant) ---------
@@ -836,24 +918,17 @@ def test_normalize_invalid_identity_meta_warns_and_completes(
 
 
 def test_normalize_setlist_mixed_ok_and_skip_records_ok_variants(
-        monkeypatch, library_preset, tmp_path):
+        monkeypatch, library_preset):
     # review pin: setlist scope with MIXED ok/skipped targets still records
     # the measured-ok tones' variants (per-tone granularity) AND still
     # exits 1 for the partial run
-    from helixgen.device import observations
-    from helixgen.device.manifest import SetlistManifest
-
-    m = SetlistManifest.load()
-    name = m.add_tone("LibGig", library_preset)
-    other = tmp_path / "OtherTone.hsp"
-    shutil.copy(harness.CORPUS_DIR / "goldfinger.hsp", other)
-    name_other = m.add_tone("LibGig", other)
-    m.save()
-    obs = observations.load_observations("FAKE123")
-    obs.tones[name] = {"cid": 201, "posi": 0}
-    # name_other gets NO observed placement -> SKIPPED
-    observations.save_observations(obs)
-    _patch(monkeypatch, {("cid", 201): 0.5}, names={201: name})
+    name = read_hsp(library_preset)["meta"]["name"]
+    # a second preset in the device setlist with NO .hsp in the library ->
+    # SKIPPED (the surviving skip condition under live resolution)
+    name_other = "Not In The Library"
+    _patch(monkeypatch, {("cid", 201): 0.5},
+           names={201: name, 202: name_other},
+           setlists={"LibGig": 900}, members={900: [201, 202]})
     result = CliRunner().invoke(
         cli, ["device", "normalize", "--setlist", "LibGig",
               "--seconds", "6", "--target-db", "30", "--yes", "--json"])
@@ -873,16 +948,9 @@ def test_normalize_setlist_mixed_ok_and_skip_records_ok_variants(
 
 def test_normalize_setlist_records_base_trim_on_library_variant(
         monkeypatch, library_preset, _isolated_git_env):
-    from helixgen.device import observations
-    from helixgen.device.manifest import SetlistManifest
-
-    m = SetlistManifest.load()
-    name = m.add_tone("LibGig", library_preset)
-    m.save()
-    obs = observations.load_observations("FAKE123")
-    obs.tones[name] = {"cid": 201, "posi": 0}
-    observations.save_observations(obs)
-    _patch(monkeypatch, {("cid", 201): 0.5}, names={201: name})
+    name = read_hsp(library_preset)["meta"]["name"]
+    _patch(monkeypatch, {("cid", 201): 0.5}, names={201: name},
+           setlists={"LibGig": 900}, members={900: [201]})
     result = CliRunner().invoke(
         cli, ["device", "normalize", "--setlist", "LibGig",
               "--seconds", "6", "--target-db", "30", "--yes"])

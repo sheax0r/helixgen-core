@@ -29,13 +29,13 @@ interface) but resolves each variant against ``tones_dir.parent`` (==
 library_dir() / variant.hsp``.
 
 Every write goes through :func:`save_tone_meta`, which -- like
-``device/manifest.py``'s ``SetlistManifest.save`` -- calls
+the retired manifest's save -- calls
 ``libinit.ensure_initialized()`` first, writes atomically (per-process-unique
 temp file + ``os.replace``; the temp file is removed on any failure before
 the replace), and then advisory-commits via ``gitops.auto_commit`` (never
 raises; gated by the ``git_commit_tones`` preference) -- but only when the
 written file resolves under ``home.helixgen_home()``, same guard shape as
-``SetlistManifest.save``.
+that same guarantee.
 
 **Concurrency (advisory only).** Tone JSON writes are load -> mutate ->
 ``save_tone_meta``: the atomic replace guarantees a reader never sees a
@@ -402,7 +402,7 @@ def save_tone_meta(meta: ToneMeta) -> ToneMeta:
       and leaves the existing metadata untouched).
     - ``gitops.auto_commit`` afterward -- but ONLY when the written path
       resolves under ``home.helixgen_home()`` (mirrors
-      ``device/manifest.py``'s ``SetlistManifest.save`` guard); when
+      the retired manifest's save guard); when
       ``$HELIXGEN_LIBRARY`` points somewhere else entirely, the commit is
       skipped so an unrelated home repo never gets swept up. Advisory; never
       raises.
@@ -559,7 +559,6 @@ def validate_tone_meta(
     meta: ToneMeta,
     *,
     tones_dir: Path,
-    manifest: Any,
     guitar_slugs: Iterable[str],
 ) -> List[str]:
     """Shape/cross-link checks on ``meta``; returns a list of problem strings
@@ -577,8 +576,11 @@ def validate_tone_meta(
       (backlog #79b), and a path naming a directory fails the check.
     - Each variant key must be in ``guitar_slugs`` or the special
       ``"generic"`` key.
-    - Each variant's ``preset_name`` must be registered in ``manifest.tones``
-      (a ``SetlistManifest``).
+    A variant's ``preset_name`` used to be cross-checked against the setlist
+    manifest's ``tones``. That manifest is gone (2026-09-09 file-copy design)
+    and the library DIRECTORY is the index, so the "is this tone real?" question
+    is already answered by the ``hsp`` existence check above — there is no
+    second registry that could disagree with it.
 
     Unknown-control (``guitar_settings``) warnings are Task 12's job (guitar
     profiles don't exist yet in this PR) -- not checked here.
@@ -602,11 +604,6 @@ def validate_tone_meta(
             )
         elif not resolved.is_file():
             problems.append(f"variant {key!r}: hsp file not found: {resolved}")
-        if variant.preset_name not in manifest.tones:
-            problems.append(
-                f"variant {key!r}: preset_name {variant.preset_name!r} "
-                "not registered in the manifest"
-            )
     return problems
 
 

@@ -200,16 +200,10 @@ def test_import_hss_creates_setlist_and_installs_in_order(monkeypatch, tmp_path)
     assert [r[0] for r in HssClient.referenced] == [setlist_cid, setlist_cid]
     assert [r[2] for r in HssClient.referenced] == [0, 1]
 
-    # CRITICAL invariant: the manifest's membership matches the references the
-    # import wrote (in order) — otherwise the next targeted `device sync Gigs`
-    # computes desired=[] and strips them all from the device.
-    from helixgen.device.manifest import SetlistManifest
-    m = SetlistManifest.load()
-    assert "Gigs" in m.setlists()
-    assert m.tones_in("Gigs") == ["First", "Second"]
-    for name in ("First", "Second"):
-        assert m.tones[name]["path"] is None
-        assert m.tones[name]["source"] == "import-hss"
+    # The manifest-membership invariant retired with `device sync`: it existed
+    # only so a later targeted sync wouldn't compute desired=[] and strip the
+    # references the import just wrote. Without a reconcile, the references the
+    # import wrote (asserted above) simply stay put.
 
 
 def test_import_hss_reuses_existing_setlist(monkeypatch, tmp_path):

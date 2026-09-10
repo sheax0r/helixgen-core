@@ -573,18 +573,17 @@ def test_detect_payload_format():
     assert hss.detect_payload_format(None) == hss.FMT_UNKNOWN
 
 
-# --- device setlist -> .hss export (fake client + temp manifest) ---------------
+# --- device setlist -> .hss export (fake client + temp library dir) -----------
 
 def test_export_setlist_to_hss_embeds_local_hsp(tmp_path):
     from helixgen.device.client import Cctp, Container
-    from helixgen.device.manifest import SetlistManifest
 
-    # a local .hsp on disk, registered in a temp manifest
-    hsp = tmp_path / "lead.hsp"
+    # a local .hsp in the library DIRECTORY (the index, 2026-09-09 design)
+    lib = tmp_path / "tones"
+    lib.mkdir()
+    hsp = lib / "lead.hsp"
     hsp.write_bytes(b"rpshnosj" + json.dumps(
         {"meta": {"name": "My Lead"}, "preset": {}}).encode())
-    man = SetlistManifest(path=tmp_path / "setlists.json")
-    man.register_tone(hsp, source="authored")
 
     class FakeClient:
         def resolve_setlist_cid(self, name, **kw):
@@ -600,7 +599,7 @@ def test_export_setlist_to_hss_embeds_local_hsp(tmp_path):
         def product_info(self):
             return {"device_id": 0x260000, "raw": {"host": {}}}
 
-    result = hss.export_setlist_to_hss(FakeClient(), "MySet", manifest=man, mtime=1)
+    result = hss.export_setlist_to_hss(FakeClient(), "MySet", tones_dir=lib, mtime=1)
     assert result["ok"] is True
     assert result["embedded"] == ["My Lead"]
     assert result["skipped"] == []
@@ -613,9 +612,9 @@ def test_export_setlist_to_hss_embeds_local_hsp(tmp_path):
 
 def test_export_setlist_to_hss_skips_device_born(tmp_path):
     from helixgen.device.client import Cctp, Container
-    from helixgen.device.manifest import SetlistManifest
-
-    man = SetlistManifest(path=tmp_path / "setlists.json")  # empty (no local .hsp)
+    
+    lib = tmp_path / "tones"
+    lib.mkdir(exist_ok=True)
 
     class FakeClient:
         def resolve_setlist_cid(self, name, **kw):
@@ -631,7 +630,7 @@ def test_export_setlist_to_hss_skips_device_born(tmp_path):
         def product_info(self):
             return {"device_id": 0x260000, "raw": {"host": {}}}
 
-    result = hss.export_setlist_to_hss(FakeClient(), "MySet", manifest=man, mtime=1)
+    result = hss.export_setlist_to_hss(FakeClient(), "MySet", tones_dir=lib, mtime=1)
     assert result["ok"] is False
     assert result["embedded"] == []
     assert len(result["skipped"]) == 1 and "Ghost" in result["skipped"][0]
@@ -642,15 +641,14 @@ def test_export_setlist_to_hss_skips_device_born(tmp_path):
 
 def test_export_setlist_to_hss_unknown_setlist_raises(tmp_path):
     from helixgen.device.client import HelixError
-    from helixgen.device.manifest import SetlistManifest
-
+    
     class FakeClient:
         def resolve_setlist_cid(self, name, **kw):
             return None
 
     with pytest.raises(HelixError, match="no setlist named"):
         hss.export_setlist_to_hss(FakeClient(), "Nope",
-                                  manifest=SetlistManifest(path=tmp_path / "s.json"))
+                                  tones_dir=tmp_path / "tones")
 
 
 # --- adversarial-review fixes (2026-07-15) --------------------------------------
