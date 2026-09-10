@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 from helixgen import guitars, home, tone_meta
-from helixgen.device.manifest import SetlistManifest
 
 
 # ---------------------------------------------------------------------------
@@ -50,11 +49,7 @@ def _valid_meta_and_manifest(tmp_home: Path):
         variants={"g1": tone_meta.Variant(hsp=hsp_rel, preset_name="A - B - G1")},
         created="2020-01-01", updated="2020-01-01",
     )
-    manifest = SetlistManifest(home.manifest_path())
-    manifest.tones["A - B - G1"] = {
-        "path": None, "content_hash": None, "source": "authored", "slot": None,
-    }
-    return meta, manifest
+    return meta, None
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +243,7 @@ def test_upsert_variant_generic_key_omits_guitar_segment():
 def test_validate_empty_for_fully_valid_meta(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+        meta, tones_dir=home.tones_dir(), guitar_slugs={"g1"}
     )
     assert problems == []
 
@@ -257,7 +252,7 @@ def test_validate_flags_both_song_and_descriptor(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.descriptor = "Warm Clean"  # song is already "B"
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+        meta, tones_dir=home.tones_dir(), guitar_slugs={"g1"}
     )
     assert any("song" in p and "descriptor" in p for p in problems)
 
@@ -268,7 +263,7 @@ def test_validate_flags_neither_song_nor_descriptor(tmp_home):
     meta.artist = None
     meta.descriptor = None
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+        meta, tones_dir=home.tones_dir(), guitar_slugs={"g1"}
     )
     assert any("song" in p and "descriptor" in p for p in problems)
 
@@ -277,7 +272,7 @@ def test_validate_flags_missing_hsp_on_disk(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.variants["g1"].hsp = "tones/does-not-exist.hsp"
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+        meta, tones_dir=home.tones_dir(), guitar_slugs={"g1"}
     )
     assert any("does-not-exist.hsp" in p for p in problems)
 
@@ -286,25 +281,32 @@ def test_validate_flags_unknown_variant_key(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.variants["not-a-known-guitar"] = meta.variants.pop("g1")
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=set()
+        meta, tones_dir=home.tones_dir(), guitar_slugs=set()
     )
     assert any("not-a-known-guitar" in p for p in problems)
 
 
-def test_validate_flags_unregistered_preset_name(tmp_home):
-    meta, manifest = _valid_meta_and_manifest(tmp_home)
-    manifest.tones.clear()
+def test_validate_flags_a_variant_whose_hsp_is_gone(tmp_home):
+    """The manifest cross-check ("preset_name must be registered") retired with
+    the manifest itself — the library directory is the index now, so a variant
+    is real exactly when its .hsp is on disk. That check has to catch the case
+    the registry check used to."""
+    meta, _ = _valid_meta_and_manifest(tmp_home)
+    for variant in meta.variants.values():
+        resolved = tone_meta._resolve_variant_hsp(
+            variant.hsp, home.tones_dir().parent)
+        resolved.unlink()
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+        meta, tones_dir=home.tones_dir(), guitar_slugs={"g1"}
     )
-    assert any("A - B - G1" in p for p in problems)
+    assert any("hsp file not found" in p for p in problems), problems
 
 
 def test_validate_generic_key_always_allowed(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.variants["generic"] = meta.variants.pop("g1")
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=set()
+        meta, tones_dir=home.tones_dir(), guitar_slugs=set()
     )
     assert not any("generic" in p and "known guitar" in p for p in problems)
 
@@ -390,7 +392,7 @@ def test_validate_flags_blank_artist_as_missing_identity(tmp_home):
     meta.artist = ""
     meta.song = "Some Song"
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+        meta, tones_dir=home.tones_dir(), guitar_slugs={"g1"}
     )
     assert problems  # must NOT be clean
     assert any("artist" in p and "song" in p for p in problems)
@@ -419,7 +421,7 @@ def test_validate_flags_unsupported_schema(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.schema = 2
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs={"g1"}
+        meta, tones_dir=home.tones_dir(), guitar_slugs={"g1"}
     )
     assert any("schema" in p for p in problems)
 
@@ -566,8 +568,7 @@ def test_variant_normalized_none_still_validates(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.variants["g1"].normalized = dict(_NORMALIZED)
     assert tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest,
-        guitar_slugs=["g1"]) == []
+        meta, tones_dir=home.tones_dir(), guitar_slugs=["g1"]) == []
 
 
 def test_find_variant_by_hsp_resolves_library_relative_path(tmp_home):
@@ -653,28 +654,6 @@ def test_save_tone_meta_tmp_name_is_process_unique(tmp_home, monkeypatch):
     assert f".{_os.getpid()}.tmp" in seen["src"]
 
 
-def test_manifest_save_cleans_tmp_file_on_write_failure(tmp_home, monkeypatch):
-    # 79a (shared weakness): SetlistManifest.save gets the same guarantee.
-    from helixgen.device import manifest as manifest_mod
-
-    m = SetlistManifest(home.manifest_path())
-    m.tones["T"] = {"path": None, "content_hash": None,
-                    "source": "authored", "slot": None}
-    m.save()
-    before = m.path.read_text()
-
-    def _boom(src, dst):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(manifest_mod.os, "replace", _boom)
-    m.tones["U"] = {"path": None, "content_hash": None,
-                    "source": "authored", "slot": None}
-    with pytest.raises(OSError):
-        m.save()
-    assert m.path.read_text() == before
-    assert list(m.path.parent.glob("*.tmp")) == []
-
-
 def test_find_variant_by_hsp_matches_differently_cased_path(tmp_home):
     # 83a: on a case-insensitive filesystem (APFS), a differently-cased
     # spelling of a registered variant's path must still match (samestat).
@@ -707,7 +686,7 @@ def test_validate_flags_blank_hsp_value(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.variants["g1"].hsp = ""
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=["g1"])
+        meta, tones_dir=home.tones_dir(), guitar_slugs=["g1"])
     assert any("blank" in p for p in problems)
 
 
@@ -716,7 +695,7 @@ def test_validate_flags_hsp_pointing_at_directory(tmp_home):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.variants["g1"].hsp = "tones"  # the tones/ dir itself
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=["g1"])
+        meta, tones_dir=home.tones_dir(), guitar_slugs=["g1"])
     assert any("not found" in p for p in problems)
 
 
@@ -728,7 +707,7 @@ def test_validate_accepts_absolute_stored_hsp(tmp_home, tmp_path):
     meta, manifest = _valid_meta_and_manifest(tmp_home)
     meta.variants["g1"].hsp = str(outside)
     problems = tone_meta.validate_tone_meta(
-        meta, tones_dir=home.tones_dir(), manifest=manifest, guitar_slugs=["g1"])
+        meta, tones_dir=home.tones_dir(), guitar_slugs=["g1"])
     assert problems == []
 
 

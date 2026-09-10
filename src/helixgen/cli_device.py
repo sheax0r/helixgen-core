@@ -44,13 +44,6 @@ def _client():
     return HelixClient, HelixError
 
 
-def _manifest():
-    """Lazy import of the manifest pair `(SetlistManifest, ManifestError)`."""
-    from helixgen.device.manifest import SetlistManifest, ManifestError
-
-    return SetlistManifest, ManifestError
-
-
 def _serial_of(h, ip: str) -> str:
     """The connected device's serial (`/ProductInfoGet`), for keying its
     `devices/<serial>.json` observation file; falls back to `f"ip-{ip}"` when
@@ -97,20 +90,35 @@ def _hss_print_dry_run(hss_file, target_setlist, filled, hss_mod) -> None:
         click.echo(f"  slot {s.pos}: {hss_mod.hss_slot_label(s)}{note}")
 
 
-def _hss_record_import_manifest(result, hss_mod) -> None:
-    """Record freshly-imported presets in the tone library (pathless, source
-    "import-hss") + the setlist's membership — load-bearing: without it a later
-    targeted `device sync <setlist>` computes desired=[] and strips every
-    reference the import just wrote. Best-effort (the device write succeeded)."""
-    try:
-        SetlistManifest, _ = _manifest()
+def _library_hsp_for(name: str):
+    """The library `.hsp` whose ``meta.name`` is ``name``, or None.
 
-        m = SetlistManifest.load()
-        for w in hss_mod.record_import_in_manifest(m, result):
-            click.echo(f"warning: {w}", err=True)
-        m.save()
-    except Exception as e:  # noqa: BLE001 — advisory; device write succeeded
-        click.echo(f"warning: could not update local manifest: {e}", err=True)
+    The library directory IS the index (2026-09-09 design) — there is no
+    registry to consult and nothing to keep in agreement with the files.
+    """
+    from helixgen.home import tones_dir
+    from helixgen.hsp import read_hsp
+    d = tones_dir()
+    if not d.is_dir():
+        return None
+    want = (name or "").strip().casefold()
+    hits = []
+    for path in sorted(d.glob("*.hsp")):
+        try:
+            body = read_hsp(path)
+        except Exception:  # noqa: BLE001 - a bad file must not break lookup
+            continue
+        if str((body.get("meta") or {}).get("name", "")).strip().casefold() == want:
+            hits.append(path)
+    if len(hits) > 1:
+        # Everywhere else in this design an ambiguous name is a hard error;
+        # first-wins here would write normalize's trims into an arbitrary one
+        # of two library files claiming the same tone.
+        raise click.ClickException(
+            f"{len(hits)} library tones are named {name!r}: "
+            + ", ".join(str(h) for h in hits)
+            + " — rename one so the name identifies exactly one .hsp")
+    return hits[0] if hits else None
 
 
 # --- device: network control of a Line 6 Helix Stadium --------------------
@@ -129,6 +137,49 @@ _SETLIST_HELP = ("'user' (the preset POOL, where every user preset lives), "
                  "'factory', or a device setlist NAME (e.g. 'Throwaway' — "
                  "matched case-insensitively; setlists hold REFERENCES to "
                  "pool presets).")
+
+
+def _snapshot_root() -> Path:
+    """Where device photographs live: $HELIXGEN_BACKUP, else <home>/backup."""
+    import os
+    from helixgen.home import helixgen_home
+    env = os.environ.get("HELIXGEN_BACKUP")
+    return Path(env).expanduser() if env else helixgen_home() / "backup"
+
+
+def _snapshot_at_ref(root: Path, git_ref: str):
+    """Materialise the snapshot tree as of ``git_ref`` into a temp dir.
+
+    Returns ``(path, tempdir)``; the caller removes the tempdir. Restoring
+    "the way it was last Tuesday" is the whole reason the photograph is
+    git-tracked, so this reads the tree out of git rather than asking the
+    user to check anything out (which would disturb their working tree).
+    """
+    import subprocess, tempfile
+    root = Path(root)
+    try:
+        top = subprocess.run(["git", "-C", str(root), "rev-parse",
+                              "--show-toplevel"],
+                             check=True, capture_output=True, text=True
+                             ).stdout.strip()
+        rel = root.resolve().relative_to(Path(top).resolve())
+    except (OSError, subprocess.CalledProcessError, ValueError) as e:
+        raise click.ClickException(
+            f"--from {git_ref} needs {root} to be inside a git repo: {e}") from e
+    tmp = tempfile.mkdtemp(prefix="helixgen-snap-")
+    spec = f"{git_ref}:{rel.as_posix()}" if str(rel) != "." else git_ref
+    try:
+        archive = subprocess.run(["git", "-C", top, "archive", spec],
+                                 check=True, capture_output=True).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise click.ClickException(
+            f"cannot read the snapshot at {git_ref}: {e}") from e
+    import io, tarfile
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tf:
+        tf.extractall(tmp)
+    return Path(tmp), tmp
 
 
 def _resolve_ip_or_fail(explicit=None):
@@ -446,7 +497,7 @@ def _resolve_setlist_dest(h, name: str):
             f"no device setlist named {name!r}; device setlists: {have}. "
             "Also valid: 'user' (the preset pool) and 'factory'.")
     # Return the setlist's CANONICAL display name, not the user's typed case
-    # (the match is case-insensitive but the local manifest's setlist keys
+    # (the match is case-insensitive but the device's setlist names
     # are case-sensitive — a typed-case label would mint a duplicate).
     label = name
     try:
@@ -540,7 +591,7 @@ def _auto_upload_irs(ip: str, hashes) -> None:
 
     Thin echo-formatting wrapper around the shared core in
     ``helixgen.device.ir_upload`` (backlog #6 — the same core also backs
-    ``device sync``). Unlike ``device sync``, which tolerates a per-IR upload
+    ``device copy``). Unlike ``device copy``, which tolerates a per-IR upload
     failure and keeps going (a sync run shouldn't be all-or-nothing on IR
     trouble), ``device install --auto-irs`` **aborts the whole install** on a
     hard upload error (``push_ir`` itself failing, e.g. a dropped
@@ -567,104 +618,6 @@ def _auto_upload_irs(ip: str, hashes) -> None:
     if upload_errors:
         raise click.ClickException(
             "IR upload failed: " + "; ".join(upload_errors))
-
-
-def _tone_by_cid(cid: int):
-    """Return the tone name whose observed device cid matches, or None. Reads
-    the per-device observation files (design §3 — cid/posi no longer lives in
-    the manifest)."""
-    from helixgen.device import observations as obsmod
-    return obsmod.lookup_name_by_cid(cid)
-
-
-def _record_placement(*, setlist: str, posi: int, name: str, cid: int | None,
-                      source_kind: str, source_path: str | None = None,
-                      model: str | None = None, serial: str | None = None,
-                      setlist_pos: int | None = None) -> None:
-    """Record a device placement: the desired ``slot``/setlist membership go
-    into the tone-library manifest (intent); the observed ``cid``/``posi`` go
-    into ``devices/<serial>.json`` (observation). ``posi`` is the POOL
-    position; ``setlist_pos`` (when the write targeted a named setlist) is the
-    tone's position within that setlist's membership order. Best-effort: a
-    failure warns but never fails the device command (the write already
-    succeeded)."""
-    try:
-        SetlistManifest, _ = _manifest()
-
-        m = SetlistManifest.load()
-        if name not in m.tones:
-            if source_path and str(source_path).endswith(".hsp"):
-                name = m.register_tone(source_path, source="import-local")
-            elif source_path:
-                # a pushed .sbe (or other local source): store the path
-                # verbatim. It IS device content, so `device sync` re-pushes
-                # those bytes unchanged and `ir-prune` decodes them for IR
-                # references — neither force-parses it as a .hsp (hc-vko/#68i).
-                m.tones[name] = {"path": str(source_path), "content_hash": None,
-                                 "source": "push", "slot": None}
-            else:
-                m.register_pathless(name, source="save" if source_kind == "save" else "create")
-        slot = _slot_from_posi(posi)
-        if slot:
-            m.mark_on_device(name, slot)
-        if setlist and setlist != "user":
-            m.add_to_setlist(setlist, name, pos=setlist_pos)
-        m.save()
-        # Observed placement -> the connected device's observation file.
-        if cid is not None and serial:
-            from helixgen.device import observations as obsmod
-            obs = obsmod.load_observations(serial)
-            obs.tones[name] = {"cid": cid, "posi": posi}
-            obsmod.save_observations(obs)
-    except Exception as e:  # noqa: BLE001 — advisory, never fatal
-        click.echo(f"warning: could not update tone library: {e}", err=True)
-
-
-def _slot_from_posi(posi):
-    from helixgen.device.manifest import _posi_to_slot
-    return _posi_to_slot(posi)
-
-
-def _ledger_rename(cid: int, new_name: str) -> None:
-    """Best-effort: reflect a device rename in the tone library — the
-    manifest's intent record AND the per-device observation file's ``tones``
-    key (Minor 5: the observation file used to keep the stale name)."""
-    try:
-        SetlistManifest, _ = _manifest()
-
-        m = SetlistManifest.load()
-        old = _tone_by_cid(cid)
-        if old and old != new_name:
-            if old in m.tones:
-                m.tones[new_name] = m.tones.pop(old)
-                for rec in m.setlists_map.values():
-                    rec["tones"] = [new_name if t == old else t for t in rec["tones"]]
-                m.save()
-            from helixgen.device import observations as obsmod
-            obsmod.rename_tone(old, new_name)
-    except Exception as e:  # noqa: BLE001
-        click.echo(f"warning: could not update tone library: {e}", err=True)
-
-
-def _ledger_remove(cid: int) -> None:
-    """Best-effort: drop a deleted preset from the tone library (clears its
-    desired on-device slot; the tone stays in the library) and drop its key
-    from the per-device observation file's ``tones`` map (Minor 5). The rest
-    of that observation file self-heals on the next sync."""
-    try:
-        SetlistManifest, _ = _manifest()
-
-        m = SetlistManifest.load()
-        name = _tone_by_cid(cid)
-        if name:
-            if name in m.tones:
-                m.tones[name]["slot"] = None
-                m.tones[name].pop("auto_marked", None)
-                m.save()
-            from helixgen.device import observations as obsmod
-            obsmod.remove_tone(name)
-    except Exception as e:  # noqa: BLE001
-        click.echo(f"warning: could not update tone library: {e}", err=True)
 
 
 def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
@@ -734,31 +687,49 @@ def device() -> None:
     resolves the IP automatically (--ip > $HELIXGEN_HELIX_IP > the persisted
     device record — no built-in default; with none set, verbs fail fast).
 
+    THE MODEL IS FILE COPY, NOT SYNC. `device copy <tone.hsp> --to <setlist>`
+    puts one authored preset on the device, upserting by the file's meta.name:
+    if that name is already there its content is updated IN PLACE, otherwise
+    it is pooled and referenced. `device rm` takes one out, `device move`
+    repositions one. Each call touches exactly the preset you name — nothing
+    reconciles a whole library in the background.
+
+    THE DEVICE IS THE TRUTH about what is loaded and in what order. There is
+    no local intent file: read membership and order with `device setlist list`
+    / `device list`. The retired ~/.helixgen/setlists/manifest.json and
+    `device copy` are GONE — if you have a legacy manifest, the migration is
+    `device backup`, commit, delete the file. The tone LIBRARY
+    ($HELIXGEN_HOME/library/tones/*.hsp) is just a directory; a tone is in it
+    exactly when its .hsp is there.
+
+    IDENTITY IS THE DISPLAY NAME, and device names are not unique — an
+    ambiguous name is an ERROR naming the competing cids, never a guess.
+    Pass --cid to disambiguate.
+
+    BACKUP / RESTORE: `device backup` photographs the device into
+    $HELIXGEN_HOME/backup/<serial>/ (pool/*.sbe = the device's own bytes,
+    setlists/*.json = order, plus IRs) — git-trackable, and `--dry-run` is the
+    diff against the live device. `device restore` replays one; `--prune`
+    (which DELETES presets absent from the snapshot) is the one destructive
+    path here. `device decode` renders a .sbe as JSON for git diffs.
+
     READ vs WRITE: verbs that only read/list device state are safe (info,
-    active, read, list, setlists, list-irs, blocks, params, settings
-    list/get, tuner, meters, measure, watch, backup, pull, pull-ir, plus the
-    offline verbs local-list, library, slots list, globaleq list and
-    --list/--dry-run modes).
+    active, read, list, setlists, setlist list, list-irs, blocks, params,
+    settings list/get, tuner, meters, measure, watch, backup, pull, pull-ir,
+    plus the offline verbs decode, globaleq list and --list/--dry-run modes).
     Everything else MUTATES the device — and the live-ops verbs (snapshot,
     bypass, model, set-param) change the ACTIVE tone immediately. Prefer an
     empty/expendable slot when testing writes.
 
-    The Stadium's network stack is flaky: if a verb/sync drops or stalls,
-    re-run it — `sync` and the live-ops verbs are idempotent +
-    auto-reconnecting; the slot-writing verbs (install/save/push/create)
-    fail safe on an occupied slot instead; `setlist import-hss` is the one
-    NOT-idempotent retry (see its --help). If it keeps dropping, reboot
-    the Helix.
+    The Stadium's network stack is flaky: if a verb drops or stalls, re-run it
+    — `copy` and the live-ops verbs are idempotent + auto-reconnecting, and
+    the slot-writing verbs fail safe on an occupied slot instead;
+    `setlist import-hss` is the one NOT-idempotent retry (see its --help). If
+    it keeps dropping, reboot the Helix.
 
-    The tone library manifest (~/.helixgen/setlists/manifest.json, override
-    $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json auto-migrates on
-    first load) is the single management record: every generated tone
-    auto-registers there; "on the device" ⟺ the tone has a slot; `device
-    sync` mirrors ONLY managed tones and never touches untracked device
-    presets. Presets live once in the pool (cid container -2) and setlists
-    hold references to them. A specific Helix's OBSERVED placement (cid/posi)
-    lives separately, in ~/.helixgen/devices/<serial>.json — not in the
-    manifest.
+    Presets live once in the pool (cid container -2) and setlists hold
+    references to them, so one tone can be in many setlists at once and
+    removing it from one leaves the others untouched.
 
     SEE ALSO: docs/CLI.md "Device commands" for the full per-verb reference.
 
@@ -1652,7 +1623,6 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
                 new_cid = h.reference_into_setlist(container, src_cid, pos)
             else:
                 new_cid = h._raw.create_from(src_cid, container, pos)
-            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1665,8 +1635,6 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
                    f"in setlist {label!r} at position {pos}")
         return
     click.echo(f"created cid {new_cid}")
-    _record_placement(setlist=setlist, posi=pos, name=f"(copy of cid {src_cid})",
-                      cid=new_cid, source_kind="copy", serial=serial)
 
 
 @device.command(name="rename")
@@ -1688,7 +1656,6 @@ def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
     if not ok:
         raise click.ClickException(f"failed to rename cid {cid}")
     click.echo(f"renamed cid {cid} -> {new_name!r}")
-    _ledger_rename(cid, new_name)
 
 
 @device.command(name="delete")
@@ -1736,7 +1703,6 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
                    f"{label!r} — the pool preset was not touched")
         return
     click.echo(f"deleted cid {cid}")
-    _ledger_remove(cid)
 
 
 @device.command(name="set-param")
@@ -2008,10 +1974,11 @@ def device_reorder(setlist: str, target: str, to_index: int,
     real cid) when it doesn't. --to is bounds-validated against the
     container's current length.
 
-    This is a direct, immediate DEVICE-side write — distinct from the local
-    manifest's `device slots reorder`, which only edits the tone library's
-    recorded order and takes effect on the device on the next `device sync`
-    (which may then reorder things right back to the manifest's order).
+    This is a direct, immediate DEVICE-side write. For the ordinary
+    name-addressed form of the same move, prefer `device move <name> --in
+    <setlist> --to <N>`; this verb is the cid-first / container-level escape
+    hatch (reordering the setlist list itself, or an item whose display name
+    is ambiguous).
     """
     HelixClient, HelixError = _client()
     from helixgen.device import reorder as R
@@ -2305,7 +2272,6 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
 
             new_cid, pool_pos, ref_cid = _install_via_dest(
                 h, kind, container, label, pos, _writer)
-            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -2315,9 +2281,6 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     where = (f"pool slot {pool_pos}, referenced into setlist {label!r} at {pos}"
              if kind == "setlist" else f"{label} slot {pos}")
     click.echo(f"saved edit buffer as cid {new_cid} ({name!r}) in {where}")
-    _record_placement(setlist=label, posi=pool_pos, name=name, cid=new_cid,
-                      source_kind="edit-buffer", serial=serial,
-                      setlist_pos=pos if kind == "setlist" else None)
 
 
 @device.command(name="list-irs")
@@ -2617,6 +2580,165 @@ def device_push_ir(wav: Path, ip: str) -> None:
         click.echo(f"uploaded {res['name']} ({hh}) — {res.get('note')}", err=True)
 
 
+# --- the file-copy model: copy / rm / move (2026-09-09 design) -------------
+
+@device.command(name="copy")
+@click.argument("hsp_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--to", "setlist", default=None,
+              help="Destination setlist NAME (case-insensitive). Omit to put "
+                   "the preset in the POOL with no setlist reference.")
+@click.option("--pos", type=int, default=None,
+              help="Reference position in the setlist. Omitted = append. An "
+                   "OCCUPIED position is REFUSED, not insert-shifted (#69) — "
+                   "copy, then `device move`.")
+@click.option("--no-irs", is_flag=True, default=False,
+              help="Skip IR upload. By default a copy uploads every IR the "
+                   "tone references, because a copy that leaves a cab reading "
+                   "'No Model' is a broken copy.")
+@click.option("--cid", type=int, default=None,
+              help="Disambiguate a duplicate preset NAME by content id.")
+@click.option("--json", "as_json", is_flag=True, default=False)
+@_device_option
+@_locked("library", "irs", verb="copy")
+def device_copy(hsp_file: Path, setlist, pos, no_irs, cid, as_json, ip, port):
+    """Copy an authored .hsp onto the device. Upserts by the file's meta.name.
+
+    If a preset of that name is already in the target, its content is UPDATED
+    IN PLACE (a non-activating write — the player's live tone is undisturbed).
+    Otherwise the tone is installed into the pool and referenced at --pos.
+    So re-copying an edited .hsp is how you push a revision: there is no
+    separate update verb.
+
+    Transcodes the .hsp into the device's native format — any block chain,
+    full fidelity, no template (dual-amp, parallel splits, snapshots,
+    footswitch/EXP all synthesized). IRs upload by default; --no-irs opts out.
+
+    Identity is the display NAME. Device names are not unique: an ambiguous
+    name is an ERROR listing the competing cids, never a guess — pass --cid.
+    MUTATES the device. EXPERIMENTAL.
+    """
+    from helixgen.device import copy as _copy
+    HelixClient, HelixError = _client()
+    try:
+        with HelixClient(ip, port) as h:
+            res = _copy.copy_tone(h, hsp_file, setlist=setlist, pos=pos,
+                                  with_irs=not no_irs, cid=cid)
+    except _copy.AmbiguousName as e:
+        raise click.ClickException(str(e)) from e
+    except (HelixError, OSError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+    else:
+        where = f" in {res['setlist']!r}" if res.get("setlist") else " in the pool"
+        click.echo(f"{res['action']} {res['name']!r} (cid {res['cid']}){where}")
+        for err in res.get("errors") or []:
+            click.echo(f"  ! {err}", err=True)
+    if not res.get("ok"):
+        raise SystemExit(1)
+
+
+@device.command(name="rm")
+@click.argument("name")
+@click.option("--from", "setlist", required=True,
+              help="Setlist to drop the reference from (case-insensitive).")
+@click.option("--also-pool", is_flag=True, default=False,
+              help="Also delete the POOL preset. Refused when another setlist "
+                   "still references it — this never orphans.")
+@click.option("--cid", type=int, default=None,
+              help="Disambiguate a duplicate preset NAME by content id.")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation.")
+@click.option("--json", "as_json", is_flag=True, default=False)
+@_device_option
+@_locked("library", verb="rm")
+def device_rm(name, setlist, also_pool, cid, yes, as_json, ip, port):
+    """Take a preset out of a setlist. The pool preset survives by default.
+
+    Drops the setlist's REFERENCE. The pooled content stays — and stays
+    available to every other setlist that references it — unless --also-pool.
+    MUTATES the device. EXPERIMENTAL.
+    """
+    from helixgen.device import copy as _copy
+    HelixClient, HelixError = _client()
+    if also_pool and not yes:
+        click.confirm(f"delete pool preset {name!r} outright?", abort=True)
+    try:
+        with HelixClient(ip, port) as h:
+            res = _copy.remove_tone(h, name, setlist=setlist,
+                                    also_pool=also_pool, cid=cid)
+    except _copy.AmbiguousName as e:
+        raise click.ClickException(str(e)) from e
+    except (HelixError, OSError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+    else:
+        click.echo(f"removed {res['name']!r} from {setlist!r}"
+                   + (" (pool preset deleted)" if res.get("removed_pool") else ""))
+        for err in res.get("errors") or []:
+            click.echo(f"  ! {err}", err=True)
+    if not res.get("ok"):
+        raise SystemExit(1)
+
+
+@device.command(name="move")
+@click.argument("name")
+@click.option("--in", "setlist", required=True,
+              help="Setlist to reorder within (case-insensitive).")
+@click.option("--to", "to", type=int, required=True,
+              help="Destination position (0-based) in the setlist order.")
+@click.option("--cid", type=int, default=None,
+              help="Disambiguate a duplicate preset NAME by content id.")
+@click.option("--json", "as_json", is_flag=True, default=False)
+@_device_option
+@_locked("library", verb="move")
+def device_move(name, setlist, to, cid, as_json, ip, port):
+    """Reposition a preset within a setlist's order.
+
+    A DEVICE-side reorder: it takes effect immediately and there is nothing
+    local to update afterwards. MUTATES the device. EXPERIMENTAL.
+    """
+    from helixgen.device import copy as _copy
+    HelixClient, HelixError = _client()
+    try:
+        with HelixClient(ip, port) as h:
+            res = _copy.move_tone(h, name, setlist=setlist, to=to, cid=cid)
+    except _copy.AmbiguousName as e:
+        raise click.ClickException(str(e)) from e
+    except (HelixError, OSError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+    else:
+        click.echo(f"moved {res['name']!r} {res.get('from')} -> {res.get('to')}"
+                   f" in {setlist!r}")
+    if not res.get("ok"):
+        raise SystemExit(1)
+
+
+@device.command(name="decode")
+@click.argument("source", type=click.Path(allow_dash=True, dir_okay=False,
+                                          path_type=Path))
+@click.option("--indent", type=int, default=2, show_default=True)
+def device_decode(source: Path, indent: int) -> None:
+    """Print a .sbe content blob as native JSON. Wholly OFFLINE.
+
+    Renders the device's own content structure (4CC keys) losslessly — no
+    transcoder, so nothing is dropped the way `device to-hsp` drops Command
+    Center and MIDI CC bindings. This is what `device backup` wires as git's
+    textconv driver, so a photograph diffs as readable JSON instead of binary.
+    Reads stdin when SOURCE is '-'.
+    """
+    from helixgen.device import content as _content
+    blob = (sys.stdin.buffer.read() if str(source) == "-"
+            else Path(source).read_bytes())
+    try:
+        doc = _content.decode_any(blob)
+    except Exception as e:  # noqa: BLE001 - a bad blob is a user error here
+        raise click.ClickException(f"not a device content blob: {e}") from e
+    click.echo(json.dumps(doc, indent=indent, sort_keys=True, default=repr))
+
+
 @device.command(name="pull-ir")
 @click.argument("filename")
 @click.argument("outfile", type=click.Path(dir_okay=False, path_type=Path))
@@ -2643,182 +2765,63 @@ def device_pull_ir(filename: str, outfile: Path, ip: str) -> None:
     click.echo(f"downloaded {filename} -> {outfile}")
 
 
-@device.command(name="install")
-@click.argument("hsp_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.argument("name")
-@click.option("--pos", type=int, required=True, help="Destination slot (posi); must be empty.")
-@click.option("--setlist", default="user", show_default=True,
-              help="Destination: " + _SETLIST_HELP)
-@click.option("--auto-irs", is_flag=True, default=False,
-              help="Upload any referenced IRs that aren't on the device yet "
-                   "(resolved from your local IR mapping.json). A WEDGED IR "
-                   "(backing file resolves, no registry entry) is detected "
-                   "via a confirmed listing refresh, reported missing, and "
-                   "re-pushed — the re-push removes the orphaned file and "
-                   "re-imports (self-heal, backlog #93). Only when the "
-                   "refresh can't be confirmed (empty or failed -11 listing) "
-                   "does the wedge still read as already-present; "
-                   "`device delete-ir --force-wedge` is the sure clear then.")
-@_device_option
-# `irs` is held even without --auto-irs: the IR presence check runs either
-# way, and its wedge discriminator (confirm_ir_listed, #93) may issue a
-# state-neutral rename nudge — an IR-container write
-@_locked("library", "irs", verb="install")
-def device_install(hsp_file: Path, name: str, pos: int, setlist: str,
-                   auto_irs: bool, ip: str, port: int) -> None:
-    """Author a helixgen .hsp onto the device as a new, playable preset.
-
-    Transcodes the .hsp straight into the device's native content format and
-    installs it into an empty slot — any block chain, full fidelity, no
-    template (dual-amp, parallel splits, snapshots, footswitch/EXP
-    assignments all synthesized). MUTATES the device (the slot must be
-    empty; the active tone is untouched). With a NAMED --setlist the preset
-    lands in the POOL (lowest empty slot) and a REFERENCE is added to the
-    setlist at --pos.
-
-    If the preset references user IRs, pass --auto-irs so any that aren't on
-    the device are uploaded first (resolved from the local mapping.json) —
-    otherwise those cabs come up SILENT until the IRs are imported. For
-    managed multi-tone workflows prefer `device sync`. EXPERIMENTAL.
-    """
-    from helixgen.hsp import read_hsp
-    HelixClient, HelixError = _client()
-
-    body = read_hsp(hsp_file)
-    try:
-        with HelixClient(ip, port) as h, h.mutating():
-            # The whole sequence runs under one 2001 subscription: the
-            # emptiness reads that decide where to write — and that authorize
-            # the failed-write cleanup to delete by (name, pos) — must not be
-            # answered from a lagging container index (#38).
-            kind, container, label = _resolve_setlist_dest(h, setlist)
-
-            def _writer(cont, cpos):
-                # _install_hsp_open does its own strict emptiness check for
-                # the pool path; the setlist path just computed a fresh
-                # lowest-empty pool posi, so skip re-checking it. That is
-                # known_empty, NOT force: the posi is ours, so a stub left by
-                # a failed write must still be cleaned up (#38).
-                return _install_hsp_open(h, body, cont, cpos, name,
-                                         setlist_label=label,
-                                         auto_irs=auto_irs, ip=ip,
-                                         known_empty=(kind == "setlist"))
-
-            cid, pool_pos, _ref = _install_via_dest(
-                h, kind, container, label, pos, _writer)
-            serial = _serial_of(h, ip)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
-    where = (f"pool slot {pool_pos}, referenced into setlist {label!r} at {pos}"
-             if kind == "setlist" else f"{label} slot {pos}")
-    click.echo(f"installed {hsp_file.name} as cid {cid} ({name!r}) in {where}")
-    _record_placement(setlist=label, posi=pool_pos, name=name, cid=cid,
-                      source_kind="hsp", source_path=str(hsp_file.resolve()),
-                      serial=serial,
-                      setlist_pos=pos if kind == "setlist" else None)
-
-
-# --- device setlist: the local manifest of desired setlist membership -------
-
 @device.group(name="setlist")
 def device_setlist() -> None:
-    """Manage the local setlist manifest (~/.helixgen/setlists/manifest.json,
-    override $HELIXGEN_SETLISTS; a legacy ~/.helixgen/setlists.json
-    auto-migrates on first load).
+    """Manage the DEVICE's setlists (create / rename / delete / duplicate),
+    and list what they reference.
 
-    A tone is added to a setlist here (desired membership); `device sync` then
-    pushes that membership onto the device as a preset pool + references. The
-    manifest is never hand-edited — use these verbs.
+    Membership and order are device state (2026-09-09 file-copy design) —
+    there is no local manifest. Put a preset into a setlist with
+    `device copy <tone.hsp> --to <setlist>`, take one out with `device rm`,
+    and reposition one with `device move`.
     """
 
 
 @device_setlist.command(name="list")
-@click.option("--json", "as_json", is_flag=True, default=False,
-              help="Emit the whole manifest document as JSON.")
-def device_setlist_list(as_json: bool) -> None:
-    """List the manifest's setlists with their tone counts and members."""
-    SetlistManifest, _ = _manifest()
+@click.argument("setlist", required=False)
+@click.option("--json", "as_json", is_flag=True, default=False)
+@_device_option
+@_reads("library")
+def device_setlist_list(setlist, as_json: bool, ip: str, port: int) -> None:
+    """List the device's setlists and the presets they reference, IN ORDER.
 
-    m = SetlistManifest.load()
-    if as_json:
-        click.echo(json.dumps(m.to_dict(), indent=2))
-        return
-    setlists = m.setlists()
-    if not setlists:
-        click.echo("(no setlists in manifest)")
-        return
-    for sl in setlists:
-        tones = m.tones_in(sl)
-        click.echo(f"{sl}  ({len(tones)} tone{'s' if len(tones) != 1 else ''})")
-        for t in tones:
-            click.echo(f"    {t}")
-
-
-@device_setlist.command(name="add")
-@click.argument("setlist")
-@click.argument("hsp_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--pos", type=int, default=None,
-              help="Insert at this 0-based position (default: append).")
-def device_setlist_add_cmd(setlist: str, hsp_file: Path, pos: int | None) -> None:
-    """Add an authored .hsp tone to a setlist's membership (auto-creates the setlist).
-
-    A tone may belong to many setlists (it's referenced once in the device pool
-    and shared) — adding one that's already elsewhere is expected, not a dup.
-    Idempotent within a setlist; only errors if the tone's name is already
-    registered to a different .hsp file (names must be unique).
+    Reads the DEVICE. Membership and order are device state (2026-09-09
+    design) — there is no local manifest to consult and nothing to keep in
+    agreement. Read-only. With SETLIST, lists just that one.
     """
-    SetlistManifest, ManifestError = _manifest()
-
-    m = SetlistManifest.load()
+    HelixClient, HelixError = _client()
+    from helixgen.device import Container
+    from helixgen.device.client import Cctp
     try:
-        name = m.add_tone(setlist, hsp_file, pos=pos)
-    except ManifestError as e:
+        with HelixClient(ip, port) as h:
+            pool = {e.get("cid_"): e.get("name", "")
+                    for e in h.list_presets(Container.POOL, strict=True)}
+            out = {}
+            for sl in h.list_setlists(strict=True):
+                nm = str(sl.get("name") or "")
+                if setlist and nm.casefold() != setlist.casefold():
+                    continue
+                refs = sorted(
+                    (m for m in h.list_container(sl.get("cid_"), strict=True)
+                     if m.get("cctp") == Cctp.REFERENCE),
+                    key=lambda m: m.get("posi", 1 << 30))
+                out[nm] = [pool.get(m.get("rcid")) for m in refs]
+    except HelixError as e:
         raise click.ClickException(str(e)) from e
-    m.save()
-    where = "appended to" if pos is None else f"inserted at {pos} in"
-    click.echo(f"added {name!r} ({where} setlist {setlist!r})")
-
-
-@device_setlist.command(name="remove")
-@click.argument("setlist")
-@click.argument("tone_name")
-def device_setlist_remove_cmd(setlist: str, tone_name: str) -> None:
-    """Drop a tone from a setlist's membership (TONE_NAME = display name).
-
-    Local-only (run `device sync` to apply). The tone stays in the registry
-    if another setlist still references it, or if it carries an explicit
-    device mark (`device add` / a concrete slot); an implicit mark
-    (auto-stamped when it joined a synced setlist) dies with its last
-    membership, so add-then-remove is a no-op.
-    """
-    SetlistManifest, _ = _manifest()
-
-    m = SetlistManifest.load()
-    if not m.remove_tone(setlist, tone_name):
-        raise click.ClickException(
-            f"{tone_name!r} is not in setlist {setlist!r} "
-            f"(try `helixgen device setlist list`)")
-    m.save()
-    click.echo(f"removed {tone_name!r} from setlist {setlist!r}")
-
-
-@device_setlist.command(name="create-local")
-@click.argument("setlist")
-def device_setlist_create_local(setlist: str) -> None:
-    """Create an empty setlist in the LOCAL manifest only (no device).
-
-    To also create it on the device, run `helixgen device setlist create`
-    (which records it locally too).
-    """
-    SetlistManifest, _ = _manifest()
-
-    m = SetlistManifest.load()
-    m.create_setlist(setlist)
-    m.save()
-    click.echo(f"created local setlist {setlist!r} (manifest only — "
-               f"`device setlist create` also creates it on the device)")
+    except OSError as e:
+        raise click.ClickException(str(e)) from e
+    if setlist and not out:
+        raise click.ClickException(f"setlist {setlist!r} not found on the device")
+    if as_json:
+        click.echo(json.dumps(out, indent=2))
+        return
+    if not out:
+        click.echo("(no setlists on the device)")
+        return
+    for nm, names in out.items():
+        click.echo(f"{nm}  ({len(names)} preset{'s' if len(names) != 1 else ''})")
+        for i, n in enumerate(names):
+            click.echo(f"    {i}: {n}")
 
 
 @device_setlist.command(name="create")
@@ -2826,14 +2829,13 @@ def device_setlist_create_local(setlist: str) -> None:
 @_device_option
 @_locked("library", verb="setlist create")
 def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
-    """Create a new empty setlist ON THE DEVICE (and in the local manifest).
+    """Create a new empty setlist ON THE DEVICE.
 
     Uses the device's own create command (/CreateContent under the setlists
     root) — no Stadium app needed. Errors if a setlist with that name already
     exists on the device.
     """
     HelixClient, HelixError = _client()
-    SetlistManifest, _ = _manifest()
 
     try:
         with HelixClient(ip, port) as h:
@@ -2849,12 +2851,6 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
         raise click.ClickException(str(e)) from e
     if cid is None:
         raise click.ClickException(f"device refused to create setlist {setlist!r}")
-    try:
-        m = SetlistManifest.load()
-        m.create_setlist(setlist)
-        m.save()
-    except Exception as e:  # noqa: BLE001 — advisory; the device write succeeded
-        click.echo(f"warning: could not update tone library: {e}", err=True)
     click.echo(f"created setlist {setlist!r} on the device (cid {cid})")
 
 
@@ -2864,9 +2860,8 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
 @_device_option
 @_locked("library", verb="setlist rename")
 def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -> None:
-    """Rename a setlist ON THE DEVICE (and in the local manifest, if tracked)."""
+    """Rename a setlist ON THE DEVICE."""
     HelixClient, HelixError = _client()
-    SetlistManifest, ManifestError = _manifest()
 
     try:
         with HelixClient(ip, port) as h:
@@ -2884,15 +2879,6 @@ def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -
         raise click.ClickException(str(e)) from e
     if not ok:
         raise click.ClickException(f"failed to rename setlist {setlist!r}")
-    try:
-        m = SetlistManifest.load()
-        if m.rename_setlist(setlist, new_name):
-            m.save()
-    except ManifestError as e:
-        click.echo(f"warning: device renamed, but the local manifest kept "
-                   f"{setlist!r}: {e}", err=True)
-    except Exception as e:  # noqa: BLE001 — advisory
-        click.echo(f"warning: could not update tone library: {e}", err=True)
     click.echo(f"renamed setlist {setlist!r} -> {new_name!r} (cid {cid})")
 
 
@@ -2905,11 +2891,8 @@ def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> No
     """Delete a setlist ON THE DEVICE. Its references die with it — the pool
     presets they pointed at are NEVER deleted (never-orphan).
 
-    A local manifest setlist of the same name is kept as a local-only draft
-    (marked unsynced).
     """
     HelixClient, HelixError = _client()
-    SetlistManifest, _ = _manifest()
 
     try:
         with HelixClient(ip, port) as h:
@@ -2928,13 +2911,6 @@ def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> No
         raise click.ClickException(str(e)) from e
     if not ok:
         raise click.ClickException(f"failed to delete setlist {setlist!r}")
-    try:
-        m = SetlistManifest.load()
-        if setlist in m.setlists_map:
-            m.set_setlist_synced(setlist, False)
-            m.save()
-    except Exception as e:  # noqa: BLE001 — advisory
-        click.echo(f"warning: could not update tone library: {e}", err=True)
     click.echo(f"deleted setlist {setlist!r} from the device — its pool "
                f"presets were not touched")
 
@@ -2970,15 +2946,6 @@ def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
-    if created:
-        try:
-            SetlistManifest, _ = _manifest()
-
-            m = SetlistManifest.load()
-            m.create_setlist(dst)
-            m.save()
-        except Exception as e:  # noqa: BLE001 — advisory; device write succeeded
-            click.echo(f"warning: could not update tone library: {e}", err=True)
     click.echo(f"duplicated setlist {src!r} -> {dst!r} "
                f"({'created, ' if created else ''}{copied} reference(s) copied)")
 
@@ -3004,7 +2971,7 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     installed into the device POOL (non-activating) and referenced into a
     device setlist (created if absent) in the bundle's slot order — reusing the
     same install + setlist-create + reference primitives as `device install` /
-    `device sync`.
+    `device copy`.
 
     Both the container framing (header/gzip/tar/manifest/128-slot/empty-sentinel)
     and the FILLED-slot framing are pinned against real captured exports. A
@@ -3066,7 +3033,6 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     click.echo(f"imported {len(installed)}/{len(filled)} preset(s) from {hss_file.name} "
                f"into setlist {result['setlist']!r} "
                f"({'created, ' if result['created'] else ''}cid {result['cid']})")
-    _hss_record_import_manifest(result, hss_mod)
     for w in result.get("warnings", []):
         click.echo(f"  warning: {w}", err=True)
     if errors:
@@ -3117,338 +3083,6 @@ def device_setlist_export_hss(setlist: str, out_file: Path, ip: str, port: int) 
         click.echo(f"  warning: skipped {s}", err=True)
 
 
-@device_setlist.command(name="sync-on")
-@click.argument("setlist")
-def device_setlist_sync_on(setlist: str) -> None:
-    """Mark a setlist as device-synced (marks all its tones for the device)."""
-    SetlistManifest, _ = _manifest()
-
-    m = SetlistManifest.load()
-    m.set_setlist_synced(setlist, True)
-    m.save()
-    click.echo(f"setlist {setlist!r} is now synced; run `helixgen device sync {setlist}`")
-
-
-@device_setlist.command(name="sync-off")
-@click.argument("setlist")
-def device_setlist_sync_off(setlist: str) -> None:
-    """Mark a setlist as a local-only draft (not mirrored to the device)."""
-    SetlistManifest, _ = _manifest()
-
-    m = SetlistManifest.load()
-    m.set_setlist_synced(setlist, False)
-    m.save()
-    click.echo(f"setlist {setlist!r} is now a local-only draft")
-
-
-@device.command(name="add")
-@click.argument("tone")
-@click.option("--slot", default="auto",
-              help="Only 'auto' (the default) is accepted: sync picks the address. "
-                   "An explicit label ('1A'..'128D') is REJECTED — targeted "
-                   "placement is unimplemented (backlog #30), and the manifest "
-                   "used to record the label while sync silently ignored it.")
-def device_add_cmd(tone: str, slot: str) -> None:
-    """Mark a library tone for the device (placed on the next `device sync`).
-
-    `--slot` accepts only 'auto'. An explicit slot label is refused rather
-    than silently ignored: sync never converted the recorded label into a
-    device address (it installs at the lowest empty slot), so the flag
-    reported success and changed nothing. See backlog #30.
-    """
-    SetlistManifest, ManifestError = _manifest()
-
-    if slot != "auto":
-        raise click.ClickException(
-            f"--slot {slot!r} is not supported: targeted placement is "
-            f"unimplemented (backlog #30). `device sync` installs at the "
-            f"lowest empty slot regardless of the label, so recording {slot!r} "
-            f"would report a placement that never happens. Use --slot auto "
-            f"(the default), then move the preset with `device reorder` "
-            f"(`device reorder -2 <name> --to <N>` for a pool-only tone).")
-
-    m = SetlistManifest.load()
-    try:
-        m.mark_on_device(tone, slot)
-    except ManifestError as e:
-        raise click.ClickException(str(e)) from e
-    m.save()
-    click.echo(f"{tone!r} marked for device (slot {slot})")
-
-
-@device.command(name="unsync")
-@click.argument("tone")
-def device_unsync_cmd(tone: str) -> None:
-    """Take a tone off the device on next sync (keeps it in the library).
-
-    Also removes the tone from every SYNCED setlist's membership (a synced
-    membership would put it right back on the next sync); the output names
-    the setlists it was pulled from. Local-only draft setlists keep it.
-    """
-    SetlistManifest, ManifestError = _manifest()
-
-    m = SetlistManifest.load()
-    try:
-        pulled = m.unsync(tone)
-    except ManifestError as e:
-        raise click.ClickException(str(e)) from e
-    m.save()
-    msg = f"{tone!r} unsynced (deleted from device on next sync)"
-    if pulled:
-        msg += f"; removed from synced setlists: {', '.join(pulled)}"
-    click.echo(msg)
-
-
-@device.command(name="library")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit raw JSON.")
-def device_library_cmd(as_json: bool) -> None:
-    """List every library tone: slot, on/off device, setlist memberships."""
-    SetlistManifest, _ = _manifest()
-
-    rows = SetlistManifest.load().library()
-    if as_json:
-        click.echo(json.dumps(rows, indent=2))
-        return
-    _echo_library_rows(rows)
-
-
-class _SyncProgressRenderer:
-    """Renders a `sync_setlists` `ProgressEvent` stream to STDERR ONLY, never
-    touching stdout (the summary lines + `--json` output stay byte-for-byte
-    unchanged regardless of whether this renderer is active).
-
-    Two modes, chosen once at construction:
-
-    * **rich** — stderr is a live TTY and `--no-progress` wasn't given: each
-      phase with a stable per-phase total (`install`/`update`/`references`/
-      `delete`/`gc`) gets its own `click.progressbar` (manually driven —
-      events are push-based, so `render_progress()`/`update()`/
-      `render_finish()` are called by hand as events arrive and the phase
-      changes).
-    * **plain** — stderr isn't a TTY, or `--no-progress` was given: no bar,
-      but NOT quiet — a header line per phase start PLUS one line per item
-      (`  <phase> <i>/<n>: <label>`) and one per IR upload, with no
-      carriage-return redraw. A large sync therefore prints on the order of
-      a hundred stderr lines (a 40-tone sync is ~100). `--no-progress` only
-      turns off the rich bar; it NEVER suppresses these per-item lines
-      (there is no fully-quiet progress mode). Safe for redirected/non-TTY
-      stderr (CI logs, `--json` piped to a file, etc).
-
-    The `irs` phase is special-cased in both modes: its `index`/`total` are
-    scoped PER authored tone (they reset for every tone with missing IRs), so
-    it is always rendered as a running line rather than a bar that would
-    visibly reset mid-sync. Critically, `irs` events are NOT a phase
-    transition — the engine emits them INSIDE authoring, interleaved between
-    install/update events for different tones (IR upload happens before that
-    tone's install/update event). Rendering an `irs` line never closes or
-    reopens the enclosing install/update bar/banner, which stays open and
-    current across it.
-
-    Error/skip statuses always get a visible note line, in both modes.
-    """
-
-    def __init__(self, no_progress: bool):
-        self._stream = sys.stderr
-        self.rich = (not no_progress) and self._stream_is_tty()
-        self._phase = None
-        self._bar = None
-
-    def _stream_is_tty(self) -> bool:
-        """Whether stderr is an interactive TTY, degrading to plain (False) for
-        any stream that lacks ``isatty`` or whose ``isatty()`` raises (a closed
-        / broken stderr must never crash the sync -- progress is advisory)."""
-        try:
-            isatty = getattr(self._stream, "isatty", None)
-            return bool(isatty and isatty())
-        except Exception:  # noqa: BLE001 -- broken/closed stderr -> plain mode
-            return False
-
-    def _echo(self, line: str) -> None:
-        click.echo(line, err=True)
-
-    def _close_bar(self) -> None:
-        if self._bar is not None:
-            try:
-                self._bar.render_finish()
-            except Exception:  # noqa: BLE001 — progress is advisory only
-                pass
-            self._bar = None
-
-    def _note(self, phase: str, ev) -> None:
-        if ev.status == "error":
-            self._echo(f"  ! {phase} error: {ev.label}: {ev.detail or 'failed'}")
-        elif ev.status == "skip":
-            detail = f": {ev.detail}" if ev.detail else ""
-            self._echo(f"  - {phase} skip: {ev.label}{detail}")
-
-    def __call__(self, ev) -> None:
-        phase = ev.phase
-
-        if phase == "plan":
-            self._close_bar()
-            self._phase = None
-            self._echo(f"sync: {ev.label}")
-            return
-
-        if phase == "irs":
-            # A lightweight side-channel line, NOT a phase transition: IR
-            # uploads happen INSIDE authoring, interleaved between install/
-            # update events for different tones (see setlist_sync._author).
-            # Do NOT touch self._phase or self._bar here -- closing/reopening
-            # the enclosing install/update bar on every irs event would
-            # finish it early and open a second, duplicate bar for the next
-            # item in that same phase. Its index/total are scoped PER
-            # authored tone (they reset for every tone with missing IRs), so
-            # it is always rendered as a running line rather than a bar.
-            status = f" {ev.status}" if ev.status and ev.status != "ok" else ""
-            self._echo(f"  uploading IR {ev.index}/{ev.total}: {ev.label}{status}")
-            self._note(phase, ev)
-            return
-
-        if phase != self._phase:
-            self._close_bar()
-            self._phase = phase
-            if self.rich and ev.total:
-                bar = click.progressbar(length=ev.total, label=phase,
-                                         file=self._stream)
-                bar.render_progress()
-                self._bar = bar
-            else:
-                self._echo(f"sync: {phase} ({ev.total or 0})")
-
-        if self.rich and self._bar is not None:
-            self._bar.current_item = ev.label
-            self._bar.update(1)
-        else:
-            status = f" {ev.status}" if ev.status and ev.status != "ok" else ""
-            self._echo(f"  {phase} {ev.index}/{ev.total}: {ev.label}{status}")
-
-        self._note(phase, ev)
-
-    def close(self) -> None:
-        """Finish any still-open bar. No terminal event marks the end of the
-        stream, so the CLI calls this once after `sync_setlists` returns."""
-        self._close_bar()
-
-
-def _make_sync_progress_renderer(no_progress: bool) -> _SyncProgressRenderer:
-    """Build the `progress=` callback for `sync_setlists` used by `device
-    sync`. See `_SyncProgressRenderer` for the rich/plain rendering rules;
-    the returned object is callable (`renderer(event)`) and also exposes
-    `.close()` to finish any still-open progress bar once the sync ends."""
-    return _SyncProgressRenderer(no_progress)
-
-
-@device.command(name="sync")
-@click.argument("setlist_name", metavar="SETLIST", required=False)
-@click.option("--all", "all_setlists", is_flag=True, default=False,
-              help="Sync every setlist in the manifest (the whole-library reconcile).")
-@click.option("--gc", is_flag=True, default=False,
-              help="Garbage-collect pool presets no setlist references (only with --all).")
-@click.option("--exclude-irs", is_flag=True, default=False,
-              help="Install tones only; do not upload their referenced IRs.")
-@click.option("--repush", is_flag=True, default=False,
-              help="Force re-transcode + re-push every in-scope tone's content, "
-                   "even when its .hsp bytes are unchanged since the last sync. "
-                   "Plain sync already re-pushes genuinely edited .hsp files "
-                   "(it recomputes the file hash at sync time), so this is only "
-                   "for the unchanged-bytes case — refreshing already-synced "
-                   "tones after a transcoder upgrade.")
-@click.option("--json", "as_json", is_flag=True, default=False,
-              help="Emit the raw engine result dict as JSON.")
-@click.option("--no-progress", is_flag=True, default=False,
-              help="Turn off the rich progress bar. This does NOT quiet the "
-                   "output: it falls back to the plain text form, which still "
-                   "prints a header line per phase plus one line per item and "
-                   "per IR upload (~100 lines for a large sync).")
-@_device_option
-@_locked(verb="sync", when=lambda kw: ("library",) if kw.get("exclude_irs") else ("library", "irs"))
-def device_sync(setlist_name: str | None, all_setlists: bool, gc: bool,
-                exclude_irs: bool, repush: bool, as_json: bool,
-                no_progress: bool, ip: str, port: int) -> None:
-    """Sync the manifest's setlists onto the device (pool + references).
-
-    Give a single SETLIST name, or --all for every manifest setlist. The engine
-    reconciles the preset pool (install/update/skip), then rebuilds each
-    setlist's references to manifest order — never orphaning a still-referenced
-    pool preset. --gc (only with --all) prunes pool presets no setlist wants any
-    more. Plain sync recomputes each pool tone's .hsp file hash at sync time, so
-    an in-place edit to an already-synced tone is detected and re-pushed on the
-    next plain sync. --repush treats every in-scope tone already in the pool as
-    changed — re-pushing its content via the same non-activating SetContentData-
-    on-the-existing-cid path an ordinary hash-triggered update uses — even when
-    its .hsp bytes are unchanged since the last sync. Use it only for that
-    unchanged-bytes case: a transcoder upgrade can change what an unchanged .hsp
-    produces, which a byte-hash comparison can't see.
-    A setlist the device doesn't have is reported as a clear error (create
-    it first with `helixgen device setlist create <name>`). Sync is a
-    managed-set mirror: it never touches untracked device presets and never
-    orphans a pool preset another setlist still references. Idempotent — if
-    the flaky network drops a run, just re-run it. Shows a live progress
-    display on stderr: a per-phase progress bar when stderr is a TTY,
-    otherwise (non-TTY, or --no-progress) plain text — a header line per
-    phase plus one line per item and one per IR upload, so a large sync
-    prints on the order of a hundred stderr lines. --no-progress only turns
-    off the rich bar; it does NOT suppress the per-item plain lines (there
-    is no fully-quiet mode). stdout (this summary, and --json) is never
-    affected by the progress display. EXPERIMENTAL.
-    """
-    SetlistManifest, _ = _manifest()
-    from helixgen.device.setlist_sync import sync_setlists
-    _, HelixError = _client()
-
-    if bool(setlist_name) == bool(all_setlists):
-        raise click.ClickException(
-            "give exactly one of a SETLIST name or --all (not both, not neither)")
-    if gc and not all_setlists:
-        click.echo("warning: --gc is ignored without --all "
-                   "(a single-setlist sync never garbage-collects)", err=True)
-        gc = False
-
-    setlists = None if all_setlists else [setlist_name]
-    renderer = _make_sync_progress_renderer(no_progress)
-    try:
-        res = sync_setlists(SetlistManifest.load(), ip=ip, port=port,
-                            setlists=setlists, gc=gc, exclude_irs=exclude_irs,
-                            repush=repush, progress=renderer)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    finally:
-        renderer.close()
-
-    if as_json:
-        click.echo(json.dumps(res, indent=2))
-        return
-
-    pool = res.get("pool", {})
-    click.echo(f"pool: {len(pool.get('installed', []))} installed, "
-               f"{len(pool.get('updated', []))} updated, "
-               f"{len(pool.get('skipped', []))} skipped")
-    pool_deleted = pool.get("deleted", [])
-    if pool_deleted:
-        click.echo(f"pool: deleted {len(pool_deleted)} unsynced preset(s): "
-                   f"{', '.join(pool_deleted)}")
-    for name in pool.get("delete_skipped", []):
-        click.echo(f"pool: kept {name!r} (unsynced, but another device setlist "
-                   f"still references it — sync that setlist or use --all)")
-    for sl, diff in res.get("references", {}).items():
-        click.echo(f"setlist {sl!r}: +{len(diff.get('added', []))} references, "
-                   f"-{len(diff.get('removed', []))} references")
-    deleted = res.get("gc", {}).get("deleted", [])
-    if deleted:
-        click.echo(f"gc: deleted {len(deleted)} orphan pool preset(s): "
-                   f"{', '.join(deleted)}")
-    for er in res.get("errors", []):
-        click.echo(f"error: {er}", err=True)
-    synced = res.get("setlists", [])
-    click.echo(f"synced {len(synced)} setlist(s): {', '.join(synced) or '(none)'}")
-    drafts = res.get("skipped_draft_setlists", [])
-    if drafts:
-        click.echo(f"note: skipped {len(drafts)} local-only draft setlist(s): "
-                   f"{', '.join(drafts)} — run `device sync <setlist>` or "
-                   f"`device setlist sync-on <setlist>` to mirror one")
-
-
 @device.command(name="push")
 @click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("name")
@@ -3464,10 +3098,13 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     slot must be empty (checked strictly — backlog #40 — so a listing timeout
     raises instead of reading as empty). With a NAMED --setlist the content
     lands in the POOL (lowest empty slot) and a REFERENCE is added to the
-    setlist at --pos. The .sbe is recorded as the tone's local source in the
-    tone library: it already IS device content, so `device sync` re-pushes
-    those bytes verbatim (no transcode) and `ir-prune` decodes them for IR
-    references — neither reads it as a .hsp.
+    setlist at --pos. The .sbe already IS device content, so it is written
+    verbatim (no transcode). Nothing local records the push: the device is the
+    record of what is on it, so re-photograph with `device backup` afterwards
+    if you want it captured. NOTE `ir-prune` protects IRs referenced by the
+    tone LIBRARY ($HELIXGEN_HOME/library/tones) — a .sbe pushed from elsewhere
+    is not scanned, so its IRs are protected only while a device preset
+    references them.
     """
     HelixClient, HelixError = _client()
 
@@ -3493,7 +3130,6 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
 
             new_cid, pool_pos, _ref = _install_via_dest(
                 h, kind, container, label, pos, _writer)
-            serial = _serial_of(h, ip)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -3503,336 +3139,145 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     where = (f"pool slot {pool_pos}, referenced into setlist {label!r} at {pos}"
              if kind == "setlist" else f"{label} slot {pos}")
     click.echo(f"pushed {infile.name} as cid {new_cid} ({name!r}) in {where}")
-    _record_placement(setlist=label, posi=pool_pos, name=name, cid=new_cid,
-                      source_kind="sbe", source_path=str(infile.resolve()),
-                      serial=serial,
-                      setlist_pos=pos if kind == "setlist" else None)
 
 
 @device.command(name="restore")
-@click.argument("infile", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.argument("cid", type=int)
+@click.option("--dir", "root", type=click.Path(file_okay=False, path_type=Path),
+              default=None, help="Snapshot root (default $HELIXGEN_HOME/backup).")
+@click.option("--serial", default=None,
+              help="Which device snapshot to replay (default: the only one).")
+@click.option("--from", "git_ref", default=None,
+              help="Replay the snapshot as of a git ref (e.g. HEAD~3). "
+                   "Requires the snapshot root to be inside a git repo.")
+@click.option("--setlist", default=None,
+              help="Restore only this setlist's membership and order.")
+@click.option("--prune", is_flag=True, default=False,
+              help="ALSO DELETE device presets absent from the snapshot. "
+                   "Destructive and irreversible on the device.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print the plan and exit without touching the device.")
+@click.option("--yes", is_flag=True, default=False, help="Skip confirmation.")
+@click.option("--json", "as_json", is_flag=True, default=False)
 @_device_option
-@_locked("library", verb="restore")
-def device_restore(infile: Path, cid: int, ip: str, port: int) -> None:
-    """Overwrite an EXISTING preset's content from a local file (.sbe).
+@_locked("library", "irs", verb="restore",
+         when=lambda kw: () if kw.get("dry_run") else ("library", "irs"),
+         note="A --dry-run takes NO lease and only reads the device.")
+def device_restore(root, serial, git_ref, setlist, prune, dry_run, yes,
+                   as_json, ip, port):
+    """Replay a device photograph onto the hardware.
 
-    Warning: replaces the content at CID in place.
+    Pool content first, then setlist order. Additive-and-update by default:
+    it creates what is missing and updates what differs, and never deletes.
+
+    --prune ALSO deletes device presets the snapshot does not have. That is
+    the one genuinely destructive path here and it has no undo on the device
+    — always run --dry-run and show the user the plan first.
+
+    Restores from the device's own bytes, so nothing passes through a
+    transcoder. MUTATES the device (except --dry-run). EXPERIMENTAL.
     """
     HelixClient, HelixError = _client()
+    from helixgen.device import snapshot as _snap
 
-    blob = infile.read_bytes()
+    root = Path(root) if root else _snapshot_root()
+    tmp = None
+    if git_ref:
+        root, tmp = _snapshot_at_ref(root, git_ref)
     try:
         with HelixClient(ip, port) as h:
-            ok = h._raw.set_content_data(cid, blob)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
-    if not ok:
-        raise click.ClickException(f"failed to restore content to cid {cid}")
-    click.echo(f"restored content of cid {cid} from {infile.name}")
-
-
-@device.group(name="slots", invoke_without_command=True)
-@click.pass_context
-def device_slots(ctx: click.Context) -> None:
-    """The local record of which tone helixgen put in which device slot.
-
-    Placement commands (install / save / push / create) record here; rename and
-    delete keep it in sync. Bare `device slots` lists the record offline.
-    """
-    if ctx.invoked_subcommand is None:
-        ctx.invoke(device_slots_list)
-
-
-@device_slots.command(name="list")
-@click.option("--verify", is_flag=True, default=False,
-              help="Cross-check the live device and flag drift (needs the Helix).")
-@click.option("--json", "as_json", is_flag=True, default=False,
-              help="Emit raw JSON (the library view, or verify records with --verify).")
-@_device_option
-@_reads(when=lambda kw: ("library",) if kw.get("verify") else (),
-        note=_READS_WHEN_NOTE.format(flag="--verify", scope="library"))
-def device_slots_list(verify: bool, as_json: bool, ip: str, port: int) -> None:
-    """List every library tone: slot, on/off device, setlists. Offline unless --verify."""
-    SetlistManifest, _ = _manifest()
-
-    m = SetlistManifest.load()
-    rows = m.library()
-
-    if verify:
-        HelixClient, HelixError = _client()
-
-        from helixgen.device import Container
-
-        on_device = {}
-        try:
-            with HelixClient(ip, port) as h:
-                for p in h.list_presets(int(Container.POOL)):
-                    on_device[p.get("name")] = p
-        except (HelixError, OSError) as e:
-            raise click.ClickException(str(e)) from e
-        records = []
-        for row in rows:
-            if not row["on_device"]:
-                status = "offline"
-            elif row["name"] in on_device:
-                status = "ok"
+            plan = _snap.plan_restore(h, root, serial=serial, setlist=setlist,
+                                      prune=prune)
+            if as_json and dry_run:
+                click.echo(json.dumps(plan, indent=2))
             else:
-                status = "missing"
-            records.append({**row, "status": status})
-        for name in on_device:
-            if name not in m.tones:
-                records.append({"name": name, "slot": None, "status": "untracked"})
-        if as_json:
-            click.echo(json.dumps(records, indent=2))
-        else:
-            for r in records:
-                click.echo(f"{(r.get('slot') or '-'):<4} {r.get('status', ''):<9} {r.get('name', '')}")
-        return
-
-    if as_json:
-        click.echo(json.dumps(rows, indent=2))
-        return
-    _echo_library_rows(rows)
-
-
-@device_slots.command(name="restore")
-@click.argument("target")
-@click.option("--pos", type=int, default=None,
-              help="Override the destination slot (default: the recorded slot).")
-@click.option("--setlist", default=None,
-              help="Override the destination: " + _SETLIST_HELP)
-@click.option("--force", is_flag=True, default=False,
-              help="Push even if the destination POOL slot is occupied "
-                   "(pool destinations only; an occupied named-setlist "
-                   "position is always refused — backlog #69). The device "
-                   "INSERTS at an occupied posi: the restored tone lands at "
-                   "the slot and the occupant (and everything after it) "
-                   "shifts down one — nothing is overwritten. The write is "
-                   "attribution-gated (#94): helixgen snapshots the pool's "
-                   "cids first and refuses to write into an entry that "
-                   "predates the call, so a failed or refused write never "
-                   "touches the occupant's CONTENT. Cleanup of a failed "
-                   "write deletes only the fresh stub, but deletes leave a "
-                   "gap: the occupant and everything after it stay shifted "
-                   "down one (warned; fix with `device reorder`).")
-@_device_option
-# `irs` too: restoring an .hsp source runs the IR presence check, whose wedge
-# discriminator (confirm_ir_listed, #93) may issue a rename nudge — an
-# IR-container write
-@_locked("library", "irs", verb="slots restore")
-def device_slots_restore(target: str, pos: int | None, setlist: str | None,
-                         force: bool, ip: str, port: int) -> None:
-    """Put a recorded tone back in its slot. TARGET is the tone name or slot label.
-
-    Re-installs the recorded source: an .hsp (from `install`) is re-authored; an
-    .sbe (from `push`) is re-pushed. Tones saved from the live edit buffer or
-    copied on-device have no local source and can't be restored this way.
-    With a NAMED --setlist the content is restored into the POOL and a
-    REFERENCE is added to the setlist at the destination position; if that
-    position already holds a reference the restore is refused even with
-    --force (a second reference would stack at one position — uncataloged
-    device behavior, backlog #69) — remove the incumbent reference first
-    (`device delete <cid> --setlist <name>`).
-    """
-    SetlistManifest, _ = _manifest()
-
-    m = SetlistManifest.load()
-    name = target if target in m.tones else None
-    if name is None:  # try to match a slot label
-        name = next((n for n, r in m.tones.items() if r.get("slot") == target), None)
-    if name is None:
-        raise click.ClickException(f"no library tone matching {target!r} "
-                                   f"(try `helixgen device slots`)")
-
-    rec = m.tones[name]
-    src_path = rec.get("path")
-    dest_setlist = setlist or "user"
-    # Slot resolution (#25): an explicit --pos wins; else the recorded slot
-    # label; else the last observed device posi (a synced tone's concrete
-    # position is recorded in devices/<serial>.json even when ``slot`` is
-    # unresolved).
-    dest_pos = pos
-    if dest_pos is None:
-        dest_pos = _posi_from_slot(rec.get("slot"))
-    if dest_pos is None:
-        from helixgen.device import observations as obsmod
-        dev = obsmod.lookup_tone(name)
-        if isinstance(dev, dict) and isinstance(dev.get("posi"), int):
-            dest_pos = dev["posi"]
-    if dest_pos is None:
-        raise click.ClickException(f"{name!r} has no recorded slot; pass --pos")
-
-    if not src_path:
-        raise click.ClickException(
-            f"no local source recorded for {name!r} "
-            f"(pathless save/create); back it up first (helixgen device pull / backup)")
-    src = Path(src_path)
-    if not src.is_file():
-        raise click.ClickException(f"recorded source no longer exists: {src}")
-
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h, h.mutating():
-            # One subscription for the whole restore — the strict emptiness
-            # checks below decide both whether to refuse and whether a failed
-            # write may delete what it finds, so they must read a settled
-            # container index rather than a lagging one (#38).
-            kind, container, label = _resolve_setlist_dest(h, dest_setlist)
-            if kind == "setlist" and pos is None:
-                raise click.ClickException(
-                    f"restoring into a named setlist needs an explicit --pos: "
-                    f"the recorded slot/posi for {name!r} is a POOL position, "
-                    f"not a position within setlist {label!r}")
-
-            if src.suffix == ".sbe":
-                def _writer(cont, cpos):
-                    # strict (backlog #40): a listing timeout must raise, not
-                    # read as "empty" and push into an occupied slot.
-                    if (kind == "pool" and not force
-                            and h.find_by_pos(cont, cpos, strict=True) is not None):
-                        raise click.ClickException(
-                            f"{label} slot {cpos} is not empty (use --force)")
-                    # --force skipped the emptiness check, so the create runs
-                    # through the #94 attribution gate (pre-create cid
-                    # snapshot) instead: a confirmed cid that predates the
-                    # call is refused, one the snapshot proved fresh is safe
-                    # to write into and to clean up on a failed write.
-                    # The setlist path is exempt — _install_via_dest always
-                    # writes at a freshly computed lowest-empty POOL posi, which
-                    # --force never applied to (the check above is pool-only),
-                    # so its precheck authorizes the (name, pos) cleanup
-                    # directly (same conflation the .hsp branch fixed via
-                    # known_empty).
-                    return h._raw.push_to_slot(
-                        cont, cpos, name, src.read_bytes(),
-                        prechecked_empty=(kind == "setlist") or not force)
-            else:  # hsp
-                from helixgen.hsp import read_hsp
-
-                body = read_hsp(src)
-
-                def _writer(cont, cpos):
-                    return _install_hsp_open(
-                        h, body, cont, cpos, name, setlist_label=label,
-                        force=force, known_empty=(kind == "setlist"), ip=ip)
-
-            cid, pool_pos, _ref = _install_via_dest(
-                h, kind, container, label, dest_pos, _writer, force=force)
-            serial = _serial_of(h, ip)
+                for line in plan["summary"]:
+                    click.echo(f"  {line}")
+                for err in plan["errors"]:
+                    click.echo(f"  ! {err}", err=True)
+            if plan["errors"] and not plan["ops"]:
+                raise SystemExit(1)
+            if dry_run:
+                click.echo(f"{len(plan['ops'])} op(s) planned (dry run)")
+                return
+            deletes = [o for o in plan["ops"] if "delete" in o["op"]]
+            if deletes and not yes:
+                click.confirm(f"{len(deletes)} preset(s) will be DELETED from "
+                              f"the device. Proceed?", abort=True)
+            res = _snap.apply_restore(h, plan)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
-    if cid is None:
-        raise click.ClickException(f"failed to restore {name!r}")
-    where = (f"pool slot {pool_pos}, referenced into setlist {label!r} at "
-             f"{dest_pos}" if kind == "setlist" else f"{label} slot {dest_pos}")
-    click.echo(f"restored {name!r} to {where} (cid {cid}) from {src.name}")
-    _record_placement(setlist=label, posi=pool_pos, name=name,
-                      cid=cid, source_kind=src.suffix.lstrip("."), source_path=str(src),
-                      serial=serial,
-                      setlist_pos=dest_pos if kind == "setlist" else None)
-
-
-@device_slots.command(name="reorder")
-@click.argument("target")
-@click.option("--to", "to_index", type=int, required=True,
-              help="New 0-based position within the setlist order.")
-@click.option("--setlist", "setlist_name", default="user",
-              help="Which setlist's order to change (default: user).")
-def device_slots_reorder(target: str, to_index: int, setlist_name: str) -> None:
-    """Move a tone to a new position within a setlist's order.
-
-    Local only — reorders the manifest; run `device sync <setlist>` to apply it to
-    the device. TARGET is the tone name.
-    """
-    SetlistManifest, _ = _manifest()
-
-    m = SetlistManifest.load()
-    members = m.tones_in(setlist_name)
-    if target not in members:
-        raise click.ClickException(
-            f"{target!r} is not in setlist {setlist_name!r} "
-            f"(try `helixgen device slots`)")
-    members.remove(target)
-    members.insert(max(0, to_index), target)
-    m.setlists_map[setlist_name]["tones"] = members
-    m.save()
-    click.echo(f"reordered {setlist_name}; order is now: {', '.join(members)}")
-
-
-def _posi_from_slot(slot):
-    from helixgen.device.manifest import _SLOT_LABELS
-    if slot in (None, "auto"):
-        return None
-    try:
-        return _SLOT_LABELS.index(slot)
-    except ValueError:
-        return None
+    finally:
+        if tmp is not None:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+    else:
+        click.echo(f"applied {res['applied']} op(s)")
+        for err in res["errors"]:
+            click.echo(f"  ! {err}", err=True)
+    if not res["ok"]:
+        raise SystemExit(1)
 
 
 @device.command(name="backup")
-@click.option("--setlist", default="user", show_default=True,
-              help="What to back up: " + _SETLIST_HELP)
-@click.option("--dir", "out_dir", type=click.Path(file_okay=False, path_type=Path),
-              default=None, help="Output dir (default ~/.helixgen/device-backups/ "
-                                 "or $HELIXGEN_DEVICE_BACKUPS).")
+@click.option("--dir", "root", type=click.Path(file_okay=False, path_type=Path),
+              default=None,
+              help="Snapshot root (default $HELIXGEN_HOME/backup, "
+                   "or $HELIXGEN_BACKUP).")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Compute and report what WOULD change; write nothing. This "
+                   "is the diff against the live device.")
+@click.option("--json", "as_json", is_flag=True, default=False)
 @_device_option
-@_reads("library")
-def device_backup(setlist: str, out_dir, ip: str, port: int) -> None:
-    """Back up presets to local .sbe files + a manifest.
+@_reads("library", "irs")
+def device_backup(root, dry_run: bool, as_json: bool, ip: str, port: int) -> None:
+    """Photograph the device into <root>/<serial>/ — pool, setlists, IRs.
 
-    --setlist user (default) backs up the whole preset POOL; --setlist
-    <NAME> backs up the pool presets a named device setlist references (in
-    setlist order). Reads each preset via the non-activating
-    `/GetContentData`, so the device's live tone is never disturbed. Works
-    offline afterwards via `device local-list`.
+    Writes the device's OWN content bytes (pool/<Name>.sbe), each setlist's
+    reference order (setlists/<Name>.json), the device's processed IRs, and
+    device.json. `.sbe` rather than `.hsp` because `device to-hsp` drops
+    Command Center and MIDI CC bindings — an .hsp backup would restore a
+    damaged preset. `device decode` renders the bytes for git diffs.
+
+    Unchanged files are not rewritten, so a re-run leaves a clean git status;
+    presets no longer on the device are pruned from the tree — except after
+    ANY failed read, when nothing is pruned (a preset that could not be
+    fetched must not look deleted).
+
+    IR collection cross-checks the -11 listing against every irhash actually
+    referenced by a pulled preset, because that listing's cache goes stale
+    (#38) and would silently under-collect; each pulled file's MD5 is verified
+    against its hash. Read-only and NON-ACTIVATING. EXPERIMENTAL.
     """
     HelixClient, HelixError = _client()
-    from helixgen.device import backup as _backup
+    from helixgen.device import snapshot as _snap
     from datetime import datetime, timezone
 
+    root = Path(root) if root else _snapshot_root()
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     try:
         with HelixClient(ip, port) as h:
-            kind, container, label = _resolve_setlist_dest(h, setlist)
-            if kind == "setlist":
-                presets = [{"cid_": m.get("rcid"), "name": m.get("name", ""),
-                            "posi": m.get("posi")}
-                           for m in _setlist_refs(h, container, strict=True)
-                           if m.get("rcid") is not None]
-                entries = _backup.backup_setlist(
-                    h, out_dir=out_dir, now=now, presets=presets,
-                    setlist_name=label)
-            else:
-                entries = _backup.backup_setlist(h, container, out_dir, now=now)
+            res = _snap.take(h, root, dry_run=dry_run, now=now)
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
         raise click.ClickException(str(e)) from e
-    dest = out_dir or _backup.default_backup_dir()
-    click.echo(f"backed up {len(entries)} preset(s) to {dest}")
-
-
-@device.command(name="local-list")
-@click.option("--dir", "out_dir", type=click.Path(file_okay=False, path_type=Path),
-              default=None, help="Backup dir to read (offline; no device needed).")
-@click.option("--json", "as_json", is_flag=True, default=False)
-def device_local_list(out_dir, as_json: bool) -> None:
-    """List locally backed-up presets (works with the Helix disconnected)."""
-    from helixgen.device import backup as _backup
-
-    entries = _backup.local_list(out_dir)
     if as_json:
-        click.echo(json.dumps(entries, indent=2))
-        return
-    for e in entries:
-        click.echo(f"{e.get('slot_label',''):<4} {e.get('name','?'):<28} "
-                   f"[{e.get('fmt','?')}] {e.get('file','')}")
+        click.echo(json.dumps(res, indent=2))
+    else:
+        for line in res["changed"]:
+            click.echo(f"  {line}")
+        verb = "would change" if dry_run else "wrote"
+        click.echo(f"{verb} {len(res['changed'])} file(s) in {res['root']}")
+        for m in res["irs"]["missing"]:
+            click.echo(f"  ! IR {m['irhash']}: {m['reason']}", err=True)
+        for err in res["errors"]:
+            click.echo(f"  ! {err}", err=True)
+    if res["errors"]:
+        raise SystemExit(1)
 
 
 @device.command(name="watch")
@@ -4551,7 +3996,7 @@ def _normalize_settings(flags: dict):
 @click.argument("preset", required=False,
                 type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--setlist", default=None, metavar="NAME",
-              help="Level-match every tone of this LOCAL manifest setlist "
+              help="Level-match every preset this DEVICE setlist references "
                    "instead of one preset's snapshots (mutually exclusive "
                    "with the PRESET argument).")
 @click.option("--target-db", type=float, default=None,
@@ -4682,7 +4127,7 @@ def device_normalize(preset: Path | None, setlist: str | None,
     active preset's name is verified against the .hsp before anything is
     measured; a mismatch aborts the run (an unverifiable name only warns).
     `device normalize --setlist <name>` level-matches every tone of a local
-    manifest setlist that has a local .hsp and an observed device placement
+    manifest setlist that has a local .hsp and a matching .hsp in the tone library
     (loads each by CID and verifies the loaded preset's name matches the
     tone — a mismatch means a stale observation and that tone is SKIPPED;
     tones without a local .hsp or a placement are SKIPPED too). The
@@ -4695,15 +4140,14 @@ def device_normalize(preset: Path | None, setlist: str | None,
     snapshot scope; a whole-preset shift, base plus any per-snapshot array,
     in setlist scope — a uniform shift that preserves the preset's own
     scene-to-scene and path-to-path balance). The device copy is NOT
-    written by this verb: run `device sync <setlist>` (or `device install`)
-    afterwards to rebuild it from the .hsp. If a mid-run write fails, the
+    written by this verb: run `device copy` for it first.hsp. If a mid-run write fails, the
     error lists the files already written. Recalling snapshots / loading
     presets does change the device's ACTIVE tone selection while measuring.
 
     The output block's `level` is dB-native, so a trim is EXACT by
     construction and lands in ONE move. Both measurement paths sit
     DOWNSTREAM of that gain, so a written trim IS visible once the device
-    copy is rebuilt (`device sync` / `device install`): re-measuring is a
+    copy is rebuilt (`device copy` / `device install`): re-measuring is a
     valid way to CONFIRM a trim, and re-running the whole loop is a no-op
     that reports in-band zeros rather than compounding.
 
@@ -5111,62 +4555,79 @@ def device_normalize(preset: Path | None, setlist: str | None,
             payload = {"scope": scope, "preset": str(preset)}
         else:
             scope = "setlist"
-            SetlistManifest, _ManifestError = _manifest()
-            from helixgen.device import observations as OBS
-
-            m = SetlistManifest.load()
-            rec = m.setlists_map.get(setlist)
-            if rec is None:
-                raise click.ClickException(
-                    f"setlist {setlist!r} is not in the local manifest "
-                    f"(see `device setlist list`)")
-            tone_names = list(rec.get("tones") or [])
-            if not tone_names:
-                raise click.ClickException(f"setlist {setlist!r} has no tones")
-            say(f"normalize (setlist scope): {len(tone_names)} tone(s) in "
-                f"{setlist!r}")
+            # Membership comes from the DEVICE and the .hsp from the library
+            # directory (2026-09-09 design). The retired path read desired
+            # membership from the manifest and the CID from a per-device
+            # observation file that only `device copy` ever refreshed — so a
+            # reorganised Helix silently measured the WRONG preset until the
+            # name guard below caught it. Resolving live removes the staleness
+            # class entirely; the guard stays, because names are not unique.
+            from helixgen.device import Container
+            from helixgen.device.client import Cctp
             with HelixClient(ip, port) as h:
-                obs = OBS.load_observations(_serial_of(h, ip))
+                sl_cid = h.resolve_setlist_cid(setlist)
+                if sl_cid is None:
+                    raise click.ClickException(
+                        f"setlist {setlist!r} not found on the device "
+                        f"(see `device setlist list`)")
+                pool = {e.get("cid_"): str(e.get("name") or "")
+                        for e in h.list_presets(Container.POOL, strict=True)}
+                refs = sorted(
+                    (m for m in h.list_container(sl_cid, strict=True)
+                     if m.get("cctp") == Cctp.REFERENCE),
+                    key=lambda m: m.get("posi", 1 << 30))
+                # A reference whose pool row is missing (or unnamed) cannot be
+                # measured, but it must be REPORTED as a skip, never silently
+                # dropped: a run that quietly ignores a preset in the setlist
+                # and still reports success is the exact silent-wrong-answer
+                # failure this design exists to remove.
+                targets = []
+                for m in refs:
+                    rcid = m.get("rcid")
+                    nm = pool.get(rcid)
+                    if nm:
+                        targets.append((nm, rcid))
+                    else:
+                        say(f"warning: reference to cid {rcid} SKIPPED — no "
+                            f"such preset in the pool listing (dangling "
+                            f"reference)")
+                        results.append({"tone": None, "cid": rcid, "path": None,
+                                        "ok": False,
+                                        "reason": "dangling setlist reference"})
+                if not targets:
+                    raise click.ClickException(
+                        f"setlist {setlist!r} has no presets on the device")
+                say(f"normalize (setlist scope): {len(targets)} tone(s) in "
+                    f"{setlist!r}")
                 # save the player's current selection; restored after the run
                 try:
                     prev_cid = (h.active_preset() or {}).get("cid")
                 except HelixError:
                     prev_cid = None
-                for name in tone_names:
-                    trec = m.tones.get(name) or {}
-                    hsp_path = trec.get("path")
-                    placement = obs.tone_placement(name)
-                    if not hsp_path or not Path(hsp_path).exists():
-                        say(f"warning: {name!r}: SKIPPED — no local .hsp to "
-                            f"write trims into")
-                        results.append({"tone": name, "path": hsp_path,
+                for name, tone_cid in targets:
+                    lib = _library_hsp_for(name)
+                    hsp_path = str(lib) if lib else None
+                    if not hsp_path:
+                        say(f"warning: {name!r}: SKIPPED — no local .hsp in "
+                            f"the library to write trims into")
+                        results.append({"tone": name, "path": None,
                                         "ok": False,
                                         "reason": "no local .hsp"})
                         continue
-                    if not placement or placement.get("cid") is None:
-                        say(f"warning: {name!r}: SKIPPED — no observed device "
-                            f"placement (run `device sync {setlist}` first)")
-                        results.append({"tone": name, "path": hsp_path,
-                                        "ok": False,
-                                        "reason": "not observed on device"})
-                        continue
-                    h.load_preset(int(placement["cid"]))
-                    # identity guard: a stale observed CID silently measures
-                    # some OTHER preset — verify the loaded preset's name
+                    h.load_preset(int(tone_cid))
+                    # identity guard: names are not unique, so confirm the
+                    # device loaded the preset we meant before measuring it
                     try:
                         loaded_name = (h.active_preset() or {}).get("name")
                     except HelixError:
                         loaded_name = None
                     if loaded_name and loaded_name != name:
-                        say(f"warning: {name!r}: SKIPPED — cid "
-                            f"{placement['cid']} on the device is named "
-                            f"{loaded_name!r} (stale observation? run "
-                            f"`device sync {setlist}` first)")
+                        say(f"warning: {name!r}: SKIPPED — cid {tone_cid} on "
+                            f"the device is named {loaded_name!r}")
                         results.append({
                             "tone": name, "path": hsp_path, "ok": False,
                             "reason": f"device name mismatch: cid "
-                                      f"{placement['cid']} is "
-                                      f"{loaded_name!r}"})
+                                      f"{tone_cid} is {loaded_name!r}"})
                         continue
                     if not loaded_name:
                         say(f"warning: {name!r}: could not verify the "

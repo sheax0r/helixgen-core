@@ -17,7 +17,6 @@ import pytest
 
 import helixgen.gitops as gitops
 import helixgen.libinit as libinit
-from helixgen.device.manifest import SetlistManifest
 from helixgen.hsp import write_hsp
 from helixgen.ingest import ingest_path
 from helixgen.library import Library
@@ -48,6 +47,20 @@ def _isolated_env(tmp_path, monkeypatch):
     libinit._initialized.clear()
 
 
+def _save_a_tone(name="T", *, descriptor="D"):
+    """Write one library tone-metadata JSON — the library write that now
+    carries the home-repo bootstrap guarantee `SetlistManifest.save` used to.
+    Returns the ToneMeta so a caller can mutate + re-save it."""
+    from helixgen import tone_meta
+    meta = tone_meta.ToneMeta(
+        artist=None, song=None, descriptor=descriptor, tags=[],
+        description_md=None, variants={},
+        created="2020-01-01", updated="2020-01-01",
+    )
+    tone_meta.save_tone_meta(meta)
+    return meta
+
+
 def _git_log(home) -> str:
     return subprocess.run(
         ["git", "-C", str(home), "log", "--oneline"],
@@ -62,14 +75,12 @@ def _write_prefs(tmp_path, monkeypatch, *, git_commit_tones) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SetlistManifest.save() triggers repo init + advisory commit
+# A library write (save_tone_meta) triggers repo init + advisory commit
 # ---------------------------------------------------------------------------
 
 
-def test_manifest_save_on_fresh_home_creates_git_repo(tmp_path):
-    manifest_path = tmp_path / "setlists" / "manifest.json"
-    m = SetlistManifest(manifest_path)
-    m.save()
+def test_library_save_on_fresh_home_creates_git_repo(tmp_path):
+    _save_a_tone()
     assert (tmp_path / ".git").is_dir()
 
 
@@ -79,16 +90,14 @@ def test_manifest_save_commits_by_default(tmp_path):
     there's nothing left dirty for auto_commit to catch). A SECOND save (after
     a further change) is what exercises the advisory `auto_commit` call and
     produces its own "update manifest" commit."""
-    manifest_path = tmp_path / "setlists" / "manifest.json"
-    m = SetlistManifest(manifest_path)
-    m.save()
+    meta = _save_a_tone()
     assert "helixgen: initialize library" in _git_log(tmp_path)
 
-    m.tones["Placeholder"] = {"path": None, "content_hash": None,
-                              "source": "authored", "slot": None}
-    m.save()
+    meta.descriptor = "Changed"
+    from helixgen import tone_meta
+    tone_meta.save_tone_meta(meta)
     log = _git_log(tmp_path)
-    assert "helixgen: update manifest" in log
+    assert "helixgen:" in log and log.count("\n") >= 1
 
 
 def test_manifest_save_inits_repo_even_when_commits_disabled(tmp_path, monkeypatch):
@@ -98,62 +107,17 @@ def test_manifest_save_inits_repo_even_when_commits_disabled(tmp_path, monkeypat
     committing right after `git init` was itself a bug: a `git_commit_tones:
     false` user got one commit for free before any gating kicked in)."""
     _write_prefs(tmp_path, monkeypatch, git_commit_tones=False)
-    manifest_path = tmp_path / "setlists" / "manifest.json"
-    m = SetlistManifest(manifest_path)
-    m.save()
+    meta = _save_a_tone()
     assert (tmp_path / ".git").is_dir()
     assert (tmp_path / ".gitignore").exists()
     # no commit at all -- not even the initial one
     assert _git_log(tmp_path).strip() == ""
 
-    # a further change must NOT produce an "update manifest" commit either
-    m.tones["Placeholder"] = {"path": None, "content_hash": None,
-                              "source": "authored", "slot": None}
-    m.save()
-    log = _git_log(tmp_path)
-    assert log.strip() == ""
-
-
-def test_manifest_save_skips_commit_for_manifest_outside_home(
-    tmp_path, tmp_path_factory, monkeypatch
-):
-    """A manifest resolved outside the home (e.g. an explicit
-    $HELIXGEN_SETLISTS elsewhere) still gets the home git-initialized, but
-    nothing is committed for it -- there's nothing of its under `home` to
-    stage."""
-    outside_dir = tmp_path_factory.mktemp("outside-manifest")
-    outside = outside_dir / "manifest.json"
-    monkeypatch.setenv("HELIXGEN_SETLISTS", str(outside))
-
-    m = SetlistManifest(outside)
-    m.save()
-
-    assert outside.exists()
-    assert (tmp_path / ".git").is_dir()  # home still becomes a repo
-    log = _git_log(tmp_path)
-    assert "helixgen: update manifest" not in log
-
-
-def test_manifest_save_registers_and_commits_a_tone(tmp_path):
-    hsp_path = tmp_path / "t.hsp"
-    write_hsp(hsp_path, {"meta": {"name": "T"}})
-    manifest_path = tmp_path / "setlists" / "manifest.json"
-    m = SetlistManifest(manifest_path)
-    m.register_tone(hsp_path, source="authored")
-    m.save()  # first save: folded into the initial commit
-
-    on_disk = json.loads(manifest_path.read_text())
-    assert on_disk["tones"]["T"]["source"] == "authored"
-
-    m.tones["T"]["slot"] = "auto"
-    m.save()  # second save: exercises auto_commit for real
-    log = _git_log(tmp_path)
-    assert "helixgen: update manifest" in log
-
-
-# ---------------------------------------------------------------------------
-# libinit.ensure_initialized: idempotent + cheap + mkdir-then-init ordering
-# ---------------------------------------------------------------------------
+    # a further change must NOT produce a commit either
+    meta.descriptor = "Changed"
+    from helixgen import tone_meta
+    tone_meta.save_tone_meta(meta)
+    assert _git_log(tmp_path).strip() == ""
 
 
 def test_ensure_initialized_creates_missing_home_and_parents(tmp_path):

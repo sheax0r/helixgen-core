@@ -52,7 +52,6 @@ from helixgen import gitops, home, ir_meta, libinit, naming, tone_meta
 from helixgen.hsp import read_hsp, write_hsp
 from helixgen.ir import IrMapping
 from helixgen.preferences import load_preferences
-from helixgen.device.manifest import SetlistManifest
 
 # " - " / " – " (en) / " — " (em), with surrounding whitespace.
 _NAME_SEP = re.compile(r"\s+[-–—]\s+")
@@ -136,6 +135,37 @@ def _variant_names(identity: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _legacy_manifest_tones() -> Dict[str, Any]:
+    """The ``tones`` map out of a LEGACY setlist manifest, if one is present.
+
+    The manifest and its ``SetlistManifest`` class are gone (2026-09-09
+    file-copy design) — the library directory is the index. But a user
+    upgrading from the old layout may still have the file on disk, and that
+    file is exactly the list of what needs moving, so this reads it as plain
+    data for the one-shot migration. Absent, unreadable, or malformed => an
+    empty map: nothing to migrate FROM the manifest is a normal state, not an
+    error.
+    """
+    import json as _json
+    from helixgen import home
+
+    candidates = [home.manifest_path()]
+    legacy = getattr(home, "legacy_manifest_path", None)
+    if legacy is not None:
+        candidates.append(legacy())
+    for candidate in candidates:
+        try:
+            if not candidate.is_file():
+                continue
+            data = _json.loads(candidate.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        tones = data.get("tones") if isinstance(data, dict) else None
+        if isinstance(tones, dict):
+            return tones
+    return {}
+
+
 def plan_migration() -> Dict[str, Any]:
     """Inspect the manifest + preferences + IR mapping and emit the editable plan.
 
@@ -153,10 +183,9 @@ def plan_migration() -> Dict[str, Any]:
     only if edited back in.
     """
     labels = _instrument_labels()
-    manifest = SetlistManifest.load()
 
     tones: List[Dict[str, Any]] = []
-    for name, rec in manifest.tones.items():
+    for name, rec in _legacy_manifest_tones().items():
         path = rec.get("path")
         if not path:
             continue
@@ -292,33 +321,6 @@ def place_tone(
     return dest
 
 
-def _rekey_manifest_tone(m: SetlistManifest, old_name: str, new_name: str,
-                         dest: Path) -> None:
-    """Re-key ``old_name`` -> ``new_name`` at ``dest`` in the manifest.
-
-    Preserves ``slot`` + ``source`` (+ the ``auto_marked`` provenance flag),
-    recomputes ``content_hash`` off the moved file, replaces any setlist
-    membership referencing the old name, and drops the dangling old key."""
-    old_rec = m.tones.get(old_name) or {}
-    slot = old_rec.get("slot")
-    source = old_rec.get("source") or "authored"
-    auto_marked = old_rec.get("auto_marked")
-
-    # Drop the stale entry (the tone was named the new style already OR the key
-    # is changing) so ``register_tone`` -- which refuses to re-point an existing
-    # name at a different path -- writes a fresh record at the moved location.
-    m.tones.pop(old_name, None)
-    if old_name != new_name:
-        m.tones.pop(new_name, None)
-        for rec in m.setlists_map.values():
-            rec["tones"] = [new_name if t == old_name else t for t in rec.get("tones", [])]
-
-    m.register_tone(dest, source=source)  # keys by dest's meta.name == new_name
-    m.tones[new_name]["slot"] = slot
-    if auto_marked:
-        m.tones[new_name]["auto_marked"] = True
-
-
 # ---------------------------------------------------------------------------
 # run_migration
 # ---------------------------------------------------------------------------
@@ -377,24 +379,21 @@ def run_migration(plan: Dict[str, Any], *, dry_run: bool = False) -> Dict[str, A
     if not dry_run:
         libinit.ensure_initialized()
 
-    manifest = SetlistManifest.load()
-    manifest_dirty = _migrate_tones(plan.get("tones", []), manifest, summary, dry_run)
+    tones_dirty = _migrate_tones(plan.get("tones", []), summary, dry_run)
 
     mapping = IrMapping.load()
     mapping_dirty = _migrate_irs(plan.get("irs", []), mapping, summary, dry_run)
 
     if not dry_run:
-        if manifest_dirty:
-            manifest.save()
         if mapping_dirty:
             mapping.save()
-        if manifest_dirty or mapping_dirty:
+        if tones_dirty or mapping_dirty:
             gitops.auto_commit(home.helixgen_home(), "helixgen: library migration")
 
     return summary
 
 
-def _migrate_tones(entries: List[Dict[str, Any]], manifest: SetlistManifest,
+def _migrate_tones(entries: List[Dict[str, Any]],
                    summary: Dict[str, Any], dry_run: bool) -> bool:
     tones_dir = home.tones_dir()
 
@@ -420,16 +419,20 @@ def _migrate_tones(entries: List[Dict[str, Any]], manifest: SetlistManifest,
         if e["new_slug"] in colliding:
             continue
         try:
-            changed = _migrate_one_tone(e, manifest, summary, dry_run, tones_dir)
+            changed = _migrate_one_tone(e, summary, dry_run, tones_dir)
             dirty = dirty or changed
         except Exception as exc:  # noqa: BLE001 - record + continue (data safety)
             summary["tones"]["errors"].append({"name": e.get("name"), "error": str(exc)})
     return dirty
 
 
-def _is_registered_at(manifest: SetlistManifest, name: str, dest: Path) -> bool:
-    rec = manifest.tones.get(name)
-    return rec is not None and rec.get("path") == str(dest)
+def _is_registered_at(name: str, dest: Path) -> bool:
+    """A tone is "registered" exactly when its `.hsp` sits at ``dest``.
+
+    The library directory is the index (2026-09-09 file-copy design), so
+    there is no record that could disagree with the filesystem.
+    """
+    return dest.is_file() and _dest_identifies_as(dest, name, name)
 
 
 def _dest_identifies_as(dest: Path, old_name: str, new_name: str) -> bool:
@@ -445,7 +448,7 @@ def _dest_identifies_as(dest: Path, old_name: str, new_name: str) -> bool:
     return name in (old_name, new_name)
 
 
-def _heal_placed_tone(e: Dict[str, Any], manifest: SetlistManifest,
+def _heal_placed_tone(e: Dict[str, Any],
                       dest: Path) -> None:
     """Finish the bookkeeping for a tone whose ``.hsp`` already sits at its
     migration destination but that the manifest doesn't register there -- a
@@ -479,10 +482,8 @@ def _heal_placed_tone(e: Dict[str, Any], manifest: SetlistManifest,
             meta.description_md = md_path.read_text()
         tone_meta.save_tone_meta(meta)
 
-    _rekey_manifest_tone(manifest, e["name"], e["new_name"], dest)
 
-
-def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
+def _migrate_one_tone(e: Dict[str, Any],
                       summary: Dict[str, Any], dry_run: bool,
                       tones_dir: Path) -> bool:
     old_name = e["name"]
@@ -490,7 +491,7 @@ def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
     dest = (tones_dir / f"{e['new_slug']}.hsp").resolve()
 
     if dest.exists():
-        if _is_registered_at(manifest, e["new_name"], dest):
+        if _is_registered_at(e["new_name"], dest):
             summary["tones"]["skipped"].append(
                 {"name": old_name, "reason": "already in place"})
             return False
@@ -506,7 +507,7 @@ def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
             # name) -- adopting an unrelated file squatting the slug would
             # silently relabel someone else's tone.
             if not dry_run:
-                _heal_placed_tone(e, manifest, dest)
+                _heal_placed_tone(e, dest)
             summary["tones"]["moved"].append(
                 {"old": old_name, "new_name": e["new_name"], "to": str(dest),
                  "healed": True})
@@ -535,7 +536,6 @@ def _migrate_one_tone(e: Dict[str, Any], manifest: SetlistManifest,
         new_name=e["new_name"], logical=e["logical"], new_slug=e["new_slug"],
         move=True, description_md=description_md,
     )
-    _rekey_manifest_tone(manifest, old_name, e["new_name"], placed)
     summary["tones"]["moved"].append(
         {"old": old_name, "new_name": e["new_name"], "to": str(placed)})
     return True

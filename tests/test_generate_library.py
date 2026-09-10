@@ -25,7 +25,6 @@ from click.testing import CliRunner
 
 from helixgen import guitars, home, tone_meta
 from helixgen.cli import cli
-from helixgen.device.manifest import SetlistManifest
 from helixgen.hsp import read_hsp
 
 
@@ -77,7 +76,10 @@ def test_default_write_creates_hsp_json_and_manifest_entry(tmp_home, hsp_library
     assert meta.variants["les-paul-jr"].preset_name == "Warm Jazz Clean - Les Paul Jr"
 
     # registered in the manifest under the preset display name
-    assert "Warm Jazz Clean - Les Paul Jr" in SetlistManifest.load().tones
+    # The library DIRECTORY is the index (2026-09-09 file-copy design): a tone
+    # is registered exactly when its .hsp is in tones_dir().
+    assert any(read_hsp(p)["meta"]["name"] == "Warm Jazz Clean - Les Paul Jr"
+               for p in home.tones_dir().glob("*.hsp"))
 
     # stdout reports path + preset name + logical slug
     assert "warm-jazz-clean-les-paul-jr.hsp" in res.output
@@ -191,7 +193,8 @@ def test_dash_o_writes_exactly_there_and_no_metadata(tmp_home, hsp_library, tmp_
     assert res.exit_code == 0, res.output
     assert out.exists()
     # auto-registered in the manifest (keyed by the recipe name)
-    assert "Recipe Title" in SetlistManifest.load().tones
+    assert any(read_hsp(p)["meta"]["name"] == "Recipe Title"
+               for p in home.tones_dir().glob("*.hsp"))
     # NO metadata JSON written under tones_dir
     if home.tones_dir().exists():
         assert list(home.tones_dir().glob("*.json")) == []

@@ -22,7 +22,7 @@ See ``docs/superpowers/specs/2026-07-14-parity-capture-findings.md`` §1/§9.
 
 This module is the pure name-resolution layer (:func:`resolve_target_cid` is
 unit-testable against plain listings — the ``maintenance.py``/
-``setlist_sync.py`` pattern of separating planning from device I/O).
+the pattern of separating planning from device I/O).
 :meth:`HelixClient.reorder_container` is the wire primitive;
 :func:`reorder_setlist_item` below is the thin device-driving orchestrator
 the CLI (``device reorder``) calls.

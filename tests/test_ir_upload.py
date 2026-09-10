@@ -2,7 +2,7 @@
 
 `helixgen.device.ir_upload` is the single implementation behind three
 call sites: CLI `device install --auto-irs` (`helixgen.cli._auto_upload_irs`),
-`device sync` (`helixgen.device.setlist_sync._upload_missing_irs`), and the
+`device copy` (the shared per-tone IR core), and the
 `device install` path. These tests exercise the core directly, so
 its behavior is pinned independent of any one caller's wrapper.
 """
@@ -131,7 +131,7 @@ def test_upload_missing_irs_no_mapping_applies_to_every_hash(monkeypatch):
 def test_upload_missing_irs_push_ir_raises_helixerror_is_surfaced(monkeypatch):
     """push_ir raising HelixError is caught and turned into a per-hash entry
     rather than propagating (a defensive improvement shared by every
-    caller — previously only the setlist_sync path guarded this)."""
+    caller — previously only the bulk path guarded this)."""
     import helixgen.ir as _ir
     from helixgen.device import ir_upload
     from helixgen.device.client import HelixError

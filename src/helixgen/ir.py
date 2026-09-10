@@ -70,7 +70,7 @@ class IrMapping:
           ``mapping.json.migrated-legacy``). Relative legacy values are
           absolutized against the legacy dir first so they keep resolving.
           Mirrors
-          ``SetlistManifest``'s v2->v3 legacy bridge.
+          the retired manifest's v2->v3 legacy bridge.
         - A second run finds the library mapping.json and never re-bridges.
         """
         if irs_dir is not None:
@@ -107,7 +107,7 @@ class IrMapping:
         ``mapping.json.migrated-legacy`` AFTER the new file is safely
         written — never before, and only once (so a re-run never re-bridges).
         A rename failure
-        is swallowed (advisory, matches ``SetlistManifest``)."""
+        is swallowed (advisory)."""
         self.irs_dir.mkdir(parents=True, exist_ok=True)
         target = self.irs_dir / "mapping.json"
         tmp = target.with_suffix(".json.tmp")

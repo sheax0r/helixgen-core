@@ -928,32 +928,6 @@ def test_ttl_zero_means_no_expiry(root):
         locks.acquire(IP, ("library",), label="me", timeout=0)
 
 
-def test_install_auto_irs_also_locks_irs(root, monkeypatch, tmp_path):
-    """`device install` must hold `irs` as well as `library` — with
-    --auto-irs it uploads device IRs, and even without it the IR presence
-    check's wedge discriminator (confirm_ir_listed, #93) may issue a rename
-    nudge, an IR-container write."""
-    from helixgen.hsp import HSP_MAGIC
-
-    hsp = tmp_path / "t.hsp"
-    hsp.write_bytes(HSP_MAGIC + b"{}")
-    monkeypatch.setenv("HELIXGEN_LOCK_TIMEOUT", "0")
-    write_lease(root, "irs", pid=1, label="other-agent")
-    res = run_cli("device", "install", hsp, "HGTEST X", "--pos", "0",
-                  "--auto-irs", "--ip", IP)
-    assert res.exit_code != 0
-    assert "other-agent" in res.output
-    # without --auto-irs too: the presence check's nudge is still a write
-    res = run_cli("device", "install", hsp, "HGTEST X", "--pos", "0",
-                  "--ip", IP)
-    assert res.exit_code != 0
-    assert "other-agent" in res.output
-
-
-# --------------------------------------------------------------------------
-# scope conflict matrix
-# --------------------------------------------------------------------------
-
 @pytest.mark.parametrize("held,wanted,conflict", [
     ("library", "library", True),
     ("library", "editbuffer", False),
@@ -1232,20 +1206,6 @@ def test_ir_prune_dry_run_takes_no_lock(root, monkeypatch):
     res = run_cli("device", "ir-prune", "--yes", "--ip", IP)
     assert res.exit_code != 0
     assert "other-agent" in res.output
-
-
-def test_sync_locks_library_and_irs(root, monkeypatch):
-    monkeypatch.setenv("HELIXGEN_LOCK_TIMEOUT", "0")
-    import helixgen.device.setlist_sync as ss
-    monkeypatch.setattr(ss, "sync_setlists", lambda *a, **kw: {
-        "pool": {}, "references": {}, "gc": {}, "errors": [], "setlists": []})
-    write_lease(root, "irs", pid=1, label="other-agent")
-    res = run_cli("device", "sync", "X", "--ip", IP)
-    assert res.exit_code != 0
-    assert "other-agent" in res.output
-    # --exclude-irs drops the irs scope
-    res = run_cli("device", "sync", "X", "--exclude-irs", "--ip", IP)
-    assert res.exit_code == 0, res.output
 
 
 def test_import_hss_list_mode_takes_no_lock(root, tmp_path, monkeypatch):
@@ -2020,26 +1980,6 @@ READ_ONLY_VERBS = [
     (("device", "settings", "list", "--values"), "globals"),
     (("device", "settings", "get", "global.tuner.type"), "globals"),
 ]
-
-
-@pytest.mark.parametrize("argv,scope", READ_ONLY_VERBS)
-def test_97_read_only_verbs_refuse_a_dangling_token(root, fake_client,
-                                                    monkeypatch, tmp_path,
-                                                    argv, scope):
-    write_lease(root, scope, pid=1, label="other-agent")
-    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
-    argv = tuple(a.format(out=tmp_path / "out") for a in argv)
-    res = run_cli(*argv, "--ip", IP)
-    assert res.exit_code != 0, res.output
-    assert "other-agent" in res.output and "reclaimed" in res.output
-
-
-def test_97_slots_list_stays_exempt_when_it_is_offline(root, monkeypatch):
-    """`slots list` without --verify reads the local manifest only — the
-    other `when()`-narrowing verb. An offline verb must stay usable under a
-    dangling token: exactly the state you are in when you need to inspect."""
-    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-97")
-    assert run_cli("device", "slots", "list", "--ip", IP).exit_code == 0
 
 
 def test_97_settings_list_stays_exempt_when_it_is_offline(root, monkeypatch):

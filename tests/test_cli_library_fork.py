@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from helixgen import guitars, home, tone_meta
 from helixgen.cli import cli
-from helixgen.device.manifest import SetlistManifest
+from helixgen.hsp import read_hsp
 
 
 def _profile(name, short, *, active, pickups):
@@ -71,10 +71,11 @@ def test_fork_adds_second_variant_of_same_logical_tone(seeded):
     assert "Aerosmith - Dream On - Ibanez Prestige" in d.output
     assert "Aerosmith - Dream On - EC-1000" in d.output
 
-    # The fork is a real, registered tone (manifest + .hsp on disk).
+    # The fork is a real, registered tone: its .hsp is in the library under
+    # the forked name -- the directory IS the registry.
     dest = home.tones_dir() / "aerosmith-dream-on-esp-ltd-ec-1000.hsp"
     assert dest.is_file()
-    assert "Aerosmith - Dream On - EC-1000" in SetlistManifest.load().tones
+    assert read_hsp(dest)["meta"]["name"] == "Aerosmith - Dream On - EC-1000"
 
 
 def test_fork_by_exact_preset_name_and_by_path(seeded):
@@ -268,7 +269,6 @@ def test_pickup_class_reads_flag_and_prose():
 
 def test_dry_run_writes_nothing(seeded):
     before_files = {p.name: p.read_bytes() for p in home.tones_dir().iterdir()}
-    before_manifest = json.dumps(SetlistManifest.load().tones, sort_keys=True)
 
     r = _fork("aerosmith-dream-on", "--guitar", "EC-1000", "--dry-run")
     assert r.exit_code == 0, r.output
@@ -277,7 +277,6 @@ def test_dry_run_writes_nothing(seeded):
     assert "aerosmith-dream-on-esp-ltd-ec-1000.hsp" in r.output
 
     assert {p.name: p.read_bytes() for p in home.tones_dir().iterdir()} == before_files
-    assert json.dumps(SetlistManifest.load().tones, sort_keys=True) == before_manifest
 
 
 def test_json_output_shape(seeded):

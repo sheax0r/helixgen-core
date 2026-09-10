@@ -11,7 +11,7 @@ Three call sites share this core instead of each re-implementing it:
 * CLI ``device install --auto-irs`` / ``device slots restore`` —
   ``helixgen.cli._auto_upload_irs`` is a thin wrapper that echoes the same
   per-hash human messages it always has.
-* ``device sync`` — ``helixgen.device.setlist_sync._upload_missing_irs`` is
+* ``device copy`` — the per-tone IR upload core is
   likewise a thin wrapper (kept under its original name so existing tests /
   call sites can still monkeypatch it).
 """

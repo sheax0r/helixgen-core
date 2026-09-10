@@ -1158,7 +1158,7 @@ class HelixClient:
             # confirmation. Deliberately non-strict re-list (#40 audit): this
             # is pure post-write bookkeeping to recover the confirmed order
             # for the return value, same as the post-write reference listing
-            # #39 left lenient in setlist_sync.py.
+            # #39 left lenient on the bulk path.
             items = self.list_container(container)
         items.sort(key=lambda m: m.get("posi", 1 << 30))
         return items

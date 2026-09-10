@@ -469,18 +469,34 @@ def _resolve_guitar(label: str) -> tuple[str, str]:
 
 
 def _auto_register_tone(hsp_path: Path) -> None:
-    """Record a freshly-authored .hsp in the tone library (off-device by default).
+    """Place a freshly-authored .hsp in the tone library.
 
-    Advisory: a registration failure warns but never fails ``generate`` (the
-    .hsp is already written)."""
+    There is no registry to write (2026-09-09 file-copy design): the library
+    DIRECTORY is the index, so a tone is in the library exactly when its
+    ``.hsp`` is in ``home.tones_dir()``. A tone generated straight into that
+    directory is therefore already registered and this is a no-op; one written
+    elsewhere is copied in.
+
+    Advisory: a failure warns but never fails ``generate`` — the .hsp is
+    already written wherever the user asked for it."""
     try:
-        from helixgen.device.manifest import SetlistManifest
+        import shutil
+        from helixgen import home
 
-        m = SetlistManifest.load()
-        m.register_tone(hsp_path, source="authored")
-        m.save()
-    except Exception as e:  # noqa: BLE001 — registration is advisory
-        click.echo(f"warning: could not register tone in library: {e}", err=True)
+        d = home.tones_dir()
+        src = Path(hsp_path).resolve()
+        if src.parent == d.resolve():
+            return
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / src.name
+        if dest.exists() and dest.resolve() != src:
+            # never clobber a different tone that already owns this filename
+            click.echo(f"warning: {dest.name} already in the library; left "
+                       f"{src} where it is", err=True)
+            return
+        shutil.copy2(src, dest)
+    except Exception as e:  # noqa: BLE001 — placement is advisory
+        click.echo(f"warning: could not place tone in library: {e}", err=True)
 
 
 @cli.command(name="view")
@@ -1337,21 +1353,6 @@ def list_irs_cmd(as_json: bool, irs_dir: Path | None) -> None:
         return
     for hash_ in sorted(mapping.entries):
         click.echo(f"{hash_}  {mapping.entries[hash_]}")
-
-
-@cli.command(name="register")
-@click.argument("hsp_path", type=click.Path(exists=True, path_type=Path))
-def register_cmd(hsp_path: Path) -> None:
-    """Register an existing local .hsp into the tone library (off-device)."""
-    from helixgen.device.manifest import SetlistManifest, ManifestError
-
-    m = SetlistManifest.load()
-    try:
-        name = m.register_tone(hsp_path, source="import-local")
-    except ManifestError as e:
-        raise click.ClickException(str(e)) from e
-    m.save()
-    click.echo(f"registered {name!r} in the tone library (off-device)")
 
 
 @cli.command(name="ir-cache")
