@@ -454,6 +454,56 @@ def _apply_normalization_env(n: Normalization) -> None:
 
 
 @dataclass
+class MicInput:
+    """A standing "I sing while I play" preference.
+
+    When ``enabled``, every generated preset gets its ``path`` re-jacked to
+    the XLR mic and that path's output level set, so a vocal is audible
+    alongside the guitar without restating it per tone. Every field below
+    ``enabled`` is optional: ``None`` means "leave it at the model default".
+
+    This is a DEFAULT, never an override — a recipe that says anything about
+    that path's input wins, and an occupied path is left alone (a dual-amp
+    rig is not a free slot).
+    """
+
+    enabled: bool = False
+    path: int = 1
+    lowcut: float | None = None
+    trim: float | None = None
+    gate: bool | None = None
+    threshold: float | None = None
+    decay: float | None = None
+    level: float | None = None      # the mic path's output block gain, dB
+
+    def to_dict(self) -> dict:
+        d: dict[str, Any] = {"enabled": self.enabled, "path": self.path}
+        for f in ("lowcut", "trim", "gate", "threshold", "decay", "level"):
+            v = getattr(self, f)
+            if v is not None:
+                d[f] = v
+        return d
+
+    def input_field(self) -> dict:
+        """The recipe ``input`` object this preference stands for."""
+        inp: dict[str, Any] = {"source": "mic"}
+        if self.lowcut is not None:
+            inp["lowcut"] = self.lowcut
+        if self.trim is not None:
+            inp["trim"] = self.trim
+        gate: dict[str, Any] = {}
+        if self.gate is not None:
+            gate["enabled"] = self.gate
+        if self.threshold is not None:
+            gate["threshold"] = self.threshold
+        if self.decay is not None:
+            gate["decay"] = self.decay
+        if gate:
+            inp["gate"] = gate
+        return inp
+
+
+@dataclass
 class Preferences:
     """Resolved preferences: env overrides layered over the file, layered over defaults."""
 
@@ -470,6 +520,63 @@ class Preferences:
     volume_normalize_baseline: bool = True
     git_commit_tones: str = "auto"
     normalization: Normalization = field(default_factory=Normalization)
+    mic_input: MicInput = field(default_factory=MicInput)
+
+
+_MIC_NUMERIC_FIELDS = {
+    # field -> (min, max); ranges mirror flowparams' input specs so a bad
+    # preference is caught at load, not three layers down in generate.
+    "lowcut": (19.9, 400.0),
+    "trim": (-24.0, 6.0),
+    "threshold": (-96.0, 0.0),
+    "decay": (0.01, 1.0),
+    "level": (-120.0, 20.0),
+}
+
+
+def _parse_mic_input(raw: Any) -> MicInput:
+    """Parse the ``mic_input`` block. Absent or ``None`` → disabled."""
+    if raw is None:
+        return MicInput()
+    if not isinstance(raw, dict):
+        raise _normalize_block_error("mic_input", raw, "an object")
+
+    unknown = sorted(set(raw) - {"enabled", "path", "gate", *_MIC_NUMERIC_FIELDS})
+    if unknown:
+        raise PreferencesError(
+            f"mic_input: unknown key(s) {unknown}; valid keys: "
+            f"['enabled', 'path', 'gate', "
+            f"{', '.join(repr(k) for k in sorted(_MIC_NUMERIC_FIELDS))}]."
+        )
+
+    mic = MicInput(enabled=bool(raw.get("enabled", False)))
+
+    path = raw.get("path", 1)
+    if not isinstance(path, int) or isinstance(path, bool) or path < 0:
+        raise PreferencesError(
+            f"mic_input.path must be a non-negative integer (got {path!r}).")
+    mic.path = path
+
+    gate = raw.get("gate")
+    if gate is not None:
+        if not isinstance(gate, bool):
+            raise PreferencesError(
+                f"mic_input.gate must be a boolean (got {gate!r}).")
+        mic.gate = gate
+
+    for fname, (lo, hi) in _MIC_NUMERIC_FIELDS.items():
+        v = raw.get(fname)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise PreferencesError(
+                f"mic_input.{fname} must be a number (got {v!r}).")
+        if not (lo <= float(v) <= hi):
+            raise PreferencesError(
+                f"mic_input.{fname} must be within [{lo}, {hi}] (got {v}).")
+        setattr(mic, fname, float(v))
+
+    return mic
 
 
 def _normalize_device_model_key(value: str) -> str:
@@ -630,6 +737,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         volume_normalize_baseline=bool(data.get("volume_normalize_baseline", True)),
         git_commit_tones=_validate_git_commit_tones(data.get("git_commit_tones", "auto")),
         normalization=_parse_normalization(data.get("normalization")),
+        mic_input=_parse_mic_input(data.get("mic_input")),
     )
 
     # --- per-key env overrides (first hit wins, applied last) ---
@@ -689,6 +797,7 @@ def _default_scaffold_dict() -> dict:
         "volume_normalize_snapshots": True,
         "volume_normalize_baseline": True,
         "git_commit_tones": "auto",
+        "mic_input": MicInput().to_dict(),
         "normalization": {
             **Normalization().to_dict(),
             # Scaffolded with the shipped reference rather than null: a

@@ -357,9 +357,11 @@ def _set_input_flow_param(body: dict[str, Any], path_dict: dict[str, Any],
     if param == "link" and mode != "both":
         raise MutateError('"link" (StereoLink) applies only to the stereo '
                           '"both" input.')
-    if param == "pad" and mode in (None, "none"):
+    if param == "pad" and mode not in ("inst1", "inst2", "both"):
         raise MutateError('"pad" requires an instrument input source '
                           '(inst1/inst2/both).')
+    if param == "lowcut" and mode != "mic":
+        raise MutateError('"lowcut" applies only to the "mic" input source.')
     try:
         flowparams.validate_input_field(param, value)
     except ValueError as exc:
@@ -1621,12 +1623,18 @@ def _op_swap_model(body: dict, library: Library, o: dict) -> list[str]:
     )
 
 
+def _op_set_input(body: dict, library: Library, o: dict) -> list[str]:
+    set_input(body, int(o["path"]), o["jack"])
+    return []
+
+
 PATCH_OPS = {
     "set_param": _op_set_param,
     "set_enabled": _op_set_enabled,
     "add_block": _op_add_block,
     "remove_block": _op_remove_block,
     "swap_model": _op_swap_model,
+    "set_input": _op_set_input,
 }
 
 # Required fields per op, validated up front so a missing key reports itself
@@ -1638,6 +1646,7 @@ _PATCH_OP_REQUIRED = {
     "add_block": ("block",),
     "remove_block": ("block",),
     "swap_model": ("old", "new"),
+    "set_input": ("path", "jack"),
 }
 
 
@@ -1649,7 +1658,7 @@ def apply_operations(
     params/IRs/MIDI bindings that could not be carried over).
 
     The op vocabulary is :data:`PATCH_OPS` (`set_param`, `set_enabled`,
-    `add_block`, `remove_block`, `swap_model`), each dispatching to the
+    `add_block`, `remove_block`, `swap_model`, `set_input`), each dispatching to the
     matching surgical verb in this module. An unknown op raises
     :class:`MutateError` — callers apply ops to an in-memory body and only
     write the file after ALL ops succeeded, so a bad op never half-patches

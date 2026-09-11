@@ -20,6 +20,7 @@ INPUT_MODELS: dict[str, dict[str, str]] = {
         "inst2": "P35_InputInst2",
         "both":  "P35_InputInst1_2",
         "none":  "P35_InputNone",
+        "mic":   "P35_InputMic",
     },
 }
 

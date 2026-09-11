@@ -54,6 +54,14 @@ mode string:
 - `"inst2"` — Instrument 2 jack only
 - `"both"` — both jacks (stereo) — **default on paths[0]**
 - `"none"` — input disabled — **default on paths[1]**
+- `"mic"` — the XLR mic jack
+
+The mic's *preamp gain* and *phantom power* are device globals, not preset
+state (`global.in.mic.gain`, `global.in.mic.phantom`, settings page
+`ins-outs` — see `helixgen device settings`). A path set to `"mic"` that
+plays silent has almost always just got the global gain at 0, which no
+recipe can fix. Phantom is off by default: a condenser needs it on, and it
+can damage a ribbon mic, so it is never set implicitly.
 
 The object form adds the Input-block params (impedance / pad / trim / gate):
 
@@ -77,8 +85,12 @@ The object form adds the Input-block params (impedance / pad / trim / gate):
   `"FirstEnabled"`; an omission never conflicts with another path's explicit
   value (explicit wins). Two paths giving the same jack **different explicit**
   values is an error.
-- `pad` — bool (instrument sources only).
+- `pad` — bool (instrument sources only; the mic has no Pad and rejects it).
 - `trim` — float dB, −24..6.
+- `lowcut` — float Hz, 19.9..400. **`"mic"` source only** — the one input
+  param the mic has that the instrument jacks do not. Useful against an SM58's
+  proximity boom at ~80 Hz. (The device also carries a *global*
+  `global.in.mic.lowcut`; this one is per preset and stacks with it.)
 - `gate` — `true`/`false` shorthand, or `{"enabled", "threshold" (−96..0 dB),
   "decay" (0.01..1)}`. Giving the gate **object** implies `enabled: true`
   unless you set `"enabled": false` explicitly.

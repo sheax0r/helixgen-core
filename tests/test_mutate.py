@@ -821,13 +821,29 @@ def test_set_input_both_to_inst_reshapes_params_to_mono(goldfinger_body):
     # path 0's b00 starts stereo (P35_InputInst1_2); give it a stereo-shaped
     # param so the mono rewrite has something to reshape.
     b00_slot = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]
-    b00_slot["params"] = {"Gain": {"1": {"value": 0.5}, "2": {"value": 0.6}},
+    b00_slot["params"] = {"Trim": {"1": {"value": 0.5}, "2": {"value": 0.6}},
                            "StereoLink": {"value": False}}
     mutate.set_input(goldfinger_body, 0, "inst2")
     slot = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]
     assert slot["model"] == "P35_InputInst2"
-    assert slot["params"]["Gain"] == {"value": 0.5}
+    assert slot["params"]["Trim"] == {"value": 0.5}
     assert "StereoLink" not in slot["params"]
+
+
+def test_set_input_mic_drops_pad(goldfinger_body):
+    """P35_InputMic has no Pad (it has LowCut); the swap must not carry one."""
+    mutate.set_input(goldfinger_body, 0, "mic")
+    slot = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]
+    assert slot["model"] == "P35_InputMic"
+    assert "Pad" not in slot["params"]
+    assert "StereoLink" not in slot["params"]
+
+
+def test_patch_op_set_input(goldfinger_body, library):
+    mutate.apply_operations(
+        goldfinger_body, [{"op": "set_input", "path": 0, "jack": "mic"}], library)
+    assert (goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]["model"]
+            == "P35_InputMic")
 
 
 def test_set_input_invalid_jack_raises(goldfinger_body):
