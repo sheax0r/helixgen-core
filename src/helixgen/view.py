@@ -171,6 +171,13 @@ def _lift_input(path_dict: dict, device_id: Any, body: dict) -> "str | dict | No
     if trim is not None and _flow_differs(trim, 0.0):
         lifts["trim"] = trim
 
+    # LowCut is mic-only, and scoped for the same reason as pad above: lifting
+    # it on an instrument source would make parse_spec reject view's own output.
+    lowcut = val("LowCut")
+    if mode == "mic" and lowcut is not None and _flow_differs(
+            lowcut, flowparams.MIC_LOWCUT_DEFAULT):
+        lifts["lowcut"] = lowcut
+
     gate: dict[str, Any] = {}
     ng = val("noiseGate")
     th = val("threshold")
