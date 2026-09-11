@@ -133,3 +133,83 @@ def test_params_reach_the_recipe_input_object():
         "source": "mic", "lowcut": 80.0,
         "gate": {"enabled": True, "threshold": -45.0, "decay": 0.35},
     }
+
+
+# --- end to end -------------------------------------------------------------
+#
+# These exist because the unit tests above ALL passed while the feature did
+# nothing: the injection was wired into `apply_recipe`, and `generate_preset`
+# parses its recipe directly without going through it. Assert against a
+# generated preset, not against the helper.
+
+def _flow1_input(hsp_path):
+    import json as _json
+    d = hsp_path.read_bytes()
+    body = _json.loads(d[d.find(b"{"):].decode().rstrip("\0"))
+    return body["preset"]["flow"][1]
+
+
+MIC_ON = {"schema_version": 1,
+          "mic_input": {"enabled": True, "path": 1, "lowcut": 80.0,
+                        "gate": True, "threshold": -45.0, "decay": 0.35,
+                        "level": 3.5}}
+RECIPE = {"name": "Mic E2E", "paths": [{"blocks": []}]}
+
+
+def test_generate_applies_the_preference(tmp_path, monkeypatch, hsp_library):
+    from helixgen.generate import generate_preset
+    import json as _json
+    pfile = tmp_path / "preferences.json"
+    pfile.write_text(_json.dumps(MIC_ON))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(pfile))
+    rfile = tmp_path / "r.json"
+    rfile.write_text(_json.dumps(RECIPE))
+    out = tmp_path / "out.hsp"
+    generate_preset(rfile, out, hsp_library)
+
+    f1 = _flow1_input(out)
+    slot = f1["b00"]["slot"][0]
+    assert slot["model"] == "P35_InputMic"
+    assert slot["params"]["LowCut"]["value"] == 80.0
+    assert slot["params"]["threshold"]["value"] == -45.0
+    assert slot["params"]["noiseGate"]["value"] is True
+    assert "Pad" not in slot["params"], "the mic model has no Pad"
+    assert f1["b13"]["slot"][0]["params"]["gain"]["value"] == 3.5
+
+
+def test_generate_without_the_preference_is_unchanged(tmp_path, monkeypatch,
+                                                      hsp_library):
+    from helixgen.generate import generate_preset
+    import json as _json
+    pfile = tmp_path / "preferences.json"
+    pfile.write_text(_json.dumps({"schema_version": 1}))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(pfile))
+    rfile = tmp_path / "r.json"
+    rfile.write_text(_json.dumps(RECIPE))
+    out = tmp_path / "out.hsp"
+    generate_preset(rfile, out, hsp_library)
+    assert _flow1_input(out)["b00"]["slot"][0]["model"] != "P35_InputMic"
+
+
+def test_the_mic_reaches_the_device_payload(tmp_path, monkeypatch,
+                                            hsp_library):
+    """The oracle: an .hsp that merely READS as mic is what the original bug
+    produced. Assert the transcoded device model id."""
+    pytest.importorskip("msgpack")
+    from helixgen.device import content, transcode
+    from helixgen.generate import generate_preset
+    import json as _json
+    pfile = tmp_path / "preferences.json"
+    pfile.write_text(_json.dumps(MIC_ON))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(pfile))
+    rfile = tmp_path / "r.json"
+    rfile.write_text(_json.dumps(RECIPE))
+    out = tmp_path / "out.hsp"
+    generate_preset(rfile, out, hsp_library)
+
+    d = out.read_bytes()
+    body = _json.loads(d[d.find(b"{"):].decode().rstrip("\0"))
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    ids = [b["mdls"][0]["id__"] for b in doc["sfg_"]["flow"][1]["blks"]
+           if isinstance(b, dict) and b.get("type") == 8]
+    assert 766 in ids, f"mic (766) not in DSP1 input endpoints: {ids}"

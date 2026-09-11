@@ -255,6 +255,8 @@ def generate_cmd(
         # legacy error-ordering tests rely on (a malformed recipe reports its
         # own error rather than being masked by a missing-chassis error).
         raw = json.loads(spec_path.read_text())
+        from helixgen.recipe import apply_stored_defaults
+        apply_stored_defaults(raw)
         spec = parse_spec(raw, source=str(spec_path))
         chassis = library.load_chassis()
         shape = chassis.get(CHASSIS_SHAPE_KEY, "hlx")

@@ -283,6 +283,29 @@ def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
     return []
 
 
+def apply_stored_defaults(recipe: Any) -> None:
+    """Apply stored user preferences to a RAW recipe dict, in place.
+
+    Call this immediately before `parse_spec` at every entry point that turns
+    a user-supplied recipe dict into a `Spec`. There are three
+    (`cli.generate`, `generate.generate_preset`, `apply_recipe`) and a
+    preference wired into only some of them is worse than one wired into
+    none: it would apply or not depending on which verb the user reached for.
+
+    Never raises — a malformed preferences file disables the defaults rather
+    than failing the generate.
+    """
+    if not isinstance(recipe, dict):
+        return
+    from helixgen.preferences import load_preferences
+    try:
+        mic = load_preferences().mic_input
+    except Exception:
+        return
+    for why in apply_mic_preference(recipe, mic):
+        print(why, file=sys.stderr)
+
+
 def apply_recipe(
     recipe: dict[str, Any] | Spec,
     library,
@@ -305,17 +328,10 @@ def apply_recipe(
             f"shape {shape!r}. Use generate.compose_preset for .hlx output."
         )
 
-    if not isinstance(recipe, Spec):
-        # The stored mic preference is injected as a recipe-level default so
-        # it flows through the ordinary input pipeline — same validation, same
-        # endpoint normalization — rather than being a second way to route.
-        from helixgen.preferences import load_preferences
-        try:
-            _mic = load_preferences().mic_input
-        except Exception:                       # a broken prefs file must not
-            _mic = None                         # break preset generation
-        for _why in apply_mic_preference(recipe, _mic):
-            print(_why, file=sys.stderr)
+    # The stored mic preference is injected as a recipe-level default so it
+    # flows through the ordinary input pipeline — same validation, same
+    # endpoint normalization — rather than being a second way to route.
+    apply_stored_defaults(recipe)
 
     spec = recipe if isinstance(recipe, Spec) else parse_spec(recipe, source=source)
 

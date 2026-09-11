@@ -1003,6 +1003,8 @@ def generate_preset(
         irs = IrMapping.load()  # default location; returns empty mapping if no file
 
     raw = json.loads(spec_path.read_text())
+    from helixgen.recipe import apply_stored_defaults
+    apply_stored_defaults(raw)
     spec = parse_spec(raw, source=str(spec_path))
     preset = compose_preset(spec, library, source=str(spec_path), irs=irs)
 
