@@ -17,6 +17,7 @@ from typing import Any
 
 from helixgen import __version__
 from helixgen import controllers, flowparams
+from helixgen.device import defs as _defs
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.hsp import HSP_MAGIC, translate_to_hsp
 from helixgen.ingest import (
@@ -504,6 +505,22 @@ def _reshape_input_params(
     return out
 
 
+def _drop_params_absent_from(params: dict[str, Any], target_model: str) -> dict[str, Any]:
+    """Drop params the target input model does not have.
+
+    Input models differ in more than channel count: `P35_InputMic` has `LowCut`
+    and no `Pad`, `P35_InputNone` has no `Pad` either. Carrying a stale `Pad`
+    across the swap is inert on push (`transcode._synth_parm` iterates the
+    TARGET model's table and ignores extras) but leaves a param in the `.hsp`
+    that the model cannot hold. Params the target has but the source did not
+    are left absent — `_synth_parm` fills them from the model defaults.
+    """
+    known = {n.split(".")[0] for n in _defs.model_params_for(target_model)}
+    if not known:  # unknown model — defs miss; leave params untouched
+        return params
+    return {k: v for k, v in params.items() if k.split(".")[0] in known}
+
+
 def _rewrite_input_endpoint(path_dict: dict[str, Any], target_model: str) -> None:
     """Rewrite path_dict['b00'] to use `target_model`, reshaping params as needed.
 
@@ -520,8 +537,9 @@ def _rewrite_input_endpoint(path_dict: dict[str, Any], target_model: str) -> Non
     if slot.get("model") == target_model:
         return
     target_is_stereo = target_model.endswith("_2")
-    slot["params"] = _reshape_input_params(
-        slot.get("params") or {}, to_stereo=target_is_stereo
+    slot["params"] = _drop_params_absent_from(
+        _reshape_input_params(slot.get("params") or {}, to_stereo=target_is_stereo),
+        target_model,
     )
     slot["model"] = target_model
 

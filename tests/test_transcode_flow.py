@@ -91,6 +91,30 @@ class TestTranscodeSynthesis:
         assert pids[2] == -4.5       # gain
         assert pids[1] == 0.25       # pan
 
+    def test_mic_input_survives(self):
+        """The regression this whole change exists for: before `mic` was in
+        `_INPUT_MODEL`, an .hsp asking for the XLR mic transcoded SILENTLY to
+        Guitar In 1 (`_make_input_endpoint`'s `.get(mode, inst1)` fallback)."""
+        body = _hsp_body("P35_InputMic", _wrap({
+            "LowCut": 80.0, "Trim": -2.0, "noiseGate": True,
+            "threshold": -50.0, "decay": 0.3}))
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+        inp = _blocks_by_type(doc)[8][0]
+        assert inp["mdls"][0]["id__"] == 766, "mic input fell back to another jack"
+        # Mic's pid layout differs from the instrument jacks: it has LowCut at
+        # pid 2 where they have Pad, shifting everything after it down one.
+        pids = _parm_by_pid(inp)
+        assert pids[1] == -2.0       # Trim
+        assert pids[2] == 80.0       # LowCut
+        assert pids[3] is True       # noiseGate
+        assert pids[4] == -50.0      # threshold
+        assert pids[5] == 0.3        # decay
+
+    def test_mic_input_round_trips_back_to_mic(self):
+        body = _hsp_body("P35_InputMic", _wrap({"Trim": 0.0}))
+        paths = bridge.hsp_to_paths(body)
+        assert paths[0]["input"] == "mic"
+
     def test_default_endpoints_unchanged_without_params(self):
         body = _hsp_body("P35_InputInst1", {})
         doc = content.decode_any(transcode.hsp_to_sbepgsm(body))

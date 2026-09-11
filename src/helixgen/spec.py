@@ -251,7 +251,7 @@ class Spec:
 
 
 SNAPSHOT_MAX = 8  # Stadium hardware cap
-VALID_INPUT_MODES = ("inst1", "inst2", "both", "none")
+VALID_INPUT_MODES = ("inst1", "inst2", "both", "none", "mic")
 VALID_FS_BEHAVIORS = ("latching", "momentary")
 
 

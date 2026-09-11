@@ -759,7 +759,8 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
        {"op": "set_enabled", "block": "Plate Stereo", "enabled": false},
        {"op": "add_block",   "block": "LA Studio Comp", "path": 0},
        {"op": "remove_block","block": "Plate Stereo"},
-       {"op": "swap_model",  "old": "Brit Plexi Brt", "new": "Brit 2204"}]
+       {"op": "swap_model",  "old": "Brit Plexi Brt", "new": "Brit 2204"},
+       {"op": "set_input",   "path": 1, "jack": "mic"}]
 
     All ops are applied to an in-memory copy and the file is written ONCE at
     the end — an invalid op anywhere in the list (unknown op, bad param,
@@ -772,7 +773,10 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
     (name or 0-based index) for a per-snapshot override. "set_param"
     also accepts the signal-flow pseudo-blocks `input` / `output` / `split` /
     `join` (`merge` = alias) — see `set-param --help`. Run `show-block` first
-    to confirm exact, case-sensitive param names.
+    to confirm exact, case-sensitive param names. "set_input" re-jacks a whole
+    path's input endpoint — "jack" is inst1/inst2/both/none/mic ("mic" = the
+    XLR mic input) — and drops params the target jack does not have (the mic
+    has LowCut and no Pad).
 
     Warnings (e.g. swap_model params it had to drop) go to stderr, or into
     the --json result's "warnings" list. Exit 0 = file patched.

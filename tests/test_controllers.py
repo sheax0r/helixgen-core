@@ -4,9 +4,9 @@ import pytest
 from helixgen import controllers
 
 
-def test_input_models_has_stadium_xl_with_all_four_modes():
+def test_input_models_has_stadium_xl_with_every_mode():
     table = controllers.INPUT_MODELS["stadium_xl"]
-    assert set(table.keys()) == {"inst1", "inst2", "both", "none"}
+    assert set(table.keys()) == {"inst1", "inst2", "both", "none", "mic"}
 
 
 def test_input_models_stadium_xl_model_ids_are_p35():
