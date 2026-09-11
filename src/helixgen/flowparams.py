@@ -73,6 +73,7 @@ INPUT_HSP_DEFAULTS: dict[str, Any] = {
     "threshold": -48.0,  # dB
     "decay": 0.1,
 }
+MIC_LOWCUT_DEFAULT = 19.9   # Hz; P35_InputMic's own device default
 STEREO_LINK_DEFAULT = False
 
 # recipe field -> (hsp param name, kind, min, max). kind: "bool" | "float".

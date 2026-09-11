@@ -68,6 +68,7 @@ class InputSpec:
     gate_threshold: Any = None
     gate_decay: Any = None
     link: bool | None = None
+    lowcut: Any = None
 
 
 @dataclass
@@ -974,7 +975,8 @@ def _parse_channel_value(field: str, value: Any, *, stereo: bool,
     return value
 
 
-_INPUT_OBJECT_KEYS = ("source", "impedance", "pad", "trim", "gate", "link")
+_INPUT_OBJECT_KEYS = ("source", "impedance", "pad", "trim", "gate", "link",
+                      "lowcut")
 
 
 def _parse_input(raw: Any, *, source: str, path_index: int) -> "str | InputSpec | None":
@@ -1027,14 +1029,22 @@ def _parse_input(raw: Any, *, source: str, path_index: int) -> "str | InputSpec 
             spec.impedance = imp
 
     if raw.get("pad") is not None:
-        if effective == "none":
+        if effective not in ("inst1", "inst2", "both"):
             raise _err(source, 'input "pad" requires an instrument source '
-                               '(inst1/inst2/both), not "none".')
+                               f'(inst1/inst2/both), not "{effective}".')
         spec.pad = _parse_channel_value("pad", raw["pad"], stereo=stereo,
                                         source=source)
     if raw.get("trim") is not None:
         spec.trim = _parse_channel_value("trim", raw["trim"], stereo=stereo,
                                          source=source)
+
+    if raw.get("lowcut") is not None:
+        # LowCut is the one input param the mic has and the jacks do not.
+        if effective != "mic":
+            raise _err(source, 'input "lowcut" applies only to the "mic" '
+                               f'source, not "{effective}".')
+        spec.lowcut = _parse_channel_value("lowcut", raw["lowcut"],
+                                           stereo=stereo, source=source)
 
     gate = raw.get("gate")
     if gate is not None:
