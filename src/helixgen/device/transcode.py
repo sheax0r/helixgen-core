@@ -530,6 +530,7 @@ _INPUT_MODEL = {
     "inst2": defs.model_id_for("P35_InputInst2"),
     "both": defs.model_id_for("P35_InputInst1_2"),  # stereo, both jacks
     "none": defs.model_id_for("P35_InputNone"),
+    "mic": defs.model_id_for("P35_InputMic"),  # XLR mic jack
 }
 # Fail LOUDLY at import if a defs regeneration ever drops/renames one of these
 # models — a silent None here would flow a None model id into input synthesis.

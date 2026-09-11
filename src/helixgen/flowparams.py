@@ -84,6 +84,7 @@ INPUT_FIELD_SPECS: dict[str, tuple[str, str, float | None, float | None]] = {
     "threshold": ("threshold",  "float", -96.0, 0.0),
     "decay":     ("decay",      "float", 0.01, 1.0),
     "link":      ("StereoLink", "bool",  None, None),
+    "lowcut":    ("LowCut",     "float", 19.9, 400.0),   # P35_InputMic only
 }
 
 

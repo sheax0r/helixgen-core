@@ -52,7 +52,11 @@ class TestInputObject:
 
     def test_object_bad_source_rejected(self):
         with pytest.raises(SpecError, match="inst1"):
-            _parse_path0({"input": {"source": "mic"}, "blocks": []})
+            _parse_path0({"input": {"source": "xlr"}, "blocks": []})
+
+    def test_object_mic_source_accepted(self):
+        p = _parse_path0({"input": {"source": "mic"}, "blocks": []})
+        assert p.input.source == "mic"
 
     def test_gate_bool_shorthand(self):
         p = _parse_path0({"input": {"gate": True}, "blocks": []})
