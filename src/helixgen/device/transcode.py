@@ -900,16 +900,20 @@ def _split_branch_gps(structural, lane1_pos) -> Dict[int, int]:
     the first lane-1 slot (the old rule) routed a SECOND split's B side through
     the FIRST split's branch blocks — a Y split tapping row 1 straight to its
     own output came out mono, ~24 dB down, carrying the other branch
-    (hardware-measured). So, per split:
+    (hardware-measured; the tap's correct bblk was ``14 + split.pos``). So, per
+    split:
 
-    1. the ``.hsp`` ``branch`` key (``generate`` writes it; ``to-hsp`` writes
-       it from the device's own ``bblk``) when it names a row-1 slot;
-    2. a ``branch`` that names a lane-0 slot means an EMPTY branch (``generate``
-       aims an empty one at its join), as does a split with no lane-1 block in
-       its region: the row-1 slot beneath the split, ``14 + split.pos``;
-    3. no ``branch`` at all: the first lane-1 block in the split's region — past
-       the previous pair's join (or the previous unpaired split), up to its own
-       join (or the end of the row when unpaired).
+    1. the ``.hsp`` ``branch`` key (``to-hsp`` writes it from the device's own
+       ``bblk``) when it names a row-1 user slot that no other split's
+       ``branch`` also names (the pre-fix ``to-hsp`` aimed an empty pair at the
+       whole lane, so two splits could claim one block);
+    2. otherwise the first lane-1 block in the split's region: past the
+       previous pair's join, up to its own join — or, unpaired (a Y tap), from
+       its own column to the end of the row. A lane-0 ``branch`` lands here
+       too: ``generate`` aims one at the join whenever no lane-1 block is
+       LISTED between the pair, which says nothing about the grid;
+    3. nothing in the region, or a ``branch`` naming the row-1 output: the
+       row-1 slot beneath the split, ``14 + split.pos``.
     """
     order = sorted((s for s in structural if s.get("type") in (3, 4)),
                    key=lambda s: int(s["_pos"]))
@@ -920,22 +924,30 @@ def _split_branch_gps(structural, lane1_pos) -> Dict[int, int]:
             stack.append(s)
         elif stack:
             join_pos[id(stack.pop())] = int(s["_pos"])
+    splits = [s for s in order if s["type"] == 3]
+
+    def branch_num(s) -> Optional[int]:
+        b = s.get("_branch")
+        return int(b[1:]) if isinstance(b, str) and b[1:].isdigit() else None
+
+    named = [branch_num(s) for s in splits]
     out: Dict[int, int] = {}
     prev_end = 0
-    for s in (s for s in order if s["type"] == 3):
+    for s, bnum in zip(splits, named):
         spos = int(s["_pos"])
-        end = join_pos.get(id(s), _ROW0_LAST_USER)
-        branch = s.get("_branch")
-        bnum = (int(branch[1:]) if isinstance(branch, str)
-                and branch[1:].isdigit() else None)
-        if bnum is not None and _ROW1_INPUT < bnum <= _ROW1_OUTPUT:
+        paired = id(s) in join_pos
+        lo, hi = ((prev_end, join_pos[id(s)]) if paired
+                  else (spos - 1, _ROW0_LAST_USER))
+        own = [p for p in lane1_pos if lo < p <= hi]
+        if (bnum is not None and _ROW1_INPUT < bnum <= _ROW1_LAST_USER
+                and (named.count(bnum) == 1
+                     or bnum - _ROW1_INPUT in own)):
             out[id(s)] = bnum
-        elif bnum is not None:
-            out[id(s)] = _ROW1_INPUT + spos
+        elif own and bnum != _ROW1_OUTPUT:
+            out[id(s)] = _ROW1_INPUT + own[0]
         else:
-            own = [p for p in lane1_pos if prev_end < p <= end]
-            out[id(s)] = _ROW1_INPUT + (own[0] if own else spos)
-        prev_end = end
+            out[id(s)] = _ROW1_INPUT + spos
+        prev_end = hi
     return out
 
 
@@ -992,9 +1004,8 @@ def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, stru
         typ = scaffold.get("type")
         slot = split_gp if typ == 3 else join_gp
         blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
-        if typ == 3:      # its branch starts the packed row 1; empty: beneath it
-            blk["bblk"] = base + (_ROW1_INPUT + (1 if lane1 else split_gp))
-            blk["bflw"] = pi
+        if typ == 3:
+            blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
         elif typ == 4:
             blk["bblk"], blk["bflw"] = base + join_gp, pi
         scaffold["_eid"] = base + slot   # its cg__ target key (bead hgc-rq3)

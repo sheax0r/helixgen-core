@@ -485,14 +485,7 @@ def _endpoint_pointers(entries: Dict[str, dict],
             entries[split]["branch"] = span[0]
             entries[key]["branch"] = span[-1]
     for split, branch in (split_bblk or {}).items():
-        join = entries[split].get("endpoint")
-        if join in entries and branch not in entries:
-            # A pair whose split feeds an EMPTY row-1 slot brackets nothing —
-            # not the whole row, which is what the span fallback above claims.
-            entries[split].pop("branch", None)
-            entries[join].pop("branch", None)
-        else:
-            entries[split]["branch"] = branch
+        entries[split]["branch"] = branch
 
 
 def _nest_stereo_channels(params: Dict[str, Any]) -> Dict[str, Any]:
