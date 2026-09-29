@@ -487,9 +487,9 @@ _OUTPUT_PATH2A = {
 
 # Split (``P35_AppDSPSplitY`` model 475) / join (``P35_AppDSPJoin`` model 478)
 # scaffolds captured verbatim from ``preset_152`` flow 0. ``bblk``/``bflw`` are
-# partner cross-references the device uses to pair a split with its join; the
-# exact semantics are not decoded offline (see the module note + spec §5), so on
-# synthesis we re-point them at the emitted partner's id as a best effort.
+# row-1 pointers: a split's ``bblk`` is the row-1 slot its B side enters, a
+# join's the row-1 slot beneath it; ``bflw`` is the flow. ``synthesize_sfg``
+# re-points both (:func:`_split_branch_gps`).
 _SPLIT_SCAFFOLD = {
     "bblk": 0, "bflw": 0, "cid_": 0, "enbl": 1, "favo": 0, "hasb": True,
     "hrns": {"cid_": 0, "enbl": 1, "id__": 479, "lbid": -1,
@@ -891,26 +891,73 @@ def _place_serial_flow(placements, instance_ids, pi, base, modeled) -> None:
         instance_ids[(pi, lane, pos)] = base + gp
 
 
+def _split_branch_gps(structural, lane1_pos) -> Dict[int, int]:
+    """The row-1 grid slot each split's B side enters (its ``bblk``), keyed by
+    ``id()`` of the split scaffold.
+
+    ``bblk`` is where the split drops its B signal into row 1; it runs forward
+    from there to the next join or the row-1 output. Pointing every split at
+    the first lane-1 slot (the old rule) routed a SECOND split's B side through
+    the FIRST split's branch blocks — a Y split tapping row 1 straight to its
+    own output came out mono, ~24 dB down, carrying the other branch
+    (hardware-measured). So, per split:
+
+    1. the ``.hsp`` ``branch`` key (``generate`` writes it; ``to-hsp`` writes
+       it from the device's own ``bblk``) when it names a row-1 slot;
+    2. a ``branch`` that names a lane-0 slot means an EMPTY branch (``generate``
+       aims an empty one at its join), as does a split with no lane-1 block in
+       its region: the row-1 slot beneath the split, ``14 + split.pos``;
+    3. no ``branch`` at all: the first lane-1 block in the split's region — past
+       the previous pair's join (or the previous unpaired split), up to its own
+       join (or the end of the row when unpaired).
+    """
+    order = sorted((s for s in structural if s.get("type") in (3, 4)),
+                   key=lambda s: int(s["_pos"]))
+    join_pos: Dict[int, int] = {}
+    stack: List[dict] = []
+    for s in order:
+        if s["type"] == 3:
+            stack.append(s)
+        elif stack:
+            join_pos[id(stack.pop())] = int(s["_pos"])
+    out: Dict[int, int] = {}
+    prev_end = 0
+    for s in (s for s in order if s["type"] == 3):
+        spos = int(s["_pos"])
+        end = join_pos.get(id(s), _ROW0_LAST_USER)
+        branch = s.get("_branch")
+        bnum = (int(branch[1:]) if isinstance(branch, str)
+                and branch[1:].isdigit() else None)
+        if bnum is not None and _ROW1_INPUT < bnum <= _ROW1_OUTPUT:
+            out[id(s)] = bnum
+        elif bnum is not None:
+            out[id(s)] = _ROW1_INPUT + spos
+        else:
+            own = [p for p in lane1_pos if prev_end < p <= end]
+            out[id(s)] = _ROW1_INPUT + (own[0] if own else spos)
+        prev_end = end
+    return out
+
+
 def _place_split_flow_coords(placements, instance_ids, pi, base, modeled, structural) -> None:
     """SPLIT flow, faithful placement from .hsp grid coordinates (hardware-
     derived 2026-07-13): lane-0 blocks/split/join at gridpos == pos (row 0),
-    lane-1 blocks at gridpos == 14 + pos (row 1). The split's branch pointer
-    (bblk) is the first lane-1 grid slot; the join's is the row-1 slot beneath
-    the join (14 + join.pos)."""
+    lane-1 blocks at gridpos == 14 + pos (row 1). Each split's branch pointer
+    (bblk) is where ITS branch enters row 1 (:func:`_split_branch_gps`); the
+    join's is the row-1 slot beneath the join (14 + join.pos)."""
     for spec in modeled:
         lane = int(spec.get("lane", 0))
         pos = int(spec["pos"])
         gp = pos if lane == 0 else _ROW1_INPUT + pos
         placements.append((gp, _make_user_block(spec, 0)))
         instance_ids[(pi, lane, pos)] = base + gp
-    lane1_gps = [_ROW1_INPUT + int(s["pos"]) for s in modeled
-                 if int(s.get("lane", 0)) == 1]
-    first_lane1_gp = min(lane1_gps) if lane1_gps else _ROW1_INPUT + 1
+    branch_gps = _split_branch_gps(structural, sorted(
+        int(s["pos"]) for s in modeled if int(s.get("lane", 0)) == 1))
     for scaffold in structural:
         blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
         spos = int(scaffold["_pos"])
-        if blk.get("type") == 3:      # split -> first lane-1 slot
-            blk["bblk"], blk["bflw"] = base + first_lane1_gp, pi
+        if blk.get("type") == 3:      # split -> where its branch enters row 1
+            blk["bblk"], blk["bflw"] = base + branch_gps[id(scaffold)], pi
         elif blk.get("type") == 4:    # join <- row-1 slot beneath it
             blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
         scaffold["_eid"] = base + spos   # its cg__ target key (bead hgc-rq3)
@@ -945,8 +992,9 @@ def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, stru
         typ = scaffold.get("type")
         slot = split_gp if typ == 3 else join_gp
         blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
-        if typ == 3:
-            blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
+        if typ == 3:      # its branch starts the packed row 1; empty: beneath it
+            blk["bblk"] = base + (_ROW1_INPUT + (1 if lane1 else split_gp))
+            blk["bflw"] = pi
         elif typ == 4:
             blk["bblk"], blk["bflw"] = base + join_gp, pi
         scaffold["_eid"] = base + slot   # its cg__ target key (bead hgc-rq3)
@@ -2108,6 +2156,8 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
                 if e.get("pos") is not None:
                     blk["_pos"] = int(e["pos"])
                     blk["_lane"] = int(e.get("lane", 0))
+                if e.get("branch"):
+                    blk["_branch"] = e["branch"]
                 for k in ("snap_bypass", "snap_params", "ctl_params"):
                     if e.get(k):
                         blk["_" + k] = e[k]

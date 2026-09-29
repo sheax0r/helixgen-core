@@ -572,7 +572,7 @@ assumption — see #9); the reference-based redesign below then **shipped
   `locl=24+N` ctxt 1, EXP `locl=42`).
 - ✅ **Multi-chain / parallel routing** — dual-DSP AND intra-flow split/join
   synthesized onto the real 28-slot device grid (`bmap[gridpos]=id`; split.bblk
-  = first lane-1 slot, join.bblk = 14 + join.pos). Hardware-validated vs HX
+  = where that split's branch enters row 1, join.bblk = 14 + join.pos). Hardware-validated vs HX
   Edit's own import.
 
 ### Transcoder snapshot residuals (from the 2.21.1 bypass-semantics fix review)

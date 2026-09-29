@@ -1208,3 +1208,82 @@ def test_corpus_is_mostly_byte_exact():
         == p.read_bytes() for p in corpus)
     assert exact >= 0.85 * len(corpus), (
         f"only {exact}/{len(corpus)} device blobs round-tripped byte-exactly")
+
+
+# --- split bblk: where each split's B side enters row 1 -----------------------
+
+def _tap_recipe() -> dict:
+    """A parallel branch (split@3 -> b15, b16 -> join@6) plus a later Y split
+    (@11) whose B side runs straight to the row-1 output (a USB 3/4 tap)."""
+    return {"name": "tap", "paths": [{
+        "blocks": [
+            {"block": AMP, "params": {}, "lane": 0, "pos": 1},
+            {"block": DRIVE, "params": {}, "lane": 1, "pos": 1},
+            {"block": FUZZ, "params": {}, "lane": 1, "pos": 2},
+            {"block": CAB, "params": {}, "lane": 0, "pos": 8},
+        ],
+        "structural": [
+            {**copy.deepcopy(transcode._SPLIT_SCAFFOLD), "_pos": 3, "_lane": 0},
+            {**copy.deepcopy(transcode._JOIN_SCAFFOLD), "_pos": 6, "_lane": 0},
+            {**copy.deepcopy(transcode._SPLIT_SCAFFOLD), "_pos": 11, "_lane": 0},
+        ],
+        "row1_output": {"model": "P35_OutputUSB3_4"},
+    }]}
+
+
+def _split_bblks(doc: dict) -> dict:
+    """``{split gridpos: bblk}`` for flow 0 of a ``_sbepgsm`` dict."""
+    return {gp: blk["bblk"] for gp, blk in untranscode._iter_blocks(
+        doc["sfg_"]["flow"][0]) if blk.get("type") == 3}
+
+
+def test_a_second_split_does_not_feed_the_first_branch():
+    """Hardware-measured: every split used to get ``bblk = 15``, so the tap
+    split's B side ran through the first branch's lane-1 blocks (USB 3/4 came
+    out mono, ~24 dB down). The tap split enters row 1 beneath itself."""
+    bblks = _split_bblks(transcode.recipe_to_sbepgsm(_tap_recipe()))
+    assert bblks == {3: 15, 11: 25}
+
+
+def test_split_branch_survives_pull_and_repush():
+    """``to-hsp`` writes the split's ``branch`` from the device ``bblk`` and
+    the forward path reads it back, so the pointer round-trips on its own
+    merit rather than because a constant comes back."""
+    body = _assert_roundtrip(_tap_recipe())
+    flow = _flow0(body)
+    assert flow["b03"]["branch"] == "b15"
+    assert flow["b11"]["branch"] == "b25"
+    # The .hsp pointer is authoritative: move it and the device bblk follows.
+    flow["b11"]["branch"] = "b27"
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    assert _split_bblks(doc)[11] == 27
+
+
+def test_split_bblk_without_branch_keys_uses_the_split_region():
+    """A ``.hsp`` with no ``branch`` pointers (pulled before the fix) still
+    routes each split to its own region."""
+    body = _assert_roundtrip(_tap_recipe())
+    for key in ("b03", "b06", "b11"):
+        _flow0(body)[key].pop("branch", None)
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    assert _split_bblks(doc) == {3: 15, 11: 25}
+
+
+def test_empty_pair_does_not_claim_another_pairs_branch():
+    """A pair bracketing nothing (split@1/join@2) before a real branch
+    (split@5 -> b20 -> join@7): the empty split enters row 1 beneath itself,
+    and ``to-hsp`` no longer points it at the whole lane."""
+    recipe = {"name": "empty-first", "paths": [{
+        "blocks": [{"block": AMP, "params": {}, "lane": 0, "pos": 4},
+                   {"block": CAB, "params": {}, "lane": 1, "pos": 6}],
+        "structural": [
+            {**copy.deepcopy(transcode._SPLIT_SCAFFOLD), "_pos": 1, "_lane": 0},
+            {**copy.deepcopy(transcode._JOIN_SCAFFOLD), "_pos": 2, "_lane": 0},
+            {**copy.deepcopy(transcode._SPLIT_SCAFFOLD), "_pos": 5, "_lane": 0},
+            {**copy.deepcopy(transcode._JOIN_SCAFFOLD), "_pos": 7, "_lane": 0},
+        ],
+    }]}
+    assert _split_bblks(transcode.recipe_to_sbepgsm(recipe)) == {1: 15, 5: 20}
+    flow = _flow0(_assert_roundtrip(recipe))
+    assert "branch" not in flow["b01"] and "branch" not in flow["b02"]
+    assert flow["b05"]["branch"] == "b20"
