@@ -70,7 +70,10 @@ Reversing why synthesized presets drew no connecting lines / mis-routed:
   (positions 1..12), `OutputMatrix` at 13.
 - **Intra-flow split:** lane-0 blocks + the `type:3` split + `type:4` join sit in
   row 0 at `gridpos = .hsp pos`; lane-1 blocks in row 1 at `gridpos = 14 + pos`.
-  **`split.bblk` = the first lane-1 grid slot** (`14 + min lane-1 pos`);
+  **`split.bblk` = the row-1 slot where THAT split's B side enters** (its first
+  branch block; `14 + split.pos` for an empty branch / a Y tap straight to the
+  row-1 output — 2026-09 correction: the old "first lane-1 slot" rule fed a
+  second split into the first split's branch, hardware-measured);
   **`join.bblk` = `14 + join.pos`** (the row-1 slot beneath the join); `bflw` =
   flow index. Row 0 terminates with a normal `OutputMatrix` (NOT `OutputPath2A`).
   Verified: a synthesized grudge dual-amp matches HX Edit's own import

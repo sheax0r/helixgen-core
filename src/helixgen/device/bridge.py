@@ -464,6 +464,10 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                                          "lane": slane, "pos": spos}
                 if _base_bypassed(b):
                     entry["enabled"] = False
+                # Where a split's B side enters row 1 — the device's ``bblk``
+                # (see ``transcode._split_branch_gps``).
+                if isinstance(b.get("branch"), str):
+                    entry["branch"] = b["branch"]
                 # A routing node is a snapshot/controller target like any other
                 # block — the device snapshot-tracks a split's bypass and
                 # sweeps its RouteTo from EXP1 (bead hgc-rq3).

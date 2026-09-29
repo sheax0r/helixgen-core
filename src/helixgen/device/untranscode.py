@@ -435,7 +435,8 @@ def _iter_blocks(flow: dict):
             gp = item
 
 
-def _endpoint_pointers(entries: Dict[str, dict]) -> None:
+def _endpoint_pointers(entries: Dict[str, dict],
+                       split_bblk: Optional[Dict[str, str]] = None) -> None:
     """Wire the ``.hsp`` routing pointers a real export carries, in place.
 
     ``b00``/``b13`` reference each other. Each split points ``endpoint`` at ITS
@@ -444,6 +445,11 @@ def _endpoint_pointers(entries: Dict[str, dict]) -> None:
     and it is the ONLY way the parallel structure survives into ``view``: the
     forward transcoder ignores ``endpoint``/``branch`` entirely, so the
     ``.sbe`` round trip cannot catch a mis-wiring here.
+
+    A split's own ``branch`` is the row-1 slot its device ``bblk`` names
+    (``split_bblk``) — the one pointer the forward transcoder DOES read back
+    (``transcode._split_branch_gps``), so a pull + re-push keeps a split's B
+    side where the device had it, paired or not.
 
     Splits and joins are paired **in grid order** — pairing the first split
     with the LAST join reports one giant bogus parallel section when a flow
@@ -478,6 +484,8 @@ def _endpoint_pointers(entries: Dict[str, dict]) -> None:
         if span:
             entries[split]["branch"] = span[0]
             entries[key]["branch"] = span[-1]
+    for split, branch in (split_bblk or {}).items():
+        entries[split]["branch"] = branch
 
 
 def _nest_stereo_channels(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -698,7 +706,16 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
         lost.append(f"flow {fi}: the DSP path is DISABLED on the device, and "
                     f"a re-install re-enables it (the forward transcoder "
                     f"always writes enbl=1)")
-    _endpoint_pointers(entries)
+    bmap = flow.get("bmap") or []
+    split_bblk = {}
+    for gp, blk in _iter_blocks(flow):
+        key = f"b{gp:02d}" if isinstance(gp, int) else None
+        if (key in entries and entries[key].get("type") == "split"
+                and blk.get("bblk") in bmap):
+            bgp = bmap.index(blk["bblk"])
+            if _ROW1_INPUT < bgp <= _ROW1_OUTPUT:
+                split_bblk[key] = f"b{bgp:02d}"
+    _endpoint_pointers(entries, split_bblk)
     out: Dict[str, Any] = {"@enabled": {"value": bool(flow.get("enbl", 1))}}
     out.update({k: entries[k] for k in sorted(entries)})
     return out

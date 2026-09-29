@@ -487,9 +487,9 @@ _OUTPUT_PATH2A = {
 
 # Split (``P35_AppDSPSplitY`` model 475) / join (``P35_AppDSPJoin`` model 478)
 # scaffolds captured verbatim from ``preset_152`` flow 0. ``bblk``/``bflw`` are
-# partner cross-references the device uses to pair a split with its join; the
-# exact semantics are not decoded offline (see the module note + spec §5), so on
-# synthesis we re-point them at the emitted partner's id as a best effort.
+# row-1 pointers: a split's ``bblk`` is the row-1 slot its B side enters, a
+# join's the row-1 slot beneath it; ``bflw`` is the flow. ``synthesize_sfg``
+# re-points both (:func:`_split_branch_gps`).
 _SPLIT_SCAFFOLD = {
     "bblk": 0, "bflw": 0, "cid_": 0, "enbl": 1, "favo": 0, "hasb": True,
     "hrns": {"cid_": 0, "enbl": 1, "id__": 479, "lbid": -1,
@@ -891,26 +891,85 @@ def _place_serial_flow(placements, instance_ids, pi, base, modeled) -> None:
         instance_ids[(pi, lane, pos)] = base + gp
 
 
+def _split_branch_gps(structural, lane1_pos) -> Dict[int, int]:
+    """The row-1 grid slot each split's B side enters (its ``bblk``), keyed by
+    ``id()`` of the split scaffold.
+
+    ``bblk`` is where the split drops its B signal into row 1; it runs forward
+    from there to the next join or the row-1 output. Pointing every split at
+    the first lane-1 slot (the old rule) routed a SECOND split's B side through
+    the FIRST split's branch blocks — a Y split tapping row 1 straight to its
+    own output came out mono, ~24 dB down, carrying the other branch
+    (hardware-measured; the tap's correct bblk was ``14 + split.pos``). So, per
+    split:
+
+    1. the ``.hsp`` ``branch`` key (``to-hsp`` writes it from the device's own
+       ``bblk``) when it names a row-1 user slot that no other split's
+       ``branch`` also names (the pre-fix ``to-hsp`` aimed an empty pair at the
+       whole lane, so two splits could claim one block);
+    2. otherwise the first lane-1 block in the split's region: past the
+       previous pair's join, up to its own join — or, unpaired (a Y tap), from
+       its own column to the end of the row. A lane-0 ``branch`` lands here
+       too: ``generate`` aims one at the join whenever no lane-1 block is
+       LISTED between the pair, which says nothing about the grid;
+    3. nothing in the region, or a ``branch`` naming the row-1 output: the
+       row-1 slot beneath the split, ``14 + split.pos``.
+    """
+    order = sorted((s for s in structural if s.get("type") in (3, 4)),
+                   key=lambda s: int(s["_pos"]))
+    join_pos: Dict[int, int] = {}
+    stack: List[dict] = []
+    for s in order:
+        if s["type"] == 3:
+            stack.append(s)
+        elif stack:
+            join_pos[id(stack.pop())] = int(s["_pos"])
+    splits = [s for s in order if s["type"] == 3]
+
+    def branch_num(s) -> Optional[int]:
+        b = s.get("_branch")
+        return int(b[1:]) if isinstance(b, str) and b[1:].isdigit() else None
+
+    named = [branch_num(s) for s in splits]
+    out: Dict[int, int] = {}
+    prev_end = 0
+    for s, bnum in zip(splits, named):
+        spos = int(s["_pos"])
+        paired = id(s) in join_pos
+        lo, hi = ((prev_end, join_pos[id(s)]) if paired
+                  else (spos - 1, _ROW0_LAST_USER))
+        own = [p for p in lane1_pos if lo < p <= hi]
+        if (bnum is not None and _ROW1_INPUT < bnum <= _ROW1_LAST_USER
+                and (named.count(bnum) == 1
+                     or bnum - _ROW1_INPUT in own)):
+            out[id(s)] = bnum
+        elif own and bnum != _ROW1_OUTPUT:
+            out[id(s)] = _ROW1_INPUT + own[0]
+        else:
+            out[id(s)] = _ROW1_INPUT + spos
+        prev_end = hi
+    return out
+
+
 def _place_split_flow_coords(placements, instance_ids, pi, base, modeled, structural) -> None:
     """SPLIT flow, faithful placement from .hsp grid coordinates (hardware-
     derived 2026-07-13): lane-0 blocks/split/join at gridpos == pos (row 0),
-    lane-1 blocks at gridpos == 14 + pos (row 1). The split's branch pointer
-    (bblk) is the first lane-1 grid slot; the join's is the row-1 slot beneath
-    the join (14 + join.pos)."""
+    lane-1 blocks at gridpos == 14 + pos (row 1). Each split's branch pointer
+    (bblk) is where ITS branch enters row 1 (:func:`_split_branch_gps`); the
+    join's is the row-1 slot beneath the join (14 + join.pos)."""
     for spec in modeled:
         lane = int(spec.get("lane", 0))
         pos = int(spec["pos"])
         gp = pos if lane == 0 else _ROW1_INPUT + pos
         placements.append((gp, _make_user_block(spec, 0)))
         instance_ids[(pi, lane, pos)] = base + gp
-    lane1_gps = [_ROW1_INPUT + int(s["pos"]) for s in modeled
-                 if int(s.get("lane", 0)) == 1]
-    first_lane1_gp = min(lane1_gps) if lane1_gps else _ROW1_INPUT + 1
+    branch_gps = _split_branch_gps(structural, sorted(
+        int(s["pos"]) for s in modeled if int(s.get("lane", 0)) == 1))
     for scaffold in structural:
         blk = {k: v for k, v in scaffold.items() if not k.startswith("_")}
         spos = int(scaffold["_pos"])
-        if blk.get("type") == 3:      # split -> first lane-1 slot
-            blk["bblk"], blk["bflw"] = base + first_lane1_gp, pi
+        if blk.get("type") == 3:      # split -> where its branch enters row 1
+            blk["bblk"], blk["bflw"] = base + branch_gps[id(scaffold)], pi
         elif blk.get("type") == 4:    # join <- row-1 slot beneath it
             blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
         scaffold["_eid"] = base + spos   # its cg__ target key (bead hgc-rq3)
@@ -2108,6 +2167,8 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
                 if e.get("pos") is not None:
                     blk["_pos"] = int(e["pos"])
                     blk["_lane"] = int(e.get("lane", 0))
+                if e.get("branch"):
+                    blk["_branch"] = e["branch"]
                 for k in ("snap_bypass", "snap_params", "ctl_params"):
                     if e.get(k):
                         blk["_" + k] = e[k]
