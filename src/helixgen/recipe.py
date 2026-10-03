@@ -251,9 +251,9 @@ def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
         return []
 
     idx = mic.path
-    paths = recipe.setdefault("paths", [])
-    if not isinstance(paths, list):
-        return [f"mic preference skipped: recipe \"paths\" is not a list."]
+    paths = recipe.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return []  # not a valid recipe — leave it for parse_spec to reject
     while len(paths) <= idx:
         paths.append({"blocks": []})
     target = paths[idx]
@@ -293,14 +293,16 @@ def apply_stored_defaults(recipe: Any) -> None:
     none: it would apply or not depending on which verb the user reached for.
 
     Never raises — a malformed preferences file disables the defaults rather
-    than failing the generate.
+    than failing the generate, and says so on stderr.
     """
     if not isinstance(recipe, dict):
         return
     from helixgen.preferences import load_preferences
     try:
         mic = load_preferences().mic_input
-    except Exception:
+    except Exception as e:
+        print(f"stored preferences ignored (mic_input not applied): {e}",
+              file=sys.stderr)
         return
     for why in apply_mic_preference(recipe, mic):
         print(why, file=sys.stderr)

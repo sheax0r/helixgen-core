@@ -53,6 +53,19 @@ def test_path_must_be_a_non_negative_int():
         _parse_mic_input({"enabled": True, "path": "1"})
 
 
+def test_path_must_name_one_of_the_two_dsps():
+    # Only paths 0 and 1 exist; 2 used to pad the recipe to three paths and
+    # fail EVERY generate with a paths-length error naming the recipe.
+    with pytest.raises(PreferencesError, match="path"):
+        _parse_mic_input({"enabled": True, "path": 2})
+
+
+def test_enabled_must_be_a_boolean():
+    # bool("false") is True — a string must not switch the mic on.
+    with pytest.raises(PreferencesError, match="enabled"):
+        _parse_mic_input({"enabled": "false"})
+
+
 def test_loads_from_a_prefs_file(tmp_path):
     p = tmp_path / "preferences.json"
     p.write_text(json.dumps({"mic_input": {"enabled": True, "level": 3.5}}))
@@ -213,3 +226,21 @@ def test_the_mic_reaches_the_device_payload(tmp_path, monkeypatch,
     ids = [b["mdls"][0]["id__"] for b in doc["sfg_"]["flow"][1]["blks"]
            if isinstance(b, dict) and b.get("type") == 8]
     assert 766 in ids, f"mic (766) not in DSP1 input endpoints: {ids}"
+
+
+@pytest.mark.parametrize("recipe", [{"name": "t"}, {"name": "t", "paths": []}])
+def test_a_recipe_without_paths_is_left_for_parse_spec_to_reject(recipe):
+    before = json.loads(json.dumps(recipe))
+    apply_mic_preference(recipe, MicInput(enabled=True))
+    assert recipe == before
+
+
+def test_a_malformed_preference_says_so(tmp_path, monkeypatch, capsys):
+    from helixgen.recipe import apply_stored_defaults
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({"mic_input": {"enabled": True, "lowcutt": 80}}))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(p))
+    recipe = {"name": "t", "paths": [{"blocks": []}]}
+    apply_stored_defaults(recipe)
+    assert len(recipe["paths"]) == 1
+    assert "lowcutt" in capsys.readouterr().err

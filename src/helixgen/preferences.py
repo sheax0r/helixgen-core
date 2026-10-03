@@ -549,12 +549,16 @@ def _parse_mic_input(raw: Any) -> MicInput:
             f"{', '.join(repr(k) for k in sorted(_MIC_NUMERIC_FIELDS))}]."
         )
 
-    mic = MicInput(enabled=bool(raw.get("enabled", False)))
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise PreferencesError(
+            f"mic_input.enabled must be a boolean (got {enabled!r}).")
+    mic = MicInput(enabled=enabled)
 
     path = raw.get("path", 1)
-    if not isinstance(path, int) or isinstance(path, bool) or path < 0:
+    if not isinstance(path, int) or isinstance(path, bool) or path not in (0, 1):
         raise PreferencesError(
-            f"mic_input.path must be a non-negative integer (got {path!r}).")
+            f"mic_input.path must be 0 or 1 — 0-based, one per DSP (got {path!r}).")
     mic.path = path
 
     gate = raw.get("gate")

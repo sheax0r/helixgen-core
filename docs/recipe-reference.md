@@ -63,6 +63,25 @@ plays silent has almost always just got the global gain at 0, which no
 recipe can fix. Phantom is off by default: a condenser needs it on, and it
 can damage a ribbon mic, so it is never set implicitly.
 
+**The `mic_input` preference** puts the mic on every generated preset without
+restating it per recipe. In `preferences.json` (`$HELIXGEN_PREFS`, else
+`$HELIXGEN_HOME/preferences.json`, else `~/.helixgen/preferences.json`):
+
+```json
+"mic_input": {"enabled": true, "path": 1, "lowcut": 80, "trim": 0,
+              "gate": true, "threshold": -50, "decay": 0.1, "level": 0}
+```
+
+Only `enabled` (bool) is required; any other key is an error. `path` is
+0-based and must be `0` or `1` (default `1`, the Stadium's "Path 2").
+`lowcut`/`trim`/`gate`/`threshold`/`decay` are the mic input's params; `level`
+is that path's output level in dB. Omitted params stay at the model default.
+It applies at generate time only, as a DEFAULT: a recipe that gives that path
+its own `input` wins (and so replaces the stored settings — don't restate it);
+a path carrying blocks, or fed by another path's `output.to`, is left alone.
+Every back-off — and a malformed block, which disables the preference — is
+printed to stderr while `generate` still exits 0.
+
 The object form adds the Input-block params (impedance / pad / trim / gate):
 
 ```json
