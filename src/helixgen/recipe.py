@@ -21,6 +21,7 @@ legacy `.hlx` compose path stays in `generate.py` (out of scope here); an
 from __future__ import annotations
 
 import copy
+import sys
 from typing import Any
 
 from helixgen import __version__  # noqa: F401  (re-exported provenance version lives in generate)
@@ -60,6 +61,7 @@ _INPUT_FIELD_ATTRS = (
     ("gate", "gate_enabled"),
     ("threshold", "gate_threshold"),
     ("decay", "gate_decay"),
+    ("lowcut", "lowcut"),
 )
 
 
@@ -80,8 +82,10 @@ def _normalize_input_endpoint(path_dict: dict[str, Any], mode: str,
     stereo = mode == "both"
 
     values: dict[str, Any] = dict(flowparams.INPUT_HSP_DEFAULTS)
-    if mode == "none":
-        values.pop("Pad", None)
+    if mode in ("none", "mic"):
+        values.pop("Pad", None)          # neither model carries Pad
+    if mode == "mic":
+        values["LowCut"] = flowparams.MIC_LOWCUT_DEFAULT
     for field, attr in _INPUT_FIELD_ATTRS:
         v = getattr(input_spec, attr) if input_spec else None
         if v is None:
@@ -228,6 +232,82 @@ def _apply_output(path_dict: dict[str, Any], output_spec,
             wrapped.pop("snapshots", None)
 
 
+def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
+    """Inject the stored mic-input preference into a recipe, in place.
+
+    The preference is a DEFAULT, not an override, so this backs off in every
+    case where the author has said something of their own:
+
+    - the recipe already gives that path an ``input`` — the recipe wins;
+    - that path already carries blocks — it is somebody's second amp, not a
+      free slot, and re-jacking its input would silence it;
+    - another path's output is routed INTO the mic path (``to: "path2a"`` and
+      friends), which makes an "empty" path anything but.
+
+    Returns a list of human-readable reasons it declined, for the caller to
+    surface — silence here is what made the original mic bug so expensive.
+    """
+    if mic is None or not getattr(mic, "enabled", False):
+        return []
+
+    idx = mic.path
+    paths = recipe.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return []  # not a valid recipe — leave it for parse_spec to reject
+    while len(paths) <= idx:
+        paths.append({"blocks": []})
+    target = paths[idx]
+    if not isinstance(target, dict):
+        return [f"mic preference skipped: paths[{idx}] is not an object."]
+
+    if target.get("input") is not None:
+        return [f"mic preference skipped: paths[{idx}] already sets its own "
+                f"input ({target['input']!r}) — the recipe wins."]
+    if target.get("blocks"):
+        return [f"mic preference skipped: paths[{idx}] already has "
+                f"{len(target['blocks'])} block(s); it is in use, not free."]
+
+    for i, other in enumerate(paths):
+        if i == idx or not isinstance(other, dict):
+            continue
+        dest = (other.get("output") or {}).get("to")
+        if isinstance(dest, str) and dest.lower().startswith(f"path{idx + 1}"):
+            return [f"mic preference skipped: paths[{i}] routes its output "
+                    f"into paths[{idx}] ({dest!r}), so that path is not free."]
+
+    target["input"] = mic.input_field()
+    if mic.level is not None:
+        out = target.setdefault("output", {})
+        if isinstance(out, dict) and out.get("level") is None:
+            out["level"] = mic.level
+    return []
+
+
+def apply_stored_defaults(recipe: Any) -> None:
+    """Apply stored user preferences to a RAW recipe dict, in place.
+
+    Call this immediately before `parse_spec` at every entry point that turns
+    a user-supplied recipe dict into a `Spec`. There are three
+    (`cli.generate`, `generate.generate_preset`, `apply_recipe`) and a
+    preference wired into only some of them is worse than one wired into
+    none: it would apply or not depending on which verb the user reached for.
+
+    Never raises — a malformed preferences file disables the defaults rather
+    than failing the generate, and says so on stderr.
+    """
+    if not isinstance(recipe, dict):
+        return
+    from helixgen.preferences import load_preferences
+    try:
+        mic = load_preferences().mic_input
+    except Exception as e:
+        print(f"stored preferences ignored (mic_input not applied): {e}",
+              file=sys.stderr)
+        return
+    for why in apply_mic_preference(recipe, mic):
+        print(why, file=sys.stderr)
+
+
 def apply_recipe(
     recipe: dict[str, Any] | Spec,
     library,
@@ -249,6 +329,11 @@ def apply_recipe(
             f"recipe authoring supports only .hsp (Stadium) chassis; got "
             f"shape {shape!r}. Use generate.compose_preset for .hlx output."
         )
+
+    # The stored mic preference is injected as a recipe-level default so it
+    # flows through the ordinary input pipeline — same validation, same
+    # endpoint normalization — rather than being a second way to route.
+    apply_stored_defaults(recipe)
 
     spec = recipe if isinstance(recipe, Spec) else parse_spec(recipe, source=source)
 

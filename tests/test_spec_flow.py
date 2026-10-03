@@ -52,7 +52,28 @@ class TestInputObject:
 
     def test_object_bad_source_rejected(self):
         with pytest.raises(SpecError, match="inst1"):
-            _parse_path0({"input": {"source": "mic"}, "blocks": []})
+            _parse_path0({"input": {"source": "xlr"}, "blocks": []})
+
+    def test_object_mic_source_accepted(self):
+        p = _parse_path0({"input": {"source": "mic"}, "blocks": []})
+        assert p.input.source == "mic"
+
+    def test_mic_takes_lowcut(self):
+        p = _parse_path0({"input": {"source": "mic", "lowcut": 80.0},
+                          "blocks": []})
+        assert p.input.lowcut == 80.0
+
+    def test_lowcut_rejected_on_an_instrument_jack(self):
+        with pytest.raises(SpecError, match="lowcut"):
+            _parse_path0({"input": {"source": "inst1", "lowcut": 80.0},
+                          "blocks": []})
+
+    def test_pad_rejected_on_the_mic(self):
+        """The mic has no Pad. Before "mic" existed the guard only caught
+        "none", so a valid-but-padless source would have slipped through."""
+        with pytest.raises(SpecError, match="pad"):
+            _parse_path0({"input": {"source": "mic", "pad": True},
+                          "blocks": []})
 
     def test_gate_bool_shorthand(self):
         p = _parse_path0({"input": {"gate": True}, "blocks": []})

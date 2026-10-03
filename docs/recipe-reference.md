@@ -54,6 +54,33 @@ mode string:
 - `"inst2"` — Instrument 2 jack only
 - `"both"` — both jacks (stereo) — **default on paths[0]**
 - `"none"` — input disabled — **default on paths[1]**
+- `"mic"` — the XLR mic jack
+
+The mic's *preamp gain* and *phantom power* are device globals, not preset
+state (`global.in.mic.gain`, `global.in.mic.phantom`, settings page
+`ins-outs` — see `helixgen device settings`). A path set to `"mic"` that
+plays silent has almost always just got the global gain at 0, which no
+recipe can fix. Phantom is off by default: a condenser needs it on, and it
+can damage a ribbon mic, so it is never set implicitly.
+
+**The `mic_input` preference** puts the mic on every generated preset without
+restating it per recipe. In `preferences.json` (`$HELIXGEN_PREFS`, else
+`$HELIXGEN_HOME/preferences.json`, else `~/.helixgen/preferences.json`):
+
+```json
+"mic_input": {"enabled": true, "path": 1, "lowcut": 80, "trim": 0,
+              "gate": true, "threshold": -50, "decay": 0.1, "level": 0}
+```
+
+Only `enabled` (bool) is required; any other key is an error. `path` is
+0-based and must be `0` or `1` (default `1`, the Stadium's "Path 2").
+`lowcut`/`trim`/`gate`/`threshold`/`decay` are the mic input's params; `level`
+is that path's output level in dB. Omitted params stay at the model default.
+It applies at generate time only, as a DEFAULT: a recipe that gives that path
+its own `input` wins (and so replaces the stored settings — don't restate it);
+a path carrying blocks, or fed by another path's `output.to`, is left alone.
+Every back-off — and a malformed block, which disables the preference — is
+printed to stderr while `generate` still exits 0.
 
 The object form adds the Input-block params (impedance / pad / trim / gate):
 
@@ -77,8 +104,12 @@ The object form adds the Input-block params (impedance / pad / trim / gate):
   `"FirstEnabled"`; an omission never conflicts with another path's explicit
   value (explicit wins). Two paths giving the same jack **different explicit**
   values is an error.
-- `pad` — bool (instrument sources only).
+- `pad` — bool (instrument sources only; the mic has no Pad and rejects it).
 - `trim` — float dB, −24..6.
+- `lowcut` — float Hz, 19.9..400. **`"mic"` source only** — the one input
+  param the mic has that the instrument jacks do not. Useful against an SM58's
+  proximity boom at ~80 Hz. (The device also carries a *global*
+  `global.in.mic.lowcut`; this one is per preset and stacks with it.)
 - `gate` — `true`/`false` shorthand, or `{"enabled", "threshold" (−96..0 dB),
   "decay" (0.01..1)}`. Giving the gate **object** implies `enabled: true`
   unless you set `"enabled": false` explicitly.

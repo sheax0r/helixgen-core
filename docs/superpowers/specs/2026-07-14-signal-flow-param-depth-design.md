@@ -36,6 +36,13 @@ Stereo model (`P35_InputInst1_2`) wraps each param per-channel:
 the `controllers` input-mode table, so its `b00` passes through untouched
 exactly as today.
 
+> **Superseded 2026-09-11.** The mic shipped as an authorable source. Leaving
+> it out of the input-mode table turned out not to be inert: an `.hsp` naming
+> `P35_InputMic` transcoded SILENTLY to Guitar In 1, because
+> `_make_input_endpoint` falls back to `inst1` for any mode it cannot resolve.
+> "Passes through untouched" held for the `.hsp`, not for the device. See the
+> mic-input commit and §3.5 below.
+
 **Impedance is NOT on the input block.** It lives at the preset level:
 `preset.params.inst1Z` / `inst2Z`, a **string** enum. Corpus values:
 `"FirstBlock"` ×120, `"FirstEnabled"` ×76, `"1M"` ×13, `"230K"` ×2.
@@ -265,6 +272,10 @@ by test). New:
 
 - `P35_InputMic` / return-jack input sources (b00 passes through untouched,
   as today).
+  > **Superseded 2026-09-11 for the mic only.** `"mic"` is now in all three
+  > vocabulary tables. The return/SPDIF/USB/Nexus sources remain unmapped and
+  > still hit the silent `inst1` fallback described above — that is a known
+  > gap, not a safe default.
 - Output **destination** model authoring (stays verbatim structural).
 - Per-snapshot overrides on endpoint/split/join params (corpus shows e.g.
   snapshotted `RouteTo`; carried verbatim via structural today — split/join
