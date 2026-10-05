@@ -521,6 +521,31 @@ class Preferences:
     git_commit_tones: str = "auto"
     normalization: Normalization = field(default_factory=Normalization)
     mic_input: MicInput = field(default_factory=MicInput)
+    # RAW `usb_taps` block, validated by its consumer (`usbtaps.configured`)
+    # via `parse_usb_taps` — a typo there must not break unrelated verbs.
+    usb_taps: Any = None
+
+
+USB_TAP_ROLES = ("guitar", "mic")
+USB_TAP_PAIRS = ("1/2", "3/4", "5/6")
+
+
+def parse_usb_taps(raw: Any) -> dict[str, str]:
+    """Parse the ``usb_taps`` block. Absent or ``None`` → no taps."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise PreferencesError(
+            f'usb_taps must be an object like {{"guitar": "3/4", "mic": "5/6"}}, got {raw!r}')
+    unknown = sorted(set(raw) - set(USB_TAP_ROLES))
+    if unknown:
+        raise PreferencesError(
+            f"usb_taps: unknown key(s) {unknown}; valid keys: {list(USB_TAP_ROLES)}.")
+    for role, pair in raw.items():
+        if pair not in USB_TAP_PAIRS:
+            raise PreferencesError(
+                f"usb_taps.{role} must be one of {list(USB_TAP_PAIRS)} (got {pair!r}).")
+    return dict(raw)
 
 
 _MIC_NUMERIC_FIELDS = {
@@ -742,6 +767,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         git_commit_tones=_validate_git_commit_tones(data.get("git_commit_tones", "auto")),
         normalization=_parse_normalization(data.get("normalization")),
         mic_input=_parse_mic_input(data.get("mic_input")),
+        usb_taps=data.get("usb_taps"),
     )
 
     # --- per-key env overrides (first hit wins, applied last) ---
