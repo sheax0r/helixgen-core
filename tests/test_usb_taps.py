@@ -277,3 +277,87 @@ def test_verb_reports_a_malformed_preference(tmp_path, monkeypatch):
     f.write_bytes(b"rpshnosj{}")
     r = CliRunner().invoke(cli, ["usb-taps", str(f)])
     assert r.exit_code != 0 and "usb_taps.guitar" in r.output
+
+
+# --- review follow-ups -------------------------------------------------------
+
+def test_foh_plus_amp_taps_the_foh_path_on_either_dsp():
+    body = _body(_path(out="P35_OutputQtrInch", cells=(1, 2)),
+                 _path(out="P35_OutputXLR", cells=(1, 2)))
+    usbtaps.apply(body, TAPS)
+    amp, foh = body["preset"]["flow"]
+    assert "b27" not in amp
+    assert usbtaps._model(foh["b27"]) == "P35_OutputUSB3_4"
+
+
+def test_main_output_already_on_the_pair_is_not_tapped_again():
+    body = _body(_path(out="P35_OutputUSB3_4", cells=(1,)), _path(inp="P35_InputMic"))
+    usbtaps.apply(body, TAPS)
+    g, m = body["preset"]["flow"]
+    assert "b27" not in g and usbtaps._model(m["b27"]) == "P35_OutputUSB5_6"
+
+
+def test_lone_block_at_b12_is_not_called_lane_zero_full():
+    r = usbtaps.apply(_body(_path(cells=(12,))), TAPS)
+    assert r["status"] == "skipped" and "block at b12" in r["detail"]
+
+
+def test_stale_tap_is_moved_after_the_new_last_block():
+    """A block landed after the tap split (added on the hardware, or
+    re-authored from `view`): the next write moves the tap back to the end."""
+    body = _body(_path(cells=(1,)))
+    usbtaps.apply(body, TAPS)
+    body["preset"]["flow"][0]["b12"] = _fx(12)
+    r = usbtaps.apply(body, TAPS)
+    assert r["status"] == "skipped" and "stale" in r["detail"]   # no room after b12
+
+    body = _body(_path(cells=(1, 8)))
+    body["preset"]["flow"][0]["b05"] = usbtaps._split_block(5)
+    body["preset"]["flow"][0]["b27"] = usbtaps._tap_block("P35_OutputUSB3_4")
+    r = usbtaps.apply(body, TAPS)
+    assert r["status"] == "added" and "moved stale tap" in r["detail"]
+    f = body["preset"]["flow"][0]
+    assert f["b11"]["type"] == "split" and "b05" not in f and "b27" in f
+    assert usbtaps.apply(body, TAPS)["status"] == "present"
+
+
+def test_edit_verbs_work_on_a_tapped_tone(tmp_path, hsp_library, prefs):
+    """Review HIGH: add/remove_block refuse a path holding a split — the tap
+    split included. The edit verbs lift the taps around the edit."""
+    from helixgen.generate import generate_preset
+    spec = tmp_path / "in.json"
+    spec.write_text(json.dumps({"name": "C", "paths": [{"blocks": [
+        {"block": "Tube Drive", "params": {}}]}]}))
+    out = tmp_path / "out.hsp"
+    generate_preset(spec, out, hsp_library)
+    assert usbtaps.has_tap(read_hsp(out))           # generate applied the pref
+    lib = str(hsp_library.root)
+    r = CliRunner().invoke(cli, ["add-block", str(out), "Brit Amp", "--library", lib])
+    assert r.exit_code == 0, r.output
+    f = read_hsp(out)["preset"]["flow"][0]
+    assert usbtaps._model(f["b02"]).startswith("HD2_AmpBrit")
+    assert f["b11"]["type"] == "split" and usbtaps._model(f["b27"]) == "P35_OutputUSB3_4"
+    r = CliRunner().invoke(cli, ["remove-block", str(out), "Tube Drive", "--library", lib])
+    assert r.exit_code == 0, r.output
+    f = read_hsp(out)["preset"]["flow"][0]
+    assert "b01" not in f and f["b11"]["type"] == "split" and "b27" in f
+
+
+def test_lifted_puts_the_tap_after_an_appended_block():
+    body = _body(_path(cells=range(1, 11)))
+    usbtaps.apply(body, TAPS)
+    with usbtaps.lifted(body):
+        f = body["preset"]["flow"][0]
+        assert "b11" not in f and "b27" not in f
+        f["b11"] = _fx(11)
+    assert f["b12"]["type"] == "split" and "b27" in f
+
+
+def test_lifted_drops_a_tap_that_no_longer_fits_and_says_so(capsys):
+    body = _body(_path(cells=range(1, 11)), _path(inp="P35_InputMic"), name="Crowded")
+    usbtaps.apply(body, TAPS)
+    with usbtaps.lifted(body):
+        body["preset"]["flow"][0]["b11"] = _fx(11)
+        body["preset"]["flow"][0]["b12"] = _fx(12)
+    assert not usbtaps.has_tap(body)          # mic tap NOT kept on its own
+    assert "Crowded" in capsys.readouterr().err

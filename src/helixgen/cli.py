@@ -9,7 +9,7 @@ from typing import Any
 import click
 from click.core import ParameterSource
 
-from helixgen import gitops, home, ir_meta, libinit, mutate, naming, tone_meta
+from helixgen import gitops, home, ir_meta, libinit, mutate, naming, tone_meta, usbtaps
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.generate import GenerateError, ParamValidationError, generate_preset
 from helixgen.hsp import HSP_MAGIC, HSP_MAGIC_LEN, read_hsp, write_hsp
@@ -573,7 +573,8 @@ def _run_mutation(preset_path: Path, library_path, irs_dir, mutation) -> None:
     preset_path = Path(preset_path)
     try:
         body = read_hsp(preset_path)
-        warnings = mutation(body, library, irs) or []
+        with usbtaps.lifted(body):
+            warnings = mutation(body, library, irs) or []
         write_hsp(preset_path, body)
     except (MutateError, KeyError, LookupError, SpecError,
             ParamValidationError, GenerateError, ValueError) as e:
@@ -792,7 +793,8 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
     preset_path = Path(preset_path)
     try:
         body = read_hsp(preset_path)
-        warnings_out = mutate.apply_operations(body, operations, library)
+        with usbtaps.lifted(body):
+            warnings_out = mutate.apply_operations(body, operations, library)
         write_hsp(preset_path, body)
     except (MutateError, KeyError, LookupError, SpecError,
             ParamValidationError, GenerateError, ValueError) as e:
@@ -832,10 +834,10 @@ def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_apply: bool,
     b12) feeding a lane-1 USB output at b27. A mic path (P35_InputMic) or an
     empty second path takes the mic pair; the first path with blocks takes
     the guitar pair; a dual-amp second rig ending at the SAME output takes
-    the guitar pair too (blend); a second rig ending elsewhere (FOH + Amp) is
-    not tapped.
+    the guitar pair too (blend); with FOH + Amp only the rig NOT ending at the
+    1/4" output is tapped. The edit verbs lift taps out and put them back
+    after the new last block, so they keep working on tapped tones.
     """
-    from helixgen import usbtaps
     from helixgen.preferences import PreferencesError
 
     try:
@@ -866,7 +868,7 @@ def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_apply: bool,
         results.append({"path": str(p),
                         "name": (body.get("meta") or {}).get("name") or p.stem, **r})
 
-    if do_apply and whole_library and any(r["status"] == "added" for r in results):
+    if do_apply and any(r["status"] == "added" for r in results):
         gitops.auto_commit(home.helixgen_home(), "helixgen: add USB taps to tones")
     if as_json:
         click.echo(json.dumps(results, indent=2))

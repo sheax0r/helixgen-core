@@ -2186,10 +2186,15 @@ def device_to_hsp(source: str, outfile: Path, preset_name, author,
     except Exception as e:  # noqa: BLE001
         raise click.ClickException(f"{origin}: could not transcode: {e}") from e
 
-    from helixgen.hsp import write_hsp
+    from helixgen.hsp import read_hsp, write_hsp
 
     write_hsp(outfile, body)
     click.echo(f"wrote {outfile} from {origin}")
+    from helixgen import usbtaps
+    if usbtaps.has_tap(read_hsp(outfile)) and not usbtaps.has_tap(body):
+        click.echo("note: the written .hsp also carries USB taps (usb_taps "
+                   "preference); verify below checks the conversion WITHOUT them.",
+                   err=True)
 
     if not verify:
         return
