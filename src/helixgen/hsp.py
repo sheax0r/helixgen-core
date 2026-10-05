@@ -87,7 +87,13 @@ def dumps_hsp(body: dict[str, Any]) -> bytes:
 
     Compact separators (no spaces) match what the device itself writes, and
     is what `read_hsp` expects to strip the magic header and parse back.
+
+    Every `.hsp` helixgen writes goes through here, so this is where the
+    `usb_taps` preference lands (``usbtaps.apply_preference``; a no-op when
+    unset). ``body`` itself is never mutated by it.
     """
+    from helixgen.usbtaps import apply_preference
+    body = apply_preference(body)
     payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
     return HSP_MAGIC + payload.encode("utf-8")
 

@@ -112,7 +112,7 @@ def cli() -> None:
       catalog    ingest, list-blocks, show-block
       author     generate (recipe JSON -> .hsp), view (read-only projection)
       edit       patch (batch ops), set-param, enable, disable, add-block,
-                 remove-block, swap-model
+                 remove-block, swap-model, usb-taps
       IRs        irhash, register-irs, ir-scan, list-irs, ir-cache
       tones      register, controllers
       library    `helixgen library ...` — tone metadata: list/show/doc/
@@ -803,6 +803,79 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
     for w in warnings_out:
         click.echo(f"warning: {w}", err=True)
     click.echo(f"Patched {preset_path} ({len(operations)} op(s))")
+
+
+@cli.command(name="usb-taps")
+@click.argument("presets", nargs=-1, type=click.Path(exists=True, path_type=Path))
+@click.option("--library", "whole_library", is_flag=True, default=False,
+              help="Every .hsp in the tone library (library/tones/).")
+@click.option("--apply/--dry-run", "do_apply", default=False,
+              help="--apply writes the taps; --dry-run (the default) only reports.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a JSON list of {path, name, status, detail}.")
+def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_apply: bool,
+                 as_json: bool) -> None:
+    """Retrofit the `usb_taps` preference onto existing .hsp files.
+
+    DRY RUN by default; `--apply` writes. Reports, per tone: added / present
+    (already carries a USB tap — left unchanged, taps never stack) / skipped
+    (with the reason, e.g. lane 0 full). All or nothing per tone: one that
+    can't take every tap it needs is left untouched, never half-patched.
+
+    The preference (`~/.helixgen/preferences.json`) names the USB pair per
+    role, e.g. `"usb_taps": {"guitar": "3/4", "mic": "5/6"}`; unset = this
+    verb refuses. While it is set, EVERY .hsp helixgen writes (generate, the
+    edit verbs, `device to-hsp`, `library import`/`fork`) gets the taps
+    automatically — this verb is only for tones written before.
+
+    Each tapped path gets a Y split in lane 0 after its last block (b11, else
+    b12) feeding a lane-1 USB output at b27. A mic path (P35_InputMic) or an
+    empty second path takes the mic pair; the first path with blocks takes
+    the guitar pair; a dual-amp second rig ending at the SAME output takes
+    the guitar pair too (blend); a second rig ending elsewhere (FOH + Amp) is
+    not tapped.
+    """
+    from helixgen import usbtaps
+    from helixgen.preferences import PreferencesError
+
+    try:
+        taps = usbtaps.configured()
+    except PreferencesError as e:
+        raise click.ClickException(str(e)) from e
+    if not taps:
+        raise click.ClickException(
+            'usb_taps preference is not set — add e.g. "usb_taps": '
+            '{"guitar": "3/4", "mic": "5/6"} to ~/.helixgen/preferences.json')
+    paths = list(presets)
+    if whole_library:
+        paths += sorted(home.tones_dir().glob("*.hsp"))
+    if not paths:
+        raise click.ClickException("name .hsp files, or pass --library")
+
+    results = []
+    for p in paths:
+        try:
+            body = read_hsp(p)
+        except (OSError, ValueError) as e:
+            results.append({"path": str(p), "name": p.stem, "status": "skipped",
+                            "detail": f"unreadable: {e}"})
+            continue
+        r = usbtaps.apply(body, taps)
+        if do_apply and r["status"] == "added":
+            write_hsp(p, body)
+        results.append({"path": str(p),
+                        "name": (body.get("meta") or {}).get("name") or p.stem, **r})
+
+    if do_apply and whole_library and any(r["status"] == "added" for r in results):
+        gitops.auto_commit(home.helixgen_home(), "helixgen: add USB taps to tones")
+    if as_json:
+        click.echo(json.dumps(results, indent=2))
+        return
+    for r in results:
+        click.echo(f"{r['status']:8} {r['name']}: {r['detail']}")
+    counts = Counter(r["status"] for r in results)
+    click.echo(("" if do_apply else "DRY RUN (--apply to write): ")
+               + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())))
 
 
 @cli.command(name="list-blocks")

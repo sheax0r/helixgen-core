@@ -1013,7 +1013,8 @@ def generate_preset(
     if shape == "hsp":
         # No sidecar: the .hsp is the sole source of truth (surgical edits
         # mutate it in place via `mutate.py`).
-        body = json.dumps(preset, separators=(",", ":")).encode("utf-8")
+        from helixgen.usbtaps import apply_preference
+        body = json.dumps(apply_preference(preset), separators=(",", ":")).encode("utf-8")
         output_path.write_bytes(HSP_MAGIC + body)
     else:
         output_path.write_text(json.dumps(preset, indent=2))
