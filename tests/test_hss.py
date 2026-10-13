@@ -851,3 +851,39 @@ def test_import_unresolvable_block_fails_the_slot_loudly(monkeypatch):
     assert fc.installed == []
     assert result["ok"] is False
     assert any("HD2_NoSuchModel" in e for e in result["errors"])
+
+
+def test_import_creates_no_setlist_when_no_slot_is_importable(monkeypatch):
+    from helixgen.device import bridge, transcode
+
+    def fake(body, *, dsp=None, strict=False):
+        raise bridge.UnresolvedModel("HD2_NoSuchModel")
+
+    monkeypatch.setattr(transcode, "hsp_to_sbepgsm", fake)
+    slot = hss.HssSlot(pos=1, filled=True, name="Bad",
+                       blob=hss.HSP_MAGIC + b'{"preset": {}}')
+    bundle = hss.HssBundle(name="B", device_id=0, device_version=0,
+                           version=256, mtime=0, slots=[slot])
+
+    class C:
+        def resolve_setlist_cid(self, name, **kw):
+            return None
+
+        def create_setlist(self, name):
+            raise AssertionError("must not create a setlist nothing lands in")
+
+    res = hss.import_bundle(C(), bundle, setlist="ZZDEST")
+    assert res["ok"] is False and res["created"] is False
+    assert any("HD2_NoSuchModel" in e for e in res["errors"])
+
+
+def test_prepare_slot_reports_the_strict_failure(monkeypatch):
+    from helixgen.device import bridge, transcode
+
+    monkeypatch.setattr(transcode, "hsp_to_sbepgsm",
+                        lambda body, *, dsp=None, strict=False:
+                        (_ for _ in ()).throw(bridge.UnresolvedModel("HD2_X")))
+    slot = hss.HssSlot(pos=3, filled=True, name="Bad",
+                       blob=hss.HSP_MAGIC + b'{"preset": {}}')
+    blob, err = hss.prepare_slot(slot)
+    assert blob is None and "HD2_X" in err
