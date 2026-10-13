@@ -101,3 +101,42 @@ def test_floats_are_float32_like_a_real_export(tmp_path):
     lib, _, _ = _fill(tmp_path)
     ex = lib.load_block("Agoura_AmpBritSL100").exemplar
     assert ex["AmpCabPeakQ"] == 0.7070000171661377
+
+
+def test_a_generated_name_never_shadows_an_existing_alias(tmp_path):
+    """The editor names the legacy HX amp ``HD2_AmpGermanXtraRed`` plain
+    "German Xtra Red" — which is the sighted Agoura amp's legacy alias. Display
+    names beat aliases in ``find_block``, so a generated entry under the plain
+    name would silently re-point every recipe saying "German Xtra Red" at a
+    different amp. The generated one gets a distinct, pinned name instead."""
+    lib = Library(tmp_path)
+    path = tmp_path / "blocks" / "amp" / "Agoura_AmpGermanXtraRed.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({
+        "model_id": "Agoura_AmpGermanXtraRed", "category": "amp",
+        "display_name": "German Xtra Red", "params": {}, "exemplar": {},
+        "first_seen": {}}))
+    assert lib.find_block("German Xtra Red").model_id == "Agoura_AmpGermanXtraRed"
+    written, _ = blf.fill_library(lib)
+    assert "HD2_AmpGermanXtraRed" in written
+    assert lib.find_block("German Xtra Red").model_id == "Agoura_AmpGermanXtraRed"
+    legacy = lib.load_block("HD2_AmpGermanXtraRed")
+    assert legacy.display_name == "German Xtra Red (Legacy)"
+    assert lib.find_block("German Xtra Red (Legacy)").model_id == "HD2_AmpGermanXtraRed"
+
+
+def test_catalog_category_beats_the_prefix_rule(tmp_path):
+    """``HD2_FM4*Synth`` would be "filter" by prefix and ``L6SPB_PolyChorus``
+    "pitch"; the app's own catalog files them under Pitch/Synth and Modulation."""
+    lib, _, _ = _fill(tmp_path)
+    assert lib.load_block("HD2_FM4OctiSynth").category == "pitch"
+    assert lib.load_block("L6SPB_PolyChorus").category == "modulation"
+
+
+def test_params_new_in_the_latest_defs_are_left_out(tmp_path):
+    """Sighted Agoura amps carry no ``CabIdx`` (1.4-new, factory content on
+    1.4 lacks it too), so a generated pre-1.4 Agoura amp leaves it out as well;
+    a model new in 1.4 keeps it."""
+    lib, _, _ = _fill(tmp_path)
+    assert "CabIdx" not in lib.load_block("Agoura_AmpCali2CPlus").params
+    assert "CabIdx" in lib.load_block("Agoura_AmpBritSL100").params

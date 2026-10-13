@@ -52,8 +52,9 @@ from helixgen.ingest import block_from_raw, infer_category  # noqa: E402
 from helixgen.ir import IR_MODEL_PREFIX  # noqa: E402
 from helixgen.library import Library, default_library_path  # noqa: E402
 
-# Catalog category -> library category, used only when the model-id prefix
-# (``ingest.infer_category``, what an export ingest would pick) says nothing.
+# Catalog category -> library category. The app's own grouping wins over the
+# model-id prefix rule (``ingest.infer_category``, the fallback), which files
+# e.g. ``HD2_FM4*Synth`` under filter and ``L6SPB_PolyChorus`` under pitch.
 _CATALOG_CATEGORY = {
     "Amp": "amp", "Preamp": "amp", "Cab": "cab", "Delay": "delay",
     "Distortion": "drive", "Dynamics": "dynamics", "EQ": "eq",
@@ -69,6 +70,17 @@ def _stereo_partner(model: str, models: dict) -> str | None:
     head, sep, tail = model.rpartition("Mono")
     partner = f"{head}Stereo{tail}" if sep else None
     return partner if partner in models else None
+
+
+def _distinct_name(block, claimed: set[str]) -> str:
+    """A name for ``block`` no other block uses: Stadium's ``HD2_Amp*`` are
+    the legacy HX amps, so "(Legacy)"; otherwise the category, then the id."""
+    tag = "Legacy" if block.model_id.startswith("HD2_Amp") else block.category.title()
+    for name in (f"{block.display_name} ({tag})",
+                 f"{block.display_name} ({block.model_id})"):
+        if name not in claimed:
+            return name
+    return block.model_id
 
 
 def _raw_block(model: str, category: str, params: dict) -> dict:
@@ -98,7 +110,10 @@ def fill_library(library: Library) -> tuple[list[str], dict[str, str]]:
     # A sighted block may spell a model differently (HX-era ``HD2_DrvScream808``
     # IS ``HD2_DistScream808Mono``): coverage is by DEVICE model, not string.
     have = set()
+    claimed: set[str] = set()  # every display name AND alias already in use
     for b in library.list_blocks():
+        claimed.add(b.display_name)
+        claimed.update(b.aliases)
         have.add(b.model_id)
         dev = modelmap.device_model_id(b.model_id)
         if dev is not None:
@@ -122,9 +137,7 @@ def fill_library(library: Library) -> tuple[list[str], dict[str, str]]:
         if _SKIP_PARAMS & set(params):
             skipped[model] = "capture payload params (Weights)"
             continue
-        category = infer_category(model)
-        if category == "uncategorized":
-            category = _CATALOG_CATEGORY.get(cat_name, "uncategorized")
+        category = _CATALOG_CATEGORY.get(cat_name) or infer_category(model)
         if category == "uncategorized":
             skipped[model] = f"no library category for catalog {cat_name!r}"
             continue
@@ -138,10 +151,22 @@ def fill_library(library: Library) -> tuple[list[str], dict[str, str]]:
         if model in have:
             continue
         params = device_defs.model_params_for(models[model])
+        # A param an older model only gained in the latest defs (1.4's CabIdx;
+        # models new in this release carry no `added` marks) is absent from
+        # every sighted block and from factory content on the new firmware
+        # alike; the transcoder leaves it out unless the .hsp carries it, so
+        # the library entry does too.
+        params = {k: v for k, v in params.items() if not v.get("added")}
         raw = _raw_block(model, category, params)
         raw["@category"] = category
         block = block_from_raw(raw, source)
         del block.exemplar["@category"]
+        if block.display_name in claimed:
+            # Display names beat aliases in find_block: taking a name that is
+            # already some block's alias would silently re-point recipes.
+            block.display_name = _distinct_name(block, claimed)
+            block.pinned_name = True
+        claimed.add(block.display_name)
         library.save_block(block)
         written.append(model)
     return written, skipped

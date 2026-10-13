@@ -89,11 +89,17 @@ class Block:
     first_seen: dict[str, str]
     aliases: list[str] = field(default_factory=list)
     default_irhash: str | None = None
+    # The stored display_name wins over the editor's table. Set only where the
+    # editor's name is already another block's alias (the generated legacy HX
+    # `HD2_AmpGermanXtraRed` vs the sighted Agoura amp's "German Xtra Red").
+    pinned_name: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         if self.default_irhash is None:
             out.pop("default_irhash", None)
+        if not self.pinned_name:
+            out.pop("pinned_name", None)
         return out
 
     @classmethod
@@ -116,19 +122,22 @@ class Block:
         model_id = data["model_id"]
         stored_name = data.get("display_name")
         aliases = list(data.get("aliases", []))
-        legacy = legacy_alias(model_id, stored_name)
+        pinned = bool(data.get("pinned_name")) and bool(stored_name)
+        legacy = None if pinned else legacy_alias(model_id, stored_name)
         if legacy is not None and legacy not in aliases:
             aliases.append(legacy)
 
         return cls(
             model_id=model_id,
             category=data["category"],
-            display_name=resolve_display_name(model_id, stored_name),
+            display_name=(stored_name if pinned
+                          else resolve_display_name(model_id, stored_name)),
             aliases=aliases,
             params=dict(data.get("params", {})),
             exemplar=dict(data.get("exemplar", {})),
             first_seen=dict(data.get("first_seen", {})),
             default_irhash=data.get("default_irhash"),
+            pinned_name=pinned,
         )
 
 
