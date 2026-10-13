@@ -2856,3 +2856,37 @@ def test_fw14_placeholder_position_reads_as_empty():
     h = HelixClient("10.0.0.99")
     _wire_fw14_listing(h)
     assert h._lowest_empty_posi(-2) == 1
+
+def test_get_property_unknown_key_raises_property_unavailable():
+    # fw 1.4: a key the firmware doesn't define answers
+    # /getPropertyValue [reqid, key, b'', -21] — an empty blob, not an error.
+    from helixgen.device.client import PropertyUnavailable
+    h = HelixClient("10.0.0.99")
+    reply = osc_encode("/getPropertyValue", [("i", 1000), ("s", "global.clip.tm.gap"),
+                                             ("b", b""), ("i", -21)])
+    _wire(h, [reply])
+    with pytest.raises(PropertyUnavailable, match="not defined on this device"):
+        h.get_property("global.clip.tm.gap")
+
+
+def test_set_property_true_on_fw14_status_ack():
+    # fw 1.4 acks /PropertyValueSet with /status [reqid, 0, dirty] (field 3 is
+    # the edit-buffer dirty flag) instead of /success [reqid, 0].
+    h = HelixClient("10.0.0.99")
+    reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 1)])
+    _wire(h, [reply])
+    assert h.set_property("global.exp.2.pedal.position", "i", 1) is True
+
+
+def test_set_property_false_on_nonzero_status():
+    h = HelixClient("10.0.0.99")
+    reply = osc_encode("/status", [("i", 1000), ("i", 5), ("i", 0)])
+    _wire(h, [reply])
+    assert h.set_property("global.exp.2.pedal.position", "i", 1) is False
+
+
+def test_set_globaleq_true_on_fw14_status_ack():
+    h = HelixClient("10.0.0.99")
+    reply = osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])
+    _wire(h, [reply])
+    assert h.set_globaleq("qtr", "low", "gain", 1.0) is True

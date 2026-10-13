@@ -201,3 +201,18 @@ def test_catalog_excludes_connectivity_footguns():
     for k in S.DANGEROUS_KEYS:
         assert k not in keys
     assert "wireless" not in S.pages()
+
+
+def test_catalog_carries_fw14_keys():
+    # fw 1.4 (build 1341): per-pedal EXP global/per-preset position for EXP 2
+    # and the four EXP A-D jacks (EXP 1 keeps global.exp.pedal.position), and
+    # the Time Machine settings that replaced global.clip.tm.*.
+    sp = S.keys_for_page("switches-pedals")
+    for k in ("global.exp.2.pedal.position", "global.exp.a.pedal.position",
+              "global.exp.b.pedal.position", "global.exp.c.pedal.position",
+              "global.exp.d.pedal.position"):
+        assert k in sp
+    songs = S.keys_for_page("songs")
+    for k in ("global.timemachine.gap", "global.timemachine.input",
+              "global.timemachine.threshold"):
+        assert k in songs
