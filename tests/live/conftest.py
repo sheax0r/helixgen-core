@@ -59,7 +59,9 @@ Safety model (encoded as fixtures)
   (``HELIXGEN_IRHASH_CACHE`` — the cache is written by IR verbs regardless
   of ``HELIXGEN_IRS``, proven live 2026-07-15), preferences
   (``HELIXGEN_PREFS``) and device backups (``HELIXGEN_DEVICE_BACKUPS``).
-  Only ``HELIXGEN_LIBRARY`` points at the user's real block library,
+  ``HELIXGEN_LIBRARY`` is a scratch dir whose block-library content is
+  symlinked from the user's real library (tones/guitars/irs are fresh scratch
+  dirs — ``generate`` auto-registers every tone into ``tones/``, hgc-6r5.12),
   read-only (the suite skips if it's absent). ``ingest`` tests must pass an
   explicit ``--library <scratch>`` — never let ingest write the real library.
 * An upfront ``device backup`` runs (to scratch) before any device test.
@@ -180,6 +182,10 @@ _GUARDED_FILES = (
     _REAL_HELIXGEN / "cache" / "irhash.json",
     _REAL_HELIXGEN / "device-slots.json",
 )
+_GUARDED_DIRS = (
+    _REAL_HELIXGEN / "library" / "tones",
+    _REAL_HELIXGEN / "library" / "guitars",
+)
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -251,8 +257,29 @@ def scratch(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return root
 
 
+#: Library subdirs helixgen WRITES (tone/guitar artifacts — `generate`
+#: auto-registers every tone into ``tones/``; IRs are redirected separately).
+#: The scratch library gets fresh empty ones; everything else is symlinked.
+_LIBRARY_WRITABLE = ("tones", "guitars", "irs")
+
+
 @pytest.fixture(scope="session")
-def live_env(scratch: Path, real_library: Path) -> dict:
+def scratch_library(scratch: Path, real_library: Path) -> Path:
+    """A scratch ``$HELIXGEN_LIBRARY``: the real block library's read-only
+    content symlinked in, with empty scratch tone/guitar/IR dirs (hgc-6r5.12:
+    pointing the env at the real library leaked HGTEST tones into it)."""
+    lib = scratch / "library"
+    lib.mkdir()
+    for entry in real_library.iterdir():
+        if entry.name not in _LIBRARY_WRITABLE:
+            (lib / entry.name).symlink_to(entry)
+    for name in _LIBRARY_WRITABLE:
+        (lib / name).mkdir()
+    return lib
+
+
+@pytest.fixture(scope="session")
+def live_env(scratch: Path, scratch_library: Path) -> dict:
     """Subprocess environment: working tree on PYTHONPATH + scratch state."""
     env = dict(os.environ)
     env["PYTHONPATH"] = str(SRC_DIR) + (
@@ -275,7 +302,7 @@ def live_env(scratch: Path, real_library: Path) -> dict:
         "HELIXGEN_IRHASH_CACHE": str(scratch / "irhash-cache.json"),
         "HELIXGEN_DEVICE_BACKUPS": str(scratch / "backups"),
         "HELIXGEN_PREFS": str(scratch / "preferences.json"),
-        "HELIXGEN_LIBRARY": str(real_library),
+        "HELIXGEN_LIBRARY": str(scratch_library),
         # The suite holds the REAL machine-local `all` device lock for the
         # whole run (workspace #71 — flagship consumer); this token lets
         # every CLI call the suite makes pass through that session lease.
@@ -344,6 +371,11 @@ def _real_dotfiles_guard():
             str(p): (hashlib.sha256(p.read_bytes()).hexdigest()
                      if p.exists() else None)
             for p in _GUARDED_FILES
+        } | {
+            # hgc-6r5.12: artifact dirs — a new/removed entry is a leak.
+            str(d): (sorted(e.name for e in d.iterdir())
+                     if d.is_dir() else None)
+            for d in _GUARDED_DIRS
         }
 
     before = _digests()
