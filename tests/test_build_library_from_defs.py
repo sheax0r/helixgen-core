@@ -91,3 +91,13 @@ def test_a_model_covered_under_another_spelling_is_not_duplicated(tmp_path):
     written, _ = blf.fill_library(lib)
     assert "HD2_DistScream808Mono" not in written
     assert "HD2_DistScream808Stereo" in written
+
+
+def test_floats_are_float32_like_a_real_export(tmp_path):
+    """The device stores and exports float32; an exemplar holding the bare
+    decimal (0.707) reads back as a moved knob against a real export's
+    0.7070000171661377 — `view` showed every internal AmpCab Q as changed on
+    a device-converted Brit SL100."""
+    lib, _, _ = _fill(tmp_path)
+    ex = lib.load_block("Agoura_AmpBritSL100").exemplar
+    assert ex["AmpCabPeakQ"] == 0.7070000171661377

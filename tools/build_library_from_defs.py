@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import struct
 import sys
 from pathlib import Path
 
@@ -80,7 +81,10 @@ def _raw_block(model: str, category: str, params: dict) -> dict:
     }
     for name in sorted(params):
         meta = params[name]
-        raw[name] = _TYPES[meta["type"]](meta.get("def", 0))
+        value = _TYPES[meta["type"]](meta.get("def", 0))
+        if isinstance(value, float):  # float32, the precision exports carry
+            value = struct.unpack("<f", struct.pack("<f", value))[0]
+        raw[name] = value
     return raw
 
 
