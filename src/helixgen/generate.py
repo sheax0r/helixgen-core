@@ -515,10 +515,15 @@ def _drop_params_absent_from(params: dict[str, Any], target_model: str) -> dict[
     that the model cannot hold. Params the target has but the source did not
     are left absent — `_synth_parm` fills them from the model defaults.
     """
-    known = {n.split(".")[0] for n in _defs.model_params_for(target_model)}
+    # The stereo input's defs names carry the channel: `Pad_1` (1.4+) /
+    # `Pad.1` (1.3). The `.hsp` nests them under the bare `Pad`.
+    def base(name: str) -> str:
+        return re.sub(r"[._][12]$", "", name)
+
+    known = {base(n) for n in _defs.model_params_for(target_model)}
     if not known:  # unknown model — defs miss; leave params untouched
         return params
-    return {k: v for k, v in params.items() if k.split(".")[0] in known}
+    return {k: v for k, v in params.items() if base(k) in known}
 
 
 def _rewrite_input_endpoint(path_dict: dict[str, Any], target_model: str) -> None:

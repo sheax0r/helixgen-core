@@ -2,13 +2,14 @@
 """Regenerate ``src/helixgen/device/_defs_data.json`` from the Helix Stadium
 editor app bundle.
 
-The Line 6 "Helix Stadium Debug.app" ships three resource files that, together,
+The Line 6 "Helix Stadium.app" ships three resource files that, together,
 describe every model the device exposes and the numeric ids the *network*
 protocol addresses them by:
 
 - ``P35ModelCatalog.json`` — the on-device pick-list: categories, display short
   names, and (a subset of) model-id strings. No numeric ids.
-- ``modeldefs/p35md-1_3_0_0.bin`` — the authoritative model table. A short JSON
+- ``modeldefs/p35md-<ver>.bin`` — the authoritative model table (the newest
+  version present is used: :func:`find_modeldefs`). A short JSON
   header, a NUL byte, an 8-byte magic ``ldompgsm`` (reverse of ``msgpmodl``),
   then a msgpack map keyed by model-id string. Each value carries the numeric
   ``id`` plus a ``params`` map of ParamName -> {id, type, min, max, def}.
@@ -31,14 +32,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import struct
 import sys
 from pathlib import Path
 
-DEFAULT_RESOURCES = "/Users/michael.shea/Helix Stadium Debug.app/Contents/Resources"
+DEFAULT_RESOURCES = "/Applications/Line6/Helix Stadium.app/Contents/Resources"
 
 CATALOG_NAME = "P35ModelCatalog.json"
-MODELDEFS_NAME = "modeldefs/p35md-1_3_0_0.bin"
 COMMANDDEFS_NAME = "commanddefs/P35EditCommandDefs.json"
 
 # 8-byte magic that precedes the msgpack body inside the modeldefs .bin.
@@ -47,6 +48,53 @@ MODELDEFS_MAGIC = b"ldompgsm"
 # Written relative to this file: ../src/helixgen/device/_defs_data.json
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = REPO_ROOT / "src" / "helixgen" / "device" / "_defs_data.json"
+
+
+def _releases(resources: Path) -> list[Path]:
+    """Every ``modeldefs/p35md-*.bin``, oldest first (the app keeps each past
+    release's table side by side; versions compare numerically)."""
+    def version(p: Path) -> tuple[int, ...]:
+        return tuple(int(x) for x in re.findall(r"\d+", p.stem.split("-", 1)[1]))
+
+    return sorted((resources / "modeldefs").glob("p35md-*.bin"), key=version)
+
+
+def find_modeldefs(resources: Path) -> Path:
+    """The highest-versioned ``modeldefs/p35md-*.bin``."""
+    found = _releases(resources)
+    if not found:
+        raise FileNotFoundError(f"no modeldefs/p35md-*.bin under {resources}")
+    return found[-1]
+
+
+def find_previous_modeldefs(resources: Path) -> Path | None:
+    """The release before :func:`find_modeldefs`'s, or ``None``."""
+    found = _releases(resources)
+    return found[-2] if len(found) > 1 else None
+
+
+def added_params(models: dict, previous: dict) -> dict[str, set[str]]:
+    """``{model: {param names}}`` a model GAINED since ``previous`` — by pid, so
+    a rename (1.4's ``Pad.1`` -> ``Pad_1``, same pid) is not "new". Models new
+    in this release are skipped: there is no older content to stay faithful to.
+
+    The transcoder leaves these out of content that never carried them, so a
+    pre-release tone still round-trips byte-exact and an older firmware is
+    never sent a pid it does not know (1.4 itself tolerates them missing:
+    factory content on fw 1.4 lacks ``CabIdx``).
+    """
+    out: dict[str, set[str]] = {}
+    for name, mdef in models.items():
+        old = previous.get(name)
+        if not isinstance(mdef, dict) or not isinstance(old, dict):
+            continue
+        old_pids = {p.get("id") for p in (old.get("params") or {}).values()
+                    if isinstance(p, dict)}
+        new = {pn for pn, p in (mdef.get("params") or {}).items()
+               if isinstance(p, dict) and p.get("id") not in old_pids}
+        if new:
+            out[name] = new
+    return out
 
 
 def _read_two_json_objects(text: str):
@@ -116,13 +164,33 @@ def parse_commanddefs(path: Path):
     return header, commands
 
 
-def build(resources: Path) -> dict:
+def carried_added(vendored: dict) -> dict[str, dict[int, str]]:
+    """``{model: {pid: release}}`` of the ``added`` marks in an existing asset.
+
+    :func:`added_params` only diffs against the release just before the newest,
+    so a regen against a later app (or one without the older bin) would drop
+    earlier releases' marks; ``build`` carries these forward instead.
+    """
+    names = {str(mid): name for name, mid in (vendored.get("models") or {}).items()}
+    out: dict[str, dict[int, str]] = {}
+    for mid, params in (vendored.get("model_params") or {}).items():
+        for meta in params.values():
+            if meta.get("added") and mid in names:
+                out.setdefault(names[mid], {})[meta.get("id")] = meta["added"]
+    return out
+
+
+def build(resources: Path, vendored: dict | None = None) -> dict:
     catalog_path = resources / CATALOG_NAME
-    modeldefs_path = resources / MODELDEFS_NAME
+    modeldefs_path = find_modeldefs(resources)
     commanddefs_path = resources / COMMANDDEFS_NAME
 
     catalog = parse_catalog(catalog_path)
     md_header, models = parse_modeldefs(modeldefs_path)
+    previous_path = find_previous_modeldefs(resources)
+    added = (added_params(models, parse_modeldefs(previous_path)[1])
+             if previous_path else {})
+    carried = carried_added(vendored or {})
     cmd_header, commands = parse_commanddefs(commanddefs_path)
 
     name_to_id: dict[str, int] = {}
@@ -149,13 +217,18 @@ def build(resources: Path) -> dict:
             for k in ("min", "max", "def"):
                 if k in pdef:
                     entry[k] = pdef[k]
+            if pname in added.get(model_str, ()):
+                entry["added"] = modeldefs_path.name
+            elif pdef.get("id") in carried.get(model_str, {}):
+                entry["added"] = carried[model_str][pdef.get("id")]
             params_out[pname] = entry
         model_params[str(mid)] = params_out
 
     return {
         "source": {
             "catalog": CATALOG_NAME,
-            "modeldefs": Path(MODELDEFS_NAME).name,
+            "modeldefs": modeldefs_path.name,
+            "previous_modeldefs": previous_path.name if previous_path else None,
             "commanddefs": COMMANDDEFS_NAME,
             "modeldefs_header": md_header,
             "commanddefs_header": cmd_header,
@@ -179,7 +252,8 @@ def main(argv: list[str]) -> int:
         print(f"error: resources dir not found: {resources}", file=sys.stderr)
         return 2
 
-    data = build(resources)
+    vendored = json.loads(OUT_PATH.read_text()) if OUT_PATH.exists() else {}
+    data = build(resources, vendored)
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUT_PATH.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

@@ -649,13 +649,16 @@ they are defined in data files **bundled inside the editor app**, which you may
 read directly to build name↔id maps:
 
 ```
-/Users/michael.shea/Helix Stadium Debug.app/Contents/Resources/
+/Applications/Line6/Helix Stadium.app/Contents/Resources/
 ```
+
+(`tools/build_device_defs.py` / `build_param_meta.py` / `build_modelmap.py`
+default to this path; `$HELIX_APP_RESOURCES` overrides it.)
 
 | File | Format | What it gives you |
 |------|--------|-------------------|
 | `P35ModelCatalog.json` | JSON | Category → list of model **string ids** (the browsing/UI grouping). **No numeric ids.** |
-| `modeldefs/p35md-1_3_0_0.bin` | JSON header + `\0` + `ldompgsm` magic + **msgpack** | **The main map:** model-string → `{numeric id, category, params:{name→{id,type,def,min,max}}}`. This is where the numeric `modelId` and `paramId` values come from. |
+| `modeldefs/p35md-<ver>.bin` | JSON header + `\0` + `ldompgsm` magic + **msgpack** | **The main map:** model-string → `{numeric id, category, params:{name→{id,type,def,min,max}}}`. This is where the numeric `modelId` and `paramId` values come from. |
 | `commanddefs/P35EditCommandDefs.json` | **two concatenated JSON objects** | Footswitch/command definitions (`/PresetSnapshot`, `/Looper`, `/MIDI-*`, …) with per-command param id/type/range. |
 | `P35Controls.json` | JSON | Physical control (footswitch / expression / knob) definitions. |
 | `P35ModelUIDefs.json` | JSON | UI layout / knob-rendering metadata per model. |
@@ -684,14 +687,31 @@ read directly to build name↔id maps:
 - The catalog gives you **grouping and display**, not numeric ids — cross to the
   model defs for the number.
 
-### `modeldefs/p35md-1_3_0_0.bin` structure (numeric id source)
+### `modeldefs/p35md-<ver>.bin` structure (numeric id source)
 
-Layout: a small JSON header `{"id":["0x00260000"],"ver":"0x13000000","pbn":0 }`,
+The app keeps every release's table side by side (`p35md-1_1_0_0.bin` …
+`p35md-1_4_0_0.bin`; `p37md-*` / `c63md-*` belong to other products);
+`tools/build_device_defs.py` picks the highest `p35md` version.
+
+Layout: a small JSON header `{"id":["0x00260000"],"ver":"0x14000000","pbn":0 }`,
 a single `\0`, the 8-byte magic **`ldompgsm`** (reverse of `msgpmodl`), then a
-**msgpack map** keyed by model-string id (**801 models** in the `1_3_0_0`
-Stadium/`p35` build; 615 of them `HD2_*`), across **~7065 params** in total.
-helixgen's `device/defs.py` extracts these into the `modelId` / `paramId`
-name↔id maps (801 models / 7065 params). Each value:
+**msgpack map** keyed by model-string id — **828 models / 7287 params** in the
+`1_4_0_0` Stadium/`p35` build (801 / 7065 in `1_3_0_0`). helixgen's
+`device/defs.py` extracts these into the `modelId` / `paramId` name↔id maps.
+1.4 renumbered nothing; it added 27 models (the "Eras" amps/effects 845–871
+plus Variax inputs / Nexus outputs), dropped `P35_InputNexus1/2`, added a
+`CabIdx` param to every Agoura amp and `CpuMonitor` to every harness, and
+renamed the stereo input's per-channel params `Pad.1` → `Pad_1` and
+`Agoura_AmpCali2CPlus`'s `2.2 KHz` / `6.6 KHz` → `2_2 KHz` / `6_6 KHz` (same
+pids; the transcoder maps names alnum-normalized, so both spellings reach the
+device, but `set-param`/`patch` name matching is exact), and widened the
+`HD2_FXLoop*` `Send`/`Return` minimum from -60 to -120 dB. `build_device_defs`
+marks each param a model GAINED since the previous release (`"added"`, by pid —
+so renames don't count; in 1.4 exactly `CabIdx` and `CpuMonitor`), and the
+transcoder emits those only when the source content carries them: pre-1.4
+tones stay byte-exact, and fw 1.4 tolerates them missing (its own factory
+content lacks `CabIdx`).
+Each value:
 
 ```jsonc
 {

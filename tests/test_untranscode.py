@@ -476,28 +476,29 @@ def test_does_not_mutate_its_input():
 
 
 def test_stereo_input_params_are_nested_per_channel():
-    """The device names the stereo input's params `Pad.1`/`Pad.2`; the `.hsp`
+    """The device names the stereo input's params `Pad_1`/`Pad_2` (`Pad.1`
+    before the 1.4 modeldefs); the `.hsp`
     nests them. `bridge._lift_endpoint_params` reads BOTH spellings, so the
     round-trip oracle is blind here — but `view._lift_input` and `mutate`'s
     `input` pseudo-block only address the nested shape, so a flat `.hsp` makes
     `view` drop the input section and `set-param input …` a silent no-op."""
     body = _assert_roundtrip({"name": "stereo", "paths": [{
         "input": "both",
-        "input_params": {"Trim.1": -6.0, "Trim.2": -6.0,
-                         "noiseGate.1": True, "noiseGate.2": True},
+        "input_params": {"Trim_1": -6.0, "Trim_2": -6.0,
+                         "noiseGate_1": True, "noiseGate_2": True},
         "blocks": [{"block": AMP, "params": {}}],
     }]})
     params = _flow0(body)["b00"]["slot"][0]["params"]
     assert params["Trim"] == {"1": {"value": -6.0}, "2": {"value": -6.0}}
-    assert "Trim.1" not in params
+    assert "Trim_1" not in params
     assert params["StereoLink"] == {"value": False}  # unsuffixed, left alone
 
 
 def test_stereo_nesting_needs_both_channels():
-    """A lone `.1` is not the per-channel shape; folding it would invent a
+    """A lone `_1` is not the per-channel shape; folding it would invent a
     half-populated wrapper the device never wrote."""
-    assert untranscode._nest_stereo_channels({"Trim.1": {"value": 1}}) == \
-        {"Trim.1": {"value": 1}}
+    assert untranscode._nest_stereo_channels({"Trim_1": {"value": 1}}) == \
+        {"Trim_1": {"value": 1}}
 
 
 def test_mono_input_params_are_left_flat():
@@ -1335,3 +1336,22 @@ def test_device_bblk_on_an_empty_slot_roundtrips():
     sbe1 = content.encode_content_data(doc)
     body = untranscode.sbe_bytes_to_hsp(sbe1, name="RT")
     assert transcode.hsp_to_sbepgsm(body) == sbe1
+
+
+def test_stadium_1_4_models_round_trip():
+    """Every model new in Stadium 1.4 survives ``.sbe -> .hsp -> .sbe`` under
+    its device string. Before the 1.4 defs, `device to-hsp` DROPPED these
+    blocks ("no helixgen model for device model id(s) [845, ...]")."""
+    new = ["Agoura_AmpBritSL100", "Agoura_AmpLine6Prosecutor",
+           "Agoura_AmpOmegaGrano", "HD2_DistMercatorMono",
+           "HD2_DistRockBoxBoostMono", "HD2_DistRockBoxStereo",
+           "HD2_DistPortaBox424Stereo", "HD2_VibratoEssexVibeMono",
+           "HD2_ChorusDimensionWStereo"]
+    body = _assert_roundtrip({"name": "eras", "paths": [
+        {"blocks": [{"block": m, "params": {}} for m in new[:5]]},
+        {"blocks": [{"block": m, "params": {}} for m in new[5:]]},
+    ]})
+    models = [s["model"] for f in body["preset"]["flow"]
+              for k, b in f.items() if k.startswith("b") and isinstance(b, dict)
+              for s in b.get("slot", [])]
+    assert set(new) <= set(models)

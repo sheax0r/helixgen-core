@@ -49,7 +49,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-DEFAULT_RESOURCES = "/Users/michael.shea/Helix Stadium Debug.app/Contents/Resources"
+DEFAULT_RESOURCES = "/Applications/Line6/Helix Stadium.app/Contents/Resources"
 
 UIDEFS_NAME = "P35ModelUIDefs.json"
 CONTROLS_NAME = "P35Controls.json"

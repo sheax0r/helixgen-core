@@ -830,6 +830,19 @@ def test_set_input_both_to_inst_reshapes_params_to_mono(goldfinger_body):
     assert "StereoLink" not in slot["params"]
 
 
+def test_set_input_inst_to_both_keeps_per_channel_params(goldfinger_body):
+    """The stereo input's defs names are channel-suffixed (`Pad_1`; `Pad.1`
+    before 1.4). The known-param filter must strip either suffix, or a swap to
+    `both` drops every param but StereoLink."""
+    mutate.set_input(goldfinger_body, 0, "inst1")
+    b00_slot = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]
+    b00_slot["params"] = {"Pad": {"value": 2}, "Trim": {"value": -3.0},
+                          "noiseGate": {"value": True}}
+    mutate.set_input(goldfinger_body, 0, "both")
+    params = goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]["params"]
+    assert {"Pad", "Trim", "noiseGate"} <= set(params)
+
+
 def test_set_input_mic_drops_pad(goldfinger_body):
     """P35_InputMic has no Pad (it has LowCut); the swap must not carry one."""
     mutate.set_input(goldfinger_body, 0, "mic")

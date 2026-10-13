@@ -12,8 +12,35 @@ def test_load_defs_shape():
     data = defs.load_defs()
     for key in ("models", "model_names", "model_params", "source"):
         assert key in data, f"missing top-level key: {key}"
-    assert data["source"]["modeldefs"] == "p35md-1_3_0_0.bin"
-    assert len(data["models"]) > 500  # ~801 in 1.3.0
+    assert data["source"]["modeldefs"] == "p35md-1_4_0_0.bin"
+    assert len(data["models"]) >= 828  # 801 in 1.3.0, 828 in 1.4.0
+
+
+# Models new in Stadium firmware/app 1.4 ("Eras" update) -> device numeric id.
+NEW_IN_1_4 = {
+    "Agoura_AmpBritSL100": 845,
+    "Agoura_AmpLine6Prosecutor": 846,
+    "Agoura_AmpOmegaGrano": 847,
+    "HD2_VibratoEssexVibeMono": 853,
+    "HD2_VibratoEssexVibeStereo": 854,
+    "HD2_DistRockBoxBoostMono": 855,
+    "HD2_DistRockBoxBoostStereo": 856,
+    "HD2_DistRockBoxMono": 857,
+    "HD2_DistRockBoxStereo": 858,
+    "HD2_ChorusDimensionWMono": 859,
+    "HD2_ChorusDimensionWStereo": 860,
+    "HD2_DistMercatorMono": 868,
+    "HD2_DistMercatorStereo": 869,
+    "HD2_DistPortaBox424Mono": 870,
+    "HD2_DistPortaBox424Stereo": 871,
+}
+
+
+def test_1_4_models_present():
+    for name, mid in NEW_IN_1_4.items():
+        assert defs.model_id_for(name) == mid, name
+        assert defs.model_name_for(mid) == name
+        assert defs.model_params_for(mid), f"{name} has no params"
 
 
 def test_known_amp_model_roundtrips():
@@ -96,3 +123,17 @@ def test_category_for_unknown_or_none_returns_none():
     assert defs.category_for(None) is None
     assert defs.category_for(99999999) is None
     assert defs.category_for("NotARealModel_XYZ") is None
+
+
+def test_only_the_stereo_input_has_channel_suffixed_param_pairs():
+    """``untranscode._nest_stereo_channels`` folds ANY ``X_1``/``X_2`` pair
+    into the ``.hsp`` per-channel shape. That is only right while the stereo
+    input is the sole model with such pairs; a regen that adds another must
+    revisit the fold."""
+    data = defs.load_defs()
+    paired = set()
+    for name, mid in data["models"].items():
+        ps = data["model_params"][str(mid)]
+        if any(p.endswith("_1") and p[:-2] + "_2" in ps for p in ps):
+            paired.add(name)
+    assert paired == {"P35_InputInst1_2"}

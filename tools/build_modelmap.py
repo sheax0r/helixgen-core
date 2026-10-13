@@ -60,9 +60,12 @@ PARAM_THRESHOLD_NAME = 0.50
 # identical AND category-compatible AND it resolves to a single variant.
 PARAM_THRESHOLD_ONLY = 0.85
 
-_DEFAULT_UIDEFS = (
-    "/Users/michael.shea/Helix Stadium Debug.app/Contents/Resources/"
-    "P35ModelUIDefs.json"
+_DEFAULT_UIDEFS = os.path.join(
+    os.environ.get(
+        "HELIX_APP_RESOURCES",
+        "/Applications/Line6/Helix Stadium.app/Contents/Resources",
+    ),
+    "P35ModelUIDefs.json",
 )
 
 # Library-category -> set of device-category strings considered compatible.
