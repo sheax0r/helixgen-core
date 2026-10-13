@@ -428,6 +428,19 @@ device — 2002 unless discovery saw the device advertise a nonstandard port
 without re-passing `--port` every verb; an explicit `--port` always wins.
 (The telemetry verbs `tuner`/`meters`/`measure` stream on the fixed PUB port
 2003 and use `--port` for their reachability preflight — see those verbs.)
+**Every connecting verb TCP-preflights the control port first** (hgc-7he):
+ZeroMQ retries a failed connect silently, so before this every failure
+ended as the same "no Helix Stadium answered" timeout. The preflight error
+now keeps the causes distinct — *timed out* (wrong IP / device off / stale
+record), *connection refused* (host up, port closed: Remote Access disabled
+or not a Stadium), and on **macOS** an immediate `EHOSTUNREACH`/`EPERM`,
+the signature of a **Local Network privacy denial** for the terminal app
+(macOS can reset it, e.g. after an OS update; `nc` and Apple's
+`/usr/bin/python3` are exempt so they still connect, which makes it look
+like a helixgen bug). Fix: System Settings > Privacy & Security > Local
+Network → enable the terminal app, then quit and restart it. `device
+discover` reports the same hint when every mDNS send / probe connect fails
+that way, instead of "no Helix Stadium found".
 Protocol reference:
 [`helix-protocol.md`](helix-protocol.md).
 

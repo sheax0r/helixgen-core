@@ -206,12 +206,10 @@ def _telemetry_preflight(ip: str, port: int) -> None:
     error instead."""
     from helixgen.device import discovery
 
-    if not discovery.probe_reachable(ip, port):
+    why = discovery.connect_error(ip, port)
+    if why:
         raise click.ClickException(
-            f"no Helix Stadium reachable at {ip}:{port} (TCP connect "
-            f"failed) — wrong IP, device off, or a stale device record? "
-            f"Re-run `helixgen device discover`, or pass --ip / set "
-            f"$HELIXGEN_HELIX_IP.")
+            f"no Helix Stadium reachable at {ip}:{port} — {why}")
 
 
 def _ip_callback(ctx, param, value):
@@ -1139,6 +1137,12 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
     discovering (matches a record's serial or IP; exits nonzero with a
     clear message when nothing matches or no records exist yet).
 
+    On macOS, when EVERY mDNS send / probe connect fails instantly with
+    EHOSTUNREACH/EPERM, this process is denied Local Network access: the
+    error names System Settings > Privacy & Security > Local Network
+    (enable the terminal app, then restart it) instead of "no Helix
+    Stadium found". Every connecting verb's TCP preflight reports the same.
+
     \b
     Known limitations (backlog #77):
       * Both mechanisms look at the DEFAULT-ROUTE interface. With a VPN
@@ -1175,17 +1179,22 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
 
     HelixClient, HelixError = _client()
 
-    candidates = discovery.mdns_discover(timeout=timeout)
-    probed = None
-    if not candidates and probe:
-        # Name the range actually swept, never "the LAN" — the old wording
-        # asserted more than it checked (hc-3qw).
-        probed = discovery.local_probe_network()
-        click.echo("mDNS found nothing — falling back to a TCP connect-probe "
-                   f"of {probed or 'the local subnet'} (port 2002)…",
-                   err=True)
-        candidates = [discovery.Candidate(ip=ip, via="probe")
-                      for ip in discovery.probe_subnet()]
+    try:
+        candidates = discovery.mdns_discover(timeout=timeout)
+        probed = None
+        if not candidates and probe:
+            # Name the range actually swept, never "the LAN" — the old
+            # wording asserted more than it checked (hc-3qw).
+            probed = discovery.local_probe_network()
+            click.echo("mDNS found nothing — falling back to a TCP "
+                       f"connect-probe of {probed or 'the local subnet'} "
+                       "(port 2002)…", err=True)
+            candidates = [discovery.Candidate(ip=ip, via="probe")
+                          for ip in discovery.probe_subnet()]
+    except discovery.LocalNetworkDenied as e:
+        # hgc-7he: not "found nothing" — this process can't reach the LAN.
+        raise click.ClickException(
+            f"discovery could not reach the local network: {e}") from e
     if not candidates:
         raise click.ClickException(
             "no Helix Stadium found (mDNS `_stadiumserver._tcp` browse"

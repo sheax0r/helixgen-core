@@ -61,6 +61,7 @@ guaranteed-wrong default for anyone else that failed as a long stall).
 """
 from __future__ import annotations
 
+import errno
 import ipaddress
 import os
 import re
@@ -91,6 +92,31 @@ _TYPE_SRV = 33
 
 class IPResolutionError(RuntimeError):
     """No device IP could be resolved (no flag, no env, no persisted record)."""
+
+
+#: macOS Local Network privacy (hgc-7he). A process denied Local Network
+#: access gets connect()/sendto() to LAN addresses failing IMMEDIATELY with
+#: EHOSTUNREACH (sometimes EPERM) — ZeroMQ retries that silently, so without
+#: this hint the only symptom was a misleading "no Helix Stadium answered".
+LOCAL_NETWORK_HINT = (
+    "macOS blocked the connection before it left this machine — this "
+    "process is most likely denied Local Network access. Enable your "
+    "terminal app under System Settings > Privacy & Security > Local "
+    "Network, then QUIT and restart the terminal (the grant only reaches "
+    "newly launched processes). If access is already granted, the host may "
+    "simply be down — check the device is on and the IP is right.")
+
+
+class LocalNetworkDenied(RuntimeError):
+    """Every discovery socket failed the way a macOS Local Network privacy
+    denial does (see :data:`LOCAL_NETWORK_HINT`)."""
+
+
+def is_local_network_denial(exc: BaseException) -> bool:
+    """True when ``exc`` looks like a macOS Local Network privacy denial
+    (EHOSTUNREACH / EPERM on darwin). Never true off macOS."""
+    return sys.platform == "darwin" and getattr(exc, "errno", None) in (
+        errno.EHOSTUNREACH, errno.EPERM)
 
 
 #: The RFC 1918 private ranges — the only address space the /24 probe will
@@ -274,7 +300,9 @@ def mdns_discover(timeout: float = 3.0,
                   service: str = MDNS_SERVICE) -> List[Candidate]:
     """One-shot mDNS browse for ``service``; collects responses for up to
     ``timeout`` seconds (re-asking once halfway through for reliability).
-    Returns unique candidates (by IP). Socket errors return ``[]``."""
+    Returns unique candidates (by IP). Socket errors return ``[]`` —
+    except a send refused the way a macOS Local Network denial refuses it,
+    which raises :class:`LocalNetworkDenied` (hgc-7he)."""
     query = build_mdns_query(service)
     found: Dict[str, Candidate] = {}
     try:
@@ -287,7 +315,12 @@ def mdns_discover(timeout: float = 3.0,
         sock.settimeout(0.25)
         deadline = time.monotonic() + max(0.5, timeout)
         resend_at = time.monotonic() + max(0.5, timeout) / 2
-        sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
+        try:
+            sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
+        except OSError as e:
+            if is_local_network_denial(e):
+                raise LocalNetworkDenied(LOCAL_NETWORK_HINT) from e
+            raise
         while time.monotonic() < deadline:
             if time.monotonic() >= resend_at:
                 resend_at = float("inf")
@@ -410,17 +443,39 @@ def local_probe_network(*, max_hosts: int = MAX_PROBE_HOSTS
     return probe_network(me, local_prefixlen(me), max_hosts=max_hosts)
 
 
-def probe_reachable(ip: str, port: int = RPC_PORT, *,
-                    timeout: float = 2.0) -> bool:
+_REDISCOVER = ("wrong IP, device off, or a stale device record? Re-run "
+               "`helixgen device discover`, or pass --ip / set "
+               "$HELIXGEN_HELIX_IP.")
+
+
+def connect_error(ip: str, port: int = RPC_PORT, *,
+                  timeout: float = 2.0) -> Optional[str]:
     """One cheap TCP connect probe of ``ip:port`` — the canonical "is the
     device up?" check (the Stadium ignores ICMP ping; an open RPC port is
-    the reliable reachability signal — the same test :func:`probe_subnet`
-    and the live suite's gate use). Never raises."""
+    the reliable reachability signal). ``None`` when the connect succeeds,
+    else a short actionable reason that keeps the failure modes distinct:
+    a macOS Local Network denial (hgc-7he), a refusal (host up, port
+    closed), a timeout, or any other socket error. Never raises."""
     try:
         with socket.create_connection((str(ip), int(port)), timeout=timeout):
-            return True
-    except OSError:
-        return False
+            return None
+    except (socket.timeout, TimeoutError):
+        return f"TCP connect timed out after {timeout:g}s — {_REDISCOVER}"
+    except ConnectionRefusedError:
+        return ("connection refused — the host is up but nothing listens on "
+                "that port: Remote Access disabled on the Stadium, a wrong "
+                "--port, or that address is not a Stadium.")
+    except OSError as e:
+        if is_local_network_denial(e):
+            return (f"TCP connect failed: {e.strerror or e} "
+                    f"(errno {e.errno}). {LOCAL_NETWORK_HINT}")
+        return f"TCP connect failed ({e}) — {_REDISCOVER}"
+
+
+def probe_reachable(ip: str, port: int = RPC_PORT, *,
+                    timeout: float = 2.0) -> bool:
+    """Boolean form of :func:`connect_error`. Never raises."""
+    return connect_error(ip, port, timeout=timeout) is None
 
 
 def probe_subnet(port: int = RPC_PORT, *, connect_timeout: float = 0.35,
@@ -461,20 +516,26 @@ def probe_subnet(port: int = RPC_PORT, *, connect_timeout: float = 0.35,
         return []
     targets = [str(host) for host in net.hosts() if str(host) != me]
 
-    def _try(ip: str) -> Optional[str]:
+    def _try(ip: str) -> Tuple[Optional[str], bool]:
         try:
             with socket.create_connection((ip, port), timeout=connect_timeout):
-                return ip
-        except OSError:
-            return None
+                return ip, False
+        except OSError as e:
+            return None, is_local_network_denial(e)
 
     hits: List[str] = []
+    denied = 0
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_try, ip) for ip in targets]
         for fut in as_completed(futures):
-            ip = fut.result()
+            ip, was_denied = fut.result()
             if ip:
                 hits.append(ip)
+            denied += was_denied
+    # A real LAN mixes timeouts/refusals; EVERY connect failing instantly
+    # with EHOSTUNREACH/EPERM is the macOS privacy denial (hgc-7he).
+    if not hits and targets and denied == len(targets):
+        raise LocalNetworkDenied(LOCAL_NETWORK_HINT)
     return sorted(hits)
 
 
