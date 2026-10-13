@@ -2,13 +2,14 @@
 """Regenerate ``src/helixgen/device/_defs_data.json`` from the Helix Stadium
 editor app bundle.
 
-The Line 6 "Helix Stadium Debug.app" ships three resource files that, together,
+The Line 6 "Helix Stadium.app" ships three resource files that, together,
 describe every model the device exposes and the numeric ids the *network*
 protocol addresses them by:
 
 - ``P35ModelCatalog.json`` — the on-device pick-list: categories, display short
   names, and (a subset of) model-id strings. No numeric ids.
-- ``modeldefs/p35md-1_3_0_0.bin`` — the authoritative model table. A short JSON
+- ``modeldefs/p35md-<ver>.bin`` — the authoritative model table (the newest
+  version present is used: :func:`find_modeldefs`). A short JSON
   header, a NUL byte, an 8-byte magic ``ldompgsm`` (reverse of ``msgpmodl``),
   then a msgpack map keyed by model-id string. Each value carries the numeric
   ``id`` plus a ``params`` map of ParamName -> {id, type, min, max, def}.
@@ -31,14 +32,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import struct
 import sys
 from pathlib import Path
 
-DEFAULT_RESOURCES = "/Users/michael.shea/Helix Stadium Debug.app/Contents/Resources"
+DEFAULT_RESOURCES = "/Applications/Line6/Helix Stadium.app/Contents/Resources"
 
 CATALOG_NAME = "P35ModelCatalog.json"
-MODELDEFS_NAME = "modeldefs/p35md-1_3_0_0.bin"
 COMMANDDEFS_NAME = "commanddefs/P35EditCommandDefs.json"
 
 # 8-byte magic that precedes the msgpack body inside the modeldefs .bin.
@@ -47,6 +48,18 @@ MODELDEFS_MAGIC = b"ldompgsm"
 # Written relative to this file: ../src/helixgen/device/_defs_data.json
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = REPO_ROOT / "src" / "helixgen" / "device" / "_defs_data.json"
+
+
+def find_modeldefs(resources: Path) -> Path:
+    """The highest-versioned ``modeldefs/p35md-*.bin`` (the app keeps every
+    past release's table side by side; versions compare numerically)."""
+    def version(p: Path) -> tuple[int, ...]:
+        return tuple(int(x) for x in re.findall(r"\d+", p.stem.split("-", 1)[1]))
+
+    found = sorted((resources / "modeldefs").glob("p35md-*.bin"), key=version)
+    if not found:
+        raise FileNotFoundError(f"no modeldefs/p35md-*.bin under {resources}")
+    return found[-1]
 
 
 def _read_two_json_objects(text: str):
@@ -118,7 +131,7 @@ def parse_commanddefs(path: Path):
 
 def build(resources: Path) -> dict:
     catalog_path = resources / CATALOG_NAME
-    modeldefs_path = resources / MODELDEFS_NAME
+    modeldefs_path = find_modeldefs(resources)
     commanddefs_path = resources / COMMANDDEFS_NAME
 
     catalog = parse_catalog(catalog_path)
@@ -155,7 +168,7 @@ def build(resources: Path) -> dict:
     return {
         "source": {
             "catalog": CATALOG_NAME,
-            "modeldefs": Path(MODELDEFS_NAME).name,
+            "modeldefs": modeldefs_path.name,
             "commanddefs": COMMANDDEFS_NAME,
             "modeldefs_header": md_header,
             "commanddefs_header": cmd_header,

@@ -116,7 +116,7 @@ def _warn(msg: str) -> None:
 def _reverse_modelmap() -> Dict[int, str]:
     """``device numeric model id -> helixgen model-id string``.
 
-    The vendored map is injective today (330 helixgen ids -> 330 distinct
+    The vendored map is injective today (730 helixgen ids -> 730 distinct
     device ids); should a regeneration ever collide, the lexicographically
     first helixgen id wins so the result stays deterministic.
     """
@@ -489,12 +489,12 @@ def _endpoint_pointers(entries: Dict[str, dict],
 
 
 def _nest_stereo_channels(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Fold the device's ``<Name>.1`` / ``<Name>.2`` pairs back into the ``.hsp``
+    """Fold the device's ``<Name>_1`` / ``<Name>_2`` pairs back into the ``.hsp``
     per-channel shape ``{"<Name>": {"1": {...}, "2": {...}}}``.
 
     The stereo input endpoint (``P35_InputInst1_2``) is the only place this
-    occurs — it is the ONLY category in ``defs`` with dotted-channel param
-    names. ``bridge._lift_endpoint_params`` un-nests it on the way out, and it
+    occurs — it is the ONLY model in ``defs`` with paired channel-suffixed
+    param names (pinned by ``test_device_defs``; 1.3 spelled them ``.1``). ``bridge._lift_endpoint_params`` un-nests it on the way out, and it
     reads the flat spelling too, so the transcode round trip does NOT catch a
     failure to nest. Everything ELSE does: ``view._lift_input`` and
     ``mutate``'s ``input`` pseudo-block both address the nested shape, so a
@@ -504,17 +504,17 @@ def _nest_stereo_channels(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     channels: Dict[str, Dict[str, Any]] = {}
     for name in params:
-        base, _, ch = name.rpartition(".")
+        base, _, ch = name.rpartition("_")
         if base and ch in ("1", "2"):
             channels.setdefault(base, {})[ch] = name
-    # Only fold a base whose BOTH channels are present; a lone ".1" is not the
+    # Only fold a base whose BOTH channels are present; a lone "_1" is not the
     # per-channel shape and folding it would invent a half-populated wrapper.
     foldable = {b: chs for b, chs in channels.items() if len(chs) == 2}
     if not foldable:
         return params
     out: Dict[str, Any] = {}
     for name, wrapper in params.items():
-        base, _, ch = name.rpartition(".")
+        base, _, ch = name.rpartition("_")
         if base in foldable and ch in ("1", "2"):
             out.setdefault(base, {})[ch] = wrapper
         else:

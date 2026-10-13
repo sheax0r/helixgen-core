@@ -649,8 +649,9 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
 def _lift_endpoint_params(slot: dict) -> Dict[str, Any]:
     """Lift an input/output endpoint slot's params as device-name-keyed scalar
     values. Stereo per-channel wrappers (``{"1": {...}, "2": {...}}``) become
-    the device's ``<name>.1`` / ``<name>.2`` param names (matching ``defs``
-    for e.g. ``P35_InputInst1_2``)."""
+    the device's ``<name>_1`` / ``<name>_2`` param names (matching ``defs``
+    for ``P35_InputInst1_2``; the 1.3 modeldefs spelled them ``<name>.1``,
+    the pids are unchanged)."""
     out: Dict[str, Any] = {}
     for name, wrapped in (slot.get("params") or {}).items():
         if not isinstance(wrapped, dict):
@@ -660,7 +661,7 @@ def _lift_endpoint_params(slot: dict) -> Dict[str, Any]:
                 w = wrapped.get(ch)
                 if isinstance(w, dict) and isinstance(
                         w.get("value"), (int, float, bool)):
-                    out[f"{name}.{ch}"] = w["value"]
+                    out[f"{name}_{ch}"] = w["value"]
         elif isinstance(wrapped.get("value"), (int, float, bool)):
             out[name] = wrapped["value"]
     return out

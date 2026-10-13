@@ -58,7 +58,7 @@ class TestBridgeLift:
         })
         paths = bridge.hsp_to_paths(body, strict=False)
         assert paths[0]["input_params"] == {
-            "Pad.1": 1, "Pad.2": 2, "StereoLink": True}
+            "Pad_1": 1, "Pad_2": 2, "StereoLink": True}
 
     def test_output_params_lifted(self):
         body = _hsp_body("P35_InputInst1", {}, {"gain": -4.5, "pan": 0.25})
@@ -80,6 +80,21 @@ class TestTranscodeSynthesis:
         assert pids[4] is True       # noiseGate
         assert pids[5] == -55.0      # threshold
         assert pids[6] == 0.2        # decay
+
+    def test_stereo_input_params_survive(self):
+        """The stereo input's per-channel params reach their device pids. The
+        1.4 modeldefs renamed them `Pad.1` -> `Pad_1`; a lift still emitting the
+        dotted spelling matched nothing in defs and silently reset both
+        channels to defaults."""
+        body = _hsp_body("P35_InputInst1_2", {
+            "Pad": {"1": {"value": 2}, "2": {"value": 2}},
+            "Trim": {"1": {"value": -6.0}, "2": {"value": -3.0}},
+        })
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+        inp = _blocks_by_type(doc)[8][0]
+        pids = _parm_by_pid(inp)
+        assert (pids[2], pids[22]) == (2, 2)          # Pad_1 / Pad_2
+        assert (pids[3], pids[23]) == (-6.0, -3.0)    # Trim_1 / Trim_2
 
     def test_output_params_survive(self):
         body = _hsp_body("P35_InputInst1", {}, {"gain": -4.5, "pan": 0.25})
@@ -260,6 +275,8 @@ class TestTrailsHarness:
              "snap": False, "tid_": 0, "valu": True},    # upper
             {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 13,
              "snap": False, "tid_": 0, "valu": -1},      # EvtIdx
+            {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 15,
+             "snap": False, "tid_": 0, "valu": False},   # CpuMonitor (1.4)
         ], "snap": False, "tid_": 0, "vers": 0}
 
     def test_a_mono_block_gets_the_mono_trails_harness(self):

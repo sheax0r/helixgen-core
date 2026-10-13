@@ -554,7 +554,7 @@ def _make_input_endpoint(mode: Optional[str], inst_id: int,
     ``inst1``/``none`` reuse the verbatim captured templates; ``inst2``/``both``
     are synthesized from ``defs`` (valid model + default params). ``params``
     (device-name-keyed, e.g. ``Trim``/``noiseGate`` or the stereo model's
-    ``Pad.1``/``Pad.2`` — from :func:`bridge._lift_endpoint_params`) overlays
+    ``Pad_1``/``Pad_2`` — from :func:`bridge._lift_endpoint_params`) overlays
     the model's defaults so the ``.hsp``'s pad/trim/gate state survives
     transcode (parity #18)."""
     if not params:

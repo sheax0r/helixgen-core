@@ -476,28 +476,29 @@ def test_does_not_mutate_its_input():
 
 
 def test_stereo_input_params_are_nested_per_channel():
-    """The device names the stereo input's params `Pad.1`/`Pad.2`; the `.hsp`
+    """The device names the stereo input's params `Pad_1`/`Pad_2` (`Pad.1`
+    before the 1.4 modeldefs); the `.hsp`
     nests them. `bridge._lift_endpoint_params` reads BOTH spellings, so the
     round-trip oracle is blind here — but `view._lift_input` and `mutate`'s
     `input` pseudo-block only address the nested shape, so a flat `.hsp` makes
     `view` drop the input section and `set-param input …` a silent no-op."""
     body = _assert_roundtrip({"name": "stereo", "paths": [{
         "input": "both",
-        "input_params": {"Trim.1": -6.0, "Trim.2": -6.0,
-                         "noiseGate.1": True, "noiseGate.2": True},
+        "input_params": {"Trim_1": -6.0, "Trim_2": -6.0,
+                         "noiseGate_1": True, "noiseGate_2": True},
         "blocks": [{"block": AMP, "params": {}}],
     }]})
     params = _flow0(body)["b00"]["slot"][0]["params"]
     assert params["Trim"] == {"1": {"value": -6.0}, "2": {"value": -6.0}}
-    assert "Trim.1" not in params
+    assert "Trim_1" not in params
     assert params["StereoLink"] == {"value": False}  # unsuffixed, left alone
 
 
 def test_stereo_nesting_needs_both_channels():
-    """A lone `.1` is not the per-channel shape; folding it would invent a
+    """A lone `_1` is not the per-channel shape; folding it would invent a
     half-populated wrapper the device never wrote."""
-    assert untranscode._nest_stereo_channels({"Trim.1": {"value": 1}}) == \
-        {"Trim.1": {"value": 1}}
+    assert untranscode._nest_stereo_channels({"Trim_1": {"value": 1}}) == \
+        {"Trim_1": {"value": 1}}
 
 
 def test_mono_input_params_are_left_flat():

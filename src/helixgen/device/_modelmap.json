@@ -4,16 +4,21 @@
     "Agoura_AmpAmpegB15NF66": 759,
     "Agoura_AmpAmpegSVT": 805,
     "Agoura_AmpBrit2203MV": 758,
+    "Agoura_AmpBritJujube": 834,
     "Agoura_AmpBritMegaBass": 757,
     "Agoura_AmpBritPlexi": 756,
+    "Agoura_AmpBritSL100": 845,
+    "Agoura_AmpCali2CPlus": 832,
     "Agoura_AmpEVPanamaBlue": 811,
     "Agoura_AmpEVPanamaRed": 823,
     "Agoura_AmpEssexTB30CC": 810,
     "Agoura_AmpGermanXtraBlue": 818,
     "Agoura_AmpGermanXtraRed": 819,
+    "Agoura_AmpLine6Prosecutor": 846,
     "Agoura_AmpMandarinPlus200": 754,
     "Agoura_AmpMandarinRockerMk3": 844,
     "Agoura_AmpMatchstick30": 835,
+    "Agoura_AmpOmegaGrano": 847,
     "Agoura_AmpRevvCh3Purple": 817,
     "Agoura_AmpRevvCh4Red": 806,
     "Agoura_AmpSolid100": 753,
@@ -22,11 +27,21 @@
     "Agoura_AmpUSDripBass": 812,
     "Agoura_AmpUSLuxeBlack": 751,
     "Agoura_AmpUSPrincess76": 750,
+    "Agoura_AmpUSSuperBlack": 833,
+    "Agoura_AmpUSTweedman": 749,
     "Agoura_AmpWhoWatt103": 808,
+    "BuzzWave": 402,
+    "DoubleBass": 399,
+    "EuclideanDelayMono_Victoria": 105,
+    "EuclideanDelayStereo_Victoria": 44,
     "HD2_AmpA30FawnBrt": 612,
+    "HD2_AmpA30FawnNrm": 613,
     "HD2_AmpANGLMeteor": 610,
+    "HD2_AmpAgua51": 663,
+    "HD2_AmpAguaSledge": 726,
     "HD2_AmpArchetypeClean": 637,
     "HD2_AmpArchetypeLead": 635,
+    "HD2_AmpBrit2203": 735,
     "HD2_AmpBrit2204": 608,
     "HD2_AmpBritJ45Brt": 604,
     "HD2_AmpBritJ45Nrm": 605,
@@ -35,54 +50,109 @@
     "HD2_AmpBritPlexiBrt": 594,
     "HD2_AmpBritPlexiJump": 595,
     "HD2_AmpBritPlexiNrm": 596,
+    "HD2_AmpBritTremBrt": 657,
+    "HD2_AmpBritTremJump": 658,
+    "HD2_AmpBritTremNrm": 659,
+    "HD2_AmpBusyOneCh1": 649,
+    "HD2_AmpBusyOneCh2": 647,
     "HD2_AmpBusyOneJump": 645,
+    "HD2_AmpCali400Ch1": 590,
+    "HD2_AmpCali400Ch2": 591,
+    "HD2_AmpCaliBass": 588,
     "HD2_AmpCaliIVLead": 626,
     "HD2_AmpCaliIVR1": 622,
+    "HD2_AmpCaliIVR2": 623,
     "HD2_AmpCaliRectifire": 586,
+    "HD2_AmpCaliTexasCh1": 671,
+    "HD2_AmpCaliTexasCh2": 667,
+    "HD2_AmpCartographer": 655,
+    "HD2_AmpDasBenzinLead": 693,
     "HD2_AmpDasBenzinMega": 695,
+    "HD2_AmpDelSol300": 639,
     "HD2_AmpDerailedIngrid": 651,
+    "HD2_AmpDividedDuo": 584,
+    "HD2_AmpEVPanamaBlue": 746,
+    "HD2_AmpEVPanamaRed": 745,
     "HD2_AmpEssexA15": 582,
+    "HD2_AmpEssexA30": 580,
+    "HD2_AmpFullertonBrt": 682,
     "HD2_AmpFullertonJump": 683,
+    "HD2_AmpFullertonNrm": 684,
     "HD2_AmpGCougar800": 578,
     "HD2_AmpGSG100": 731,
     "HD2_AmpGermanMahadeva": 576,
     "HD2_AmpGermanUbersonic": 574,
+    "HD2_AmpGermanXtraBlue": 741,
+    "HD2_AmpGermanXtraRed": 742,
     "HD2_AmpGrammaticoBrt": 676,
+    "HD2_AmpGrammaticoJump": 677,
+    "HD2_AmpGrammaticoNrm": 678,
     "HD2_AmpInterstateZed": 572,
     "HD2_AmpJazzRivet120": 570,
     "HD2_AmpLine62204Mod": 628,
+    "HD2_AmpLine6Aristocrat": 713,
     "HD2_AmpLine6Badonk": 643,
+    "HD2_AmpLine6Carillon": 712,
     "HD2_AmpLine6Clarity": 710,
+    "HD2_AmpLine6Doom": 568,
+    "HD2_AmpLine6Elektrik": 566,
+    "HD2_AmpLine6Elmsley": 725,
     "HD2_AmpLine6Epic": 564,
     "HD2_AmpLine6Fatality": 630,
+    "HD2_AmpLine6Kinetic": 711,
+    "HD2_AmpLine6Litigator": 633,
+    "HD2_AmpLine6Oblivion": 714,
+    "HD2_AmpLine6Ventoux": 700,
     "HD2_AmpLine6Voltage": 709,
     "HD2_AmpMailOrderTwin": 562,
+    "HD2_AmpMandarin80": 560,
+    "HD2_AmpMandarinBass200": 733,
+    "HD2_AmpMandarinRocker": 697,
     "HD2_AmpMatchstickCh1": 616,
     "HD2_AmpMatchstickCh2": 617,
+    "HD2_AmpMatchstickJump": 618,
+    "HD2_AmpMoonBrt": 703,
+    "HD2_AmpMoonJump": 702,
+    "HD2_AmpMoonNrm": 701,
     "HD2_AmpPVPanama": 558,
+    "HD2_AmpPVVitriolClean": 723,
+    "HD2_AmpPVVitriolCrunch": 708,
+    "HD2_AmpPVVitriolLead": 707,
     "HD2_AmpPlacaterClean": 669,
     "HD2_AmpPlacaterDirty": 665,
     "HD2_AmpRevvGenPurple": 689,
     "HD2_AmpRevvGenRed": 675,
     "HD2_AmpSVBeastBrt": 554,
+    "HD2_AmpSVBeastNrm": 555,
     "HD2_AmpSVT4Pro": 673,
     "HD2_AmpSoloLeadClean": 550,
     "HD2_AmpSoloLeadCrunch": 551,
     "HD2_AmpSoloLeadOD": 548,
     "HD2_AmpSoupPro": 546,
     "HD2_AmpStoneAge185": 544,
+    "HD2_AmpTucknGo": 542,
+    "HD2_AmpTweedBluesBrt": 538,
+    "HD2_AmpTweedBluesNrm": 539,
     "HD2_AmpUSDeluxeNrm": 536,
+    "HD2_AmpUSDeluxeVib": 534,
     "HD2_AmpUSDoubleNrm": 532,
     "HD2_AmpUSDoubleVib": 530,
+    "HD2_AmpUSDripmanNorm": 729,
     "HD2_AmpUSPrincess": 691,
+    "HD2_AmpUSSmallTweed": 528,
+    "HD2_AmpUSSuperNorm": 737,
     "HD2_AmpUSSuperVib": 739,
+    "HD2_AmpVoltageQueen": 653,
     "HD2_AmpWhoWatt100": 526,
     "HD2_AmpWoodyBlue": 641,
     "HD2_CabMicIr_1x10USPrincessWithPan": 434,
     "HD2_CabMicIr_1x12BlueBellWithPan": 453,
+    "HD2_CabMicIr_1x12CaliEXTWithPan": 448,
     "HD2_CabMicIr_1x12CaliIVWithPan": 458,
     "HD2_CabMicIr_1x12EpicenterWithPan": 450,
     "HD2_CabMicIr_1x12FullertonWithPan": 460,
+    "HD2_CabMicIr_1x12GrammaticoWithPan": 430,
+    "HD2_CabMicIr_1x12OpenCastWithPan": 454,
     "HD2_CabMicIr_1x12OpenCreamWithPan": 455,
     "HD2_CabMicIr_1x12USDeluxeWithPan": 428,
     "HD2_CabMicIr_1x15AmpegB15WithPan": 426,
@@ -91,6 +161,7 @@
     "HD2_CabMicIr_2x12DoubleC12NWithPan": 437,
     "HD2_CabMicIr_2x12InterstateWithPan": 459,
     "HD2_CabMicIr_2x12JazzRivetWithPan": 443,
+    "HD2_CabMicIr_2x12MailC12QWithPan": 445,
     "HD2_CabMicIr_2x12MandarinWithPan": 447,
     "HD2_CabMicIr_2x12MatchG25WithPan": 456,
     "HD2_CabMicIr_2x12MatchH30WithPan": 457,
@@ -105,27 +176,35 @@
     "HD2_CabMicIr_4x12BlackbackH30WithPan": 432,
     "HD2_CabMicIr_4x12BritV30WithPan": 431,
     "HD2_CabMicIr_4x12CaliV30WithPan": 435,
+    "HD2_CabMicIr_4x12CartogC90WithPan": 471,
     "HD2_CabMicIr_4x12CartogGuvWithPan": 472,
     "HD2_CabMicIr_4x12Greenback20WithPan": 451,
     "HD2_CabMicIr_4x12Greenback25WithPan": 441,
     "HD2_CabMicIr_4x12Greenback30WithPan": 461,
+    "HD2_CabMicIr_4x12MOONT75WithPan": 438,
+    "HD2_CabMicIr_4x12MandarinWithPan": 433,
     "HD2_CabMicIr_4x12SoloLeadEMWithPan": 470,
     "HD2_CabMicIr_4x12UberT75WithPan": 439,
     "HD2_CabMicIr_4x12UberV30WithPan": 446,
     "HD2_CabMicIr_4x12WhoWatt100WithPan": 466,
     "HD2_CabMicIr_4x12XXLV30WithPan": 427,
+    "HD2_CabMicIr_6x10CaliPowerWithPan": 463,
     "HD2_CabMicIr_8x10SVTAVWithPan": 440,
     "HD2_CabMicIr_NoCab": 467,
     "HD2_CabMicIr_SoupProEllipseWithPan": 465,
     "HD2_CaliQMono": 331,
     "HD2_CaliQStereo": 196,
+    "HD2_Chorus4VoiceMono": 408,
     "HD2_Chorus4VoiceStereo": 257,
     "HD2_Chorus70sChorusMono": 298,
     "HD2_Chorus70sChorusStereo": 167,
     "HD2_ChorusAmpegLiquifierMono": 403,
     "HD2_ChorusAmpegLiquifierStereo": 252,
+    "HD2_ChorusDimensionWMono": 859,
+    "HD2_ChorusDimensionWStereo": 860,
     "HD2_ChorusMono": 267,
     "HD2_ChorusPlastiChorusMono": 335,
+    "HD2_ChorusPlastiChorusStereo": 199,
     "HD2_ChorusStereo": 134,
     "HD2_ChorusTrinityChorusStereo": 166,
     "HD2_DL4AnalogDelayStereo": 58,
@@ -133,12 +212,33 @@
     "HD2_DL4AutoVolStereo": 56,
     "HD2_DL4DigDelay": 54,
     "HD2_DL4DigDelayWithMod": 53,
+    "HD2_DL4DynamicDelayStereo": 52,
+    "HD2_DL4EchoPlatterStereo": 51,
     "HD2_DL4LowResDelay": 50,
+    "HD2_DL4MultiheadStereo": 49,
+    "HD2_DL4PingPong": 48,
+    "HD2_DL4Reverse": 109,
+    "HD2_DL4StereoDelay": 55,
     "HD2_DL4SweepEchoStereo": 47,
     "HD2_DL4TapeEchoStereo": 46,
+    "HD2_DL4TubeEchoStereo": 45,
     "HD2_DM4BassOctaver": 351,
+    "HD2_DM4BuzzSaw": 355,
+    "HD2_DM4ClassicDistortion": 356,
     "HD2_DM4ColorDrive": 357,
+    "HD2_DM4FacialFuzz": 358,
+    "HD2_DM4FuzzPi": 359,
+    "HD2_DM4HeavyDistortion": 360,
+    "HD2_DM4JetFuzz": 352,
     "HD2_DM4JumboFuzz": 361,
+    "HD2_DM4Line6Distortion": 362,
+    "HD2_DM4Line6Drive": 363,
+    "HD2_DM4OctaveFuzz": 353,
+    "HD2_DM4Overdrive": 364,
+    "HD2_DM4Screamer": 354,
+    "HD2_DM4SubOctFuzz": 350,
+    "HD2_DM4TubeDrive": 365,
+    "HD2_DelayADTMono": 131,
     "HD2_DelayADTStereo": 95,
     "HD2_DelayAdriaticDelayMono": 130,
     "HD2_DelayAdriaticDelayStereo": 93,
@@ -146,6 +246,8 @@
     "HD2_DelayBucketBrigadeStereo": 92,
     "HD2_DelayCosmosEchoMono": 127,
     "HD2_DelayCosmosEchoStereo": 91,
+    "HD2_DelayCrissCrossMono": 126,
+    "HD2_DelayCrissCrossStereo": 90,
     "HD2_DelayDoubleDoubleMono": 340,
     "HD2_DelayDoubleDoubleStereo": 203,
     "HD2_DelayDualDelayStereo": 89,
@@ -153,89 +255,308 @@
     "HD2_DelayDuckedDelayStereo": 86,
     "HD2_DelayElephantManMono": 129,
     "HD2_DelayElephantManStereo": 94,
+    "HD2_DelayHarmonyDelayStereo": 491,
+    "HD2_DelayHeliosphereMono": 503,
+    "HD2_DelayHeliosphereStereo": 493,
     "HD2_DelayModChorusEchoMono": 124,
     "HD2_DelayModChorusEchoStereo": 88,
+    "HD2_DelayMultiPassMono": 122,
+    "HD2_DelayMultiPassStereo": 84,
     "HD2_DelayMultitap4Stereo": 85,
     "HD2_DelayMultitap6Stereo": 81,
     "HD2_DelayPingPongStereo": 83,
+    "HD2_DelayPitchMono": 502,
+    "HD2_DelayPitchStereo": 492,
     "HD2_DelayReverseDelayMono": 121,
     "HD2_DelayReverseDelayStereo": 82,
     "HD2_DelaySimpleDelayMono": 125,
     "HD2_DelaySimpleDelayStereo": 87,
     "HD2_DelaySweepEchoMono": 119,
+    "HD2_DelaySweepEchoStereo": 80,
+    "HD2_DelaySwellAdriaticMono": 118,
+    "HD2_DelaySwellAdriaticStereo": 79,
+    "HD2_DelaySwellVintageDigitalMono": 117,
+    "HD2_DelaySwellVintageDigitalStereo": 78,
     "HD2_DelayTransistorTapeMono": 116,
     "HD2_DelayTransistorTapeStereo": 77,
     "HD2_DelayVintageDigitalMonoV2": 115,
     "HD2_DelayVintageDigitalStereoV2": 76,
     "HD2_DistAlpacaRougeMono": 380,
+    "HD2_DistAlpacaRougeStereo": 243,
     "HD2_DistAmpegScramblerODMono": 372,
+    "HD2_DistAmpegScramblerODStereo": 509,
     "HD2_DistArbitratorFuzzMono": 308,
+    "HD2_DistArbitratorFuzzStereo": 173,
     "HD2_DistBallisticFuzzMono": 387,
+    "HD2_DistBallisticFuzzStereo": 514,
+    "HD2_DistBitcrusherMono": 321,
+    "HD2_DistBitcrusherStereo": 185,
     "HD2_DistClawthornDriveMono": 334,
+    "HD2_DistClawthornDriveStereo": 508,
     "HD2_DistCompulsiveDrive": 305,
+    "HD2_DistCompulsiveDriveStereo": 170,
+    "HD2_DistDarkDoveFuzzMono": 410,
     "HD2_DistDarkDoveFuzzStereo": 516,
     "HD2_DistDeezOneModMono": 370,
+    "HD2_DistDeezOneModStereo": 236,
+    "HD2_DistDeezOneVintageMono": 369,
+    "HD2_DistDeezOneVintageStereo": 235,
     "HD2_DistDerangedMasterMono": 368,
+    "HD2_DistDerangedMasterStereo": 234,
     "HD2_DistDhyanaDriveMono": 371,
+    "HD2_DistDhyanaDriveStereo": 237,
     "HD2_DistHedgehogD9Mono": 287,
+    "HD2_DistHedgehogD9Stereo": 149,
     "HD2_DistHeirApparentMono": 378,
+    "HD2_DistHeirApparentStereo": 242,
     "HD2_DistHorizonDriveMono": 386,
+    "HD2_DistHorizonDriveStereo": 513,
     "HD2_DistIndustrialFuzzMono": 288,
+    "HD2_DistIndustrialFuzzStereo": 148,
     "HD2_DistKWBMono": 323,
+    "HD2_DistKWBStereo": 187,
     "HD2_DistKinkyBoostMono": 339,
+    "HD2_DistKinkyBoostStereo": 202,
+    "HD2_DistLegendaryDriveMono": 382,
+    "HD2_DistLegendaryDriveStereo": 512,
     "HD2_DistMegaphoneMono": 266,
+    "HD2_DistMegaphoneStereo": 138,
+    "HD2_DistMercatorMono": 868,
+    "HD2_DistMercatorStereo": 869,
     "HD2_DistMinotaurMono": 304,
     "HD2_DistMinotaurStereo": 507,
     "HD2_DistObsidian7000Mono": 333,
+    "HD2_DistObsidian7000Stereo": 198,
+    "HD2_DistPillarsMono": 406,
+    "HD2_DistPillarsStereo": 255,
     "HD2_DistPocketFuzzMono": 388,
+    "HD2_DistPocketFuzzStereo": 249,
+    "HD2_DistPortaBox424Mono": 870,
+    "HD2_DistPortaBox424Stereo": 871,
     "HD2_DistPrizeDriveMono": 411,
+    "HD2_DistPrizeDriveStereo": 517,
     "HD2_DistRamsHeadMono": 383,
+    "HD2_DistRamsHeadStereo": 245,
     "HD2_DistRatatouilleDistMono": 390,
+    "HD2_DistRatatouilleDistStereo": 251,
     "HD2_DistRegalBassDIMono": 412,
+    "HD2_DistRegalBassDIStereo": 518,
+    "HD2_DistRockBoxBoostMono": 855,
+    "HD2_DistRockBoxBoostStereo": 856,
+    "HD2_DistRockBoxMono": 857,
+    "HD2_DistRockBoxStereo": 858,
     "HD2_DistScream808Stereo": 176,
     "HD2_DistStuporODMono": 332,
+    "HD2_DistStuporODStereo": 197,
     "HD2_DistSwedishChainsawMono": 385,
+    "HD2_DistSwedishChainsawStereo": 248,
     "HD2_DistTeemahMono": 327,
+    "HD2_DistTeemahStereo": 191,
+    "HD2_DistThrifterFuzzMono": 338,
+    "HD2_DistThrifterFuzzStereo": 200,
     "HD2_DistToneSovereignMono": 377,
+    "HD2_DistToneSovereignStereo": 510,
     "HD2_DistTopSecretODMono": 306,
+    "HD2_DistTopSecretODStereo": 171,
     "HD2_DistTriangleFuzzMono": 300,
+    "HD2_DistTriangleFuzzStereo": 169,
     "HD2_DistTycoctaviaFuzzMono": 309,
+    "HD2_DistTycoctaviaFuzzStereo": 174,
     "HD2_DistValveDriverMono": 286,
+    "HD2_DistValveDriverStereo": 506,
     "HD2_DistVerminDistMono": 307,
+    "HD2_DistVerminDistStereo": 172,
+    "HD2_DistVitalBoostMono": 405,
+    "HD2_DistVitalBoostStereo": 254,
     "HD2_DistVitalDistMono": 404,
+    "HD2_DistVitalDistStereo": 515,
+    "HD2_DistWringerFuzzMono": 330,
+    "HD2_DistWringerFuzzStereo": 195,
+    "HD2_DistXenomorphFuzzMono": 379,
+    "HD2_DistXenomorphFuzzStereo": 511,
     "HD2_DistZeroAmpBassDIMono": 376,
+    "HD2_DistZeroAmpBassDIStereo": 241,
     "HD2_DrvScream808": 310,
     "HD2_EQGraphic10BandMono": 265,
     "HD2_EQGraphic10BandStereo": 137,
     "HD2_EQSimpleTiltMono": 373,
     "HD2_EQSimpleTiltStereo": 238,
+    "HD2_FM4AttackSynth": 349,
+    "HD2_FM4CometTrails": 220,
     "HD2_FM4Growler": 348,
     "HD2_FM4ObiWah": 219,
+    "HD2_FM4OctiSynth": 347,
+    "HD2_FM4QFilter": 218,
+    "HD2_FM4Seeker": 217,
+    "HD2_FM4SlowFilter": 216,
+    "HD2_FM4SpinCycle": 215,
     "HD2_FM4SynthOMatic": 346,
+    "HD2_FM4SynthString": 345,
+    "HD2_FM4Throbber": 214,
+    "HD2_FM4TronDown": 213,
+    "HD2_FM4TronUp": 212,
+    "HD2_FM4VTron": 343,
     "HD2_FM4VoiceBox": 344,
+    "HD2_FilterAshevillePattrnMono": 375,
+    "HD2_FilterAshevillePattrnStereo": 240,
     "HD2_FlangerCourtesanFlangeMono": 295,
     "HD2_FlangerCourtesanFlangeStereo": 163,
+    "HD2_FlangerDynamixFlangerMono": 325,
+    "HD2_FlangerDynamixFlangerStereo": 188,
     "HD2_FlangerGrayFlangerMono": 296,
+    "HD2_FlangerGrayFlangerStereo": 164,
+    "HD2_FlangerHarmonicFlangerMono": 297,
+    "HD2_FlangerHarmonicFlangerStereo": 165,
+    "HD2_M1380AFlanger": 230,
+    "HD2_M13ACFlanger": 231,
+    "HD2_M13TwoVoiceHarmony": 342,
     "HD2_MM4AnalogChorus": 233,
     "HD2_MM4AnalogFlanger": 224,
     "HD2_MM4BarberpolePhaser": 210,
+    "HD2_MM4BiasTremolo": 221,
     "HD2_MM4Dimension": 229,
+    "HD2_MM4DualPhaser": 225,
+    "HD2_MM4FrequencyShifter": 211,
+    "HD2_MM4JetFlanger": 232,
+    "HD2_MM4OptoTremolo": 208,
+    "HD2_MM4PannedPhaser": 228,
+    "HD2_MM4Panner": 207,
+    "HD2_MM4PatternTrem": 209,
     "HD2_MM4Phaser": 223,
     "HD2_MM4PitchVibrato": 367,
+    "HD2_MM4RingModulator": 206,
+    "HD2_MM4RotaryDrum": 226,
+    "HD2_MM4RotaryDrumHorn": 227,
+    "HD2_MM4ScriptPhase": 205,
+    "HD2_MM4TriChorus": 222,
+    "HD2_MM4UVibe": 366,
     "HD2_PhaserDeluxePhaserMono": 326,
+    "HD2_PhaserDeluxePhaserStereo": 189,
+    "HD2_PhaserPebblePhaserMono": 381,
+    "HD2_PhaserPebblePhaserStereo": 244,
     "HD2_PhaserScriptModPhaseMono": 294,
     "HD2_PhaserScriptModPhaseStereo": 162,
     "HD2_PhaserUbiquitousVibeMono": 285,
+    "HD2_PhaserUbiquitousVibeStereo": 152,
     "HD2_PitchDualPitchMono": 324,
     "HD2_PitchDualPitchStereo": 192,
     "HD2_PitchPitchWhamMono": 292,
+    "HD2_PitchPitchWhamStereo": 156,
     "HD2_PitchSimplePitchMono": 328,
     "HD2_PitchSimplePitchStereo": 193,
     "HD2_PitchTwinHarmonyMono": 291,
     "HD2_PitchTwinHarmonyStereo": 155,
+    "HD2_PreampA30FawnBrt": 614,
+    "HD2_PreampA30FawnNrm": 615,
+    "HD2_PreampANGLMeteor": 611,
+    "HD2_PreampAgua51": 664,
     "HD2_PreampAguaSledge": 727,
+    "HD2_PreampArchetypeClean": 638,
+    "HD2_PreampArchetypeLead": 636,
+    "HD2_PreampBrit2203": 736,
+    "HD2_PreampBrit2204": 609,
+    "HD2_PreampBritJ45Brt": 606,
+    "HD2_PreampBritJ45Nrm": 607,
+    "HD2_PreampBritP75Brt": 602,
+    "HD2_PreampBritP75Nrm": 603,
+    "HD2_PreampBritPlexiBrt": 597,
+    "HD2_PreampBritPlexiJump": 598,
+    "HD2_PreampBritPlexiNrm": 599,
+    "HD2_PreampBritTremBrt": 660,
+    "HD2_PreampBritTremJump": 661,
+    "HD2_PreampBritTremNrm": 662,
+    "HD2_PreampBusyOneCh1": 650,
+    "HD2_PreampBusyOneCh2": 648,
+    "HD2_PreampBusyOneJump": 646,
+    "HD2_PreampCali400Ch1": 592,
+    "HD2_PreampCali400Ch2": 593,
+    "HD2_PreampCaliBass": 589,
+    "HD2_PreampCaliIVLead": 627,
+    "HD2_PreampCaliIVR1": 624,
+    "HD2_PreampCaliIVR2": 625,
+    "HD2_PreampCaliRectifire": 587,
+    "HD2_PreampCaliTexasCh1": 672,
+    "HD2_PreampCaliTexasCh2": 668,
+    "HD2_PreampCartographer": 656,
+    "HD2_PreampDasBenzinLead": 694,
+    "HD2_PreampDasBenzinMega": 696,
+    "HD2_PreampDelSol300": 640,
+    "HD2_PreampDerailedIngrid": 652,
+    "HD2_PreampDividedDuo": 585,
+    "HD2_PreampEVPanamaBlue": 747,
+    "HD2_PreampEVPanamaRed": 748,
+    "HD2_PreampEssexA15": 583,
+    "HD2_PreampEssexA30": 581,
+    "HD2_PreampFullertonBrt": 685,
+    "HD2_PreampFullertonJump": 686,
+    "HD2_PreampFullertonNrm": 687,
+    "HD2_PreampGCougar800": 579,
+    "HD2_PreampGSG100": 732,
+    "HD2_PreampGermanMahadeva": 577,
+    "HD2_PreampGermanUbersonic": 575,
+    "HD2_PreampGermanXtraBlue": 744,
+    "HD2_PreampGermanXtraRed": 743,
+    "HD2_PreampGrammaticoBrt": 679,
+    "HD2_PreampGrammaticoJump": 680,
+    "HD2_PreampGrammaticoNrm": 681,
+    "HD2_PreampInterstateZed": 573,
+    "HD2_PreampJazzRivet120": 571,
+    "HD2_PreampLine62204ModV2": 632,
+    "HD2_PreampLine6Aristocrat": 717,
+    "HD2_PreampLine6Badonk": 644,
+    "HD2_PreampLine6Carillon": 718,
+    "HD2_PreampLine6Clarity": 719,
+    "HD2_PreampLine6Doom": 569,
+    "HD2_PreampLine6Elektrik": 567,
+    "HD2_PreampLine6Elmsley": 724,
+    "HD2_PreampLine6Epic": 565,
+    "HD2_PreampLine6Fatality": 631,
+    "HD2_PreampLine6Kinetic": 716,
+    "HD2_PreampLine6Litigator": 634,
+    "HD2_PreampLine6Oblivion": 715,
+    "HD2_PreampLine6Ventoux": 699,
+    "HD2_PreampLine6Voltage": 720,
+    "HD2_PreampMailOrderTwin": 563,
+    "HD2_PreampMandarin80": 561,
+    "HD2_PreampMandarinBass200": 734,
+    "HD2_PreampMandarinRocker": 698,
+    "HD2_PreampMatchstickCh1": 619,
+    "HD2_PreampMatchstickCh2": 620,
+    "HD2_PreampMatchstickJump": 621,
+    "HD2_PreampMoonBrt": 706,
+    "HD2_PreampMoonJump": 705,
+    "HD2_PreampMoonNrm": 704,
+    "HD2_PreampPVPanama": 559,
+    "HD2_PreampPVVitriolClean": 728,
+    "HD2_PreampPVVitriolCrunch": 722,
+    "HD2_PreampPVVitriolLead": 721,
+    "HD2_PreampPlacaterClean": 670,
+    "HD2_PreampPlacaterDirty": 666,
+    "HD2_PreampRevvGenPurple": 690,
+    "HD2_PreampRevvGenRed": 688,
+    "HD2_PreampSVBeastBrt": 556,
+    "HD2_PreampSVBeastNrm": 557,
+    "HD2_PreampSVT4Pro": 674,
+    "HD2_PreampSoloLeadClean": 552,
+    "HD2_PreampSoloLeadCrunch": 553,
+    "HD2_PreampSoloLeadOD": 549,
+    "HD2_PreampSoupPro": 547,
+    "HD2_PreampStoneAge185": 545,
+    "HD2_PreampTucknGo": 543,
+    "HD2_PreampTweedBluesBrt": 540,
+    "HD2_PreampTweedBluesNrm": 541,
+    "HD2_PreampUSDeluxeNrm": 537,
+    "HD2_PreampUSDeluxeVib": 535,
+    "HD2_PreampUSDoubleNrm": 533,
+    "HD2_PreampUSDoubleVib": 531,
+    "HD2_PreampUSDripmanNorm": 730,
+    "HD2_PreampUSPrincess": 692,
+    "HD2_PreampUSSmallTweed": 529,
+    "HD2_PreampUSSuperNorm": 738,
+    "HD2_PreampUSSuperVib": 740,
     "HD2_PreampVintagePre": 525,
     "HD2_PreampVoltageQueen": 654,
+    "HD2_PreampWhoWatt100": 527,
     "HD2_PreampWoodyBlue": 642,
     "HD2_RetroReelMono": 389,
     "HD2_RetroReelStereo": 250,
@@ -243,51 +564,94 @@
     "HD2_Reverb63SpringStereo": 488,
     "HD2_ReverbCaveStereo": 64,
     "HD2_ReverbChamberStereo": 62,
+    "HD2_ReverbDoubleTankMono": 102,
     "HD2_ReverbDoubleTankStereo": 75,
+    "HD2_ReverbDuckingStereo": 69,
+    "HD2_ReverbEchoStereo": 67,
+    "HD2_ReverbGanymedeMono": 101,
     "HD2_ReverbGanymedeStereo": 74,
+    "HD2_ReverbGlitzMono": 100,
     "HD2_ReverbGlitzStereo": 73,
     "HD2_ReverbHallStereo": 68,
     "HD2_ReverbHxSpringMono": 497,
     "HD2_ReverbHxSpringStereo": 490,
+    "HD2_ReverbNonLinearMono": 496,
+    "HD2_ReverbNonLinearStereo": 489,
     "HD2_ReverbOctoStereo": 72,
     "HD2_ReverbParticleStereo": 71,
     "HD2_ReverbPlateStereo": 63,
+    "HD2_ReverbPlateauxMono": 99,
     "HD2_ReverbPlateauxStereo": 70,
     "HD2_ReverbRoomStereo": 65,
+    "HD2_ReverbSearchlightsMono": 98,
     "HD2_ReverbSearchlightsStereo": 61,
     "HD2_ReverbSpringStereo": 487,
     "HD2_ReverbTileStereo": 66,
+    "HD2_RingModulatorAMRingModMono": 293,
+    "HD2_RingModulatorAMRingModStereo": 161,
     "HD2_RingModulatorPitchRingModStereo": 160,
+    "HD2_Rotary122RotaryStereo": 157,
     "HD2_Rotary145RotaryStereo": 158,
+    "HD2_Rotary3RotorStereo": 260,
+    "HD2_RotaryVibeRotaryStereo": 159,
     "HD2_SendMono1": 269,
     "HD2_SendMono2": 270,
+    "HD2_Synth3NoteGeneratorMono": 336,
+    "HD2_Synth3NoteGeneratorStereo": 422,
+    "HD2_Synth4OSCGeneratorMono": 337,
+    "HD2_Synth4OSCGeneratorStereo": 421,
+    "HD2_SynthSubtractiveStereo": 505,
     "HD2_Tremolo60sBiasTremMono": 284,
     "HD2_Tremolo60sBiasTremStereo": 150,
     "HD2_TremoloHarmonicMono": 329,
     "HD2_TremoloHarmonicStereo": 194,
     "HD2_TremoloOpticalTremMono": 311,
     "HD2_TremoloOpticalTremStereo": 151,
+    "HD2_TremoloPatternMono": 341,
     "HD2_TremoloPatternStereo": 204,
     "HD2_TremoloTremoloMono": 322,
     "HD2_TremoloTremoloStereo": 186,
     "HD2_VibratoBubbleVibratoMono": 299,
     "HD2_VibratoBubbleVibratoStereo": 168,
+    "HD2_VibratoEssexVibeMono": 853,
+    "HD2_VibratoEssexVibeStereo": 854,
     "HD2_VolPanGainMono": 282,
     "HD2_VolPanGainStereo": 146,
+    "HD2_VolPanPanStereo": 135,
+    "HD2_VolPanStereoImagerStereo": 247,
+    "HD2_VolPanStereoWidthStereo": 201,
     "HD2_VolPanVol": 268,
     "HD2_VolPanVolStereo": 136,
     "HD2_WahChromeCustomMono": 313,
+    "HD2_WahChromeCustomStereo": 177,
     "HD2_WahChromeMono": 314,
+    "HD2_WahChromeStereo": 178,
     "HD2_WahColorfulMono": 315,
+    "HD2_WahColorfulStereo": 179,
+    "HD2_WahConductorMono": 316,
+    "HD2_WahConductorStereo": 180,
     "HD2_WahFasselMono": 317,
+    "HD2_WahFasselStereo": 181,
     "HD2_WahTeardrop310Mono": 289,
+    "HD2_WahTeardrop310Stereo": 153,
+    "HD2_WahTeardropBassQMono": 415,
+    "HD2_WahTeardropBassQStereo": 261,
     "HD2_WahThroatyMono": 318,
+    "HD2_WahThroatyStereo": 182,
     "HD2_WahUKWah846Mono": 290,
+    "HD2_WahUKWah846Stereo": 154,
     "HD2_WahVettaWahMono": 319,
+    "HD2_WahVettaWahStereo": 183,
     "HD2_WahWeeperMono": 320,
+    "HD2_WahWeeperStereo": 184,
+    "HX2_Compressor3BandCompMono": 38,
+    "HX2_Compressor3BandCompStereo": 16,
+    "HX2_CompressorAutoSwellMono": 37,
+    "HX2_CompressorAutoSwellStereo": 15,
     "HX2_CompressorDeluxeCompMono": 33,
     "HX2_CompressorDeluxeCompStereo": 9,
     "HX2_CompressorKinkyCompMono": 34,
+    "HX2_CompressorKinkyCompStereo": 12,
     "HX2_CompressorLAStudioCompMono": 35,
     "HX2_CompressorLAStudioCompStereo": 13,
     "HX2_CompressorOptoCompMono": 32,
@@ -295,41 +659,77 @@
     "HX2_CompressorRedSqueezeMono": 36,
     "HX2_CompressorRedSqueezeStereo": 14,
     "HX2_CompressorRochesterCompMono": 31,
+    "HX2_CompressorRochesterCompStereo": 10,
     "HX2_DM4BlueComp": 24,
+    "HX2_DM4BlueCompTreb": 27,
+    "HX2_DM4BoostComp": 30,
     "HX2_DM4RedComp": 26,
     "HX2_DM4TubeComp": 25,
+    "HX2_DM4VettaComp": 29,
+    "HX2_DM4VettaJuice": 28,
     "HX2_EQParametricMono": 413,
     "HX2_EQParametricStereo": 259,
     "HX2_FilterAutoFilterMono": 18,
+    "HX2_FilterAutoFilterStereo": 7,
     "HX2_FilterMutantFilterMono": 19,
+    "HX2_FilterMutantFilterStereo": 8,
+    "HX2_FilterMysterFilterMono": 20,
+    "HX2_FilterMysterFilterStereo": 6,
     "HX2_GateHardGateMono": 23,
+    "HX2_GateHardGateStereo": 5,
     "HX2_GateHorizonGateMono": 22,
+    "HX2_GateHorizonGateStereo": 4,
     "HX2_GateNoiseGateMono": 21,
+    "HX2_GateNoiseGateStereo": 3,
     "HX2_ImpulseResponseWithPan": 468,
+    "KillerZ": 391,
+    "L6BubbleEcho": 111,
+    "L6PhazeEko": 110,
     "L6SPB_AcousGtrSimMono": 384,
     "L6SPB_AcousGtrSimStereo": 246,
+    "L6SPB_PolyChorus": 521,
     "L6SPB_PolyDowntune": 523,
     "L6SPB_PolyPitch": 480,
+    "L6SPB_PolyWham": 522,
+    "Line6BronzeMaster": 392,
+    "RezSynth": 401,
+    "SampleAndHold": 113,
+    "Saturn5RingMod": 398,
+    "SeismicSynth": 397,
+    "Sweeper": 253,
+    "SynthAnalog": 396,
+    "SynthFX": 393,
+    "SynthHarmony": 400,
+    "SynthLead": 395,
+    "SynthString": 394,
     "TapeEater": 112,
     "VIC_DelayGlitchMono": 108,
     "VIC_DelayGlitchStereo": 43,
     "VIC_DelayPolySustain": 481,
+    "VIC_DelayRatchetMono": 107,
+    "VIC_DelayRatchetStereo": 41,
+    "VIC_DelayStutterEditMono": 106,
     "VIC_DelayStutterEditStereo": 42,
     "VIC_DynPlateMono": 501,
     "VIC_DynPlateStereo": 486,
     "VIC_FeedbackSim": 482,
+    "VIC_FlexoVibeMono": 407,
+    "VIC_FlexoVibeStereo": 256,
     "VIC_LooperShufflingStereo": 815,
     "VIC_PitchBoctaverMono": 409,
+    "VIC_PitchBoctaverStereo": 258,
     "VIC_PitchTwelveStringMono": 520,
     "VIC_ReverbDynAmbienceMono": 104,
     "VIC_ReverbDynAmbienceStereo": 60,
+    "VIC_ReverbDynBloomMono": 500,
     "VIC_ReverbDynBloomStereo": 494,
     "VIC_ReverbDynRoomMono": 103,
     "VIC_ReverbDynRoomStereo": 59,
     "VIC_ReverbRotatingMono": 499,
     "VIC_ReverbRotatingStereo": 485,
     "VIC_ReverbShimmerMono": 498,
-    "VIC_ReverbShimmerStereo": 484
+    "VIC_ReverbShimmerStereo": 484,
+    "Warble_Matic": 114
   },
   "unmatched": [],
   "matches": {
@@ -339,7 +739,7 @@
       "device_name": "agua751",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9167,
       "category": "amp"
     },
     "Agoura_AmpAmpegB15NF66": {
@@ -348,7 +748,7 @@
       "device_name": "ampegb15nf66",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.95,
       "category": "amp"
     },
     "Agoura_AmpAmpegSVT": {
@@ -357,13 +757,22 @@
       "device_name": "ampegsvt50th",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9667,
       "category": "amp"
     },
     "Agoura_AmpBrit2203MV": {
       "device_id": 758,
       "device_model_str": "Agoura_AmpBrit2203MV",
       "device_name": "br2203mv",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 0.9565,
+      "category": "amp"
+    },
+    "Agoura_AmpBritJujube": {
+      "device_id": 834,
+      "device_model_str": "Agoura_AmpBritJujube",
+      "device_name": "britjujube",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -375,13 +784,31 @@
       "device_name": "britmegabass",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9583,
       "category": "amp"
     },
     "Agoura_AmpBritPlexi": {
       "device_id": 756,
       "device_model_str": "Agoura_AmpBritPlexi",
       "device_name": "britplexi",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 0.9583,
+      "category": "amp"
+    },
+    "Agoura_AmpBritSL100": {
+      "device_id": 845,
+      "device_model_str": "Agoura_AmpBritSL100",
+      "device_name": "britsl100",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "Agoura_AmpCali2CPlus": {
+      "device_id": 832,
+      "device_model_str": "Agoura_AmpCali2CPlus",
+      "device_name": "cali2c",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -393,7 +820,7 @@
       "device_name": "evpanamablue",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9545,
       "category": "amp"
     },
     "Agoura_AmpEVPanamaRed": {
@@ -402,7 +829,7 @@
       "device_name": "evpanamared",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9545,
       "category": "amp"
     },
     "Agoura_AmpEssexTB30CC": {
@@ -411,7 +838,7 @@
       "device_name": "essextb30cc",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9565,
       "category": "amp"
     },
     "Agoura_AmpGermanXtraBlue": {
@@ -420,13 +847,22 @@
       "device_name": "germanxtrablue",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.963,
       "category": "amp"
     },
     "Agoura_AmpGermanXtraRed": {
       "device_id": 819,
       "device_model_str": "Agoura_AmpGermanXtraRed",
       "device_name": "germanxtrared",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 0.963,
+      "category": "amp"
+    },
+    "Agoura_AmpLine6Prosecutor": {
+      "device_id": 846,
+      "device_model_str": "Agoura_AmpLine6Prosecutor",
+      "device_name": "prosecutor",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -438,7 +874,7 @@
       "device_name": "mand200",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9545,
       "category": "amp"
     },
     "Agoura_AmpMandarinRockerMk3": {
@@ -447,13 +883,22 @@
       "device_name": "mandarinrock3",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9565,
       "category": "amp"
     },
     "Agoura_AmpMatchstick30": {
       "device_id": 835,
       "device_model_str": "Agoura_AmpMatchstick30",
       "device_name": "match30",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 0.9583,
+      "category": "amp"
+    },
+    "Agoura_AmpOmegaGrano": {
+      "device_id": 847,
+      "device_model_str": "Agoura_AmpOmegaGrano",
+      "device_name": "omegagranophyre",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -465,7 +910,7 @@
       "device_name": "revv120purple",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9643,
       "category": "amp"
     },
     "Agoura_AmpRevvCh4Red": {
@@ -474,7 +919,7 @@
       "device_name": "revv120red",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9643,
       "category": "amp"
     },
     "Agoura_AmpSolid100": {
@@ -483,7 +928,7 @@
       "device_name": "solid100",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.96,
       "category": "amp"
     },
     "Agoura_AmpUS5WTweed": {
@@ -492,7 +937,7 @@
       "device_name": "us5wtwed",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.95,
       "category": "amp"
     },
     "Agoura_AmpUSDoubleBlack": {
@@ -501,7 +946,7 @@
       "device_name": "usdblblk",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9643,
       "category": "amp"
     },
     "Agoura_AmpUSDripBass": {
@@ -510,7 +955,7 @@
       "device_name": "usdripbass",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9615,
       "category": "amp"
     },
     "Agoura_AmpUSLuxeBlack": {
@@ -519,13 +964,31 @@
       "device_name": "usluxblk",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9583,
       "category": "amp"
     },
     "Agoura_AmpUSPrincess76": {
       "device_id": 750,
       "device_model_str": "Agoura_AmpUSPrincess76",
       "device_name": "usprin76",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 0.95,
+      "category": "amp"
+    },
+    "Agoura_AmpUSSuperBlack": {
+      "device_id": 833,
+      "device_model_str": "Agoura_AmpUSSuperBlack",
+      "device_name": "ussupblk",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "Agoura_AmpUSTweedman": {
+      "device_id": 749,
+      "device_model_str": "Agoura_AmpUSTweedman",
+      "device_name": "ustwdman",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -537,8 +1000,44 @@
       "device_name": "whowatt103",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9583,
       "category": "amp"
+    },
+    "BuzzWave": {
+      "device_id": 402,
+      "device_model_str": "BuzzWave",
+      "device_name": "buzzwave",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "DoubleBass": {
+      "device_id": 399,
+      "device_model_str": "DoubleBass",
+      "device_name": "dblbass",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "EuclideanDelayMono_Victoria": {
+      "device_id": 105,
+      "device_model_str": "EuclideanDelayMono_Victoria",
+      "device_name": "euclideandelay",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "EuclideanDelayStereo_Victoria": {
+      "device_id": 44,
+      "device_model_str": "EuclideanDelayStereo_Victoria",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
     },
     "HD2_AmpA30FawnBrt": {
       "device_id": 612,
@@ -549,10 +1048,37 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpA30FawnNrm": {
+      "device_id": 613,
+      "device_model_str": "HD2_AmpA30FawnNrm",
+      "device_name": "a30fawnnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpANGLMeteor": {
       "device_id": 610,
       "device_model_str": "HD2_AmpANGLMeteor",
       "device_name": "anglmeteor",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpAgua51": {
+      "device_id": 663,
+      "device_model_str": "HD2_AmpAgua51",
+      "device_name": "agua51",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpAguaSledge": {
+      "device_id": 726,
+      "device_model_str": "HD2_AmpAguaSledge",
+      "device_name": "aguasled",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -571,6 +1097,15 @@
       "device_id": 635,
       "device_model_str": "HD2_AmpArchetypeLead",
       "device_name": "archetypelead",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpBrit2203": {
+      "device_id": 735,
+      "device_model_str": "HD2_AmpBrit2203",
+      "device_name": "brit2203",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -648,10 +1183,82 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpBritTremBrt": {
+      "device_id": 657,
+      "device_model_str": "HD2_AmpBritTremBrt",
+      "device_name": "brittrembrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpBritTremJump": {
+      "device_id": 658,
+      "device_model_str": "HD2_AmpBritTremJump",
+      "device_name": "brittremjump",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpBritTremNrm": {
+      "device_id": 659,
+      "device_model_str": "HD2_AmpBritTremNrm",
+      "device_name": "brittremnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpBusyOneCh1": {
+      "device_id": 649,
+      "device_model_str": "HD2_AmpBusyOneCh1",
+      "device_name": "busy1ch1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpBusyOneCh2": {
+      "device_id": 647,
+      "device_model_str": "HD2_AmpBusyOneCh2",
+      "device_name": "busy1ch2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpBusyOneJump": {
       "device_id": 645,
       "device_model_str": "HD2_AmpBusyOneJump",
       "device_name": "busy1jmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpCali400Ch1": {
+      "device_id": 590,
+      "device_model_str": "HD2_AmpCali400Ch1",
+      "device_name": "cal400c1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpCali400Ch2": {
+      "device_id": 591,
+      "device_model_str": "HD2_AmpCali400Ch2",
+      "device_name": "cal400c2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpCaliBass": {
+      "device_id": 588,
+      "device_model_str": "HD2_AmpCaliBass",
+      "device_name": "calibass",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -675,10 +1282,55 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpCaliIVR2": {
+      "device_id": 623,
+      "device_model_str": "HD2_AmpCaliIVR2",
+      "device_name": "cali4r2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpCaliRectifire": {
       "device_id": 586,
       "device_model_str": "HD2_AmpCaliRectifire",
       "device_name": "calirect",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpCaliTexasCh1": {
+      "device_id": 671,
+      "device_model_str": "HD2_AmpCaliTexasCh1",
+      "device_name": "calitexasch1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpCaliTexasCh2": {
+      "device_id": 667,
+      "device_model_str": "HD2_AmpCaliTexasCh2",
+      "device_name": "calitexasch2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpCartographer": {
+      "device_id": 655,
+      "device_model_str": "HD2_AmpCartographer",
+      "device_name": "cartogra",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpDasBenzinLead": {
+      "device_id": 693,
+      "device_model_str": "HD2_AmpDasBenzinLead",
+      "device_name": "benzlead",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -693,10 +1345,46 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpDelSol300": {
+      "device_id": 639,
+      "device_model_str": "HD2_AmpDelSol300",
+      "device_name": "delsol",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpDerailedIngrid": {
       "device_id": 651,
       "device_model_str": "HD2_AmpDerailedIngrid",
       "device_name": "derailedingrid",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpDividedDuo": {
+      "device_id": 584,
+      "device_model_str": "HD2_AmpDividedDuo",
+      "device_name": "divdduo",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpEVPanamaBlue": {
+      "device_id": 746,
+      "device_model_str": "HD2_AmpEVPanamaBlue",
+      "device_name": "evpanamablue",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpEVPanamaRed": {
+      "device_id": 745,
+      "device_model_str": "HD2_AmpEVPanamaRed",
+      "device_name": "evpanamared",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -711,10 +1399,37 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpEssexA30": {
+      "device_id": 580,
+      "device_model_str": "HD2_AmpEssexA30",
+      "device_name": "essexa30",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpFullertonBrt": {
+      "device_id": 682,
+      "device_model_str": "HD2_AmpFullertonBrt",
+      "device_name": "fullerbr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpFullertonJump": {
       "device_id": 683,
       "device_model_str": "HD2_AmpFullertonJump",
       "device_name": "fullerjp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpFullertonNrm": {
+      "device_id": 684,
+      "device_model_str": "HD2_AmpFullertonNrm",
+      "device_name": "fullernm",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -756,10 +1471,46 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpGermanXtraBlue": {
+      "device_id": 741,
+      "device_model_str": "HD2_AmpGermanXtraBlue",
+      "device_name": "germanxtrablue",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpGermanXtraRed": {
+      "device_id": 742,
+      "device_model_str": "HD2_AmpGermanXtraRed",
+      "device_name": "germanxtrared",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpGrammaticoBrt": {
       "device_id": 676,
       "device_model_str": "HD2_AmpGrammaticoBrt",
       "device_name": "grammaticolgbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpGrammaticoJump": {
+      "device_id": 677,
+      "device_model_str": "HD2_AmpGrammaticoJump",
+      "device_name": "grammaticolgjmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpGrammaticoNrm": {
+      "device_id": 678,
+      "device_model_str": "HD2_AmpGrammaticoNrm",
+      "device_name": "grammaticolgnrm",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -792,6 +1543,15 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpLine6Aristocrat": {
+      "device_id": 713,
+      "device_model_str": "HD2_AmpLine6Aristocrat",
+      "device_name": "aristocr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpLine6Badonk": {
       "device_id": 643,
       "device_model_str": "HD2_AmpLine6Badonk",
@@ -801,10 +1561,46 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpLine6Carillon": {
+      "device_id": 712,
+      "device_model_str": "HD2_AmpLine6Carillon",
+      "device_name": "carillon",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpLine6Clarity": {
       "device_id": 710,
       "device_model_str": "HD2_AmpLine6Clarity",
       "device_name": "clarity",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpLine6Doom": {
+      "device_id": 568,
+      "device_model_str": "HD2_AmpLine6Doom",
+      "device_name": "doom",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpLine6Elektrik": {
+      "device_id": 566,
+      "device_model_str": "HD2_AmpLine6Elektrik",
+      "device_name": "elektrik",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpLine6Elmsley": {
+      "device_id": 725,
+      "device_model_str": "HD2_AmpLine6Elmsley",
+      "device_name": "elmsley",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -828,6 +1624,42 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpLine6Kinetic": {
+      "device_id": 711,
+      "device_model_str": "HD2_AmpLine6Kinetic",
+      "device_name": "kinetic",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpLine6Litigator": {
+      "device_id": 633,
+      "device_model_str": "HD2_AmpLine6Litigator",
+      "device_name": "litigator",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpLine6Oblivion": {
+      "device_id": 714,
+      "device_model_str": "HD2_AmpLine6Oblivion",
+      "device_name": "oblivion",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpLine6Ventoux": {
+      "device_id": 700,
+      "device_model_str": "HD2_AmpLine6Ventoux",
+      "device_name": "ventoux",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpLine6Voltage": {
       "device_id": 709,
       "device_model_str": "HD2_AmpLine6Voltage",
@@ -841,6 +1673,33 @@
       "device_id": 562,
       "device_model_str": "HD2_AmpMailOrderTwin",
       "device_name": "mailordertwin",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpMandarin80": {
+      "device_id": 560,
+      "device_model_str": "HD2_AmpMandarin80",
+      "device_name": "mandar80",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpMandarinBass200": {
+      "device_id": 733,
+      "device_model_str": "HD2_AmpMandarinBass200",
+      "device_name": "mandarinbass200",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpMandarinRocker": {
+      "device_id": 697,
+      "device_model_str": "HD2_AmpMandarinRocker",
+      "device_name": "mandarinrocker",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -864,10 +1723,73 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpMatchstickJump": {
+      "device_id": 618,
+      "device_model_str": "HD2_AmpMatchstickJump",
+      "device_name": "matchjmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpMoonBrt": {
+      "device_id": 703,
+      "device_model_str": "HD2_AmpMoonBrt",
+      "device_name": "moonbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpMoonJump": {
+      "device_id": 702,
+      "device_model_str": "HD2_AmpMoonJump",
+      "device_name": "moonjmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpMoonNrm": {
+      "device_id": 701,
+      "device_model_str": "HD2_AmpMoonNrm",
+      "device_name": "moonnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpPVPanama": {
       "device_id": 558,
       "device_model_str": "HD2_AmpPVPanama",
       "device_name": "pvpanama",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpPVVitriolClean": {
+      "device_id": 723,
+      "device_model_str": "HD2_AmpPVVitriolClean",
+      "device_name": "pvvitcln",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpPVVitriolCrunch": {
+      "device_id": 708,
+      "device_model_str": "HD2_AmpPVVitriolCrunch",
+      "device_name": "pvvitcrn",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpPVVitriolLead": {
+      "device_id": 707,
+      "device_model_str": "HD2_AmpPVVitriolLead",
+      "device_name": "pvvitled",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -913,6 +1835,15 @@
       "device_id": 554,
       "device_model_str": "HD2_AmpSVBeastBrt",
       "device_name": "ampegsvtbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpSVBeastNrm": {
+      "device_id": 555,
+      "device_model_str": "HD2_AmpSVBeastNrm",
+      "device_name": "ampegsvtnrm",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -972,10 +1903,46 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpTucknGo": {
+      "device_id": 542,
+      "device_model_str": "HD2_AmpTucknGo",
+      "device_name": "ampegb15nf",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpTweedBluesBrt": {
+      "device_id": 538,
+      "device_model_str": "HD2_AmpTweedBluesBrt",
+      "device_name": "twdblbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpTweedBluesNrm": {
+      "device_id": 539,
+      "device_model_str": "HD2_AmpTweedBluesNrm",
+      "device_name": "twdblnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpUSDeluxeNrm": {
       "device_id": 536,
       "device_model_str": "HD2_AmpUSDeluxeNrm",
       "device_name": "usdeluxenrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpUSDeluxeVib": {
+      "device_id": 534,
+      "device_model_str": "HD2_AmpUSDeluxeVib",
+      "device_name": "usdeluxevib",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -999,6 +1966,15 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpUSDripmanNorm": {
+      "device_id": 729,
+      "device_model_str": "HD2_AmpUSDripmanNorm",
+      "device_name": "usdripmannorm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpUSPrincess": {
       "device_id": 691,
       "device_model_str": "HD2_AmpUSPrincess",
@@ -1008,10 +1984,37 @@
       "param_jaccard": 1.0,
       "category": "amp"
     },
+    "HD2_AmpUSSmallTweed": {
+      "device_id": 528,
+      "device_model_str": "HD2_AmpUSSmallTweed",
+      "device_name": "ussmalltweed",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpUSSuperNorm": {
+      "device_id": 737,
+      "device_model_str": "HD2_AmpUSSuperNorm",
+      "device_name": "ussupernorm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
     "HD2_AmpUSSuperVib": {
       "device_id": 739,
       "device_model_str": "HD2_AmpUSSuperVib",
       "device_name": "ussupervib",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "amp"
+    },
+    "HD2_AmpVoltageQueen": {
+      "device_id": 653,
+      "device_model_str": "HD2_AmpVoltageQueen",
+      "device_name": "voltageq",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1053,6 +2056,15 @@
       "param_jaccard": 1.0,
       "category": "cab_ir_interp"
     },
+    "HD2_CabMicIr_1x12CaliEXTWithPan": {
+      "device_id": 448,
+      "device_model_str": "HD2_CabMicIr_1x12CaliEXTWithPan",
+      "device_name": "1x12cale",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
     "HD2_CabMicIr_1x12CaliIVWithPan": {
       "device_id": 458,
       "device_model_str": "HD2_CabMicIr_1x12CaliIVWithPan",
@@ -1075,6 +2087,24 @@
       "device_id": 460,
       "device_model_str": "HD2_CabMicIr_1x12FullertonWithPan",
       "device_name": "1x12full",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
+    "HD2_CabMicIr_1x12GrammaticoWithPan": {
+      "device_id": 430,
+      "device_model_str": "HD2_CabMicIr_1x12GrammaticoWithPan",
+      "device_name": "1x12gram",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
+    "HD2_CabMicIr_1x12OpenCastWithPan": {
+      "device_id": 454,
+      "device_model_str": "HD2_CabMicIr_1x12OpenCastWithPan",
+      "device_name": "1x12opca",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1147,6 +2177,15 @@
       "device_id": 443,
       "device_model_str": "HD2_CabMicIr_2x12JazzRivetWithPan",
       "device_name": "2x12jazz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
+    "HD2_CabMicIr_2x12MailC12QWithPan": {
+      "device_id": 445,
+      "device_model_str": "HD2_CabMicIr_2x12MailC12QWithPan",
+      "device_name": "2x12c12q",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1278,6 +2317,15 @@
       "param_jaccard": 1.0,
       "category": "cab_ir_interp"
     },
+    "HD2_CabMicIr_4x12CartogC90WithPan": {
+      "device_id": 471,
+      "device_model_str": "HD2_CabMicIr_4x12CartogC90WithPan",
+      "device_name": "4x12cartogc90",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
     "HD2_CabMicIr_4x12CartogGuvWithPan": {
       "device_id": 472,
       "device_model_str": "HD2_CabMicIr_4x12CartogGuvWithPan",
@@ -1309,6 +2357,24 @@
       "device_id": 461,
       "device_model_str": "HD2_CabMicIr_4x12Greenback30WithPan",
       "device_name": "4x12gr30",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
+    "HD2_CabMicIr_4x12MOONT75WithPan": {
+      "device_id": 438,
+      "device_model_str": "HD2_CabMicIr_4x12MOONT75WithPan",
+      "device_name": "4x12moon",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
+    "HD2_CabMicIr_4x12MandarinWithPan": {
+      "device_id": 433,
+      "device_model_str": "HD2_CabMicIr_4x12MandarinWithPan",
+      "device_name": "4x12maem",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1359,6 +2425,15 @@
       "param_jaccard": 1.0,
       "category": "cab_ir_interp"
     },
+    "HD2_CabMicIr_6x10CaliPowerWithPan": {
+      "device_id": 463,
+      "device_model_str": "HD2_CabMicIr_6x10CaliPowerWithPan",
+      "device_name": "6x10cali",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "cab_ir_interp"
+    },
     "HD2_CabMicIr_8x10SVTAVWithPan": {
       "device_id": 440,
       "device_model_str": "HD2_CabMicIr_8x10SVTAVWithPan",
@@ -1403,6 +2478,15 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "eq"
+    },
+    "HD2_Chorus4VoiceMono": {
+      "device_id": 408,
+      "device_model_str": "HD2_Chorus4VoiceMono",
+      "device_name": "4voiccho",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
     },
     "HD2_Chorus4VoiceStereo": {
       "device_id": 257,
@@ -1449,6 +2533,24 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_ChorusDimensionWMono": {
+      "device_id": 859,
+      "device_model_str": "HD2_ChorusDimensionWMono",
+      "device_name": "dimensionw",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_ChorusDimensionWStereo": {
+      "device_id": 860,
+      "device_model_str": "HD2_ChorusDimensionWStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_ChorusMono": {
       "device_id": 267,
       "device_model_str": "HD2_ChorusMono",
@@ -1462,6 +2564,15 @@
       "device_id": 335,
       "device_model_str": "HD2_ChorusPlastiChorusMono",
       "device_name": "plastcho",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_ChorusPlastiChorusStereo": {
+      "device_id": 199,
+      "device_model_str": "HD2_ChorusPlastiChorusStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1530,10 +2641,64 @@
       "param_jaccard": 1.0,
       "category": "delay"
     },
+    "HD2_DL4DynamicDelayStereo": {
+      "device_id": 52,
+      "device_model_str": "HD2_DL4DynamicDelayStereo",
+      "device_name": "dynamic",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DL4EchoPlatterStereo": {
+      "device_id": 51,
+      "device_model_str": "HD2_DL4EchoPlatterStereo",
+      "device_name": "echoplatter",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
     "HD2_DL4LowResDelay": {
       "device_id": 50,
       "device_model_str": "HD2_DL4LowResDelay",
       "device_name": "lores",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DL4MultiheadStereo": {
+      "device_id": 49,
+      "device_model_str": "HD2_DL4MultiheadStereo",
+      "device_name": "multhead",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DL4PingPong": {
+      "device_id": 48,
+      "device_model_str": "HD2_DL4PingPong",
+      "device_name": "pingpong",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DL4Reverse": {
+      "device_id": 109,
+      "device_model_str": "HD2_DL4Reverse",
+      "device_name": "reverse",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DL4StereoDelay": {
+      "device_id": 55,
+      "device_model_str": "HD2_DL4StereoDelay",
+      "device_name": "stereo",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1557,6 +2722,15 @@
       "param_jaccard": 1.0,
       "category": "delay"
     },
+    "HD2_DL4TubeEchoStereo": {
+      "device_id": 45,
+      "device_model_str": "HD2_DL4TubeEchoStereo",
+      "device_name": "tubeecho",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
     "HD2_DM4BassOctaver": {
       "device_id": 351,
       "device_model_str": "HD2_DM4BassOctaver",
@@ -1566,10 +2740,64 @@
       "param_jaccard": 1.0,
       "category": "pitch"
     },
+    "HD2_DM4BuzzSaw": {
+      "device_id": 355,
+      "device_model_str": "HD2_DM4BuzzSaw",
+      "device_name": "buzzsaw",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4ClassicDistortion": {
+      "device_id": 356,
+      "device_model_str": "HD2_DM4ClassicDistortion",
+      "device_name": "clasdist",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DM4ColorDrive": {
       "device_id": 357,
       "device_model_str": "HD2_DM4ColorDrive",
       "device_name": "colordrive",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4FacialFuzz": {
+      "device_id": 358,
+      "device_model_str": "HD2_DM4FacialFuzz",
+      "device_name": "facefuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4FuzzPi": {
+      "device_id": 359,
+      "device_model_str": "HD2_DM4FuzzPi",
+      "device_name": "fuzzpi",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4HeavyDistortion": {
+      "device_id": 360,
+      "device_model_str": "HD2_DM4HeavyDistortion",
+      "device_name": "heavydist",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4JetFuzz": {
+      "device_id": 352,
+      "device_model_str": "HD2_DM4JetFuzz",
+      "device_name": "jetfuzz",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1583,6 +2811,78 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "distortion"
+    },
+    "HD2_DM4Line6Distortion": {
+      "device_id": 362,
+      "device_model_str": "HD2_DM4Line6Distortion",
+      "device_name": "l6distortion",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4Line6Drive": {
+      "device_id": 363,
+      "device_model_str": "HD2_DM4Line6Drive",
+      "device_name": "l6drive",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4OctaveFuzz": {
+      "device_id": 353,
+      "device_model_str": "HD2_DM4OctaveFuzz",
+      "device_name": "octavefuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4Overdrive": {
+      "device_id": 364,
+      "device_model_str": "HD2_DM4Overdrive",
+      "device_name": "overdrive",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4Screamer": {
+      "device_id": 354,
+      "device_model_str": "HD2_DM4Screamer",
+      "device_name": "screamer",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4SubOctFuzz": {
+      "device_id": 350,
+      "device_model_str": "HD2_DM4SubOctFuzz",
+      "device_name": "suboctfuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DM4TubeDrive": {
+      "device_id": 365,
+      "device_model_str": "HD2_DM4TubeDrive",
+      "device_name": "tubedrive",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DelayADTMono": {
+      "device_id": 131,
+      "device_model_str": "HD2_DelayADTMono",
+      "device_name": "adt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
     },
     "HD2_DelayADTStereo": {
       "device_id": 95,
@@ -1641,6 +2941,24 @@
     "HD2_DelayCosmosEchoStereo": {
       "device_id": 91,
       "device_model_str": "HD2_DelayCosmosEchoStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayCrissCrossMono": {
+      "device_id": 126,
+      "device_model_str": "HD2_DelayCrissCrossMono",
+      "device_name": "criscros",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayCrissCrossStereo": {
+      "device_id": 90,
+      "device_model_str": "HD2_DelayCrissCrossStereo",
       "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
@@ -1710,6 +3028,33 @@
       "param_jaccard": 1.0,
       "category": "delay"
     },
+    "HD2_DelayHarmonyDelayStereo": {
+      "device_id": 491,
+      "device_model_str": "HD2_DelayHarmonyDelayStereo",
+      "device_name": "harmdly",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayHeliosphereMono": {
+      "device_id": 503,
+      "device_model_str": "HD2_DelayHeliosphereMono",
+      "device_name": "heliosph",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayHeliosphereStereo": {
+      "device_id": 493,
+      "device_model_str": "HD2_DelayHeliosphereStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
     "HD2_DelayModChorusEchoMono": {
       "device_id": 124,
       "device_model_str": "HD2_DelayModChorusEchoMono",
@@ -1722,6 +3067,24 @@
     "HD2_DelayModChorusEchoStereo": {
       "device_id": 88,
       "device_model_str": "HD2_DelayModChorusEchoStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayMultiPassMono": {
+      "device_id": 122,
+      "device_model_str": "HD2_DelayMultiPassMono",
+      "device_name": "multipass",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayMultiPassStereo": {
+      "device_id": 84,
+      "device_model_str": "HD2_DelayMultiPassStereo",
       "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
@@ -1750,6 +3113,24 @@
       "device_id": 83,
       "device_model_str": "HD2_DelayPingPongStereo",
       "device_name": "pingpong",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayPitchMono": {
+      "device_id": 502,
+      "device_model_str": "HD2_DelayPitchMono",
+      "device_name": "pitchecho",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelayPitchStereo": {
+      "device_id": 492,
+      "device_model_str": "HD2_DelayPitchStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1800,6 +3181,51 @@
       "param_jaccard": 1.0,
       "category": "delay"
     },
+    "HD2_DelaySweepEchoStereo": {
+      "device_id": 80,
+      "device_model_str": "HD2_DelaySweepEchoStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelaySwellAdriaticMono": {
+      "device_id": 118,
+      "device_model_str": "HD2_DelaySwellAdriaticMono",
+      "device_name": "adriaswl",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelaySwellAdriaticStereo": {
+      "device_id": 79,
+      "device_model_str": "HD2_DelaySwellAdriaticStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelaySwellVintageDigitalMono": {
+      "device_id": 117,
+      "device_model_str": "HD2_DelaySwellVintageDigitalMono",
+      "device_name": "vintageswell",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "HD2_DelaySwellVintageDigitalStereo": {
+      "device_id": 78,
+      "device_model_str": "HD2_DelaySwellVintageDigitalStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
     "HD2_DelayTransistorTapeMono": {
       "device_id": 116,
       "device_model_str": "HD2_DelayTransistorTapeMono",
@@ -1845,10 +3271,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistAlpacaRougeStereo": {
+      "device_id": 243,
+      "device_model_str": "HD2_DistAlpacaRougeStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistAmpegScramblerODMono": {
       "device_id": 372,
       "device_model_str": "HD2_DistAmpegScramblerODMono",
       "device_name": "ampegscrambler",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistAmpegScramblerODStereo": {
+      "device_id": 509,
+      "device_model_str": "HD2_DistAmpegScramblerODStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1863,10 +3307,46 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistArbitratorFuzzStereo": {
+      "device_id": 173,
+      "device_model_str": "HD2_DistArbitratorFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistBallisticFuzzMono": {
       "device_id": 387,
       "device_model_str": "HD2_DistBallisticFuzzMono",
       "device_name": "ballfuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistBallisticFuzzStereo": {
+      "device_id": 514,
+      "device_model_str": "HD2_DistBallisticFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistBitcrusherMono": {
+      "device_id": 321,
+      "device_model_str": "HD2_DistBitcrusherMono",
+      "device_name": "bitcrush",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistBitcrusherStereo": {
+      "device_id": 185,
+      "device_model_str": "HD2_DistBitcrusherStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1881,11 +3361,38 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistClawthornDriveStereo": {
+      "device_id": 508,
+      "device_model_str": "HD2_DistClawthornDriveStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistCompulsiveDrive": {
       "device_id": 305,
       "device_model_str": "HD2_DistCompulsiveDriveMono",
       "device_name": "compdrv",
       "method": "name_param",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistCompulsiveDriveStereo": {
+      "device_id": 170,
+      "device_model_str": "HD2_DistCompulsiveDriveStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistDarkDoveFuzzMono": {
+      "device_id": 410,
+      "device_model_str": "HD2_DistDarkDoveFuzzMono",
+      "device_name": "darkdove",
+      "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "distortion"
@@ -1908,10 +3415,46 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistDeezOneModStereo": {
+      "device_id": 236,
+      "device_model_str": "HD2_DistDeezOneModStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistDeezOneVintageMono": {
+      "device_id": 369,
+      "device_model_str": "HD2_DistDeezOneVintageMono",
+      "device_name": "deez1vin",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistDeezOneVintageStereo": {
+      "device_id": 235,
+      "device_model_str": "HD2_DistDeezOneVintageStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistDerangedMasterMono": {
       "device_id": 368,
       "device_model_str": "HD2_DistDerangedMasterMono",
       "device_name": "derangedmaster",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistDerangedMasterStereo": {
+      "device_id": 234,
+      "device_model_str": "HD2_DistDerangedMasterStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1926,10 +3469,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistDhyanaDriveStereo": {
+      "device_id": 237,
+      "device_model_str": "HD2_DistDhyanaDriveStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistHedgehogD9Mono": {
       "device_id": 287,
       "device_model_str": "HD2_DistHedgehogD9Mono",
       "device_name": "hedgehog",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistHedgehogD9Stereo": {
+      "device_id": 149,
+      "device_model_str": "HD2_DistHedgehogD9Stereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1944,10 +3505,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistHeirApparentStereo": {
+      "device_id": 242,
+      "device_model_str": "HD2_DistHeirApparentStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistHorizonDriveMono": {
       "device_id": 386,
       "device_model_str": "HD2_DistHorizonDriveMono",
       "device_name": "horizondrive",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistHorizonDriveStereo": {
+      "device_id": 513,
+      "device_model_str": "HD2_DistHorizonDriveStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1962,10 +3541,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistIndustrialFuzzStereo": {
+      "device_id": 148,
+      "device_model_str": "HD2_DistIndustrialFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistKWBMono": {
       "device_id": 323,
       "device_model_str": "HD2_DistKWBMono",
       "device_name": "kwb",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistKWBStereo": {
+      "device_id": 187,
+      "device_model_str": "HD2_DistKWBStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -1980,10 +3577,64 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistKinkyBoostStereo": {
+      "device_id": 202,
+      "device_model_str": "HD2_DistKinkyBoostStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistLegendaryDriveMono": {
+      "device_id": 382,
+      "device_model_str": "HD2_DistLegendaryDriveMono",
+      "device_name": "legendarydrive",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistLegendaryDriveStereo": {
+      "device_id": 512,
+      "device_model_str": "HD2_DistLegendaryDriveStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistMegaphoneMono": {
       "device_id": 266,
       "device_model_str": "HD2_DistMegaphoneMono",
       "device_name": "megaphon",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistMegaphoneStereo": {
+      "device_id": 138,
+      "device_model_str": "HD2_DistMegaphoneStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistMercatorMono": {
+      "device_id": 868,
+      "device_model_str": "HD2_DistMercatorMono",
+      "device_name": "mercatordist",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistMercatorStereo": {
+      "device_id": 869,
+      "device_model_str": "HD2_DistMercatorStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2016,10 +3667,64 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistObsidian7000Stereo": {
+      "device_id": 198,
+      "device_model_str": "HD2_DistObsidian7000Stereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistPillarsMono": {
+      "device_id": 406,
+      "device_model_str": "HD2_DistPillarsMono",
+      "device_name": "pillars",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistPillarsStereo": {
+      "device_id": 255,
+      "device_model_str": "HD2_DistPillarsStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistPocketFuzzMono": {
       "device_id": 388,
       "device_model_str": "HD2_DistPocketFuzzMono",
       "device_name": "pocketfuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistPocketFuzzStereo": {
+      "device_id": 249,
+      "device_model_str": "HD2_DistPocketFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistPortaBox424Mono": {
+      "device_id": 870,
+      "device_model_str": "HD2_DistPortaBox424Mono",
+      "device_name": "portabox424",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistPortaBox424Stereo": {
+      "device_id": 871,
+      "device_model_str": "HD2_DistPortaBox424Stereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2034,10 +3739,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistPrizeDriveStereo": {
+      "device_id": 517,
+      "device_model_str": "HD2_DistPrizeDriveStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistRamsHeadMono": {
       "device_id": 383,
       "device_model_str": "HD2_DistRamsHeadMono",
       "device_name": "bighorn",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistRamsHeadStereo": {
+      "device_id": 245,
+      "device_model_str": "HD2_DistRamsHeadStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2052,10 +3775,64 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistRatatouilleDistStereo": {
+      "device_id": 251,
+      "device_model_str": "HD2_DistRatatouilleDistStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistRegalBassDIMono": {
       "device_id": 412,
       "device_model_str": "HD2_DistRegalBassDIMono",
       "device_name": "regalbassdi",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistRegalBassDIStereo": {
+      "device_id": 518,
+      "device_model_str": "HD2_DistRegalBassDIStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistRockBoxBoostMono": {
+      "device_id": 855,
+      "device_model_str": "HD2_DistRockBoxBoostMono",
+      "device_name": "rckbxbst",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistRockBoxBoostStereo": {
+      "device_id": 856,
+      "device_model_str": "HD2_DistRockBoxBoostStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistRockBoxMono": {
+      "device_id": 857,
+      "device_model_str": "HD2_DistRockBoxMono",
+      "device_name": "rckbxdst",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistRockBoxStereo": {
+      "device_id": 858,
+      "device_model_str": "HD2_DistRockBoxStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2079,10 +3856,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistStuporODStereo": {
+      "device_id": 197,
+      "device_model_str": "HD2_DistStuporODStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistSwedishChainsawMono": {
       "device_id": 385,
       "device_model_str": "HD2_DistSwedishChainsawMono",
       "device_name": "swdchain",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistSwedishChainsawStereo": {
+      "device_id": 248,
+      "device_model_str": "HD2_DistSwedishChainsawStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2097,10 +3892,46 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistTeemahStereo": {
+      "device_id": 191,
+      "device_model_str": "HD2_DistTeemahStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistThrifterFuzzMono": {
+      "device_id": 338,
+      "device_model_str": "HD2_DistThrifterFuzzMono",
+      "device_name": "thrifterfuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistThrifterFuzzStereo": {
+      "device_id": 200,
+      "device_model_str": "HD2_DistThrifterFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistToneSovereignMono": {
       "device_id": 377,
       "device_model_str": "HD2_DistToneSovereignMono",
       "device_name": "tonesovereign",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistToneSovereignStereo": {
+      "device_id": 510,
+      "device_model_str": "HD2_DistToneSovereignStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2115,10 +3946,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistTopSecretODStereo": {
+      "device_id": 171,
+      "device_model_str": "HD2_DistTopSecretODStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistTriangleFuzzMono": {
       "device_id": 300,
       "device_model_str": "HD2_DistTriangleFuzzMono",
       "device_name": "trianglefuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistTriangleFuzzStereo": {
+      "device_id": 169,
+      "device_model_str": "HD2_DistTriangleFuzzStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2133,10 +3982,28 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistTycoctaviaFuzzStereo": {
+      "device_id": 174,
+      "device_model_str": "HD2_DistTycoctaviaFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistValveDriverMono": {
       "device_id": 286,
       "device_model_str": "HD2_DistValveDriverMono",
       "device_name": "valvedriver",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistValveDriverStereo": {
+      "device_id": 506,
+      "device_model_str": "HD2_DistValveDriverStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2151,6 +4018,33 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistVerminDistStereo": {
+      "device_id": 172,
+      "device_model_str": "HD2_DistVerminDistStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistVitalBoostMono": {
+      "device_id": 405,
+      "device_model_str": "HD2_DistVitalBoostMono",
+      "device_name": "vitalboost",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistVitalBoostStereo": {
+      "device_id": 254,
+      "device_model_str": "HD2_DistVitalBoostStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistVitalDistMono": {
       "device_id": 404,
       "device_model_str": "HD2_DistVitalDistMono",
@@ -2160,10 +4054,64 @@
       "param_jaccard": 1.0,
       "category": "distortion"
     },
+    "HD2_DistVitalDistStereo": {
+      "device_id": 515,
+      "device_model_str": "HD2_DistVitalDistStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistWringerFuzzMono": {
+      "device_id": 330,
+      "device_model_str": "HD2_DistWringerFuzzMono",
+      "device_name": "wringerfuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistWringerFuzzStereo": {
+      "device_id": 195,
+      "device_model_str": "HD2_DistWringerFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistXenomorphFuzzMono": {
+      "device_id": 379,
+      "device_model_str": "HD2_DistXenomorphFuzzMono",
+      "device_name": "xenofuzz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistXenomorphFuzzStereo": {
+      "device_id": 511,
+      "device_model_str": "HD2_DistXenomorphFuzzStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
     "HD2_DistZeroAmpBassDIMono": {
       "device_id": 376,
       "device_model_str": "HD2_DistZeroAmpBassDIMono",
       "device_name": "zeroampbassdi",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "HD2_DistZeroAmpBassDIStereo": {
+      "device_id": 241,
+      "device_model_str": "HD2_DistZeroAmpBassDIStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2214,6 +4162,24 @@
       "param_jaccard": 1.0,
       "category": "eq"
     },
+    "HD2_FM4AttackSynth": {
+      "device_id": 349,
+      "device_model_str": "HD2_FM4AttackSynth",
+      "device_name": "attacksy",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "HD2_FM4CometTrails": {
+      "device_id": 220,
+      "device_model_str": "HD2_FM4CometTrails",
+      "device_name": "comettr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
     "HD2_FM4Growler": {
       "device_id": 348,
       "device_model_str": "HD2_FM4Growler",
@@ -2232,6 +4198,51 @@
       "param_jaccard": 1.0,
       "category": "filter"
     },
+    "HD2_FM4OctiSynth": {
+      "device_id": 347,
+      "device_model_str": "HD2_FM4OctiSynth",
+      "device_name": "octisynt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "HD2_FM4QFilter": {
+      "device_id": 218,
+      "device_model_str": "HD2_FM4QFilter",
+      "device_name": "qfilter",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FM4Seeker": {
+      "device_id": 217,
+      "device_model_str": "HD2_FM4Seeker",
+      "device_name": "seeker",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FM4SlowFilter": {
+      "device_id": 216,
+      "device_model_str": "HD2_FM4SlowFilter",
+      "device_name": "slowfilter",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FM4SpinCycle": {
+      "device_id": 215,
+      "device_model_str": "HD2_FM4SpinCycle",
+      "device_name": "spincycl",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
     "HD2_FM4SynthOMatic": {
       "device_id": 346,
       "device_model_str": "HD2_FM4SynthOMatic",
@@ -2241,10 +4252,73 @@
       "param_jaccard": 1.0,
       "category": "synth"
     },
+    "HD2_FM4SynthString": {
+      "device_id": 345,
+      "device_model_str": "HD2_FM4SynthString",
+      "device_name": "synthstring",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "HD2_FM4Throbber": {
+      "device_id": 214,
+      "device_model_str": "HD2_FM4Throbber",
+      "device_name": "throbber",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FM4TronDown": {
+      "device_id": 213,
+      "device_model_str": "HD2_FM4TronDown",
+      "device_name": "trondown",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FM4TronUp": {
+      "device_id": 212,
+      "device_model_str": "HD2_FM4TronUp",
+      "device_name": "tronup",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FM4VTron": {
+      "device_id": 343,
+      "device_model_str": "HD2_FM4VTron",
+      "device_name": "vtron",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
     "HD2_FM4VoiceBox": {
       "device_id": 344,
       "device_model_str": "HD2_FM4VoiceBox",
       "device_name": "voicebox",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FilterAshevillePattrnMono": {
+      "device_id": 375,
+      "device_model_str": "HD2_FilterAshevillePattrnMono",
+      "device_name": "asheptrn",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HD2_FilterAshevillePattrnStereo": {
+      "device_id": 240,
+      "device_model_str": "HD2_FilterAshevillePattrnStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2268,6 +4342,24 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_FlangerDynamixFlangerMono": {
+      "device_id": 325,
+      "device_model_str": "HD2_FlangerDynamixFlangerMono",
+      "device_name": "dynamixflanger",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_FlangerDynamixFlangerStereo": {
+      "device_id": 188,
+      "device_model_str": "HD2_FlangerDynamixFlangerStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_FlangerGrayFlangerMono": {
       "device_id": 296,
       "device_model_str": "HD2_FlangerGrayFlangerMono",
@@ -2276,6 +4368,60 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "modulation"
+    },
+    "HD2_FlangerGrayFlangerStereo": {
+      "device_id": 164,
+      "device_model_str": "HD2_FlangerGrayFlangerStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_FlangerHarmonicFlangerMono": {
+      "device_id": 297,
+      "device_model_str": "HD2_FlangerHarmonicFlangerMono",
+      "device_name": "grayflgr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_FlangerHarmonicFlangerStereo": {
+      "device_id": 165,
+      "device_model_str": "HD2_FlangerHarmonicFlangerStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_M1380AFlanger": {
+      "device_id": 230,
+      "device_model_str": "HD2_M1380AFlanger",
+      "device_name": "80aflanger",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_M13ACFlanger": {
+      "device_id": 231,
+      "device_model_str": "HD2_M13ACFlanger",
+      "device_name": "acflanger",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_M13TwoVoiceHarmony": {
+      "device_id": 342,
+      "device_model_str": "HD2_M13TwoVoiceHarmony",
+      "device_name": "smartharmony",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "pitch"
     },
     "HD2_MM4AnalogChorus": {
       "device_id": 233,
@@ -2304,10 +4450,82 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_MM4BiasTremolo": {
+      "device_id": 221,
+      "device_model_str": "HD2_MM4BiasTremolo",
+      "device_name": "biastrem",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_MM4Dimension": {
       "device_id": 229,
       "device_model_str": "HD2_MM4Dimension",
       "device_name": "dimension",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4DualPhaser": {
+      "device_id": 225,
+      "device_model_str": "HD2_MM4DualPhaser",
+      "device_name": "dualphas",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4FrequencyShifter": {
+      "device_id": 211,
+      "device_model_str": "HD2_MM4FrequencyShifter",
+      "device_name": "freqshft",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4JetFlanger": {
+      "device_id": 232,
+      "device_model_str": "HD2_MM4JetFlanger",
+      "device_name": "jetflanger",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4OptoTremolo": {
+      "device_id": 208,
+      "device_model_str": "HD2_MM4OptoTremolo",
+      "device_name": "optotrem",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4PannedPhaser": {
+      "device_id": 228,
+      "device_model_str": "HD2_MM4PannedPhaser",
+      "device_name": "pannedphaser",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4Panner": {
+      "device_id": 207,
+      "device_model_str": "HD2_MM4Panner",
+      "device_name": "panner",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4PatternTrem": {
+      "device_id": 209,
+      "device_model_str": "HD2_MM4PatternTrem",
+      "device_name": "patterntremolo",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2331,10 +4549,91 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_MM4RingModulator": {
+      "device_id": 206,
+      "device_model_str": "HD2_MM4RingModulator",
+      "device_name": "ringmod",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4RotaryDrum": {
+      "device_id": 226,
+      "device_model_str": "HD2_MM4RotaryDrum",
+      "device_name": "rotarydrum",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4RotaryDrumHorn": {
+      "device_id": 227,
+      "device_model_str": "HD2_MM4RotaryDrumHorn",
+      "device_name": "rotarydrumhorn",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4ScriptPhase": {
+      "device_id": 205,
+      "device_model_str": "HD2_MM4ScriptPhase",
+      "device_name": "scriptphase",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4TriChorus": {
+      "device_id": 222,
+      "device_model_str": "HD2_MM4TriChorus",
+      "device_name": "trichor",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_MM4UVibe": {
+      "device_id": 366,
+      "device_model_str": "HD2_MM4UVibe",
+      "device_name": "uvibe",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_PhaserDeluxePhaserMono": {
       "device_id": 326,
       "device_model_str": "HD2_PhaserDeluxePhaserMono",
       "device_name": "deluxephaser",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_PhaserDeluxePhaserStereo": {
+      "device_id": 189,
+      "device_model_str": "HD2_PhaserDeluxePhaserStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_PhaserPebblePhaserMono": {
+      "device_id": 381,
+      "device_model_str": "HD2_PhaserPebblePhaserMono",
+      "device_name": "pbblphas",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_PhaserPebblePhaserStereo": {
+      "device_id": 244,
+      "device_model_str": "HD2_PhaserPebblePhaserStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2367,6 +4666,15 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_PhaserUbiquitousVibeStereo": {
+      "device_id": 152,
+      "device_model_str": "HD2_PhaserUbiquitousVibeStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_PitchDualPitchMono": {
       "device_id": 324,
       "device_model_str": "HD2_PitchDualPitchMono",
@@ -2389,6 +4697,15 @@
       "device_id": 292,
       "device_model_str": "HD2_PitchPitchWhamMono",
       "device_name": "pitchwham",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "pitch"
+    },
+    "HD2_PitchPitchWhamStereo": {
+      "device_id": 156,
+      "device_model_str": "HD2_PitchPitchWhamStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2430,10 +4747,973 @@
       "param_jaccard": 1.0,
       "category": "pitch"
     },
+    "HD2_PreampA30FawnBrt": {
+      "device_id": 614,
+      "device_model_str": "HD2_PreampA30FawnBrt",
+      "device_name": "a30fawnbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampA30FawnNrm": {
+      "device_id": 615,
+      "device_model_str": "HD2_PreampA30FawnNrm",
+      "device_name": "a30fawnnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampANGLMeteor": {
+      "device_id": 611,
+      "device_model_str": "HD2_PreampANGLMeteor",
+      "device_name": "anglmeteor",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampAgua51": {
+      "device_id": 664,
+      "device_model_str": "HD2_PreampAgua51",
+      "device_name": "agua51",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
     "HD2_PreampAguaSledge": {
       "device_id": 727,
       "device_model_str": "HD2_PreampAguaSledge",
       "device_name": "aguasled",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampArchetypeClean": {
+      "device_id": 638,
+      "device_model_str": "HD2_PreampArchetypeClean",
+      "device_name": "archcln",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampArchetypeLead": {
+      "device_id": 636,
+      "device_model_str": "HD2_PreampArchetypeLead",
+      "device_name": "archetypelead",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBrit2203": {
+      "device_id": 736,
+      "device_model_str": "HD2_PreampBrit2203",
+      "device_name": "brit2203",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBrit2204": {
+      "device_id": 609,
+      "device_model_str": "HD2_PreampBrit2204",
+      "device_name": "brit2204",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritJ45Brt": {
+      "device_id": 606,
+      "device_model_str": "HD2_PreampBritJ45Brt",
+      "device_name": "britj45brt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritJ45Nrm": {
+      "device_id": 607,
+      "device_model_str": "HD2_PreampBritJ45Nrm",
+      "device_name": "britj45nrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritP75Brt": {
+      "device_id": 602,
+      "device_model_str": "HD2_PreampBritP75Brt",
+      "device_name": "britp75brt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritP75Nrm": {
+      "device_id": 603,
+      "device_model_str": "HD2_PreampBritP75Nrm",
+      "device_name": "britp75nrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritPlexiBrt": {
+      "device_id": 597,
+      "device_model_str": "HD2_PreampBritPlexiBrt",
+      "device_name": "britplexibrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritPlexiJump": {
+      "device_id": 598,
+      "device_model_str": "HD2_PreampBritPlexiJump",
+      "device_name": "britplexijump",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritPlexiNrm": {
+      "device_id": 599,
+      "device_model_str": "HD2_PreampBritPlexiNrm",
+      "device_name": "britplexinrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritTremBrt": {
+      "device_id": 660,
+      "device_model_str": "HD2_PreampBritTremBrt",
+      "device_name": "brittrembrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritTremJump": {
+      "device_id": 661,
+      "device_model_str": "HD2_PreampBritTremJump",
+      "device_name": "brittremjump",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBritTremNrm": {
+      "device_id": 662,
+      "device_model_str": "HD2_PreampBritTremNrm",
+      "device_name": "brittremnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBusyOneCh1": {
+      "device_id": 650,
+      "device_model_str": "HD2_PreampBusyOneCh1",
+      "device_name": "busy1ch1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBusyOneCh2": {
+      "device_id": 648,
+      "device_model_str": "HD2_PreampBusyOneCh2",
+      "device_name": "busy1ch2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampBusyOneJump": {
+      "device_id": 646,
+      "device_model_str": "HD2_PreampBusyOneJump",
+      "device_name": "busy1jmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCali400Ch1": {
+      "device_id": 592,
+      "device_model_str": "HD2_PreampCali400Ch1",
+      "device_name": "cal400c1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCali400Ch2": {
+      "device_id": 593,
+      "device_model_str": "HD2_PreampCali400Ch2",
+      "device_name": "cal400c2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCaliBass": {
+      "device_id": 589,
+      "device_model_str": "HD2_PreampCaliBass",
+      "device_name": "calibass",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCaliIVLead": {
+      "device_id": 627,
+      "device_model_str": "HD2_PreampCaliIVLead",
+      "device_name": "cali4ld",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCaliIVR1": {
+      "device_id": 624,
+      "device_model_str": "HD2_PreampCaliIVR1",
+      "device_name": "cali4r1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCaliIVR2": {
+      "device_id": 625,
+      "device_model_str": "HD2_PreampCaliIVR2",
+      "device_name": "cali4r2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCaliRectifire": {
+      "device_id": 587,
+      "device_model_str": "HD2_PreampCaliRectifire",
+      "device_name": "calirect",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCaliTexasCh1": {
+      "device_id": 672,
+      "device_model_str": "HD2_PreampCaliTexasCh1",
+      "device_name": "calitexasch1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCaliTexasCh2": {
+      "device_id": 668,
+      "device_model_str": "HD2_PreampCaliTexasCh2",
+      "device_name": "calitexasch2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampCartographer": {
+      "device_id": 656,
+      "device_model_str": "HD2_PreampCartographer",
+      "device_name": "cartogra",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampDasBenzinLead": {
+      "device_id": 694,
+      "device_model_str": "HD2_PreampDasBenzinLead",
+      "device_name": "benzlead",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampDasBenzinMega": {
+      "device_id": 696,
+      "device_model_str": "HD2_PreampDasBenzinMega",
+      "device_name": "benzmega",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampDelSol300": {
+      "device_id": 640,
+      "device_model_str": "HD2_PreampDelSol300",
+      "device_name": "delsol",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampDerailedIngrid": {
+      "device_id": 652,
+      "device_model_str": "HD2_PreampDerailedIngrid",
+      "device_name": "derailedingrid",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampDividedDuo": {
+      "device_id": 585,
+      "device_model_str": "HD2_PreampDividedDuo",
+      "device_name": "divdduo",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampEVPanamaBlue": {
+      "device_id": 747,
+      "device_model_str": "HD2_PreampEVPanamaBlue",
+      "device_name": "evpanamablue",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampEVPanamaRed": {
+      "device_id": 748,
+      "device_model_str": "HD2_PreampEVPanamaRed",
+      "device_name": "evpanamared",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampEssexA15": {
+      "device_id": 583,
+      "device_model_str": "HD2_PreampEssexA15",
+      "device_name": "essexa15",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampEssexA30": {
+      "device_id": 581,
+      "device_model_str": "HD2_PreampEssexA30",
+      "device_name": "essexa30",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampFullertonBrt": {
+      "device_id": 685,
+      "device_model_str": "HD2_PreampFullertonBrt",
+      "device_name": "fullerbr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampFullertonJump": {
+      "device_id": 686,
+      "device_model_str": "HD2_PreampFullertonJump",
+      "device_name": "fullerjp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampFullertonNrm": {
+      "device_id": 687,
+      "device_model_str": "HD2_PreampFullertonNrm",
+      "device_name": "fullernm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGCougar800": {
+      "device_id": 579,
+      "device_model_str": "HD2_PreampGCougar800",
+      "device_name": "cougr800",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGSG100": {
+      "device_id": 732,
+      "device_model_str": "HD2_PreampGSG100",
+      "device_name": "grammaticogsg",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGermanMahadeva": {
+      "device_id": 577,
+      "device_model_str": "HD2_PreampGermanMahadeva",
+      "device_name": "germanmahadeva",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGermanUbersonic": {
+      "device_id": 575,
+      "device_model_str": "HD2_PreampGermanUbersonic",
+      "device_name": "germanubersonic",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGermanXtraBlue": {
+      "device_id": 744,
+      "device_model_str": "HD2_PreampGermanXtraBlue",
+      "device_name": "germanxtrablue",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGermanXtraRed": {
+      "device_id": 743,
+      "device_model_str": "HD2_PreampGermanXtraRed",
+      "device_name": "germanxtrared",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGrammaticoBrt": {
+      "device_id": 679,
+      "device_model_str": "HD2_PreampGrammaticoBrt",
+      "device_name": "grammaticolgbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGrammaticoJump": {
+      "device_id": 680,
+      "device_model_str": "HD2_PreampGrammaticoJump",
+      "device_name": "grammaticolgjmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampGrammaticoNrm": {
+      "device_id": 681,
+      "device_model_str": "HD2_PreampGrammaticoNrm",
+      "device_name": "grammaticolgnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampInterstateZed": {
+      "device_id": 573,
+      "device_model_str": "HD2_PreampInterstateZed",
+      "device_name": "interstatezed",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampJazzRivet120": {
+      "device_id": 571,
+      "device_model_str": "HD2_PreampJazzRivet120",
+      "device_name": "jazz120",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine62204ModV2": {
+      "device_id": 632,
+      "device_model_str": "HD2_PreampLine62204ModV2",
+      "device_name": "2204mod",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Aristocrat": {
+      "device_id": 717,
+      "device_model_str": "HD2_PreampLine6Aristocrat",
+      "device_name": "aristocr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Badonk": {
+      "device_id": 644,
+      "device_model_str": "HD2_PreampLine6Badonk",
+      "device_name": "badonk",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Carillon": {
+      "device_id": 718,
+      "device_model_str": "HD2_PreampLine6Carillon",
+      "device_name": "carillon",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Clarity": {
+      "device_id": 719,
+      "device_model_str": "HD2_PreampLine6Clarity",
+      "device_name": "clarity",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Doom": {
+      "device_id": 569,
+      "device_model_str": "HD2_PreampLine6Doom",
+      "device_name": "doom",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Elektrik": {
+      "device_id": 567,
+      "device_model_str": "HD2_PreampLine6Elektrik",
+      "device_name": "elektrik",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Elmsley": {
+      "device_id": 724,
+      "device_model_str": "HD2_PreampLine6Elmsley",
+      "device_name": "elmsley",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Epic": {
+      "device_id": 565,
+      "device_model_str": "HD2_PreampLine6Epic",
+      "device_name": "epic",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Fatality": {
+      "device_id": 631,
+      "device_model_str": "HD2_PreampLine6Fatality",
+      "device_name": "fatality",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Kinetic": {
+      "device_id": 716,
+      "device_model_str": "HD2_PreampLine6Kinetic",
+      "device_name": "kinetic",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Litigator": {
+      "device_id": 634,
+      "device_model_str": "HD2_PreampLine6Litigator",
+      "device_name": "litigator",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Oblivion": {
+      "device_id": 715,
+      "device_model_str": "HD2_PreampLine6Oblivion",
+      "device_name": "oblivion",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Ventoux": {
+      "device_id": 699,
+      "device_model_str": "HD2_PreampLine6Ventoux",
+      "device_name": "ventoux",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampLine6Voltage": {
+      "device_id": 720,
+      "device_model_str": "HD2_PreampLine6Voltage",
+      "device_name": "voltage",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMailOrderTwin": {
+      "device_id": 563,
+      "device_model_str": "HD2_PreampMailOrderTwin",
+      "device_name": "mailordertwin",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMandarin80": {
+      "device_id": 561,
+      "device_model_str": "HD2_PreampMandarin80",
+      "device_name": "mandar80",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMandarinBass200": {
+      "device_id": 734,
+      "device_model_str": "HD2_PreampMandarinBass200",
+      "device_name": "mandarinbass200",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMandarinRocker": {
+      "device_id": 698,
+      "device_model_str": "HD2_PreampMandarinRocker",
+      "device_name": "mandarinrocker",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMatchstickCh1": {
+      "device_id": 619,
+      "device_model_str": "HD2_PreampMatchstickCh1",
+      "device_name": "matchch1",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMatchstickCh2": {
+      "device_id": 620,
+      "device_model_str": "HD2_PreampMatchstickCh2",
+      "device_name": "matchch2",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMatchstickJump": {
+      "device_id": 621,
+      "device_model_str": "HD2_PreampMatchstickJump",
+      "device_name": "matchjmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMoonBrt": {
+      "device_id": 706,
+      "device_model_str": "HD2_PreampMoonBrt",
+      "device_name": "moonbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMoonJump": {
+      "device_id": 705,
+      "device_model_str": "HD2_PreampMoonJump",
+      "device_name": "moonjmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampMoonNrm": {
+      "device_id": 704,
+      "device_model_str": "HD2_PreampMoonNrm",
+      "device_name": "moonnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampPVPanama": {
+      "device_id": 559,
+      "device_model_str": "HD2_PreampPVPanama",
+      "device_name": "pvpanama",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampPVVitriolClean": {
+      "device_id": 728,
+      "device_model_str": "HD2_PreampPVVitriolClean",
+      "device_name": "pvvitcln",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampPVVitriolCrunch": {
+      "device_id": 722,
+      "device_model_str": "HD2_PreampPVVitriolCrunch",
+      "device_name": "pvvitcrn",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampPVVitriolLead": {
+      "device_id": 721,
+      "device_model_str": "HD2_PreampPVVitriolLead",
+      "device_name": "pvvitled",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampPlacaterClean": {
+      "device_id": 670,
+      "device_model_str": "HD2_PreampPlacaterClean",
+      "device_name": "placacln",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampPlacaterDirty": {
+      "device_id": 666,
+      "device_model_str": "HD2_PreampPlacaterDirty",
+      "device_name": "placadrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampRevvGenPurple": {
+      "device_id": 690,
+      "device_model_str": "HD2_PreampRevvGenPurple",
+      "device_name": "revvgenpurple",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampRevvGenRed": {
+      "device_id": 688,
+      "device_model_str": "HD2_PreampRevvGenRed",
+      "device_name": "revvgenred",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampSVBeastBrt": {
+      "device_id": 556,
+      "device_model_str": "HD2_PreampSVBeastBrt",
+      "device_name": "ampegsvtbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampSVBeastNrm": {
+      "device_id": 557,
+      "device_model_str": "HD2_PreampSVBeastNrm",
+      "device_name": "ampegsvtnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampSVT4Pro": {
+      "device_id": 674,
+      "device_model_str": "HD2_PreampSVT4Pro",
+      "device_name": "ampegsvt4pro",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampSoloLeadClean": {
+      "device_id": 552,
+      "device_model_str": "HD2_PreampSoloLeadClean",
+      "device_name": "sololdcl",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampSoloLeadCrunch": {
+      "device_id": 553,
+      "device_model_str": "HD2_PreampSoloLeadCrunch",
+      "device_name": "sololdcr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampSoloLeadOD": {
+      "device_id": 549,
+      "device_model_str": "HD2_PreampSoloLeadOD",
+      "device_name": "sololdod",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampSoupPro": {
+      "device_id": 547,
+      "device_model_str": "HD2_PreampSoupPro",
+      "device_name": "souppro",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampStoneAge185": {
+      "device_id": 545,
+      "device_model_str": "HD2_PreampStoneAge185",
+      "device_name": "stoneage",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampTucknGo": {
+      "device_id": 543,
+      "device_model_str": "HD2_PreampTucknGo",
+      "device_name": "ampegb15nf",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampTweedBluesBrt": {
+      "device_id": 540,
+      "device_model_str": "HD2_PreampTweedBluesBrt",
+      "device_name": "twdblbrt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampTweedBluesNrm": {
+      "device_id": 541,
+      "device_model_str": "HD2_PreampTweedBluesNrm",
+      "device_name": "twdblnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSDeluxeNrm": {
+      "device_id": 537,
+      "device_model_str": "HD2_PreampUSDeluxeNrm",
+      "device_name": "usdeluxenrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSDeluxeVib": {
+      "device_id": 535,
+      "device_model_str": "HD2_PreampUSDeluxeVib",
+      "device_name": "usdeluxevib",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSDoubleNrm": {
+      "device_id": 533,
+      "device_model_str": "HD2_PreampUSDoubleNrm",
+      "device_name": "usdblnrm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSDoubleVib": {
+      "device_id": 531,
+      "device_model_str": "HD2_PreampUSDoubleVib",
+      "device_name": "usdblvib",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSDripmanNorm": {
+      "device_id": 730,
+      "device_model_str": "HD2_PreampUSDripmanNorm",
+      "device_name": "usdripmannorm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSPrincess": {
+      "device_id": 692,
+      "device_model_str": "HD2_PreampUSPrincess",
+      "device_name": "usprince",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSSmallTweed": {
+      "device_id": 529,
+      "device_model_str": "HD2_PreampUSSmallTweed",
+      "device_name": "ussmalltweed",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSSuperNorm": {
+      "device_id": 738,
+      "device_model_str": "HD2_PreampUSSuperNorm",
+      "device_name": "ussupernorm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampUSSuperVib": {
+      "device_id": 740,
+      "device_model_str": "HD2_PreampUSSuperVib",
+      "device_name": "ussupervib",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2452,6 +5732,15 @@
       "device_id": 654,
       "device_model_str": "HD2_PreampVoltageQueen",
       "device_name": "voltageq",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "preamp"
+    },
+    "HD2_PreampWhoWatt100": {
+      "device_id": 527,
+      "device_model_str": "HD2_PreampWhoWatt100",
+      "device_name": "whowatt100",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2520,6 +5809,15 @@
       "param_jaccard": 1.0,
       "category": "reverb"
     },
+    "HD2_ReverbDoubleTankMono": {
+      "device_id": 102,
+      "device_model_str": "HD2_ReverbDoubleTankMono",
+      "device_name": "dbltank",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
     "HD2_ReverbDoubleTankStereo": {
       "device_id": 75,
       "device_model_str": "HD2_ReverbDoubleTankStereo",
@@ -2529,10 +5827,46 @@
       "param_jaccard": 1.0,
       "category": "reverb"
     },
+    "HD2_ReverbDuckingStereo": {
+      "device_id": 69,
+      "device_model_str": "HD2_ReverbDuckingStereo",
+      "device_name": "ducking",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
+    "HD2_ReverbEchoStereo": {
+      "device_id": 67,
+      "device_model_str": "HD2_ReverbEchoStereo",
+      "device_name": "echo",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
+    "HD2_ReverbGanymedeMono": {
+      "device_id": 101,
+      "device_model_str": "HD2_ReverbGanymedeMono",
+      "device_name": "ganymede",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
     "HD2_ReverbGanymedeStereo": {
       "device_id": 74,
       "device_model_str": "HD2_ReverbGanymedeStereo",
       "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
+    "HD2_ReverbGlitzMono": {
+      "device_id": 100,
+      "device_model_str": "HD2_ReverbGlitzMono",
+      "device_name": "glitz",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2574,6 +5908,24 @@
       "param_jaccard": 1.0,
       "category": "reverb"
     },
+    "HD2_ReverbNonLinearMono": {
+      "device_id": 496,
+      "device_model_str": "HD2_ReverbNonLinearMono",
+      "device_name": "nonlinear",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
+    "HD2_ReverbNonLinearStereo": {
+      "device_id": 489,
+      "device_model_str": "HD2_ReverbNonLinearStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
     "HD2_ReverbOctoStereo": {
       "device_id": 72,
       "device_model_str": "HD2_ReverbOctoStereo",
@@ -2601,6 +5953,15 @@
       "param_jaccard": 1.0,
       "category": "reverb"
     },
+    "HD2_ReverbPlateauxMono": {
+      "device_id": 99,
+      "device_model_str": "HD2_ReverbPlateauxMono",
+      "device_name": "plateaux",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
     "HD2_ReverbPlateauxStereo": {
       "device_id": 70,
       "device_model_str": "HD2_ReverbPlateauxStereo",
@@ -2614,6 +5975,15 @@
       "device_id": 65,
       "device_model_str": "HD2_ReverbRoomStereo",
       "device_name": "room",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
+    "HD2_ReverbSearchlightsMono": {
+      "device_id": 98,
+      "device_model_str": "HD2_ReverbSearchlightsMono",
+      "device_name": "searchlights",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2646,6 +6016,24 @@
       "param_jaccard": 1.0,
       "category": "reverb"
     },
+    "HD2_RingModulatorAMRingModMono": {
+      "device_id": 293,
+      "device_model_str": "HD2_RingModulatorAMRingModMono",
+      "device_name": "amring",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_RingModulatorAMRingModStereo": {
+      "device_id": 161,
+      "device_model_str": "HD2_RingModulatorAMRingModStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_RingModulatorPitchRingModStereo": {
       "device_id": 160,
       "device_model_str": "HD2_RingModulatorPitchRingModStereo",
@@ -2655,10 +6043,37 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_Rotary122RotaryStereo": {
+      "device_id": 157,
+      "device_model_str": "HD2_Rotary122RotaryStereo",
+      "device_name": "122rotary",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_Rotary145RotaryStereo": {
       "device_id": 158,
       "device_model_str": "HD2_Rotary145RotaryStereo",
       "device_name": "145rotary",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_Rotary3RotorStereo": {
+      "device_id": 260,
+      "device_model_str": "HD2_Rotary3RotorStereo",
+      "device_name": "triplerotary",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_RotaryVibeRotaryStereo": {
+      "device_id": 159,
+      "device_model_str": "HD2_RotaryVibeRotaryStereo",
+      "device_name": "viberotary",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2681,6 +6096,51 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "send"
+    },
+    "HD2_Synth3NoteGeneratorMono": {
+      "device_id": 336,
+      "device_model_str": "HD2_Synth3NoteGeneratorMono",
+      "device_name": "3notegen",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "HD2_Synth3NoteGeneratorStereo": {
+      "device_id": 422,
+      "device_model_str": "HD2_Synth3NoteGeneratorStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "HD2_Synth4OSCGeneratorMono": {
+      "device_id": 337,
+      "device_model_str": "HD2_Synth4OSCGeneratorMono",
+      "device_name": "4oscgen",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "HD2_Synth4OSCGeneratorStereo": {
+      "device_id": 421,
+      "device_model_str": "HD2_Synth4OSCGeneratorStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "HD2_SynthSubtractiveStereo": {
+      "device_id": 505,
+      "device_model_str": "HD2_SynthSubtractiveStereo",
+      "device_name": "3oscsynt",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
     },
     "HD2_Tremolo60sBiasTremMono": {
       "device_id": 284,
@@ -2736,6 +6196,15 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_TremoloPatternMono": {
+      "device_id": 341,
+      "device_model_str": "HD2_TremoloPatternMono",
+      "device_name": "bleatchoptrem",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_TremoloPatternStereo": {
       "device_id": 204,
       "device_model_str": "HD2_TremoloPatternStereo",
@@ -2781,6 +6250,24 @@
       "param_jaccard": 1.0,
       "category": "modulation"
     },
+    "HD2_VibratoEssexVibeMono": {
+      "device_id": 853,
+      "device_model_str": "HD2_VibratoEssexVibeMono",
+      "device_name": "essexvb",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "HD2_VibratoEssexVibeStereo": {
+      "device_id": 854,
+      "device_model_str": "HD2_VibratoEssexVibeStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "HD2_VolPanGainMono": {
       "device_id": 282,
       "device_model_str": "HD2_VolPanGainMono",
@@ -2799,12 +6286,39 @@
       "param_jaccard": 1.0,
       "category": "volume"
     },
+    "HD2_VolPanPanStereo": {
+      "device_id": 135,
+      "device_model_str": "HD2_VolPanPanStereo",
+      "device_name": "pan",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "volume"
+    },
+    "HD2_VolPanStereoImagerStereo": {
+      "device_id": 247,
+      "device_model_str": "HD2_VolPanStereoImagerStereo",
+      "device_name": "stereoim",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "volume"
+    },
+    "HD2_VolPanStereoWidthStereo": {
+      "device_id": 201,
+      "device_model_str": "HD2_VolPanStereoWidthStereo",
+      "device_name": "stereowd",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "volume"
+    },
     "HD2_VolPanVol": {
       "device_id": 268,
       "device_model_str": "HD2_VolPanVolMono",
       "device_name": "volpedal",
-      "method": "param_only",
-      "confidence": 0.9,
+      "method": "name_param",
+      "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "volume"
     },
@@ -2826,10 +6340,28 @@
       "param_jaccard": 1.0,
       "category": "wah"
     },
+    "HD2_WahChromeCustomStereo": {
+      "device_id": 177,
+      "device_model_str": "HD2_WahChromeCustomStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
     "HD2_WahChromeMono": {
       "device_id": 314,
       "device_model_str": "HD2_WahChromeMono",
       "device_name": "chrome",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahChromeStereo": {
+      "device_id": 178,
+      "device_model_str": "HD2_WahChromeStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2844,10 +6376,46 @@
       "param_jaccard": 1.0,
       "category": "wah"
     },
+    "HD2_WahColorfulStereo": {
+      "device_id": 179,
+      "device_model_str": "HD2_WahColorfulStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahConductorMono": {
+      "device_id": 316,
+      "device_model_str": "HD2_WahConductorMono",
+      "device_name": "conductor",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahConductorStereo": {
+      "device_id": 180,
+      "device_model_str": "HD2_WahConductorStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
     "HD2_WahFasselMono": {
       "device_id": 317,
       "device_model_str": "HD2_WahFasselMono",
       "device_name": "fassel",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahFasselStereo": {
+      "device_id": 181,
+      "device_model_str": "HD2_WahFasselStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2862,10 +6430,46 @@
       "param_jaccard": 1.0,
       "category": "wah"
     },
+    "HD2_WahTeardrop310Stereo": {
+      "device_id": 153,
+      "device_model_str": "HD2_WahTeardrop310Stereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahTeardropBassQMono": {
+      "device_id": 415,
+      "device_model_str": "HD2_WahTeardropBassQMono",
+      "device_name": "tearbass",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahTeardropBassQStereo": {
+      "device_id": 261,
+      "device_model_str": "HD2_WahTeardropBassQStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
     "HD2_WahThroatyMono": {
       "device_id": 318,
       "device_model_str": "HD2_WahThroatyMono",
       "device_name": "throaty",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahThroatyStereo": {
+      "device_id": 182,
+      "device_model_str": "HD2_WahThroatyStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2880,10 +6484,28 @@
       "param_jaccard": 1.0,
       "category": "wah"
     },
+    "HD2_WahUKWah846Stereo": {
+      "device_id": 154,
+      "device_model_str": "HD2_WahUKWah846Stereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
     "HD2_WahVettaWahMono": {
       "device_id": 319,
       "device_model_str": "HD2_WahVettaWahMono",
       "device_name": "vettawah",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HD2_WahVettaWahStereo": {
+      "device_id": 183,
+      "device_model_str": "HD2_WahVettaWahStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2897,6 +6519,51 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "wah"
+    },
+    "HD2_WahWeeperStereo": {
+      "device_id": 184,
+      "device_model_str": "HD2_WahWeeperStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "wah"
+    },
+    "HX2_Compressor3BandCompMono": {
+      "device_id": 38,
+      "device_model_str": "HX2_Compressor3BandCompMono",
+      "device_name": "3bandcmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_Compressor3BandCompStereo": {
+      "device_id": 16,
+      "device_model_str": "HX2_Compressor3BandCompStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_CompressorAutoSwellMono": {
+      "device_id": 37,
+      "device_model_str": "HX2_CompressorAutoSwellMono",
+      "device_name": "autoswel",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_CompressorAutoSwellStereo": {
+      "device_id": 15,
+      "device_model_str": "HX2_CompressorAutoSwellStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
     },
     "HX2_CompressorDeluxeCompMono": {
       "device_id": 33,
@@ -2920,6 +6587,15 @@
       "device_id": 34,
       "device_model_str": "HX2_CompressorKinkyCompMono",
       "device_name": "kinkycmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_CompressorKinkyCompStereo": {
+      "device_id": 12,
+      "device_model_str": "HX2_CompressorKinkyCompStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -2988,10 +6664,37 @@
       "param_jaccard": 1.0,
       "category": "dynamics"
     },
+    "HX2_CompressorRochesterCompStereo": {
+      "device_id": 10,
+      "device_model_str": "HX2_CompressorRochesterCompStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
     "HX2_DM4BlueComp": {
       "device_id": 24,
       "device_model_str": "HX2_DM4BlueComp",
       "device_name": "bluecomp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_DM4BlueCompTreb": {
+      "device_id": 27,
+      "device_model_str": "HX2_DM4BlueCompTreb",
+      "device_name": "blucmptr",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_DM4BoostComp": {
+      "device_id": 30,
+      "device_model_str": "HX2_DM4BoostComp",
+      "device_name": "boostcmp",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -3010,6 +6713,24 @@
       "device_id": 25,
       "device_model_str": "HX2_DM4TubeComp",
       "device_name": "tubecomp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_DM4VettaComp": {
+      "device_id": 29,
+      "device_model_str": "HX2_DM4VettaComp",
+      "device_name": "vettacmp",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_DM4VettaJuice": {
+      "device_id": 28,
+      "device_model_str": "HX2_DM4VettaJuice",
+      "device_name": "vettajce",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -3042,10 +6763,46 @@
       "param_jaccard": 1.0,
       "category": "filter"
     },
+    "HX2_FilterAutoFilterStereo": {
+      "device_id": 7,
+      "device_model_str": "HX2_FilterAutoFilterStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
     "HX2_FilterMutantFilterMono": {
       "device_id": 19,
       "device_model_str": "HX2_FilterMutantFilterMono",
       "device_name": "mutantfilter",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HX2_FilterMutantFilterStereo": {
+      "device_id": 8,
+      "device_model_str": "HX2_FilterMutantFilterStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HX2_FilterMysterFilterMono": {
+      "device_id": 20,
+      "device_model_str": "HX2_FilterMysterFilterMono",
+      "device_name": "mysteryfilter",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "filter"
+    },
+    "HX2_FilterMysterFilterStereo": {
+      "device_id": 6,
+      "device_model_str": "HX2_FilterMysterFilterStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -3060,10 +6817,28 @@
       "param_jaccard": 1.0,
       "category": "dynamics"
     },
+    "HX2_GateHardGateStereo": {
+      "device_id": 5,
+      "device_model_str": "HX2_GateHardGateStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
     "HX2_GateHorizonGateMono": {
       "device_id": 22,
       "device_model_str": "HX2_GateHorizonGateMono",
       "device_name": "horizongate",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
+    "HX2_GateHorizonGateStereo": {
+      "device_id": 4,
+      "device_model_str": "HX2_GateHorizonGateStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -3078,6 +6853,15 @@
       "param_jaccard": 1.0,
       "category": "dynamics"
     },
+    "HX2_GateNoiseGateStereo": {
+      "device_id": 3,
+      "device_model_str": "HX2_GateNoiseGateStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "dynamics"
+    },
     "HX2_ImpulseResponseWithPan": {
       "device_id": 468,
       "device_model_str": "HX2_ImpulseResponseWithPan",
@@ -3086,6 +6870,33 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "ir"
+    },
+    "KillerZ": {
+      "device_id": 391,
+      "device_model_str": "KillerZ",
+      "device_name": "killerz",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "L6BubbleEcho": {
+      "device_id": 111,
+      "device_model_str": "L6BubbleEcho",
+      "device_name": "bubblech",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "L6PhazeEko": {
+      "device_id": 110,
+      "device_model_str": "L6PhazeEko",
+      "device_name": "phazeeko",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
     },
     "L6SPB_AcousGtrSimMono": {
       "device_id": 384,
@@ -3105,6 +6916,15 @@
       "param_jaccard": 1.0,
       "category": "eq"
     },
+    "L6SPB_PolyChorus": {
+      "device_id": 521,
+      "device_model_str": "L6SPB_PolyChorus",
+      "device_name": "polydetune",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "L6SPB_PolyDowntune": {
       "device_id": 523,
       "device_model_str": "L6SPB_PolyDowntune",
@@ -3122,6 +6942,114 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "pitch"
+    },
+    "L6SPB_PolyWham": {
+      "device_id": 522,
+      "device_model_str": "L6SPB_PolyWham",
+      "device_name": "polywham",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "pitch"
+    },
+    "Line6BronzeMaster": {
+      "device_id": 392,
+      "device_model_str": "Line6BronzeMaster",
+      "device_name": "bronzema",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "distortion"
+    },
+    "RezSynth": {
+      "device_id": 401,
+      "device_model_str": "RezSynth",
+      "device_name": "rezsynth",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "SampleAndHold": {
+      "device_id": 113,
+      "device_model_str": "SampleAndHold",
+      "device_name": "randomsh",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "Saturn5RingMod": {
+      "device_id": 398,
+      "device_model_str": "Saturn5RingMod",
+      "device_name": "saturn5",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "SeismicSynth": {
+      "device_id": 397,
+      "device_model_str": "SeismicSynth",
+      "device_name": "seismiksynth",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "Sweeper": {
+      "device_id": 253,
+      "device_model_str": "Sweeper",
+      "device_name": "sweeper",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "SynthAnalog": {
+      "device_id": 396,
+      "device_model_str": "SynthAnalog",
+      "device_name": "analogsynth",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "SynthFX": {
+      "device_id": 393,
+      "device_model_str": "SynthFX",
+      "device_name": "synthfx",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "SynthHarmony": {
+      "device_id": 400,
+      "device_model_str": "SynthHarmony",
+      "device_name": "syntharm",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "SynthLead": {
+      "device_id": 395,
+      "device_model_str": "SynthLead",
+      "device_name": "synthlead",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
+    },
+    "SynthString": {
+      "device_id": 394,
+      "device_model_str": "SynthString",
+      "device_name": "stringth",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "synth"
     },
     "TapeEater": {
       "device_id": 112,
@@ -3154,6 +7082,33 @@
       "device_id": 481,
       "device_model_str": "VIC_DelayPolySustain",
       "device_name": "polysust",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "VIC_DelayRatchetMono": {
+      "device_id": 107,
+      "device_model_str": "VIC_DelayRatchetMono",
+      "device_name": "ratchet",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "VIC_DelayRatchetStereo": {
+      "device_id": 41,
+      "device_model_str": "VIC_DelayRatchetStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "delay"
+    },
+    "VIC_DelayStutterEditMono": {
+      "device_id": 106,
+      "device_model_str": "VIC_DelayStutterEditMono",
+      "device_name": "tesselator",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -3195,6 +7150,24 @@
       "param_jaccard": 1.0,
       "category": "dynamics"
     },
+    "VIC_FlexoVibeMono": {
+      "device_id": 407,
+      "device_model_str": "VIC_FlexoVibeMono",
+      "device_name": "flexovibe",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
+    "VIC_FlexoVibeStereo": {
+      "device_id": 256,
+      "device_model_str": "VIC_FlexoVibeStereo",
+      "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
+    },
     "VIC_LooperShufflingStereo": {
       "device_id": 815,
       "device_model_str": "VIC_LooperShufflingStereo",
@@ -3208,6 +7181,15 @@
       "device_id": 409,
       "device_model_str": "VIC_PitchBoctaverMono",
       "device_name": "boctaver",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "pitch"
+    },
+    "VIC_PitchBoctaverStereo": {
+      "device_id": 258,
+      "device_model_str": "VIC_PitchBoctaverStereo",
+      "device_name": null,
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -3235,6 +7217,15 @@
       "device_id": 60,
       "device_model_str": "VIC_ReverbDynAmbienceStereo",
       "device_name": null,
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "reverb"
+    },
+    "VIC_ReverbDynBloomMono": {
+      "device_id": 500,
+      "device_model_str": "VIC_ReverbDynBloomMono",
+      "device_name": "dynamicbloom",
       "method": "exact_id",
       "confidence": 1.0,
       "param_jaccard": 1.0,
@@ -3302,17 +7293,25 @@
       "confidence": 1.0,
       "param_jaccard": 1.0,
       "category": "reverb"
+    },
+    "Warble_Matic": {
+      "device_id": 114,
+      "device_model_str": "Warble_Matic",
+      "device_name": "warblematic",
+      "method": "exact_id",
+      "confidence": 1.0,
+      "param_jaccard": 1.0,
+      "category": "modulation"
     }
   },
   "meta": {
     "counts": {
-      "helixgen_total": 330,
-      "matched": 330,
+      "helixgen_total": 730,
+      "matched": 730,
       "unmatched": 0,
       "by_method": {
-        "exact_id": 327,
-        "name_param": 2,
-        "param_only": 1
+        "exact_id": 727,
+        "name_param": 3
       }
     },
     "coverage_pct": 100.0,
@@ -3321,8 +7320,8 @@
       "param_jaccard_only": 0.85
     },
     "sources": {
-      "library": "/Users/michael.shea/.helixgen/library",
-      "uidefs": "/Users/michael.shea/Helix Stadium Debug.app/Contents/Resources/P35ModelUIDefs.json",
+      "library": "/Users/michael.shea/git/helixgen/.worktrees/stadium-1.4-library/data/library",
+      "uidefs": "/Applications/Line6/Helix Stadium.app/Contents/Resources/P35ModelUIDefs.json",
       "device_defs": "helixgen.device.defs (vendored _defs_data.json)",
       "defs_source": {
         "catalog": "P35ModelCatalog.json",
@@ -3333,13 +7332,13 @@
           ],
           "ver": "0x00000000"
         },
-        "modeldefs": "p35md-1_3_0_0.bin",
+        "modeldefs": "p35md-1_4_0_0.bin",
         "modeldefs_header": {
           "id": [
             "0x00260000"
           ],
           "pbn": 0,
-          "ver": "0x13000000"
+          "ver": "0x14000000"
         }
       }
     }
