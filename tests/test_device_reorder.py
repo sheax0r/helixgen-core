@@ -473,11 +473,11 @@ def test_reorder_setlist_item_numeric_setlist_is_container_cid():
     assert client.reorder_calls == [(1234, [502], 0)]
 
 
-@pytest.mark.parametrize("bad_to", [-1, 3, 99])
+@pytest.mark.parametrize("bad_to", [-1, 128, 200])
 def test_reorder_setlist_item_bounds_validates_to_index(bad_to):
-    """Negative or past-the-end --to is refused before touching the device
-    (out-of-range newPos behavior on the wire is uncharacterized).
-    SETLIST_ITEMS has 3 entries → valid positions are 0..2."""
+    """--to is a destination POSI (hgc-6r5.14): a setlist has 128 positions
+    (0..127). Outside that is refused before touching the device — fw 1.4
+    parks an item sent past the end at posi 128, invisible to every listing."""
     client = StubClient(
         setlists={"throwaway": 1234},
         container_items={1234: SETLIST_ITEMS},
@@ -488,16 +488,31 @@ def test_reorder_setlist_item_bounds_validates_to_index(bad_to):
     assert client.reorder_calls == []
 
 
+def test_reorder_setlist_item_to_is_a_posi_past_the_row_count():
+    """hgc-6r5.14: fw 1.4 setlists have real gaps (refs at posi [0, 3]); a
+    destination past the row count is a real, empty position, not an error."""
+    gapped = [{"cid_": 501, "posi": 0, "cctp": Cctp.REFERENCE, "rcid": 100},
+              {"cid_": 502, "posi": 3, "cctp": Cctp.REFERENCE, "rcid": 101}]
+    client = StubClient(setlists={"AB": 7}, container_items={7: gapped},
+                        pool=[{"cid_": 100, "name": "A"},
+                              {"cid_": 101, "name": "B"}])
+    R.reorder_setlist_item(client, "AB", "A", 5)
+    R.reorder_setlist_item(client, "AB", "B", 1)
+    # newPos is a move-before insertion point (HW-characterized fw 1.4):
+    # moving DOWN lands at newPos-1, so posi 5 is sent as 6; UP is as-is.
+    assert [c[2] for c in client.reorder_calls] == [6, 1]
+
+
 def test_reorder_setlist_item_to_index_edges_ok():
-    """0 and len(items)-1 are both valid destinations."""
+    """0 and 127 (the last setlist position) are both valid destinations."""
     client = StubClient(
         setlists={"throwaway": 1234},
         container_items={1234: SETLIST_ITEMS},
         pool=[{"cid_": cid, "name": name} for cid, name in POOL_NAMES.items()],
     )
     R.reorder_setlist_item(client, "throwaway", "Lead Tone", 0)
-    R.reorder_setlist_item(client, "throwaway", "Lead Tone", 2)
-    assert [c[2] for c in client.reorder_calls] == [0, 2]
+    R.reorder_setlist_item(client, "throwaway", "Lead Tone", 127)
+    assert [c[2] for c in client.reorder_calls] == [0, 128]
 
 
 def test_reorder_setlist_item_pool_container_by_name():
@@ -594,3 +609,12 @@ def test_reorder_setlist_item_propagates_listing_failure_not_wrong_error():
     with pytest.raises(HelixError, match="undecodable"):
         R.reorder_setlist_item(client, "throwaway", "Lead Tone", 0)
     assert client.reorder_calls == []
+
+
+def test_reorder_pool_and_root_keep_verbatim_index():
+    """Only setlist newPos semantics are HW-characterized (hgc-6r5.14)."""
+    client = StubClient(container_items={int(Container.SETLISTS_ROOT): ROOT_ITEMS})
+    R.reorder_setlist_item(client, "setlists", "user", 2)
+    assert client.reorder_calls[-1][2] == 2
+    with pytest.raises(ValueError, match="out of range"):
+        R.reorder_setlist_item(client, "setlists", "user", 3)

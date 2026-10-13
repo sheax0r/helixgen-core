@@ -11,7 +11,8 @@ On-disk layout, under ``<root>/<serial>/``::
     index.json               # slugged filename -> exact device name (pool + setlists)
     device.json              # model, firmware, serial, globals
     pool/<Name>.sbe          # device content bytes, verbatim, one per pool preset
-    setlists/<Name>.json     # ordered array of preset names: ["Dream On", ...]
+    setlists/<Name>.json     # references in order: [{"name": "Dream On", "posi": 0}, ...]
+                             #   (pre-0.56 backups: a bare name array, read as posi = index)
     irs/<irhash>.wav         # device-processed IR, ~32 KB, pulled over SFTP
     irs/index.json           # irhash -> {name, file, channels}
 
@@ -53,6 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import content as _content
 from . import irmd as _irmd
+from .reorder import SETLIST_SLOTS
 from .client import Cctp, Container, HelixError
 
 logger = logging.getLogger(__name__)
@@ -341,8 +343,11 @@ def take(client, root: Path, *, dry_run: bool = False, now: Optional[str] = None
             continue
         refs = sorted((m for m in items if m.get("cctp") == Cctp.REFERENCE),
                       key=lambda m: m.get("posi", 1 << 30))
+        # posi is recorded (hgc-6r5.14): fw 1.4 setlists keep real gaps, and
+        # a restore must put each reference back where it was, not compacted.
         files[f"setlists/{fn}"] = _json_bytes(
-            [cid_to_name.get(m.get("rcid")) for m in refs])
+            [{"name": cid_to_name.get(m.get("rcid")), "posi": m.get("posi")}
+             for m in refs])
 
     # -- IRs: the cross-check (listing UNION preset references, #38) --------
     try:
@@ -473,6 +478,83 @@ def _by_name(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     return out
 
 
+def _desired_refs(doc: Any) -> Optional[List[Tuple[str, int]]]:
+    """A setlist file as ``[(name, posi)]``, or ``None`` if malformed.
+
+    Current backups record ``{"name", "posi"}`` objects; a pre-posi backup is
+    a bare name array, read as compact positions over its non-null names —
+    exactly what it used to restore to. Unresolvable references (``name:
+    null``) are skipped, as before. A posi outside 0..127 or held twice is
+    malformed (a second reference at one posi would REPLACE the first).
+    """
+    if not isinstance(doc, list):
+        return None
+    if all(not isinstance(d, dict) for d in doc):          # legacy shape
+        return _legacy_refs(doc)
+    out, seen = [], set()
+    for d in doc:
+        if not isinstance(d, dict):
+            return None
+        name, posi = d.get("name"), d.get("posi")
+        if (not isinstance(posi, int) or isinstance(posi, bool)
+                or not 0 <= posi < SETLIST_SLOTS or posi in seen):
+            return None
+        seen.add(posi)
+        if name is not None:
+            out.append((str(name), posi))
+    return out
+
+
+def _legacy_refs(doc: List[Any]) -> List[Tuple[str, int]]:
+    names = [str(d) for d in doc if d is not None]
+    return [(nm, i) for i, nm in enumerate(names)]
+
+
+def _plan_setlist(sl_name: str, desired: List[Tuple[str, int]],
+                  current: Dict[Any, Any], prune: bool, ops: List[Dict[str, Any]],
+                  summary: List[str], errors: List[str]) -> None:
+    """Ops putting every desired reference at its recorded posi.
+
+    A misplaced reference is removed and re-referenced at its posi rather than
+    moved: ``/ReorderContainerContent`` shifts every slot between the old and
+    new position (fw 1.4), while a removal leaves a gap and a create at an
+    empty posi shifts nothing — so this lands each posi exactly. A reference
+    added at an OCCUPIED posi replaces the incumbent (fw 1.4, HW-observed), so a
+    posi held by a preset outside the backup is an error unless ``prune``
+    removes it.
+    """
+    want = dict(desired)
+    removes = {nm for nm in current
+               if (nm in want and current[nm] != want[nm])
+               or (nm not in want and prune)}
+    while True:
+        occupant = {p: nm for nm, p in current.items() if nm not in removes}
+        adds, blocked = [], []
+        for nm, posi in desired:
+            if current.get(nm) == posi and nm not in removes:
+                continue
+            holder = occupant.get(posi)
+            (blocked if holder not in (None, nm) else adds).append((nm, posi))
+        # A misplaced reference that can't land stays where it is: never
+        # remove what can't be put back. Its old posi may then block another.
+        stuck = {nm for nm, _ in blocked if nm in removes and nm in want}
+        if not stuck:
+            break
+        removes -= stuck
+    for nm, posi in blocked:
+        errors.append(
+            f"setlist {sl_name!r} position {posi} holds {occupant[posi]!r}, "
+            f"which the backup does not have there — not restoring {nm!r} "
+            f"over it (re-run with --prune, or move {occupant[posi]!r} first)")
+    for nm in [n for n in current if n in removes]:
+        ops.append({"op": "remove_ref", "setlist": sl_name, "name": nm})
+        summary.append(f"remove {nm!r} from setlist {sl_name!r}")
+    for nm, posi in adds:
+        ops.append({"op": "reference", "setlist": sl_name, "name": nm,
+                    "pos": posi})
+        summary.append(f"add {nm!r} to setlist {sl_name!r} at {posi}")
+
+
 def plan_restore(client, root: Path, *, serial: Optional[str] = None,
                  setlist: Optional[str] = None,
                  prune: bool = False) -> Dict[str, Any]:
@@ -593,11 +675,11 @@ def plan_restore(client, root: Path, *, serial: Optional[str] = None,
         sl_name = sl_index[fname]
         if setlist is not None and sl_name != setlist:
             continue
-        desired = _read_json(base / "setlists" / fname, None)
-        if not isinstance(desired, list):
-            errors.append(f"setlists/{fname} is not a JSON array of preset names")
+        desired = _desired_refs(_read_json(base / "setlists" / fname, None))
+        if desired is None:
+            errors.append(f"setlists/{fname} is not a JSON array of setlist "
+                          f"references")
             continue
-        desired = [d for d in desired if d is not None]
         matches = [s for s in live_setlists
                    if str(s.get("name", "") or "").strip().casefold()
                    == sl_name.strip().casefold()]
@@ -612,37 +694,19 @@ def plan_restore(client, root: Path, *, serial: Optional[str] = None,
                 f"{', '.join(str(m.get('cid_')) for m in matches)}")
             continue
         sl_cid = matches[0].get("cid_")
-        refs = sorted((m for m in client.list_container(sl_cid, strict=True)
-                       if m.get("cctp") == Cctp.REFERENCE),
-                      key=lambda m: m.get("posi", 1 << 30))
-        current = [cid_to_name.get(m.get("rcid")) for m in refs]
-        if len(set(current)) != len(current):
-            errors.append(
-                f"setlist {sl_name!r} has duplicate preset names "
-                f"({', '.join(sorted({c for c in current if current.count(c) > 1}))}) "
-                f"— order cannot be restored by name")
-            continue
-        sim = list(current)
-        if prune:
-            for nm in [c for c in current if c not in desired]:
-                ops.append({"op": "remove_ref", "setlist": sl_name, "name": nm})
-                summary.append(f"remove {nm!r} from setlist {sl_name!r}")
-                sim.remove(nm)
-        for pos, nm in enumerate(desired):
-            if nm not in sim:
-                ops.append({"op": "reference", "setlist": sl_name, "name": nm,
-                            "pos": pos})
-                summary.append(f"add {nm!r} to setlist {sl_name!r} at {pos}")
-                sim.insert(min(pos, len(sim)), nm)
-        # Greedy insertion sort: one `move` per preset that is out of place.
-        # 40 presets can mean 40 moves — the accepted cost of the design.
-        for i, nm in enumerate(desired):
-            if i < len(sim) and sim[i] == nm:
-                continue
-            ops.append({"op": "move", "setlist": sl_name, "name": nm, "to": i})
-            summary.append(f"move {nm!r} to {sl_name!r} slot {i}")
-            sim.remove(nm)
-            sim.insert(i, nm)
+        refs = [m for m in client.list_container(sl_cid, strict=True)
+                if m.get("cctp") == Cctp.REFERENCE]
+        current = {}
+        for m in refs:
+            nm = cid_to_name.get(m.get("rcid"))
+            if nm in current:
+                errors.append(
+                    f"setlist {sl_name!r} has duplicate preset name {nm!r} "
+                    f"— positions cannot be restored by name")
+                break
+            current[nm] = m.get("posi")
+        else:
+            _plan_setlist(sl_name, desired, current, prune, ops, summary, errors)
 
     # -- prune the pool last, once nothing references it --------------------
     if prune:
@@ -731,6 +795,14 @@ def _apply_op(client, op: Dict[str, Any]) -> None:
         if sl_cid is None:
             raise HelixError(f"no setlist named {op['setlist']!r} on the device")
         pool_cid = _resolve_pool_cid(client, op["name"])
+        # fw 1.4 REPLACES a reference at an occupied posi, so re-check right
+        # before writing: a failed earlier remove_ref must not turn this into
+        # a silent drop of the incumbent.
+        holder = client.find_by_pos(sl_cid, op["pos"], strict=True)
+        if holder is not None:
+            raise HelixError(
+                f"{op['setlist']!r} position {op['pos']} is occupied (cid "
+                f"{holder.get('cid_')}); not referencing {op['name']!r} over it")
         if client.reference_into_setlist(sl_cid, pool_cid, op["pos"]) is None:
             raise HelixError(
                 f"device refused to reference {op['name']!r} into "
@@ -740,9 +812,6 @@ def _apply_op(client, op: Dict[str, Any]) -> None:
         if not client.remove_reference(sl_cid, ref_cid):
             raise HelixError(
                 f"device refused to remove {op['name']!r} from {op['setlist']!r}")
-    elif kind == "move":
-        sl_cid, ref_cid = _resolve_ref(client, op["setlist"], op["name"])
-        client.reorder_container(sl_cid, [ref_cid], op["to"])
     elif kind == "delete_pool":
         cid = _resolve_pool_cid(client, op["name"])
         if not client._raw.delete(Container.POOL, [cid]):

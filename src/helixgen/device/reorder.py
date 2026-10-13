@@ -51,6 +51,9 @@ from .client import Cctp, Container
 #: integer is accepted and used as the container cid directly).
 SETLISTS_ROOT_KEYWORD = "setlists"
 
+#: Positions in a device setlist (fw 1.4 lists every one).
+SETLIST_SLOTS = 128
+
 _INT_RE = re.compile(r"-?\d+")
 
 
@@ -233,13 +236,6 @@ def reorder_setlist_item(client, setlist: str, target: str,
     # (bounds check + which cid gets moved) — a truncated/partial read could
     # misresolve the target or accept an out-of-range position silently.
     items = client.list_container(container_cid, strict=True)
-    # Bounds-check the destination against the fresh listing — how the device
-    # handles an out-of-range newPos is uncharacterized, so refuse it here.
-    n = len(items)
-    if not 0 <= int(to_index) < max(n, 1):
-        raise ValueError(
-            f"--to {to_index} is out of range for container {container_cid} "
-            f"({n} item(s); valid positions 0..{max(n - 1, 0)})")
     pool_names = None
     if not is_root:
         pool_names = {m.get("cid_"): m.get("name")
@@ -255,7 +251,34 @@ def reorder_setlist_item(client, setlist: str, target: str,
         raise ValueError(
             f"cid {moved_cid} is not in container {container_cid} "
             f"(its item cids: {have})")
-    new_items = client.reorder_container(container_cid, [moved_cid], to_index)
+    # ``to_index`` is the destination POSI (hgc-6r5.14). fw 1.4 setlists have
+    # real gaps, and the device's newPos is a move-before insertion point
+    # over the container's full slot array (placeholders included): moving
+    # DOWN lands at newPos-1, UP at newPos, with the slots in between shifted
+    # one place (HW-characterized fw 1.4, docs/helix-protocol.md). A newPos
+    # past the last slot parks the item at an unlisted posi, so refuse it.
+    to = int(to_index)
+    if is_root or container_cid == int(Container.POOL):
+        # ponytail: only SETLIST newPos semantics are HW-characterized; the
+        # pool and setlists root keep the old verbatim index + row-count
+        # bound until probed on hardware.
+        if not 0 <= to < max(len(items), 1):
+            raise ValueError(
+                f"--to {to_index} is out of range for container "
+                f"{container_cid} ({len(items)} item(s); valid positions "
+                f"0..{max(len(items) - 1, 0)})")
+        new_pos = to
+    else:
+        if not 0 <= to < SETLIST_SLOTS:
+            raise ValueError(
+                f"--to {to_index} is out of range for container "
+                f"{container_cid} (valid positions 0..{SETLIST_SLOTS - 1})")
+        cur = next(m.get("posi") for m in items if m.get("cid_") == moved_cid)
+        if not isinstance(cur, int) or isinstance(cur, bool):
+            raise ValueError(f"cid {moved_cid} has no listed position; "
+                             "refusing to guess the move direction")
+        new_pos = to + 1 if to > cur else to
+    new_items = client.reorder_container(container_cid, [moved_cid], new_pos)
     return {"ok": True, "container": container_cid, "moved_cid": moved_cid,
-            "new_pos": int(to_index), "items": new_items,
+            "new_pos": to, "items": new_items,
             "warnings": warnings}

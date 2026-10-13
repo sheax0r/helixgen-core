@@ -243,8 +243,8 @@ def _plan_ref(client, setlist: str, pos: Optional[int]):
     orphaned pool preset behind.
 
     Both listings are strict (#40): an occupied position is refused rather
-    than stacking a second reference there (uncataloged device behavior —
-    backlog #69), and a listing timeout must never read as "position free".
+    than writing there — on fw 1.4 a reference added at an occupied setlist
+    posi REPLACES the incumbent (backlog #69, HW-observed 2026-10-13), and a listing timeout must never read as "position free".
     """
     sl_cid = _setlist_cid(client, setlist)
     if pos is None:

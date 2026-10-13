@@ -159,7 +159,8 @@ def test_take_captures_setlist_ORDER_not_pool_order(tmp_path, two_presets):
     S.take(StubClient(**two_presets), tmp_path)
     order = json.loads(
         (tmp_path / "SN-TEST-1" / "setlists" / "Gigs.json").read_text())
-    assert order == ["Back In Black", "Dream On"]
+    assert order == [{"name": "Back In Black", "posi": 0},
+                     {"name": "Dream On", "posi": 1}]
 
 
 def test_take_is_non_activating(tmp_path, two_presets):
@@ -569,3 +570,127 @@ def test_firmware_specific_globals_are_skipped_whatever_the_failure(tmp_path, tw
 
     res = S.take(Old(**two_presets), tmp_path)
     assert res["errors"] == ["global global.tuner.type: no blob in reply"]
+
+
+# ---------------------------------------------------------------------------
+# hgc-6r5.14: fw 1.4 setlists keep real gaps — backups record posi, restore
+# puts each reference back at it
+# ---------------------------------------------------------------------------
+
+def _gapped(two_presets, posis=(0, 3)):
+    g = dict(two_presets)
+    g["refs"] = {5001: [{"cctp": Cctp.REFERENCE, "rcid": 102, "posi": posis[0], "cid_": 9001},
+                        {"cctp": Cctp.REFERENCE, "rcid": 101, "posi": posis[1], "cid_": 9002}]}
+    return g
+
+
+def _setlist_ops(plan):
+    return [o for o in plan["ops"] if o["op"] in ("reference", "remove_ref", "move")]
+
+
+def test_take_records_the_posi_of_a_gapped_setlist(tmp_path, two_presets):
+    S.take(StubClient(**_gapped(two_presets)), tmp_path)
+    order = json.loads((tmp_path / "SN-TEST-1" / "setlists" / "Gigs.json").read_text())
+    assert order == [{"name": "Back In Black", "posi": 0},
+                     {"name": "Dream On", "posi": 3}]
+
+
+def test_restore_puts_references_back_at_their_recorded_posi(tmp_path, two_presets):
+    S.take(StubClient(**_gapped(two_presets)), tmp_path)
+    emptied = dict(two_presets, refs={5001: []})
+    ops = _setlist_ops(S.plan_restore(StubClient(**emptied), tmp_path, serial="SN-TEST-1"))
+    assert [(o["op"], o["name"], o.get("pos")) for o in ops] == [
+        ("reference", "Back In Black", 0), ("reference", "Dream On", 3)]
+
+
+def test_restore_of_a_matching_gapped_setlist_is_a_no_op(tmp_path, two_presets):
+    S.take(StubClient(**_gapped(two_presets)), tmp_path)
+    plan = S.plan_restore(StubClient(**_gapped(two_presets)), tmp_path, serial="SN-TEST-1")
+    assert _setlist_ops(plan) == [] and not plan["errors"]
+
+
+def test_restore_moves_a_misplaced_reference_by_remove_then_reference(tmp_path, two_presets):
+    S.take(StubClient(**_gapped(two_presets)), tmp_path)        # want 0, 3
+    live = StubClient(**_gapped(two_presets, posis=(0, 1)))    # have 0, 1
+    ops = _setlist_ops(S.plan_restore(live, tmp_path, serial="SN-TEST-1"))
+    assert [(o["op"], o["name"], o.get("pos")) for o in ops] == [
+        ("remove_ref", "Dream On", None), ("reference", "Dream On", 3)]
+
+
+def test_restore_never_clobbers_an_incumbent_outside_the_backup(tmp_path, two_presets):
+    """fw 1.4: a reference added at an occupied setlist posi REPLACES the
+    incumbent reference (HW-observed) — without --prune that would silently
+    drop a preset the user added since the backup."""
+    S.take(StubClient(**_gapped(two_presets)), tmp_path)        # want BiB@0, DO@3
+    live = dict(two_presets)
+    live["pool"] = two_presets["pool"] + [{"cid_": 103, "name": "Stray", "posi": 2}]
+    live["blobs"] = {**two_presets["blobs"], 103: content()}
+    live["refs"] = {5001: [{"cctp": Cctp.REFERENCE, "rcid": 102, "posi": 0, "cid_": 9001},
+                           {"cctp": Cctp.REFERENCE, "rcid": 103, "posi": 3, "cid_": 9003}]}
+    plan = S.plan_restore(StubClient(**live), tmp_path, serial="SN-TEST-1")
+    assert _setlist_ops(plan) == []
+    assert any("Stray" in e and "3" in e for e in plan["errors"])
+    pruned = S.plan_restore(StubClient(**live), tmp_path, serial="SN-TEST-1", prune=True)
+    assert [(o["op"], o["name"], o.get("pos")) for o in _setlist_ops(pruned)] == [
+        ("remove_ref", "Stray", None), ("reference", "Dream On", 3)]
+
+
+def test_restore_reads_a_pre_posi_backup_as_compact_positions(tmp_path, two_presets):
+    S.take(StubClient(**two_presets), tmp_path)
+    old = tmp_path / "SN-TEST-1" / "setlists" / "Gigs.json"
+    old.write_text(json.dumps(["Back In Black", "Dream On"]))   # legacy shape
+    emptied = dict(two_presets, refs={5001: []})
+    ops = _setlist_ops(S.plan_restore(StubClient(**emptied), tmp_path, serial="SN-TEST-1"))
+    assert [(o["name"], o["pos"]) for o in ops] == [("Back In Black", 0), ("Dream On", 1)]
+
+
+def test_restore_never_removes_a_misplaced_reference_it_cannot_put_back(tmp_path, two_presets):
+    S.take(StubClient(**_gapped(two_presets)), tmp_path)        # want BiB@0, DO@3
+    live = dict(two_presets)
+    live["pool"] = two_presets["pool"] + [{"cid_": 103, "name": "Stray", "posi": 2}]
+    live["blobs"] = {**two_presets["blobs"], 103: content()}
+    live["refs"] = {5001: [{"cctp": Cctp.REFERENCE, "rcid": 102, "posi": 0, "cid_": 9001},
+                           {"cctp": Cctp.REFERENCE, "rcid": 101, "posi": 1, "cid_": 9002},
+                           {"cctp": Cctp.REFERENCE, "rcid": 103, "posi": 3, "cid_": 9003}]}
+    plan = S.plan_restore(StubClient(**live), tmp_path, serial="SN-TEST-1")
+    assert _setlist_ops(plan) == []          # Dream On stays at 1, not dropped
+    assert any("Stray" in e for e in plan["errors"])
+
+
+def test_apply_reference_refuses_an_occupied_posi_at_write_time():
+    """A failed earlier remove_ref must not become a silent replace (fw 1.4
+    replaces the incumbent of an occupied setlist posi)."""
+    class C:
+        refs = []
+
+        def resolve_setlist_cid(self, name):
+            return 5001
+
+        def list_presets(self, container=Container.POOL, *, strict=False):
+            return [{"cid_": 101, "name": "A"}]
+
+        def find_by_pos(self, container, pos, *, strict=False):
+            assert strict
+            return {"cid_": 9009, "posi": pos}
+
+        def reference_into_setlist(self, *a):
+            self.refs.append(a)
+            return 1
+
+    c = C()
+    with pytest.raises(HelixError, match="occupied"):
+        S._apply_op(c, {"op": "reference", "setlist": "Gigs", "name": "A", "pos": 3})
+    assert c.refs == []
+
+
+@pytest.mark.parametrize("doc", [
+    [{"name": "A", "posi": 1}, {"name": "B", "posi": 1}],
+    [{"name": "A", "posi": 1}, {"name": "B"}],
+    [{"name": "A", "posi": 128}],
+])
+def test_a_posi_file_with_duplicate_or_bad_posi_is_malformed(doc):
+    assert S._desired_refs(doc) is None
+
+
+def test_legacy_names_with_nulls_restore_compact():
+    assert S._desired_refs(["A", None, "B"]) == [("A", 0), ("B", 1)]

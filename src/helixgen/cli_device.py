@@ -709,7 +709,7 @@ def device() -> None:
 
     BACKUP / RESTORE: `device backup` photographs the device into
     $HELIXGEN_HOME/backup/<serial>/ (pool/*.sbe = the device's own bytes,
-    setlists/*.json = order, plus IRs) — git-trackable, and `--dry-run` is the
+    setlists/*.json = each reference's position, plus IRs) — git-trackable, and `--dry-run` is the
     diff against the live device. `device restore` replays one; `--prune`
     (which DELETES presets absent from the snapshot) is the one destructive
     path here. `device decode` renders a .sbe as JSON for git diffs.
@@ -2003,7 +2003,7 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
 @click.argument("setlist")
 @click.argument("target")
 @click.option("--to", "to_index", type=int, required=True,
-              help="New 0-based position within the container.")
+              help="Destination POSITION (posi, 0-based) the item lands on — a setlist has 128 (0..127), gaps included.")
 @_device_option
 @_locked("library", verb="reorder")
 def device_reorder(setlist: str, target: str, to_index: int,
@@ -2020,8 +2020,14 @@ def device_reorder(setlist: str, target: str, to_index: int,
     parsed as a cid, never a display name. If an item is display-named that
     digit string, the cid reading wins with a stderr warning when the cid
     resolves in the container, and the command errors (naming the item's
-    real cid) when it doesn't. --to is bounds-validated against the
-    container's current length.
+    real cid) when it doesn't.
+
+    --to is the destination POSITION (posi) the item lands on, not an index
+    among the listed items: fw 1.4 setlists keep real gaps, so `--to 5` in a
+    two-preset setlist is a valid empty position. Items between the old and
+    new position shift one place (gaps shift with them). Bounds: a setlist
+    0..127. The pool (-2) and the setlists root are not yet
+    characterized: there --to stays an index bounded by the current length.
 
     This is a direct, immediate DEVICE-side write. For the ordinary
     name-addressed form of the same move, prefer `device move <name> --in
@@ -2745,7 +2751,7 @@ def device_rm(name, setlist, also_pool, cid, yes, as_json, ip, port):
 @click.option("--in", "setlist", required=True,
               help="Setlist to reorder within (case-insensitive).")
 @click.option("--to", "to", type=int, required=True,
-              help="Destination position (0-based) in the setlist order.")
+              help="Destination POSITION (posi, 0..127) in the setlist — gaps count; items in between shift one place.")
 @click.option("--cid", type=int, default=None,
               help="Disambiguate a duplicate preset NAME by content id.")
 @click.option("--json", "as_json", is_flag=True, default=False)
@@ -3228,8 +3234,13 @@ def device_restore(root, serial, git_ref, setlist, prune, dry_run, yes,
                    as_json, ip, port):
     """Replay a device photograph onto the hardware.
 
-    Pool content first, then setlist order. Additive-and-update by default:
-    it creates what is missing and updates what differs, and never deletes.
+    Pool content first, then setlist membership: each reference goes back at
+    its RECORDED position (gaps preserved; a pre-position backup restores
+    compact, 0..n-1). A misplaced reference is removed and re-referenced at
+    its position. A position held by a preset the backup does not have there
+    is reported, never overwritten, unless --prune removes that reference.
+    Additive-and-update by default: it creates what is missing and updates
+    what differs, and never deletes a preset.
 
     --prune ALSO deletes device presets the snapshot does not have. That is
     the one genuinely destructive path here and it has no undo on the device
@@ -3299,7 +3310,8 @@ def device_backup(root, dry_run: bool, as_json: bool, ip: str, port: int) -> Non
     """Photograph the device into <root>/<serial>/ — pool, setlists, IRs.
 
     Writes the device's OWN content bytes (pool/<Name>.sbe), each setlist's
-    reference order (setlists/<Name>.json), the device's processed IRs, and
+    references with their positions (setlists/<Name>.json: [{name, posi}] —
+    fw 1.4 setlists keep real gaps), the device's processed IRs, and
     device.json. `.sbe` rather than `.hsp` because `device to-hsp` drops
     Command Center and MIDI CC bindings — an .hsp backup would restore a
     damaged preset. `device decode` renders the bytes for git diffs.
