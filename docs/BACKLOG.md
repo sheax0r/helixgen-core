@@ -216,11 +216,13 @@ Still open, should someone want it: the same validation on `device globaleq set`
   instead of assuming a /24, and **refuses non-RFC 1918 ranges** (explicit 10/8 + 172.16/12 + 192.168/16 check — deterministic
   across Python versions, unlike `ipaddress.is_private`; stderr warning
   names `--ip` as the escape hatch). The default-route interface blindness
-  REMAINS (a VPN default route makes both mDNS and the probe look at the
-  tunnel and miss a LAN-attached Stadium) — now documented in
-  `device discover --help`, `discovery.py`, and `docs/CLI.md`; a real fix
-  needs per-interface address enumeration, which pure stdlib doesn't
-  expose portably. (b) `mdns_discover` binds an ephemeral port and never
+  is **FIXED (hgc-094, 2026-10-13)**: discovery enumerates every UP
+  interface with an RFC 1918 address from the same `ip`/`ifconfig` output
+  the netmask lookup already reads (tunnels — utun/tun/ppp/ipsec/wg or
+  POINTOPOINT — only when no physical private interface exists), sends the
+  mDNS query bound to each address (`IP_MULTICAST_IF`), and probes each
+  range (1024-host cap per interface). Live-verified with a VPN (utun4,
+  10.5.0.2/16) holding the default route: found the Stadium on en0. (b) `mdns_discover` binds an ephemeral port and never
   joins the 224.0.0.251 group, so multicast-only responses (RFC 6762
   QU-ignore cases) are invisible — fine against fw 1.3.2 (unicast reply
   verified live), other firmware may fall through to the probe; now
@@ -234,8 +236,8 @@ Still open, should someone want it: the same validation on `device globaleq set`
   `$HELIXGEN_HOME` dir; live conftest `_persisted_device_ip` tie-breaks
   missing serials by `path.stem` like `devices_with_ips`; `--ip ""` (and
   whitespace-only) is now rejected loudly rather than treated as unset.
-  REMAINING: only (a) default-route interface blindness and (b) the
-  multicast-group-join gap above — both need non-stdlib/per-interface work.
+  REMAINING: only (b) the multicast-group-join gap above ((a) fixed by
+  hgc-094).
   Plus these low-severity nits surfaced by the 2026-07-18 #73-branch review
   (all in already-merged #77 code, deferred not fixed): (i) `_ip_callback`
   (`cli_device.py`) rejects empty/whitespace-only `--ip` but forwards a real

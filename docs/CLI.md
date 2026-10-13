@@ -479,11 +479,20 @@ mechanisms, both verified on hardware (Stadium XL, fw 1.3.2, 2026-07-16):
    scan of strangers, not LAN discovery (backlog #77). `--no-probe`
    disables it.
 
-**Known limitations (backlog #77):** both mechanisms look at the
-**default-route interface** — with a VPN up that is usually the tunnel, so a
-LAN-attached Stadium can be missed; disconnect the VPN for the one-shot
-`discover`, or bypass discovery entirely with `--ip` / `$HELIXGEN_HELIX_IP`.
-And the mDNS listener hears **unicast replies only** (it never joins the
+**Every private interface, not just the default route (hgc-094).** Both
+mechanisms run once per UP interface with an RFC 1918 address (enumerated
+from the same `ip -o -4 addr show up` / `ifconfig -a` output the netmask
+lookup reads): the mDNS query is sent bound to each address
+(`IP_MULTICAST_IF`), and the probe sweeps each interface's range (1024-host
+cap per interface; interfaces sharing a range are swept once). VPN/tunnel
+links (`utun`/`tun`/`ppp`/`ipsec`/`wg`, or POINTOPOINT) are used only when
+no physical private interface exists — so a VPN holding the default route
+no longer hides a LAN Stadium (backlog #77(a), formerly a known
+limitation). The fallback and failure messages list every range probed.
+Without `ip`/`ifconfig` (Windows) it falls back to the default-route
+interface.
+
+**Known limitation (backlog #77):** the mDNS listener hears **unicast replies only** (it never joins the
 224.0.0.251 multicast group): the Stadium honors the query's QU bit and
 replies unicast (verified live, fw 1.3.2), but firmware that replied only
 via multicast would be invisible to mDNS and fall through to the probe.

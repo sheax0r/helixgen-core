@@ -27,14 +27,14 @@ Pure stdlib — no pyzmq/msgpack/zeroconf. Two mechanisms, used by
 
 Known limitations (backlog #77):
 
-* **Default-route interface blindness.** :func:`local_ipv4` picks the
-  interface that carries the default route. With a VPN up, that is usually
-  the tunnel — so both the mDNS query and the /24 probe can look at the
-  wrong network and miss a LAN-attached Stadium. Workaround: disconnect
-  the VPN for the one-shot ``device discover``, or skip discovery entirely
-  and pass ``--ip`` / set ``$HELIXGEN_HELIX_IP``. (Enumerating candidate
-  interfaces needs per-interface addresses, which pure stdlib does not
-  expose portably.)
+* **Default-route interface blindness — FIXED (hgc-094).** Discovery used
+  to look only at the interface carrying the default route, so a VPN
+  (``utun``) holding it hid a LAN-attached Stadium. :func:`probe_targets`
+  now enumerates every UP interface with an RFC 1918 address (from the
+  same ``ip``/``ifconfig`` output the netmask lookup already reads),
+  preferring physical interfaces and using tunnels only when nothing else
+  exists; mDNS queries go out bound to each of those addresses and the
+  probe sweeps each range (1024-host cap per interface).
 * **The mDNS listener is unicast-reply-only.** :func:`mdns_discover` sends
   a QU (unicast-response) query from an ephemeral port and never joins the
   224.0.0.251 multicast group, so responders that ignore the QU bit and
@@ -65,6 +65,7 @@ import errno
 import ipaddress
 import os
 import re
+import select
 import socket
 import struct
 import subprocess
@@ -72,7 +73,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 #: The DNS-SD service type the Stadium advertises (verified live).
 MDNS_SERVICE = "_stadiumserver._tcp.local."
@@ -297,50 +298,74 @@ def candidates_from_records(
 # ---------------------------------------------------------------------------
 
 def mdns_discover(timeout: float = 3.0,
-                  service: str = MDNS_SERVICE) -> List[Candidate]:
+                  service: str = MDNS_SERVICE, *,
+                  bind_ips: Optional[Sequence[str]] = None) -> List[Candidate]:
     """One-shot mDNS browse for ``service``; collects responses for up to
     ``timeout`` seconds (re-asking once halfway through for reliability).
-    Returns unique candidates (by IP). Socket errors return ``[]`` —
-    except a send refused the way a macOS Local Network denial refuses it,
-    which raises :class:`LocalNetworkDenied` (hgc-7he)."""
+    Returns unique candidates (by IP). Socket errors return ``[]``.
+
+    ``bind_ips`` (hgc-094): one query socket per local address, bound to it
+    with ``IP_MULTICAST_IF`` so the query leaves THAT interface — a VPN
+    holding the default route no longer swallows the LAN query. Empty /
+    ``None`` = one unbound socket (the OS picks the interface).
+
+    When EVERY send is refused the way a macOS Local Network denial refuses
+    it, raises :class:`LocalNetworkDenied` (hgc-7he) instead of returning
+    ``[]``."""
     query = build_mdns_query(service)
     found: Dict[str, Candidate] = {}
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    except OSError:
-        return []
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("", 0))
-        sock.settimeout(0.25)
-        deadline = time.monotonic() + max(0.5, timeout)
-        resend_at = time.monotonic() + max(0.5, timeout) / 2
+    addrs = list(bind_ips or [""])
+    socks: List[socket.socket] = []
+    denied = 0
+    for ip in addrs:
         try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError:
+            continue
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((ip, 0))
+            if ip:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                                socket.inet_aton(ip))
             sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
         except OSError as e:
-            if is_local_network_denial(e):
-                raise LocalNetworkDenied(LOCAL_NETWORK_HINT) from e
-            raise
-        while time.monotonic() < deadline:
+            denied += is_local_network_denial(e)
+            sock.close()
+            continue
+        socks.append(sock)
+    if not socks:
+        if denied == len(addrs):
+            raise LocalNetworkDenied(LOCAL_NETWORK_HINT)
+        return []
+    try:
+        deadline = time.monotonic() + max(0.5, timeout)
+        resend_at = time.monotonic() + max(0.5, timeout) / 2
+        while socks and time.monotonic() < deadline:
             if time.monotonic() >= resend_at:
                 resend_at = float("inf")
-                try:
-                    sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
-                except OSError:
-                    pass
+                for sock in socks:
+                    try:
+                        sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
+                    except OSError:
+                        pass
             try:
-                data, _addr = sock.recvfrom(9000)
-            except socket.timeout:
-                continue
-            except OSError:
+                ready, _, _ = select.select(socks, [], [], 0.25)
+            except (OSError, ValueError):
                 break
-            for cand in candidates_from_records(
-                    parse_mdns_response(data), service):
-                found.setdefault(cand.ip, cand)
-    except OSError:
-        pass
+            for sock in ready:
+                try:
+                    data, _addr = sock.recvfrom(9000)
+                except OSError:
+                    socks.remove(sock)  # a dead socket must not spin select
+                    sock.close()
+                    continue
+                for cand in candidates_from_records(
+                        parse_mdns_response(data), service):
+                    found.setdefault(cand.ip, cand)
     finally:
-        sock.close()
+        for sock in socks:
+            sock.close()
     return sorted(found.values(), key=lambda c: c.ip)
 
 
@@ -431,16 +456,85 @@ def probe_network(ip: str, prefixlen: Optional[int],
     return ipaddress.IPv4Network(f"{ip}/{max(width, floor)}", strict=False)
 
 
-def local_probe_network(*, max_hosts: int = MAX_PROBE_HOSTS
-                        ) -> Optional[ipaddress.IPv4Network]:
-    """The range :func:`probe_subnet` would sweep right now, or ``None``
-    when there is nothing probeable (no local IPv4, or a non-RFC 1918
-    address the probe refuses to scan). Lets the CLI name the range it
-    actually checked instead of claiming "the LAN"."""
-    me = local_ipv4()
-    if not me or not _is_rfc1918(me):
-        return None
-    return probe_network(me, local_prefixlen(me), max_hosts=max_hosts)
+#: Interface-name prefixes treated as VPN/tunnel links (alongside the
+#: POINTOPOINT flag). Scanned only when no physical private interface exists.
+_TUNNEL_PREFIXES = ("utun", "tun", "ppp", "ipsec", "wg", "gif", "stf")
+
+
+def _is_tunnel(name: str, p2p: bool) -> bool:
+    return p2p or name.lower().startswith(_TUNNEL_PREFIXES)
+
+
+def parse_interfaces(output: str
+                     ) -> List[Tuple[str, str, Optional[int], bool]]:
+    """``(name, ipv4, prefixlen, is_tunnel)`` for every IPv4 address on an
+    UP interface, read from ``ifconfig -a`` (BSD/macOS or net-tools) or
+    ``ip -o -4 addr show up`` output. Pure — the offline half of
+    :func:`local_interfaces`. ``prefixlen`` is ``None`` for an unparseable
+    netmask; down interfaces (ifconfig flags without ``UP``) are dropped."""
+    out: List[Tuple[str, str, Optional[int], bool]] = []
+    name: Optional[str] = None
+    up = p2p = False
+    for line in output.splitlines():
+        m = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)",
+                     line)
+        if m:  # iproute2 one-line form (already filtered to UP links)
+            out.append((m[1], m[2], int(m[3]), _is_tunnel(m[1], False)))
+            continue
+        m = re.match(r"^(\S+?):\s+flags=\S*<([^>]*)>", line)
+        if m:  # ifconfig interface header
+            flags = set(m[2].split(","))
+            name, up, p2p = m[1], "UP" in flags, "POINTOPOINT" in flags
+            continue
+        m = re.match(
+            r"^\s+inet\s+(\d+\.\d+\.\d+\.\d+)\b.*?\bnetmask\s+(\S+)", line)
+        if m and name and up:
+            out.append((name, m[1], netmask_to_prefixlen(m[2]),
+                        _is_tunnel(name, p2p)))
+    return out
+
+
+def local_interfaces() -> List[Tuple[str, str, Optional[int], bool]]:
+    """Every UP interface's IPv4 addresses (see :func:`parse_interfaces`),
+    or ``[]`` when neither ``ip`` nor ``ifconfig`` is available (Windows).
+    Shelling out because stdlib exposes no portable per-interface address
+    + netmask listing."""
+    for cmd in (["ip", "-o", "-4", "addr", "show", "up"], ["ifconfig", "-a"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        found = parse_interfaces(out or "")
+        if found:
+            return found
+    return []
+
+
+def probe_targets(*, max_hosts: int = MAX_PROBE_HOSTS
+                  ) -> List[Tuple[str, ipaddress.IPv4Network]]:
+    """``(our address, range to sweep)`` for every interface discovery
+    should look at (hgc-094): each UP interface with an RFC 1918 address —
+    physical ones only, unless there are none, in which case VPN/tunnel
+    links are used (a VPN holding the default route used to blind discovery
+    to the LAN). Each range is the interface's netmask capped at
+    ``max_hosts`` (:func:`probe_network`); interfaces sharing one range are
+    swept once. Without interface enumeration (no ``ip``/``ifconfig``) it
+    falls back to the default-route address (:func:`local_ipv4`). ``[]``
+    when nothing private is probeable."""
+    private = [i for i in local_interfaces() if _is_rfc1918(i[1])]
+    chosen = [i for i in private if not i[3]] or private
+    if not chosen:
+        me = local_ipv4()
+        if not me or not _is_rfc1918(me):
+            return []
+        chosen = [("", me, local_prefixlen(me), False)]
+    out: List[Tuple[str, ipaddress.IPv4Network]] = []
+    for _name, ip, plen, _tun in chosen:
+        net = probe_network(ip, plen, max_hosts=max_hosts)
+        if all(net != seen for _, seen in out):
+            out.append((ip, net))
+    return out
 
 
 _REDISCOVER = ("wrong IP, device off, or a stale device record? Re-run "

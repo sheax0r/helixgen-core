@@ -1095,11 +1095,13 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
 @click.option("--probe/--no-probe", default=True, show_default=True,
               help="If mDNS finds nothing, fall back to a bounded TCP "
                    "connect-probe of the LOCAL subnet only, on the "
-                   "Stadium's RPC port 2002. The range comes from the "
+                   "Stadium's RPC port 2002, once per private interface "
+                   "(see Known limitations). Each range comes from that "
                    "interface's own NETMASK (a /22 is probed as a /22, not "
                    "as a /24), capped at 1024 addresses around this "
-                   "machine's address, and the messages name the range "
-                   "actually probed (short timeouts, bounded concurrency; "
+                   "machine's address on it, and the messages name the "
+                   "ranges actually probed (short timeouts, bounded "
+                   "concurrency; "
                    "never probes beyond the local subnet, and refuses to "
                    "scan at all when the range is not in a private RFC "
                    "1918 range).")
@@ -1145,10 +1147,12 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
 
     \b
     Known limitations (backlog #77):
-      * Both mechanisms look at the DEFAULT-ROUTE interface. With a VPN
-        up, that is usually the tunnel — a LAN-attached Stadium can be
-        missed. Disconnect the VPN for the one-shot discover, or bypass
-        discovery with --ip / $HELIXGEN_HELIX_IP.
+      * FIXED (hgc-094): discovery no longer looks only at the
+        default-route interface. Every UP interface with a private
+        (RFC 1918) address gets its own mDNS query and probe range;
+        VPN/tunnel links (utun/tun/ppp/ipsec/wg) are used only when no
+        physical private interface exists, so a VPN holding the default
+        route no longer hides a LAN Stadium.
       * The mDNS listener hears unicast replies only (no multicast group
         join). The Stadium answers unicast (verified live, fw 1.3.2);
         firmware that replied only via multicast would fall through to
@@ -1179,18 +1183,28 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
 
     HelixClient, HelixError = _client()
 
+    # hgc-094: every UP private interface, not just the default route (a
+    # VPN holding it used to hide a LAN Stadium).
+    targets = discovery.probe_targets()
     try:
-        candidates = discovery.mdns_discover(timeout=timeout)
+        candidates = discovery.mdns_discover(
+            timeout=timeout, bind_ips=[me for me, _ in targets])
         probed = None
         if not candidates and probe:
-            # Name the range actually swept, never "the LAN" — the old
+            # Name the ranges actually swept, never "the LAN" — the old
             # wording asserted more than it checked (hc-3qw).
-            probed = discovery.local_probe_network()
+            probed = ", ".join(str(net) for _, net in targets) or None
             click.echo("mDNS found nothing — falling back to a TCP "
                        f"connect-probe of {probed or 'the local subnet'} "
                        "(port 2002)…", err=True)
+            if targets:
+                hits = sorted({ip for me, net in targets
+                               for ip in discovery.probe_subnet(
+                                   subnet_ip=me, prefixlen=net.prefixlen)})
+            else:  # nothing private found: the old path (warns + refuses)
+                hits = discovery.probe_subnet()
             candidates = [discovery.Candidate(ip=ip, via="probe")
-                          for ip in discovery.probe_subnet()]
+                          for ip in hits]
     except discovery.LocalNetworkDenied as e:
         # hgc-7he: not "found nothing" — this process can't reach the LAN.
         raise click.ClickException(

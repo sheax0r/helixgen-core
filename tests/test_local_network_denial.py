@@ -131,7 +131,7 @@ class TestDiscoveryDenial:
                 pass
         monkeypatch.setattr(discovery.socket, "socket", _Sock)
         with pytest.raises(discovery.LocalNetworkDenied):
-            discovery.mdns_discover(timeout=0.5)
+            discovery.mdns_discover(timeout=0.5, bind_ips=["192.168.4.87"])
 
     def test_discover_cli_reports_the_hint(self, monkeypatch):
         def denied(**kw):
