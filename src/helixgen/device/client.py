@@ -426,6 +426,9 @@ class HelixClient:
         * a blob argument that failed msgpack decoding (truncated chunked
           reply) → :class:`HelixError`;
         * a genuine empty-array reply → ``[]``.
+
+        Empty-position placeholders (no ``cid_``, no name; fw 1.4+) are never
+        returned.
         """
         replies = self._rpc("/GetContainerContents", [("i", cid)])
         if strict and not replies:
@@ -445,6 +448,12 @@ class HelixClient:
                         f"undecodable listing blob for container {cid} "
                         "(truncated chunked reply?); refusing a partial "
                         "listing — retry")
+        # fw 1.4 (build 1341) lists EVERY position of a slotted container —
+        # empty ones as placeholders with neither ``cid_`` nor ``name``. They
+        # are not content: drop them so empty positions read as empty again.
+        # (A NAMED row without a cid is kept — that is the "listed but no cid
+        # reported" create-confirmation state, see push_to_slot.)
+        items = [m for m in items if "cid_" in m or m.get("name")]
         return items
 
     def list_presets(self, container: int = USER, *,
