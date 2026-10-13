@@ -616,12 +616,17 @@ def _synth_parm(model_id: int, params: Dict[str, Any]) -> List[dict]:
     Values come from ``params`` (keyed by DEVICE param name) when present —
     preserving the caller's value type (bool/int/float), so lifted values
     round-trip exactly — else the model default from ``defs``.
+
+    A param the model only GAINED in the newest modeldefs (``added``: 1.4's
+    ``CabIdx`` on Agoura amps, ``CpuMonitor`` on harnesses) is emitted only
+    when ``params`` carries it: content that predates it stays a byte-exact
+    round trip, and an older firmware is never sent a pid it does not know.
     """
     mp = defs.model_params_for(model_id)
     parm: List[dict] = []
     for name, meta in mp.items():
         pid = meta.get("id")
-        if pid is None:
+        if pid is None or (meta.get("added") and name not in params):
             continue
         valu = params[name] if name in params else meta.get("def", 0.0)
         parm.append({"accs": 0, "cid_": 0, "mid_": model_id, "pid_": pid,

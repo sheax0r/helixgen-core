@@ -50,16 +50,51 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = REPO_ROOT / "src" / "helixgen" / "device" / "_defs_data.json"
 
 
-def find_modeldefs(resources: Path) -> Path:
-    """The highest-versioned ``modeldefs/p35md-*.bin`` (the app keeps every
-    past release's table side by side; versions compare numerically)."""
+def _releases(resources: Path) -> list[Path]:
+    """Every ``modeldefs/p35md-*.bin``, oldest first (the app keeps each past
+    release's table side by side; versions compare numerically)."""
     def version(p: Path) -> tuple[int, ...]:
         return tuple(int(x) for x in re.findall(r"\d+", p.stem.split("-", 1)[1]))
 
-    found = sorted((resources / "modeldefs").glob("p35md-*.bin"), key=version)
+    return sorted((resources / "modeldefs").glob("p35md-*.bin"), key=version)
+
+
+def find_modeldefs(resources: Path) -> Path:
+    """The highest-versioned ``modeldefs/p35md-*.bin``."""
+    found = _releases(resources)
     if not found:
         raise FileNotFoundError(f"no modeldefs/p35md-*.bin under {resources}")
     return found[-1]
+
+
+def find_previous_modeldefs(resources: Path) -> Path | None:
+    """The release before :func:`find_modeldefs`'s, or ``None``."""
+    found = _releases(resources)
+    return found[-2] if len(found) > 1 else None
+
+
+def added_params(models: dict, previous: dict) -> dict[str, set[str]]:
+    """``{model: {param names}}`` a model GAINED since ``previous`` — by pid, so
+    a rename (1.4's ``Pad.1`` -> ``Pad_1``, same pid) is not "new". Models new
+    in this release are skipped: there is no older content to stay faithful to.
+
+    The transcoder leaves these out of content that never carried them, so a
+    pre-release tone still round-trips byte-exact and an older firmware is
+    never sent a pid it does not know (1.4 itself tolerates them missing:
+    factory content on fw 1.4 lacks ``CabIdx``).
+    """
+    out: dict[str, set[str]] = {}
+    for name, mdef in models.items():
+        old = previous.get(name)
+        if not isinstance(mdef, dict) or not isinstance(old, dict):
+            continue
+        old_pids = {p.get("id") for p in (old.get("params") or {}).values()
+                    if isinstance(p, dict)}
+        new = {pn for pn, p in (mdef.get("params") or {}).items()
+               if isinstance(p, dict) and p.get("id") not in old_pids}
+        if new:
+            out[name] = new
+    return out
 
 
 def _read_two_json_objects(text: str):
@@ -136,6 +171,9 @@ def build(resources: Path) -> dict:
 
     catalog = parse_catalog(catalog_path)
     md_header, models = parse_modeldefs(modeldefs_path)
+    previous_path = find_previous_modeldefs(resources)
+    added = (added_params(models, parse_modeldefs(previous_path)[1])
+             if previous_path else {})
     cmd_header, commands = parse_commanddefs(commanddefs_path)
 
     name_to_id: dict[str, int] = {}
@@ -162,6 +200,8 @@ def build(resources: Path) -> dict:
             for k in ("min", "max", "def"):
                 if k in pdef:
                     entry[k] = pdef[k]
+            if pname in added.get(model_str, ()):
+                entry["added"] = modeldefs_path.name
             params_out[pname] = entry
         model_params[str(mid)] = params_out
 
@@ -169,6 +209,7 @@ def build(resources: Path) -> dict:
         "source": {
             "catalog": CATALOG_NAME,
             "modeldefs": modeldefs_path.name,
+            "previous_modeldefs": previous_path.name if previous_path else None,
             "commanddefs": COMMANDDEFS_NAME,
             "modeldefs_header": md_header,
             "commanddefs_header": cmd_header,

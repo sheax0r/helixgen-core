@@ -96,6 +96,26 @@ class TestTranscodeSynthesis:
         assert (pids[2], pids[22]) == (2, 2)          # Pad_1 / Pad_2
         assert (pids[3], pids[23]) == (-6.0, -3.0)    # Trim_1 / Trim_2
 
+    def test_param_new_in_1_4_is_not_synthesized(self):
+        """``CabIdx`` is new on every Agoura amp in the 1.4 defs. Content that
+        never carried it must not gain it: pre-1.4 tones stopped being a
+        round-trip fixed point, and a 1.3 device would be sent an unknown pid.
+        A model NEW in 1.4 has no such params, so it is synthesized whole."""
+        def amp_pids(model, params):
+            body = _hsp_body("P35_InputInst1", {}, extra_blocks={"b02": {
+                "type": "amp", "position": 2, "path": 0,
+                "slot": [{"model": model, "params": params}]}})
+            doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+            blk = [b for b in doc["sfg_"]["flow"][0]["blks"]
+                   if isinstance(b, dict) and b.get("type") not in (8, 9)][0]
+            return {p["pid_"]: p["valu"] for p in blk["mdls"][0]["parm"]}
+        cab_idx = transcode.defs.param_id_for("Agoura_AmpBritPlexi", "CabIdx")
+        assert cab_idx not in amp_pids("Agoura_AmpBritPlexi", {})
+        assert amp_pids("Agoura_AmpBritPlexi",
+                        {"CabIdx": {"value": 3}})[cab_idx] == 3
+        sl100 = transcode.defs.param_id_for("Agoura_AmpBritSL100", "CabIdx")
+        assert amp_pids("Agoura_AmpBritSL100", {})[sl100] == -1
+
     def test_output_params_survive(self):
         body = _hsp_body("P35_InputInst1", {}, {"gain": -4.5, "pan": 0.25})
         doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
@@ -275,8 +295,6 @@ class TestTrailsHarness:
              "snap": False, "tid_": 0, "valu": True},    # upper
             {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 13,
              "snap": False, "tid_": 0, "valu": -1},      # EvtIdx
-            {"accs": 0, "cid_": 0, "mid_": 97, "pid_": 15,
-             "snap": False, "tid_": 0, "valu": False},   # CpuMonitor (1.4)
         ], "snap": False, "tid_": 0, "vers": 0}
 
     def test_a_mono_block_gets_the_mono_trails_harness(self):

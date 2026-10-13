@@ -28,3 +28,17 @@ def test_no_modeldefs_raises(tmp_path):
     except FileNotFoundError:
         return
     raise AssertionError("expected FileNotFoundError")
+
+
+def test_params_new_since_the_previous_release_are_marked_by_pid():
+    """A param a model gained in this release (1.4's ``CabIdx`` on every
+    Agoura amp) is marked ``added`` so the transcoder can leave it out of
+    content that never carried it; a RENAME (same pid: ``Pad.1`` -> ``Pad_1``)
+    is not new, and a model new in this release has nothing to compare."""
+    prev = {"Amp": {"id": 1, "params": {"Drive": {"id": 1}, "Pad.1": {"id": 2}}}}
+    cur = {
+        "Amp": {"id": 1, "params": {"Drive": {"id": 1}, "Pad_1": {"id": 2},
+                                    "CabIdx": {"id": 26}}},
+        "NewAmp": {"id": 9, "params": {"Drive": {"id": 1}}},
+    }
+    assert bdd.added_params(cur, prev) == {"Amp": {"CabIdx"}}
