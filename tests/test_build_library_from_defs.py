@@ -140,3 +140,24 @@ def test_params_new_in_the_latest_defs_are_left_out(tmp_path):
     lib, _, _ = _fill(tmp_path)
     assert "CabIdx" not in lib.load_block("Agoura_AmpCali2CPlus").params
     assert "CabIdx" in lib.load_block("Agoura_AmpBritSL100").params
+
+
+def test_ingesting_a_real_export_of_a_generated_model_does_not_duplicate_it(tmp_path):
+    """A real ``.hsp`` block has no ``@category``, so ingest files it by the
+    prefix rule (``HD2_FM4AttackSynth`` -> filter) while the generator used the
+    catalog's (pitch). Dedup must find the existing entry by model id in ANY
+    category, or the library holds the model twice and its name stops
+    resolving ("matches multiple library entries")."""
+    from helixgen.ingest import block_from_raw
+    from helixgen.library import IngestStatus
+
+    lib, _, _ = _fill(tmp_path)
+    generated = lib.load_block("HD2_FM4AttackSynth")
+    assert generated.category == "pitch"
+    raw = dict(generated.exemplar)
+    raw.pop("@category", None)
+    sighted = block_from_raw(raw, {"preset": "real.hsp"})
+    assert sighted.category != "pitch"  # the prefix rule disagrees
+    assert lib.save_block_with_dedup(sighted) == IngestStatus.MATCH
+    assert len(list((tmp_path / "blocks").glob("*/HD2_FM4AttackSynth*.json"))) == 1
+    assert lib.find_block(generated.display_name).model_id == "HD2_FM4AttackSynth"

@@ -293,8 +293,17 @@ class Library:
         return json.loads(self.chassis_path.read_text())
 
     def save_block_with_dedup(self, block: Block) -> IngestStatus:
-        """Save a block, deduplicating by model_id and detecting conflicts."""
+        """Save a block, deduplicating by model_id and detecting conflicts.
+
+        The existing entry is looked up by model_id in EVERY category: an
+        ingested export files by the prefix rule while a generated entry
+        (``tools/build_library_from_defs.py``) files by the app catalog, and
+        the two disagree for some models (``HD2_FM4AttackSynth``: filter vs
+        pitch) — a per-category lookup would store the model twice.
+        """
         path = self.block_path(block.model_id, block.category)
+        if not path.exists() and self.blocks_dir.exists():
+            path = next(self.blocks_dir.glob(f"*/{block.model_id}.json"), path)
         if not path.exists():
             self.save_block(block)
             return IngestStatus.NEW
