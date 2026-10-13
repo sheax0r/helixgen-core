@@ -74,7 +74,8 @@ class StubClient:
     ip = "10.0.0.99"
 
     def __init__(self, *, pool=None, setlists=None, refs=None, irs=None,
-                 ir_paths=None, blobs=None, list_irs_error=None):
+                 ir_paths=None, blobs=None, list_irs_error=None,
+                 firmware="1.3.2"):
         self.pool = [dict(m) for m in (pool or [])]
         self.setlists = [dict(m) for m in (setlists or [])]
         self.refs = {k: [dict(m) for m in v] for k, v in (refs or {}).items()}
@@ -82,6 +83,7 @@ class StubClient:
         self.ir_paths = dict(ir_paths or {})
         self.blobs = dict(blobs or {})
         self.list_irs_error = list_irs_error
+        self.firmware = firmware
         self.calls = []
         self.strict = []
         self.loaded = []
@@ -117,7 +119,7 @@ class StubClient:
 
     def product_info(self):
         return {"serial": "SN-TEST-1", "model": "Stadium XL",
-                "firmware": "1.3.2"}
+                "firmware": self.firmware}
 
     def get_property(self, key):
         # A real device answers every global; returning a value keeps errors[]
@@ -159,7 +161,8 @@ def test_take_captures_setlist_ORDER_not_pool_order(tmp_path, two_presets):
     S.take(StubClient(**two_presets), tmp_path)
     order = json.loads(
         (tmp_path / "SN-TEST-1" / "setlists" / "Gigs.json").read_text())
-    assert order == ["Back In Black", "Dream On"]
+    assert order == [{"name": "Back In Black", "posi": 0},
+                     {"name": "Dream On", "posi": 1}]
 
 
 def test_take_is_non_activating(tmp_path, two_presets):
@@ -569,3 +572,274 @@ def test_firmware_specific_globals_are_skipped_whatever_the_failure(tmp_path, tw
 
     res = S.take(Old(**two_presets), tmp_path)
     assert res["errors"] == ["global global.tuner.type: no blob in reply"]
+
+
+# ---------------------------------------------------------------------------
+# hgc-6r5.14: fw 1.4 setlists keep real gaps — backups record posi, restore
+# puts each reference back at it, and NEVER leaves a desired preset absent
+# ---------------------------------------------------------------------------
+
+class Fw14Device:
+    """Stateful stand-in with the HW-characterized fw 1.4 setlist semantics:
+    a reference added at an EMPTY posi lands there; at an OCCUPIED posi it
+    REPLACES the incumbent; removal leaves a gap. Duplicate refs allowed."""
+
+    ip = "10.0.0.99"
+
+    def __init__(self, pool, refs, *, firmware="1.4.0", refuse_remove=(),
+                 drop_reference=()):
+        self.pool = [dict(m) for m in pool]          # [{cid_, name, posi}]
+        self.sl = {5001: "Gigs"}
+        self.refs = [dict(r) for r in refs]           # [{cid_, rcid, posi}]
+        self.firmware = firmware
+        self.refuse_remove = set(refuse_remove)      # pool names whose removal fails
+        self.drop_reference = set(drop_reference)    # pool names whose add is lost
+        self.next_cid = 9100
+
+    # reads
+    def product_info(self):
+        return {"serial": "SN-TEST-1", "firmware": self.firmware}
+
+    def list_presets(self, container=Container.POOL, *, strict=False):
+        return [dict(m) for m in self.pool]
+
+    def list_setlists(self, *, strict=False):
+        return [{"cid_": c, "name": n, "cctp": Cctp.SETLIST} for c, n in self.sl.items()]
+
+    def resolve_setlist_cid(self, name, **kw):
+        return next((c for c, n in self.sl.items() if n == name), None)
+
+    def list_container(self, cid, *, strict=False):
+        return [dict(r, cctp=Cctp.REFERENCE) for r in self.refs]
+
+    def find_by_pos(self, container, pos, *, strict=False):
+        return next((dict(r) for r in self.refs if r["posi"] == pos), None)
+
+    def ir_path_for_hash(self, h, *, strict=False):
+        return "x"
+
+    def get_content(self, cid):
+        return content()
+
+    def get_property(self, key):
+        return SimpleNamespace(value=f"v:{key}")
+
+    def list_irs(self, *, strict=False, **kw):
+        return []
+
+    # writes
+    from contextlib import nullcontext as _nc
+
+    def mutating(self):
+        return self._nc()
+
+    def _name(self, pool_cid):
+        return next((m["name"] for m in self.pool if m["cid_"] == pool_cid), None)
+
+    def reference_into_setlist(self, sl_cid, pool_cid, pos):
+        if self._name(pool_cid) in self.drop_reference:
+            raise HelixError("connection dropped")
+        self.refs = [r for r in self.refs if r["posi"] != pos]   # REPLACE
+        self.next_cid += 1
+        self.refs.append({"cid_": self.next_cid, "rcid": pool_cid, "posi": pos})
+        return self.next_cid
+
+    def remove_reference(self, sl_cid, ref_cid):
+        r = next(r for r in self.refs if r["cid_"] == ref_cid)
+        if self._name(r["rcid"]) in self.refuse_remove:
+            return False
+        self.refs.remove(r)
+        return True
+
+    # helpers
+    def layout(self):
+        return sorted((r["posi"], self._name(r["rcid"]) if any(
+            m["cid_"] == r["rcid"] for m in self.pool) else None) for r in self.refs)
+
+
+POOL = [{"cid_": 101, "name": "X", "posi": 0}, {"cid_": 102, "name": "Y", "posi": 1},
+        {"cid_": 103, "name": "Z", "posi": 2}]
+
+
+def _ref(cid, rcid, posi):
+    return {"cid_": cid, "rcid": rcid, "posi": posi}
+
+
+def _backup(tmp_path, refs, firmware="1.4.0"):
+    S.take(Fw14Device(POOL, refs, firmware=firmware), tmp_path)
+
+
+def _restore(tmp_path, dev, **kw):
+    plan = S.plan_restore(dev, tmp_path, serial="SN-TEST-1", **kw)
+    res = S.apply_restore(dev, plan)
+    return plan, res
+
+
+def _names(dev):
+    return sorted(n for _p, n in dev.layout())
+
+
+def test_take_records_the_posi_of_a_gapped_setlist(tmp_path):
+    _backup(tmp_path, [_ref(9001, 102, 0), _ref(9002, 101, 3)])
+    order = json.loads((tmp_path / "SN-TEST-1" / "setlists" / "Gigs.json").read_text())
+    assert order == [{"name": "Y", "posi": 0}, {"name": "X", "posi": 3}]
+
+
+def test_restore_puts_references_back_at_their_recorded_posi(tmp_path):
+    _backup(tmp_path, [_ref(9001, 102, 0), _ref(9002, 101, 3)])
+    dev = Fw14Device(POOL, [])
+    plan, res = _restore(tmp_path, dev)
+    assert res["ok"], res
+    assert dev.layout() == [(0, "Y"), (3, "X")]
+
+
+def test_restore_of_a_matching_gapped_setlist_is_a_no_op(tmp_path):
+    refs = [_ref(9001, 102, 0), _ref(9002, 101, 3)]
+    _backup(tmp_path, refs)
+    plan = S.plan_restore(Fw14Device(POOL, refs), tmp_path, serial="SN-TEST-1")
+    assert [o for o in plan["ops"] if o["op"] != "push_ir"] == [] and not plan["errors"]
+
+
+def test_restore_moves_a_misplaced_reference_add_first(tmp_path):
+    _backup(tmp_path, [_ref(9001, 102, 0), _ref(9002, 101, 3)])   # want Y@0 X@3
+    dev = Fw14Device(POOL, [_ref(9001, 102, 0), _ref(9002, 101, 1)])
+    plan, res = _restore(tmp_path, dev)
+    assert res["ok"], res
+    assert dev.layout() == [(0, "Y"), (3, "X")]
+
+
+def test_restore_swaps_two_references_by_parking(tmp_path):
+    _backup(tmp_path, [_ref(9001, 101, 1), _ref(9002, 102, 0)])   # want X@1 Y@0
+    dev = Fw14Device(POOL, [_ref(9001, 101, 0), _ref(9002, 102, 1)])
+    plan, res = _restore(tmp_path, dev)
+    assert res["ok"], res
+    assert dev.layout() == [(0, "Y"), (1, "X")]
+
+
+def test_swap_with_a_refused_remove_never_loses_a_reference(tmp_path):
+    """Coordinator repro: device X@0,Y@1, backup X@1,Y@0, removing Y refused.
+    The old remove-all-then-add order lost X and duplicated Y."""
+    _backup(tmp_path, [_ref(9001, 101, 1), _ref(9002, 102, 0)])
+    dev = Fw14Device(POOL, [_ref(9001, 101, 0), _ref(9002, 102, 1)],
+                     refuse_remove={"Y"})
+    plan, res = _restore(tmp_path, dev)
+    assert not res["ok"]
+    assert {"X", "Y"} <= set(_names(dev))
+    # and the setlist is still restorable afterwards (no permanent wedge)
+    dev.refuse_remove = set()
+    plan2, res2 = _restore(tmp_path, dev)
+    assert res2["ok"], res2
+    assert [n for p, n in dev.layout() if p in (0, 1)] == ["Y", "X"]
+
+
+def test_a_dropped_add_leaves_the_reference_where_it_was(tmp_path):
+    _backup(tmp_path, [_ref(9002, 101, 3)])                       # want X@3
+    dev = Fw14Device(POOL, [_ref(9001, 101, 1)], drop_reference={"X"})
+    plan, res = _restore(tmp_path, dev)
+    assert not res["ok"]
+    assert dev.layout() == [(1, "X")]
+
+
+def test_restore_never_clobbers_an_incumbent_outside_the_backup(tmp_path):
+    _backup(tmp_path, [_ref(9001, 102, 0), _ref(9002, 101, 3)])   # want Y@0 X@3
+    dev = Fw14Device(POOL, [_ref(9001, 102, 0), _ref(9003, 103, 3)])  # Z holds 3
+    plan, res = _restore(tmp_path, dev)
+    assert any("'Z'" in e and "3" in e for e in plan["errors"])
+    assert dev.layout() == [(0, "Y"), (3, "Z")]
+    plan, res = _restore(tmp_path, dev, prune=True)
+    assert res["ok"], res
+    assert dev.layout() == [(0, "Y"), (3, "X")]
+
+
+def test_restore_never_removes_a_misplaced_reference_it_cannot_put_back(tmp_path):
+    _backup(tmp_path, [_ref(9001, 102, 0), _ref(9002, 101, 3)])
+    dev = Fw14Device(POOL, [_ref(9001, 102, 0), _ref(9002, 101, 1), _ref(9003, 103, 3)])
+    plan, res = _restore(tmp_path, dev)
+    assert dev.layout() == [(0, "Y"), (1, "X"), (3, "Z")]
+    assert any("'Z'" in e for e in plan["errors"])
+
+
+def test_a_setlist_referencing_one_preset_twice_restores_cleanly(tmp_path):
+    refs = [_ref(9001, 101, 0), _ref(9002, 101, 4)]
+    _backup(tmp_path, refs)
+    plan = S.plan_restore(Fw14Device(POOL, refs), tmp_path, serial="SN-TEST-1")
+    assert not plan["errors"] and [o for o in plan["ops"] if o["op"] != "push_ir"] == []
+    dev = Fw14Device(POOL, [_ref(9001, 101, 0)])
+    plan, res = _restore(tmp_path, dev)
+    assert res["ok"], res
+    assert dev.layout() == [(0, "X"), (4, "X")]
+
+
+def test_dangling_references_are_pruned_by_ref_cid(tmp_path):
+    _backup(tmp_path, [_ref(9001, 101, 0)])
+    dev = Fw14Device(POOL, [_ref(9001, 101, 0), _ref(9005, 777, 2), _ref(9006, 778, 3)])
+    plan = S.plan_restore(dev, tmp_path, serial="SN-TEST-1")
+    assert not plan["errors"]                     # dangling refs don't wedge it
+    plan, res = _restore(tmp_path, dev, prune=True)
+    assert res["ok"], res
+    assert dev.layout() == [(0, "X")]
+
+
+def test_a_gapped_backup_is_refused_on_pre_1_4_firmware(tmp_path):
+    _backup(tmp_path, [_ref(9001, 102, 0), _ref(9002, 101, 3)])
+    dev = Fw14Device(POOL, [], firmware="1.3.2")
+    plan = S.plan_restore(dev, tmp_path, serial="SN-TEST-1")
+    assert [o for o in plan["ops"] if o["op"] != "push_ir"] == []
+    assert any("1.4" in e for e in plan["errors"])
+
+
+def test_apply_reference_refuses_an_occupied_posi_at_write_time():
+    dev = Fw14Device(POOL, [_ref(9009, 103, 3)])
+    with pytest.raises(HelixError, match="occupied"):
+        S._apply_op(dev, {"op": "reference", "setlist": "Gigs", "name": "X", "pos": 3})
+    assert dev.layout() == [(3, "Z")]
+
+
+@pytest.mark.parametrize("doc", [
+    [{"name": "A", "posi": 1}, {"name": "B", "posi": 1}],
+    [{"name": "A", "posi": 1}, {"name": "B"}],
+    [{"name": "A", "posi": 128}],
+])
+def test_a_posi_file_with_duplicate_or_bad_posi_is_malformed(doc):
+    assert S._desired_refs(doc) is None
+
+
+def test_legacy_names_with_nulls_restore_compact():
+    assert S._desired_refs(["A", None, "B"]) == [("A", 0), ("B", 1)]
+
+
+def test_an_acked_add_that_never_landed_never_removes_the_only_copy(tmp_path):
+    """Verifier repro: the REAL reference_into_setlist falls back to matching
+    rcid alone, so an add the device acks but never lands returns the OLD
+    source ref's cid. The move must confirm a NEW row at the target by strict
+    re-list before removing anything."""
+    from helixgen.device.client import HelixClient
+
+    class AckNoLand(Fw14Device):
+        def _create_copy(self, sl, cids, pos):
+            return True
+
+        def reference_into_setlist(self, sl, pc, pos):
+            return HelixClient.reference_into_setlist(self, sl, pc, pos)
+
+    _backup(tmp_path, [_ref(9001, 101, 3)])
+    dev = AckNoLand(POOL, [_ref(8001, 101, 1)])
+    plan, res = _restore(tmp_path, dev)
+    assert not res["ok"]
+    assert dev.layout() == [(1, "X")]
+
+
+def test_leftover_references_are_reported_without_prune(tmp_path):
+    _backup(tmp_path, [_ref(9001, 101, 0)])
+    dev = Fw14Device(POOL, [_ref(9001, 101, 0), _ref(9002, 102, 2), _ref(9005, 777, 4)])
+    plan = S.plan_restore(dev, tmp_path, serial="SN-TEST-1")
+    line = next(l for l in plan["summary"] if l.startswith("note: keeping"))
+    assert "'Y'@2" in line and "'(dangling)'@4" in line and "--prune" in line
+
+
+def test_a_dangling_blocker_is_named_dangling(tmp_path):
+    _backup(tmp_path, [_ref(9001, 101, 3)])
+    dev = Fw14Device(POOL, [_ref(9001, 101, 1), _ref(9005, 777, 3)])
+    plan = S.plan_restore(dev, tmp_path, serial="SN-TEST-1")
+    assert any("'(dangling)'" in e for e in plan["errors"])
+    assert not any("None" in e for e in plan["errors"])

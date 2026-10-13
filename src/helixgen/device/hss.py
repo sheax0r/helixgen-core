@@ -68,7 +68,7 @@ import tarfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 HSP_MAGIC = b"rpshnosj"        # .hsp preset file magic (== helixgen.hsp.HSP_MAGIC)
 _SBEPGSM_MAGIC = b"_sbepgsm"   # device edit-buffer content magic
@@ -357,10 +357,34 @@ def _installable_content(slot: HssSlot) -> bytes:
     fmt = slot.payload_format or detect_payload_format(slot.blob)
     if fmt == FMT_HSP:
         body = json.loads(slot.blob[len(HSP_MAGIC):].decode("utf-8"))
-        return transcode.hsp_to_sbepgsm(body)
+        # strict (hgc-6r5.13): an unresolvable block fails the slot loudly
+        # instead of being silently dropped — same as `device copy`.
+        return transcode.hsp_to_sbepgsm(body, strict=True)
     if fmt == FMT_SBEPGSM:
         return content.to_content_data(slot.blob)
     raise ValueError("payload is neither a .hsp preset nor a device content blob")
+
+
+def prepare_slot(slot: HssSlot) -> Tuple[Optional[bytes], Optional[str]]:
+    """``(device content, None)`` for an importable filled slot, else
+    ``(None, per-slot error)``. Pure — no device; ``--dry-run`` uses it so the
+    preview reports exactly the slots the real import would fail (including
+    a strict-transcode failure on an unresolvable block)."""
+    name = hss_slot_label(slot)
+    fmt = slot.payload_format or detect_payload_format(slot.blob)
+    if fmt == FMT_UNKNOWN:
+        return None, (f"slot {slot.pos} ({name!r}): payload is neither a .hsp "
+                      f"preset (rpshnosj) nor a device content blob; skipped, "
+                      f"nothing written to the device")
+    try:
+        return _installable_content(slot), None
+    except Exception as e:  # noqa: BLE001 — untrusted embedded payload: a
+        # structurally malformed .hsp (magic present, body not a proper preset
+        # dict) raises AttributeError/TypeError deep inside the transcoder, not
+        # just ValueError. ANY failure must become a per-slot error so the
+        # import continues and already-installed slots aren't orphaned.
+        return None, (f"slot {slot.pos} ({name!r}): could not decode/transcode "
+                      f"payload ({type(e).__name__}: {e})")
 
 
 def import_bundle(client: Any, bundle: HssBundle, *,
@@ -408,6 +432,13 @@ def import_bundle(client: Any, bundle: HssBundle, *,
         return {"ok": True, "setlist": target_setlist, "cid": None, "created": False,
                 "installed": [], "warnings": [], "errors": []}
 
+    prepared = {s.pos: prepare_slot(s) for s in filled}
+    if all(blob is None for blob, _err in prepared.values()):
+        # nothing importable: don't leave an empty setlist behind
+        return {"ok": False, "setlist": target_setlist, "cid": None,
+                "created": False, "installed": [], "warnings": [],
+                "errors": [err for _b, err in prepared.values()]}
+
     setlist_cid = client.resolve_setlist_cid(target_setlist)
     created = False
     if setlist_cid is None:
@@ -433,13 +464,11 @@ def import_bundle(client: Any, bundle: HssBundle, *,
     errors: List[str] = []
     for s in filled:
         name = hss_slot_label(s)
-        fmt = s.payload_format or detect_payload_format(s.blob)
-        if fmt == FMT_UNKNOWN:
-            errors.append(
-                f"slot {s.pos} ({name!r}): payload is neither a .hsp preset "
-                f"(rpshnosj) nor a device content blob; skipped, nothing "
-                f"written to the device")
+        blob, err = prepared[s.pos]
+        if blob is None:
+            errors.append(err)
             continue
+        fmt = s.payload_format or detect_payload_format(s.blob)
         # Cross-check the manifest type token against the magic-detected format
         # (magic wins; a mismatch is advisory, not fatal).
         manifest_type = s.raw_entry.get("type")
@@ -457,19 +486,6 @@ def import_bundle(client: Any, bundle: HssBundle, *,
             warnings.append(
                 f"slot {s.pos} ({name!r}): unexpected manifest type "
                 f"{manifest_type!r}; proceeding on the {fmt!r} payload magic")
-        try:
-            blob = _installable_content(s)
-        except Exception as e:  # noqa: BLE001 — untrusted embedded payload: a
-            # structurally malformed .hsp (magic present, body not a proper
-            # preset dict) raises AttributeError/TypeError deep inside the
-            # transcoder, not just ValueError. ANY failure here must become a
-            # per-slot error so the loop continues and already-installed slots
-            # aren't orphaned by an escaping exception (the docstring's
-            # per-slot fail-closed contract).
-            errors.append(
-                f"slot {s.pos} ({name!r}): could not decode/transcode payload "
-                f"({type(e).__name__}: {e})")
-            continue
         try:
             pool_cid = client.install_into_pool(blob, name)
         except (HelixError, ValueError) as e:

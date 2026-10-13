@@ -163,3 +163,22 @@ def test_register_existing_hsp(cli, hsp):
     code, out, err = cli("register", hsp)
     assert code == 0, err or out
     assert "registered" in out
+
+
+def test_generate_never_writes_the_real_tones_dir(cli, scratch, amp_blocks,
+                                                  live_env):
+    """hgc-6r5.12: generate auto-registers the tone under
+    ``$HELIXGEN_LIBRARY/tones``; the suite env must route that to scratch,
+    never the user's real library (13 HGTEST-*.hsp leaked there once)."""
+    from pathlib import Path
+
+    from .conftest import _REAL_HELIXGEN
+    real_tones = _REAL_HELIXGEN / "library" / "tones"
+    before = set(real_tones.glob("*")) if real_tones.is_dir() else set()
+    generate_hsp(cli, scratch, f"{HGTEST} Tones Isolation",
+                 amp_blocks[0]["display_name"])
+    after = set(real_tones.glob("*")) if real_tones.is_dir() else set()
+    assert after == before, f"leaked into real tones dir: {after - before}"
+    lib = Path(live_env["HELIXGEN_LIBRARY"]).resolve()
+    assert not lib.is_relative_to(_REAL_HELIXGEN.resolve() / "library")
+    assert list((lib / "tones").glob("HGTEST-Tones-Isolation*"))

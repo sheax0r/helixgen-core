@@ -37,7 +37,7 @@ operation; it does not read or write the manifest at all.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .client import Cctp, Container
 
@@ -50,6 +50,24 @@ from .client import Cctp, Container
 #: — pass its container cid as the <setlist> argument instead (a literal
 #: integer is accepted and used as the container cid directly).
 SETLISTS_ROOT_KEYWORD = "setlists"
+
+#: Positions in a device setlist (fw 1.4 lists every one).
+SETLIST_SLOTS = 128
+
+def _firmware(client) -> str:
+    try:
+        return str((client.product_info() or {}).get("firmware") or "")
+    except Exception:  # noqa: BLE001 - identity is advisory
+        return ""
+
+
+def _fw_at_least(fw: str, want: Tuple[int, ...]) -> bool:
+    """``fw`` ("major.minor.patch") >= ``want``; unknown reads as older."""
+    try:
+        return tuple(int(x) for x in fw.split(".")[:len(want)]) >= want
+    except ValueError:
+        return False
+
 
 _INT_RE = re.compile(r"-?\d+")
 
@@ -183,6 +201,7 @@ def reorder_setlist_item(client, setlist: str, target: str,
     warnings: List[str] = []
     s = str(setlist).strip()
     lit = _as_int_literal(s)
+    is_setlist = False
     if s.casefold() == SETLISTS_ROOT_KEYWORD:
         is_root = True
         container_cid = int(Container.SETLISTS_ROOT)
@@ -206,6 +225,7 @@ def reorder_setlist_item(client, setlist: str, target: str,
             cid_present = (
                 lit == int(Container.POOL)
                 or any(m.get("cid_") == lit for m in setlists))
+            is_setlist = any(m.get("cid_") == lit for m in setlists)
             if clashes and cid_present:
                 cids = ", ".join(str(m.get("cid_")) for m in clashes)
                 warnings.append(
@@ -224,6 +244,7 @@ def reorder_setlist_item(client, setlist: str, target: str,
     else:
         is_root = False
         container_cid = client.resolve_setlist_cid(setlist)
+        is_setlist = container_cid is not None
         if container_cid is None:
             raise ValueError(
                 f"no setlist named {setlist!r} on the device (create it "
@@ -233,13 +254,6 @@ def reorder_setlist_item(client, setlist: str, target: str,
     # (bounds check + which cid gets moved) — a truncated/partial read could
     # misresolve the target or accept an out-of-range position silently.
     items = client.list_container(container_cid, strict=True)
-    # Bounds-check the destination against the fresh listing — how the device
-    # handles an out-of-range newPos is uncharacterized, so refuse it here.
-    n = len(items)
-    if not 0 <= int(to_index) < max(n, 1):
-        raise ValueError(
-            f"--to {to_index} is out of range for container {container_cid} "
-            f"({n} item(s); valid positions 0..{max(n - 1, 0)})")
     pool_names = None
     if not is_root:
         pool_names = {m.get("cid_"): m.get("name")
@@ -255,7 +269,42 @@ def reorder_setlist_item(client, setlist: str, target: str,
         raise ValueError(
             f"cid {moved_cid} is not in container {container_cid} "
             f"(its item cids: {have})")
-    new_items = client.reorder_container(container_cid, [moved_cid], to_index)
+    # ``to_index`` is the destination POSI (hgc-6r5.14). fw 1.4 setlists have
+    # real gaps, and the device's newPos is a move-before insertion point
+    # over the container's full slot array (placeholders included): moving
+    # DOWN lands at newPos-1, UP at newPos, with the slots in between shifted
+    # one place (HW-characterized fw 1.4, docs/helix-protocol.md). A newPos
+    # past the last slot parks the item at an unlisted posi, so refuse it.
+    to = int(to_index)
+    fw = _firmware(client) if is_setlist else ""
+    if is_setlist and not fw:
+        # fw 1.4 setlists take a posi, older ones an index — guessing wrong
+        # lands the preset one slot off (or shifts the wrong slots).
+        raise ValueError(
+            "could not read the device firmware version, so the setlist "
+            "position semantics (fw 1.4 posi vs older index) are unknown; "
+            "refusing to reorder — check the connection and retry")
+    if not (is_setlist and _fw_at_least(fw, (1, 4))):
+        # ponytail: only fw 1.4 SETLIST newPos semantics are HW-characterized;
+        # the pool, the setlists root, any other container and older firmware
+        # keep the old verbatim index + row-count bound until probed.
+        if not 0 <= to < max(len(items), 1):
+            raise ValueError(
+                f"--to {to_index} is out of range for container "
+                f"{container_cid} ({len(items)} item(s); valid positions "
+                f"0..{max(len(items) - 1, 0)})")
+        new_pos = to
+    else:
+        if not 0 <= to < SETLIST_SLOTS:
+            raise ValueError(
+                f"--to {to_index} is out of range for container "
+                f"{container_cid} (valid positions 0..{SETLIST_SLOTS - 1})")
+        cur = next(m.get("posi") for m in items if m.get("cid_") == moved_cid)
+        if not isinstance(cur, int) or isinstance(cur, bool):
+            raise ValueError(f"cid {moved_cid} has no listed position; "
+                             "refusing to guess the move direction")
+        new_pos = to + 1 if to > cur else to
+    new_items = client.reorder_container(container_cid, [moved_cid], new_pos)
     return {"ok": True, "container": container_cid, "moved_cid": moved_cid,
-            "new_pos": int(to_index), "items": new_items,
+            "new_pos": to, "items": new_items,
             "warnings": warnings}

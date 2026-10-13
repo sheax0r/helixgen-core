@@ -81,12 +81,18 @@ def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
 
 def _hss_print_dry_run(hss_file, target_setlist, filled, hss_mod) -> None:
     """`--dry-run` output for `device setlist import-hss`: the filled slots that
-    would be imported, flagging any non-.hsp/non-content payload as a skip."""
+    would be imported, flagging any slot the import would fail (unrecognized
+    payload, or a strict-transcode failure such as an unresolvable block)."""
     click.echo(f"DRY RUN: would import {len(filled)} preset(s) into "
                f"setlist {target_setlist!r}:")
     for s in filled:
-        note = (f"  [{s.payload_format}]" if hss_mod.looks_like_content_blob(s.blob)
-                else "  (would SKIP: payload isn't a .hsp or content blob)")
+        # the real import's own preflight (strict transcode included), so the
+        # preview never calls a slot importable that the import will fail
+        _blob, err = hss_mod.prepare_slot(s)
+        note = (f"  [{s.payload_format}]" if err is None
+                else "  (would SKIP: payload isn't a .hsp or content blob)"
+                if not hss_mod.looks_like_content_blob(s.blob)
+                else f"  (would FAIL: {err.split(': ', 1)[-1]})")
         click.echo(f"  slot {s.pos}: {hss_mod.hss_slot_label(s)}{note}")
 
 
@@ -709,7 +715,7 @@ def device() -> None:
 
     BACKUP / RESTORE: `device backup` photographs the device into
     $HELIXGEN_HOME/backup/<serial>/ (pool/*.sbe = the device's own bytes,
-    setlists/*.json = order, plus IRs) — git-trackable, and `--dry-run` is the
+    setlists/*.json = each reference's position, plus IRs) — git-trackable, and `--dry-run` is the
     diff against the live device. `device restore` replays one; `--prune`
     (which DELETES presets absent from the snapshot) is the one destructive
     path here. `device decode` renders a .sbe as JSON for git diffs.
@@ -2003,7 +2009,7 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
 @click.argument("setlist")
 @click.argument("target")
 @click.option("--to", "to_index", type=int, required=True,
-              help="New 0-based position within the container.")
+              help="Destination POSITION (posi, 0-based) the item lands on — a setlist has 128 (0..127), gaps included.")
 @_device_option
 @_locked("library", verb="reorder")
 def device_reorder(setlist: str, target: str, to_index: int,
@@ -2020,8 +2026,15 @@ def device_reorder(setlist: str, target: str, to_index: int,
     parsed as a cid, never a display name. If an item is display-named that
     digit string, the cid reading wins with a stderr warning when the cid
     resolves in the container, and the command errors (naming the item's
-    real cid) when it doesn't. --to is bounds-validated against the
-    container's current length.
+    real cid) when it doesn't.
+
+    --to is the destination POSITION (posi) the item lands on, not an index
+    among the listed items: fw 1.4 setlists keep real gaps, so `--to 5` in a
+    two-preset setlist is a valid empty position. Items between the old and
+    new position shift one place (gaps shift with them). Bounds: a setlist
+    0..127 (fw 1.4+). Older firmware, the pool (-2) and the setlists
+    root keep --to as an index bounded by the current length; a setlist
+    reorder is refused when the firmware version can't be read.
 
     This is a direct, immediate DEVICE-side write. For the ordinary
     name-addressed form of the same move, prefer `device move <name> --in
@@ -2745,7 +2758,7 @@ def device_rm(name, setlist, also_pool, cid, yes, as_json, ip, port):
 @click.option("--in", "setlist", required=True,
               help="Setlist to reorder within (case-insensitive).")
 @click.option("--to", "to", type=int, required=True,
-              help="Destination position (0-based) in the setlist order.")
+              help="Destination POSITION (posi, 0..127) in the setlist — gaps count; items in between shift one place.")
 @click.option("--cid", type=int, default=None,
               help="Disambiguate a duplicate preset NAME by content id.")
 @click.option("--json", "as_json", is_flag=True, default=False)
@@ -3035,14 +3048,17 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     Both the container framing (header/gzip/tar/manifest/128-slot/empty-sentinel)
     and the FILLED-slot framing are pinned against real captured exports. A
     filled slot embeds the preset's `.hsp` (magic `rpshnosj` + JSON); it is
-    transcoded to device content on the way in. Device content blobs
-    (`_sbepgsm` / `/SetContentData`) are also accepted (detected by magic).
+    transcoded to device content on the way in, STRICTLY (as `device copy`):
+    a block whose model can't be resolved fails that slot with an error naming
+    the model — never installed with the block silently dropped. Device
+    content blobs (`_sbepgsm` / `/SetContentData`) are also accepted (detected
+    by magic).
 
-    Imported presets are recorded in the local tone library as PATHLESS tones
-    (source `import-hss`) with membership in the destination setlist, so a
-    later `device sync <setlist>` preserves their references instead of
-    stripping them. They have no local `.hsp`, so `device slots restore`
-    can't re-author them.
+    Imported presets live only on the device: nothing local records them. To
+    bring one into the library, pull it back with `device to-hsp <cid>`.
+    `--dry-run` runs the same per-slot preflight (strict transcode included)
+    and flags every slot the import would fail; if NO slot is importable the
+    destination setlist is not created.
 
     NOT idempotent on retry: re-running after a partial failure installs and
     references the already-succeeded slots AGAIN (duplicate pool presets +
@@ -3225,8 +3241,17 @@ def device_restore(root, serial, git_ref, setlist, prune, dry_run, yes,
                    as_json, ip, port):
     """Replay a device photograph onto the hardware.
 
-    Pool content first, then setlist order. Additive-and-update by default:
-    it creates what is missing and updates what differs, and never deletes.
+    Pool content first, then setlist membership: each reference goes back at
+    its RECORDED position (gaps preserved; a pre-position backup restores
+    compact, 0..n-1; a gapped backup is refused on firmware < 1.4). A
+    misplaced reference is moved ADD-FIRST — re-added at its position, then
+    the old one removed — so a failed step never leaves the preset absent;
+    swaps park one reference at a free position. A position held by a
+    preset the backup does not have there is reported, never overwritten,
+    unless --prune removes that reference. Additive-and-update by default:
+    it creates what is missing and updates what differs, and never deletes
+    a preset (without --prune the only references removed are the old
+    copies of ones just re-added).
 
     --prune ALSO deletes device presets the snapshot does not have. That is
     the one genuinely destructive path here and it has no undo on the device
@@ -3296,7 +3321,8 @@ def device_backup(root, dry_run: bool, as_json: bool, ip: str, port: int) -> Non
     """Photograph the device into <root>/<serial>/ — pool, setlists, IRs.
 
     Writes the device's OWN content bytes (pool/<Name>.sbe), each setlist's
-    reference order (setlists/<Name>.json), the device's processed IRs, and
+    references with their positions (setlists/<Name>.json: [{name, posi}] —
+    fw 1.4 setlists keep real gaps), the device's processed IRs, and
     device.json. `.sbe` rather than `.hsp` because `device to-hsp` drops
     Command Center and MIDI CC bindings — an .hsp backup would restore a
     damaged preset. `device decode` renders the bytes for git diffs.

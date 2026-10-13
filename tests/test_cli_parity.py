@@ -109,7 +109,7 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
     ("device_install_preset", ["device", "copy"],
      ["Transcodes", "UPDATED", "IN PLACE", "no-irs"]),
     ("device_import_hss", ["device", "setlist", "import-hss"],
-     ["NOT idempotent", "offline", "PATHLESS"]),
+     ["NOT idempotent", "offline", "nothing local records them", "would fail"]),
     ("device_export_hss", ["device", "setlist", "export-hss"],
      ["SKIPPED", "local `.hsp`"]),
     # NOT "setlist" — that appears in the usage line, so the row asserted

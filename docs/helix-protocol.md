@@ -441,7 +441,7 @@ Live-control commands pinned by the 2026-07-14 capture (full writeup:
 |----|---------|-----------------|-------|
 | **Recall snapshot (live)** | `/activateSnapshot` | `,ii` → `[cmd, snapshotIndex]` | Index **absolute, 0-based**. Followed by `/setBatchedParamVals` (the snapshot's param deltas). No atomic *copy*-snapshot opcode exists — the app duplicates via `/AddContentsToContainer` or a batch of property writes. Read the current index with `/ActiveSnapshotIndexGet` → `/getActiveSnapshotIndex [reqid, index]` (live-verified 2026-07-15). |
 | **Bypass/enable block (live)** | `/BlockEnableSet` | `,iiii` → `[cmd, dsp, grid_slot, enable]` | `enable` 0/1; echoed `/setBlockEnable` on 2001. |
-| **Reorder container** | `/ReorderContainerContent` | `,iibi` → `[cmd, containerCID, msgpack[movedCIDs], newPos]` | Moves the listed CIDs to `newPos`. Works on both a **setlist's presets** and the **setlists** themselves (a setlist is a container under `-5`). `/updateContainerContent` returns the new order. |
+| **Reorder container** | `/ReorderContainerContent` | `,iibi` → `[cmd, containerCID, msgpack[movedCIDs], newPos]` | Moves the listed CIDs to `newPos` — on fw 1.4 a **posi** move-before insertion point (see §9 "fw 1.4 setlist positions"). Works on both a **setlist's presets** and the **setlists** themselves (a setlist is a container under `-5`). `/updateContainerContent` returns the new order. |
 
 `/LoadPresetWithCID` (above) is **load-by-CID** — the app's "make active" click
 is this same command; there is no separate active-index (backlog #1 resolved).
@@ -851,6 +851,49 @@ footswitch/controller assignment commands are parameterised on the device.
   `cid_` and no `name`** (1.3.2 listed occupied positions only). They are not
   content: `HelixClient.list_container` drops them, so every caller (listing,
   backup, lowest-empty-position placement) sees empty positions as empty.
+- **fw 1.4 setlist positions: reorder, create, gaps** (hgc-6r5.14,
+  live-verified 2026-10-13, Stadium XL fw 1.4.0, scratch setlist
+  `HGTEST-gaps`; every step confirmed by the `/updateContainerContent`
+  reply AND a strict re-list):
+  - **`/ReorderContainerContent` `newPos` is a POSI, and a move-before
+    insertion point over the full 128-slot array (placeholders included)** —
+    not an index among the listed items. Moving UP lands at `newPos`;
+    moving DOWN lands at `newPos − 1`; every slot in between (gaps too)
+    shifts one place toward the vacated slot; nothing outside that range
+    moves. Observed (posi:cid): `[0:A 1:D 3:B 5:C]` move A→2 ⇒
+    `[0:D 1:A 3:B 5:C]`; move C(5)→2 ⇒ `[0:D 1:A 2:C 4:B]`; move D(0)→4 ⇒
+    `[0:A 1:C 3:D 4:B]`; move A(0)→10 ⇒ A at 9; move B(4)→128 ⇒ B at 127.
+  - **`newPos` past the end parks the item at an UNLISTED posi.**
+    `newPos = 200` put the reference at **posi 128** — absent from
+    `/GetContainerContents` (which lists 0..127) yet alive by point
+    `/GetContentRef` (`posi: 128`); `newPos 0` brought it back. Valid
+    `newPos` for a setlist is 0..128. helixgen's `device reorder`/`move`
+    take the *landing* posi (0..127) and send `posi + 1` when moving down.
+  - **Creates at an EMPTY (placeholder) posi land there and shift
+    nothing.** Setlist reference (`/AddContentsToContainer`, the reference
+    path): refs `[0, 3, 5]` + reference at posi 1 ⇒ `[0, 1, 3, 5]`. Pool
+    `/CreateContent` (`install_into_pool`, HGTEST preset): pool of 90 with
+    lowest empty posi 89 and an occupant at 103 ⇒ new preset at 89, **no**
+    existing preset's posi changed. (Contrast fw 1.3.2, where a create at an
+    OCCUPIED pos inserts and shifts the tail +1 — §6 CREATE row.)
+  - **A reference added at an OCCUPIED setlist posi REPLACES the incumbent**
+    (backlog #69 — no longer uncataloged): ref cid 1969 at posi 2 +
+    `/AddContentsToContainer` at posi 2 ⇒ the new ref cid 1970 holds posi 2
+    and `/GetContentRef 1969` returns `-21 FAILED` (the pool preset it
+    pointed at is untouched). `/status` reported success — so a reference
+    at an occupied posi silently drops the old one. (Occupied-posi pool
+    `/CreateContent` on 1.4 not probed.)
+  - Consequences in helixgen: `device backup` records `{name, posi}` per
+    reference and `device restore` re-references at the recorded posi
+    (a misplaced ref is moved ADD-FIRST — new ref at the empty target, then
+    the old one removed by ref cid — never a reorder; swaps park at a free
+    posi), refusing a posi held by a preset outside the backup unless
+    `--prune`. `device reorder`/`move` use posi semantics only on fw ≥ 1.4
+    setlists; the pool, the setlists root and older firmware keep the old
+    verbatim index. HW-validated 2026-10-13 on a scratch setlist: refs
+    `[0:X 1:Y 5:Z]` restored to `[0:Y 1:X 3:Z]` via 4 add-first moves (Y
+    parked at 2) — which also confirms a setlist may hold two references
+    to the same pool preset at once.
 - **2001 12-byte header field split** (§2) and **2003 framing** (assumed same as
   2002) are inferred, not verified.
 - **`/CreateContent` `ctype`.** `ctype = 2` (preset) and `ctype = 1003`

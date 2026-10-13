@@ -401,3 +401,25 @@ def test_import_hss_dry_run_flags_would_skip_payloads(monkeypatch, tmp_path):
     assert "would SKIP" in bad_line
     assert "would SKIP" not in good_line
     assert HssClient.installed == []
+
+
+def test_import_hss_dry_run_flags_a_strict_transcode_failure(monkeypatch, tmp_path):
+    """hgc-6r5.13 review: the dry run must not call a slot importable that
+    the strict transcode will fail."""
+    from helixgen.device import bridge, transcode
+    _fresh_manifest_env(monkeypatch, tmp_path)
+    _reset()
+    _patch_client(monkeypatch, HssClient)
+    monkeypatch.setattr(transcode, "hsp_to_sbepgsm",
+                        lambda body, *, dsp=None, strict=False:
+                        (_ for _ in ()).throw(bridge.UnresolvedModel("HD2_X")))
+    from helixgen.device.hss import HSP_MAGIC
+    data = _build_hss(setlist_name="Gigs",
+                      filled={1: ("Unres", HSP_MAGIC + b'{"meta": {"name": "Unres"}, "preset": {}}')})
+    path = tmp_path / "gigs.hss"
+    path.write_bytes(data)
+    result = CliRunner().invoke(
+        cli, ["device", "setlist", "import-hss", str(path), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "would FAIL" in result.output and "HD2_X" in result.output
+    assert HssClient.installed == []
