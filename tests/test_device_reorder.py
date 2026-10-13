@@ -342,7 +342,9 @@ class StubClient:
     """Minimal stand-in exposing exactly the surface reorder_setlist_item
     calls — no socket, no HelixClient machinery."""
 
-    def __init__(self, *, setlists=None, container_items=None, pool=None):
+    def __init__(self, *, setlists=None, container_items=None, pool=None,
+                 firmware="1.4.0"):
+        self.firmware = firmware
         self.setlists = setlists or {}
         self.container_items = container_items or {}
         self.pool = pool or []
@@ -350,6 +352,9 @@ class StubClient:
 
     def resolve_setlist_cid(self, name, *, strict=True):
         return self.setlists.get(name)
+
+    def product_info(self):
+        return {"firmware": self.firmware}
 
     def list_setlists(self, *, strict=False):
         return [{"cid_": cid, "name": name, "cctp": Cctp.SETLIST}
@@ -618,3 +623,26 @@ def test_reorder_pool_and_root_keep_verbatim_index():
     assert client.reorder_calls[-1][2] == 2
     with pytest.raises(ValueError, match="out of range"):
         R.reorder_setlist_item(client, "setlists", "user", 3)
+
+
+def test_setlist_posi_semantics_only_on_fw_1_4():
+    """Pre-1.4 firmware keeps the old index semantics (uncharacterized)."""
+    gapped = [{"cid_": 501, "posi": 0, "cctp": Cctp.REFERENCE, "rcid": 100},
+              {"cid_": 502, "posi": 1, "cctp": Cctp.REFERENCE, "rcid": 101}]
+    client = StubClient(setlists={"AB": 7}, container_items={7: gapped},
+                        pool=[{"cid_": 100, "name": "A"}, {"cid_": 101, "name": "B"}],
+                        firmware="1.3.2")
+    R.reorder_setlist_item(client, "AB", "A", 1)
+    assert client.reorder_calls[-1][2] == 1          # verbatim, no +1
+    with pytest.raises(ValueError, match="out of range"):
+        R.reorder_setlist_item(client, "AB", "A", 5)
+
+
+def test_literal_non_setlist_container_keeps_index_semantics():
+    items = [{"cid_": 501, "posi": 0, "cctp": Cctp.REFERENCE, "rcid": 100},
+             {"cid_": 502, "posi": 1, "cctp": Cctp.REFERENCE, "rcid": 101}]
+    client = StubClient(container_items={-11: items}, pool=[])
+    R.reorder_setlist_item(client, "-11", "501", 1)
+    assert client.reorder_calls[-1][2] == 1
+    with pytest.raises(ValueError, match="out of range"):
+        R.reorder_setlist_item(client, "-11", "501", 5)

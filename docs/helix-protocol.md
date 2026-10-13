@@ -885,8 +885,15 @@ footswitch/controller assignment commands are parameterised on the device.
     `/CreateContent` on 1.4 not probed.)
   - Consequences in helixgen: `device backup` records `{name, posi}` per
     reference and `device restore` re-references at the recorded posi
-    (remove + re-reference for a misplaced ref, never a reorder), refusing
-    a posi held by a preset outside the backup unless `--prune`.
+    (a misplaced ref is moved ADD-FIRST — new ref at the empty target, then
+    the old one removed by ref cid — never a reorder; swaps park at a free
+    posi), refusing a posi held by a preset outside the backup unless
+    `--prune`. `device reorder`/`move` use posi semantics only on fw ≥ 1.4
+    setlists; the pool, the setlists root and older firmware keep the old
+    verbatim index. HW-validated 2026-10-13 on a scratch setlist: refs
+    `[0:X 1:Y 5:Z]` restored to `[0:Y 1:X 3:Z]` via 4 add-first moves (Y
+    parked at 2) — which also confirms a setlist may hold two references
+    to the same pool preset at once.
 - **2001 12-byte header field split** (§2) and **2003 framing** (assumed same as
   2002) are inferred, not verified.
 - **`/CreateContent` `ctype`.** `ctype = 2` (preset) and `ctype = 1003`

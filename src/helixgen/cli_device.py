@@ -81,12 +81,18 @@ def _hss_print_listing(hss_file, bundle, filled, hss_mod) -> None:
 
 def _hss_print_dry_run(hss_file, target_setlist, filled, hss_mod) -> None:
     """`--dry-run` output for `device setlist import-hss`: the filled slots that
-    would be imported, flagging any non-.hsp/non-content payload as a skip."""
+    would be imported, flagging any slot the import would fail (unrecognized
+    payload, or a strict-transcode failure such as an unresolvable block)."""
     click.echo(f"DRY RUN: would import {len(filled)} preset(s) into "
                f"setlist {target_setlist!r}:")
     for s in filled:
-        note = (f"  [{s.payload_format}]" if hss_mod.looks_like_content_blob(s.blob)
-                else "  (would SKIP: payload isn't a .hsp or content blob)")
+        # the real import's own preflight (strict transcode included), so the
+        # preview never calls a slot importable that the import will fail
+        _blob, err = hss_mod.prepare_slot(s)
+        note = (f"  [{s.payload_format}]" if err is None
+                else "  (would SKIP: payload isn't a .hsp or content blob)"
+                if not hss_mod.looks_like_content_blob(s.blob)
+                else f"  (would FAIL: {err.split(': ', 1)[-1]})")
         click.echo(f"  slot {s.pos}: {hss_mod.hss_slot_label(s)}{note}")
 
 
@@ -3047,11 +3053,11 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     content blobs (`_sbepgsm` / `/SetContentData`) are also accepted (detected
     by magic).
 
-    Imported presets are recorded in the local tone library as PATHLESS tones
-    (source `import-hss`) with membership in the destination setlist, so a
-    later `device sync <setlist>` preserves their references instead of
-    stripping them. They have no local `.hsp`, so `device slots restore`
-    can't re-author them.
+    Imported presets live only on the device: nothing local records them. To
+    bring one into the library, pull it back with `device to-hsp <cid>`.
+    `--dry-run` runs the same per-slot preflight (strict transcode included)
+    and flags every slot the import would fail; if NO slot is importable the
+    destination setlist is not created.
 
     NOT idempotent on retry: re-running after a partial failure installs and
     references the already-succeeded slots AGAIN (duplicate pool presets +
@@ -3236,11 +3242,15 @@ def device_restore(root, serial, git_ref, setlist, prune, dry_run, yes,
 
     Pool content first, then setlist membership: each reference goes back at
     its RECORDED position (gaps preserved; a pre-position backup restores
-    compact, 0..n-1). A misplaced reference is removed and re-referenced at
-    its position. A position held by a preset the backup does not have there
-    is reported, never overwritten, unless --prune removes that reference.
-    Additive-and-update by default: it creates what is missing and updates
-    what differs, and never deletes a preset.
+    compact, 0..n-1; a gapped backup is refused on firmware < 1.4). A
+    misplaced reference is moved ADD-FIRST — re-added at its position, then
+    the old one removed — so a failed step never leaves the preset absent;
+    swaps park one reference at a free position. A position held by a
+    preset the backup does not have there is reported, never overwritten,
+    unless --prune removes that reference. Additive-and-update by default:
+    it creates what is missing and updates what differs, and never deletes
+    a preset (without --prune the only references removed are the old
+    copies of ones just re-added).
 
     --prune ALSO deletes device presets the snapshot does not have. That is
     the one genuinely destructive path here and it has no undo on the device

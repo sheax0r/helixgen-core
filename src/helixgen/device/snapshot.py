@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import content as _content
 from . import irmd as _irmd
-from .reorder import SETLIST_SLOTS
+from .reorder import SETLIST_SLOTS, _firmware, _fw_at_least
 from .client import Cctp, Container, HelixError
 
 logger = logging.getLogger(__name__)
@@ -511,48 +511,91 @@ def _legacy_refs(doc: List[Any]) -> List[Tuple[str, int]]:
 
 
 def _plan_setlist(sl_name: str, desired: List[Tuple[str, int]],
-                  current: Dict[Any, Any], prune: bool, ops: List[Dict[str, Any]],
-                  summary: List[str], errors: List[str]) -> None:
-    """Ops putting every desired reference at its recorded posi.
+                  live: List[Dict[str, Any]], prune: bool,
+                  ops: List[Dict[str, Any]], summary: List[str],
+                  errors: List[str]) -> None:
+    """Ops putting every desired reference at its recorded posi, such that NO
+    op sequence — including one where any op fails and the run continues —
+    ever leaves a desired preset absent from the setlist.
 
-    A misplaced reference is removed and re-referenced at its posi rather than
-    moved: ``/ReorderContainerContent`` shifts every slot between the old and
-    new position (fw 1.4), while a removal leaves a gap and a create at an
-    empty posi shifts nothing — so this lands each posi exactly. A reference
-    added at an OCCUPIED posi replaces the incumbent (fw 1.4, HW-observed), so a
-    posi held by a preset outside the backup is an error unless ``prune``
-    removes it.
+    ``live`` rows are ``{cid, posi, name}`` (``name`` None for a dangling
+    reference). Duplicate references are allowed on the device, so a
+    misplaced reference is MOVED by adding the new one first and only then
+    removing the old one by its ref cid (``move_ref``); a failure at either
+    step leaves the preset present (once or twice), never gone. A reorder is
+    never used: on fw 1.4 it shifts every slot in between. A reference added
+    at an OCCUPIED posi REPLACES the incumbent (fw 1.4, HW-observed), so
+    targets must be empty: cycles (swaps) are broken by parking one reference
+    at a free posi; a posi held by a reference the backup lacks there is an
+    error unless ``prune`` removes it. ``_apply_op`` re-checks every target
+    against a strict re-list right before writing, so a failed earlier op can
+    never turn a later add into a silent replace.
     """
-    want = dict(desired)
-    removes = {nm for nm in current
-               if (nm in want and current[nm] != want[nm])
-               or (nm not in want and prune)}
-    while True:
-        occupant = {p: nm for nm, p in current.items() if nm not in removes}
-        adds, blocked = [], []
-        for nm, posi in desired:
-            if current.get(nm) == posi and nm not in removes:
-                continue
-            holder = occupant.get(posi)
-            (blocked if holder not in (None, nm) else adds).append((nm, posi))
-        # A misplaced reference that can't land stays where it is: never
-        # remove what can't be put back. Its old posi may then block another.
-        stuck = {nm for nm, _ in blocked if nm in removes and nm in want}
-        if not stuck:
-            break
-        removes -= stuck
-    for nm, posi in blocked:
-        errors.append(
-            f"setlist {sl_name!r} position {posi} holds {occupant[posi]!r}, "
-            f"which the backup does not have there — not restoring {nm!r} "
-            f"over it (re-run with --prune, or move {occupant[posi]!r} first)")
-    for nm in [n for n in current if n in removes]:
-        ops.append({"op": "remove_ref", "setlist": sl_name, "name": nm})
-        summary.append(f"remove {nm!r} from setlist {sl_name!r}")
-    for nm, posi in adds:
-        ops.append({"op": "reference", "setlist": sl_name, "name": nm,
-                    "pos": posi})
-        summary.append(f"add {nm!r} to setlist {sl_name!r} at {posi}")
+    todo = list(desired)
+    rest = list(live)
+    for nm, posi in list(todo):            # already in place
+        hit = next((r for r in rest if r["name"] == nm and r["posi"] == posi), None)
+        if hit is not None:
+            rest.remove(hit)
+            todo.remove((nm, posi))
+    moves = []                             # [src_posi_or_None, name, target]
+    for nm, posi in todo:
+        src = next((r for r in rest if r["name"] == nm), None)
+        if src is not None:
+            rest.remove(src)
+        moves.append([src["posi"] if src else None, nm, posi])
+    occupied = {r["posi"] for r in live}
+    for r in rest:                         # live refs the backup lacks
+        if prune:
+            ops.append({"op": "remove_ref", "setlist": sl_name,
+                        "name": r["name"], "ref_cid": r["cid"], "pos": r["posi"]})
+            summary.append(f"remove {r['name'] or '(dangling)'!r} from setlist "
+                           f"{sl_name!r} at {r['posi']}")
+            occupied.discard(r["posi"])
+    fixed = {r["posi"]: r["name"] for r in rest if not prune}
+
+    def emit(src, nm, target):
+        if src is None:
+            ops.append({"op": "reference", "setlist": sl_name, "name": nm,
+                        "pos": target})
+            summary.append(f"add {nm!r} to setlist {sl_name!r} at {target}")
+        else:
+            ops.append({"op": "move_ref", "setlist": sl_name, "name": nm,
+                        "from": src, "pos": target})
+            summary.append(f"move {nm!r} in setlist {sl_name!r} {src} -> {target}")
+            occupied.discard(src)
+        occupied.add(target)
+
+    while moves:
+        ready = [m for m in moves if m[2] not in occupied]
+        for m in ready:
+            emit(*m)
+            moves.remove(m)
+        if ready:
+            continue
+        blocked = [m for m in moves if m[2] in fixed]
+        if blocked:
+            for m in blocked:
+                moves.remove(m)
+                if m[0] is not None:       # it stays put — and now blocks too
+                    fixed[m[0]] = m[1]
+                errors.append(
+                    f"setlist {sl_name!r} position {m[2]} holds "
+                    f"{fixed[m[2]]!r}, which the backup does not have there — "
+                    f"not restoring {m[1]!r} over it (re-run with --prune, or "
+                    f"move {fixed[m[2]]!r} first)")
+            continue
+        # only movers block each other: a cycle — park one at a free posi
+        targets = {m[2] for m in moves}
+        free = next((p for p in range(SETLIST_SLOTS)
+                     if p not in occupied and p not in targets), None)
+        m = next(m for m in moves if m[0] is not None)
+        if free is None:
+            errors.append(f"setlist {sl_name!r} has no free position to "
+                          f"reorder through — restore it by hand")
+            return
+        emit(m[0], m[1], free)
+        m[0] = free
 
 
 def plan_restore(client, root: Path, *, serial: Optional[str] = None,
@@ -670,6 +713,8 @@ def plan_restore(client, root: Path, *, serial: Optional[str] = None,
 
     # -- setlists -----------------------------------------------------------
     live_setlists = client.list_setlists(strict=True)
+    fw = _firmware(client)
+    slotted = _fw_at_least(fw, (1, 4))
     cid_to_name = {p.get("cid_"): str(p.get("name", "") or "") for p in live_pool}
     for fname in sorted(sl_index):
         sl_name = sl_index[fname]
@@ -694,19 +739,18 @@ def plan_restore(client, root: Path, *, serial: Optional[str] = None,
                 f"{', '.join(str(m.get('cid_')) for m in matches)}")
             continue
         sl_cid = matches[0].get("cid_")
-        refs = [m for m in client.list_container(sl_cid, strict=True)
+        live = [{"cid": m.get("cid_"), "posi": m.get("posi"),
+                 "name": cid_to_name.get(m.get("rcid"))}
+                for m in client.list_container(sl_cid, strict=True)
                 if m.get("cctp") == Cctp.REFERENCE]
-        current = {}
-        for m in refs:
-            nm = cid_to_name.get(m.get("rcid"))
-            if nm in current:
-                errors.append(
-                    f"setlist {sl_name!r} has duplicate preset name {nm!r} "
-                    f"— positions cannot be restored by name")
-                break
-            current[nm] = m.get("posi")
-        else:
-            _plan_setlist(sl_name, desired, current, prune, ops, summary, errors)
+        if not slotted and [p for _n, p in desired] != list(range(len(desired))):
+            errors.append(
+                f"setlist {sl_name!r}: the backup has gaps (positions "
+                f"{sorted(p for _n, p in desired)}), which only firmware 1.4+ "
+                f"setlists hold — this device runs {fw or 'unknown firmware'}; "
+                f"not restoring it")
+            continue
+        _plan_setlist(sl_name, desired, live, prune, ops, summary, errors)
 
     # -- prune the pool last, once nothing references it --------------------
     if prune:
@@ -732,15 +776,11 @@ def _resolve_pool_cid(client, name: str) -> int:
     return matches[0].get("cid_")
 
 
-def _resolve_ref(client, setlist: str, name: str) -> Tuple[int, int]:
+def _setlist_cid(client, setlist: str) -> int:
     sl_cid = client.resolve_setlist_cid(setlist)
     if sl_cid is None:
         raise HelixError(f"no setlist named {setlist!r} on the device")
-    pool_cid = _resolve_pool_cid(client, name)
-    for m in client.list_container(sl_cid, strict=True):
-        if m.get("cctp") == Cctp.REFERENCE and m.get("rcid") == pool_cid:
-            return sl_cid, m.get("cid_")
-    raise HelixError(f"{name!r} is not referenced in setlist {setlist!r}")
+    return sl_cid
 
 
 def _push_ir_verbatim(client, irhash: str, path: str) -> None:
@@ -790,28 +830,54 @@ def _apply_op(client, op: Dict[str, Any]) -> None:
         blob = Path(op["file"]).read_bytes()
         if not client._raw.set_content_data(cid, blob):
             raise HelixError(f"device refused the content update for {op['name']!r}")
-    elif kind == "reference":
-        sl_cid = client.resolve_setlist_cid(op["setlist"])
-        if sl_cid is None:
-            raise HelixError(f"no setlist named {op['setlist']!r} on the device")
+    elif kind in ("reference", "move_ref"):
+        sl_cid = _setlist_cid(client, op["setlist"])
         pool_cid = _resolve_pool_cid(client, op["name"])
-        # fw 1.4 REPLACES a reference at an occupied posi, so re-check right
-        # before writing: a failed earlier remove_ref must not turn this into
-        # a silent drop of the incumbent.
-        holder = client.find_by_pos(sl_cid, op["pos"], strict=True)
+        rows = client.list_container(sl_cid, strict=True)
+        src = None
+        if kind == "move_ref":
+            src = next((m for m in rows if m.get("posi") == op["from"]
+                        and m.get("rcid") == pool_cid), None)
+            if src is None:
+                raise HelixError(
+                    f"{op['name']!r} is no longer at {op['setlist']!r} "
+                    f"position {op['from']}; not moving it")
+        # fw 1.4 REPLACES a reference at an occupied posi: re-check right
+        # before writing, so an earlier failed op can never make this a
+        # silent replace of the incumbent.
+        holder = next((m for m in rows if m.get("posi") == op["pos"]), None)
         if holder is not None:
             raise HelixError(
                 f"{op['setlist']!r} position {op['pos']} is occupied (cid "
                 f"{holder.get('cid_')}); not referencing {op['name']!r} over it")
-        if client.reference_into_setlist(sl_cid, pool_cid, op["pos"]) is None:
+        # ADD first — duplicates are allowed, so the preset is never absent.
+        try:
+            added = client.reference_into_setlist(sl_cid, pool_cid, op["pos"])
+        except Exception:  # noqa: BLE001 - a lost reply may still have landed
+            added = None
+        if added is None and not any(
+                m.get("posi") == op["pos"] and m.get("rcid") == pool_cid
+                for m in client.list_container(sl_cid, strict=True)):
             raise HelixError(
-                f"device refused to reference {op['name']!r} into "
-                f"{op['setlist']!r} at {op['pos']}")
+                f"device did not reference {op['name']!r} into "
+                f"{op['setlist']!r} at {op['pos']}"
+                + (f" ({op['name']!r} is still at {op['from']})" if src else ""))
+        if src is not None and not client.remove_reference(sl_cid, src["cid_"]):
+            raise HelixError(
+                f"{op['name']!r} now at {op['pos']} but the old reference at "
+                f"{op['from']} could not be removed (it is listed twice)")
     elif kind == "remove_ref":
-        sl_cid, ref_cid = _resolve_ref(client, op["setlist"], op["name"])
-        if not client.remove_reference(sl_cid, ref_cid):
+        sl_cid = _setlist_cid(client, op["setlist"])
+        row = next((m for m in client.list_container(sl_cid, strict=True)
+                    if m.get("cid_") == op["ref_cid"]), None)
+        if row is None or row.get("posi") != op["pos"]:
             raise HelixError(
-                f"device refused to remove {op['name']!r} from {op['setlist']!r}")
+                f"reference cid {op['ref_cid']} is no longer at "
+                f"{op['setlist']!r} position {op['pos']}; not removing")
+        if not client.remove_reference(sl_cid, op["ref_cid"]):
+            raise HelixError(
+                f"device refused to remove {op['name'] or '(dangling)'!r} from "
+                f"{op['setlist']!r}")
     elif kind == "delete_pool":
         cid = _resolve_pool_cid(client, op["name"])
         if not client._raw.delete(Container.POOL, [cid]):
