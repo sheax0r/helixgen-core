@@ -217,11 +217,11 @@ Still open, should someone want it: the same validation on `device globaleq set`
   across Python versions, unlike `ipaddress.is_private`; stderr warning
   names `--ip` as the escape hatch). The default-route interface blindness
   is **FIXED (hgc-094, 2026-10-13)**: discovery enumerates every UP
-  interface with an RFC 1918 address from the same `ip`/`ifconfig` output
-  the netmask lookup already reads (tunnels — utun/tun/ppp/ipsec/wg or
-  POINTOPOINT — only when no physical private interface exists), sends the
-  mDNS query bound to each address (`IP_MULTICAST_IF`), and probes each
-  range (1024-host cap per interface). Live-verified with a VPN (utun4,
+  interface (link up) with an RFC 1918 address from `ip`/`ifconfig`,
+  physical interfaces first and VPN/tunnel + VM/container bridges as a
+  last-resort tier, sends the mDNS query bound to each address
+  (`IP_MULTICAST_IF`), and probes each range (1024-host cap per
+  interface). Live-verified with a VPN (utun4,
   10.5.0.2/16) holding the default route: found the Stadium on en0. (b) `mdns_discover` binds an ephemeral port and never
   joins the 224.0.0.251 group, so multicast-only responses (RFC 6762
   QU-ignore cases) are invisible — fine against fw 1.3.2 (unicast reply

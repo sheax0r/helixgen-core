@@ -1151,11 +1151,13 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
     \b
     Known limitations (backlog #77):
       * FIXED (hgc-094): discovery no longer looks only at the
-        default-route interface. Every UP interface with a private
-        (RFC 1918) address gets its own mDNS query and probe range;
-        VPN/tunnel links (utun/tun/ppp/ipsec/wg) are used only when no
-        physical private interface exists, so a VPN holding the default
-        route no longer hides a LAN Stadium.
+        default-route interface. Every link-up interface with a private
+        (RFC 1918) address gets its own mDNS query and probe range.
+        Physical interfaces are tried first; VPN/tunnel links and VM/
+        container bridges (utun/tun/wg/docker/br-/virbr/vmnet/bridge...)
+        only as a last resort when no physical private interface finds
+        a device — so a VPN holding the default route no longer hides a
+        LAN Stadium, and a VPN-only Stadium is still found.
       * The mDNS listener hears unicast replies only (no multicast group
         join). The Stadium answers unicast (verified live, fw 1.3.2);
         firmware that replied only via multicast would fall through to
@@ -1186,32 +1188,53 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
 
     HelixClient, HelixError = _client()
 
-    # hgc-094: every UP private interface, not just the default route (a
-    # VPN holding it used to hide a LAN Stadium).
-    targets = discovery.probe_targets()
-    try:
-        candidates = discovery.mdns_discover(
-            timeout=timeout, bind_ips=[me for me, _ in targets])
-        probed = None
-        if not candidates and probe:
-            # Name the ranges actually swept, never "the LAN" — the old
-            # wording asserted more than it checked (hc-3qw).
-            probed = ", ".join(str(net) for _, net in targets) or None
-            click.echo("mDNS found nothing — falling back to a TCP "
-                       f"connect-probe of {probed or 'the local subnet'} "
-                       "(port 2002)…", err=True)
-            if targets:
-                hits = sorted({ip for me, net in targets
-                               for ip in discovery.probe_subnet(
-                                   subnet_ip=me, prefixlen=net.prefixlen)})
-            else:  # nothing private found: the old path (warns + refuses)
-                hits = discovery.probe_subnet()
-            candidates = [discovery.Candidate(ip=ip, via="probe")
-                          for ip in hits]
-    except discovery.LocalNetworkDenied as e:
-        # hgc-7he: not "found nothing" — this process can't reach the LAN.
+    # hgc-094: every link-up private interface, physical tier first, then
+    # VPN/tunnel + VM/container bridges as a last resort (a VPN holding the
+    # default route used to hide a LAN Stadium).
+    tiers = discovery.probe_tiers()
+    attempts = denied = 0
+
+    def _attempt(fn):
+        # hgc-7he: one denied range/socket set must not discard the others'
+        # hits; the denial is reported only if EVERYTHING was denied.
+        nonlocal attempts, denied
+        attempts += 1
+        try:
+            return fn()
+        except discovery.LocalNetworkDenied:
+            denied += 1
+            return []
+
+    candidates: list = []
+    probed_nets: list = []
+    for tier in tiers or [[]]:
+        candidates = _attempt(lambda: discovery.mdns_discover(
+            timeout=timeout, bind_ips=[me for me, _ in tier]))
+        if candidates or not probe:
+            if candidates:
+                break
+            continue
+        # Name the ranges actually swept, never "the LAN" — the old wording
+        # asserted more than it checked (hc-3qw).
+        nets = [str(net) for _, net in tier]
+        probed_nets += nets
+        click.echo("mDNS found nothing — falling back to a TCP connect-probe "
+                   f"of {', '.join(nets) or 'the local subnet'} (port 2002)…",
+                   err=True)
+        if tier:
+            hits = sorted({ip for me, net in tier
+                           for ip in _attempt(lambda: discovery.probe_subnet(
+                               subnet_ip=me, prefixlen=net.prefixlen))})
+        else:  # nothing private found: the old path (warns + refuses)
+            hits = _attempt(discovery.probe_subnet)
+        candidates = [discovery.Candidate(ip=ip, via="probe") for ip in hits]
+        if candidates:
+            break
+    if not candidates and attempts and denied == attempts:
         raise click.ClickException(
-            f"discovery could not reach the local network: {e}") from e
+            "discovery could not reach the local network: "
+            + discovery.LOCAL_NETWORK_HINT)
+    probed = ", ".join(probed_nets) or None
     if not candidates:
         raise click.ClickException(
             "no Helix Stadium found (mDNS `_stadiumserver._tcp` browse"

@@ -29,12 +29,12 @@ Known limitations (backlog #77):
 
 * **Default-route interface blindness — FIXED (hgc-094).** Discovery used
   to look only at the interface carrying the default route, so a VPN
-  (``utun``) holding it hid a LAN-attached Stadium. :func:`probe_targets`
-  now enumerates every UP interface with an RFC 1918 address (from the
-  same ``ip``/``ifconfig`` output the netmask lookup already reads),
-  preferring physical interfaces and using tunnels only when nothing else
-  exists; mDNS queries go out bound to each of those addresses and the
-  probe sweeps each range (1024-host cap per interface).
+  (``utun``) holding it hid a LAN-attached Stadium. :func:`probe_tiers`
+  now enumerates every link-up interface with an RFC 1918 address (from
+  ``ip``/``ifconfig``), trying physical interfaces first and VPN/tunnel or
+  VM/container-bridge links only as a last resort; mDNS queries go out
+  bound to each of those addresses and the probe sweeps each range
+  (1024-host cap per interface).
 * **The mDNS listener is unicast-reply-only.** :func:`mdns_discover` sends
   a QU (unicast-response) query from an ephemeral port and never joins the
   224.0.0.251 multicast group, so responders that ignore the QU bit and
@@ -456,85 +456,124 @@ def probe_network(ip: str, prefixlen: Optional[int],
     return ipaddress.IPv4Network(f"{ip}/{max(width, floor)}", strict=False)
 
 
-#: Interface-name prefixes treated as VPN/tunnel links (alongside the
-#: POINTOPOINT flag). Scanned only when no physical private interface exists.
-_TUNNEL_PREFIXES = ("utun", "tun", "ppp", "ipsec", "wg", "gif", "stf")
+#: Interface-name prefixes discovery treats as LAST-RESORT links: VPN /
+#: tunnels (alongside the POINTOPOINT flag) and VM / container bridges,
+#: whose private ranges hold no Stadium in practice but would each add a
+#: 1024-host sweep. Probed only when the physical tier finds nothing.
+_FALLBACK_PREFIXES = (
+    "utun", "tun", "ppp", "ipsec", "wg", "gif", "stf", "zt",        # VPN
+    "docker", "br-", "virbr", "vboxnet", "vmnet", "lxdbr", "lxcbr",
+    "bridge", "veth", "cni", "podman", "vnic")                      # VM/CT
 
 
-def _is_tunnel(name: str, p2p: bool) -> bool:
-    return p2p or name.lower().startswith(_TUNNEL_PREFIXES)
+def _is_fallback(name: str, p2p: bool) -> bool:
+    return p2p or name.lower().startswith(_FALLBACK_PREFIXES)
 
 
 def parse_interfaces(output: str
                      ) -> List[Tuple[str, str, Optional[int], bool]]:
-    """``(name, ipv4, prefixlen, is_tunnel)`` for every IPv4 address on an
-    UP interface, read from ``ifconfig -a`` (BSD/macOS or net-tools) or
-    ``ip -o -4 addr show up`` output. Pure — the offline half of
-    :func:`local_interfaces`. ``prefixlen`` is ``None`` for an unparseable
-    netmask; down interfaces (ifconfig flags without ``UP``) are dropped."""
-    out: List[Tuple[str, str, Optional[int], bool]] = []
+    """``(name, ipv4, prefixlen, last_resort)`` for every IPv4 address on a
+    usable interface, read from ``ifconfig -a`` (BSD/macOS or net-tools)
+    or ``ip -o link show up`` + ``ip -o -4 addr show up`` output. Pure —
+    the offline half of :func:`local_interfaces`.
+
+    Usable = link up: ifconfig flags carry both ``UP`` and ``RUNNING`` and
+    no ``status: inactive`` line; ``ip -o link`` flags carry ``LOWER_UP``
+    (an address with no link line is kept). ``last_resort`` marks
+    VPN/tunnel and VM/container-bridge links (see ``_FALLBACK_PREFIXES``).
+    ``prefixlen`` is ``None`` for an unparseable netmask."""
+    entries: List[Tuple[str, str, Optional[int]]] = []
+    usable: Dict[str, bool] = {}
+    p2p: set = set()
     name: Optional[str] = None
-    up = p2p = False
     for line in output.splitlines():
         m = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)",
                      line)
-        if m:  # iproute2 one-line form (already filtered to UP links)
-            out.append((m[1], m[2], int(m[3]), _is_tunnel(m[1], False)))
+        if m:  # iproute2 one-line address
+            entries.append((m[1], m[2], int(m[3])))
+            continue
+        m = re.match(r"^\d+:\s+([^:@\s]+)(?:@\S+)?:\s+<([^>]*)>", line)
+        if m:  # iproute2 one-line link
+            flags = set(m[2].split(","))
+            usable[m[1]] = "UP" in flags and "LOWER_UP" in flags
+            if "POINTOPOINT" in flags:
+                p2p.add(m[1])
             continue
         m = re.match(r"^(\S+?):\s+flags=\S*<([^>]*)>", line)
         if m:  # ifconfig interface header
             flags = set(m[2].split(","))
-            name, up, p2p = m[1], "UP" in flags, "POINTOPOINT" in flags
+            name = m[1]
+            usable[name] = "UP" in flags and "RUNNING" in flags
+            if "POINTOPOINT" in flags:
+                p2p.add(name)
+            continue
+        if name and re.match(r"^\s+status:\s+inactive\b", line):
+            usable[name] = False
             continue
         m = re.match(
             r"^\s+inet\s+(\d+\.\d+\.\d+\.\d+)\b.*?\bnetmask\s+(\S+)", line)
-        if m and name and up:
-            out.append((name, m[1], netmask_to_prefixlen(m[2]),
-                        _is_tunnel(name, p2p)))
-    return out
+        if m and name:
+            entries.append((name, m[1], netmask_to_prefixlen(m[2])))
+    return [(n, ip, plen, _is_fallback(n, n in p2p))
+            for n, ip, plen in entries if usable.get(n, True)]
 
 
 def local_interfaces() -> List[Tuple[str, str, Optional[int], bool]]:
-    """Every UP interface's IPv4 addresses (see :func:`parse_interfaces`),
-    or ``[]`` when neither ``ip`` nor ``ifconfig`` is available (Windows).
-    Shelling out because stdlib exposes no portable per-interface address
-    + netmask listing."""
-    for cmd in (["ip", "-o", "-4", "addr", "show", "up"], ["ifconfig", "-a"]):
-        try:
-            out = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=5).stdout
-        except (OSError, subprocess.SubprocessError):
-            continue
-        found = parse_interfaces(out or "")
+    """Every usable interface's IPv4 addresses (see
+    :func:`parse_interfaces`), or ``[]`` when neither ``ip`` nor
+    ``ifconfig`` is available (Windows). Shelling out because stdlib exposes
+    no portable per-interface address + netmask listing."""
+    for cmds in ([["ip", "-o", "link", "show", "up"],
+                  ["ip", "-o", "-4", "addr", "show", "up"]],
+                 [["ifconfig", "-a"]]):
+        out = ""
+        for cmd in cmds:
+            try:
+                out += subprocess.run(cmd, capture_output=True, text=True,
+                                      timeout=5).stdout or ""
+            except (OSError, subprocess.SubprocessError):
+                pass
+        found = parse_interfaces(out)
         if found:
             return found
     return []
 
 
-def probe_targets(*, max_hosts: int = MAX_PROBE_HOSTS
-                  ) -> List[Tuple[str, ipaddress.IPv4Network]]:
-    """``(our address, range to sweep)`` for every interface discovery
-    should look at (hgc-094): each UP interface with an RFC 1918 address —
-    physical ones only, unless there are none, in which case VPN/tunnel
-    links are used (a VPN holding the default route used to blind discovery
-    to the LAN). Each range is the interface's netmask capped at
-    ``max_hosts`` (:func:`probe_network`); interfaces sharing one range are
-    swept once. Without interface enumeration (no ``ip``/``ifconfig``) it
-    falls back to the default-route address (:func:`local_ipv4`). ``[]``
-    when nothing private is probeable."""
+def probe_tiers(*, max_hosts: int = MAX_PROBE_HOSTS
+                ) -> List[List[Tuple[str, ipaddress.IPv4Network]]]:
+    """``(our address, range to sweep)`` groups discovery tries IN ORDER
+    (hgc-094), stopping at the first group that finds a device:
+
+    1. every usable physical interface with an RFC 1918 address;
+    2. last resort — VPN/tunnel and VM/container-bridge links with RFC 1918
+       addresses (a VPN holding the default route used to blind discovery
+       to the LAN; a VPN-only Stadium must still be findable).
+
+    Each range is the interface's netmask capped at ``max_hosts``
+    (:func:`probe_network`); a range is swept once even if several
+    interfaces share it. Empty groups are omitted. Without interface
+    enumeration (no ``ip``/``ifconfig``) the single group is the
+    default-route address (:func:`local_ipv4`). ``[]`` when nothing private
+    is probeable."""
     private = [i for i in local_interfaces() if _is_rfc1918(i[1])]
-    chosen = [i for i in private if not i[3]] or private
-    if not chosen:
+    groups = [[i for i in private if not i[3]], [i for i in private if i[3]]]
+    if not private:
         me = local_ipv4()
         if not me or not _is_rfc1918(me):
             return []
-        chosen = [("", me, local_prefixlen(me), False)]
-    out: List[Tuple[str, ipaddress.IPv4Network]] = []
-    for _name, ip, plen, _tun in chosen:
-        net = probe_network(ip, plen, max_hosts=max_hosts)
-        if all(net != seen for _, seen in out):
-            out.append((ip, net))
-    return out
+        groups = [[("", me, local_prefixlen(me), False)]]
+    seen: List[ipaddress.IPv4Network] = []
+    tiers: List[List[Tuple[str, ipaddress.IPv4Network]]] = []
+    for group in groups:
+        tier = []
+        for _name, ip, plen, _fb in group:
+            net = probe_network(ip, plen, max_hosts=max_hosts)
+            if net not in seen:
+                seen.append(net)
+                tier.append((ip, net))
+        if tier:
+            tiers.append(tier)
+    return tiers
 
 
 _REDISCOVER = ("wrong IP, device off, or a stale device record? Re-run "

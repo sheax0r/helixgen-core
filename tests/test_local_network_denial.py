@@ -136,9 +136,9 @@ class TestDiscoveryDenial:
     def test_discover_cli_reports_the_hint(self, monkeypatch):
         def denied(**kw):
             raise discovery.LocalNetworkDenied(discovery.LOCAL_NETWORK_HINT)
-        monkeypatch.setattr(discovery, "probe_targets", lambda **kw: [],
-                            raising=False)
+        monkeypatch.setattr(discovery, "probe_tiers", lambda **kw: [])
         monkeypatch.setattr(discovery, "mdns_discover", denied)
+        monkeypatch.setattr(discovery, "probe_subnet", denied)
         r = CliRunner().invoke(cli, ["device", "discover"])
         assert r.exit_code != 0
         assert "Privacy & Security > Local Network" in r.output

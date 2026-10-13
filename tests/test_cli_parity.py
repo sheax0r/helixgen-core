@@ -384,7 +384,8 @@ DISCOVER_SURFACES: list[tuple[list[str], list[str]]] = [
      ["mDNS", "_stadiumserver._tcp", "PERSIST", "/ProductInfoGet",
       "direct-to-IP", "most recently discovered",
       "never probes beyond the local subnet", "Read-only", "--forget",
-      "Privacy & Security > Local Network", "physical private interface"]),
+      "Privacy & Security > Local Network", "physical private interface",
+      "last resort"]),
     # the shared --ip help (any verb carrying it) pins the resolution chain
     (["device", "copy"],
      ["helixgen device discover", "NO built-in default"]),
