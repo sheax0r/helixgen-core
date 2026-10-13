@@ -826,10 +826,14 @@ class HelixClient:
                 for v in args:
                     if isinstance(v, (bytes, bytearray)):
                         if not v and addr == "/PropertyValueGet":
-                            code = args[-1] if isinstance(args[-1], int) else "?"
-                            raise PropertyUnavailable(
-                                f"property {key!r} is not defined on this "
-                                f"device's firmware (status {code})")
+                            code = args[-1] if isinstance(args[-1], int) else None
+                            if code == -21:
+                                raise PropertyUnavailable(
+                                    f"property {key!r} is not defined on this "
+                                    "device's firmware (status -21)")
+                            raise HelixError(
+                                f"empty value blob for property {key!r} "
+                                f"(status {code})")
                         return bytes(v)
             if raddr == "/error":
                 raise HelixError(
@@ -846,9 +850,17 @@ class HelixClient:
         """Read a property's definition — name, type, range, enum, default
         (``/PropertyDefWithKeyGet``). Self-describing catalog straight from the
         device."""
-        return _settings.decode_property_def(
+        d = _settings.decode_property_def(
             self._property_blob(
                 "/PropertyDefWithKeyGet", "/keyPropertyDefinition", key))
+        # fw 1.4 answers an undefined key with an all-empty def (key '', id
+        # 0). Raise here so `settings set` never writes to a key that isn't
+        # there (an empty def decodes as a rangeless float that accepts any number).
+        if not d.key or not d.id:
+            raise PropertyUnavailable(
+                f"property {key!r} is not defined on this device's firmware "
+                "(empty definition)")
+        return d
 
     # -- writes (proven commands) -----------------------------------------
     def set_property(self, key: str, typ: str, value: Any) -> bool:

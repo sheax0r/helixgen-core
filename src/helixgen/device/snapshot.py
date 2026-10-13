@@ -196,6 +196,8 @@ def _globals(client, errors: List[str]) -> Dict[str, Any]:
         except PropertyUnavailable:
             continue  # not defined on this firmware: absent, not unreadable
         except Exception as exc:  # noqa: BLE001 - one unreadable global is not fatal
+            if key in _settings.FIRMWARE_SPECIFIC_KEYS:
+                continue  # reply shape on other firmware uncharacterized
             errors.append(f"global {key}: {exc}")
     return out
 

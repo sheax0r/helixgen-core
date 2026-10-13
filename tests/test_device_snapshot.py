@@ -554,3 +554,18 @@ def test_a_global_absent_from_this_firmware_is_not_a_failed_read(tmp_path, two_p
     assert res["errors"] == []
     dev = json.loads(next(tmp_path.glob("*/device.json")).read_text())
     assert "global.clip.tm.gap" not in dev["globals"]
+
+
+def test_firmware_specific_globals_are_skipped_whatever_the_failure(tmp_path, two_presets):
+    """A 1.3 device's reply to the 1.4-only keys is uncharacterized (could be
+    /error or a timeout). Failures on the firmware-specific catalog keys must
+    never block pruning; failures on any other key still count."""
+    class Old(StubClient):
+        def get_property(self, key):
+            if key in ("global.exp.2.pedal.position", "global.clip.tm.gap",
+                       "global.tuner.type"):
+                raise HelixError("no blob in reply")
+            return super().get_property(key)
+
+    res = S.take(Old(**two_presets), tmp_path)
+    assert res["errors"] == ["global global.tuner.type: no blob in reply"]

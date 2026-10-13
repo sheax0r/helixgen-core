@@ -147,7 +147,7 @@ A ✅ requires a shipped-release / test / hardware ref — never memory.
 | Register / hash IRs locally | — | local | full | full | ✅ | `register-irs`/`ir-scan`/`ir-cache` |
 | IR block params (hi/lo cut, mix) | IR block | `.hsp` params | full | full | ✅ | authored on the IR block |
 
-## 8. Global settings — ✅ SHIPPED (2.20.0) via `device settings` (161 `global.*` keys)
+## 8. Global settings — ✅ SHIPPED (2.20.0) via `device settings` (164 `global.*` keys as of fw 1.4)
 
 The app exposes these as Global Settings pages; every value is a device
 *property* read/written over `/PropertyValueGet` / `/PropertyValueSet` (protocol

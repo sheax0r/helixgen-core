@@ -461,11 +461,12 @@ push-style tracking. Backs `helixgen device active`.
 **Firmware 1.4 (build 1341) deltas, live-verified 2026-10-13:** a key the
 firmware does not define answers `/PropertyValueGet` with
 `/getPropertyValue [reqid, key, b'', -21]` (empty blob, trailing status
-`-21`; `/PropertyDefWithKeyGet` returns an all-empty def), and
+`-21`; `/PropertyDefWithKeyGet` returns an all-empty def — key `''`, id 0;
+helixgen raises `PropertyUnavailable` on either, before any write), and
 `/PropertyValueSet` acks with `/status [reqid, 0, dirty]` — field 3 the
 edit-buffer dirty flag, as for `/CreateContent` — instead of
 `/success [reqid, 0]`. `/MatchingPropertyDefinitionsGet "*"` returned 457
-defs (385 `global.*`).
+defs (~375–385 `global.*`, depending on how the prefix is counted).
 
 The property catalog itself is enumerable: **`/MatchingPropertyDefinitionsGet
 [reqid, glob:s]`** (e.g. `"*"`, `"server*"`) replies with an `sfdppgsm` blob —
