@@ -284,7 +284,20 @@ class HelixClient:
         """Open the DEALER socket. If ``verify``, confirm a device actually
         answers (a lazily-connected socket to a dead/wrong host never errors on
         its own, which would otherwise make every read look like an empty
-        result)."""
+        result).
+
+        A plain-TCP preflight runs first (hgc-7he): ZeroMQ retries a refused
+        or privacy-blocked connect silently, so without it every failure
+        mode collapsed into the generic "no Helix Stadium answered" — a
+        macOS Local Network denial included."""
+        from helixgen.device import discovery
+
+        self._load_zmq()       # a missing extra stays the first error
+        self._load_msgpack()
+        why = discovery.connect_error(self.ip, self.port)
+        if why:
+            raise HelixError(
+                f"no Helix Stadium reachable at {self.ip}:{self.port} — {why}")
         self._open_socket()
         if verify and self.get_ref(USER) is None:
             self.close()

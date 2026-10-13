@@ -206,12 +206,10 @@ def _telemetry_preflight(ip: str, port: int) -> None:
     error instead."""
     from helixgen.device import discovery
 
-    if not discovery.probe_reachable(ip, port):
+    why = discovery.connect_error(ip, port)
+    if why:
         raise click.ClickException(
-            f"no Helix Stadium reachable at {ip}:{port} (TCP connect "
-            f"failed) — wrong IP, device off, or a stale device record? "
-            f"Re-run `helixgen device discover`, or pass --ip / set "
-            f"$HELIXGEN_HELIX_IP.")
+            f"no Helix Stadium reachable at {ip}:{port} — {why}")
 
 
 def _ip_callback(ctx, param, value):
@@ -585,7 +583,7 @@ def _install_via_dest(h, kind: str, dest_cid: int, label: str, pos: int,
     return new_cid, pool_pos, ref_cid
 
 
-def _auto_upload_irs(ip: str, hashes) -> None:
+def _auto_upload_irs(ip: str, hashes, client=None) -> None:
     """Upload each missing IR hash by resolving it to a local wav via the
     helixgen IR mapping, then SFTP-pushing it (device auto-registers).
 
@@ -598,11 +596,14 @@ def _auto_upload_irs(ip: str, hashes) -> None:
     connection) — a preset whose referenced IR couldn't be pushed is never
     installed. It does so via a clean ``ClickException``, and only after
     echoing every hash's outcome (not just the first failure) so the user
-    sees the full picture before the command exits non-zero."""
+    sees the full picture before the command exits non-zero. An upload
+    that would exceed the firmware 1.4 IR cap (``ir_cap``, checked when
+    ``client`` is given) aborts the same way."""
     from helixgen.device import ir_upload
 
     upload_errors = []
-    for entry in ir_upload.upload_missing_irs(ip, list(hashes)):
+    for entry in ir_upload.upload_missing_irs(ip, list(hashes),
+                                              client=client):
         outcome = entry.get("outcome")
         if outcome == "no_mapping":
             # Applies identically to every hash (mapping.json itself failed
@@ -613,7 +614,7 @@ def _auto_upload_irs(ip: str, hashes) -> None:
             click.echo(entry["note"])
         else:
             click.echo(f"warning: {entry['note']}", err=True)
-            if outcome == "upload_error":
+            if outcome in ("upload_error", "ir_cap"):
                 upload_errors.append(entry["note"])
     if upload_errors:
         raise click.ClickException(
@@ -658,7 +659,7 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
         raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
     missing = sorted(bridge.check_irs(h, body)["missing"])
     if missing and auto_irs:
-        _auto_upload_irs(ip, missing)
+        _auto_upload_irs(ip, missing, client=h)
     else:
         for m in missing:
             click.echo(
@@ -1097,11 +1098,13 @@ def device_setlists(as_json: bool, ip: str, port: int) -> None:
 @click.option("--probe/--no-probe", default=True, show_default=True,
               help="If mDNS finds nothing, fall back to a bounded TCP "
                    "connect-probe of the LOCAL subnet only, on the "
-                   "Stadium's RPC port 2002. The range comes from the "
+                   "Stadium's RPC port 2002, once per private interface "
+                   "(see Known limitations). Each range comes from that "
                    "interface's own NETMASK (a /22 is probed as a /22, not "
                    "as a /24), capped at 1024 addresses around this "
-                   "machine's address, and the messages name the range "
-                   "actually probed (short timeouts, bounded concurrency; "
+                   "machine's address on it, and the messages name the "
+                   "ranges actually probed (short timeouts, bounded "
+                   "concurrency; "
                    "never probes beyond the local subnet, and refuses to "
                    "scan at all when the range is not in a private RFC "
                    "1918 range).")
@@ -1139,12 +1142,22 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
     discovering (matches a record's serial or IP; exits nonzero with a
     clear message when nothing matches or no records exist yet).
 
+    On macOS, when EVERY mDNS send / probe connect fails instantly with
+    EHOSTUNREACH/EPERM, this process is denied Local Network access: the
+    error names System Settings > Privacy & Security > Local Network
+    (enable the terminal app, then restart it) instead of "no Helix
+    Stadium found". Every connecting verb's TCP preflight reports the same.
+
     \b
     Known limitations (backlog #77):
-      * Both mechanisms look at the DEFAULT-ROUTE interface. With a VPN
-        up, that is usually the tunnel — a LAN-attached Stadium can be
-        missed. Disconnect the VPN for the one-shot discover, or bypass
-        discovery with --ip / $HELIXGEN_HELIX_IP.
+      * FIXED (hgc-094): discovery no longer looks only at the
+        default-route interface. Every link-up interface with a private
+        (RFC 1918) address gets its own mDNS query and probe range.
+        Physical interfaces are tried first; VPN/tunnel links and VM/
+        container bridges (utun/tun/wg/docker/br-/virbr/vmnet/bridge...)
+        only as a last resort when no physical private interface finds
+        a device — so a VPN holding the default route no longer hides a
+        LAN Stadium, and a VPN-only Stadium is still found.
       * The mDNS listener hears unicast replies only (no multicast group
         join). The Stadium answers unicast (verified live, fw 1.3.2);
         firmware that replied only via multicast would fall through to
@@ -1175,17 +1188,53 @@ def device_discover(timeout: float, probe: bool, as_json: bool,
 
     HelixClient, HelixError = _client()
 
-    candidates = discovery.mdns_discover(timeout=timeout)
-    probed = None
-    if not candidates and probe:
-        # Name the range actually swept, never "the LAN" — the old wording
+    # hgc-094: every link-up private interface, physical tier first, then
+    # VPN/tunnel + VM/container bridges as a last resort (a VPN holding the
+    # default route used to hide a LAN Stadium).
+    tiers = discovery.probe_tiers()
+    attempts = denied = 0
+
+    def _attempt(fn):
+        # hgc-7he: one denied range/socket set must not discard the others'
+        # hits; the denial is reported only if EVERYTHING was denied.
+        nonlocal attempts, denied
+        attempts += 1
+        try:
+            return fn()
+        except discovery.LocalNetworkDenied:
+            denied += 1
+            return []
+
+    candidates: list = []
+    probed_nets: list = []
+    for tier in tiers or [[]]:
+        candidates = _attempt(lambda: discovery.mdns_discover(
+            timeout=timeout, bind_ips=[me for me, _ in tier]))
+        if candidates or not probe:
+            if candidates:
+                break
+            continue
+        # Name the ranges actually swept, never "the LAN" — the old wording
         # asserted more than it checked (hc-3qw).
-        probed = discovery.local_probe_network()
+        nets = [str(net) for _, net in tier]
+        probed_nets += nets
         click.echo("mDNS found nothing — falling back to a TCP connect-probe "
-                   f"of {probed or 'the local subnet'} (port 2002)…",
+                   f"of {', '.join(nets) or 'the local subnet'} (port 2002)…",
                    err=True)
-        candidates = [discovery.Candidate(ip=ip, via="probe")
-                      for ip in discovery.probe_subnet()]
+        if tier:
+            hits = sorted({ip for me, net in tier
+                           for ip in _attempt(lambda: discovery.probe_subnet(
+                               subnet_ip=me, prefixlen=net.prefixlen))})
+        else:  # nothing private found: the old path (warns + refuses)
+            hits = _attempt(discovery.probe_subnet)
+        candidates = [discovery.Candidate(ip=ip, via="probe") for ip in hits]
+        if candidates:
+            break
+    if not candidates and attempts and denied == attempts:
+        raise click.ClickException(
+            "discovery could not reach the local network: "
+            + discovery.LOCAL_NETWORK_HINT)
+    probed = ", ".join(probed_nets) or None
     if not candidates:
         raise click.ClickException(
             "no Helix Stadium found (mDNS `_stadiumserver._tcp` browse"
@@ -2558,6 +2607,11 @@ def device_push_ir(wav: Path, ip: str) -> None:
     The wedge verdict needs a confirmed listing refresh — an empty or failed
     listing (or a nudge that didn't confirm) keeps the trusting "already"
     answer; `delete-ir --force-wedge` is the sure clear then.
+
+    Firmware 1.4 caps the device IR list at 2048 files: a fresh import onto
+    a full device is refused before uploading (free space with `ir-prune` /
+    `delete-ir`). `device copy` / `install --auto-irs` refuse a whole batch
+    that would overflow, naming how many more fit.
     """
     # sftp path needs a real address even when --no-lock skipped the
     # _locked wrapper's resolution (#74; HelixSFTP(None) would try

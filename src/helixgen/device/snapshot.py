@@ -759,11 +759,24 @@ def apply_restore(client, plan: Dict[str, Any], *,
     A failing op is recorded and the run **continues**: one preset the device
     refuses must not strand the other 39 half-restored.
 
+    IR uploads past the firmware 1.4 2048-IR cap refuse the WHOLE run
+    before anything is written (one error naming how many fit).
+
     Returns ``{ok, applied, errors}``.
     """
     ops = list(plan.get("ops") or [])
     errors: List[str] = []
     applied = 0
+    # firmware 1.4 caps the device IR list at 2048 (hgc-6r5.8): refuse the
+    # whole restore BEFORE any write rather than half-restore past the cap.
+    n_irs = sum(1 for op in ops if op.get("op") == "push_ir")
+    if n_irs:
+        from .ir_upload import ir_cap_note, ir_room
+
+        room = ir_room(client)
+        if room is not None and n_irs > room:
+            return {"ok": False, "applied": 0,
+                    "errors": [ir_cap_note(room, n_irs)]}
     with client.mutating():
         for i, op in enumerate(ops, 1):
             _note(progress, f"{i}/{len(ops)} {op.get('op')} "

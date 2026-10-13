@@ -498,3 +498,41 @@ def test_backup_wires_the_git_textconv(tmp_path, two_presets):
         ["git", "-C", str(tmp_path), "config", "--get",
          "diff.helixgen-sbe.textconv"], capture_output=True, text=True)
     assert "device decode" in got.stdout
+
+
+class _CapClient:
+    ip = "10.0.0.99"
+
+    def __init__(self, n):
+        self.n = n
+        self.applied = []
+
+    def list_irs(self, *, strict=False, settle=True, include_unusable=False):
+        return [{"hash": None}] * self.n
+
+    def mutating(self):
+        import contextlib
+        return contextlib.nullcontext()
+
+
+def test_apply_restore_refuses_irs_past_the_cap_before_uploading(monkeypatch):
+    """hgc-6r5.8: restore is an IR uploader too — refuse before any write."""
+    monkeypatch.setattr(S, "_apply_op",
+                        lambda client, op: client.applied.append(op))
+    plan = {"ops": [{"op": "push_ir", "irhash": "a" * 32, "file": "x"},
+                    {"op": "push_ir", "irhash": "b" * 32, "file": "y"},
+                    {"op": "create", "name": "Tone", "file": "z"}]}
+    c = _CapClient(2047)
+    res = S.apply_restore(c, plan)
+    assert c.applied == []
+    assert res["ok"] is False and res["applied"] == 0
+    assert len(res["errors"]) == 1 and "1 more" in res["errors"][0]
+
+
+def test_apply_restore_within_cap_runs(monkeypatch):
+    monkeypatch.setattr(S, "_apply_op",
+                        lambda client, op: client.applied.append(op))
+    plan = {"ops": [{"op": "push_ir", "irhash": "a" * 32, "file": "x"}]}
+    c = _CapClient(2047)
+    assert S.apply_restore(c, plan)["ok"]
+    assert len(c.applied) == 1

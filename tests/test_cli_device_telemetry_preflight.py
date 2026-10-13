@@ -5,7 +5,7 @@ PUB stream, whose SUB socket connects lazily — an unreachable device used to
 be indistinguishable from silence (a full --seconds wait, then "no meter
 data"). The verbs now TCP-probe the RPC control port (--port) up front and
 fail fast with an instructive error. No real device or socket is touched:
-`discovery.probe_reachable` is monkeypatched, and a sentinel subscriber
+`discovery.connect_error` is monkeypatched, and a sentinel subscriber
 asserts the stream is never opened when the preflight fails.
 """
 from __future__ import annotations
@@ -41,9 +41,10 @@ def _patch_unreachable(monkeypatch):
 
     def fake_probe(ip, port=2002, **kw):
         probed.append((ip, port))
-        return False
+        return ("TCP connect timed out after 2s — re-run "
+                "`helixgen device discover`")
 
-    monkeypatch.setattr(discovery, "probe_reachable", fake_probe)
+    monkeypatch.setattr(discovery, "connect_error", fake_probe)
     monkeypatch.setattr(sub_mod, "HelixSubscriber", ExplodingSubscriber)
     return probed
 

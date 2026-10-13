@@ -222,7 +222,7 @@ def test_sync_preset_irs_uploads_missing_when_auto_irs_true(monkeypatch):
                         lambda client, body: {"present": set(), "missing": {"aa11"}})
     calls = []
 
-    def _fake_upload(ip, hashes):
+    def _fake_upload(ip, hashes, **kw):
         calls.append((ip, list(hashes)))
         return [{"hash": h, "ok": True, "outcome": "imported"} for h in hashes]
 
@@ -250,3 +250,87 @@ def test_sync_preset_irs_auto_irs_false_skips_upload_but_reports(monkeypatch):
     assert results[0]["hash"] == "aa11"
     assert results[0]["ok"] is False
     assert results[0]["outcome"] == "skipped_auto_irs_off"
+
+
+# ---------------------------------------------------------------------------
+# firmware 1.4 IR-list cap (hgc-6r5.8)
+# ---------------------------------------------------------------------------
+
+class _CountClient:
+    def __init__(self, n=0, error=None):
+        self.n, self.error = n, error
+
+    def list_irs(self, *, strict=False, settle=True, include_unusable=False):
+        if self.error is not None:
+            raise self.error
+        return [{"hash": None, "cid_": i} for i in range(self.n)]
+
+
+def test_upload_refused_whole_batch_when_it_would_exceed_cap(monkeypatch):
+    from helixgen.device import ir_upload
+
+    calls = _patch(monkeypatch, {"aa11": Path("/irs/a.wav"),
+                                 "bb22": Path("/irs/b.wav")}, [])
+    results = ir_upload.upload_missing_irs(
+        "1.2.3.4", ["aa11", "bb22", "nope"], client=_CountClient(2047))
+    assert calls == []  # nothing uploaded: no half-written tone
+    by = {r["hash"]: r for r in results}
+    assert by["aa11"]["outcome"] == by["bb22"]["outcome"] == "ir_cap"
+    assert not by["aa11"]["ok"]
+    assert "2048" in by["aa11"]["note"] and "1 more" in by["aa11"]["note"]
+    assert by["nope"]["outcome"] == "not_found_locally"
+
+
+def test_upload_proceeds_when_it_fits_exactly(monkeypatch):
+    from helixgen.device import ir_upload
+
+    ok = {"ok": True, "registered": True, "hash_match": True, "name": "a",
+          "already": False}
+    calls = _patch(monkeypatch, {"aa11": Path("/irs/a.wav")}, [dict(ok)])
+    results = ir_upload.upload_missing_irs(
+        "1.2.3.4", ["aa11"], client=_CountClient(2047))
+    assert len(calls) == 1 and results[0]["ok"]
+
+
+def test_unreadable_listing_does_not_block_upload(monkeypatch):
+    from helixgen.device import ir_upload
+
+    ok = {"ok": True, "registered": True, "hash_match": True, "name": "a",
+          "already": False}
+    calls = _patch(monkeypatch, {"aa11": Path("/irs/a.wav")}, [dict(ok)])
+    ir_upload.upload_missing_irs(
+        "1.2.3.4", ["aa11"], client=_CountClient(error=RuntimeError("x")))
+    assert len(calls) == 1
+
+
+def test_sync_preset_irs_passes_its_client_to_the_cap_check(monkeypatch):
+    from helixgen.device import bridge, ir_upload
+
+    monkeypatch.setattr(bridge, "check_irs",
+                        lambda client, body: {"missing": ["aa11"]})
+    _patch(monkeypatch, {"aa11": Path("/irs/a.wav")}, [])
+    results = ir_upload.sync_preset_irs(_CountClient(2048), {}, "1.2.3.4")
+    assert results[0]["outcome"] == "ir_cap"
+    assert "0 more" in results[0]["note"]
+
+
+def test_batch_checked_upload_tells_push_ir_to_skip_its_own_listing(
+        monkeypatch):
+    """Review: push_ir re-listed per file (~0.6 s each) after the batch
+    check already ran."""
+    import helixgen.ir as _ir
+    from helixgen.device import ir_upload
+    from helixgen.device import sftp as _sftp
+
+    monkeypatch.setattr(_ir.IrMapping, "load", classmethod(
+        lambda cls: _FakeMapping({"aa11": Path("/irs/a.wav")})))
+    seen = []
+
+    def fake_push(ip, path, **kw):
+        seen.append(kw.get("cap_checked"))
+        return {"ok": True, "registered": True, "hash_match": True,
+                "name": "a", "already": False}
+    monkeypatch.setattr(_sftp, "push_ir", fake_push)
+    ir_upload.upload_missing_irs("1.2.3.4", ["aa11"], client=_CountClient(5))
+    ir_upload.upload_missing_irs("1.2.3.4", ["aa11"])
+    assert seen == [True, False]

@@ -27,14 +27,14 @@ Pure stdlib — no pyzmq/msgpack/zeroconf. Two mechanisms, used by
 
 Known limitations (backlog #77):
 
-* **Default-route interface blindness.** :func:`local_ipv4` picks the
-  interface that carries the default route. With a VPN up, that is usually
-  the tunnel — so both the mDNS query and the /24 probe can look at the
-  wrong network and miss a LAN-attached Stadium. Workaround: disconnect
-  the VPN for the one-shot ``device discover``, or skip discovery entirely
-  and pass ``--ip`` / set ``$HELIXGEN_HELIX_IP``. (Enumerating candidate
-  interfaces needs per-interface addresses, which pure stdlib does not
-  expose portably.)
+* **Default-route interface blindness — FIXED (hgc-094).** Discovery used
+  to look only at the interface carrying the default route, so a VPN
+  (``utun``) holding it hid a LAN-attached Stadium. :func:`probe_tiers`
+  now enumerates every link-up interface with an RFC 1918 address (from
+  ``ip``/``ifconfig``), trying physical interfaces first and VPN/tunnel or
+  VM/container-bridge links only as a last resort; mDNS queries go out
+  bound to each of those addresses and the probe sweeps each range
+  (1024-host cap per interface).
 * **The mDNS listener is unicast-reply-only.** :func:`mdns_discover` sends
   a QU (unicast-response) query from an ephemeral port and never joins the
   224.0.0.251 multicast group, so responders that ignore the QU bit and
@@ -61,9 +61,11 @@ guaranteed-wrong default for anyone else that failed as a long stall).
 """
 from __future__ import annotations
 
+import errno
 import ipaddress
 import os
 import re
+import select
 import socket
 import struct
 import subprocess
@@ -71,7 +73,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 #: The DNS-SD service type the Stadium advertises (verified live).
 MDNS_SERVICE = "_stadiumserver._tcp.local."
@@ -91,6 +93,31 @@ _TYPE_SRV = 33
 
 class IPResolutionError(RuntimeError):
     """No device IP could be resolved (no flag, no env, no persisted record)."""
+
+
+#: macOS Local Network privacy (hgc-7he). A process denied Local Network
+#: access gets connect()/sendto() to LAN addresses failing IMMEDIATELY with
+#: EHOSTUNREACH (sometimes EPERM) — ZeroMQ retries that silently, so without
+#: this hint the only symptom was a misleading "no Helix Stadium answered".
+LOCAL_NETWORK_HINT = (
+    "macOS blocked the connection before it left this machine — this "
+    "process is most likely denied Local Network access. Enable your "
+    "terminal app under System Settings > Privacy & Security > Local "
+    "Network, then QUIT and restart the terminal (the grant only reaches "
+    "newly launched processes). If access is already granted, the host may "
+    "simply be down — check the device is on and the IP is right.")
+
+
+class LocalNetworkDenied(RuntimeError):
+    """Every discovery socket failed the way a macOS Local Network privacy
+    denial does (see :data:`LOCAL_NETWORK_HINT`)."""
+
+
+def is_local_network_denial(exc: BaseException) -> bool:
+    """True when ``exc`` looks like a macOS Local Network privacy denial
+    (EHOSTUNREACH / EPERM on darwin). Never true off macOS."""
+    return sys.platform == "darwin" and getattr(exc, "errno", None) in (
+        errno.EHOSTUNREACH, errno.EPERM)
 
 
 #: The RFC 1918 private ranges — the only address space the /24 probe will
@@ -271,43 +298,74 @@ def candidates_from_records(
 # ---------------------------------------------------------------------------
 
 def mdns_discover(timeout: float = 3.0,
-                  service: str = MDNS_SERVICE) -> List[Candidate]:
+                  service: str = MDNS_SERVICE, *,
+                  bind_ips: Optional[Sequence[str]] = None) -> List[Candidate]:
     """One-shot mDNS browse for ``service``; collects responses for up to
     ``timeout`` seconds (re-asking once halfway through for reliability).
-    Returns unique candidates (by IP). Socket errors return ``[]``."""
+    Returns unique candidates (by IP). Socket errors return ``[]``.
+
+    ``bind_ips`` (hgc-094): one query socket per local address, bound to it
+    with ``IP_MULTICAST_IF`` so the query leaves THAT interface — a VPN
+    holding the default route no longer swallows the LAN query. Empty /
+    ``None`` = one unbound socket (the OS picks the interface).
+
+    When EVERY send is refused the way a macOS Local Network denial refuses
+    it, raises :class:`LocalNetworkDenied` (hgc-7he) instead of returning
+    ``[]``."""
     query = build_mdns_query(service)
     found: Dict[str, Candidate] = {}
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    except OSError:
+    addrs = list(bind_ips or [""])
+    socks: List[socket.socket] = []
+    denied = 0
+    for ip in addrs:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError:
+            continue
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((ip, 0))
+            if ip:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF,
+                                socket.inet_aton(ip))
+            sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
+        except OSError as e:
+            denied += is_local_network_denial(e)
+            sock.close()
+            continue
+        socks.append(sock)
+    if not socks:
+        if denied == len(addrs):
+            raise LocalNetworkDenied(LOCAL_NETWORK_HINT)
         return []
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("", 0))
-        sock.settimeout(0.25)
         deadline = time.monotonic() + max(0.5, timeout)
         resend_at = time.monotonic() + max(0.5, timeout) / 2
-        sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
-        while time.monotonic() < deadline:
+        while socks and time.monotonic() < deadline:
             if time.monotonic() >= resend_at:
                 resend_at = float("inf")
-                try:
-                    sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
-                except OSError:
-                    pass
+                for sock in socks:
+                    try:
+                        sock.sendto(query, (MDNS_GROUP, MDNS_PORT))
+                    except OSError:
+                        pass
             try:
-                data, _addr = sock.recvfrom(9000)
-            except socket.timeout:
-                continue
-            except OSError:
+                ready, _, _ = select.select(socks, [], [], 0.25)
+            except (OSError, ValueError):
                 break
-            for cand in candidates_from_records(
-                    parse_mdns_response(data), service):
-                found.setdefault(cand.ip, cand)
-    except OSError:
-        pass
+            for sock in ready:
+                try:
+                    data, _addr = sock.recvfrom(9000)
+                except OSError:
+                    socks.remove(sock)  # a dead socket must not spin select
+                    sock.close()
+                    continue
+                for cand in candidates_from_records(
+                        parse_mdns_response(data), service):
+                    found.setdefault(cand.ip, cand)
     finally:
-        sock.close()
+        for sock in socks:
+            sock.close()
     return sorted(found.values(), key=lambda c: c.ip)
 
 
@@ -398,29 +456,159 @@ def probe_network(ip: str, prefixlen: Optional[int],
     return ipaddress.IPv4Network(f"{ip}/{max(width, floor)}", strict=False)
 
 
-def local_probe_network(*, max_hosts: int = MAX_PROBE_HOSTS
-                        ) -> Optional[ipaddress.IPv4Network]:
-    """The range :func:`probe_subnet` would sweep right now, or ``None``
-    when there is nothing probeable (no local IPv4, or a non-RFC 1918
-    address the probe refuses to scan). Lets the CLI name the range it
-    actually checked instead of claiming "the LAN"."""
-    me = local_ipv4()
-    if not me or not _is_rfc1918(me):
-        return None
-    return probe_network(me, local_prefixlen(me), max_hosts=max_hosts)
+#: Interface-name prefixes discovery treats as LAST-RESORT links: VPN /
+#: tunnels (alongside the POINTOPOINT flag) and VM / container bridges,
+#: whose private ranges hold no Stadium in practice but would each add a
+#: 1024-host sweep. Probed only when the physical tier finds nothing.
+_FALLBACK_PREFIXES = (
+    "utun", "tun", "ppp", "ipsec", "wg", "gif", "stf", "zt",        # VPN
+    "docker", "br-", "virbr", "vboxnet", "vmnet", "lxdbr", "lxcbr",
+    "bridge", "veth", "cni", "podman", "vnic")                      # VM/CT
+
+
+def _is_fallback(name: str, p2p: bool) -> bool:
+    return p2p or name.lower().startswith(_FALLBACK_PREFIXES)
+
+
+def parse_interfaces(output: str
+                     ) -> List[Tuple[str, str, Optional[int], bool]]:
+    """``(name, ipv4, prefixlen, last_resort)`` for every IPv4 address on a
+    usable interface, read from ``ifconfig -a`` (BSD/macOS or net-tools)
+    or ``ip -o link show up`` + ``ip -o -4 addr show up`` output. Pure —
+    the offline half of :func:`local_interfaces`.
+
+    Usable = link up: ifconfig flags carry both ``UP`` and ``RUNNING`` and
+    no ``status: inactive`` line; ``ip -o link`` flags carry ``LOWER_UP``
+    (an address with no link line is kept). ``last_resort`` marks
+    VPN/tunnel and VM/container-bridge links (see ``_FALLBACK_PREFIXES``).
+    ``prefixlen`` is ``None`` for an unparseable netmask."""
+    entries: List[Tuple[str, str, Optional[int]]] = []
+    usable: Dict[str, bool] = {}
+    p2p: set = set()
+    name: Optional[str] = None
+    for line in output.splitlines():
+        m = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)",
+                     line)
+        if m:  # iproute2 one-line address
+            entries.append((m[1], m[2], int(m[3])))
+            continue
+        m = re.match(r"^\d+:\s+([^:@\s]+)(?:@\S+)?:\s+<([^>]*)>", line)
+        if m:  # iproute2 one-line link
+            flags = set(m[2].split(","))
+            usable[m[1]] = "UP" in flags and "LOWER_UP" in flags
+            if "POINTOPOINT" in flags:
+                p2p.add(m[1])
+            continue
+        m = re.match(r"^(\S+?):\s+flags=\S*<([^>]*)>", line)
+        if m:  # ifconfig interface header
+            flags = set(m[2].split(","))
+            name = m[1]
+            usable[name] = "UP" in flags and "RUNNING" in flags
+            if "POINTOPOINT" in flags:
+                p2p.add(name)
+            continue
+        if name and re.match(r"^\s+status:\s+inactive\b", line):
+            usable[name] = False
+            continue
+        m = re.match(
+            r"^\s+inet\s+(\d+\.\d+\.\d+\.\d+)\b.*?\bnetmask\s+(\S+)", line)
+        if m and name:
+            entries.append((name, m[1], netmask_to_prefixlen(m[2])))
+    return [(n, ip, plen, _is_fallback(n, n in p2p))
+            for n, ip, plen in entries if usable.get(n, True)]
+
+
+def local_interfaces() -> List[Tuple[str, str, Optional[int], bool]]:
+    """Every usable interface's IPv4 addresses (see
+    :func:`parse_interfaces`), or ``[]`` when neither ``ip`` nor
+    ``ifconfig`` is available (Windows). Shelling out because stdlib exposes
+    no portable per-interface address + netmask listing."""
+    for cmds in ([["ip", "-o", "link", "show", "up"],
+                  ["ip", "-o", "-4", "addr", "show", "up"]],
+                 [["ifconfig", "-a"]]):
+        out = ""
+        for cmd in cmds:
+            try:
+                out += subprocess.run(cmd, capture_output=True, text=True,
+                                      timeout=5).stdout or ""
+            except (OSError, subprocess.SubprocessError):
+                pass
+        found = parse_interfaces(out)
+        if found:
+            return found
+    return []
+
+
+def probe_tiers(*, max_hosts: int = MAX_PROBE_HOSTS
+                ) -> List[List[Tuple[str, ipaddress.IPv4Network]]]:
+    """``(our address, range to sweep)`` groups discovery tries IN ORDER
+    (hgc-094), stopping at the first group that finds a device:
+
+    1. every usable physical interface with an RFC 1918 address;
+    2. last resort — VPN/tunnel and VM/container-bridge links with RFC 1918
+       addresses (a VPN holding the default route used to blind discovery
+       to the LAN; a VPN-only Stadium must still be findable).
+
+    Each range is the interface's netmask capped at ``max_hosts``
+    (:func:`probe_network`); a range is swept once even if several
+    interfaces share it. Empty groups are omitted. Without interface
+    enumeration (no ``ip``/``ifconfig``) the single group is the
+    default-route address (:func:`local_ipv4`). ``[]`` when nothing private
+    is probeable."""
+    private = [i for i in local_interfaces() if _is_rfc1918(i[1])]
+    groups = [[i for i in private if not i[3]], [i for i in private if i[3]]]
+    if not private:
+        me = local_ipv4()
+        if not me or not _is_rfc1918(me):
+            return []
+        groups = [[("", me, local_prefixlen(me), False)]]
+    seen: List[ipaddress.IPv4Network] = []
+    tiers: List[List[Tuple[str, ipaddress.IPv4Network]]] = []
+    for group in groups:
+        tier = []
+        for _name, ip, plen, _fb in group:
+            net = probe_network(ip, plen, max_hosts=max_hosts)
+            if net not in seen:
+                seen.append(net)
+                tier.append((ip, net))
+        if tier:
+            tiers.append(tier)
+    return tiers
+
+
+_REDISCOVER = ("wrong IP, device off, or a stale device record? Re-run "
+               "`helixgen device discover`, or pass --ip / set "
+               "$HELIXGEN_HELIX_IP.")
+
+
+def connect_error(ip: str, port: int = RPC_PORT, *,
+                  timeout: float = 2.0) -> Optional[str]:
+    """One cheap TCP connect probe of ``ip:port`` — the canonical "is the
+    device up?" check (the Stadium ignores ICMP ping; an open RPC port is
+    the reliable reachability signal). ``None`` when the connect succeeds,
+    else a short actionable reason that keeps the failure modes distinct:
+    a macOS Local Network denial (hgc-7he), a refusal (host up, port
+    closed), a timeout, or any other socket error. Never raises."""
+    try:
+        with socket.create_connection((str(ip), int(port)), timeout=timeout):
+            return None
+    except (socket.timeout, TimeoutError):
+        return f"TCP connect timed out after {timeout:g}s — {_REDISCOVER}"
+    except ConnectionRefusedError:
+        return ("connection refused — the host is up but nothing listens on "
+                "that port: Remote Access disabled on the Stadium, a wrong "
+                "--port, or that address is not a Stadium.")
+    except OSError as e:
+        if is_local_network_denial(e):
+            return (f"TCP connect failed: {e.strerror or e} "
+                    f"(errno {e.errno}). {LOCAL_NETWORK_HINT}")
+        return f"TCP connect failed ({e}) — {_REDISCOVER}"
 
 
 def probe_reachable(ip: str, port: int = RPC_PORT, *,
                     timeout: float = 2.0) -> bool:
-    """One cheap TCP connect probe of ``ip:port`` — the canonical "is the
-    device up?" check (the Stadium ignores ICMP ping; an open RPC port is
-    the reliable reachability signal — the same test :func:`probe_subnet`
-    and the live suite's gate use). Never raises."""
-    try:
-        with socket.create_connection((str(ip), int(port)), timeout=timeout):
-            return True
-    except OSError:
-        return False
+    """Boolean form of :func:`connect_error`. Never raises."""
+    return connect_error(ip, port, timeout=timeout) is None
 
 
 def probe_subnet(port: int = RPC_PORT, *, connect_timeout: float = 0.35,
@@ -461,20 +649,26 @@ def probe_subnet(port: int = RPC_PORT, *, connect_timeout: float = 0.35,
         return []
     targets = [str(host) for host in net.hosts() if str(host) != me]
 
-    def _try(ip: str) -> Optional[str]:
+    def _try(ip: str) -> Tuple[Optional[str], bool]:
         try:
             with socket.create_connection((ip, port), timeout=connect_timeout):
-                return ip
-        except OSError:
-            return None
+                return ip, False
+        except OSError as e:
+            return None, is_local_network_denial(e)
 
     hits: List[str] = []
+    denied = 0
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_try, ip) for ip in targets]
         for fut in as_completed(futures):
-            ip = fut.result()
+            ip, was_denied = fut.result()
             if ip:
                 hits.append(ip)
+            denied += was_denied
+    # A real LAN mixes timeouts/refusals; EVERY connect failing instantly
+    # with EHOSTUNREACH/EPERM is the macOS privacy denial (hgc-7he).
+    if not hits and targets and denied == len(targets):
+        raise LocalNetworkDenied(LOCAL_NETWORK_HINT)
     return sorted(hits)
 
 

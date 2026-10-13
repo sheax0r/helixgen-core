@@ -17,10 +17,37 @@ Three call sites share this core instead of each re-implementing it:
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
+
+#: Firmware 1.4 caps the device's Cab IR list at 2048 files (the Proxy list
+#: has its own 2048 cap; helixgen uploads no proxies). What the device does
+#: when an upload goes past it is unconfirmed, so uploaders refuse first
+#: (hgc-6r5.8).
+IR_LIST_CAP = 2048
 
 
-def upload_missing_irs(ip: str, hashes: Sequence[str]) -> List[Dict[str, Any]]:
+def ir_room(client) -> Optional[int]:
+    """How many more IRs fit under :data:`IR_LIST_CAP`, or ``None`` when the
+    device's IR listing can't be read (the guard then stays out of the way
+    rather than blocking uploads on a listing glitch). Rows whose hash
+    can't be decoded still occupy a slot, so they count."""
+    try:
+        n = len(client.list_irs(strict=True, settle=False,
+                                include_unusable=True))
+    except Exception:  # noqa: BLE001 - advisory guard, never blocks on a read
+        return None
+    return max(0, IR_LIST_CAP - n)
+
+
+def ir_cap_note(room: int, wanted: int) -> str:
+    return (f"uploading {wanted} IR(s) would exceed the firmware 1.4 limit "
+            f"of {IR_LIST_CAP} IR files on the device — only {room} more "
+            f"fit. Free space first (`helixgen device ir-prune`, or "
+            f"`device delete-ir`).")
+
+
+def upload_missing_irs(ip: str, hashes: Sequence[str], *,
+                       client=None) -> List[Dict[str, Any]]:
     """Resolve + upload each of ``hashes`` (already known to be missing on the
     device).
 
@@ -51,6 +78,11 @@ def upload_missing_irs(ip: str, hashes: Sequence[str]) -> List[Dict[str, Any]]:
     * ``"upload_failed"`` — the upload itself failed (no exception, just
       ``ok: False`` from ``push_ir``).
 
+    * ``"ir_cap"`` — not attempted: with ``client`` given, the device's
+      current IR count plus every locally-resolvable hash would exceed
+      :data:`IR_LIST_CAP`, so the WHOLE batch is refused (no half-uploaded
+      tone); the note names how many would fit.
+
     ``ok`` is True only for ``"already"``/``"imported"``.
     """
     from helixgen.ir import IrMapping
@@ -63,11 +95,24 @@ def upload_missing_irs(ip: str, hashes: Sequence[str]) -> List[Dict[str, Any]]:
         return [{"hash": h, "ok": False, "outcome": "no_mapping", "note": note}
                 for h in hashes]
 
-    results: List[Dict[str, Any]] = []
+    paths: Dict[str, Any] = {}
     for hh in hashes:
         try:
-            path = irmap.resolve_by_hash(hh)
+            paths[hh] = irmap.resolve_by_hash(hh)
         except Exception:  # noqa: BLE001 - not registered locally
+            pass
+    room = ir_room(client) if client is not None and paths else None
+    capped = room is not None and len(paths) > room
+
+    results: List[Dict[str, Any]] = []
+    for hh in hashes:
+        path = paths.get(hh)
+        if path is not None and capped:
+            results.append({"hash": hh, "ok": False, "outcome": "ir_cap",
+                            "path": str(path),
+                            "note": ir_cap_note(room, len(paths))})
+            continue
+        if path is None:
             results.append({
                 "hash": hh, "ok": False, "outcome": "not_found_locally",
                 "note": (f"referenced IR {hh} not found locally; register it "
@@ -75,7 +120,7 @@ def upload_missing_irs(ip: str, hashes: Sequence[str]) -> List[Dict[str, Any]]:
             })
             continue
         try:
-            res = sftp.push_ir(ip, str(path))
+            res = sftp.push_ir(ip, str(path), cap_checked=room is not None)
         except Exception as e:  # noqa: BLE001 — push_ir spans SFTP/paramiko,
             # sockets, and the ZMQ client; catch everything so one bad IR
             # never blows up the caller (consistent with the mapping-load
@@ -135,4 +180,4 @@ def sync_preset_irs(client, body: dict, ip: str, *, auto_irs: bool = True
                           f"register-irs / the editor), or the cab will be "
                           f"silent")}
                 for h in missing]
-    return upload_missing_irs(ip, missing)
+    return upload_missing_irs(ip, missing, client=client)

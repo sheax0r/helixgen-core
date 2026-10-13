@@ -847,16 +847,20 @@ class TestProbeUsesDerivedRange:
             subnet_ip="203.0.113.5", prefixlen=24) == []
         assert "203.0.113.0/24" in capsys.readouterr().err
 
-    def test_local_probe_network_uses_the_interface_netmask(self, monkeypatch):
+    def test_probe_tiers_fallback_uses_the_interface_netmask(
+            self, monkeypatch):
+        monkeypatch.setattr(discovery, "local_interfaces", lambda: [])
         monkeypatch.setattr(discovery, "local_ipv4", lambda: "192.168.4.98")
         monkeypatch.setattr(discovery, "local_prefixlen", lambda ip: 22)
-        assert str(discovery.local_probe_network()) == "192.168.4.0/22"
+        assert [[str(n) for _, n in t] for t in discovery.probe_tiers()] == [
+            ["192.168.4.0/22"]]
 
-    def test_local_probe_network_is_none_off_private_ranges(self, monkeypatch):
+    def test_probe_tiers_empty_off_private_ranges(self, monkeypatch):
+        monkeypatch.setattr(discovery, "local_interfaces", lambda: [])
         monkeypatch.setattr(discovery, "local_ipv4", lambda: "203.0.113.5")
-        assert discovery.local_probe_network() is None
+        assert discovery.probe_tiers() == []
         monkeypatch.setattr(discovery, "local_ipv4", lambda: None)
-        assert discovery.local_probe_network() is None
+        assert discovery.probe_tiers() == []
 
 
 class TestDiscoverNamesTheProbedRange:
@@ -864,8 +868,9 @@ class TestDiscoverNamesTheProbedRange:
 
     def test_messages_name_the_range(self, monkeypatch):
         monkeypatch.setattr(discovery, "mdns_discover", lambda **kw: [])
-        monkeypatch.setattr(discovery, "local_probe_network",
-                            lambda **kw: ipaddress.ip_network("192.168.4.0/22"))
+        monkeypatch.setattr(discovery, "probe_tiers",
+                            lambda **kw: [[("192.168.4.98",
+                                            ipaddress.ip_network("192.168.4.0/22"))]])
         monkeypatch.setattr(discovery, "probe_subnet", lambda **kw: [])
         monkeypatch.setattr("helixgen.cli_device._client",
                             lambda: (_FakeClient, discovery.IPResolutionError))

@@ -21,8 +21,8 @@ def _reachable_configured_device(monkeypatch):
     from helixgen.device import discovery
 
     monkeypatch.setenv("HELIXGEN_HELIX_IP", "10.0.0.99")
-    monkeypatch.setattr(discovery, "probe_reachable",
-                        lambda ip, port=2002, **kw: True)
+    monkeypatch.setattr(discovery, "connect_error",
+                        lambda ip, port=2002, **kw: None)
 
 
 class FakeSubscriber:

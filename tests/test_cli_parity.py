@@ -279,7 +279,8 @@ LOCK_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "load"], ["machine-local advisory device lock", "DANGEROUS",
                           "skips the $HELIXGEN_LOCK_TOKEN session check"]),
     (["device", "copy"], ["machine-local advisory device lock"]),
-    (["device", "push-ir"], ["machine-local advisory device lock"]),
+    (["device", "push-ir"], ["machine-local advisory device lock",
+                             "caps the device IR list at 2048"]),
     (["device", "settings", "set"], ["machine-local advisory device lock"]),
     # #97: read-only verbs take no lease but now FAIL under a dangling
     # token — a change to when they exit nonzero, so it belongs in their own
@@ -382,7 +383,9 @@ DISCOVER_SURFACES: list[tuple[list[str], list[str]]] = [
     (["device", "discover"],
      ["mDNS", "_stadiumserver._tcp", "PERSIST", "/ProductInfoGet",
       "direct-to-IP", "most recently discovered",
-      "never probes beyond the local subnet", "Read-only", "--forget"]),
+      "never probes beyond the local subnet", "Read-only", "--forget",
+      "Privacy & Security > Local Network", "physical private interface",
+      "last resort"]),
     # the shared --ip help (any verb carrying it) pins the resolution chain
     (["device", "copy"],
      ["helixgen device discover", "NO built-in default"]),
