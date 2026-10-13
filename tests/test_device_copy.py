@@ -461,3 +461,14 @@ def test_a_timed_out_listing_aborts_instead_of_writing(hsp):
     assert res["ok"] is False
     assert "timed out" in res["errors"][0]
     assert c.calls == []
+
+
+def test_copy_ir_cap_is_one_error_not_one_per_hash(hsp, monkeypatch):
+    note = "only 0 more fit"
+    monkeypatch.setattr(
+        ir_upload, "sync_preset_irs",
+        lambda client, body, ip, auto_irs=True: [
+            {"hash": h, "ok": False, "outcome": "ir_cap", "note": note}
+            for h in ("ab", "cd", "ef")])
+    res = C.copy_tone(_gigs(), hsp(), setlist="Gigs")
+    assert res["errors"] == [note]

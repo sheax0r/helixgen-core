@@ -120,7 +120,7 @@ def upload_missing_irs(ip: str, hashes: Sequence[str], *,
             })
             continue
         try:
-            res = sftp.push_ir(ip, str(path))
+            res = sftp.push_ir(ip, str(path), cap_checked=room is not None)
         except Exception as e:  # noqa: BLE001 — push_ir spans SFTP/paramiko,
             # sockets, and the ZMQ client; catch everything so one bad IR
             # never blows up the caller (consistent with the mapping-load

@@ -139,8 +139,10 @@ def _upload_irs(client, body: dict, with_irs: bool, errors: List[str],
     for r in results:
         _emit(progress, "irs", label=r.get("name") or r.get("hash"),
               status="ok" if r.get("ok") else "error", detail=r.get("note"))
-        if not r.get("ok") and r.get("outcome") != "skipped_auto_irs_off":
-            errors.append(str(r.get("note") or r.get("outcome")))
+        note = str(r.get("note") or r.get("outcome"))
+        if not r.get("ok") and r.get("outcome") != "skipped_auto_irs_off" \
+                and not (r.get("outcome") == "ir_cap" and note in errors):
+            errors.append(note)  # one batch-wide ir_cap note, not per hash
     return results
 
 

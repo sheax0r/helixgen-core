@@ -541,3 +541,22 @@ def test_push_ir_already_present_is_fine_on_a_full_device(monkeypatch,
                          listed=[HG_HASH] + ["bb" * 16] * 2047)
     res = _patched_push_ir(monkeypatch, tmp_path, client)
     assert res["already"]
+
+
+def test_push_ir_cap_checked_skips_the_listing(monkeypatch, tmp_path):
+    import helixgen.ir as _hir
+    from helixgen.device import client as _client_mod
+    from helixgen.device import subscribe as _sub_mod
+    import time as _time
+
+    client = _FakeClient(path=None, listed=["bb" * 16] * 2048)
+    monkeypatch.setattr(_hir, "write_stadium_ir", lambda src, dst: HG_HASH)
+    monkeypatch.setattr(_client_mod, "HelixClient", client)
+    monkeypatch.setattr(_sub_mod, "HelixSubscriber", _FakeSubscriber)
+    monkeypatch.setattr(sftp, "HelixSFTP", _FakePushSFTP)
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    monkeypatch.setattr(_FakePushSFTP, "calls", [])
+    wav = tmp_path / "HGTEST-ir.wav"
+    wav.write_bytes(b"RIFFxxxx")
+    res = sftp.push_ir("1.2.3.4", str(wav), cap_checked=True)
+    assert res["ok"]

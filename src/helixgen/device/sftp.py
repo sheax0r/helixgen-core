@@ -223,7 +223,8 @@ def _addcontent_hash(args: list) -> Optional[str]:
 
 
 def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
-            user: str = DEFAULT_USER, wait_timeout: float = 20.0) -> dict:
+            user: str = DEFAULT_USER, wait_timeout: float = 20.0,
+            cap_checked: bool = False) -> dict:
     """Import an IR onto the device — **instantly**.
 
     The device only registers a new IR file promptly while a client is
@@ -241,6 +242,11 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
     preset that references the ``irhash`` resolves. ``hash_match`` confirms it.
     Returns ``{ok, name, helixgen_hash, device_hash, hash_match, registered, cid,
     device_path, remote, already}``.
+
+    A fresh import onto a device already holding the firmware 1.4 maximum
+    of 2048 IRs is refused before uploading (hgc-6r5.8). ``cap_checked=True``
+    skips that per-file listing when the caller already checked room for
+    its whole batch (``ir_upload.upload_missing_irs``).
     """
     import tempfile
     import time
@@ -275,7 +281,7 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                 # so removing it and importing normally is safe and converges.
                 with HelixSFTP(ip, key_path=key_path, user=user) as s:
                     s.remove_ir_file(already.rsplit("/", 1)[-1])
-            else:
+            elif not cap_checked:
                 # firmware 1.4 caps the IR list (hgc-6r5.8): refuse a fresh
                 # import onto a full device before uploading anything.
                 from .ir_upload import ir_cap_note, ir_room

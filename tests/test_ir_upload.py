@@ -312,3 +312,25 @@ def test_sync_preset_irs_passes_its_client_to_the_cap_check(monkeypatch):
     results = ir_upload.sync_preset_irs(_CountClient(2048), {}, "1.2.3.4")
     assert results[0]["outcome"] == "ir_cap"
     assert "0 more" in results[0]["note"]
+
+
+def test_batch_checked_upload_tells_push_ir_to_skip_its_own_listing(
+        monkeypatch):
+    """Review: push_ir re-listed per file (~0.6 s each) after the batch
+    check already ran."""
+    import helixgen.ir as _ir
+    from helixgen.device import ir_upload
+    from helixgen.device import sftp as _sftp
+
+    monkeypatch.setattr(_ir.IrMapping, "load", classmethod(
+        lambda cls: _FakeMapping({"aa11": Path("/irs/a.wav")})))
+    seen = []
+
+    def fake_push(ip, path, **kw):
+        seen.append(kw.get("cap_checked"))
+        return {"ok": True, "registered": True, "hash_match": True,
+                "name": "a", "already": False}
+    monkeypatch.setattr(_sftp, "push_ir", fake_push)
+    ir_upload.upload_missing_irs("1.2.3.4", ["aa11"], client=_CountClient(5))
+    ir_upload.upload_missing_irs("1.2.3.4", ["aa11"])
+    assert seen == [True, False]
