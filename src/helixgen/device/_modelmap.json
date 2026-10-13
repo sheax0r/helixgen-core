@@ -775,7 +775,7 @@
       "device_name": "britjujube",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.96,
       "category": "amp"
     },
     "Agoura_AmpBritMegaBass": {
@@ -811,7 +811,7 @@
       "device_name": "cali2c",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.973,
       "category": "amp"
     },
     "Agoura_AmpEVPanamaBlue": {
@@ -982,7 +982,7 @@
       "device_name": "ussupblk",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9565,
       "category": "amp"
     },
     "Agoura_AmpUSTweedman": {
@@ -991,7 +991,7 @@
       "device_name": "ustwdman",
       "method": "exact_id",
       "confidence": 1.0,
-      "param_jaccard": 1.0,
+      "param_jaccard": 0.9583,
       "category": "amp"
     },
     "Agoura_AmpWhoWatt103": {
@@ -7339,7 +7339,8 @@
           ],
           "pbn": 0,
           "ver": "0x14000000"
-        }
+        },
+        "previous_modeldefs": "p35md-1_3_0_0.bin"
       }
     }
   }
