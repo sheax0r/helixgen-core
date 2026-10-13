@@ -583,7 +583,7 @@ def _install_via_dest(h, kind: str, dest_cid: int, label: str, pos: int,
     return new_cid, pool_pos, ref_cid
 
 
-def _auto_upload_irs(ip: str, hashes) -> None:
+def _auto_upload_irs(ip: str, hashes, client=None) -> None:
     """Upload each missing IR hash by resolving it to a local wav via the
     helixgen IR mapping, then SFTP-pushing it (device auto-registers).
 
@@ -596,11 +596,14 @@ def _auto_upload_irs(ip: str, hashes) -> None:
     connection) — a preset whose referenced IR couldn't be pushed is never
     installed. It does so via a clean ``ClickException``, and only after
     echoing every hash's outcome (not just the first failure) so the user
-    sees the full picture before the command exits non-zero."""
+    sees the full picture before the command exits non-zero. An upload
+    that would exceed the firmware 1.4 IR cap (``ir_cap``, checked when
+    ``client`` is given) aborts the same way."""
     from helixgen.device import ir_upload
 
     upload_errors = []
-    for entry in ir_upload.upload_missing_irs(ip, list(hashes)):
+    for entry in ir_upload.upload_missing_irs(ip, list(hashes),
+                                              client=client):
         outcome = entry.get("outcome")
         if outcome == "no_mapping":
             # Applies identically to every hash (mapping.json itself failed
@@ -611,7 +614,7 @@ def _auto_upload_irs(ip: str, hashes) -> None:
             click.echo(entry["note"])
         else:
             click.echo(f"warning: {entry['note']}", err=True)
-            if outcome == "upload_error":
+            if outcome in ("upload_error", "ir_cap"):
                 upload_errors.append(entry["note"])
     if upload_errors:
         raise click.ClickException(
@@ -656,7 +659,7 @@ def _install_hsp_open(h, body: dict, container: int, pos: int, name: str, *,
         raise click.ClickException(f"{setlist_label} slot {pos} is not empty")
     missing = sorted(bridge.check_irs(h, body)["missing"])
     if missing and auto_irs:
-        _auto_upload_irs(ip, missing)
+        _auto_upload_irs(ip, missing, client=h)
     else:
         for m in missing:
             click.echo(
@@ -2581,6 +2584,11 @@ def device_push_ir(wav: Path, ip: str) -> None:
     The wedge verdict needs a confirmed listing refresh — an empty or failed
     listing (or a nudge that didn't confirm) keeps the trusting "already"
     answer; `delete-ir --force-wedge` is the sure clear then.
+
+    Firmware 1.4 caps the device IR list at 2048 files: a fresh import onto
+    a full device is refused before uploading (free space with `ir-prune` /
+    `delete-ir`). `device copy` / `install --auto-irs` refuse a whole batch
+    that would overflow, naming how many more fit.
     """
     # sftp path needs a real address even when --no-lock skipped the
     # _locked wrapper's resolution (#74; HelixSFTP(None) would try

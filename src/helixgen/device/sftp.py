@@ -275,6 +275,13 @@ def push_ir(ip: str, local_wav: str, *, key_path: Optional[str] = None,
                 # so removing it and importing normally is safe and converges.
                 with HelixSFTP(ip, key_path=key_path, user=user) as s:
                     s.remove_ir_file(already.rsplit("/", 1)[-1])
+            else:
+                # firmware 1.4 caps the IR list (hgc-6r5.8): refuse a fresh
+                # import onto a full device before uploading anything.
+                from .ir_upload import ir_cap_note, ir_room
+
+                if ir_room(h) == 0:
+                    raise HelixError(ir_cap_note(0, 1))
 
         # Subscribe to 2001 FIRST — this activates the device's watched-dir
         # monitor so it registers our upload immediately (the delay fix).

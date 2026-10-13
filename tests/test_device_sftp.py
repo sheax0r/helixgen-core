@@ -522,3 +522,22 @@ def test_push_ir_cid_comes_from_the_dict_the_hash_was_accepted_from(
     assert res["ok"] and res["registered"] and res["hash_match"]
     assert res["cid"] == 1465
     assert client.renames == [(1465, "HGTEST-ir")]
+
+
+def test_push_ir_refuses_when_device_ir_list_is_full(monkeypatch, tmp_path):
+    """hgc-6r5.8: firmware 1.4 caps the IR list at 2048 files — a fresh
+    import onto a full device is refused before anything is uploaded."""
+    from helixgen.device.client import HelixError
+
+    client = _FakeClient(path=None, listed=["bb" * 16] * 2048)
+    with pytest.raises(HelixError, match="2048"):
+        _patched_push_ir(monkeypatch, tmp_path, client)
+    assert _FakePushSFTP.calls == []
+
+
+def test_push_ir_already_present_is_fine_on_a_full_device(monkeypatch,
+                                                          tmp_path):
+    client = _FakeClient(path="/data/ir/x.wav",
+                         listed=[HG_HASH] + ["bb" * 16] * 2047)
+    res = _patched_push_ir(monkeypatch, tmp_path, client)
+    assert res["already"]
