@@ -185,6 +185,7 @@ def _serial_of(client) -> str:
 def _globals(client, errors: List[str]) -> Dict[str, Any]:
     """Every global setting the device reports, minus the wall clock."""
     from . import settings as _settings
+    from .client import PropertyUnavailable
     skip = set(_settings.pages().get(VOLATILE_SETTINGS_PAGE, ()))
     out: Dict[str, Any] = {}
     for key in _settings.all_keys():
@@ -192,7 +193,11 @@ def _globals(client, errors: List[str]) -> Dict[str, Any]:
             continue
         try:
             out[key] = client.get_property(key).value
+        except PropertyUnavailable:
+            continue  # not defined on this firmware: absent, not unreadable
         except Exception as exc:  # noqa: BLE001 - one unreadable global is not fatal
+            if key in _settings.FIRMWARE_SPECIFIC_KEYS:
+                continue  # reply shape on other firmware uncharacterized
             errors.append(f"global {key}: {exc}")
     return out
 

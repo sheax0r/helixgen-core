@@ -38,6 +38,19 @@ DANGEROUS_KEYS = frozenset({
     "global.remote.access",     # disabling remote access locks out all clients
 })
 
+#: Catalog keys that exist only on some firmware: added in 1.4, or present on
+#: 1.3.x and removed in 1.4. How 1.3 answers a 1.4-only key is
+#: uncharacterized, so a backup treats ANY failure reading one of these as
+#: "not on this firmware", never as a failed read.
+FIRMWARE_SPECIFIC_KEYS = frozenset({
+    "global.exp.2.pedal.position", "global.exp.a.pedal.position",
+    "global.exp.b.pedal.position", "global.exp.c.pedal.position",
+    "global.exp.d.pedal.position", "global.timemachine.gap",
+    "global.timemachine.input", "global.timemachine.threshold",
+    "global.clip.tm.gap", "global.clip.tm.threshold",
+    "global.midi.clock.synced", "global.out.spdif.type",
+})
+
 _PAGES_FILE = os.path.join(os.path.dirname(__file__), "_settings_pages.json")
 _PAGES_CACHE: Optional[Dict[str, List[str]]] = None
 

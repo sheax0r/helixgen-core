@@ -106,6 +106,12 @@ class HelixError(Exception):
     """A device RPC failed or the network client could not be used."""
 
 
+class PropertyUnavailable(HelixError):
+    """The device's firmware does not define this property key (fw 1.4 answers
+    ``/getPropertyValue [reqid, key, b'', -21]``) — the key is absent, which
+    is not a failed read."""
+
+
 def slot_label(posi: Optional[int]) -> str:
     """Device ``posi`` -> Helix bank/slot label, e.g. 0 -> '1A', 5 -> '2B'."""
     if posi is None:
@@ -819,6 +825,15 @@ class HelixClient:
             if raddr == reply:
                 for v in args:
                     if isinstance(v, (bytes, bytearray)):
+                        if not v and addr == "/PropertyValueGet":
+                            code = args[-1] if isinstance(args[-1], int) else None
+                            if code == -21:
+                                raise PropertyUnavailable(
+                                    f"property {key!r} is not defined on this "
+                                    "device's firmware (status -21)")
+                            raise HelixError(
+                                f"empty value blob for property {key!r} "
+                                f"(status {code})")
                         return bytes(v)
             if raddr == "/error":
                 raise HelixError(
@@ -835,9 +850,17 @@ class HelixClient:
         """Read a property's definition — name, type, range, enum, default
         (``/PropertyDefWithKeyGet``). Self-describing catalog straight from the
         device."""
-        return _settings.decode_property_def(
+        d = _settings.decode_property_def(
             self._property_blob(
                 "/PropertyDefWithKeyGet", "/keyPropertyDefinition", key))
+        # fw 1.4 answers an undefined key with an all-empty def (key '', id
+        # 0). Raise here so `settings set` never writes to a key that isn't
+        # there (an empty def decodes as a rangeless float that accepts any number).
+        if not d.key or not d.id:
+            raise PropertyUnavailable(
+                f"property {key!r} is not defined on this device's firmware "
+                "(empty definition)")
+        return d
 
     # -- writes (proven commands) -----------------------------------------
     def set_property(self, key: str, typ: str, value: Any) -> bool:
@@ -851,7 +874,9 @@ class HelixClient:
         _settings.guard_key(key)
         blob = _settings.encode_value_blob(key, typ, value)
         for addr, args in self._rpc("/PropertyValueSet", [("i", 0), ("b", blob)]):
-            if addr == "/success":
+            # fw <=1.3.2 acks /success [reqid, 0]; fw 1.4 acks
+            # /status [reqid, 0, dirty] (field 3 = edit-buffer dirty flag).
+            if addr in ("/success", "/status"):
                 return len(args) >= 2 and args[1] == 0
             if addr == "/error":
                 raise HelixError(
@@ -876,7 +901,9 @@ class HelixClient:
         blob = _globaleq.encode_value_blob(output, band, param, value)
         for addr, args in self._rpc(
                 "/PropertyValueSet", [("i", 0), ("b", blob)]):
-            if addr == "/success":
+            # fw <=1.3.2 acks /success [reqid, 0]; fw 1.4 acks
+            # /status [reqid, 0, dirty] (field 3 = edit-buffer dirty flag).
+            if addr in ("/success", "/status"):
                 return len(args) >= 2 and args[1] == 0
             if addr == "/error":
                 raise HelixError(

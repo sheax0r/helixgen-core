@@ -678,7 +678,7 @@ setlist/preset CRUD (#20 create-setlist/#1, setlist rename/delete) must sequence
 orthogonal to it.
 
 - **P1 · #15 Global settings read/write** — **✅ SHIPPED 2.20.0.** The 8 Global
-  Settings pages + Tuner + Wireless (161 curated `global.*` keys) are read/written
+  Settings pages + Tuner + Wireless (161 curated `global.*` keys at ship; 164 as of fw 1.4) are read/written
   over `/PropertyValueGet` / `/PropertyValueSet` via `helixgen device settings
   list|get|set` + MCP `device_settings_*`. Protocol RE'd + hardware-validated
   (get/set/def, enum-by-label, range validation, round-trip) — see

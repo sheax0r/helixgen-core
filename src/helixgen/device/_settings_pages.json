@@ -87,7 +87,10 @@
   "global.play.clip.on.open",
   "global.preset.clip.autostart",
   "global.preset.clip.autostop",
-  "global.song.play"
+  "global.song.play",
+  "global.timemachine.gap",
+  "global.timemachine.input",
+  "global.timemachine.threshold"
  ],
  "date-time": [
   "global.clock.ampm",
@@ -105,6 +108,11 @@
   "global.combo.bottom.row",
   "global.combo.top.row",
   "global.exp.pedal.position",
+  "global.exp.2.pedal.position",
+  "global.exp.a.pedal.position",
+  "global.exp.b.pedal.position",
+  "global.exp.c.pedal.position",
+  "global.exp.d.pedal.position",
   "global.exp.polarity.flip",
   "global.fs6.mode.1",
   "global.fs6.mode.2",
