@@ -1336,3 +1336,22 @@ def test_device_bblk_on_an_empty_slot_roundtrips():
     sbe1 = content.encode_content_data(doc)
     body = untranscode.sbe_bytes_to_hsp(sbe1, name="RT")
     assert transcode.hsp_to_sbepgsm(body) == sbe1
+
+
+def test_stadium_1_4_models_round_trip():
+    """Every model new in Stadium 1.4 survives ``.sbe -> .hsp -> .sbe`` under
+    its device string. Before the 1.4 defs, `device to-hsp` DROPPED these
+    blocks ("no helixgen model for device model id(s) [845, ...]")."""
+    new = ["Agoura_AmpBritSL100", "Agoura_AmpLine6Prosecutor",
+           "Agoura_AmpOmegaGrano", "HD2_DistMercatorMono",
+           "HD2_DistRockBoxBoostMono", "HD2_DistRockBoxStereo",
+           "HD2_DistPortaBox424Stereo", "HD2_VibratoEssexVibeMono",
+           "HD2_ChorusDimensionWStereo"]
+    body = _assert_roundtrip({"name": "eras", "paths": [
+        {"blocks": [{"block": m, "params": {}} for m in new[:5]]},
+        {"blocks": [{"block": m, "params": {}} for m in new[5:]]},
+    ]})
+    models = [s["model"] for f in body["preset"]["flow"]
+              for k, b in f.items() if k.startswith("b") and isinstance(b, dict)
+              for s in b.get("slot", [])]
+    assert set(new) <= set(models)
