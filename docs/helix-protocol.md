@@ -814,6 +814,13 @@ footswitch/controller assignment commands are parameterised on the device.
   preset — including freshly + successfully installed ones — so they are **not**
   an empty/populated signal; use `/GetContentData` size to tell an empty stub
   from a real preset.)
+- **fw 1.4 (build 1341) lists every POSITION of a slotted container.**
+  `/GetContainerContents` on the pool (`-2`) and factory (`-1`) returns all 512
+  positions, and on a user setlist all 128 — empty positions come back as
+  placeholders `{blck: 0, ccid, cctp, flow: 0, posi, type: 2}` with **no
+  `cid_` and no `name`** (1.3.2 listed occupied positions only). They are not
+  content: `HelixClient.list_container` drops them, so every caller (listing,
+  backup, lowest-empty-position placement) sees empty positions as empty.
 - **2001 12-byte header field split** (§2) and **2003 framing** (assumed same as
   2002) are inferred, not verified.
 - **`/CreateContent` `ctype`.** `ctype = 2` (preset) and `ctype = 1003`

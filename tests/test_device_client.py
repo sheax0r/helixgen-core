@@ -2823,3 +2823,36 @@ def test_create_error_says_unknown_when_only_an_early_listing_succeeded(
     assert "really did not land" not in msg
     assert "never showed it" not in msg
     assert not any(b"/RemoveContent" in s for s in h.sock.sent)
+
+
+# fw 1.4 (build 1341) lists EVERY position of a slotted container (512 pool,
+# 128 per setlist), empty ones as cid-less placeholders
+# {blck: 0, flow: 0, cctp, posi, type: 2} with no cid_ and no name.
+_FW14_LISTING = [
+    {"blck": 6, "ccid": -2, "cctp": 1000, "cid_": 1788, "flow": 0,
+     "name": "Dream On", "posi": 0, "type": 2},
+    {"blck": 0, "ccid": -2, "cctp": 1000, "flow": 0, "posi": 1, "type": 2},
+    {"blck": -1, "ccid": -2, "cctp": 1000, "cid_": 1791, "flow": -1,
+     "name": "Hunting Soul", "posi": 2, "type": 2},
+    {"blck": 0, "ccid": -2, "cctp": 1000, "flow": 0, "posi": 3, "type": 2},
+]
+
+
+def _wire_fw14_listing(h):
+    reply = osc_encode(
+        "/GetContainerContents",
+        [("i", 1000), ("b", msgpack.packb(_FW14_LISTING, use_bin_type=True))],
+    )
+    _wire(h, [reply])
+
+
+def test_fw14_empty_position_placeholders_are_not_listed():
+    h = HelixClient("10.0.0.99")
+    _wire_fw14_listing(h)
+    assert [m["cid_"] for m in h.list_presets(-2)] == [1788, 1791]
+
+
+def test_fw14_placeholder_position_reads_as_empty():
+    h = HelixClient("10.0.0.99")
+    _wire_fw14_listing(h)
+    assert h._lowest_empty_posi(-2) == 1
