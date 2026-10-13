@@ -20,6 +20,16 @@ def test_default_hedit_key_env_missing_file(monkeypatch):
         sftp.default_hedit_key()
 
 
+def test_default_hedit_key_prefers_captured_home_copy(tmp_path, monkeypatch):
+    # app 1.4: no bundled key, so the captured ~/.helixgen/id_hedit is used.
+    monkeypatch.delenv("HELIXGEN_HELIX_SSH_KEY", raising=False)
+    captured = tmp_path / "id_hedit"
+    captured.write_text("KEY")
+    missing_bundle = str(tmp_path / "nope" / "id_hedit")
+    monkeypatch.setattr(sftp, "_KEY_CANDIDATES", [str(captured), missing_bundle])
+    assert sftp.default_hedit_key() == str(captured)
+
+
 def test_default_hedit_key_not_found(monkeypatch):
     monkeypatch.delenv("HELIXGEN_HELIX_SSH_KEY", raising=False)
     monkeypatch.setattr(sftp, "_KEY_CANDIDATES", ["/definitely/not/here"])
