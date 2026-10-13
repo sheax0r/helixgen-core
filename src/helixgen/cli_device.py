@@ -3035,8 +3035,11 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
     Both the container framing (header/gzip/tar/manifest/128-slot/empty-sentinel)
     and the FILLED-slot framing are pinned against real captured exports. A
     filled slot embeds the preset's `.hsp` (magic `rpshnosj` + JSON); it is
-    transcoded to device content on the way in. Device content blobs
-    (`_sbepgsm` / `/SetContentData`) are also accepted (detected by magic).
+    transcoded to device content on the way in, STRICTLY (as `device copy`):
+    a block whose model can't be resolved fails that slot with an error naming
+    the model — never installed with the block silently dropped. Device
+    content blobs (`_sbepgsm` / `/SetContentData`) are also accepted (detected
+    by magic).
 
     Imported presets are recorded in the local tone library as PATHLESS tones
     (source `import-hss`) with membership in the destination setlist, so a

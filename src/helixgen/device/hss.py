@@ -357,7 +357,9 @@ def _installable_content(slot: HssSlot) -> bytes:
     fmt = slot.payload_format or detect_payload_format(slot.blob)
     if fmt == FMT_HSP:
         body = json.loads(slot.blob[len(HSP_MAGIC):].decode("utf-8"))
-        return transcode.hsp_to_sbepgsm(body)
+        # strict (hgc-6r5.13): an unresolvable block fails the slot loudly
+        # instead of being silently dropped — same as `device copy`.
+        return transcode.hsp_to_sbepgsm(body, strict=True)
     if fmt == FMT_SBEPGSM:
         return content.to_content_data(slot.blob)
     raise ValueError("payload is neither a .hsp preset nor a device content blob")
