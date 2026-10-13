@@ -164,7 +164,23 @@ def parse_commanddefs(path: Path):
     return header, commands
 
 
-def build(resources: Path) -> dict:
+def carried_added(vendored: dict) -> dict[str, dict[int, str]]:
+    """``{model: {pid: release}}`` of the ``added`` marks in an existing asset.
+
+    :func:`added_params` only diffs against the release just before the newest,
+    so a regen against a later app (or one without the older bin) would drop
+    earlier releases' marks; ``build`` carries these forward instead.
+    """
+    names = {str(mid): name for name, mid in (vendored.get("models") or {}).items()}
+    out: dict[str, dict[int, str]] = {}
+    for mid, params in (vendored.get("model_params") or {}).items():
+        for meta in params.values():
+            if meta.get("added") and mid in names:
+                out.setdefault(names[mid], {})[meta.get("id")] = meta["added"]
+    return out
+
+
+def build(resources: Path, vendored: dict | None = None) -> dict:
     catalog_path = resources / CATALOG_NAME
     modeldefs_path = find_modeldefs(resources)
     commanddefs_path = resources / COMMANDDEFS_NAME
@@ -174,6 +190,7 @@ def build(resources: Path) -> dict:
     previous_path = find_previous_modeldefs(resources)
     added = (added_params(models, parse_modeldefs(previous_path)[1])
              if previous_path else {})
+    carried = carried_added(vendored or {})
     cmd_header, commands = parse_commanddefs(commanddefs_path)
 
     name_to_id: dict[str, int] = {}
@@ -202,6 +219,8 @@ def build(resources: Path) -> dict:
                     entry[k] = pdef[k]
             if pname in added.get(model_str, ()):
                 entry["added"] = modeldefs_path.name
+            elif pdef.get("id") in carried.get(model_str, {}):
+                entry["added"] = carried[model_str][pdef.get("id")]
             params_out[pname] = entry
         model_params[str(mid)] = params_out
 
@@ -233,7 +252,8 @@ def main(argv: list[str]) -> int:
         print(f"error: resources dir not found: {resources}", file=sys.stderr)
         return 2
 
-    data = build(resources)
+    vendored = json.loads(OUT_PATH.read_text()) if OUT_PATH.exists() else {}
+    data = build(resources, vendored)
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUT_PATH.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

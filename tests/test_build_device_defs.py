@@ -42,3 +42,16 @@ def test_params_new_since_the_previous_release_are_marked_by_pid():
         "NewAmp": {"id": 9, "params": {"Drive": {"id": 1}}},
     }
     assert bdd.added_params(cur, prev) == {"Amp": {"CabIdx"}}
+
+
+def test_added_marks_carry_forward_from_the_vendored_asset():
+    """A regen against a newer app (1.5) diffs only against 1.4, so 1.4's own
+    additions would silently lose their marks; they are carried forward from
+    the asset being replaced, keyed by model + pid."""
+    vendored = {
+        "models": {"Amp": 1},
+        "model_params": {"1": {"CabIdx": {"id": 26, "added": "p35md-1_4_0_0.bin"},
+                               "Drive": {"id": 1}}},
+    }
+    assert bdd.carried_added(vendored) == {"Amp": {26: "p35md-1_4_0_0.bin"}}
+    assert bdd.carried_added({}) == {}
