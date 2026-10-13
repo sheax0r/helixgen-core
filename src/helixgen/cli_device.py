@@ -2032,8 +2032,9 @@ def device_reorder(setlist: str, target: str, to_index: int,
     among the listed items: fw 1.4 setlists keep real gaps, so `--to 5` in a
     two-preset setlist is a valid empty position. Items between the old and
     new position shift one place (gaps shift with them). Bounds: a setlist
-    0..127. The pool (-2) and the setlists root are not yet
-    characterized: there --to stays an index bounded by the current length.
+    0..127 (fw 1.4+). Older firmware, the pool (-2) and the setlists
+    root keep --to as an index bounded by the current length; a setlist
+    reorder is refused when the firmware version can't be read.
 
     This is a direct, immediate DEVICE-side write. For the ordinary
     name-addressed form of the same move, prefer `device move <name> --in

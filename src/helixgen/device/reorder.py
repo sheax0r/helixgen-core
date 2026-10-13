@@ -276,7 +276,15 @@ def reorder_setlist_item(client, setlist: str, target: str,
     # one place (HW-characterized fw 1.4, docs/helix-protocol.md). A newPos
     # past the last slot parks the item at an unlisted posi, so refuse it.
     to = int(to_index)
-    if not (is_setlist and _fw_at_least(_firmware(client), (1, 4))):
+    fw = _firmware(client) if is_setlist else ""
+    if is_setlist and not fw:
+        # fw 1.4 setlists take a posi, older ones an index — guessing wrong
+        # lands the preset one slot off (or shifts the wrong slots).
+        raise ValueError(
+            "could not read the device firmware version, so the setlist "
+            "position semantics (fw 1.4 posi vs older index) are unknown; "
+            "refusing to reorder — check the connection and retry")
+    if not (is_setlist and _fw_at_least(fw, (1, 4))):
         # ponytail: only fw 1.4 SETLIST newPos semantics are HW-characterized;
         # the pool, the setlists root, any other container and older firmware
         # keep the old verbatim index + row-count bound until probed.

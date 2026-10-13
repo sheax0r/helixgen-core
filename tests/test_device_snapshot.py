@@ -806,3 +806,40 @@ def test_a_posi_file_with_duplicate_or_bad_posi_is_malformed(doc):
 
 def test_legacy_names_with_nulls_restore_compact():
     assert S._desired_refs(["A", None, "B"]) == [("A", 0), ("B", 1)]
+
+
+def test_an_acked_add_that_never_landed_never_removes_the_only_copy(tmp_path):
+    """Verifier repro: the REAL reference_into_setlist falls back to matching
+    rcid alone, so an add the device acks but never lands returns the OLD
+    source ref's cid. The move must confirm a NEW row at the target by strict
+    re-list before removing anything."""
+    from helixgen.device.client import HelixClient
+
+    class AckNoLand(Fw14Device):
+        def _create_copy(self, sl, cids, pos):
+            return True
+
+        def reference_into_setlist(self, sl, pc, pos):
+            return HelixClient.reference_into_setlist(self, sl, pc, pos)
+
+    _backup(tmp_path, [_ref(9001, 101, 3)])
+    dev = AckNoLand(POOL, [_ref(8001, 101, 1)])
+    plan, res = _restore(tmp_path, dev)
+    assert not res["ok"]
+    assert dev.layout() == [(1, "X")]
+
+
+def test_leftover_references_are_reported_without_prune(tmp_path):
+    _backup(tmp_path, [_ref(9001, 101, 0)])
+    dev = Fw14Device(POOL, [_ref(9001, 101, 0), _ref(9002, 102, 2), _ref(9005, 777, 4)])
+    plan = S.plan_restore(dev, tmp_path, serial="SN-TEST-1")
+    line = next(l for l in plan["summary"] if l.startswith("note: keeping"))
+    assert "'Y'@2" in line and "'(dangling)'@4" in line and "--prune" in line
+
+
+def test_a_dangling_blocker_is_named_dangling(tmp_path):
+    _backup(tmp_path, [_ref(9001, 101, 3)])
+    dev = Fw14Device(POOL, [_ref(9001, 101, 1), _ref(9005, 777, 3)])
+    plan = S.plan_restore(dev, tmp_path, serial="SN-TEST-1")
+    assert any("'(dangling)'" in e for e in plan["errors"])
+    assert not any("None" in e for e in plan["errors"])

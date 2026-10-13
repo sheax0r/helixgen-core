@@ -56,6 +56,9 @@ class _Raw:
 class StubClient:
     """Exactly the surface copy.py + reorder.reorder_setlist_item call."""
 
+    def product_info(self):  # setlist reorder needs fw (hgc-6r5.14)
+        return {"firmware": "1.4.0"}
+
     ip = "10.0.0.99"
 
     def __init__(self, *, pool=None, setlists=None, refs=None):

@@ -27,6 +27,9 @@ def _configured_device_ip(monkeypatch):
 class FakeClient:
     """Stand-in for HelixClient. Records calls; returns canned data."""
 
+    def product_info(self):  # setlist reorder needs fw (hgc-6r5.14)
+        return {"firmware": "1.4.0"}
+
     def __init__(self, *args, **kwargs):
         self.init_args = (args, kwargs)
         self.calls = []

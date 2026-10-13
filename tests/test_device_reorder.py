@@ -646,3 +646,16 @@ def test_literal_non_setlist_container_keeps_index_semantics():
     assert client.reorder_calls[-1][2] == 1
     with pytest.raises(ValueError, match="out of range"):
         R.reorder_setlist_item(client, "-11", "501", 5)
+
+
+def test_setlist_reorder_refused_when_firmware_unreadable():
+    class NoFw(StubClient):
+        def product_info(self):
+            raise RuntimeError("timeout")
+
+    client = NoFw(setlists={"throwaway": 1234},
+                  container_items={1234: SETLIST_ITEMS},
+                  pool=[{"cid_": cid, "name": name} for cid, name in POOL_NAMES.items()])
+    with pytest.raises(ValueError, match="firmware"):
+        R.reorder_setlist_item(client, "throwaway", "Lead Tone", 0)
+    assert client.reorder_calls == []

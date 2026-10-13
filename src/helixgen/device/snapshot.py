@@ -553,6 +553,12 @@ def _plan_setlist(sl_name: str, desired: List[Tuple[str, int]],
                            f"{sl_name!r} at {r['posi']}")
             occupied.discard(r["posi"])
     fixed = {r["posi"]: r["name"] for r in rest if not prune}
+    if fixed:
+        summary.append(
+            f"note: keeping {len(fixed)} reference(s) in setlist {sl_name!r} the backup "
+            f"lacks: " + ", ".join(f"{(n or '(dangling)')!r}@{p}"
+                                   for p, n in sorted(fixed.items()))
+            + " (re-run with --prune to remove them)")
 
     def emit(src, nm, target):
         if src is None:
@@ -579,11 +585,12 @@ def _plan_setlist(sl_name: str, desired: List[Tuple[str, int]],
                 moves.remove(m)
                 if m[0] is not None:       # it stays put — and now blocks too
                     fixed[m[0]] = m[1]
+                holder = fixed[m[2]] or "(dangling)"
                 errors.append(
-                    f"setlist {sl_name!r} position {m[2]} holds "
-                    f"{fixed[m[2]]!r}, which the backup does not have there — "
-                    f"not restoring {m[1]!r} over it (re-run with --prune, or "
-                    f"move {fixed[m[2]]!r} first)")
+                    f"setlist {sl_name!r} position {m[2]} holds {holder!r}, "
+                    f"which the backup does not have there — not restoring "
+                    f"{m[1]!r} over it (re-run with --prune, or move "
+                    f"{holder!r} first)")
             continue
         # only movers block each other: a cycle — park one at a free posi
         targets = {m[2] for m in moves}
@@ -852,17 +859,21 @@ def _apply_op(client, op: Dict[str, Any]) -> None:
                 f"{holder.get('cid_')}); not referencing {op['name']!r} over it")
         # ADD first — duplicates are allowed, so the preset is never absent.
         try:
-            added = client.reference_into_setlist(sl_cid, pool_cid, op["pos"])
+            client.reference_into_setlist(sl_cid, pool_cid, op["pos"])
         except Exception:  # noqa: BLE001 - a lost reply may still have landed
-            added = None
-        if added is None and not any(
-                m.get("posi") == op["pos"] and m.get("rcid") == pool_cid
-                for m in client.list_container(sl_cid, strict=True)):
+            pass
+        # Its return value is NOT proof: it falls back to matching rcid alone,
+        # so an acked-but-unlanded add returns the OLD ref's cid. Only a NEW
+        # row at the target, seen by a strict re-list, licenses the removal.
+        src_cid = src.get("cid_") if src else None
+        if not any(m.get("posi") == op["pos"] and m.get("rcid") == pool_cid
+                   and m.get("cid_") != src_cid
+                   for m in client.list_container(sl_cid, strict=True)):
             raise HelixError(
                 f"device did not reference {op['name']!r} into "
                 f"{op['setlist']!r} at {op['pos']}"
                 + (f" ({op['name']!r} is still at {op['from']})" if src else ""))
-        if src is not None and not client.remove_reference(sl_cid, src["cid_"]):
+        if src is not None and not client.remove_reference(sl_cid, src_cid):
             raise HelixError(
                 f"{op['name']!r} now at {op['pos']} but the old reference at "
                 f"{op['from']} could not be removed (it is listed twice)")
