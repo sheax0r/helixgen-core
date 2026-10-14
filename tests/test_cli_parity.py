@@ -213,6 +213,7 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
                    "all populated", "another guitar"]),
     (["library", "list"], ["guitar profiles", "grouped", "per-IR metadata"]),
     (["library", "show"], ["metadata filename", "ambiguous", "describe", "guitar profile"]),
+    (["library", "tag"], ["key/value", "lowercased", "exact", "bare word"]),
     (["library", "doc"], ["mutually exclusive", "advisory-commits", "notes_md"]),
     (["library", "validate"],
      ["cross-link checks", "generic", "logical slug", "warnings"]),

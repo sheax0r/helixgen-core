@@ -288,6 +288,7 @@ def library() -> None:
     \b
       list        enumerate tones, guitar profiles, and IRs (all populated)
       show        one tone's metadata, human summary or raw --json
+      tag         add/remove a tone's key/value tags (or list them)
       doc         set a tone's description_md, or one variant's notes_md
       fork        copy a variant's .hsp onto another guitar (or another song)
       validate    shape + cross-link checks across every tone's metadata
@@ -314,7 +315,12 @@ def library() -> None:
               help='Emit {"tones": [...], "guitars": [...], "irs": [...]} JSON '
                    "instead of a human-readable listing (narrowed to only the "
                    "requested key(s) when a section flag is given).")
-def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool) -> None:
+@click.option("--tag", "tag_queries", multiple=True, metavar="QUERY",
+              help="Keep only TONES matching this tag (repeatable = AND). "
+                   "'key=value' exact, 'key=' any value for that key, a bare "
+                   "word a bare tag. Does not affect guitars/IRs.")
+def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool,
+             tag_queries: tuple[str, ...]) -> None:
     """List the library's metadata: tones, guitar profiles, and IRs.
 
     Tones are read from every ``~/.helixgen/library/tones/*.json`` (one
@@ -333,8 +339,16 @@ def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool
     want_guitars = show_all or only_guitars
     want_irs = show_all or only_irs
 
-    tones = ([_tone_summary(m) for m in tone_meta.load_all_tone_metas()]
-             if want_tones else [])
+    tone_metas = tone_meta.load_all_tone_metas() if want_tones else []
+    if tag_queries:
+        # isinstance guard: a hand-edited tone may carry a non-string tag; one
+        # corrupt file must never break the whole library's filter.
+        tone_metas = [
+            m for m in tone_metas
+            if all(any(tone_meta.tag_matches(t, q)
+                       for t in m.tags if isinstance(t, str))
+                   for q in tag_queries)]
+    tones = [_tone_summary(m) for m in tone_metas]
     guitar_rows = ([_guitar_summary(g) for g in guitars.load_all_profiles()]
                    if want_guitars else [])
     irs = ([_ir_summary(m) for m in ir_meta.load_all_ir_metas()]
@@ -434,6 +448,40 @@ def show_cmd(name: str, as_json: bool) -> None:
         click.echo(guitars.profile_path(profile.slug).read_text())
         return
     _echo_guitar_profile(profile)
+
+
+@library.command(name="tag")
+@click.argument("name")
+@click.argument("add", nargs=-1, metavar="[KEY=VALUE ...]")
+@click.option("--rm", "remove", multiple=True, metavar="QUERY",
+              help="Remove tags matching QUERY (repeatable): 'key=value' "
+                   "exact, 'key=' every tag with that key, a bare word the "
+                   "bare tag. Removals apply before any KEY=VALUE adds.")
+def tag_cmd(name: str, add: tuple[str, ...], remove: tuple[str, ...]) -> None:
+    """Add or remove a tone's key/value tags; with no edits, print them.
+
+    NAME resolves as a TONE (logical slug, ``<slug>.json`` filename, or any
+    variant's ``preset_name``); an unknown tone exits 1. Each ADD argument is
+    a ``KEY=VALUE`` tag (the key is lowercased; split on the first ``=`` so
+    values may contain ``=``) or a bare word; adds are normalized, deduped,
+    and appended. ``--rm`` queries (which run first) use the same match rule
+    as ``library list --tag``: ``key=value`` exact, ``key=`` any value for
+    that key, a bare word a bare tag.
+
+    \b
+      helixgen library tag "Foo - Bar" genre=rock role=lead
+      helixgen library tag "Foo - Bar" --rm genre=
+      helixgen library tag "Foo - Bar"        # just list current tags
+    """
+    slug = _resolve_slug(name)
+    meta = _load_meta_for(slug)
+    if not add and not remove:
+        click.echo(", ".join(meta.tags) if meta.tags else "(none)")
+        return
+    meta.tags = tone_meta.apply_tag_edits(meta.tags, add=add, remove=remove)
+    tone_meta.save_tone_meta(meta)
+    click.echo(f"{slug}  tags: "
+               f"{', '.join(meta.tags) if meta.tags else '(none)'}")
 
 
 @library.command(name="doc")

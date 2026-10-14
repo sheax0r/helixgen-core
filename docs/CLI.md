@@ -252,7 +252,10 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   (or narrowed to one with a flag). Guitar rows show slug / name / short_name /
   type; IR rows show the hash prefix, library-relative wav, and character tags.
   `--json` emits `{"tones": [...], "guitars": [...], "irs": [...]}` — narrowed
-  to only the requested key(s) when a section flag is given.
+  to only the requested key(s) when a section flag is given. `--tag QUERY`
+  (repeatable, AND) keeps only TONES matching a tag: `key=value` exact,
+  `key=` any value for that key, a bare word a bare tag (does not affect the
+  guitars/IRs sections).
 - `helixgen library show <name> [--json]` — one tone's — or one guitar
   profile's — metadata: a compact human summary, or the exact on-disk JSON
   with `--json`. `<name>` resolves as a TONE first (logical slug, metadata
@@ -269,6 +272,15 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   When a name resolves as a tone AND also matches a guitar profile, the tone
   is shown (tone-first order) with a stderr note naming the shadowed profile
   — address the guitar by a label only it matches to see the profile.
+- `helixgen library tag <name> [KEY=VALUE ...] [--rm QUERY ...]` — add, remove,
+  or (with no edits) list a tone's **key/value tags**. Tags stay a flat list;
+  a tag is key/value when it contains `=` (`genre=rock`) and bare otherwise
+  (`lead` — the legacy shape, still valid). Each `KEY=VALUE` argument is split
+  on the first `=` (values may contain `=`), the key lowercased; adds are
+  normalized, deduped, and appended. `--rm QUERY` (repeatable, applied before
+  adds) and `library list --tag` share one match rule: `key=value` exact,
+  `key=` every tag with that key, a bare word the bare tag. `<name>` resolves
+  as a tone (same order as `library show`); an unknown tone exits 1.
 - `helixgen describe <tone>` — human-oriented write-up: header ("Artist -
   Song" or the descriptor), a variants table (guitar key, preset_name,
   guitar_settings, the `forked_from` provenance when `library fork` made the
