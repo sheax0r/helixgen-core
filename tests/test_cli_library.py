@@ -84,3 +84,27 @@ def test_library_list_filters_by_tag():
     assert r.exit_code == 0, r.output
     assert "foo-rock-song" in r.output
     assert "baz-jazz-song" not in r.output
+
+
+def test_library_list_tag_survives_nonstring_tag_in_a_tone(tmp_path):
+    # a hand-edited tone with a non-string tag must not crash the whole
+    # library's --tag filter (module contract: one bad file never breaks a run)
+    from helixgen import home, tone_meta
+    good = _save_tone("Foo", "Rock Song", ["genre=rock"])
+    bad = _save_tone("Baz", "Bad Song", [])
+    p = tone_meta.meta_path(bad)
+    import json as _json
+    d = _json.loads(p.read_text())
+    d["tags"] = ["lead", 5, None]
+    p.write_text(_json.dumps(d))
+    r = CliRunner().invoke(cli, ["library", "list", "--tones", "--tag", "genre=rock"])
+    assert r.exit_code == 0, r.output
+    assert "foo-rock-song" in r.output
+
+
+def test_library_tag_empty_value_add_stores_no_junk():
+    from helixgen import tone_meta
+    slug = _save_tone("Foo", "Bar", ["lead"])
+    r = CliRunner().invoke(cli, ["library", "tag", slug, "genre="])
+    assert r.exit_code == 0, r.output
+    assert tone_meta.load_tone_meta(slug).tags == ["lead"]

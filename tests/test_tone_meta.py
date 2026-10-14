@@ -838,3 +838,10 @@ def test_apply_tag_edits_removes_by_key_wildcard_and_bare():
 def test_apply_tag_edits_normalizes_added_tags():
     out = tone_meta.apply_tag_edits([], add=["  Genre = Rock "])
     assert out == ["genre=Rock"]
+
+
+def test_apply_tag_edits_skips_junk_keyed_adds():
+    # empty-value ('genre=') or empty-key ('=rock', '=') keyed adds are junk
+    out = tone_meta.apply_tag_edits(
+        ["lead"], add=["genre=", "=rock", "=", "=="])
+    assert out == ["lead"]

@@ -225,7 +225,15 @@ def apply_tag_edits(
     out = [t for t in tags if not any(tag_matches(t, q) for q in removals)]
     for raw in add:
         nt = normalize_tag(raw)
-        if nt and nt not in out:
+        if not nt:
+            continue
+        k, v = parse_tag(nt)
+        # drop junk keyed adds: an empty key ("=rock", "=") or empty value
+        # ("genre=") -- the latter is the `--rm genre=` wildcard typed without
+        # `--rm`, which must not become a stored tag.
+        if k is not None and (k == "" or v == ""):
+            continue
+        if nt not in out:
             out.append(nt)
     return out
 

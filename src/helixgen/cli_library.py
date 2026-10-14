@@ -341,9 +341,12 @@ def list_cmd(only_tones: bool, only_guitars: bool, only_irs: bool, as_json: bool
 
     tone_metas = tone_meta.load_all_tone_metas() if want_tones else []
     if tag_queries:
+        # isinstance guard: a hand-edited tone may carry a non-string tag; one
+        # corrupt file must never break the whole library's filter.
         tone_metas = [
             m for m in tone_metas
-            if all(any(tone_meta.tag_matches(t, q) for t in m.tags)
+            if all(any(tone_meta.tag_matches(t, q)
+                       for t in m.tags if isinstance(t, str))
                    for q in tag_queries)]
     tones = [_tone_summary(m) for m in tone_metas]
     guitar_rows = ([_guitar_summary(g) for g in guitars.load_all_profiles()]
