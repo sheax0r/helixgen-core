@@ -7,8 +7,15 @@ IR is just an SFTP put into ``ir/``** — we never touch the device's database.
 
 The editor authenticates as the ``hedit`` user with an RSA key it bundles as
 ``id_hedit``. helixgen does **not** ship that key (it's a credential); it locates
-the key from your installed Helix Stadium editor at runtime, or from
-``$HELIXGEN_HELIX_SSH_KEY``.
+the key from your installed Helix Stadium editor at runtime, from
+``~/.helixgen/id_hedit``, or from ``$HELIXGEN_HELIX_SSH_KEY``.
+
+**Firmware/app 1.4 note:** the 1.4 editor no longer ships the key in its bundle
+(``Contents/Resources/sshKeys/`` is gone) and rotated it, so the old bundled path
+yields nothing. 1.4 writes the key to a short-lived temp file at connect; capture
+it once to ``~/.helixgen/id_hedit`` (see ``tools/frida_sftp_auth.py`` +
+``tools/resign-debug-app.sh``, or the planned ``device link-key`` verb) and it is
+picked up automatically from then on.
 
 Pure-Python: uses ``paramiko`` (+ ``cryptography``), both wheel-distributed — no
 system SSH binary needed. Part of the ``device`` extra; imported lazily.
@@ -26,8 +33,11 @@ DEFAULT_USER = "hedit"
 DEFAULT_REMOTE_ROOT = "/data/stadium-family-fw"
 IR_SUBDIR = "ir"
 
-# Where the editor's id_hedit key lives, in likely install locations.
+# Where the hedit key lives. The user-captured copy is checked FIRST: on app 1.4
+# the editor no longer bundles the key, so a captured key at ~/.helixgen/id_hedit
+# is the only on-disk source; on <=1.3.2 it still falls back to the app bundle.
 _KEY_CANDIDATES = [
+    os.path.expanduser("~/.helixgen/id_hedit"),
     "/Applications/Line6/Helix Stadium.app/Contents/Resources/sshKeys/id_hedit",
     "/Applications/Helix Stadium.app/Contents/Resources/sshKeys/id_hedit",
     os.path.expanduser("~/Applications/Line6/Helix Stadium.app/Contents/Resources/sshKeys/id_hedit"),
@@ -47,9 +57,10 @@ def default_hedit_key() -> str:
         if os.path.exists(cand):
             return cand
     raise HelixError(
-        "could not find the Helix editor's SFTP key (id_hedit). Install the "
-        "Helix Stadium editor, or set $HELIXGEN_HELIX_SSH_KEY to its "
-        "Contents/Resources/sshKeys/id_hedit path.")
+        "could not find the Helix editor's SFTP key (id_hedit). On app 1.4 the "
+        "editor no longer bundles it — capture it once to ~/.helixgen/id_hedit "
+        "(see tools/frida_sftp_auth.py). On older apps, install the Helix Stadium "
+        "editor. Or set $HELIXGEN_HELIX_SSH_KEY to a key file.")
 
 
 def _paramiko():
