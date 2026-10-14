@@ -1,6 +1,6 @@
 [project]
 name = "helixgen"
-version = "0.55.2"
+version = "0.56.0"
 description = "Generate Line 6 Helix Stadium .hsp / legacy .hlx preset files from JSON tone specs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,6 +51,12 @@ analyze = [
 capture = [
     "numpy>=1.26",
     "sounddevice>=0.4.6",
+]
+# `helixgen device link-key` — one-time local capture of the firmware 1.4
+# `hedit` SFTP key via a Frida hook on the installed editor (hgc-6r5.15).
+# macOS only; the key stays local (never committed/distributed).
+linkkey = [
+    "frida>=17",
 ]
 
 [project.scripts]
