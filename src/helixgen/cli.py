@@ -763,7 +763,12 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
        {"op": "add_block",   "block": "LA Studio Comp", "path": 0},
        {"op": "remove_block","block": "Plate Stereo"},
        {"op": "swap_model",  "old": "Brit Plexi Brt", "new": "Brit 2204"},
-       {"op": "set_input",   "path": 1, "jack": "mic"}]
+       {"op": "set_input",   "path": 1, "jack": "mic"},
+       {"op": "set_footswitch", "switch": "FS2", "block": "Teardrop 310 Mono"},
+       {"op": "set_expression", "pedal": "EXP1",
+        "targets": [{"block": "Pitch Wham Mono", "param": "Pedal"}]},
+       {"op": "remove_footswitch", "switch": "FS2"},
+       {"op": "remove_expression", "pedal": "EXP1"}]
 
     All ops are applied to an in-memory copy and the file is written ONCE at
     the end — an invalid op anywhere in the list (unknown op, bad param,
@@ -780,6 +785,21 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
     path's input endpoint — "jack" is inst1/inst2/both/none/mic ("mic" = the
     XLR mic input) — and drops params the target jack does not have (the mic
     has LowCut and no Pad).
+
+    Controller ops wire the live-control layer the recipe's top-level
+    "footswitches"/"expression" lists build at generate time — this is the
+    ONLY way to add or change a footswitch or expression-pedal assignment on
+    an EXISTING .hsp (no decompile→regenerate round-trip). "set_footswitch"
+    takes "switch" (FS1–FS5 / FS7–FS11, or "EXP1Toe" for the wah toe-switch;
+    FS6/FS12 are reserved) and "block", plus optional "behavior"
+    (latching/momentary), "param"+"min"+"max" (a param toggle instead of a
+    bypass), "curve", "threshold", and "label"/"color" for the scribble strip.
+    "set_expression" takes "pedal" (EXP1/EXP2) and "targets" (each
+    {"block","param"[,"min","max","curve"]}; default sweep 0.0→1.0). Both are
+    last-wins — re-issuing one edits the existing assignment. "remove_footswitch"
+    ("switch", optional "block" to unwire one target of a merge switch) and
+    "remove_expression" ("pedal") delete an assignment and error if there is
+    none to remove.
 
     Warnings (e.g. swap_model params it had to drop) go to stderr, or into
     the --json result's "warnings" list. Exit 0 = file patched.
