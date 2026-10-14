@@ -65,6 +65,8 @@ __all__ = [
     "wire_footswitch",
     "wire_expression",
     "wire_wah_toe",
+    "unwire_footswitch",
+    "unwire_expression",
 ]
 
 # Signal-flow pseudo-block names accepted by `set_param` (routed to
@@ -1286,7 +1288,15 @@ def wire_footswitch(
     # that would reject valid hardware configurations and break faithful
     # round-tripping.
     sources = body.setdefault("preset", {}).setdefault("sources", {})
+    # Last-wins: if this target already carried a controller from a DIFFERENT
+    # source (re-pointing a block to another switch), overwriting leaves the
+    # old source orphaned -- a ghost scribble strip bound to nothing. Capture
+    # it and prune below if nothing else still uses it.
+    prev = wrapped.get("controller")
+    prev_source = prev.get("source") if isinstance(prev, dict) else None
     wrapped["controller"] = controller
+    if prev_source is not None and prev_source != source_id:
+        _prune_source_if_orphaned(body, prev_source)
     entry = sources.setdefault(str(source_id), {"bypass": False})
     if label is not None or color is not None:
         _write_fs_scribble(entry, switch, source_id, label, color)
@@ -1315,8 +1325,10 @@ def wire_expression(
     ...}`) are out of scope -- see `set_param`'s stereo handling, which this
     verb does not replicate.
     """
-    if not targets:
-        raise MutateError("wire_expression requires a non-empty targets list.")
+    if not isinstance(targets, list) or not targets:
+        raise MutateError(
+            "wire_expression requires a non-empty targets LIST of "
+            "{'block','param'} dicts.")
 
     device_id = _chassis_device_id(body)
     try:
@@ -1325,7 +1337,15 @@ def wire_expression(
         raise MutateError(str(exc)) from exc
 
     resolved: list[tuple] = []
-    for target in targets:
+    for i, target in enumerate(targets):
+        if not isinstance(target, dict):
+            raise MutateError(
+                f"EXP target {i}: each target must be a {{'block','param',...}} "
+                f"dict, got {target!r}.")
+        if "block" not in target or "param" not in target:
+            missing = [k for k in ("block", "param") if k not in target]
+            raise MutateError(
+                f"EXP target {i}: missing required field(s) {missing}.")
         block = target["block"]
         param = target["param"]
         # `min > max` is a valid inverted sweep (heel = max effect, toe = min);
@@ -1333,6 +1353,11 @@ def wire_expression(
         # it through untouched, so it is NOT rejected here.
         min_val = target.get("min", 0.0)
         max_val = target.get("max", 1.0)
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                   for v in (min_val, max_val)):
+            raise MutateError(
+                f"EXP target {i} ({block!r}.{param!r}): min/max must be numeric "
+                f"(the raw param values the sweep runs between).")
         curve = target.get("curve")
         if curve is not None and curve not in controllers.CURVES:
             raise MutateError(
@@ -1371,12 +1396,22 @@ def wire_expression(
 
     # Commit only after every target validates, so a failure partway through
     # `targets` leaves the body untouched.
+    orphan_candidates: set[int] = set()
     for wrapped, min_val, max_val, curve, threshold in resolved:
+        prev = wrapped.get("controller")
+        if isinstance(prev, dict):
+            prev_source = prev.get("source")
+            if prev_source is not None and prev_source != source_id:
+                orphan_candidates.add(prev_source)
         wrapped["controller"] = _build_exp_controller(
             source_id, min_val, max_val, curve=curve, threshold=threshold)
 
     sources = body.setdefault("preset", {}).setdefault("sources", {})
     sources.setdefault(str(source_id), {"bypass": False})
+    # Re-pointing a param from another pedal (last-wins) can orphan that
+    # pedal's source -- prune any now-unreferenced one.
+    for prev_source in orphan_candidates:
+        _prune_source_if_orphaned(body, prev_source)
 
 
 def wire_midi(
@@ -1575,6 +1610,144 @@ def wire_wah_toe(
     wire_footswitch(body, "EXP1Toe", block, "latching", library, path=path, lane=lane, pos=pos)
 
 
+def _iter_controller_wrappers(body: dict[str, Any], *, only: dict | None = None):
+    """Yield every value wrapper in the flow that can hold a `"controller"`
+    key: each block's `@enabled` bypass wrapper and each of its params'
+    value wrappers. `only`, when given, is a single bNN dict to restrict the
+    walk to (a block already resolved via `resolve_slot`); otherwise the
+    whole `preset.flow` is walked. Yields the wrapper dicts themselves, so a
+    caller can read or delete their `"controller"`.
+    """
+    if only is not None:
+        bnns = [only]
+    else:
+        bnns = []
+        flow = (body.get("preset") or {}).get("flow") or []
+        for path_dict in flow:
+            if not isinstance(path_dict, dict):
+                continue
+            for key in _bnn_keys(path_dict):
+                bnn = path_dict.get(key)
+                if isinstance(bnn, dict):
+                    bnns.append(bnn)
+    for bnn in bnns:
+        enabled = bnn.get("@enabled")
+        if isinstance(enabled, dict):
+            yield enabled
+        for slot in bnn.get("slot") or []:
+            if not isinstance(slot, dict):
+                continue
+            for wrapped in (slot.get("params") or {}).values():
+                if isinstance(wrapped, dict):
+                    yield wrapped
+
+
+def _source_in_use(body: dict[str, Any], source_id: int) -> bool:
+    """True if `source_id` is still referenced anywhere that keeps its
+    `preset.sources` registration live: any flow controller wrapper, OR a
+    Command Center command. A footswitch's controller source id and its
+    command source id are the SAME number (`controllers.resolve_command_source`
+    reuses the controller ids), so a `preset.commands[str(source_id)]` entry
+    must block the source from being pruned (else removing the block-bypass
+    half orphans the command — its bypass flag + scribble strip)."""
+    for w in _iter_controller_wrappers(body):
+        ctrl = w.get("controller")
+        if isinstance(ctrl, dict) and ctrl.get("source") == source_id:
+            return True
+    commands = (body.get("preset") or {}).get("commands") or {}
+    return str(source_id) in commands
+
+
+def _prune_source_if_orphaned(body: dict[str, Any], source_id: int) -> None:
+    """Drop `preset.sources[str(source_id)]` when nothing references it any
+    more (`_source_in_use` is False). No-op otherwise."""
+    if not _source_in_use(body, source_id):
+        sources = (body.get("preset") or {}).get("sources") or {}
+        sources.pop(str(source_id), None)
+
+
+def _unwire_source(
+    body: dict[str, Any], source_id: int, *, only: dict | None = None
+) -> int:
+    """Delete every controller bound to `source_id` from the flow (optionally
+    restricted to the single bNN `only`), then prune the source's
+    `preset.sources` registration if nothing else still references it.
+    Returns the number of controllers removed. Pure structural edit — the
+    inverse of what `wire_footswitch`/`wire_expression` write.
+    """
+    removed = 0
+    for wrapped in _iter_controller_wrappers(body, only=only):
+        ctrl = wrapped.get("controller")
+        if isinstance(ctrl, dict) and ctrl.get("source") == source_id:
+            del wrapped["controller"]
+            removed += 1
+    # Prune only when NOTHING else references the source — a `only`-scoped
+    # removal may have left the switch driving other blocks, and a shared
+    # footswitch/command source id must survive while the command remains.
+    if removed:
+        _prune_source_if_orphaned(body, source_id)
+    return removed
+
+
+def unwire_footswitch(
+    body: dict[str, Any],
+    switch: str,
+    library: Library,
+    *,
+    block: str | None = None,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+) -> None:
+    """Remove a footswitch assignment, in place — the inverse of
+    `wire_footswitch`. Deletes every controller driven by `switch` (both the
+    `@enabled` bypass toggle and any param toggles it drives), then prunes the
+    switch's `preset.sources` entry once nothing else references it.
+
+    `block` (plus optional `path`/`lane`/`pos`) narrows the removal to one
+    block — use it to unwire just one target of a merge switch while leaving
+    the switch driving its other blocks. Without `block`, every target of the
+    switch is removed.
+
+    Raises `MutateError` if `switch` is unresolvable, or if no binding for it
+    exists to remove (matching `remove_block`'s strictness — a no-op removal
+    almost always means the switch name or `block` is wrong).
+    """
+    device_id = _chassis_device_id(body)
+    try:
+        source_id = controllers.resolve_controller_source(device_id, switch)
+    except ControllerError as exc:
+        raise MutateError(str(exc)) from exc
+    only = None
+    if block is not None:
+        fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+        only = body["preset"]["flow"][fi][key]
+    if _unwire_source(body, source_id, only=only) == 0:
+        where = f" on block {block!r}" if block is not None else ""
+        raise MutateError(f"No {switch} footswitch assignment to remove{where}.")
+
+
+def unwire_expression(
+    body: dict[str, Any],
+    pedal: str,
+    library: Library,
+) -> None:
+    """Remove an expression-pedal assignment, in place — the inverse of
+    `wire_expression`. Deletes every param controller driven by `pedal`
+    across the whole preset and prunes the pedal's `preset.sources` entry.
+
+    Raises `MutateError` if `pedal` is unresolvable, or if it drives no param
+    (nothing to remove).
+    """
+    device_id = _chassis_device_id(body)
+    try:
+        source_id = controllers.resolve_controller_source(device_id, pedal)
+    except ControllerError as exc:
+        raise MutateError(str(exc)) from exc
+    if _unwire_source(body, source_id) == 0:
+        raise MutateError(f"No {pedal} expression assignment to remove.")
+
+
 # --- batch operations (`helixgen patch`) -------------------------------------
 
 # Each entry takes (body, library, op_dict) and mutates `body` in place,
@@ -1628,6 +1801,36 @@ def _op_set_input(body: dict, library: Library, o: dict) -> list[str]:
     return []
 
 
+def _op_set_footswitch(body: dict, library: Library, o: dict) -> list[str]:
+    wire_footswitch(
+        body, o["switch"], o["block"], o.get("behavior", "latching"), library,
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+        param=o.get("param"), min=o.get("min"), max=o.get("max"),
+        curve=o.get("curve"), threshold=o.get("threshold"),
+        label=o.get("label"), color=o.get("color"),
+    )
+    return []
+
+
+def _op_set_expression(body: dict, library: Library, o: dict) -> list[str]:
+    wire_expression(body, o["pedal"], o["targets"], library)
+    return []
+
+
+def _op_remove_footswitch(body: dict, library: Library, o: dict) -> list[str]:
+    unwire_footswitch(
+        body, o["switch"], library,
+        block=o.get("block"),
+        path=o.get("path"), lane=o.get("lane"), pos=o.get("pos"),
+    )
+    return []
+
+
+def _op_remove_expression(body: dict, library: Library, o: dict) -> list[str]:
+    unwire_expression(body, o["pedal"], library)
+    return []
+
+
 PATCH_OPS = {
     "set_param": _op_set_param,
     "set_enabled": _op_set_enabled,
@@ -1635,6 +1838,10 @@ PATCH_OPS = {
     "remove_block": _op_remove_block,
     "swap_model": _op_swap_model,
     "set_input": _op_set_input,
+    "set_footswitch": _op_set_footswitch,
+    "set_expression": _op_set_expression,
+    "remove_footswitch": _op_remove_footswitch,
+    "remove_expression": _op_remove_expression,
 }
 
 # Required fields per op, validated up front so a missing key reports itself
@@ -1647,6 +1854,10 @@ _PATCH_OP_REQUIRED = {
     "remove_block": ("block",),
     "swap_model": ("old", "new"),
     "set_input": ("path", "jack"),
+    "set_footswitch": ("switch", "block"),
+    "set_expression": ("pedal", "targets"),
+    "remove_footswitch": ("switch",),
+    "remove_expression": ("pedal",),
 }
 
 
@@ -1658,8 +1869,9 @@ def apply_operations(
     params/IRs/MIDI bindings that could not be carried over).
 
     The op vocabulary is :data:`PATCH_OPS` (`set_param`, `set_enabled`,
-    `add_block`, `remove_block`, `swap_model`, `set_input`), each dispatching to the
-    matching surgical verb in this module. An unknown op raises
+    `add_block`, `remove_block`, `swap_model`, `set_input`, `set_footswitch`,
+    `set_expression`, `remove_footswitch`, `remove_expression`), each
+    dispatching to the matching surgical verb in this module. An unknown op raises
     :class:`MutateError` — callers apply ops to an in-memory body and only
     write the file after ALL ops succeeded, so a bad op never half-patches
     the preset on disk. (This is the engine behind `helixgen patch`,

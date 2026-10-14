@@ -159,7 +159,7 @@ Verbs — full signatures + per-flag detail in [`docs/CLI.md`](docs/CLI.md) "Com
 
 `--snapshot NAME-or-INDEX` on `set-param`/`enable`/`disable` targets ONE snapshot's slot instead of base. **Gotcha:** once param's per-snapshot array varies, device applies it on every snapshot — later plain base edit of that param inaudible on-device (`set-param` warns). `--path`/`--lane`/`--pos` disambiguate duplicate block names — block addressing = `(path, lane, pos)`; no `--index`.
 
-Multi-edit session: **`helixgen patch <preset.hsp> <ops.json|->`** applies JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`) in one atomic invocation — invalid op anywhere leaves `.hsp` untouched. Op fields mirror single-op verbs' flags. Agent edit loop = single `patch` call on file — no decompile/regenerate round-trip:
+Multi-edit session: **`helixgen patch <preset.hsp> <ops.json|->`** applies JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`, `set_input`, plus **controller ops** `set_footswitch`/`set_expression`/`remove_footswitch`/`remove_expression`) in one atomic invocation — invalid op anywhere leaves `.hsp` untouched. Op fields mirror single-op verbs' flags. **Controller ops are the ONLY way to add/change a footswitch or EXP assignment on an existing `.hsp`** (`patch --help` / `docs/CLI.md` for the shapes) — same `mutate.wire_*` verbs `generate` uses, last-wins, permissive like the hardware. Agent edit loop = single `patch` call on file — no decompile/regenerate round-trip:
 
 ```bash
 echo '[{"op": "set_param", "block": "Tape Echo", "param": "Mix", "value": 0.3},
