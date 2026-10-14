@@ -738,6 +738,11 @@ def device() -> None:
     references to them, so one tone can be in many setlists at once and
     removing it from one leaves the others untouched.
 
+    FIRMWARE 1.4: the app stopped bundling the `hedit` SFTP key, so IR
+    transfer (pull-ir, list-irs, backup IRs) needs a one-time local capture —
+    run `device link-key` once (macOS). The key is stored at
+    ~/.helixgen/id_hedit and stays on your machine.
+
     SEE ALSO: docs/CLI.md "Device commands" for the full per-verb reference.
 
     LOCKING: every device-MUTATING verb auto-acquires a machine-local
@@ -4869,4 +4874,62 @@ def device_normalize(preset: Path | None, setlist: str | None,
             click.echo("dry-run: no trims written — re-run with --yes to "
                        "write them into the .hsp")
     if skipped:
+        raise SystemExit(1)
+
+
+@device.command(name="link-key")
+@click.option("--app", default=None, metavar="PATH",
+              help="Path to Helix Stadium.app (default: autodetect in /Applications).")
+@click.option("--timeout", type=float, default=180.0, show_default=True,
+              help="Seconds to wait for you to import an IR in the app.")
+@click.option("--keep-debug-app", is_flag=True, default=False,
+              help="Leave the re-signed ~/Helix Stadium Debug.app in place.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the result as JSON.")
+def device_link_key(app, timeout, keep_debug_app, as_json):
+    """Capture the firmware 1.4 `hedit` SFTP key to ~/.helixgen/id_hedit (macOS).
+
+    ONE-TIME LOCAL SETUP, not a device verb. App 1.4 stopped bundling the
+    editor's SSH key and rotated it, which broke IR transfer (`pull-ir`,
+    `list-irs`, `backup` IRs, `copy` with IRs). The 1.4 app writes the key to a
+    temp file only at connect time, so this re-signs a debuggable copy of YOUR
+    installed app, attaches, and watches it authenticate once while you import a
+    new IR. The key is written to ~/.helixgen/id_hedit (which the engine finds
+    automatically) — it stays on this machine and is never uploaded or shared.
+
+    Needs the `linkkey` extra (`uv tool install --force
+    'helixgen[device,linkkey]'`). macOS only. You must have the Helix Stadium
+    app installed and your Stadium reachable (the import triggers a transfer).
+    Steps are printed as it runs; when prompted, import ONE NEW IR (one the
+    device does not already have) in the app's Cab IR browser.
+    """
+    from helixgen.device import linkkey as _lk
+    _, HelixError = _client()
+    # Progress goes to stderr so --json keeps stdout pure; and so the "import an
+    # IR" prompt is visible in JSON mode too (otherwise the blocking wait looks
+    # like a hang).
+    try:
+        res = _lk.capture(app=app, timeout=timeout,
+                          keep_debug_app=keep_debug_app,
+                          log=lambda m: click.echo(m, err=True))
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+    elif res["ok"]:
+        click.echo(f"\n✓ captured the hedit key to {res['dest']} ({res['mode']})")
+        if res.get("fingerprint"):
+            click.echo(f"  {res['fingerprint']}")
+        if res.get("passphrase_set"):
+            click.echo("  NOTE: the key is passphrase-protected; set "
+                       "$HELIXGEN_HELIX_SSH_KEY handling is not wired for that "
+                       "yet — report this.")
+        click.echo("  IR transfer (pull-ir, list-irs, backup) now works — "
+                   "verify with `helixgen device list-irs`.")
+    else:
+        click.echo("\n✗ no key captured — the app never authenticated. Make sure "
+                   "you imported a NEW IR (one the device lacks) and the Stadium "
+                   "is reachable, then re-run.")
+    if not res["ok"]:
         raise SystemExit(1)

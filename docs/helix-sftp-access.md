@@ -44,6 +44,29 @@ then navigate to `Contents/Resources/sshKeys/`:
 
 (Check your own build: `defaults read "/Applications/Line6/Helix Stadium.app/Contents/Info.plist" CFBundleShortVersionString`. Later builds may rotate the key or remove the bundle — re-verify.)
 
+## Firmware/app 1.4 — key rotated AND unbundled (hgc-6r5.11)
+
+On app 1.4 the `Contents/Resources/sshKeys/` bundle is **gone** and the key was
+**rotated** (the device rejects the 1.3.2 key). New public-key fingerprint
+(safe to cite): `SHA256:osscOvs1XYSeFCJvRvgDjBLP8VFZhpGC0Zs00aM3980` (RSA 3072).
+The 1.4 editor now writes the private key to a **temp file at connect time** and
+hands that path to libssh2/libcurl (`CURLOPT_SSH_PRIVATE_KEYFILE`), deleting it
+after the transfer — so there is nothing to copy out of the bundle.
+
+To make helixgen's IR transfer work on 1.4, run the one-time capture:
+
+```
+uv tool install --force 'helixgen[device,linkkey]'
+helixgen device link-key          # macOS; re-signs a debug app copy + Frida hook
+```
+
+It writes the captured key to `~/.helixgen/id_hedit` (`chmod 600`), which
+`sftp.default_hedit_key()` checks first. The manual tools behind the verb are
+`tools/resign-debug-app.sh` + `tools/frida_sftp_auth.py` (fallback if the verb
+can't attach). **The captured key stays local — never commit or redistribute it**
+(public redistribution of the `hedit` key = DMCA-1201 / EULA exposure, decided
+2026-10-13); each user captures their own from their own licensed copy.
+
 ## The scheme (from the bundled `SFTP_SETUP.md`)
 
 `SFTP_SETUP.md` is Line 6's own developer guide (it references internal dev VMs
