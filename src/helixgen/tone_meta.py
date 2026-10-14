@@ -170,6 +170,67 @@ class ToneMeta:
 
 
 # ---------------------------------------------------------------------------
+# key/value tags
+# ---------------------------------------------------------------------------
+#
+# Tags stay a flat ``List[str]`` (no schema bump, no migration). A tag is a
+# **key/value** tag when it contains ``=`` (``"genre=rock"``) and a **bare**
+# tag otherwise (``"lead"`` -- the legacy shape). The key is split on the
+# FIRST ``=`` (so values may contain ``=``), lowercased and stripped; the
+# value is stripped but case-preserved. Filtering/removal queries share one
+# rule: a query with ``=`` matches by key (empty value = any value for that
+# key); a query without ``=`` matches a bare tag exactly.
+
+
+def parse_tag(tag: str) -> tuple[Optional[str], str]:
+    """Split a tag into ``(key, value)``; ``key`` is ``None`` for a bare tag.
+
+    Split on the first ``=`` only. The key is lowercased + stripped; the
+    value is stripped but keeps its case.
+    """
+    if "=" in tag:
+        key, value = tag.split("=", 1)
+        return key.strip().lower(), value.strip()
+    return None, tag.strip()
+
+
+def normalize_tag(tag: str) -> str:
+    """Canonical on-disk form of a tag (``key=value`` or a bare value)."""
+    key, value = parse_tag(tag)
+    return f"{key}={value}" if key is not None else value
+
+
+def tag_matches(stored: str, query: str) -> bool:
+    """Does the ``stored`` tag satisfy the filter/removal ``query``?
+
+    ``key=value`` -> exact; ``key=`` -> any value for that key; a query with
+    no ``=`` -> the bare tag equal to it (never a keyed tag).
+    """
+    sk, sv = parse_tag(stored)
+    if "=" in query:
+        qk, qv = parse_tag(query)
+        return sk == qk and (qv == "" or sv == qv)
+    return sk is None and sv == query.strip()
+
+
+def apply_tag_edits(
+    tags: Iterable[str],
+    *,
+    add: Iterable[str] = (),
+    remove: Iterable[str] = (),
+) -> List[str]:
+    """Return a new tag list with ``remove`` queries dropped and ``add`` tags
+    appended (normalized, order-preserving, deduped). Removals apply first."""
+    removals = list(remove)
+    out = [t for t in tags if not any(tag_matches(t, q) for q in removals)]
+    for raw in add:
+        nt = normalize_tag(raw)
+        if nt and nt not in out:
+            out.append(nt)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # (de)serialization
 # ---------------------------------------------------------------------------
 

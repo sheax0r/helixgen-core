@@ -37,3 +37,50 @@ def test_generate_auto_registers(tmp_path):
     from helixgen.hsp import read_hsp
     assert any(read_hsp(p)["meta"]["name"] == "Auto Reg Test"
                for p in home.tones_dir().glob("*.hsp"))
+
+
+def _save_tone(artist, song, tags):
+    from helixgen import tone_meta
+    meta = tone_meta.ToneMeta(
+        artist=artist, song=song, descriptor=None, tags=list(tags),
+        description_md=None, variants={}, created="2026-01-01",
+        updated="2026-01-01")
+    tone_meta.save_tone_meta(meta)
+    return meta.logical_slug
+
+
+def test_library_tag_adds_key_value_tags():
+    from helixgen import tone_meta
+    slug = _save_tone("Foo", "Bar", [])
+    r = CliRunner().invoke(cli, ["library", "tag", slug, "genre=rock", "role=lead"])
+    assert r.exit_code == 0, r.output
+    assert tone_meta.load_tone_meta(slug).tags == ["genre=rock", "role=lead"]
+
+
+def test_library_tag_removes_by_key_wildcard():
+    from helixgen import tone_meta
+    slug = _save_tone("Foo", "Bar", ["genre=rock", "genre=metal", "role=lead"])
+    r = CliRunner().invoke(cli, ["library", "tag", slug, "--rm", "genre="])
+    assert r.exit_code == 0, r.output
+    assert tone_meta.load_tone_meta(slug).tags == ["role=lead"]
+
+
+def test_library_tag_no_edits_lists_current_tags():
+    slug = _save_tone("Foo", "Bar", ["genre=rock"])
+    r = CliRunner().invoke(cli, ["library", "tag", slug])
+    assert r.exit_code == 0, r.output
+    assert "genre=rock" in r.output
+
+
+def test_library_tag_unknown_tone_exits_1():
+    r = CliRunner().invoke(cli, ["library", "tag", "no-such-tone", "genre=rock"])
+    assert r.exit_code == 1
+
+
+def test_library_list_filters_by_tag():
+    _save_tone("Foo", "Rock Song", ["genre=rock"])
+    _save_tone("Baz", "Jazz Song", ["genre=jazz"])
+    r = CliRunner().invoke(cli, ["library", "list", "--tones", "--tag", "genre=rock"])
+    assert r.exit_code == 0, r.output
+    assert "foo-rock-song" in r.output
+    assert "baz-jazz-song" not in r.output

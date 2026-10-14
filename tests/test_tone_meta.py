@@ -777,3 +777,64 @@ def test_parse_tone_meta_raises_on_shape_invalid_data():
         {"artist": "A", "song": "B",
          "variants": {"g": {"hsp": "tones/x.hsp", "preset_name": "P"}}})
     assert ok.variants["g"].hsp == "tones/x.hsp"
+
+
+# ---------------------------------------------------------------------------
+# key/value tags (Option A: key=value entries in the flat tags list)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_tag_splits_key_and_value_on_first_equals():
+    assert tone_meta.parse_tag("genre=rock") == ("genre", "rock")
+    # split on FIRST '=' only; value may contain '='
+    assert tone_meta.parse_tag("eq=treble=7") == ("eq", "treble=7")
+
+
+def test_parse_tag_bare_has_no_key():
+    assert tone_meta.parse_tag("lead") == (None, "lead")
+    assert tone_meta.parse_tag("hard rock") == (None, "hard rock")
+
+
+def test_parse_tag_normalizes_key_lowercase_and_strips():
+    # key lowercased + stripped; value stripped but case-preserved
+    assert tone_meta.parse_tag("  Genre = Rock ") == ("genre", "Rock")
+
+
+def test_tag_matches_exact_key_value():
+    assert tone_meta.tag_matches("genre=rock", "genre=rock")
+    assert not tone_meta.tag_matches("genre=rock", "genre=metal")
+
+
+def test_tag_matches_key_wildcard_when_query_value_empty():
+    assert tone_meta.tag_matches("genre=rock", "genre=")
+    assert not tone_meta.tag_matches("genre=rock", "role=")
+
+
+def test_tag_matches_bare_query_matches_only_bare_tag():
+    assert tone_meta.tag_matches("lead", "lead")
+    # a bare query must NOT match a keyed tag, and vice-versa
+    assert not tone_meta.tag_matches("genre=rock", "rock")
+    assert not tone_meta.tag_matches("lead", "lead=")
+
+
+def test_tag_matches_is_key_case_insensitive_value_sensitive():
+    assert tone_meta.tag_matches("genre=Rock", "Genre=Rock")
+    assert not tone_meta.tag_matches("genre=Rock", "genre=rock")
+
+
+def test_apply_tag_edits_adds_and_dedupes():
+    out = tone_meta.apply_tag_edits(
+        ["hard rock", "genre=rock"], add=["role=lead", "genre=rock"])
+    assert out == ["hard rock", "genre=rock", "role=lead"]
+
+
+def test_apply_tag_edits_removes_by_key_wildcard_and_bare():
+    out = tone_meta.apply_tag_edits(
+        ["hard rock", "genre=rock", "genre=metal", "role=lead"],
+        remove=["genre=", "hard rock"])
+    assert out == ["role=lead"]
+
+
+def test_apply_tag_edits_normalizes_added_tags():
+    out = tone_meta.apply_tag_edits([], add=["  Genre = Rock "])
+    assert out == ["genre=Rock"]
