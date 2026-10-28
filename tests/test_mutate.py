@@ -1153,3 +1153,96 @@ def _diff_paths(a, b, prefix=()):
     if a != b:
         return [prefix]
     return []
+
+
+# --- unwire_footswitch / unwire_expression + source pruning (hgc-9n4) -------
+
+def test_unwire_footswitch_removes_controller_and_prunes_source(goldfinger_body, library):
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    src = str(CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"])
+    assert src in goldfinger_body["preset"]["sources"]
+    mutate.unwire_footswitch(goldfinger_body, "FS3", library)
+    assert "controller" not in goldfinger_body["preset"]["flow"][0]["b01"]["@enabled"]
+    assert src not in goldfinger_body["preset"]["sources"]
+
+
+def test_unwire_footswitch_absent_raises(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError, match="remove"):
+        mutate.unwire_footswitch(goldfinger_body, "FS5", library)
+
+
+def test_unwire_footswitch_merge_switch_keeps_source_until_last(goldfinger_body, library):
+    # FS3 drives two blocks; removing one scoped to its block keeps the source
+    # (still driving the other), removing the other prunes it.
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+    src = str(CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"])
+    mutate.unwire_footswitch(goldfinger_body, "FS3", library, block="Scream 808")
+    assert src in goldfinger_body["preset"]["sources"]  # Digital still uses it
+    mutate.unwire_footswitch(goldfinger_body, "FS3", library, block="Digital")
+    assert src not in goldfinger_body["preset"]["sources"]
+
+
+def test_unwire_footswitch_keeps_source_shared_with_command(goldfinger_body, library):
+    # HIGH regression: a footswitch's controller source id == its Command
+    # Center command source id. Removing the bypass half must NOT prune the
+    # source out from under a still-present command.
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    mutate.wire_command(goldfinger_body, "FS3", "midi_cc",
+                        {"cc": 10, "value": 64, "channel": 1})
+    src = str(CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"])
+    mutate.unwire_footswitch(goldfinger_body, "FS3", library)
+    # Bypass controller gone, but the command + its source registration survive.
+    assert "controller" not in goldfinger_body["preset"]["flow"][0]["b01"]["@enabled"]
+    assert src in goldfinger_body["preset"]["commands"]
+    assert src in goldfinger_body["preset"]["sources"]
+
+
+def test_rewire_footswitch_to_different_switch_prunes_orphan_source(goldfinger_body, library):
+    # MEDIUM regression: re-pointing a block from FS3 to FS4 (last-wins) must
+    # prune FS3's now-orphaned source (else a ghost scribble strip remains).
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library,
+                           label="SCRM", color="red")
+    old = str(CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"])
+    new = str(CONTROLLER_SOURCE_IDS["stadium_xl"]["FS4"])
+    mutate.wire_footswitch(goldfinger_body, "FS4", "Scream 808", "latching", library)
+    sources = goldfinger_body["preset"]["sources"]
+    assert old not in sources  # FS3 orphan pruned
+    assert new in sources
+    assert goldfinger_body["preset"]["flow"][0]["b01"]["@enabled"]["controller"]["source"] \
+        == CONTROLLER_SOURCE_IDS["stadium_xl"]["FS4"]
+
+
+def test_rewire_footswitch_keeps_orphan_source_if_still_used(goldfinger_body, library):
+    # The orphan prune must not fire when FS3 still drives another block.
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
+    mutate.wire_footswitch(goldfinger_body, "FS3", "Digital", "latching", library)
+    old = str(CONTROLLER_SOURCE_IDS["stadium_xl"]["FS3"])
+    mutate.wire_footswitch(goldfinger_body, "FS4", "Scream 808", "latching", library)
+    assert old in goldfinger_body["preset"]["sources"]  # Digital still on FS3
+
+
+def test_unwire_expression_removes_param_controller(goldfinger_body, library):
+    mutate.wire_expression(goldfinger_body, "EXP1",
+                           [{"block": "Scream 808", "param": "Drive"}], library)
+    mutate.unwire_expression(goldfinger_body, "EXP1", library)
+    params = goldfinger_body["preset"]["flow"][0]["b01"]["slot"][0]["params"]
+    assert "controller" not in params["Drive"]
+
+
+def test_wire_expression_rejects_non_list_targets(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError, match="LIST"):
+        mutate.wire_expression(goldfinger_body, "EXP1", "Drive", library)
+
+
+def test_wire_expression_target_missing_field_reports_cleanly(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError, match="missing required field"):
+        mutate.wire_expression(goldfinger_body, "EXP1", [{"param": "Drive"}], library)
+
+
+def test_wire_expression_rejects_non_numeric_bounds(goldfinger_body, library):
+    with pytest.raises(mutate.MutateError, match="numeric"):
+        mutate.wire_expression(
+            goldfinger_body, "EXP1",
+            [{"block": "Scream 808", "param": "Drive", "min": "lo", "max": "hi"}],
+            library)
