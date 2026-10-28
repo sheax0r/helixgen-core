@@ -304,3 +304,58 @@ def test_patch_set_expression_target_missing_field_is_clean_error(tmp_path, hsp_
         "--library", str(hsp_library.root)])
     assert res.exit_code != 0
     assert "missing required field" in res.output
+
+
+# --- single-op controller verbs: set-footswitch / remove-footswitch /
+#     set-expression / remove-expression (mirror the patch ops) --------------
+
+def test_set_footswitch_verb_then_remove(tmp_path, hsp_library):
+    out = _setup(tmp_path, hsp_library)
+    lib = ["--library", str(hsp_library.root)]
+
+    res = CliRunner().invoke(cli, [
+        "set-footswitch", str(out), "FS4", "Tube Drive",
+        "--label", "Drive", "--color", "red"] + lib)
+    assert res.exit_code == 0, res.output
+    ctrl = read_hsp(out)["preset"]["flow"][0]["b01"]["@enabled"]["controller"]
+    assert ctrl["type"] == "targetbypass" and ctrl["behavior"] == "latching"
+
+    res = CliRunner().invoke(cli, ["remove-footswitch", str(out), "FS4"] + lib)
+    assert res.exit_code == 0, res.output
+    assert "controller" not in read_hsp(out)["preset"]["flow"][0]["b01"]["@enabled"]
+
+
+def test_set_footswitch_verb_param_toggle(tmp_path, hsp_library):
+    out = _setup(tmp_path, hsp_library)
+    res = CliRunner().invoke(cli, [
+        "set-footswitch", str(out), "FS5", "Brit Amp", "--param", "Drive",
+        "--min", "0.3", "--max", "0.9", "--behavior", "momentary",
+        "--library", str(hsp_library.root)])
+    assert res.exit_code == 0, res.output
+    ctrl = read_hsp(out)["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]["controller"]
+    assert ctrl["type"] == "param" and ctrl["min"] == 0.3 and ctrl["max"] == 0.9
+
+
+def test_set_expression_verb_then_remove(tmp_path, hsp_library):
+    out = _setup(tmp_path, hsp_library)
+    lib = ["--library", str(hsp_library.root)]
+    res = CliRunner().invoke(cli, [
+        "set-expression", str(out), "EXP1", "Brit Amp", "Drive",
+        "--min", "0.2", "--max", "0.8"] + lib)
+    assert res.exit_code == 0, res.output
+    ctrl = read_hsp(out)["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]["controller"]
+    assert ctrl["type"] == "param" and ctrl["min"] == 0.2 and ctrl["max"] == 0.8
+
+    res = CliRunner().invoke(cli, ["remove-expression", str(out), "EXP1"] + lib)
+    assert res.exit_code == 0, res.output
+    assert "controller" not in read_hsp(out)["preset"]["flow"][0]["b02"]["slot"][0]["params"]["Drive"]
+
+
+def test_remove_footswitch_verb_unbound_errors(tmp_path, hsp_library):
+    out = _setup(tmp_path, hsp_library)
+    before = out.read_bytes()
+    res = CliRunner().invoke(cli, [
+        "remove-footswitch", str(out), "FS5", "--library", str(hsp_library.root)])
+    assert res.exit_code != 0
+    assert "No FS5" in res.output
+    assert out.read_bytes() == before  # strict: nothing written

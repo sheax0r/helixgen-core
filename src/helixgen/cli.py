@@ -745,6 +745,145 @@ def swap_model_cmd(preset_path, old, new, path_idx, lane, pos, library_path, irs
     _run_mutation(preset_path, library_path, irs_dir, _mutation)
 
 
+@cli.command(name="set-footswitch")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("switch")
+@click.argument("block")
+@click.option("--behavior", type=click.Choice(["latching", "momentary"]),
+              default="latching", show_default=True)
+@click.option("--param", default=None,
+              help="Bind the switch to toggle this PARAM between --min and "
+                   "--max (raw param units) instead of the block's bypass. "
+                   "Requires --min and --max.")
+@click.option("--min", "min_val", type=float, default=None,
+              help="Param value when the switch is off (with --param).")
+@click.option("--max", "max_val", type=float, default=None,
+              help="Param value when the switch is on (with --param).")
+@click.option("--label", default=None, help="Scribble-strip label (<=12 chars shown).")
+@click.option("--color", default=None,
+              help="Scribble-strip color: dkorange, ltorange, red, white, "
+                   "purple, blue, green, turquoise, yellow, pink, auto, none.")
+@click.option("--curve", default=None, help="Response curve name (default linear).")
+@click.option("--threshold", type=float, default=None, help="Switch flip point.")
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
+@_library_option
+@_irs_option
+def set_footswitch_cmd(preset_path, switch, block, behavior, param, min_val,
+                       max_val, label, color, curve, threshold, path_idx, lane,
+                       pos, library_path, irs_dir):
+    """Assign a footswitch (or EXP toe switch) to a block, in place — the
+    single-op form of the `set_footswitch` patch op.
+
+    SWITCH is an assignable controller — FS1–FS5 / FS7–FS11 (FS6 = MODE and
+    FS12 = TAP/Tuner are reserved), or EXP1Toe for the expression-pedal toe
+    switch (wah auto-engage). By default the switch toggles the block's BYPASS;
+    with `--param NAME --min X --max Y` it instead toggles that param between
+    the two raw values (e.g. a boost's Level). Assignment is last-wins and one
+    switch may drive several blocks (a merge switch), matching the hardware.
+
+    Use `--path`/`--lane`/`--pos` when the block name is placed more than once.
+    See `controllers` for the switch vocabulary, `show-block` for param names.
+    """
+    def _mutation(body, library, irs):
+        mutate.wire_footswitch(
+            body, switch, block, behavior, library,
+            path=path_idx, lane=lane, pos=pos,
+            param=param, min=min_val, max=max_val,
+            curve=curve, threshold=threshold, label=label, color=color,
+        )
+
+    _run_mutation(preset_path, library_path, irs_dir, _mutation)
+
+
+@cli.command(name="remove-footswitch")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("switch")
+@click.option("--block", default=None,
+              help="Remove only this block's binding (one target of a merge "
+                   "switch); without it, every target of the switch is removed.")
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
+@_library_option
+@_irs_option
+def remove_footswitch_cmd(preset_path, switch, block, path_idx, lane, pos,
+                          library_path, irs_dir):
+    """Remove a footswitch assignment, in place — the single-op form of the
+    `remove_footswitch` patch op.
+
+    SWITCH is FS1–FS5 / FS7–FS11 or EXP1/EXP2/EXP1Toe. Strips that switch's
+    bypass and param-toggle controllers and drops its scribble-strip entry.
+    `--block` (with `--path`/`--lane`/`--pos` to disambiguate) narrows it to
+    one target of a merge switch. Errors if the switch has nothing to remove.
+    """
+    def _mutation(body, library, irs):
+        mutate.unwire_footswitch(body, switch, library, block=block,
+                                 path=path_idx, lane=lane, pos=pos)
+
+    _run_mutation(preset_path, library_path, irs_dir, _mutation)
+
+
+@cli.command(name="set-expression")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("pedal")
+@click.argument("block")
+@click.argument("param")
+@click.option("--min", "min_val", type=float, default=0.0, show_default=True,
+              help="Param value at heel-down.")
+@click.option("--max", "max_val", type=float, default=1.0, show_default=True,
+              help="Param value at toe-down.")
+@click.option("--curve", default=None, help="Response curve name (default linear).")
+@click.option("--path", "path_idx", type=int, default=None)
+@click.option("--lane", type=int, default=None)
+@click.option("--pos", type=int, default=None)
+@_library_option
+@_irs_option
+def set_expression_cmd(preset_path, pedal, block, param, min_val, max_val,
+                       curve, path_idx, lane, pos, library_path, irs_dir):
+    """Sweep one block param with an expression pedal, in place — the single-op
+    form of the `set_expression` patch op (one target).
+
+    PEDAL is EXP1 or EXP2; PARAM sweeps from --min (heel) to --max (toe).
+    For a wah, also wire its bypass to the toe switch with
+    `set-footswitch PRESET EXP1Toe "<wah>"`. To drive several params from one
+    pedal in a single edit, use the `set_expression` op in `patch` (its
+    "targets" is a list). Use `--path`/`--lane`/`--pos` to disambiguate.
+    """
+    def _mutation(body, library, irs):
+        target = {"block": block, "param": param, "min": min_val, "max": max_val}
+        if curve is not None:
+            target["curve"] = curve
+        if path_idx is not None:
+            target["path"] = path_idx
+        if lane is not None:
+            target["lane"] = lane
+        if pos is not None:
+            target["pos"] = pos
+        mutate.wire_expression(body, pedal, [target], library)
+
+    _run_mutation(preset_path, library_path, irs_dir, _mutation)
+
+
+@cli.command(name="remove-expression")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.argument("pedal")
+@_library_option
+@_irs_option
+def remove_expression_cmd(preset_path, pedal, library_path, irs_dir):
+    """Remove an expression-pedal assignment, in place — the single-op form of
+    the `remove_expression` patch op.
+
+    PEDAL is EXP1 or EXP2. Deletes every param controller driven by the pedal
+    and drops its source entry. Errors if the pedal drives nothing.
+    """
+    def _mutation(body, library, irs):
+        mutate.unwire_expression(body, pedal, library)
+
+    _run_mutation(preset_path, library_path, irs_dir, _mutation)
+
+
 @cli.command(name="patch")
 @click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
 @click.argument("ops", type=click.File("r"))
