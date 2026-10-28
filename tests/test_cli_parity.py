@@ -244,6 +244,15 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     # --- add-guitar (#79j) ---
     (["library", "add-guitar"],
      ["Scaffold", "auto-commits", "enrich", "refused"]),
+    # --- controller single-op verbs (companion to the set_/remove_ patch ops) ---
+    (["set-footswitch"],
+     ["FS6 = MODE", "last-wins", "merge switch", "EXP1Toe"]),
+    (["remove-footswitch"],
+     ["merge switch", "Errors if"]),
+    (["set-expression"],
+     ["EXP1 or EXP2", "heel", "toe"]),
+    (["remove-expression"],
+     ["EXP1 or EXP2", "Errors if"]),
 ]
 
 
