@@ -759,6 +759,35 @@ def _make_structural_block(scaffold: dict, inst_id: int) -> dict:
     return blk
 
 
+def _apply_xbranch(block: dict, xb: Optional[dict]) -> dict:
+    """Stamp a verbatim CROSS-DSP branch pointer onto ``block`` (bead hgc-tj0).
+
+    A USB-tap / Y split wires one DSP flow into the other; the device records
+    it on the SOURCE block as ``hasb=True`` with ``bflw`` naming the target
+    flow and ``bblk`` a slot in it. synthesis has no cross-DSP model, so when
+    ``to-hsp`` preserved the device's own pointer as ``xbranch`` we re-emit it
+    byte-for-byte rather than let the within-flow default dangle.
+
+    The ``.hsp`` is hand-editable, so this is a trust boundary: a malformed or
+    out-of-range ``xbranch`` is rejected loudly here (an install that fails
+    beats one that writes a dangling pointer into the device)."""
+    if not xb:
+        return block
+    try:
+        flow, bblk = int(xb["flow"]), int(xb["bblk"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"malformed xbranch {xb!r}: {e}") from e
+    # Stadium always carries exactly 2 DSP flows; a block grid is 28 slots.
+    if not (0 <= flow < 2) or not (0 <= bblk < _GRID_SLOTS):
+        raise ValueError(
+            f"xbranch out of range: flow={flow} bblk={bblk} "
+            f"(flow 0..1, bblk 0..{_GRID_SLOTS - 1})")
+    block["hasb"] = True
+    block["bblk"] = bblk
+    block["bflw"] = flow
+    return block
+
+
 def _apply_base_bypass(block: dict, spec: Optional[dict]) -> dict:
     """Carry a ``.hsp`` entry's BASE bypass onto an emitted device block.
 
@@ -978,6 +1007,7 @@ def _place_split_flow_coords(placements, instance_ids, pi, base, modeled, struct
             blk["bblk"], blk["bflw"] = base + branch_gps[id(scaffold)], pi
         elif blk.get("type") == 4:    # join <- row-1 slot beneath it
             blk["bblk"], blk["bflw"] = base + _ROW1_INPUT + spos, pi
+        _apply_xbranch(blk, scaffold.get("_xbranch"))  # cross-DSP (bead hgc-tj0)
         scaffold["_eid"] = base + spos   # its cg__ target key (bead hgc-rq3)
         placements.append((spos, blk))
 
@@ -1014,6 +1044,7 @@ def _place_split_flow_nocoords(placements, instance_ids, pi, base, modeled, stru
             blk["bblk"], blk["bflw"] = base + (_ROW1_INPUT + 1), pi
         elif typ == 4:
             blk["bblk"], blk["bflw"] = base + join_gp, pi
+        _apply_xbranch(blk, scaffold.get("_xbranch"))  # cross-DSP (bead hgc-tj0)
         scaffold["_eid"] = base + slot   # its cg__ target key (bead hgc-rq3)
         placements.append((slot, blk))
 
@@ -1053,9 +1084,11 @@ def synthesize_sfg(paths: List[dict]) -> Tuple[dict, int, Dict[Tuple[int, int, i
 
         # (gridpos, block) placements on this flow's 28-slot grid. The input
         # endpoint carries its own base bypass (#23: ``enbl=0`` loads bypassed).
-        input_block = _apply_base_bypass(
-            _make_input_endpoint(mode, 0, in_params),
-            {"enabled": path.get("input_enabled")})
+        input_block = _apply_xbranch(
+            _apply_base_bypass(
+                _make_input_endpoint(mode, 0, in_params),
+                {"enabled": path.get("input_enabled")}),
+            path.get("input_xbranch"))
         # All FOUR endpoints are registered in ``instance_ids`` under their own
         # sentinel (they have no ``(lane, pos)`` of their own), because every
         # one of them can be a snapshot target on real device content: the DSP
@@ -2175,6 +2208,8 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
                     blk["_lane"] = int(e.get("lane", 0))
                 if e.get("branch"):
                     blk["_branch"] = e["branch"]
+                if e.get("xbranch"):
+                    blk["_xbranch"] = e["xbranch"]
                 for k in ("snap_bypass", "snap_params", "ctl_params"):
                     if e.get(k):
                         blk["_" + k] = e[k]

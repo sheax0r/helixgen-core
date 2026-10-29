@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("msgpack")
 
-from helixgen.device import bridge, content, transcode  # noqa: E402
+from helixgen.device import bridge, content, transcode, untranscode  # noqa: E402
 
 
 def _wrap(params):
@@ -199,6 +199,90 @@ class TestTranscodeSynthesis:
         assert jpids[1] == -2.0      # A Level
         assert jpids[4] == 0.1       # B Pan
         assert jpids[5] is True      # B Polarity
+
+
+class TestCrossDspBranch:
+    """A cross-DSP tap (USB-tap / Y split wiring one flow into the other) is
+    recorded on the SOURCE block as ``hasb`` + a ``bflw`` naming the OTHER flow
+    and a ``bblk`` slot in it. synthesis has no cross-DSP model, so ``to-hsp``
+    carries the device's own pointer verbatim as ``xbranch`` and the forward
+    path re-emits it byte-for-byte instead of letting the within-flow default
+    dangle (bead hgc-tj0). Mirrors white-limo cid2037: flow0 input taps flow1
+    slot 11, flow1 split taps back to flow0 slot 0."""
+
+    def _tap_body(self):
+        return {
+            "meta": {"name": "tap", "device_id": 2490368},
+            "preset": {"flow": [
+                {"@enabled": {"value": True},
+                 "b00": {"type": "input", "position": 0, "path": 0,
+                         "slot": [{"model": "P35_InputInst1_2", "params": {}}],
+                         "xbranch": {"flow": 1, "bblk": 11}},
+                 "b01": {"type": "fx", "position": 1, "path": 0,
+                         "slot": [{"model": "HD2_DrvScream808",
+                                   "params": _wrap({"Gain": 0.2})}]},
+                 "b13": {"type": "output", "position": 13, "path": 0,
+                         "slot": [{"model": "P35_OutputMatrix",
+                                   "params": _wrap({})}]}},
+                {"@enabled": {"value": True},
+                 "b00": {"type": "input", "position": 0, "path": 1,
+                         "slot": [{"model": "P35_InputInst2", "params": {}}]},
+                 "b11": {"type": "split", "position": 11, "path": 1,
+                         "slot": [{"model": "P35_AppDSPSplitY",
+                                   "params": _wrap({})}],
+                         "xbranch": {"flow": 0, "bblk": 0}},
+                 "b13": {"type": "output", "position": 13, "path": 1,
+                         "slot": [{"model": "P35_OutputMatrix",
+                                   "params": _wrap({})}]}},
+            ], "params": {}},
+        }
+
+    @staticmethod
+    def _pointer(doc, flow, gp):
+        blks = doc["sfg_"]["flow"][flow]["blks"]
+        for i in range(0, len(blks) - 1, 2):
+            if blks[i] == gp and isinstance(blks[i + 1], dict):
+                b = blks[i + 1]
+                return (b.get("hasb"), b.get("bblk"), b.get("bflw"))
+        return None
+
+    def test_forward_emits_device_pointer_verbatim(self):
+        doc = content.decode_any(transcode.hsp_to_sbepgsm(self._tap_body()))
+        # Input node taps the other flow; NOT the dropped hasb=False default.
+        assert self._pointer(doc, 0, 0) == (True, 11, 1)
+        # Split taps back to flow0 slot 0; NOT a dangling within-flow bblk.
+        assert self._pointer(doc, 1, 11) == (True, 0, 0)
+
+    def test_round_trip_recaptures_xbranch(self):
+        again = transcode.hsp_to_sbepgsm(self._tap_body())
+        body2 = untranscode.sbe_bytes_to_hsp(again, name="tap", library=None)
+        assert body2["preset"]["flow"][0]["b00"]["xbranch"] == {
+            "flow": 1, "bblk": 11}
+        assert body2["preset"]["flow"][1]["b11"]["xbranch"] == {
+            "flow": 0, "bblk": 0}
+
+    def test_malformed_xbranch_is_rejected(self):
+        # The .hsp is hand-editable (a trust boundary): a cross-DSP pointer
+        # missing a key, or out of range, must fail loudly, not write a
+        # dangling pointer into the device.
+        for bad in ({"flow": 1}, {"flow": None, "bblk": 0},
+                    {"flow": 9, "bblk": 0}, {"flow": 0, "bblk": 99}):
+            body = self._tap_body()
+            body["preset"]["flow"][0]["b00"]["xbranch"] = bad
+            with pytest.raises(ValueError):
+                transcode.hsp_to_sbepgsm(body)
+
+    def test_within_flow_split_is_unchanged(self):
+        # A split whose branch stays in its OWN flow keeps the within-flow
+        # bblk/branch path — xbranch must not fire for it.
+        extra = {"b02": {"type": "split", "position": 2, "path": 0,
+                         "branch": "b15", "endpoint": "b04",
+                         "slot": [{"model": "P35_AppDSPSplitY",
+                                   "params": _wrap({})}]}}
+        body = _hsp_body("P35_InputInst1", {}, extra_blocks=extra)
+        again = transcode.hsp_to_sbepgsm(body)
+        body2 = untranscode.sbe_bytes_to_hsp(again, name="t", library=None)
+        assert "xbranch" not in body2["preset"]["flow"][0]["b02"]
 
 
 class TestBaseBypassOnEndpointsAndRoutingNodes:

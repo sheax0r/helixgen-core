@@ -809,6 +809,20 @@ footswitch/controller assignment commands are parameterised on the device.
   strings/names, applying helixgen's ingest model-id translation first). Writing
   the actual bidirectional converter — including the still-open `hrns` /
   controller leaves — remains the main lift for full round-trip.
+  - **Cross-DSP branch wiring (USB-tap / Y split between the two DSP flows) —
+    round-trip PRESERVED 2026-10-28 (bead hgc-tj0).** A tap is recorded on the
+    SOURCE block as `hasb=True` with `bflw` naming the OTHER flow and `bblk` a
+    slot in it (observed on white-limo cid2037: flow0 input → `bflw=1 bblk=11`,
+    flow1 split → `bflw=0 bblk=0`, a mutual tap). The `.hsp` `branch` string is
+    a within-flow projection that cannot express this, so `to-hsp` now carries
+    the device's own pointer verbatim as a per-block `xbranch` key
+    (`{"flow": bflw, "bblk": bblk}`) and the forward transcoder re-emits it
+    byte-for-byte. `device to-hsp` of such a preset is now a FIXED POINT (was
+    NOT one — the input-node tap was dropped and the flow split re-pointed to a
+    dangling within-flow slot). Still open: SYNTHESIZING a cross-DSP tap from
+    scratch (a freshly authored `.hsp` with no `xbranch`) — unmodeled, and the
+    `bblk` convention for a within-flow split in flow 1 (local slot vs global
+    id) is untested on hardware.
 - **`/SavePresetWithCID` 4th arg `N`.** Meaning unknown (not the block count;
   editor sent `6`, `0` works byte-faithfully). Harmless but uncharacterised.
 - ~~**`/ModelSet` leading args.**~~ **Decoded 2026-07-14**:

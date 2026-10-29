@@ -434,6 +434,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
         input_params: Dict[str, Any] = {}
         input_enabled: Optional[bool] = None
         input_snap_bypass: Optional[List[Any]] = None
+        input_xbranch: Optional[Dict[str, Any]] = None
         output_params: Dict[str, Any] = {}
         output_model: Optional[str] = None
         output_enabled: Optional[bool] = None
@@ -468,6 +469,9 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 # (see ``transcode._split_branch_gps``).
                 if isinstance(b.get("branch"), str):
                     entry["branch"] = b["branch"]
+                # A CROSS-DSP branch pointer (bead hgc-tj0): re-emit verbatim.
+                if isinstance(b.get("xbranch"), dict):
+                    entry["xbranch"] = b["xbranch"]
                 # A routing node is a snapshot/controller target like any other
                 # block — the device snapshot-tracks a split's bypass and
                 # sweeps its RouteTo from EXP1 (bead hgc-rq3).
@@ -498,6 +502,10 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                     input_enabled = False
                 if has_snaps:
                     input_snap_bypass = _snap_bypass(b)
+                # The DSP input can be the SOURCE of a cross-DSP tap (bead
+                # hgc-tj0): hasb=True + bflw/bblk into the other flow.
+                if isinstance(b.get("xbranch"), dict):
+                    input_xbranch = b["xbranch"]
                 continue
             if typ == "output":
                 # The lane-0 primary output (b13) carries the path's level/pan;
@@ -626,6 +634,8 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             path_entry["input_enabled"] = False
         if input_snap_bypass is not None:
             path_entry["input_snap_bypass"] = input_snap_bypass
+        if input_xbranch is not None:
+            path_entry["input_xbranch"] = input_xbranch
         if output_params:
             path_entry["output_params"] = output_params
         if output_model is not None:

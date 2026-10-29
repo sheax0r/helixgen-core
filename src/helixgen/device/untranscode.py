@@ -710,12 +710,40 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
     split_bblk = {}
     for gp, blk in _iter_blocks(flow):
         key = f"b{gp:02d}" if isinstance(gp, int) else None
-        if (key in entries and entries[key].get("type") == "split"
-                and blk.get("bblk") in bmap):
+        if key not in entries or not isinstance(blk, dict):
+            continue
+        # A CROSS-DSP branch pointer (a USB-tap / Y split wiring one flow into
+        # the other): the device records it on the source block as hasb=True
+        # with bflw naming the OTHER flow and bblk a slot in it. The .hsp
+        # ``branch`` string is a within-flow projection that cannot express it,
+        # and synthesis has no cross-DSP model, so to-hsp used to drop it and a
+        # re-install mis-wired the tap (bead hgc-tj0). Carry it verbatim as
+        # ``xbranch`` so the forward path re-emits the device's own pointer.
+        is_cross = (blk.get("hasb") and isinstance(blk.get("bblk"), int)
+                    and isinstance(blk.get("bflw"), int) and blk["bflw"] != fi)
+        etype = entries[key].get("type")
+        if is_cross and etype in ("input", "split", "join"):
+            # Only these have a forward re-emit path (synthesize input / split
+            # + join scaffolds). Capturing it on any other block type would
+            # write an xbranch that a re-install silently drops.
+            entries[key]["xbranch"] = {"flow": blk["bflw"], "bblk": blk["bblk"]}
+        elif is_cross:
+            lost.append(f"flow {fi} {key}: a cross-DSP branch pointer on a "
+                        f"{etype!r} block — the forward transcoder has no way "
+                        f"to re-emit it, so a re-install drops the tap")
+        elif etype == "split" and blk.get("bblk") in bmap:
             bgp = bmap.index(blk["bblk"])
             if _ROW1_INPUT < bgp <= _ROW1_OUTPUT:
                 split_bblk[key] = f"b{bgp:02d}"
     _endpoint_pointers(entries, split_bblk)
+    # A split carrying a verbatim cross-DSP ``xbranch`` must not ALSO carry a
+    # within-flow ``branch`` span (``_endpoint_pointers`` pairs split/join by
+    # grid order and writes one): that fabricated span feeds the forward
+    # ``_split_branch_gps`` and can shift a SIBLING split's slot (bead hgc-tj0
+    # review). The xbranch is the real pointer; drop the span.
+    for e in entries.values():
+        if e.get("xbranch"):
+            e.pop("branch", None)
     out: Dict[str, Any] = {"@enabled": {"value": bool(flow.get("enbl", 1))}}
     out.update({k: entries[k] for k in sorted(entries)})
     return out
