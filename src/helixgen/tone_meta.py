@@ -203,13 +203,17 @@ def variant_key_for(
     meta: Optional[ToneMeta], guitar_slug: Optional[str], venue: Optional[str]
 ) -> tuple[str, bool]:
     """``(key, suffixed)`` for a new variant on ``guitar_slug``: the bare
-    guitar key (``"generic"`` when no guitar) unless it is already taken AND
-    a venue is given, in which case ``<guitar>@<venue>`` with ``suffixed``
-    True. With no venue a taken bare key is simply replaced (legacy)."""
+    guitar key (``"generic"`` when no guitar), unless a venue is given and the
+    bare key already holds a *different* venue -- then ``<guitar>@<venue>``
+    with ``suffixed`` True. Re-requesting the venue the bare variant already
+    has replaces the bare key; an existing ``<guitar>@<venue>`` is reused. With
+    no venue a taken bare key is simply replaced (legacy)."""
     bare = guitar_slug if guitar_slug is not None else "generic"
-    if venue is not None and meta is not None and bare in meta.variants:
-        return f"{bare}@{venue}", True
-    return bare, False
+    if venue is None or meta is None or bare not in meta.variants:
+        return bare, False
+    if meta.variants[bare].venue == venue:
+        return bare, False
+    return f"{bare}@{venue}", True
 
 
 def parse_tag(tag: str) -> tuple[Optional[str], str]:
@@ -580,7 +584,10 @@ def upsert_variant(
       (or vice versa) is self-contradictory metadata.
     - Variant key is ``guitar_slug`` or ``"generic"`` when ``guitar_slug`` is
       ``None`` (guitar-agnostic tone; ``preset_name`` then omits the guitar
-      segment, since ``guitar_short`` is also ``None`` in that case).
+      segment, since ``guitar_short`` is also ``None`` in that case). With a
+      ``venue`` differing from the bare variant's, the key is
+      ``<guitar>@<venue>`` (see ``variant_key_for``). A bad ``venue`` raises
+      ``ValueError``.
     - ``preset_name`` is computed via ``naming.display_name`` (raises
       ``ValueError`` unless exactly one of (``artist``+``song``) or
       ``descriptor`` is given -- same identity rule as the rest of the
@@ -596,6 +603,8 @@ def upsert_variant(
       their own friendlier errors; this is the cheap invariant backstop
       (backlog #79c).
     """
+    from helixgen import venue as _venue
+    _venue.validate_venue(venue)
     has_slug = not naming._is_blank(guitar_slug)
     has_short = not naming._is_blank(guitar_short)
     if has_slug != has_short:

@@ -801,7 +801,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         prefs.author = os.environ["HELIXGEN_AUTHOR"]
     if "HELIXGEN_DEFAULT_GUITAR" in os.environ:
         prefs.default_guitar = os.environ["HELIXGEN_DEFAULT_GUITAR"]
-    if "HELIXGEN_DEFAULT_VENUE" in os.environ:
+    if os.environ.get("HELIXGEN_DEFAULT_VENUE", "").strip():
         prefs.default_venue = _validate_default_venue(
             os.environ["HELIXGEN_DEFAULT_VENUE"], name="HELIXGEN_DEFAULT_VENUE"
         )

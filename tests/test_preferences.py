@@ -952,3 +952,13 @@ def test_default_venue_absent_is_none_and_bad_value_errors(tmp_path, monkeypatch
 def test_default_venue_in_scaffold(tmp_path):
     path = scaffold_default(tmp_path / "preferences.json")
     assert json.loads(path.read_text())["default_venue"] is None
+
+
+def test_env_default_venue_blank_is_unset_and_bad_raises(tmp_path, monkeypatch):
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"default_venue": "amp-in"}))
+    monkeypatch.setenv("HELIXGEN_DEFAULT_VENUE", "  ")
+    assert load_preferences(path).default_venue == "amp-in"
+    monkeypatch.setenv("HELIXGEN_DEFAULT_VENUE", "moon")
+    with pytest.raises(PreferencesError):
+        load_preferences(path)

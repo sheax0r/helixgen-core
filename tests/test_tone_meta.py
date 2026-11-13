@@ -908,10 +908,29 @@ def test_venue_fields_round_trip_and_legacy_loads_none(tmp_home):
     assert got.venue == "amp-in" and got.venue_detail == {"room_ir": "h", "offset_db": 4.0}
     legacy = tone_meta._variant_from_dict({"hsp": "x", "preset_name": "y"})
     assert legacy.venue is None and legacy.venue_detail is None
-    assert tone_meta.parse_tone_meta  # schema untouched
+    raw = json.loads(tone_meta.meta_path(meta.logical_slug).read_text())
+    assert tone_meta.parse_tone_meta(raw).variants["g1"].venue == "amp-in"
     assert tone_meta.load_tone_meta(meta.logical_slug).schema == 1
 
 
 def test_split_variant_key():
     assert tone_meta.split_variant_key("ibanez-prestige@amp-in") == ("ibanez-prestige", "amp-in")
     assert tone_meta.split_variant_key("generic") == ("generic", None)
+
+
+def test_variant_key_for_replaces_same_venue_and_reuses_suffixed(tmp_home):
+    kw = dict(descriptor="Probe", guitar_slug="g", guitar_short="G")
+    meta = tone_meta.upsert_variant(None, hsp_path="a.hsp", venue="headphones", **kw)
+    assert tone_meta.variant_key_for(meta, "g", "headphones") == ("g", False)
+    assert tone_meta.variant_key_for(meta, "g", "amp-in") == ("g@amp-in", True)
+    meta = tone_meta.upsert_variant(meta, hsp_path="b.hsp", venue="amp-in", **kw)
+    assert tone_meta.variant_key_for(meta, "g", "amp-in") == ("g@amp-in", True)
+    meta = tone_meta.upsert_variant(meta, hsp_path="c.hsp", venue="headphones", **kw)
+    assert sorted(meta.variants) == ["g", "g@amp-in"]
+    assert meta.variants["g"].hsp == "c.hsp"
+
+
+def test_upsert_variant_bad_venue_is_value_error(tmp_home):
+    with pytest.raises(ValueError, match="venue must be one of"):
+        tone_meta.upsert_variant(None, descriptor="P", guitar_slug="g",
+                                 guitar_short="G", hsp_path="a.hsp", venue="moon")
