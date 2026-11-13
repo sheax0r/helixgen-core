@@ -274,6 +274,37 @@ def test_new_agent_surfaces_keep_contract_phrases(path, phrases):
             f"phrase {phrase!r}")
 
 
+#: hgc-58a: the live chain editor. The verb's help is all an agent has to go
+#: on: that it is long-running, that every control writes immediately, what
+#: Save does and does NOT do (the library goes stale), and its lock behaviour.
+LIVE_SURFACES: list[tuple[list[str], list[str]]] = [
+    (["device", "live"],
+     ["signal chain", "BACKGROUND", "live editor: <url>",
+      "WRITES TO THE DEVICE IMMEDIATELY", "RAW range",
+      "hardware's own Save", "user pool", "LIBRARY is NOT updated",
+      "device to-hsp", "No structural editing",
+      "does NOT hold a device lock for its lifetime", "Ctrl-C"]),
+    (["device", "set-param"], ["device live"]),
+    # the two facts an agent needs so it cannot discard or misplace hand-dialed
+    # work: is the buffer unsaved, and which pool preset holds the tone
+    (["device", "active"],
+     ["edited", "UNSAVED", "CHECK IT BEFORE YOU LOAD ANYTHING",
+      "reads the STORED preset", "pool_cid", "SETLIST REFERENCE"]),
+    (["device", "live"],
+     ["Nothing persists until Save", "loaded from a setlist"]),
+]
+
+
+@pytest.mark.parametrize(
+    "path,phrases", LIVE_SURFACES, ids=[" ".join(row[0]) for row in LIVE_SURFACES])
+def test_live_surfaces_keep_contract_phrases(path, phrases):
+    combined = _full_help(_resolve(path))
+    for phrase in phrases:
+        assert phrase in combined, (
+            f"CLI verb {' '.join(path)!r} help lost the live-editor contract "
+            f"phrase {phrase!r}")
+
+
 #: 0.22.0 agent surfaces: the machine-local advisory device locks
 #: (workspace backlog #71) — `device lock`/`unlock`, per-verb auto-acquire,
 #: and the --no-lock escape hatch must keep their contract phrases.

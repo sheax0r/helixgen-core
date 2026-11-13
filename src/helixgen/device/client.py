@@ -130,6 +130,13 @@ GRID_SLOTS = 28
 ACTIVE_PRESET_KEY = "server.active.preset.id"
 
 
+# Ack wait for a ``fast=True`` live write (hgc-58a): long enough to ride out
+# LAN jitter (acks land in ~10 ms on a Stadium XL), short enough that a write
+# the device silently dropped does not stall a live control for the full RPC
+# timeout.
+_FAST_ACK_WAIT = 0.5
+
+
 def _grid_slot(block: int) -> int:
     """Validate a public block coordinate (the device's DSP **grid slot**).
 
@@ -226,6 +233,10 @@ class HelixClient:
         self.reconnect_tries = reconnect_tries
         self.reconnect_backoff = reconnect_backoff
         self._rid = itertools.count(1000)
+        # the request id of the most recent RPC sent (None before the first).
+        # The device echoes edit-buffer writes on the 2001 stream with `seq`
+        # equal to this id, which lets a live UI recognise its own echoes.
+        self.last_request_id: Optional[int] = None
         self._zmq = None
         self._ctx = None
         self.sock = None
@@ -379,6 +390,7 @@ class HelixClient:
         # zmq's exception type, or an empty tuple when a fake socket is injected
         zmq_error = getattr(self._zmq, "ZMQError", ()) if self._zmq else ()
         rid = next(self._rid)
+        self.last_request_id = rid
         try:
             self.sock.send(osc_encode(addr, [("i", rid)] + list(args)))
         except zmq_error as exc:
@@ -730,17 +742,24 @@ class HelixClient:
                 return m
         return None
 
-    def get_edit_buffer(self) -> bytes:
-        """Return the current edit buffer as a raw ``_sbepgsm`` content blob."""
-        for _addr, args in self._rpc("/EditBufferStateGet", [], raw_blobs=True):
+    def get_edit_buffer(self, *, fast: bool = False) -> bytes:
+        """Return the current edit buffer as a raw ``_sbepgsm`` content blob.
+
+        ``fast=True`` returns as soon as the reply lands instead of also
+        draining the 0.4 s settle window (it still waits the full RPC timeout
+        for the reply itself) — for a live UI that re-reads on every snapshot
+        switch."""
+        kw = {"settle": 0.0} if fast else {}
+        for _addr, args in self._rpc("/EditBufferStateGet", [], raw_blobs=True, **kw):
             for v in args:
                 if isinstance(v, (bytes, bytearray)) and bytes(v[:8]) == _content.MAGIC:
                     return bytes(v)
         raise HelixError("no edit-buffer blob in /getEditBufferState reply")
 
-    def read_edit_buffer(self) -> Any:
-        """Decode the current edit buffer into a nested dict (4CC string keys)."""
-        return _content.decode_content(self.get_edit_buffer())
+    def read_edit_buffer(self, *, fast: bool = False) -> Any:
+        """Decode the current edit buffer into a nested dict (4CC string keys).
+        ``fast``: see :meth:`get_edit_buffer`."""
+        return _content.decode_content(self.get_edit_buffer(fast=fast))
 
     def get_content(self, cid: int) -> bytes:
         """Return preset ``cid``'s stored content blob **without activating it**.
@@ -928,18 +947,50 @@ class HelixClient:
         self._rpc("/activateSnapshot", [("i", i)])
         return True
 
-    def set_block_enable(self, path: int, block: int, enable: bool) -> bool:
+    def set_block_enable(self, path: int, block: int, enable: bool, *,
+                         fast: bool = False) -> bool:
         """Bypass/enable a block in the live edit buffer.
 
         ``/BlockEnableSet [reqid, dsp, grid_slot, enable]``. ``path`` = DSP
         index (0/1), ``block`` = the grid slot printed by ``device blocks`` /
         :meth:`edit_buffer_blocks`, sent unchanged (see :func:`_grid_slot`
         for the 2026-07-15 indexing erratum).
+
+        ``fast=True`` is the live-control path (see :meth:`set_param`): wait
+        only for the device's ack, skip the settle drain, and return whether
+        the ack arrived. The default keeps the legacy contract (always
+        ``True``; the change is confirmed by its 2001 echo).
         """
-        self._rpc("/BlockEnableSet",
-                  [("i", int(path)), ("i", _grid_slot(block)),
-                   ("i", 1 if enable else 0)])
+        args = [("i", int(path)), ("i", _grid_slot(block)),
+                ("i", 1 if enable else 0)]
+        if fast:
+            return self._ok(self._rpc_fast("/BlockEnableSet", args))
+        self._rpc("/BlockEnableSet", args)
         return True
+
+    def _rpc_fast(self, addr: str, args: Sequence) -> List[tuple]:
+        """One RPC that returns as soon as OUR ack lands — no settle drain.
+
+        The default :meth:`_rpc` keeps polling ``settle`` (0.4 s) after the
+        reply in case more frames follow; a live write has exactly one reply,
+        so that drain is pure latency (614 ms vs 10 ms per ``/ParamValueSet``,
+        measured on a Stadium XL 2026-11-12). The ack is still consumed, so
+        the DEALER receive buffer stays clean."""
+        return self._rpc(addr, args,
+                         first_wait=min(self.rpc_timeout, _FAST_ACK_WAIT),
+                         settle=0.0)
+
+    def save_edit_buffer(self, cid: int) -> bool:
+        """Persist the live edit buffer into the EXISTING preset ``cid``, in
+        place (``/SavePresetWithCID`` — what the hardware's Save does).
+
+        Overwrites that preset's stored content with whatever the edit buffer
+        holds now; nothing is created, renamed or moved. The caller decides
+        WHICH cid: pass the active preset's (:meth:`active_preset`) and check
+        it lives in the user pool first — this does not. Returns ``False``
+        when the device refuses or does not answer.
+        """
+        return self._save_preset_with_cid(int(cid))
 
     def set_block_model(self, path: int, block: int, model_id: int) -> bool:
         """Set a block's model in the live edit buffer.
@@ -1097,6 +1148,43 @@ class HelixClient:
         return {"cid": cid, "name": ref.get("name"), "posi": ref.get("posi"),
                 "slot": slot_label(ref.get("posi")), "ccid": ref.get("ccid")}
 
+    def resolve_pool_cid(self, cid: int, ccid: Optional[int] = None) -> Optional[int]:
+        """The user-POOL preset that holds the content behind ``cid``.
+
+        A preset in the pool is itself. A tone loaded FROM A SETLIST is active
+        under its setlist REFERENCE (``ccid`` = the setlist, ``rcid`` = the pool
+        preset it points at — HW 2026-11-13: loading reference 1950 made
+        ``server.active.preset.id`` 1950, not pool preset 1750); the content
+        lives in the pool preset, so that is what an in-place save or a
+        ``to-hsp`` must address. ``None`` when ``cid`` is neither — a factory
+        preset, a reference to one, an id that does not resolve.
+
+        Pass ``ccid`` when you already have it (``active_preset()`` returns
+        it) to skip a lookup. Read-only.
+        """
+        pool = int(Container.POOL)
+        ref: Optional[Dict[str, Any]] = None
+        if ccid is None:
+            ref = self.get_ref(int(cid)) or {}
+            ccid = ref.get("ccid")
+        if ccid == pool:
+            return int(cid)
+        if ref is None:
+            ref = self.get_ref(int(cid)) or {}
+        rcid = ref.get("rcid")
+        if isinstance(rcid, int) and not isinstance(rcid, bool):
+            if (self.get_ref(rcid) or {}).get("ccid") == pool:
+                return rcid
+        return None
+
+    def preset_edited(self) -> bool:
+        """Whether the live edit buffer holds UNSAVED changes — the device's
+        own ``volatile.preset.edited`` flag (set by the first edit, cleared by
+        a save or a preset load). Anything that loads a preset discards them.
+        Read-only. (Not available through ``settings get``: the property has no
+        definition record.)"""
+        return bool(self.get_property("volatile.preset.edited").value)
+
     def load_preset(self, cid: int) -> bool:
         return self._ok(self._rpc("/LoadPresetWithCID", [("i", cid)]))
 
@@ -1212,8 +1300,22 @@ class HelixClient:
         items.sort(key=lambda m: m.get("posi", 1 << 30))
         return items
 
+    @staticmethod
+    def _param_arg(ptype: Optional[str], value: Any) -> Tuple[str, Any]:
+        """The OSC arg for a param value of defs type ``ptype``. The device
+        takes each param in ITS OWN OSC type — a float-encoded int or bool
+        write is silently dropped (no ack, no change; HW 2026-11-13, fw
+        1.4.1): ``i`` -> int32, ``b`` -> the ``T``/``F`` boolean tags,
+        anything else -> float32."""
+        if ptype == "b":
+            return ("T" if value else "F", None)
+        if ptype == "i":
+            return ("i", int(round(float(value))))
+        return ("f", float(value))
+
     def set_param(self, path: int, block: int, param_id: int, value: float,
-                  *, force: bool = False) -> bool:
+                  *, force: bool = False, fast: bool = False,
+                  ptype: Optional[str] = None) -> bool:
         """Set a param in the edit buffer:
         ``/ParamValueSet [_, path, grid_slot, 0, paramId, value, -1]``.
 
@@ -1232,29 +1334,63 @@ class HelixClient:
         skips the check: the range comes from the vendored model defs, not
         from the firmware, so it can be narrower than what the hardware
         actually accepts.
+
+        ``ptype`` is the param's defs type (``'f'`` / ``'i'`` / ``'b'``, as
+        :meth:`edit_buffer_params` reports it) and decides the OSC encoding
+        (see :meth:`_param_arg`) — it matters: an int/enum param sent as a
+        float, or a bool sent as anything but ``T``/``F``, is silently
+        dropped by the device. The range-checked path fills it in from the
+        model defs; a ``force=True`` write looks it up with one edit-buffer
+        read unless ``ptype`` is given or ``fast`` is set (a ``fast`` caller
+        must pass it for a non-float param).
+
+        ``fast=True`` is the live-control path (a knob UI issuing many writes
+        a second): wait only for the device's ack instead of also draining the
+        0.4 s settle window, and return ``False`` if no ack arrives within
+        ~0.5 s (a write at a slot with no block is silently dropped). It does
+        NOT skip the range check — pair it with ``force=True`` only when the
+        caller has already clamped the value to the advertised range, since
+        the check costs a full edit-buffer read per write.
         """
         slot = _grid_slot(block)
         if not force:
-            self._check_param_range(path, slot, param_id, value)
-        return self._ok(self._rpc(
-            "/ParamValueSet",
-            [("i", path), ("i", slot), ("i", 0), ("i", param_id),
-             ("f", float(value)), ("i", -1)]))
+            checked = self._check_param_range(path, slot, param_id, value)
+            if ptype is None:
+                ptype = checked
+        elif ptype is None and not fast:
+            ptype = self._param_type(path, slot, param_id)
+        args = [("i", path), ("i", slot), ("i", 0), ("i", param_id),
+                self._param_arg(ptype, value), ("i", -1)]
+        if fast:
+            return self._ok(self._rpc_fast("/ParamValueSet", args))
+        return self._ok(self._rpc("/ParamValueSet", args))
+
+    def _param_type(self, path: int, slot: int, param_id: int) -> Optional[str]:
+        """Best-effort defs type of one param (one edit-buffer read); ``None``
+        when it cannot be determined — the write then goes out as a float."""
+        try:
+            row = next((p for p in self.edit_buffer_params(path, slot)["params"]
+                        if p["pid"] == param_id), None)
+        except HelixError:
+            return None
+        return row.get("type") if row else None
 
     def _check_param_range(self, path: int, slot: int, param_id: int,
-                           value: float) -> None:
+                           value: float) -> Optional[str]:
         """Raise :class:`HelixError` if ``value`` falls outside the range the
         model defs advertise for ``param_id`` (bounds inclusive).
 
         A pid with no advertised min/max — an unknown pid, or one the defs
-        leave open — is not validated. A failed edit-buffer read propagates
+        leave open — is not validated. Returns the param's defs type
+        (``'f'``/``'i'``/``'b'``; ``None`` for an unknown pid) so the caller
+        can encode the write correctly. A failed edit-buffer read propagates
         rather than being swallowed: silently skipping the check would turn a
         transient read failure into an unvalidated write.
         """
         row = next((p for p in self.edit_buffer_params(path, slot)["params"]
                     if p["pid"] == param_id), None)
         if row is None:
-            return
+            return None
         lo, hi = row.get("min"), row.get("max")
         if (lo is not None and value < lo) or (hi is not None and value > hi):
             raise HelixError(
@@ -1264,6 +1400,7 @@ class HelixClient:
                 "out-of-range write lands and is applied; pass --force if "
                 "you mean it (the range is the vendored model defs', which "
                 "can be narrower than the firmware's).")
+        return row.get("type")
 
     def _find_by_pos_retry(self, container: int, pos: int,
                            tries: int = 4, delay: float = 0.25

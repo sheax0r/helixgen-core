@@ -460,12 +460,62 @@ def test_device_active_human_and_json(monkeypatch):
             return {"cid": 1202, "name": "Prehistoric Dog", "posi": 17,
                     "slot": "5B", "ccid": -2}
 
+        def resolve_pool_cid(self, cid, ccid=None):
+            return cid
+
+        def preset_edited(self):
+            return False
+
     _patch_client(monkeypatch, ActiveFake)
     result = CliRunner().invoke(cli, ["device", "active"])
     assert result.exit_code == 0, result.output
     assert "1202" in result.output and "Prehistoric Dog" in result.output
     result = CliRunner().invoke(cli, ["device", "active", "--json"])
     assert json.loads(result.output)["cid"] == 1202
+
+
+def test_device_active_reports_unsaved_edits_and_the_pool_preset(monkeypatch):
+    # hgc-58a: after hand-dialing in `device live` an agent must be able to
+    # tell (a) whether the edit buffer holds UNSAVED changes — anything that
+    # loads a preset discards them — and (b) which POOL preset holds the tone
+    # when it was loaded through a setlist (the active cid is then the setlist
+    # reference, and `device to-hsp` wants the preset).
+    class ActiveFake(FakeClient):
+        def active_preset(self):
+            return {"cid": 1950, "name": "Dream On", "posi": 0, "slot": "1A", "ccid": 1949}
+
+        def resolve_pool_cid(self, cid, ccid=None):
+            assert (cid, ccid) == (1950, 1949)
+            return 1750
+
+        def preset_edited(self):
+            return True
+
+    _patch_client(monkeypatch, ActiveFake)
+    j = json.loads(CliRunner().invoke(cli, ["device", "active", "--json"]).output)
+    assert j["cid"] == 1950 and j["pool_cid"] == 1750 and j["edited"] is True
+    out = CliRunner().invoke(cli, ["device", "active"]).output
+    assert "1750" in out and "UNSAVED" in out
+
+
+def test_device_active_survives_an_unreadable_edited_flag(monkeypatch):
+    from helixgen.device import HelixError
+
+    class ActiveFake(FakeClient):
+        def active_preset(self):
+            return {"cid": 1202, "name": "Prehistoric Dog", "posi": 17, "slot": "5B", "ccid": -2}
+
+        def resolve_pool_cid(self, cid, ccid=None):
+            return cid
+
+        def preset_edited(self):
+            raise HelixError("no reply")
+
+    _patch_client(monkeypatch, ActiveFake)
+    r = CliRunner().invoke(cli, ["device", "active", "--json"])
+    assert r.exit_code == 0, r.output
+    j = json.loads(r.output)
+    assert j["pool_cid"] == 1202 and j["edited"] is None
 
 
 def test_device_params_human_and_json(monkeypatch):

@@ -307,3 +307,258 @@ def test_active_preset_unresolvable_ref(monkeypatch):
     monkeypatch.setattr(h, "get_ref", lambda cid: None)
     info = h.active_preset()
     assert info["cid"] == 0 and info["name"] is None and info["slot"] == ""
+
+
+# --- fast-ack live writes (hgc-58a) ----------------------------------------
+# A live knob UI issues many writes a second. The default RPC keeps polling a
+# 0.4 s settle window AFTER the ack has arrived (614 ms / write measured on a
+# Stadium XL, 2026-11-12); `fast=True` waits only for the ack (10 ms measured).
+
+class _RecordingPoller:
+    """Hands out one frame per poll until exhausted; records each timeout."""
+
+    def __init__(self, frames):
+        self._remaining = len(frames)
+        self.timeouts = []
+
+    def register(self, *_a, **_k):
+        pass
+
+    def poll(self, ms):
+        self.timeouts.append(ms)
+        if self._remaining > 0:
+            self._remaining -= 1
+            return [("sock", 1)]
+        return []
+
+
+def _status_ack(rid, code=0):
+    return osc_encode("/status", [("i", rid), ("i", code)])
+
+
+def _wire_recording(client, frames):
+    client.sock = _FakeSock(frames)
+    client.poller = _RecordingPoller(frames)
+
+
+def test_set_param_default_keeps_the_settle_drain():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_param(0, 13, 2, -6.0, force=True, ptype="f") is True
+    # first poll waits the full rpc timeout, the post-ack poll the 0.4 s settle
+    assert h.poller.timeouts == [2000, 400]
+
+
+def test_set_param_fast_waits_only_for_the_ack():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_param(0, 13, 2, -6.0, force=True, fast=True) is True
+    addr, args = _last_sent(h)
+    assert addr == "/ParamValueSet"
+    assert args[1:] == [0, 13, 0, 2, -6.0, -1]       # same wire shape
+    first, after_ack = h.poller.timeouts
+    assert 0 < first <= 500                           # short ack wait
+    assert after_ack == 0                             # NO settle drain
+
+
+def test_set_param_fast_reports_a_missing_ack():
+    # a write at a slot with no block is silently dropped (no ack) — the fast
+    # path must still surface that as False, not as success.
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [])
+    assert h.set_param(0, 13, 2, -6.0, force=True, fast=True) is False
+
+
+def test_set_block_enable_fast_waits_only_for_the_ack():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_block_enable(0, 3, False, fast=True) is True
+    addr, args = _last_sent(h)
+    assert addr == "/BlockEnableSet" and args[1:] == [0, 3, 0]
+    assert h.poller.timeouts[-1] == 0
+
+
+def test_set_block_enable_fast_reports_a_missing_ack():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [])
+    assert h.set_block_enable(0, 3, False, fast=True) is False
+
+
+def test_set_block_enable_default_still_returns_true_without_an_ack():
+    # legacy contract (the verb treats the call as fire-and-confirm-by-echo)
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [])
+    assert h.set_block_enable(0, 3, False) is True
+
+
+def test_last_request_id_names_the_most_recent_rpc():
+    # The device echoes an edit-buffer write on the 2001 stream with `seq` ==
+    # our request id (HW 2026-11-12: /ParamValueSet reqid 1005 -> echo
+    # /setParamValue [origin, 1005, …]); a live UI uses it to tell its own
+    # echoes from someone else's change.
+    h = HelixClient("10.0.0.99")
+    assert h.last_request_id is None
+    _wire_recording(h, [_status_ack(1000)])
+    h.set_param(0, 13, 2, -6.0, force=True, fast=True)
+    assert h.last_request_id == 1000
+    _wire_recording(h, [_status_ack(1001)])
+    h.set_block_enable(0, 3, True, fast=True)
+    assert h.last_request_id == 1001
+
+
+def test_save_edit_buffer_persists_into_an_existing_cid():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.save_edit_buffer(1863) is True
+    addr, args = _last_sent(h)
+    assert addr == "/SavePresetWithCID"
+    assert args[1:] == [1863, 0, 0]
+
+
+def test_save_edit_buffer_reports_a_refusal():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000, code=1)])
+    assert h.save_edit_buffer(1863) is False
+
+
+# --- typed param encoding (hgc-58a, HW 2026-11-13) ---------------------------
+# The device takes each param in ITS OWN OSC type: float params as `f`, int /
+# enum params as `i`, bool params as `T`/`F`. A float-encoded int or bool write
+# is silently dropped — no ack, no change.
+
+def _last_sent_tagged(h):
+    raw = h.sock.sent[-1]
+    _addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    return args
+
+
+def test_set_param_ptype_int_goes_on_the_wire_as_an_int():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_param(0, 0, 2, 2.0, force=True, fast=True, ptype="i") is True
+    args = _last_sent_tagged(h)
+    assert args[5] == ("i", 2)                            # the value slot
+    assert [t for t, _ in args] == ["i", "i", "i", "i", "i", "i", "i"]
+
+
+def test_set_param_ptype_bool_uses_the_boolean_tags():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    h.set_param(0, 0, 4, 1.0, force=True, fast=True, ptype="b")
+    assert _last_sent_tagged(h)[5][0] == "T"
+    _wire_recording(h, [_status_ack(1001)])
+    h.set_param(0, 0, 4, False, force=True, fast=True, ptype="b")
+    assert _last_sent_tagged(h)[5][0] == "F"
+
+
+def test_forced_write_still_learns_the_type_from_the_defs(monkeypatch):
+    # --force skips the RANGE check, not the encoding: `device set-param
+    # --force` on a list param must still go out as an int.
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    eb = {"sfg_": {"flow": [{"blks": [
+        0, {"mdls": [{"id__": 770, "parm": [{"pid_": 2, "valu": 1}]}], "enbl": 1}]}]}}
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: eb)
+    h.set_param(0, 0, 2, 99, force=True)                   # out of range, forced
+    assert _last_sent_tagged(h)[5] == ("i", 99)
+
+
+def test_forced_write_falls_back_to_float_when_the_type_cannot_be_read(monkeypatch):
+    from helixgen.device.client import HelixError
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+
+    def boom():
+        raise HelixError("no edit-buffer blob")
+    monkeypatch.setattr(h, "read_edit_buffer", boom)
+    h.set_param(0, 13, 2, -6.0, force=True)
+    assert _last_sent_tagged(h)[5] == ("f", -6.0)
+
+
+def test_fast_forced_write_never_reads_the_device(monkeypatch):
+    # the live path: the caller already knows the type and has clamped
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    monkeypatch.setattr(h, "read_edit_buffer",
+                        lambda: (_ for _ in ()).throw(AssertionError("read!")))
+    h.set_param(0, 13, 2, -6.0, force=True, fast=True)
+    assert _last_sent_tagged(h)[5] == ("f", -6.0)
+
+
+def test_set_param_takes_the_type_from_the_model_defs_when_it_checks_the_range(monkeypatch):
+    # the non-forced path already reads the block's params to range-check; it
+    # must use the type it finds there, so `device set-param` works for list /
+    # int params (it never did: they were sent as floats and dropped).
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    eb = {"sfg_": {"flow": [{"blks": [
+        0, {"mdls": [{"id__": 770, "parm": [{"pid_": 2, "valu": 1},
+                                           {"pid_": 4, "valu": True}]}], "enbl": 1}]}]}}
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: eb)
+    h.set_param(0, 0, 2, 2)                                # P35_InputInst1 Pad: int 1..2
+    assert _last_sent_tagged(h)[5] == ("i", 2)
+    h.set_param(0, 0, 4, 0)                                # noiseGate: bool
+    assert _last_sent_tagged(h)[5][0] == "F"
+    h.set_param(0, 0, 3, -6.0)                             # Trim: float
+    assert _last_sent_tagged(h)[5] == ("f", -6.0)
+
+
+def test_fast_edit_buffer_read_skips_the_settle_drain(monkeypatch):
+    from helixgen.device import content as _content
+    h = HelixClient("10.0.0.99")
+    seen = {}
+
+    def rpc(addr, args, **kw):
+        seen["addr"], seen["kw"] = addr, kw
+        return [("/getEditBufferState", [1000, _content.MAGIC + b"x"])]
+    monkeypatch.setattr(h, "_rpc", rpc)
+    h.get_edit_buffer(fast=True)
+    assert seen["addr"] == "/EditBufferStateGet" and seen["kw"].get("settle") == 0.0
+    assert "first_wait" not in seen["kw"]            # a slow reply still gets the full timeout
+    h.get_edit_buffer()
+    assert "settle" not in seen["kw"]                # default behaviour unchanged
+
+
+# --- which preset is "the active preset", really (HW 2026-11-13) --------------
+# A tone loaded FROM A SETLIST reports the setlist REFERENCE as active
+# (cid 1950, ccid = the setlist, rcid = pool preset 1750). The content lives in
+# the pool preset; that is what a save or a to-hsp must address.
+
+def _refs(monkeypatch, h, table):
+    monkeypatch.setattr(h, "get_ref", lambda cid: table.get(cid))
+
+
+def test_resolve_pool_cid_of_a_pool_preset_is_itself(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    _refs(monkeypatch, h, {})
+    assert h.resolve_pool_cid(2037, -2) == 2037                 # no round-trip needed
+
+
+def test_resolve_pool_cid_follows_a_setlist_reference(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    _refs(monkeypatch, h, {1950: {"cid_": 1950, "ccid": 1949, "cctp": 1003, "rcid": 1750},
+                           1750: {"cid_": 1750, "ccid": -2}})
+    assert h.resolve_pool_cid(1950, 1949) == 1750
+    assert h.resolve_pool_cid(1950) == 1750                     # container looked up
+
+
+def test_resolve_pool_cid_refuses_what_is_not_a_user_preset(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    _refs(monkeypatch, h, {7: {"cid_": 7, "ccid": -1},                       # factory
+                           8: {"cid_": 8, "ccid": 30, "rcid": 7},            # reference to factory
+                           9: {"cid_": 9, "ccid": 30}})                      # reference with no target
+    assert h.resolve_pool_cid(7, -1) is None
+    assert h.resolve_pool_cid(8, 30) is None
+    assert h.resolve_pool_cid(9, 30) is None
+    assert h.resolve_pool_cid(404) is None                      # unresolvable
+
+
+def test_preset_edited_reads_the_unsaved_flag(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    seen = []
+
+    def prop(key):
+        seen.append(key)
+        return type("PV", (), {"value": 1})()
+    monkeypatch.setattr(h, "get_property", prop)
+    assert h.preset_edited() is True and seen == ["volatile.preset.edited"]

@@ -724,8 +724,8 @@ def device() -> None:
     active, read, list, setlists, setlist list, list-irs, blocks, params,
     settings list/get, tuner, meters, measure, watch, backup, pull, pull-ir,
     plus the offline verbs decode, globaleq list and --list/--dry-run modes).
-    Everything else MUTATES the device — and the live-ops verbs (snapshot,
-    bypass, model, set-param) change the ACTIVE tone immediately. Prefer an
+    Everything else MUTATES the device — and the live-ops verbs (snapshot, bypass, model, set-param, and every
+    control on the `device live` page) change the ACTIVE tone immediately. Prefer an
     empty/expendable slot when testing writes.
 
     The Stadium's network stack is flaky: if a verb drops or stalls, re-run it
@@ -1798,6 +1798,10 @@ def device_set_param(path: int, block: int, param_id: int, value: float,
     slot 13; `device params 0 13` shows `gain` = pid 2, in dB):
 
       helixgen device set-param 0 13 2 3.0
+
+    For hands-on dialing by a human (every param of the loaded tone as a
+    knob in a browser page), use `helixgen device live` instead of a
+    series of these.
     """
     HelixClient, HelixError = _client()
 
@@ -1847,8 +1851,9 @@ def device_blocks(as_json: bool, ip: str, port: int) -> None:
     the output block sits at slot 13/27). These are exactly the coordinates
     `device bypass` / `device model` / `device set-param` / `device params`
     address. Reads the active edit buffer (does not change the tone).
-    The on/off shown is the preset's *saved* base bypass; a volatile live
-    `device bypass` toggle is not reflected here until the preset is saved.
+    On fw 1.4 the on/off shown is LIVE — a `device bypass` (or footswitch)
+    toggle shows here at once (HW 2026-11-13); on fw 1.3 and earlier it was
+    the preset's saved base bypass until the preset was saved.
     """
     HelixClient, HelixError = _client()
     from helixgen.ingest import humanize_model_id
@@ -1927,12 +1932,32 @@ def device_active(as_json: bool, ip: str, port: int) -> None:
     cid via the read-only /GetContentRef. Save/restore the player's
     selection around your own work: note the cid printed here, then
     `device load <cid>` to put it back.
+
+    Two more facts (0.60.0), both in --json:
+
+    `edited` — whether the edit buffer holds UNSAVED changes (the device's own
+    flag; null if it could not be read). CHECK IT BEFORE YOU LOAD ANYTHING:
+    `device load`, and every verb that loads a preset, discards unsaved
+    edits — including whatever the player just dialed in on the hardware or
+    in `device live`. `device to-hsp` reads the STORED preset, so unsaved
+    edits are not in what it returns either.
+
+    `pool_cid` — the user-pool preset that holds the tone. For a tone loaded
+    from a setlist `cid` is the SETLIST REFERENCE (its container is the
+    setlist) and `pool_cid` is the preset it points at: pass `pool_cid`, not
+    `cid`, to `device to-hsp`. Equal to `cid` for a pool preset; null for a
+    factory preset.
     """
     HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
             info = h.active_preset()
+            info["pool_cid"] = h.resolve_pool_cid(info["cid"], info.get("ccid"))
+            try:
+                info["edited"] = h.preset_edited()
+            except HelixError:
+                info["edited"] = None
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1944,6 +1969,12 @@ def device_active(as_json: bool, ip: str, port: int) -> None:
     click.echo(f"name:  {info.get('name') or '?'}")
     click.echo(f"slot:  {info.get('slot') or '?'}  (posi {info.get('posi')}, "
                f"container {info.get('ccid')})")
+    if info["pool_cid"] != info["cid"]:
+        click.echo(f"pool:  {info['pool_cid'] if info['pool_cid'] is not None else '— (not a user preset)'}"
+                   "  (the preset this entry points at)")
+    if info["edited"]:
+        click.echo("state: UNSAVED edits in the edit buffer — loading any "
+                   "preset discards them")
 
 
 @device.command(name="bypass")
@@ -4933,3 +4964,136 @@ def device_link_key(app, timeout, keep_debug_app, as_json):
                    "is reachable, then re-run.")
     if not res["ok"]:
         raise SystemExit(1)
+
+
+@device.command(name="live")
+@click.option("--port-http", "http_port", type=click.IntRange(0, 65535),
+              default=8765, show_default=True,
+              help="Local port for the page (bound to 127.0.0.1 only). "
+                   "0 picks a free port.")
+@click.option("--no-open", is_flag=True, default=False,
+              help="Do not open the page in a browser; just print its URL.")
+@click.option("--no-lock", "no_lock", is_flag=True, default=False,
+              help="Do not take the advisory `editbuffer` device lock around "
+                   "the page's writes (DANGEROUS: the page may then write "
+                   "while another helixgen process is driving the device).")
+@_device_option
+def device_live(http_port: int, no_open: bool, no_lock: bool,
+                ip: str, port: int) -> None:
+    """Open the LIVE CHAIN EDITOR: a local browser page for dialing the ACTIVE
+    tone by hand.
+
+    The page shows the loaded tone as a signal chain — every block of every
+    DSP path, inputs and outputs included, parallel sections as side-by-side
+    lanes between their split and merge — with each parameter as a knob,
+    switch or list and a bypass switch per block.
+
+    LONG-RUNNING: serves http://127.0.0.1:<port>/ until interrupted (Ctrl-C
+    or SIGTERM). The first line printed is `live editor: <url>`. An agent
+    should start this in the BACKGROUND, give the user the URL, and stop
+    there: the human turns the knobs, and nothing about the page needs
+    narrating.
+
+    EVERY CONTROL WRITES TO THE DEVICE IMMEDIATELY — to the live edit buffer
+    of whatever tone is loaded, heard at once. Values are sent in the param's
+    RAW range and clamped to it (the device itself clamps nothing).
+
+    Nothing persists until Save is pressed on the page (until then the page
+    shows Unsaved, `device active` reports `edited`, and loading any preset
+    discards the changes). Save is the hardware's own Save: it overwrites the
+    ACTIVE tone's preset in place — a preset in the user pool; for a tone
+    loaded from a setlist, the pool preset its setlist entry points at, so
+    the save shows in every setlist holding it (a factory preset is refused —
+    use `helixgen device save` to store the edit buffer as a new preset).
+    The tone LIBRARY is NOT updated: after a Save the library's `.hsp` for
+    that tone is stale, a later `device copy` of it would overwrite the
+    tweaks, and `helixgen device to-hsp` is how the device's version comes
+    back into the library.
+
+    The page follows the device: a knob turned on the hardware, a footswitch
+    bypass, a snapshot or preset switch (from the hardware, HX Edit or
+    another helixgen verb) shows up without a reload. Undo / redo (Ctrl/Cmd+Z,
+    Ctrl/Cmd+Shift+Z) re-write the previous value; a knob drag is one undo
+    step; history clears when the preset or the snapshot changes.
+
+    No structural editing: no adding, removing or moving blocks, no model
+    swaps. Only each block's primary model is shown — not a dual cab's
+    second cab, nor harness settings such as Trails.
+
+    Needs firmware 1.4 or later (the page relies on the device acknowledging
+    every live write, which older firmware does not do for bypass).
+
+    LOCKING: unlike the other live-ops verbs this does NOT hold a device lock
+    for its lifetime. It takes the `editbuffer` scope only while the page is
+    actually writing and releases it about 2 s after the last change, so
+    other verbs (`device load` of the next tone, `device copy`, …) keep
+    working while the page is open. If another helixgen process holds the
+    device, the page's writes are refused and it says who is driving. Save
+    takes `editbuffer` + `library` for the moment it runs. With
+    $HELIXGEN_LOCK_TOKEN set, the page writes under that session (other verbs
+    carrying the token pass through its lease), and a token whose session is
+    gone stops the page's writes just as it stops any other verb.
+    """
+    import signal
+    import webbrowser
+
+    from helixgen.device.subscribe import HelixSubscriber
+    from helixgen.liveedit import server as _server
+    from helixgen.liveedit.lease import EditLease
+    from helixgen.liveedit.session import LiveError, LiveSession
+
+    HelixClient, HelixError = _client()
+
+    def _ready(url: str) -> None:
+        click.echo(f"live editor: {url}")
+        click.echo("every control on the page writes to the device; "
+                   "Ctrl-C here stops the editor.")
+        sys.stdout.flush()
+        if not no_open:
+            webbrowser.open(url)
+
+    def _term(*_a):
+        raise KeyboardInterrupt
+
+    import errno
+
+    lease = None
+    try:
+        with HelixClient(ip, port) as h:
+            dev_ip = getattr(h, "ip", None) or ip
+            try:
+                fw = (h.product_info() or {}).get("firmware") or ""
+                parts = tuple(int(x) for x in fw.split(".")[:2])
+            except Exception:  # noqa: BLE001 — unknown firmware: let it try
+                parts = ()
+            if parts and parts < (1, 4):
+                raise click.ClickException(
+                    f"`device live` needs Stadium firmware 1.4 or later (this "
+                    f"device reports {fw}).")
+            lease = EditLease(dev_ip, enabled=not no_lock)
+            session = LiveSession(h, lease=lease, liveness=True)
+            session.load()
+            for sig in ("SIGTERM", "SIGHUP"):          # stop cleanly when killed
+                try:
+                    signal.signal(getattr(signal, sig), _term)
+                except (ValueError, AttributeError):
+                    pass                               # not the main thread / no such signal
+            _server.serve(session, "127.0.0.1", http_port,
+                          subscriber=HelixSubscriber(dev_ip, ports=(2001, 2003)),
+                          on_ready=_ready)
+    except LiveError as e:
+        raise click.ClickException(str(e)) from e
+    except HelixError as e:
+        raise click.ClickException(str(e)) from e
+    except OSError as e:
+        if e.errno in (errno.EADDRINUSE, errno.EACCES):
+            raise click.ClickException(
+                f"could not serve the page on 127.0.0.1:{http_port} ({e}) — is "
+                "another `helixgen device live` already running? Pass "
+                "--port-http to use a different port.") from e
+        if e.errno == errno.EPIPE:
+            return                                     # our stdout went away: just stop
+        raise click.ClickException(str(e)) from e
+    finally:
+        if lease is not None:
+            lease.release(final=True)

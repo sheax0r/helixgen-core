@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Helix Live</title>
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0b0d12; --panel:#161a22; --panel2:#1c212b; --edge:#2a3140; --edge2:#3a4356;
+  --ink:#eef1f7; --dim:#8a93a8; --faint:#5b6478;
+  --wire:#3d6bff; --wire-glow:rgba(61,107,255,.45);
+  --ok:#35d08a; --warn:#ffb020; --bad:#ff5d5d;
+  --gap:22px; --wireh:34px;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:radial-gradient(1200px 600px at 50% -200px,#18203a 0,var(--bg) 60%) fixed,var(--bg);
+  color:var(--ink);font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased;padding-bottom:80px}
+button{font:inherit;color:inherit}
+
+/* ---------- header ---------- */
+.top{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;
+  padding:10px 20px;background:rgba(11,13,18,.86);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--edge)}
+.led{width:11px;height:11px;border-radius:50%;background:var(--ok);flex:none;
+  box-shadow:0 0 0 3px rgba(53,208,138,.16),0 0 12px var(--ok)}
+body.down .led{background:var(--bad);box-shadow:0 0 0 3px rgba(255,93,93,.18),0 0 12px var(--bad);
+  animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.35}}
+.who{flex:1 1 240px;min-width:0;display:flex;flex-direction:column}
+.preset{font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub{font-size:11px;color:var(--dim);letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:860px){.sub{display:none} .top{gap:9px;padding:10px 12px} .btn{padding:6px 9px}}
+.chip{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  padding:4px 10px;border-radius:999px;border:1px solid var(--edge2);color:var(--dim);white-space:nowrap}
+.chip.snap{color:#cfe0ff;border-color:#34508f;background:#14203d}
+.chip.dirty{color:#1b1400;background:var(--warn);border-color:var(--warn);display:none}
+body.dirty .chip.dirty{display:inline-block}
+.grow{flex:1}
+.btn{background:var(--panel2);border:1px solid var(--edge2);border-radius:9px;padding:6px 12px;
+  cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:#5a6680}
+.btn:disabled{opacity:.35;cursor:default}
+.btn.save{font-weight:700}
+body.dirty .btn.save{background:var(--warn);border-color:var(--warn);color:#1b1400}
+.banner{display:none;margin:0;padding:9px 20px;background:#3a1418;color:#ffd0d0;
+  border-bottom:1px solid #6b2229;font-weight:600}
+body.down .banner{display:block}
+
+/* ---------- rig ---------- */
+main{max-width:1040px;margin:0 auto;padding:22px 20px}
+.path{margin-bottom:44px}
+.path-hd{display:flex;align-items:center;gap:12px;margin:0 0 14px}
+.path-hd b{font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:#9fb4ff}
+.path-hd i{flex:1;height:1px;background:linear-gradient(90deg,var(--edge2),transparent)}
+.col{display:flex;flex-direction:column;min-width:0}
+.wire{align-self:center;width:4px;height:var(--wireh);border-radius:2px;flex:none;
+  background:linear-gradient(var(--wire),var(--wire));box-shadow:0 0 10px var(--wire-glow);position:relative}
+.wire::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);
+  border:6px solid transparent;border-top:8px solid var(--wire);border-bottom:0}
+.fill{align-self:center;width:4px;flex:1;min-height:var(--wireh);border-radius:2px;
+  background:var(--wire);box-shadow:0 0 10px var(--wire-glow)}
+.empty-lane{align-self:center;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--faint);padding:2px 0}
+
+/* fork / merge connectors: one centre line opening to (or closing from) two lanes */
+.fork,.merge{position:relative;height:calc(var(--wireh) + 8px);flex:none}
+.fork i,.merge i{position:absolute;background:var(--wire);box-shadow:0 0 10px var(--wire-glow);border-radius:2px}
+.fork .c,.merge .c{left:calc(50% - 2px);width:4px;height:50%}
+.fork .c{top:0} .merge .c{bottom:0}
+.fork .h,.merge .h{left:calc((100% - var(--gap))/4);right:calc((100% - var(--gap))/4);height:4px;top:calc(50% - 2px)}
+.fork .l,.fork .r,.merge .l,.merge .r{width:4px;height:50%}
+.fork .l,.merge .l{left:calc((100% - var(--gap))/4 - 2px)}
+.fork .r,.merge .r{right:calc((100% - var(--gap))/4 - 2px)}
+.fork .l,.fork .r{bottom:0} .merge .l,.merge .r{top:0}
+.lanes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--gap);align-items:stretch}
+.lane{position:relative;border:1px dashed #2c3a5e;border-radius:16px;padding:26px 10px 0;background:rgba(20,28,48,.35)}
+.lane.end{padding-bottom:12px}
+.lane::before{content:"";position:absolute;top:-1px;left:calc(50% - 2px);width:4px;height:27px;
+  background:var(--wire);box-shadow:0 0 10px var(--wire-glow)}
+.lane-tag{position:absolute;top:6px;left:12px;font-size:10px;font-weight:800;letter-spacing:.2em;color:#7f9bff}
+.lane.b .lane-tag{color:#ffb37a}
+
+/* ---------- block ---------- */
+.blk{--acc:#7c8aa8;position:relative;user-select:none;-webkit-user-select:none;background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:1px solid var(--edge);border-radius:14px;padding:12px 14px 14px 20px;
+  box-shadow:0 8px 24px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}
+.blk::before{content:"";position:absolute;left:0;top:0;bottom:0;width:6px;background:var(--acc);
+  box-shadow:0 0 16px var(--acc)}
+.blk.off{filter:saturate(.25);opacity:.5}
+.blk.off::before{box-shadow:none;opacity:.4}
+.blk.node{align-self:center;min-width:min(420px,100%);border-style:dashed;border-color:#3a4a78;background:#121827}
+.bh{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.cat{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--acc)}
+.nm{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.xl{font-size:10px;font-weight:700;letter-spacing:.08em;color:#ffd58a;border:1px solid #6d5522;
+  background:#2a2110;border-radius:999px;padding:2px 8px;white-space:nowrap}
+.foot{flex:none;display:flex;align-items:center;gap:7px;background:#0f1218;border:1px solid var(--edge2);
+  border-radius:999px;padding:4px 11px 4px 7px;cursor:pointer;font-size:10px;font-weight:800;letter-spacing:.12em}
+.foot .dot{width:12px;height:12px;border-radius:50%;background:#3a2020;border:1px solid #000}
+.foot.on .dot{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+.foot.on{color:#bff5da;border-color:#256b4b}
+.foot:not(.on){color:var(--dim)}
+.ctl{display:flex;flex-wrap:wrap;gap:14px 16px;align-items:flex-start}
+.more{margin-top:10px;background:none;border:0;padding:0;color:var(--faint);cursor:pointer;font-size:11px;letter-spacing:.06em}
+.more:hover{color:var(--dim)}
+.ctl.internal{margin-top:10px;padding-top:10px;border-top:1px dashed var(--edge)}
+.ctl.internal[hidden]{display:none}
+
+/* ---------- controls ---------- */
+.k{width:78px;text-align:center;position:relative;border-radius:10px;outline:none}
+.k svg{display:block;margin:0 auto;cursor:ns-resize;touch-action:none}
+.k:focus-visible{box-shadow:0 0 0 2px #5b8cff}
+.k .track{fill:none;stroke:#272d3a;stroke-width:6;stroke-linecap:round}
+.k .arc{fill:none;stroke:var(--acc);stroke-width:6;stroke-linecap:round;filter:drop-shadow(0 0 4px var(--acc))}
+.k .cap{fill:#232937;stroke:#0c0e13;stroke-width:1.5}
+.k .ptr{stroke:#f4f6fb;stroke-width:2.5;stroke-linecap:round}
+.k.drag .cap{fill:#2c3446}
+.val{font-size:12px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.lab{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lab .sn{display:inline-block;width:6px;height:6px;border-radius:50%;background:#7f9bff;margin-right:4px;vertical-align:1px}
+.t{width:78px;display:flex;flex-direction:column;align-items:center;padding-top:9px}
+.sw{width:46px;height:24px;border-radius:999px;background:#2b313f;border:1px solid #0c0e13;position:relative;cursor:pointer;padding:0}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#aab2c5;transition:left .1s}
+.sw.on{background:var(--acc)} .sw.on::after{left:24px;background:#fff}
+.t .val{margin-top:11px}
+.s{min-width:132px;max-width:190px;padding-top:6px}
+.s select{width:100%;background:#0f1218;color:var(--ink);border:1px solid var(--edge2);border-radius:8px;padding:6px 8px;font:inherit;font-size:12px}
+.s .lab{margin-top:6px;text-align:left}
+.flash{animation:flash .7s}
+@keyframes flash{0%{background:rgba(127,155,255,.35)}100%{background:transparent}}
+.err{animation:err .9s}
+@keyframes err{0%,60%{background:rgba(255,93,93,.4)}100%{background:transparent}}
+body.down main{opacity:.55}
+
+/* ---------- category accents ---------- */
+.c-amp,.c-preamp{--acc:#ffb347}.c-distortion{--acc:#ff7a45}.c-dynamics{--acc:#f2d44b}
+.c-delay{--acc:#5fd38d}.c-reverb{--acc:#4fc3f7}.c-modulation{--acc:#b388ff}
+.c-wah,.c-filter,.c-pitch{--acc:#ff7eb6}.c-eq{--acc:#c5e86c}.c-ir,.c-cab,.c-cab_ir_interp{--acc:#c9a27a}
+.c-input,.c-output{--acc:#8fa3c8}.c-split,.c-join{--acc:#5b8cff}.c-volume,.c-send,.c-looper{--acc:#9aa6bd}
+
+/* ---------- toasts ---------- */
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:30}
+.toast{background:#2a1215;border:1px solid #6b2229;color:#ffd7d7;border-radius:10px;padding:9px 13px;max-width:440px;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);font-size:13px}
+.toast.ok{background:#11261c;border-color:#256b4b;color:#c8f5de}
+.hint{color:var(--faint);font-size:11px;text-align:center;margin-top:30px}
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="led" id="led" title="device connection"></span>
+  <div class="who"><span class="preset" id="preset">Connecting…</span><span class="sub">Helix Live — every tweak writes to the device</span></div>
+  <span class="chip snap" id="snap" hidden></span>
+  <span class="chip dirty" title="the tone has changes that are not saved on the device">Unsaved</span>
+  <button class="btn" id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
+  <button class="btn" id="redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
+  <button class="btn" id="reread" title="Read the whole tone from the device again">Re-read</button>
+  <button class="btn save" id="save" title="Save the tone on the device (same as Save on the hardware)">Save</button>
+</header>
+<p class="banner" id="banner">Device disconnected — retrying. Controls are paused.</p>
+<main id="rig"></main>
+<div id="toasts"></div>
+<script>
+"use strict";
+const NS = "http://www.w3.org/2000/svg";
+const ME = Math.random().toString(36).slice(2) + Date.now().toString(36);
+const $ = (id) => document.getElementById(id);
+let S = null;                     // last full state from the server
+const P = new Map();              // "path/block/pid" -> control {p, b, tag, dev, set, fail}
+const B = new Map();              // "path/block"     -> control {b, tag, dev, set, fail}
+let dragging = null;              // key of the knob under the user's hand
+let down = true;                  // device (or server) unreachable: nothing is writable
+let undoS = [], redoS = [];
+const openInternal = new Set();   // blocks whose "internal" row the user expanded
+
+const el = (tag, cls, text) => { const e = document.createElement(tag);
+  if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const sv = (tag, attrs) => { const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const blip = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
+
+function toast(msg, ok) {
+  const t = el("div", "toast" + (ok ? " ok" : ""), msg);
+  $("toasts").append(t); setTimeout(() => t.remove(), ok ? 2200 : 5200);
+}
+
+/* ---------- value <-> display ---------- */
+const span = (p) => (p.max - p.min) || 1;
+function shown(p, v) {            // raw -> the number the hardware shows
+  if (p.display_min != null && p.display_max != null)
+    return p.display_min + (v - p.min) / span(p) * (p.display_max - p.display_min);
+  return v * (p.scale || 1);
+}
+function fmt(p, v) {
+  if (p.labels && p.type !== "f") {
+    const lab = p.labels[Math.round(v - p.min)];
+    if (lab != null) return lab;
+  }
+  let x = shown(p, v);
+  const u = p.unit || "";
+  if (p.type === "i" || p.type === "b") return (Math.round(x) || 0) + (u ? " " + u : "");
+  if (u === "Hz" && Math.abs(x) >= 1000) return (x / 1000).toFixed(2) + " kHz";
+  const w = Math.abs(shown(p, p.max) - shown(p, p.min));
+  const d = w >= 100 ? 0 : w >= 5 ? 1 : 2;
+  if (Math.abs(x) < 0.5 / Math.pow(10, d)) x = 0;       // never "-0.0"
+  return x.toFixed(d) + (u ? " " + u : "");
+}
+// clamp only; ints snap. Floats are NOT rounded: the device's float32 values
+// must compare equal to themselves or every click would look like a change.
+const clampV = (p, v) => {
+  v = Math.max(p.min, Math.min(p.max, v));
+  return (p.type === "i" || p.type === "b") ? Math.round(v) : v;
+};
+
+/* ---------- writes: one in flight, only the newest value per control ---------- */
+let inflight = false;
+const pending = new Map();
+let idleWaiters = [];
+function queue(kind, key) { if (down) return; pending.set(kind + ":" + key, { kind, key }); pump(); }
+function drained() {              // resolves once nothing is queued or in flight
+  return (!inflight && !pending.size) ? Promise.resolve() : new Promise((r) => idleWaiters.push(r));
+}
+async function pump() {
+  if (inflight) return;
+  const it = pending.entries().next();
+  if (it.done) { const w = idleWaiters; idleWaiters = []; w.forEach((r) => r()); return; }
+  const [qk, job] = it.value; pending.delete(qk); inflight = true;
+  const map = job.kind === "param" ? P : B;
+  const c = map.get(job.key);
+  try {
+    if (c) {
+      const body = job.kind === "param"
+        ? { path: c.b.path, block: c.b.block, pid: c.p.pid, value: c.p.value }
+        : { path: c.b.path, block: c.b.block, enabled: c.b.enabled };
+      body.client = ME; body.rev = S.rev;
+      // look the control up AGAIN in the callbacks: a re-render while the
+      // request was out replaces every control object
+      await send(job.kind === "param" ? "/param" : "/bypass", body,
+        (j) => { const n = map.get(job.key); if (!n) return;
+          const v = job.kind === "param" ? j.value : j.enabled;
+          if (v == null) return;
+          n.dev = v;
+          if (dragging !== job.key && !pending.has(qk)) n.set(v); },
+        (j) => { const n = map.get(job.key);
+          dropHist(job.kind, job.key);            // the change never happened
+          if (n) n.fail(j ? j.value : undefined); });
+    }
+  } finally { inflight = false; pump(); }
+}
+async function send(url, body, ok, bad) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 6000);   // a hung request must not jam the queue
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: ctl.signal });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) ok(j); else { bad(j); toast(j.error || ("request failed (" + r.status + ")")); }
+  } catch (e) { bad(null); toast("the editor server did not answer"); }
+  finally { clearTimeout(timer); }
+}
+
+/* ---------- undo / redo (one entry per committed change) ---------- */
+function record(kind, key, before, after, how) {
+  if (before === after) return;
+  const c = (kind === "param" ? P : B).get(key);
+  const top = undoS[undoS.length - 1], now = Date.now();
+  // key auto-repeat / a burst of nudges on one control is ONE step
+  if (how === "key" && top && top.how === "key" && top.kind === kind && top.key === key && now - top.at < 900) {
+    top.after = after; top.at = now;
+    if (top.before === top.after) undoS.pop();
+  } else undoS.push({ kind, key, before, after, how, at: now, tag: c ? c.tag : null });
+  redoS = []; syncHist();
+}
+function dropHist(kind, key) {
+  for (let i = undoS.length - 1; i >= 0; i--)
+    if (undoS[i].kind === kind && undoS[i].key === key) { undoS.splice(i, 1); break; }
+  syncHist();
+}
+function applyHist(e, val) {      // false = the entry no longer names the same control
+  const c = (e.kind === "param" ? P : B).get(e.key);
+  if (!c || c.tag !== e.tag) return false;
+  c.set(val); queue(e.kind, e.key); return true;
+}
+function undo() { if (down) return; let e;
+  while ((e = undoS.pop())) if (applyHist(e, e.before)) { redoS.push(e); break; }
+  syncHist(); }
+function redo() { if (down) return; let e;
+  while ((e = redoS.pop())) if (applyHist(e, e.after)) { undoS.push(e); break; }
+  syncHist(); }
+function syncHist() { $("undo").disabled = down || !undoS.length; $("redo").disabled = down || !redoS.length; }
+addEventListener("keydown", (ev) => {
+  if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return;
+  const k = ev.key.toLowerCase();
+  const z = k === "z" || ev.code === "KeyZ", y = k === "y" || ev.code === "KeyY";
+  if (z) { ev.preventDefault(); ev.shiftKey ? redo() : undo(); }
+  else if (y) { ev.preventDefault(); redo(); }
+});
+
+/* ---------- controls ---------- */
+function label(p) {
+  const l = el("div", "lab"); l.title = p.name + (p.snap ? " — varies per snapshot" : "");
+  if (p.snap) l.append(el("span", "sn"));
+  l.append(document.createTextNode(p.label));
+  return l;
+}
+function reg(key, p, b, root, paint) {
+  const c = { p, b, tag: b.model + "|" + p.name, dev: p.value,
+    set(v, how) { p.value = v; paint(); if (how === "remote") blip(root, "flash"); },
+    // a write the device did not take: show what the device has
+    fail(v) { p.value = (v != null) ? v : c.dev; if (v != null) c.dev = v; paint(); blip(root, "err"); } };
+  P.set(key, c); root.dataset.k = key; return c;
+}
+function knob(p, b, key) {
+  const root = el("div", "k"); root.tabIndex = 0;
+  root.setAttribute("role", "slider"); root.setAttribute("aria-label", p.label);
+  const R = 22, C = 30, A0 = 135, SW = 270;
+  const pt = (deg, r) => { const a = deg * Math.PI / 180; return [C + r * Math.cos(a), C + r * Math.sin(a)]; };
+  const arcD = (d0, d1) => { if (d1 < d0) [d0, d1] = [d1, d0];
+    const [x0, y0] = pt(d0, R), [x1, y1] = pt(d1, R);
+    return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${R} ${R} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`; };
+  const svg = sv("svg", { width: 60, height: 60, viewBox: "0 0 60 60" });
+  const arc = sv("path", { class: "arc" }), ptr = sv("line", { class: "ptr" });
+  svg.append(sv("path", { class: "track", d: arcD(A0, A0 + SW) }), arc,
+             sv("circle", { class: "cap", cx: C, cy: C, r: 14 }), ptr);
+  const val = el("div", "val");
+  root.append(svg, val, label(p));
+  // a control whose DISPLAY range straddles zero (pan, balance, trim) fills from zero
+  const lo = shown(p, p.min), hi = shown(p, p.max);
+  const zero = (lo < 0 && hi > 0) ? A0 + SW * (0 - lo) / (hi - lo) : A0;
+  function paint() {
+    const f = (p.value - p.min) / span(p), deg = A0 + SW * Math.max(0, Math.min(1, f));
+    arc.setAttribute("d", Math.abs(deg - zero) < 0.5 ? "" : arcD(zero, deg));
+    const [x0, y0] = pt(deg, 6), [x1, y1] = pt(deg, 13);
+    ptr.setAttribute("x1", x0); ptr.setAttribute("y1", y0); ptr.setAttribute("x2", x1); ptr.setAttribute("y2", y1);
+    val.textContent = fmt(p, p.value);
+    root.setAttribute("aria-valuemin", shown(p, p.min)); root.setAttribute("aria-valuemax", shown(p, p.max));
+    root.setAttribute("aria-valuenow", shown(p, p.value)); root.setAttribute("aria-valuetext", val.textContent);
+  }
+  const c = reg(key, p, b, root, paint);
+  const live = (v) => { v = clampV(p, v); if (v !== p.value) { c.set(v); queue("param", key); } };
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.button || dragging || down) return;       // one pointer, one knob
+    e.preventDefault(); root.focus();
+    try { svg.setPointerCapture(e.pointerId); } catch (x) { /* synthetic pointers */ }
+    const id = e.pointerId, v0 = p.value;
+    let lastY = e.clientY, acc = p.value;            // accumulate, so Shift mid-drag does not jump
+    dragging = key; root.classList.add("drag");
+    const move = (m) => { if (m.pointerId !== id) return;
+      acc += (lastY - m.clientY) / (m.shiftKey ? 1600 : 200) * span(p);
+      acc = Math.max(p.min, Math.min(p.max, acc)); lastY = m.clientY; live(acc); };
+    const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
+      svg.removeEventListener("pointermove", move);
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.removeEventListener(n, up));
+      root.classList.remove("drag"); if (dragging === key) dragging = null;
+      // ONE undo step per drag, at release; a click that moved nothing writes nothing
+      if (p.value !== v0) { queue("param", key); record("param", key, v0, p.value); } };
+    svg.addEventListener("pointermove", move);
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.addEventListener(n, up));
+  });
+  svg.addEventListener("dblclick", () => {        // double-click: back to the model default
+    if (down || p.default == null) return; const v0 = p.value; live(p.default); record("param", key, v0, p.value); });
+  root.addEventListener("keydown", (e) => {
+    if (down || e.metaKey || e.ctrlKey || e.altKey) return;
+    const step = (p.type === "i" ? 1 : span(p) / 100) * (e.shiftKey ? 10 : 1);
+    let v = null;
+    if (e.key === "ArrowUp" || e.key === "ArrowRight") v = p.value + step;
+    else if (e.key === "ArrowDown" || e.key === "ArrowLeft") v = p.value - step;
+    else if (e.key === "Home") v = p.min; else if (e.key === "End") v = p.max;
+    else if (e.key === "Delete" || e.key === "Backspace") v = p.default;   // keyboard "reset to default"
+    if (v == null) return;
+    e.preventDefault(); const v0 = p.value; live(v); record("param", key, v0, p.value, "key");
+  });
+  paint(); return root;
+}
+function toggle(p, b, key) {
+  const root = el("div", "t"), sw = el("button", "sw"), val = el("div", "val");
+  sw.setAttribute("role", "switch"); sw.setAttribute("aria-label", p.label);
+  root.append(sw, val, label(p));
+  const paint = () => { const on = p.value >= 0.5; sw.classList.toggle("on", on);
+    sw.setAttribute("aria-checked", on); val.textContent = p.labels ? (p.labels[on ? 1 : 0] ?? (on ? "On" : "Off")) : (on ? "On" : "Off"); };
+  const c = reg(key, p, b, root, paint);
+  sw.onclick = () => { if (down) return; const v0 = p.value; c.set(v0 >= 0.5 ? 0 : 1); queue("param", key); record("param", key, v0, p.value); };
+  paint(); return root;
+}
+function select(p, b, key) {
+  const root = el("div", "s"), sel = el("select");
+  sel.setAttribute("aria-label", p.label);
+  p.labels.forEach((t, i) => { const o = el("option", null, t); o.value = p.min + i; sel.append(o); });
+  root.append(sel, label(p));
+  const paint = () => { sel.value = String(Math.round(p.value)); };
+  const c = reg(key, p, b, root, paint);
+  sel.onchange = () => { if (down) { paint(); return; }
+    const v0 = p.value; c.set(clampV(p, +sel.value)); queue("param", key); record("param", key, v0, p.value); };
+  paint(); return root;
+}
+function control(p, b) {
+  const key = b.path + "/" + b.block + "/" + p.pid;
+  return p.ctl === "toggle" ? toggle(p, b, key) : p.ctl === "select" ? select(p, b, key) : knob(p, b, key);
+}
+
+/* ---------- blocks + chain ---------- */
+const STRUCT = new Set(["split", "join"]);
+const NO_BYPASS = new Set(["split", "join", "input", "output"]);
+function blockEl(b) {
+  const root = el("section", "blk c-" + String(b.category || "x").replace(/[^a-z0-9_]/gi, "") +
+    (STRUCT.has(b.category) ? " node" : "") + (b.enabled ? "" : " off"));
+  const key = b.path + "/" + b.block; root.dataset.b = key;
+  const hd = el("div", "bh");
+  hd.append(el("span", "cat", b.category || "block"), el("span", "nm", b.name));
+  hd.lastChild.title = b.model;
+  if (b.xlink) hd.append(el("span", "xl", "⇄ path " + (b.xlink.path + 1)));
+  hd.append(el("span", "grow"));
+  if (!NO_BYPASS.has(b.category)) {
+    const f = el("button", "foot"); const dot = el("span", "dot"); const tx = el("span");
+    f.append(dot, tx);
+    const paint = () => { f.classList.toggle("on", b.enabled); tx.textContent = b.enabled ? "ON" : "BYPASS";
+      f.setAttribute("aria-pressed", b.enabled); root.classList.toggle("off", !b.enabled); };
+    const c = { b, tag: b.model, dev: b.enabled,
+      set(on, how) { b.enabled = !!on; paint(); if (how === "remote") blip(hd, "flash"); },
+      fail(v) { b.enabled = (v != null) ? !!v : c.dev; if (v != null) c.dev = !!v; paint(); blip(hd, "err"); } };
+    B.set(key, c); f.dataset.k = "b:" + key;
+    f.onclick = () => { if (down) return; const v0 = b.enabled; c.set(!v0); queue("bypass", key); record("bypass", key, v0, b.enabled); };
+    paint(); hd.append(f);
+  }
+  root.append(hd);
+  const main = b.params.filter((p) => !p.internal), extra = b.params.filter((p) => p.internal);
+  if (main.length) { const row = el("div", "ctl"); main.forEach((p) => row.append(control(p, b))); root.append(row); }
+  if (extra.length) {
+    const more = el("button", "more"), row = el("div", "ctl internal");
+    const paint = () => { row.hidden = !openInternal.has(key);
+      more.textContent = (row.hidden ? "+ " : "− ") + extra.length + " internal";
+      more.setAttribute("aria-expanded", !row.hidden); };
+    extra.forEach((p) => row.append(control(p, b)));
+    more.onclick = () => { openInternal.has(key) ? openInternal.delete(key) : openInternal.add(key); paint(); };
+    paint(); root.append(more, row);
+  }
+  return root;
+}
+const wire = () => el("div", "wire");
+function conn(cls) { const c = el("div", cls); ["c", "h", "l", "r"].forEach((n) => c.append(el("i", n))); return c; }
+function lane(segs, tag, joined) {
+  const l = el("div", "lane col " + tag.toLowerCase() + (joined ? "" : " end"));
+  l.append(el("span", "lane-tag", "LANE " + tag));
+  if (!segs.length) l.append(el("div", "empty-lane", joined ? "straight through" : "no blocks"));
+  segs.forEach((s, i) => { if (i) l.append(wire()); l.append(segEl(s)); });
+  if (joined) l.append(el("div", "fill"));
+  return l;
+}
+function segEl(seg) {
+  if (seg.kind === "block") return blockEl(seg.block);
+  const w = el("div", "par col");
+  w.append(blockEl(seg.split), conn("fork"));
+  const lanes = el("div", "lanes");
+  lanes.append(lane(seg.a || [], "A", !!seg.join), lane(seg.b || [], "B", !!seg.join));
+  w.append(lanes);
+  if (seg.join) w.append(conn("merge"), blockEl(seg.join));
+  return w;
+}
+function column(segs) {
+  const c = el("div", "col");
+  segs.forEach((s, i) => { if (i) c.append(wire()); c.append(segEl(s)); });
+  return c;
+}
+function render() {
+  const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
+  const fkey = focused && focused.dataset.k;
+  P.clear(); B.clear(); dragging = null;
+  const rig = $("rig"); rig.textContent = "";
+  if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
+  S.paths.forEach((pt) => {
+    const sec = el("div", "path"), hd = el("div", "path-hd");
+    hd.append(el("b", null, "Path " + (pt.path + 1)), el("i")); sec.append(hd, column(pt.segments));
+    if (pt.extra.length) {
+      const h2 = el("div", "path-hd"); h2.style.marginTop = "26px";
+      h2.append(el("b", null, "Path " + (pt.path + 1) + " · second row"), el("i"));
+      sec.append(h2, column(pt.extra));
+    }
+    rig.append(sec);
+  });
+  rig.append(el("p", "hint", "Drag a knob up/down (Shift = fine) · double-click or Delete = default · arrow keys nudge · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z redo"));
+  if (fkey) {                     // a re-render must not throw the keyboard user out
+    const again = [...rig.querySelectorAll("[data-k]")].find((n) => n.dataset.k === fkey);
+    const target = again && (again.matches("[tabindex],button") ? again : again.querySelector("button,select"));
+    if (target) target.focus({ preventScroll: true });
+  }
+}
+function setDown(isDown, why) {
+  down = isDown;
+  document.body.classList.toggle("down", down);
+  $("rig").inert = down;          // not just unclickable: unreachable by keyboard too
+  $("save").disabled = down; $("reread").disabled = false;
+  if (why) $("banner").textContent = why;
+  if (down) pending.clear();
+  syncHist();
+}
+function meta(m) {
+  setDown(!m.connected, "Device disconnected — retrying. Controls are paused.");
+  document.body.classList.toggle("dirty", !!m.dirty);
+  $("preset").textContent = (m.preset && m.preset.name) || "Edit buffer";
+  const sn = $("snap");
+  if (m.snapshot == null) sn.hidden = true;
+  else { sn.hidden = false; sn.textContent = "Snapshot " + (m.snapshot + 1) + (m.snapshot_name ? " · " + m.snapshot_name : ""); }
+  document.title = ((m.preset && m.preset.name) ? m.preset.name + " — " : "") + "Helix Live";
+}
+
+/* ---------- the event stream ---------- */
+// what the controls ARE (not their values): a model swap in place changes it
+const shape = (s) => JSON.stringify(s.paths.map(function walk(x) {
+  if (Array.isArray(x)) return x.map(walk);
+  if (x.segments) return [x.path, walk(x.segments), walk(x.extra)];
+  if (x.kind === "block") return [x.block.block, x.block.model];
+  return [x.split.block, x.split.model, walk(x.a), walk(x.b), x.join && [x.join.block, x.join.model]];
+}));
+function onMsg(m) {
+  if (m.t === "state") {
+    // history only means something for the tone, snapshot and block layout it was recorded on
+    const same = S && S.preset && m.preset && S.preset.cid != null && S.preset.cid === m.preset.cid &&
+      S.snapshot === m.snapshot && shape(S) === shape(m);
+    if (!same) { undoS = []; redoS = []; }
+    S = m; pending.clear(); render(); meta(m);
+  } else if (m.t === "meta") {
+    if (S) Object.assign(S, m); meta(m);
+  } else if (m.t === "param" || m.t === "bypass") {
+    const isP = m.t === "param";
+    const key = m.path + "/" + m.block + (isP ? "/" + m.pid : "");
+    const c = (isP ? P : B).get(key);
+    if (!c) return;
+    const v = isP ? m.value : m.enabled;
+    c.dev = v;                    // what the device holds, whoever wrote it
+    // never yank a control the user is holding or has a newer change queued for
+    if (dragging === key || pending.has(m.t + ":" + key)) return;
+    const cur = isP ? c.p.value : c.b.enabled;
+    if (cur !== v) c.set(v, m.client === ME ? undefined : "remote");
+  }
+}
+function connect() {
+  const es = new EventSource("/events");
+  es.onmessage = (e) => { try { onMsg(JSON.parse(e.data)); } catch (x) { console.error(x); } };
+  es.onerror = () => {
+    setDown(true, "Lost contact with the editor server — is `helixgen device live` still running?");
+    if (es.readyState === 2) { es.close(); setTimeout(connect, 3000); }   // the browser gave up: try again ourselves
+  };
+}
+$("undo").onclick = undo; $("redo").onclick = redo;
+$("reread").onclick = () => send("/reread", {}, () => toast("Re-read from the device", true), () => {});
+$("save").onclick = async () => {
+  await drained();                // the last tweak must be on the device before it is saved
+  send("/save", {}, (j) => toast("Saved “" + (j.saved || "preset") + "” on the device", true), () => {});
+};
+setDown(true, "Connecting…");
+connect();
+</script>
+</body>
+</html>

@@ -30,7 +30,9 @@ def osc_encode(addr: str, args: List[Tuple[str, Any]]) -> bytes:
     """Encode one OSC message.
 
     ``args`` is a list of ``(tag, value)`` pairs where tag is one of
-    ``i`` int32, ``f`` float32, ``h`` int64, ``s`` string, ``b`` blob (bytes).
+    ``i`` int32, ``f`` float32, ``h`` int64, ``s`` string, ``b`` blob (bytes),
+    ``T`` / ``F`` boolean true / false (the value is ignored — the tag IS the
+    value).
     """
     out = _padz(addr)
     tags = ","
@@ -49,6 +51,8 @@ def osc_encode(addr: str, args: List[Tuple[str, Any]]) -> bytes:
             body += struct.pack(">i", len(value)) + bytes(value)
             while len(body) % 4:
                 body += b"\x00"
+        elif tag in ("T", "F"):
+            pass            # OSC booleans live in the type tag; no payload
         else:
             raise ValueError(f"unknown OSC type tag {tag!r}")
     out += _padz(tags) + body
