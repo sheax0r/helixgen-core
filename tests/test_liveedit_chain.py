@@ -316,3 +316,14 @@ def test_clamp_respects_range_and_type():
     assert chain.clamp(gate, 0.7) == 1.0 and chain.clamp(gate, 0.2) == 0.0
     out_gain = idx[(0, 13, 2)]
     assert chain.clamp(out_gain, 99.0) == 20.0        # the +20 dB ceiling holds
+
+
+def test_snapshot_names_are_ordered_by_index():
+    eb = _serial()
+    # the device lists them in arbitrary order, keyed by si__
+    eb["cg__"]["entt"] = {"snps": [
+        {"si__": 2, "name": "Lead"}, {"si__": 0, "name": "Rhythm"},
+        {"si__": 1, "name": "Chorus"}]}
+    st = chain.build_chain(eb)
+    assert st["snapshots"] == ["Rhythm", "Chorus", "Lead"]
+    assert chain.build_chain(_split_join())["snapshots"] == []

@@ -389,3 +389,33 @@ def test_set_block_enable_default_still_returns_true_without_an_ack():
     h = HelixClient("10.0.0.99")
     _wire_recording(h, [])
     assert h.set_block_enable(0, 3, False) is True
+
+
+def test_last_request_id_names_the_most_recent_rpc():
+    # The device echoes an edit-buffer write on the 2001 stream with `seq` ==
+    # our request id (HW 2026-11-12: /ParamValueSet reqid 1005 -> echo
+    # /setParamValue [origin, 1005, …]); a live UI uses it to tell its own
+    # echoes from someone else's change.
+    h = HelixClient("10.0.0.99")
+    assert h.last_request_id is None
+    _wire_recording(h, [_status_ack(1000)])
+    h.set_param(0, 13, 2, -6.0, force=True, fast=True)
+    assert h.last_request_id == 1000
+    _wire_recording(h, [_status_ack(1001)])
+    h.set_block_enable(0, 3, True, fast=True)
+    assert h.last_request_id == 1001
+
+
+def test_save_edit_buffer_persists_into_an_existing_cid():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.save_edit_buffer(1863) is True
+    addr, args = _last_sent(h)
+    assert addr == "/SavePresetWithCID"
+    assert args[1:] == [1863, 0, 0]
+
+
+def test_save_edit_buffer_reports_a_refusal():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000, code=1)])
+    assert h.save_edit_buffer(1863) is False

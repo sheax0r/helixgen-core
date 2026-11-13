@@ -233,6 +233,10 @@ class HelixClient:
         self.reconnect_tries = reconnect_tries
         self.reconnect_backoff = reconnect_backoff
         self._rid = itertools.count(1000)
+        # the request id of the most recent RPC sent (None before the first).
+        # The device echoes edit-buffer writes on the 2001 stream with `seq`
+        # equal to this id, which lets a live UI recognise its own echoes.
+        self.last_request_id: Optional[int] = None
         self._zmq = None
         self._ctx = None
         self.sock = None
@@ -386,6 +390,7 @@ class HelixClient:
         # zmq's exception type, or an empty tuple when a fake socket is injected
         zmq_error = getattr(self._zmq, "ZMQError", ()) if self._zmq else ()
         rid = next(self._rid)
+        self.last_request_id = rid
         try:
             self.sock.send(osc_encode(addr, [("i", rid)] + list(args)))
         except zmq_error as exc:
@@ -967,6 +972,18 @@ class HelixClient:
         return self._rpc(addr, args,
                          first_wait=min(self.rpc_timeout, _FAST_ACK_WAIT),
                          settle=0.0)
+
+    def save_edit_buffer(self, cid: int) -> bool:
+        """Persist the live edit buffer into the EXISTING preset ``cid``, in
+        place (``/SavePresetWithCID`` — what the hardware's Save does).
+
+        Overwrites that preset's stored content with whatever the edit buffer
+        holds now; nothing is created, renamed or moved. The caller decides
+        WHICH cid: pass the active preset's (:meth:`active_preset`) and check
+        it lives in the user pool first — this does not. Returns ``False``
+        when the device refuses or does not answer.
+        """
+        return self._save_preset_with_cid(int(cid))
 
     def set_block_model(self, path: int, block: int, model_id: int) -> bool:
         """Set a block's model in the live edit buffer.

@@ -14,7 +14,7 @@ through the flow's ``bmap`` — and ``bflw``, the flow that target lives in
 
 Shape returned by :func:`build_chain`::
 
-    {"snapshot": int | None, "dirty": bool,
+    {"snapshot": int | None, "snapshots": [name, …], "dirty": bool,
      "paths": [{"path": 0, "segments": [SEG, …], "extra": [SEG, …]}]}
 
     SEG   = {"kind": "block", "block": BLOCK}
@@ -263,9 +263,20 @@ def build_chain(eb: Any) -> dict:
     asnp = cg.get("asnp")
     return {
         "snapshot": asnp if isinstance(asnp, int) and not isinstance(asnp, bool) else None,
+        "snapshots": _snapshot_names(cg),
         "dirty": bool(eb.get("hist")),
         "paths": paths,
     }
+
+
+def _snapshot_names(cg: dict) -> List[str]:
+    """Snapshot names by index (``cg__.entt.snps[]``, each keyed by ``si__``)."""
+    entt = cg.get("entt") if isinstance(cg.get("entt"), dict) else {}
+    named = {}
+    for s in entt.get("snps") or []:
+        if isinstance(s, dict) and isinstance(s.get("si__"), int):
+            named[s["si__"]] = str(s.get("name") or f"Snapshot {s['si__'] + 1}")
+    return [named.get(i, f"Snapshot {i + 1}") for i in range(max(named) + 1)] if named else []
 
 
 def _iter_segments(segs: List[dict]) -> Iterator[dict]:
