@@ -724,8 +724,8 @@ def device() -> None:
     active, read, list, setlists, setlist list, list-irs, blocks, params,
     settings list/get, tuner, meters, measure, watch, backup, pull, pull-ir,
     plus the offline verbs decode, globaleq list and --list/--dry-run modes).
-    Everything else MUTATES the device — and the live-ops verbs (snapshot,
-    bypass, model, set-param) change the ACTIVE tone immediately. Prefer an
+    Everything else MUTATES the device — and the live-ops verbs (snapshot, bypass, model, set-param, and every
+    control on the `device live` page) change the ACTIVE tone immediately. Prefer an
     empty/expendable slot when testing writes.
 
     The Stadium's network stack is flaky: if a verb drops or stalls, re-run it

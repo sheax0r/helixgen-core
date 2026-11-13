@@ -447,6 +447,47 @@ Live-control commands pinned by the 2026-07-14 capture (full writeup:
 is this same command; there is no separate active-index (backlog #1 resolved).
 `/ParamValueSet` and `/ModelSet` (above) are the other two live edit verbs.
 
+### The 2001 change stream — edit-buffer events, acks and echoes
+
+Every change to the live edit buffer is published on **2001**, whoever made
+it: the hardware's own controls, the desktop editor, or an RPC from us. This
+is the stream to follow for live tracking — polling `/EditBufferStateGet` is
+~0.6 s per read. Layouts below were captured on a Stadium XL (fw 1.4);
+`origin` is opaque, `seq` is described under *Echoes*.
+
+| Address | Args | Meaning |
+|---|---|---|
+| `/setParamValue` | `[origin, seq, path, grid_slot, snap, pid, value]` | One param changed. `value` is in raw units (bools arrive as bools). Captured 2026-10-28 and re-confirmed 2026-11-12: `[78129, 1005, 0, 2, 0, 2, 0.55]`. |
+| `/setBlockEnable` | `[origin, seq, path, grid_slot, enable]` | A block was bypassed/enabled. Confirmed 2026-11-12: `[12593, 1004, 0, 2, 1]`. |
+| `/activateSnapshot` | `[origin, seq, index]` | The active snapshot changed (followed by `/setBatchedParamVals`, the batch of values the recall applied). |
+| `/setEditBuffer` | `[origin, seq, <_sbepgsm blob>]` | A preset was loaded: the WHOLE new live buffer, decodable exactly like the `/EditBufferStateGet` reply — a preset switch needs no read. |
+| `/loadContentRef` | `[origin, seq, {cid_, name, posi, cctp, type, …}]` | The loaded preset's identity; trails its `/setEditBuffer` by ~70 ms. Also sent alone for a rename/recolor of the loaded preset. |
+| `/setPropertyValue` | `[origin, seq, {key_, type, val_}]` | Dotted-key properties; `volatile.preset.edited` is the unsaved-edits flag. |
+
+**Acks (2002).** `/ParamValueSet` and `/BlockEnableSet` are both answered
+with a reqid-correlated `/status [reqid, 0, dirty]` — the third field is the
+edit-buffer dirty flag, not an error (same reading as §7.1). Measured
+2026-11-12: the ack lands in **10–13 ms**. (The older note that the live-ops
+commands "reply only on 2001" predates fw 1.4; `/BlockEnableSet` does ack.)
+Any edit-buffer write — even one that sets a value to what it already is —
+raises the dirty flag. A write addressed to a grid slot with no block is
+silently dropped: no ack.
+
+**Echoes.** Our own writes come back on 2001 like anyone else's, and **an
+echo's `seq` equals the request id of the write that caused it** (reqid 1005
+→ `/setParamValue [_, 1005, …]`). A live UI should apply echoes idempotently
+and never re-write on one (that loops); matching `seq` to its own recent
+request ids lets it drop a late echo of an older value instead of letting it
+drag a control backwards mid-gesture.
+
+**Latency note for implementers.** `HelixClient._rpc` gathers replies until a
+`settle` window (0.4 s) passes with no further frame. For a command with
+exactly one reply that window is pure latency — ~600 ms per `/ParamValueSet`
+— so interactive control must use the client's `fast=True` option on
+`set_param` / `set_block_enable` (wait for the ack only). The socket is a
+`DEALER`, so sending without waiting is possible too, but then the unread
+acks pile up in the receive queue.
+
 ### The ACTIVE preset + the full property catalog (2026-07-15)
 
 The device exposes the **active preset's cid** as a live property:
