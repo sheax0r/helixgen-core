@@ -446,17 +446,6 @@ def test_add_block_raises_when_lane_full(library):
         mutate.add_block(body, "Digital", library)
 
 
-def test_add_block_rejects_parallel_routed_path(split_join_body, library):
-    # split_join.hsp's path 0 has a split/join pair (b02/b03) whose
-    # branch/endpoint cross-references point at specific bNN keys --
-    # renumbering lane 0 would rewrite those keys without updating the
-    # pointers, and desync lane 1's positions. Not supported yet.
-    before = copy.deepcopy(split_join_body)
-    with pytest.raises(mutate.MutateError, match="parallel-routed"):
-        mutate.add_block(split_join_body, "IR", library)
-    assert split_join_body == before
-
-
 def test_add_block_round_trips_through_write_and_read_hsp(goldfinger_body, library, tmp_path):
     mutate.add_block(goldfinger_body, "IR", library, after="Scream 808")
     out = tmp_path / "roundtrip_add.hsp"
@@ -485,13 +474,6 @@ def test_remove_block_frees_its_slot_and_leaves_the_rest_alone(goldfinger_body, 
     )
 
 
-def test_remove_block_rejects_parallel_routed_path(split_join_body, library):
-    before = copy.deepcopy(split_join_body)
-    with pytest.raises(mutate.MutateError, match="parallel-routed"):
-        mutate.remove_block(split_join_body, "Scream 808", library)
-    assert split_join_body == before
-
-
 def test_remove_block_missing_raises(goldfinger_body, library):
     with pytest.raises(mutate.MutateError):
         mutate.remove_block(goldfinger_body, "Nope Amp", library)
@@ -503,6 +485,139 @@ def test_remove_block_round_trips_through_write_and_read_hsp(goldfinger_body, li
     write_hsp(out, goldfinger_body)
     reloaded = read_hsp(out)
     assert reloaded == goldfinger_body
+
+
+# --- add/remove on a parallel-routed path, outside the split ----------------
+#
+# The "headphones" form: amp -> Y split -> [lane 0 IR | lane 1 cab] -> join ->
+# reverb, with and without a USB tap (a second, unpaired split at the end of
+# lane 0 feeding a USB output at b27). The correctness bar: an edit leaves the
+# body viewing exactly like one generated fresh from the equivalent recipe.
+
+def _headphones_recipe(before_split=(), after_join=()):
+    return {"name": "Headphones", "paths": [{"blocks": [
+        {"block": "Scream 808"}, *({"block": b} for b in before_split),
+        {"block": "Brit 2204 Custom"},
+        {"split": {"type": "y"}},
+        {"block": "IR"},
+        {"block": "4x12 Greenback 25", "lane": 1},
+        {"join": {"params": {"A Level": 0.0, "B Level": 0.0, "Level": 0.0}}},
+        {"block": "Plate"}, *({"block": b} for b in after_join),
+    ]}]}
+
+
+def _generate(recipe, library, *, taps=False):
+    from helixgen import usbtaps
+    body = harness.parsed_dict(harness.run_current_pipeline(recipe, library))
+    if taps:
+        assert usbtaps.apply(body, {"guitar": "3/4"})["status"] == "added"
+    return body
+
+
+def _view(body, library):
+    from helixgen.view import view
+    return view(body, library)["paths"]
+
+
+@pytest.fixture(params=[False, True], ids=["plain", "usb-tapped"])
+def tapped(request):
+    return request.param
+
+
+@pytest.fixture
+def headphones_body(library, tapped):
+    return _generate(_headphones_recipe(), library, taps=tapped)
+
+
+def test_add_block_after_join_on_room_treated_path(headphones_body, library, tapped):
+    key = mutate.add_block(headphones_body, "Digital", library, after="Plate")
+    assert key == "b07"
+    want = _generate(_headphones_recipe(after_join=["Digital"]), library, taps=tapped)
+    assert _view(headphones_body, library) == _view(want, library)
+
+
+def test_add_block_before_split_shifts_pointers_correctly(headphones_body, library, tapped):
+    mutate.add_block(headphones_body, "Scream 808", library, after="Scream 808")
+    want = _generate(_headphones_recipe(before_split=["Scream 808"]), library, taps=tapped)
+    assert _view(headphones_body, library) == _view(want, library)
+    flow0 = headphones_body["preset"]["flow"][0]
+    assert (flow0["b04"]["type"], flow0["b04"]["endpoint"]) == ("split", "b06")
+    assert (flow0["b06"]["type"], flow0["b06"]["endpoint"]) == ("join", "b04")
+
+
+def test_add_block_before_empty_branch_split_rewrites_lane0_branch(library):
+    # No lane-1 block listed between split and join: generate aims each
+    # `branch` at the partner (a lane-0 key), which must follow the shift too.
+    recipe = {"name": "E", "paths": [{"blocks": [
+        {"block": "Scream 808"}, {"split": {"type": "y"}}, {"join": {}},
+        {"block": "Plate"}]}]}
+    body = _generate(recipe, library)
+    mutate.add_block(body, "Digital", library, after="Scream 808")
+    flow0 = body["preset"]["flow"][0]
+    assert (flow0["b03"]["branch"], flow0["b03"]["endpoint"]) == ("b04", "b04")
+    assert (flow0["b04"]["branch"], flow0["b04"]["endpoint"]) == ("b03", "b03")
+
+
+def test_add_block_moves_a_split_branch_aimed_beneath_it(library):
+    # A device-pulled split whose B side enters the empty row-1 slot beneath
+    # it (`branch` = b{14+pos}): the pointer moves with the split, or the
+    # transcoder keeps feeding row 1 from the column it left.
+    body = _generate(_headphones_recipe(after_join=["Digital"] * 4), library, taps=True)
+    flow0 = body["preset"]["flow"][0]
+    assert flow0["b11"]["type"] == "split"
+    flow0["b11"]["branch"] = "b25"
+    mutate.add_block(body, "Digital", library, after="Scream 808")
+    assert flow0["b12"]["type"] == "split" and flow0["b12"]["branch"] == "b26"
+
+
+def test_remove_block_outside_split(headphones_body, library):
+    for name in ("Scream 808", "Plate"):
+        before = copy.deepcopy(headphones_body)
+        fi, key, _ = mutate.resolve_slot(headphones_body, name, library)
+        mutate.remove_block(headphones_body, name, library)
+        del before["preset"]["flow"][fi][key]
+        assert headphones_body == before
+
+
+@pytest.mark.parametrize("op", [
+    lambda b, lib: mutate.add_block(b, "Digital", lib, after="IR"),
+    lambda b, lib: mutate.remove_block(b, "IR", lib),
+    lambda b, lib: mutate.remove_block(b, "4x12 Greenback 25", lib),
+], ids=["add-inside-split", "remove-inside-split", "remove-lane-1"])
+def test_edit_inside_split_or_on_lane_1_still_refused(headphones_body, library, op):
+    before = copy.deepcopy(headphones_body)
+    with pytest.raises(mutate.MutateError, match="parallel-routed"):
+        op(headphones_body, library)
+    assert headphones_body == before
+
+
+def test_append_past_a_usb_tap_split_is_refused(library):
+    # after=None lands after the tap split, i.e. inside its B-side region.
+    # (The CLI lifts taps around every edit, so it never gets here.)
+    body = _generate(_headphones_recipe(), library, taps=True)
+    before = copy.deepcopy(body)
+    with pytest.raises(mutate.MutateError, match="parallel-routed"):
+        mutate.add_block(body, "Digital", library)
+    assert body == before
+
+
+def test_split_join_corpus_edits_outside_the_split(split_join_body, library):
+    mutate.add_block(split_join_body, "IR", library)          # after the join
+    mutate.remove_block(split_join_body, "Scream 808", library)  # before the split
+    flow0 = split_join_body["preset"]["flow"][0]
+    assert flow0["b05"]["slot"][0]["model"].startswith("HX2_ImpulseResponse")
+    assert "b01" not in flow0
+
+
+def test_resulting_body_copies_to_device_format(headphones_body, library, tapped):
+    from helixgen.device import content, transcode
+    mutate.add_block(headphones_body, "Scream 808", library, after="Scream 808")
+    mutate.add_block(headphones_body, "Digital", library, after="Plate")
+    want = _generate(_headphones_recipe(before_split=["Scream 808"],
+                                        after_join=["Digital"]), library, taps=tapped)
+    # strict=False: the corpus amp has no device model; the routing is what's under test.
+    got = content.decode_any(transcode.hsp_to_sbepgsm(headphones_body, strict=False))
+    assert got == content.decode_any(transcode.hsp_to_sbepgsm(want, strict=False))
 
 
 # --- gapped grid rows (hgc-hhp) ----------------------------------------------
