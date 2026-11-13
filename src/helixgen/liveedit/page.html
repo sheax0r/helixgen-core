@@ -134,7 +134,7 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 @keyframes flash{0%{background:rgba(127,155,255,.35)}100%{background:transparent}}
 .err{animation:err .9s}
 @keyframes err{0%,60%{background:rgba(255,93,93,.4)}100%{background:transparent}}
-body.down main{pointer-events:none;opacity:.55}
+body.down main{opacity:.55}
 
 /* ---------- category accents ---------- */
 .c-amp,.c-preamp{--acc:#ffb347}.c-distortion{--acc:#ff7a45}.c-dynamics{--acc:#f2d44b}
@@ -170,15 +170,18 @@ const NS = "http://www.w3.org/2000/svg";
 const ME = Math.random().toString(36).slice(2) + Date.now().toString(36);
 const $ = (id) => document.getElementById(id);
 let S = null;                     // last full state from the server
-const P = new Map();              // "path/block/pid" -> {p, b, set(v, how)}
-const B = new Map();              // "path/block"     -> {b, set(on)}
-let dragging = null;              // key of the control under the user's hand
+const P = new Map();              // "path/block/pid" -> control {p, b, tag, dev, set, fail}
+const B = new Map();              // "path/block"     -> control {b, tag, dev, set, fail}
+let dragging = null;              // key of the knob under the user's hand
+let down = true;                  // device (or server) unreachable: nothing is writable
 let undoS = [], redoS = [];
+const openInternal = new Set();   // blocks whose "internal" row the user expanded
 
 const el = (tag, cls, text) => { const e = document.createElement(tag);
   if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 const sv = (tag, attrs) => { const e = document.createElementNS(NS, tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+const blip = (node, cls) => { node.classList.remove(cls); void node.offsetWidth; node.classList.add(cls); };
 
 function toast(msg, ok) {
   const t = el("div", "toast" + (ok ? " ok" : ""), msg);
@@ -197,65 +200,104 @@ function fmt(p, v) {
     const lab = p.labels[Math.round(v - p.min)];
     if (lab != null) return lab;
   }
-  const x = shown(p, v), u = p.unit || "";
-  if (p.type === "i" || p.type === "b") return Math.round(x) + (u ? " " + u : "");
+  let x = shown(p, v);
+  const u = p.unit || "";
+  if (p.type === "i" || p.type === "b") return (Math.round(x) || 0) + (u ? " " + u : "");
   if (u === "Hz" && Math.abs(x) >= 1000) return (x / 1000).toFixed(2) + " kHz";
   const w = Math.abs(shown(p, p.max) - shown(p, p.min));
-  const d = w >= 200 ? 0 : w >= 20 ? 1 : 2;
+  const d = w >= 100 ? 0 : w >= 5 ? 1 : 2;
+  if (Math.abs(x) < 0.5 / Math.pow(10, d)) x = 0;       // never "-0.0"
   return x.toFixed(d) + (u ? " " + u : "");
 }
+// clamp only; ints snap. Floats are NOT rounded: the device's float32 values
+// must compare equal to themselves or every click would look like a change.
 const clampV = (p, v) => {
   v = Math.max(p.min, Math.min(p.max, v));
-  return (p.type === "i" || p.type === "b") ? Math.round(v) : Math.round(v * 1e5) / 1e5;
+  return (p.type === "i" || p.type === "b") ? Math.round(v) : v;
 };
 
 /* ---------- writes: one in flight, only the newest value per control ---------- */
 let inflight = false;
 const pending = new Map();
-function queue(kind, key) { pending.set(kind + ":" + key, { kind, key }); pump(); }
+let idleWaiters = [];
+function queue(kind, key) { if (down) return; pending.set(kind + ":" + key, { kind, key }); pump(); }
+function drained() {              // resolves once nothing is queued or in flight
+  return (!inflight && !pending.size) ? Promise.resolve() : new Promise((r) => idleWaiters.push(r));
+}
 async function pump() {
   if (inflight) return;
   const it = pending.entries().next();
-  if (it.done) return;
+  if (it.done) { const w = idleWaiters; idleWaiters = []; w.forEach((r) => r()); return; }
   const [qk, job] = it.value; pending.delete(qk); inflight = true;
+  const map = job.kind === "param" ? P : B;
+  const c = map.get(job.key);
   try {
-    if (job.kind === "param") {
-      const c = P.get(job.key);
-      if (c) await send("/param", { path: c.b.path, block: c.b.block, pid: c.p.pid, value: c.p.value, client: ME },
-        (j) => { if (j.value != null && dragging !== job.key && !pending.has(qk)) c.set(j.value); },
-        (j) => { c.fail(j && j.value); });
-    } else {
-      const c = B.get(job.key);
-      if (c) await send("/bypass", { path: c.b.path, block: c.b.block, enabled: c.b.enabled, client: ME },
-        () => {}, (j) => { c.fail(j && j.value); });
+    if (c) {
+      const body = job.kind === "param"
+        ? { path: c.b.path, block: c.b.block, pid: c.p.pid, value: c.p.value }
+        : { path: c.b.path, block: c.b.block, enabled: c.b.enabled };
+      body.client = ME; body.rev = S.rev;
+      // look the control up AGAIN in the callbacks: a re-render while the
+      // request was out replaces every control object
+      await send(job.kind === "param" ? "/param" : "/bypass", body,
+        (j) => { const n = map.get(job.key); if (!n) return;
+          const v = job.kind === "param" ? j.value : j.enabled;
+          if (v == null) return;
+          n.dev = v;
+          if (dragging !== job.key && !pending.has(qk)) n.set(v); },
+        (j) => { const n = map.get(job.key);
+          dropHist(job.kind, job.key);            // the change never happened
+          if (n) n.fail(j ? j.value : undefined); });
     }
   } finally { inflight = false; pump(); }
 }
 async function send(url, body, ok, bad) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 6000);   // a hung request must not jam the queue
   try {
-    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: ctl.signal });
     const j = await r.json().catch(() => ({}));
     if (r.ok) ok(j); else { bad(j); toast(j.error || ("request failed (" + r.status + ")")); }
-  } catch (e) { bad(null); toast("the editor server is not reachable"); }
+  } catch (e) { bad(null); toast("the editor server did not answer"); }
+  finally { clearTimeout(timer); }
 }
 
 /* ---------- undo / redo (one entry per committed change) ---------- */
-function record(kind, key, before, after) {
+function record(kind, key, before, after, how) {
   if (before === after) return;
-  undoS.push({ kind, key, before, after }); redoS = []; syncHist();
+  const c = (kind === "param" ? P : B).get(key);
+  const top = undoS[undoS.length - 1], now = Date.now();
+  // key auto-repeat / a burst of nudges on one control is ONE step
+  if (how === "key" && top && top.how === "key" && top.kind === kind && top.key === key && now - top.at < 900) {
+    top.after = after; top.at = now;
+    if (top.before === top.after) undoS.pop();
+  } else undoS.push({ kind, key, before, after, how, at: now, tag: c ? c.tag : null });
+  redoS = []; syncHist();
 }
-function applyHist(e, val) {
-  if (e.kind === "param") { const c = P.get(e.key); if (!c) return; c.set(val); queue("param", e.key); }
-  else { const c = B.get(e.key); if (!c) return; c.set(val); queue("bypass", e.key); }
+function dropHist(kind, key) {
+  for (let i = undoS.length - 1; i >= 0; i--)
+    if (undoS[i].kind === kind && undoS[i].key === key) { undoS.splice(i, 1); break; }
+  syncHist();
 }
-function undo() { const e = undoS.pop(); if (!e) return; redoS.push(e); applyHist(e, e.before); syncHist(); }
-function redo() { const e = redoS.pop(); if (!e) return; undoS.push(e); applyHist(e, e.after); syncHist(); }
-function syncHist() { $("undo").disabled = !undoS.length; $("redo").disabled = !redoS.length; }
+function applyHist(e, val) {      // false = the entry no longer names the same control
+  const c = (e.kind === "param" ? P : B).get(e.key);
+  if (!c || c.tag !== e.tag) return false;
+  c.set(val); queue(e.kind, e.key); return true;
+}
+function undo() { if (down) return; let e;
+  while ((e = undoS.pop())) if (applyHist(e, e.before)) { redoS.push(e); break; }
+  syncHist(); }
+function redo() { if (down) return; let e;
+  while ((e = redoS.pop())) if (applyHist(e, e.after)) { undoS.push(e); break; }
+  syncHist(); }
+function syncHist() { $("undo").disabled = down || !undoS.length; $("redo").disabled = down || !redoS.length; }
 addEventListener("keydown", (ev) => {
   if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return;
   const k = ev.key.toLowerCase();
-  if (k === "z") { ev.preventDefault(); ev.shiftKey ? redo() : undo(); }
-  else if (k === "y") { ev.preventDefault(); redo(); }
+  const z = k === "z" || ev.code === "KeyZ", y = k === "y" || ev.code === "KeyY";
+  if (z) { ev.preventDefault(); ev.shiftKey ? redo() : undo(); }
+  else if (y) { ev.preventDefault(); redo(); }
 });
 
 /* ---------- controls ---------- */
@@ -266,11 +308,10 @@ function label(p) {
   return l;
 }
 function reg(key, p, b, root, paint) {
-  const c = { p, b,
-    set(v, how) { p.value = v; paint();
-      if (how === "remote") { root.classList.remove("flash"); void root.offsetWidth; root.classList.add("flash"); } },
-    fail(v) { if (v != null) { p.value = v; paint(); }
-      root.classList.remove("err"); void root.offsetWidth; root.classList.add("err"); } };
+  const c = { p, b, tag: b.model + "|" + p.name, dev: p.value,
+    set(v, how) { p.value = v; paint(); if (how === "remote") blip(root, "flash"); },
+    // a write the device did not take: show what the device has
+    fail(v) { p.value = (v != null) ? v : c.dev; if (v != null) c.dev = v; paint(); blip(root, "err"); } };
   P.set(key, c); root.dataset.k = key; return c;
 }
 function knob(p, b, key) {
@@ -282,11 +323,9 @@ function knob(p, b, key) {
     const [x0, y0] = pt(d0, R), [x1, y1] = pt(d1, R);
     return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${R} ${R} 0 ${d1 - d0 > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`; };
   const svg = sv("svg", { width: 60, height: 60, viewBox: "0 0 60 60" });
-  const track = sv("path", { class: "track", d: arcD(A0, A0 + SW) });
-  const arc = sv("path", { class: "arc" });
-  const cap = sv("circle", { class: "cap", cx: C, cy: C, r: 14 });
-  const ptr = sv("line", { class: "ptr" });
-  svg.append(track, arc, cap, ptr);
+  const arc = sv("path", { class: "arc" }), ptr = sv("line", { class: "ptr" });
+  svg.append(sv("path", { class: "track", d: arcD(A0, A0 + SW) }), arc,
+             sv("circle", { class: "cap", cx: C, cy: C, r: 14 }), ptr);
   const val = el("div", "val");
   root.append(svg, val, label(p));
   // a control whose DISPLAY range straddles zero (pan, balance, trim) fills from zero
@@ -294,35 +333,46 @@ function knob(p, b, key) {
   const zero = (lo < 0 && hi > 0) ? A0 + SW * (0 - lo) / (hi - lo) : A0;
   function paint() {
     const f = (p.value - p.min) / span(p), deg = A0 + SW * Math.max(0, Math.min(1, f));
-    if (Math.abs(deg - zero) < 0.5) arc.setAttribute("d", ""); else arc.setAttribute("d", arcD(zero, deg));
+    arc.setAttribute("d", Math.abs(deg - zero) < 0.5 ? "" : arcD(zero, deg));
     const [x0, y0] = pt(deg, 6), [x1, y1] = pt(deg, 13);
     ptr.setAttribute("x1", x0); ptr.setAttribute("y1", y0); ptr.setAttribute("x2", x1); ptr.setAttribute("y2", y1);
     val.textContent = fmt(p, p.value);
-    root.setAttribute("aria-valuetext", val.textContent);
+    root.setAttribute("aria-valuemin", shown(p, p.min)); root.setAttribute("aria-valuemax", shown(p, p.max));
+    root.setAttribute("aria-valuenow", shown(p, p.value)); root.setAttribute("aria-valuetext", val.textContent);
   }
   const c = reg(key, p, b, root, paint);
   const live = (v) => { v = clampV(p, v); if (v !== p.value) { c.set(v); queue("param", key); } };
   svg.addEventListener("pointerdown", (e) => {
-    if (e.button) return;
-    e.preventDefault(); root.focus(); svg.setPointerCapture(e.pointerId);
-    const y0 = e.clientY, v0 = p.value; dragging = key; root.classList.add("drag");
-    const move = (m) => live(v0 + (y0 - m.clientY) / (m.shiftKey ? 1600 : 200) * span(p));
-    const up = () => { svg.removeEventListener("pointermove", move); svg.removeEventListener("pointerup", up);
-      svg.removeEventListener("pointercancel", up); root.classList.remove("drag"); dragging = null;
-      queue("param", key);                       // the release always sends the final value
-      record("param", key, v0, p.value); };       // ONE undo step per drag, at release
-    svg.addEventListener("pointermove", move); svg.addEventListener("pointerup", up); svg.addEventListener("pointercancel", up);
+    if (e.button || dragging || down) return;       // one pointer, one knob
+    e.preventDefault(); root.focus();
+    try { svg.setPointerCapture(e.pointerId); } catch (x) { /* synthetic pointers */ }
+    const id = e.pointerId, v0 = p.value;
+    let lastY = e.clientY, acc = p.value;            // accumulate, so Shift mid-drag does not jump
+    dragging = key; root.classList.add("drag");
+    const move = (m) => { if (m.pointerId !== id) return;
+      acc += (lastY - m.clientY) / (m.shiftKey ? 1600 : 200) * span(p);
+      acc = Math.max(p.min, Math.min(p.max, acc)); lastY = m.clientY; live(acc); };
+    const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
+      svg.removeEventListener("pointermove", move);
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.removeEventListener(n, up));
+      root.classList.remove("drag"); if (dragging === key) dragging = null;
+      // ONE undo step per drag, at release; a click that moved nothing writes nothing
+      if (p.value !== v0) { queue("param", key); record("param", key, v0, p.value); } };
+    svg.addEventListener("pointermove", move);
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.addEventListener(n, up));
   });
   svg.addEventListener("dblclick", () => {        // double-click: back to the model default
-    if (p.default == null) return; const v0 = p.value; live(p.default); record("param", key, v0, p.value); });
+    if (down || p.default == null) return; const v0 = p.value; live(p.default); record("param", key, v0, p.value); });
   root.addEventListener("keydown", (e) => {
+    if (down || e.metaKey || e.ctrlKey || e.altKey) return;
     const step = (p.type === "i" ? 1 : span(p) / 100) * (e.shiftKey ? 10 : 1);
     let v = null;
     if (e.key === "ArrowUp" || e.key === "ArrowRight") v = p.value + step;
     else if (e.key === "ArrowDown" || e.key === "ArrowLeft") v = p.value - step;
     else if (e.key === "Home") v = p.min; else if (e.key === "End") v = p.max;
+    else if (e.key === "Delete" || e.key === "Backspace") v = p.default;   // keyboard "reset to default"
     if (v == null) return;
-    e.preventDefault(); const v0 = p.value; live(v); record("param", key, v0, p.value);
+    e.preventDefault(); const v0 = p.value; live(v); record("param", key, v0, p.value, "key");
   });
   paint(); return root;
 }
@@ -333,7 +383,7 @@ function toggle(p, b, key) {
   const paint = () => { const on = p.value >= 0.5; sw.classList.toggle("on", on);
     sw.setAttribute("aria-checked", on); val.textContent = p.labels ? (p.labels[on ? 1 : 0] ?? (on ? "On" : "Off")) : (on ? "On" : "Off"); };
   const c = reg(key, p, b, root, paint);
-  sw.onclick = () => { const v0 = p.value; c.set(v0 >= 0.5 ? 0 : 1); queue("param", key); record("param", key, v0, p.value); };
+  sw.onclick = () => { if (down) return; const v0 = p.value; c.set(v0 >= 0.5 ? 0 : 1); queue("param", key); record("param", key, v0, p.value); };
   paint(); return root;
 }
 function select(p, b, key) {
@@ -343,7 +393,8 @@ function select(p, b, key) {
   root.append(sel, label(p));
   const paint = () => { sel.value = String(Math.round(p.value)); };
   const c = reg(key, p, b, root, paint);
-  sel.onchange = () => { const v0 = p.value; c.set(clampV(p, +sel.value)); queue("param", key); record("param", key, v0, p.value); };
+  sel.onchange = () => { if (down) { paint(); return; }
+    const v0 = p.value; c.set(clampV(p, +sel.value)); queue("param", key); record("param", key, v0, p.value); };
   paint(); return root;
 }
 function control(p, b) {
@@ -355,7 +406,8 @@ function control(p, b) {
 const STRUCT = new Set(["split", "join"]);
 const NO_BYPASS = new Set(["split", "join", "input", "output"]);
 function blockEl(b) {
-  const root = el("section", "blk c-" + (b.category || "x") + (STRUCT.has(b.category) ? " node" : "") + (b.enabled ? "" : " off"));
+  const root = el("section", "blk c-" + String(b.category || "x").replace(/[^a-z0-9_]/gi, "") +
+    (STRUCT.has(b.category) ? " node" : "") + (b.enabled ? "" : " off"));
   const key = b.path + "/" + b.block; root.dataset.b = key;
   const hd = el("div", "bh");
   hd.append(el("span", "cat", b.category || "block"), el("span", "nm", b.name));
@@ -367,22 +419,24 @@ function blockEl(b) {
     f.append(dot, tx);
     const paint = () => { f.classList.toggle("on", b.enabled); tx.textContent = b.enabled ? "ON" : "BYPASS";
       f.setAttribute("aria-pressed", b.enabled); root.classList.toggle("off", !b.enabled); };
-    const c = { b, set(on, how) { b.enabled = !!on; paint();
-        if (how === "remote") { hd.classList.remove("flash"); void hd.offsetWidth; hd.classList.add("flash"); } },
-      fail(v) { if (v != null) { b.enabled = !!v; paint(); } hd.classList.remove("err"); void hd.offsetWidth; hd.classList.add("err"); } };
-    B.set(key, c);
-    f.onclick = () => { const v0 = b.enabled; c.set(!v0); queue("bypass", key); record("bypass", key, v0, b.enabled); };
+    const c = { b, tag: b.model, dev: b.enabled,
+      set(on, how) { b.enabled = !!on; paint(); if (how === "remote") blip(hd, "flash"); },
+      fail(v) { b.enabled = (v != null) ? !!v : c.dev; if (v != null) c.dev = !!v; paint(); blip(hd, "err"); } };
+    B.set(key, c); f.dataset.k = "b:" + key;
+    f.onclick = () => { if (down) return; const v0 = b.enabled; c.set(!v0); queue("bypass", key); record("bypass", key, v0, b.enabled); };
     paint(); hd.append(f);
   }
   root.append(hd);
   const main = b.params.filter((p) => !p.internal), extra = b.params.filter((p) => p.internal);
   if (main.length) { const row = el("div", "ctl"); main.forEach((p) => row.append(control(p, b))); root.append(row); }
   if (extra.length) {
-    const more = el("button", "more", "+ " + extra.length + " internal");
-    const row = el("div", "ctl internal"); row.hidden = true;
+    const more = el("button", "more"), row = el("div", "ctl internal");
+    const paint = () => { row.hidden = !openInternal.has(key);
+      more.textContent = (row.hidden ? "+ " : "− ") + extra.length + " internal";
+      more.setAttribute("aria-expanded", !row.hidden); };
     extra.forEach((p) => row.append(control(p, b)));
-    more.onclick = () => { row.hidden = !row.hidden; more.textContent = (row.hidden ? "+ " : "− ") + extra.length + " internal"; };
-    root.append(more, row);
+    more.onclick = () => { openInternal.has(key) ? openInternal.delete(key) : openInternal.add(key); paint(); };
+    paint(); root.append(more, row);
   }
   return root;
 }
@@ -401,7 +455,7 @@ function segEl(seg) {
   const w = el("div", "par col");
   w.append(blockEl(seg.split), conn("fork"));
   const lanes = el("div", "lanes");
-  lanes.append(lane(seg.a, "A", !!seg.join), lane(seg.b, "B", !!seg.join));
+  lanes.append(lane(seg.a || [], "A", !!seg.join), lane(seg.b || [], "B", !!seg.join));
   w.append(lanes);
   if (seg.join) w.append(conn("merge"), blockEl(seg.join));
   return w;
@@ -412,6 +466,8 @@ function column(segs) {
   return c;
 }
 function render() {
+  const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
+  const fkey = focused && focused.dataset.k;
   P.clear(); B.clear(); dragging = null;
   const rig = $("rig"); rig.textContent = "";
   if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
@@ -425,10 +481,24 @@ function render() {
     }
     rig.append(sec);
   });
-  rig.append(el("p", "hint", "Drag a knob up/down (Shift = fine) · double-click = default · arrow keys nudge · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z redo"));
+  rig.append(el("p", "hint", "Drag a knob up/down (Shift = fine) · double-click or Delete = default · arrow keys nudge · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z redo"));
+  if (fkey) {                     // a re-render must not throw the keyboard user out
+    const again = [...rig.querySelectorAll("[data-k]")].find((n) => n.dataset.k === fkey);
+    const target = again && (again.matches("[tabindex],button") ? again : again.querySelector("button,select"));
+    if (target) target.focus({ preventScroll: true });
+  }
+}
+function setDown(isDown, why) {
+  down = isDown;
+  document.body.classList.toggle("down", down);
+  $("rig").inert = down;          // not just unclickable: unreachable by keyboard too
+  $("save").disabled = down; $("reread").disabled = false;
+  if (why) $("banner").textContent = why;
+  if (down) pending.clear();
+  syncHist();
 }
 function meta(m) {
-  document.body.classList.toggle("down", !m.connected);
+  setDown(!m.connected, "Device disconnected — retrying. Controls are paused.");
   document.body.classList.toggle("dirty", !!m.dirty);
   $("preset").textContent = (m.preset && m.preset.name) || "Edit buffer";
   const sn = $("snap");
@@ -438,34 +508,50 @@ function meta(m) {
 }
 
 /* ---------- the event stream ---------- */
+// what the controls ARE (not their values): a model swap in place changes it
+const shape = (s) => JSON.stringify(s.paths.map(function walk(x) {
+  if (Array.isArray(x)) return x.map(walk);
+  if (x.segments) return [x.path, walk(x.segments), walk(x.extra)];
+  if (x.kind === "block") return [x.block.block, x.block.model];
+  return [x.split.block, x.split.model, walk(x.a), walk(x.b), x.join && [x.join.block, x.join.model]];
+}));
 function onMsg(m) {
   if (m.t === "state") {
-    // history is only meaningful for the tone + snapshot it was recorded on
-    const same = S && S.preset && m.preset && S.preset.cid === m.preset.cid && S.snapshot === m.snapshot;
-    if (!same) { undoS = []; redoS = []; syncHist(); }
+    // history only means something for the tone, snapshot and block layout it was recorded on
+    const same = S && S.preset && m.preset && S.preset.cid != null && S.preset.cid === m.preset.cid &&
+      S.snapshot === m.snapshot && shape(S) === shape(m);
+    if (!same) { undoS = []; redoS = []; }
     S = m; pending.clear(); render(); meta(m);
   } else if (m.t === "meta") {
     if (S) Object.assign(S, m); meta(m);
-  } else if (m.t === "param") {
-    if (m.client === ME) return;                  // our own write, already shown
-    const key = m.path + "/" + m.block + "/" + m.pid, c = P.get(key);
-    if (c && dragging !== key && c.p.value !== m.value) c.set(m.value, "remote");
-  } else if (m.t === "bypass") {
-    if (m.client === ME) return;
-    const c = B.get(m.path + "/" + m.block);
-    if (c && c.b.enabled !== m.enabled) c.set(m.enabled, "remote");
+  } else if (m.t === "param" || m.t === "bypass") {
+    const isP = m.t === "param";
+    const key = m.path + "/" + m.block + (isP ? "/" + m.pid : "");
+    const c = (isP ? P : B).get(key);
+    if (!c) return;
+    const v = isP ? m.value : m.enabled;
+    c.dev = v;                    // what the device holds, whoever wrote it
+    // never yank a control the user is holding or has a newer change queued for
+    if (dragging === key || pending.has(m.t + ":" + key)) return;
+    const cur = isP ? c.p.value : c.b.enabled;
+    if (cur !== v) c.set(v, m.client === ME ? undefined : "remote");
   }
 }
 function connect() {
   const es = new EventSource("/events");
   es.onmessage = (e) => { try { onMsg(JSON.parse(e.data)); } catch (x) { console.error(x); } };
-  es.onerror = () => { document.body.classList.add("down");
-    $("banner").textContent = "Lost contact with the editor server — is `helixgen device live` still running?"; };
-  es.onopen = () => { $("banner").textContent = "Device disconnected — retrying. Controls are paused."; };
+  es.onerror = () => {
+    setDown(true, "Lost contact with the editor server — is `helixgen device live` still running?");
+    if (es.readyState === 2) { es.close(); setTimeout(connect, 3000); }   // the browser gave up: try again ourselves
+  };
 }
 $("undo").onclick = undo; $("redo").onclick = redo;
 $("reread").onclick = () => send("/reread", {}, () => toast("Re-read from the device", true), () => {});
-$("save").onclick = () => send("/save", {}, (j) => toast("Saved “" + (j.saved || "preset") + "” on the device", true), () => {});
+$("save").onclick = async () => {
+  await drained();                // the last tweak must be on the device before it is saved
+  send("/save", {}, (j) => toast("Saved “" + (j.saved || "preset") + "” on the device", true), () => {});
+};
+setDown(true, "Connecting…");
 connect();
 </script>
 </body>
