@@ -648,20 +648,68 @@ def set_enabled(
 
 def _is_parallel_routed(path_dict: dict[str, Any]) -> bool:
     """True if `path_dict` contains a `split`/`join` structural block --
-    i.e. this path has a parallel-routed lane 1 branch.
-
-    `split`/`join` blocks live in lane 0 and carry `branch`/`endpoint` keys
-    that cross-reference specific `bNN` keys by name (see module docstring).
-    Nothing in this module reads those pointers: `add_block` still shifts
-    `bNN` keys out from under them, and `remove_block` would happily delete a
-    block one of them names. Both refuse the path rather than silently
-    corrupting the split/join wiring or desyncing lane 1.
-    """
+    i.e. this path has a parallel-routed lane 1 branch."""
     return any(
         isinstance(path_dict.get(k), dict) and path_dict[k].get("type") in ("split", "join")
         for k in _bnn_keys(path_dict)
         if _lane_pos(k)[0] == 0
     )
+
+
+def _lane0_chain(path_dict: dict[str, Any]) -> list[str]:
+    """Lane-0 keys (blocks AND splits/joins) in chain order."""
+    return sorted(
+        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == 0),
+        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
+    )
+
+
+def _split_spans(path_dict: dict[str, Any], chain: list[str]) -> list[tuple[int, int]] | None:
+    """`(split_index, end_index)` into `chain` for every split region: each
+    split paired with its join in grid order (as `untranscode._endpoint_pointers`
+    pairs them), and an unpaired split -- a USB tap, whose B side runs to
+    b27 -- spanning to the end of the lane (`end_index == len(chain)`).
+    `None` for a join with no split before it (wiring we can't reason about).
+
+    Lane-0 positions STRICTLY inside a span are the split region: an edit
+    there would change what the branch hears, and lane 1 is not renumbered.
+    """
+    spans: list[tuple[int, int]] = []
+    open_splits: list[int] = []
+    for i, k in enumerate(chain):
+        typ = path_dict[k].get("type")
+        if typ == "split":
+            open_splits.append(i)
+        elif typ == "join":
+            if not open_splits:
+                return None
+            spans.append((open_splits.pop(), i))
+    return spans + [(s, len(chain)) for s in open_splits]
+
+
+def _repoint_splits(path_dict: dict[str, Any], key_map: dict[str, str]) -> None:
+    """Rewrite split/join `branch`/`endpoint` pointers after lane 0 moved
+    (`key_map`: old key -> new key, already applied to `path_dict`).
+
+    The pointers name `bNN` keys (see `generate._emit_splits`): `endpoint` is
+    the partner, `branch` a lane-1 key -- or the partner when no lane-1 block
+    sits in the region. Lane 1 is never renumbered here, so a lane-1 `branch`
+    stays put, EXCEPT a split's `branch` aimed at the empty row-1 slot
+    beneath it (`b{14+pos}`, what `to-hsp` writes for a split with nothing
+    in its region, e.g. a pulled USB tap): it follows the split, or the
+    transcoder keeps feeding row 1 from the column the split left.
+    """
+    for old, new in key_map.items():
+        bnn = path_dict[new]
+        if bnn.get("type") not in ("split", "join"):
+            continue
+        beneath = f"b{14 + int(old[1:]):02d}"
+        for ptr in ("branch", "endpoint"):
+            if bnn.get(ptr) in key_map:
+                bnn[ptr] = key_map[bnn[ptr]]
+        if (bnn.get("type") == "split" and bnn.get("branch") == beneath
+                and beneath not in path_dict):
+            bnn["branch"] = f"b{14 + int(new[1:]):02d}"
 
 
 def _find_block(model: str, library: Library) -> Block:
@@ -858,19 +906,11 @@ def add_block(
     if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
         raise MutateError(f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
     path_dict = flow[path]
-    if _is_parallel_routed(path_dict):
-        raise MutateError(
-            "add_block not supported on a parallel-routed path yet (path "
-            f"{path} contains a split/join)."
-        )
 
     block = _find_block(model, library)
     lane = 0
 
-    existing_keys = sorted(
-        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == lane),
-        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
-    )
+    existing_keys = _lane0_chain(path_dict)
     ordered = [path_dict[k] for k in existing_keys]
 
     if after is None:
@@ -878,6 +918,13 @@ def add_block(
     else:
         after_fi, after_key, _si = resolve_slot(body, after, library, path=path, lane=lane)
         insert_at = existing_keys.index(after_key) + 1
+
+    spans = _split_spans(path_dict, existing_keys)
+    if spans is None or any(s < insert_at <= e for s, e in spans):
+        raise MutateError(
+            "add_block not supported on a parallel-routed path yet (path "
+            f"{path} contains a split/join)."
+        )
 
     new_bnn = _to_hsp_bnn(block, params or {}, position=0, path_index=lane)
     ordered.insert(insert_at, new_bnn)
@@ -901,6 +948,8 @@ def add_block(
         new_keys = _renumber_lane(path_dict, lane, ordered, positions)
         pos_map = dict(zip(old_positions,
                            positions[:insert_at] + positions[insert_at + 1:]))
+    _repoint_splits(path_dict, {old: new_keys[j if j < insert_at else j + 1]
+                                for j, old in enumerate(existing_keys)})
     _remap_midi_positions(body, path, lane, pos_map)
     return new_keys[insert_at]
 
@@ -926,12 +975,19 @@ def remove_block(
     """
     fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     path_dict = body["preset"]["flow"][fi]
-    if _is_parallel_routed(path_dict):
+    del_lane, del_pos = _lane_pos(key)
+    if del_lane == 1:
+        refused = _is_parallel_routed(path_dict)
+    else:
+        chain = _lane0_chain(path_dict)
+        spans = _split_spans(path_dict, chain)
+        i = chain.index(key)
+        refused = spans is None or any(s < i < e for s, e in spans)
+    if refused:
         raise MutateError(
             "remove_block not supported on a parallel-routed path yet (path "
             f"{fi} contains a split/join)."
         )
-    del_lane, del_pos = _lane_pos(key)
     del path_dict[key]
     # Nothing moved, so the only MIDI records to reconcile are the removed
     # block's own — they are dropped, with a warning.
