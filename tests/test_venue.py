@@ -655,3 +655,51 @@ def test_a_pushed_device_tap_comes_back_as_itself(lib, irs):
     tap = a.body["preset"]["flow"][0]["b12"]
     assert (tap["type"], tap["position"], tap["branch"]) == ("split", 12, "b26")
     assert _to_direct(a, lib, irs).body["preset"]["flow"] == body["preset"]["flow"]
+
+
+# --- dead cabs (fix round 1) -------------------------------------------------
+#
+# A cab off at base with no bypass controller can never sound (snapshots only
+# disable), so it does not count toward "exactly one cab".
+
+def _dead_cab_body(lib, irs, **top):
+    return _body(lib, irs, blocks=[
+        {"block": "Scream 808"}, {"block": "Brit 2204 Custom"},
+        {"block": "4x12 Greenback 25", "enabled": False},
+        {"block": "IR", "ir": CLOSE}, {"block": "Plate"}], **top)
+
+
+@needs_sf
+def test_a_dead_stock_cab_is_ignored(lib, irs):
+    body = _dead_cab_body(lib, irs)
+    a = venue.apply_venue(body, "headphones", lib, irs)
+    assert a.venue_detail["treatment"] == "room-ir"
+    flow0 = a.body["preset"]["flow"][0]
+    chain = _model_chain(flow0)
+    i = chain.index("HD2_Cab4x12Greenback25")
+    assert chain[i + 1:i + 4] == ["P35_AppDSPSplitY", "HX2_ImpulseResponseWithPan", "P35_AppDSPJoin"]
+    dead = [b for k, b in flow0.items() if k[1:].isdigit()
+            and b["slot"][0]["model"] == "HD2_Cab4x12Greenback25"]
+    assert len(dead) == 1 and dead[0]["@enabled"]["value"] is False
+    assert _to_direct(a, lib, irs).body["preset"]["flow"] == body["preset"]["flow"]
+
+
+@needs_sf
+def test_a_switchable_off_cab_counts_as_live(lib, irs):
+    body = _dead_cab_body(lib, irs, footswitches=[{"switch": "FS1", "block": "4x12 Greenback 25"}])
+    r = venue.apply_venue(body, "headphones", lib, irs)
+    assert r.venue_detail["treatment"] == "tile"
+    assert "2 cab blocks" in r.venue_detail["fallback_reason"]
+
+
+@needs_sf
+def test_a_switchable_single_cab_falls_back_to_tile(lib, irs):
+    body = _body(lib, irs, footswitches=[{"switch": "FS1", "block": "IR"}])
+    r = venue.apply_venue(body, "headphones", lib, irs)
+    assert r.venue_detail["treatment"] == "tile" and "switch" in r.venue_detail["fallback_reason"]
+
+
+def test_amp_in_still_removes_a_dead_cab(lib, irs):
+    r = venue.apply_venue(_dead_cab_body(lib, irs), "amp-in", lib, irs)
+    assert not any(b["slot"][0]["model"] in ("HD2_Cab4x12Greenback25", "HX2_ImpulseResponseWithPan")
+                   for k, b in r.body["preset"]["flow"][0].items() if k[1:].isdigit())

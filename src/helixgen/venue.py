@@ -200,6 +200,32 @@ def _cabs_after_amp(body: dict, library: Library, pi: int) -> list[tuple]:
     return [t for t in sl[last + 1:] if _is_cab(t[2])]
 
 
+def _live_cabs_after_amp(body: dict, library: Library, pi: int) -> list[tuple]:
+    """Cabs after the last amp that can sound; a dead one is left in the chain
+    untouched and does not count toward the room IR's "exactly one cab"."""
+    return [t for t in _cabs_after_amp(body, library, pi) if _live(body, t)]
+
+
+def _bypass_switched(body: dict, fi: int, key: str, lane: int, pos: int) -> bool:
+    """A footswitch / EXP toe / MIDI bypass assignment can turn this block on."""
+    en = _bnn(body, fi, key).get("@enabled")
+    if isinstance(en, dict) and isinstance(en.get("controller"), dict):
+        return True
+    return any(isinstance(r, dict) and r.get("param") is None and
+               (r.get("path"), r.get("lane"), r.get("pos")) == (fi, lane, pos)
+               for r in mutate._midi_records(body))
+
+
+def _live(body: dict, t: tuple) -> bool:
+    """Can this block ever sound? On in some snapshot (or at base), or switchable.
+    Snapshots only disable, so a block off everywhere with no switch is dead."""
+    fi, key, _, lane, pos = t
+    en = _bnn(body, fi, key).get("@enabled")
+    en = en if isinstance(en, dict) else {"value": True}
+    return (any(v is not False for v in [en.get("value"), *(en.get("snapshots") or [])])
+            or _bypass_switched(body, fi, key, lane, pos))
+
+
 def _varies(w: Any) -> bool:
     snaps = w.get("snapshots") if isinstance(w, dict) else None
     return isinstance(snaps, list) and len({repr(v) for v in snaps}) > 1
@@ -255,6 +281,8 @@ def _room_ir_blocker(body, pi, cabs, irs, room_mode) -> str | None:
     off = [i for i, v in enumerate(en.get("snapshots") or []) if v is False]
     if off:
         return f"the cab is bypassed in snapshot {_snapshot_name(body, off[0])!r}"
+    if _bypass_switched(body, *cabs[0][:2], lane, cabs[0][4]):
+        return f"the cab {blk.display_name!r} has a bypass switch assigned"
     if not blk.model_id.startswith(IR_MODEL_PREFIX):
         return f"{blk.display_name!r} is a stock cab, not an IR block"
     if _ir_wav(bnn, irs) is None:
@@ -275,10 +303,10 @@ def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> Ve
                               "ambience_switch": None, "fallback_reason": None}
     pi = _instrument_path(body, library)
     base, _ = _untapped(body, pi)
-    cabs = _cabs_after_amp(base, library, pi)
+    cabs = _live_cabs_after_amp(base, library, pi)
     if not cabs:
         return VenueResult(copy.deepcopy(body), "headphones", detail,
-                           ["no cab or IR block after the amp: chain left unchanged"])
+                           ["no live cab or IR block after the amp: chain left unchanged"])
     reason = _room_ir_blocker(base, pi, cabs, irs, room_mode)
     _, ckey, cblk, _, cpos = cabs[0]
     room = level = None
