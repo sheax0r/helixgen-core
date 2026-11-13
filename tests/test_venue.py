@@ -51,6 +51,30 @@ def test_find_room_ir_matches_prefix_prefers_natural_phase_then_energy(irs_fixtu
 
 
 @needs_sf
+def test_find_room_ir_skips_stereo_pair_halves_when_a_single_capture_exists(tmp_path):
+    root = tmp_path / "irs"
+    irs = IrMapping(irs_dir=root)
+    pack = "YA FTWN 212 D120/natural-phase/YA FTWN 212 D120 "
+    irs.register("l", _wav(root / (pack + "ROOM L.wav"), 0.9))   # loudest, half of an L/R pair
+    irs.register("r", _wav(root / (pack + "ROOM R.wav"), 0.8))
+    irs.register("one", _wav(root / (pack + "ROOM-1.wav"), 0.3))
+    irs.register("two", _wav(root / (pack + "ROOM-2.wav"), 0.4))
+    h, p = venue.find_room_ir(_close(tmp_path, "YA FTWN 212 D120 Mix 04.wav"), irs)
+    assert h == "two" and p.name == "YA FTWN 212 D120 ROOM-2.wav"
+
+
+@needs_sf
+def test_find_room_ir_uses_a_pair_half_when_nothing_else_exists(tmp_path):
+    root = tmp_path / "irs"
+    irs = IrMapping(irs_dir=root)
+    pack = "YA FTWN 212 D120/natural-phase/YA FTWN 212 D120 "
+    irs.register("l", _wav(root / (pack + "ROOM L.wav"), 0.5))
+    irs.register("r", _wav(root / (pack + "ROOM R.wav"), 0.5))
+    h, p = venue.find_room_ir(_close(tmp_path, "YA FTWN 212 D120 Mix 04.wav"), irs)
+    assert h == "l" and p.name == "YA FTWN 212 D120 ROOM L.wav"
+
+
+@needs_sf
 def test_find_room_ir_none_when_pack_has_no_room(irs_fixture, tmp_path):
     assert venue.find_room_ir(_close(tmp_path, "YA DXVB 112 Mix 01.wav"), irs_fixture) is None
 
