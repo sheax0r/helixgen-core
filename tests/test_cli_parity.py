@@ -67,6 +67,8 @@ PARITY: list[tuple[str, list[str], list[str]]] = [
     ("generate_preset", ["generate"],
      ["Unknown param(s)", "show-block", "source of truth", "recipe-reference",
       "model_id", "stable handle", "MODEL DEFAULT",
+      # venue variants
+      "default_venue", "--venue with -o is a usage error",
       # hgc-2ja: the two identity guards + the pointer at `library fork`
       "smuggled identity", "WARNS on stderr", "library fork"]),
     ("list_irs", ["list-irs"],
@@ -234,7 +236,13 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
      ["THE .hsp IS THE SOURCE", "VERBATIM", "NEVER read for values",
       "SECOND VARIANT", "SAME LOGICAL TONE", "NEW LOGICAL TONE",
       "ADAPTATION IS ADVISORY", "does NOT re-voice", "STDERR", "forked_from",
-      "INHERITED banner", "write NOTHING", "guitar_settings"]),
+      "INHERITED banner", "write NOTHING", "guitar_settings",
+      # venue variants: --venue turns a fork into another-venue variant
+      "VENUE", "venue_from", "<guitar>@<venue>"]),
+    # --- library venue (venue variants) ---
+    (["library", "venue"],
+     ["IN PLACE", "headphones", "amp-in", "already <venue>", "venue_detail",
+      "left alone", "--dry-run"]),
     # --- IR metadata: copy-by-default + backfill (Task 12) ---
     (["register-irs"],
      ["COPIED", "--no-copy", "imported_from", "one-time bridged"]),

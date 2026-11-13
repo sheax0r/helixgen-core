@@ -182,6 +182,19 @@ def ingest_cmd(path: Path, library_path: Path | None) -> None:
     "--guitar", "guitar", default=None,
     help="Target guitar label; slugified and appended to the display name + filename.",
 )
+@click.option(
+    "--venue", "venue_target", default=None,
+    type=click.Choice(["headphones", "direct", "amp-in"]),
+    help="Venue the tone is played through (library flow only). Default: the "
+         "`default_venue` preference; neither = no transform. `direct` records "
+         "the venue with no transform. Not valid with -o.",
+)
+@click.option("--room-ir", "room_ir", default=None, metavar="HASH_OR_WAV",
+              help="Room IR for --venue headphones: registered hash or wav basename.")
+@click.option("--room", "room_mode", type=click.Choice(["auto", "tile"]),
+              default="auto", show_default=True,
+              help="Headphones treatment: auto = room IR when possible, else "
+                   "Tile; tile = force the Tile fallback.")
 @_library_option
 @_irs_option
 def generate_cmd(
@@ -191,6 +204,9 @@ def generate_cmd(
     song: str | None,
     descriptor: str | None,
     guitar: str | None,
+    venue_target: str | None,
+    room_ir: str | None,
+    room_mode: str,
     library_path: Path | None,
     irs_dir: Path | None,
 ) -> None:
@@ -240,6 +256,16 @@ def generate_cmd(
         extension picks the format: .hsp = Stadium (8-byte magic + JSON),
         .hlx = legacy Helix pretty JSON.
 
+    VENUE (--venue headphones|direct|amp-in, library flow only): the tone is
+    converted to that venue after generation and the variant records it. With
+    no --venue the `default_venue` preference applies; with neither, output is
+    unchanged and no venue is recorded. `--venue direct` records direct with no
+    transform. If the guitar's bare variant already holds a different venue
+    the new one lands at key `<guitar>@<venue>` (file `...-<venue>.hsp`, name
+    suffix like ` (Amp In)`). --venue with -o is a usage error (default_venue
+    is ignored there). --room-ir / --room tile steer headphones; see
+    `library venue --help`.
+
     To make a second variant of a tone that already exists -- another guitar,
     or the same rig on another song -- use `library fork`, not a re-author: it
     copies the source .hsp verbatim, so nothing is rebuilt from a write-up.
@@ -250,6 +276,9 @@ def generate_cmd(
     """
     library = _resolved_library(library_path)
     irs = _resolved_irs(irs_dir)
+    if output_path is not None and venue_target:
+        raise click.UsageError(
+            "--venue only applies to the library flow; drop -o/--output.")
     try:
         # Parse+validate the recipe before touching the chassis, matching the
         # legacy error-ordering tests rely on (a malformed recipe reports its
@@ -325,13 +354,27 @@ def generate_cmd(
             r_artist, r_song, r_descriptor = artist, song, descriptor
         else:
             r_artist, r_song, r_descriptor = None, None, spec.name
+        if venue_target is None:
+            from helixgen import preferences as _prefs
+            try:
+                venue_target = _prefs.load_preferences().default_venue
+            except _prefs.PreferencesError as e:
+                raise click.ClickException(str(e)) from e
+        try:
+            logical = naming.logical_slug(
+                artist=r_artist, song=r_song, descriptor=r_descriptor,
+            )
+        except ValueError as e:
+            raise click.ClickException(str(e)) from e
+        suffixed = False
+        if venue_target and logical and tone_meta.meta_path(logical).exists():
+            _k, suffixed = tone_meta.variant_key_for(
+                tone_meta.load_tone_meta(logical), guitar_slug, venue_target)
         try:
             preset_name = naming.display_name(
                 artist=r_artist, song=r_song, descriptor=r_descriptor,
                 guitar_short=guitar_short,
-            )
-            logical = naming.logical_slug(
-                artist=r_artist, song=r_song, descriptor=r_descriptor,
+                venue_suffix=naming.VENUE_SUFFIX[venue_target] if suffixed else None,
             )
         except ValueError as e:
             raise click.ClickException(str(e)) from e
@@ -343,7 +386,8 @@ def generate_cmd(
                 "digits) -- give a --descriptor/--artist/--song (or recipe "
                 "name) with real text."
             )
-        variant = naming.variant_slug(logical, guitar_slug)
+        variant = naming.variant_slug(logical, guitar_slug,
+                                      venue=venue_target if suffixed else None)
 
         libinit.ensure_initialized()
         tones = home.tones_dir()
@@ -389,6 +433,15 @@ def generate_cmd(
         data = generate_from_recipe(
             spec, library, irs=irs, chassis=chassis, source=str(spec_path)
         )
+        venue_res = None
+        if venue_target:
+            from helixgen.cli_library import _apply_venue_cli
+            from helixgen.hsp import HSP_MAGIC_LEN, dumps_hsp
+            venue_res, _irs = _apply_venue_cli(
+                json.loads(data[HSP_MAGIC_LEN:].decode("utf-8")), venue_target,
+                source_venue=None, source_detail=None, room_ir=room_ir,
+                room_mode=room_mode, library_path=library_path, irs_dir=irs_dir)
+            data = dumps_hsp(venue_res.body)
         out.write_bytes(data)
 
         # Metadata JSON (creates or extends the logical tone), then manifest.
@@ -401,6 +454,8 @@ def generate_cmd(
                 artist=r_artist, song=r_song, descriptor=r_descriptor,
                 guitar_slug=guitar_slug, guitar_short=guitar_short,
                 hsp_path=out,
+                venue=venue_target,
+                venue_detail=venue_res.venue_detail if venue_res else None,
             )
             tone_meta.save_tone_meta(meta)  # atomic write + advisory commit
             _auto_register_tone(out)
@@ -425,6 +480,9 @@ def generate_cmd(
         click.echo(f"Wrote {out}")
         click.echo(f"Preset name: {preset_name}")
         click.echo(f"Logical tone: {logical}")
+        if venue_res is not None:
+            from helixgen.cli_library import _venue_summary
+            click.echo(_venue_summary(venue_res, _irs))
     except (KeyError, LookupError, SpecError, ParamValidationError, GenerateError, FileNotFoundError) as e:
         raise click.ClickException(str(e)) from e
 

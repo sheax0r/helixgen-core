@@ -434,7 +434,8 @@ def show_cmd(name: str, as_json: bool) -> None:
                     if variant.normalized else "")
             fork = (f"  -- {_forked_from_brief(variant.forked_from)}"
                     if variant.forked_from else "")
-            click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]{norm}{fork}")
+            ven = f"  -- venue {variant.venue}" if variant.venue else ""
+            click.echo(f"  {key}: {variant.preset_name}  [{variant.hsp}]{ven}{norm}{fork}")
         return
 
     # Not a tone -- try a guitar profile (slug / name / short_name).
@@ -1099,6 +1100,57 @@ def _inherited_note(source_label: str, target_label: str, when: str,
     return f"{banner}\n\n{inherited}" if inherited else banner + "\n"
 
 
+def _room_options(f):
+    """--room-ir / --room, shared by every verb that applies a venue."""
+    f = click.option("--room", "room_mode", type=click.Choice(["auto", "tile"]),
+                     default="auto", show_default=True,
+                     help="Headphones treatment: auto = parallel room IR when the "
+                          "chain allows, else Tile; tile = force the Tile fallback.")(f)
+    return click.option("--room-ir", "room_ir", default=None, metavar="HASH_OR_WAV",
+                        help="Room IR for the headphones treatment: a registered "
+                             "hash or wav basename. Default: the close IR's "
+                             "pack-matched ROOM IR.")(f)
+
+
+def _venue_summary(res, irs) -> str:
+    d = res.venue_detail or {}
+    parts: List[str] = []
+    if res.venue == "headphones":
+        parts.append(d.get("treatment") or "none")
+        if d.get("treatment") == "room-ir":
+            try:
+                name = irs.resolve_by_hash(d["room_ir"]).stem
+            except Exception:  # noqa: BLE001 -- display only
+                name = d["room_ir"]
+            parts.append(f"{name} @ {d['room_level_db']} dB")
+            if d.get("room_switch"):
+                parts.append(d["room_switch"])
+        if d.get("ambience_block"):
+            parts.append(f"{d['ambience_block']}"
+                         + (f" {d['ambience_switch']}" if d.get("ambience_switch") else ""))
+    return f"venue: {res.venue}" + (f" ({', '.join(parts)})" if parts else "")
+
+
+def _apply_venue_cli(body, target, *, source_venue, source_detail, room_ir,
+                     room_mode, library_path=None, irs_dir=None):
+    """Run ``venue.apply_venue`` with CLI error mapping; echo its warnings
+    (stderr). Returns ``(result, irs)``."""
+    from helixgen import venue as _venue
+    from helixgen.cli import _resolved_irs, _resolved_library
+
+    irs = _resolved_irs(irs_dir)
+    try:
+        res = _venue.apply_venue(
+            body, target, _resolved_library(library_path), irs,
+            source_venue=source_venue, source_detail=source_detail,
+            room_ir=room_ir, room_mode=room_mode)
+    except (_venue.VenueError, ValueError, KeyError, LookupError) as err:
+        raise click.ClickException(f"venue: {err}") from err
+    for w in res.warnings:
+        click.echo(f"warning: {w}", err=True)
+    return res, irs
+
+
 def _resolve_fork_source(source: str) -> tuple[tone_meta.ToneMeta | None, str | None, Path]:
     """Resolve SOURCE to ``(meta, variant_key, hsp_path)``.
 
@@ -1133,6 +1185,81 @@ def _resolve_fork_source(source: str) -> tuple[tone_meta.ToneMeta | None, str | 
     return meta, key, hsp
 
 
+@library.command(name="venue")
+@click.argument("variant")
+@click.argument("target", metavar="VENUE",
+                type=click.Choice(["headphones", "direct", "amp-in"]))
+@_room_options
+@click.option("--dry-run", "dry_run", is_flag=True, default=False,
+              help="Run the conversion in memory, print its warnings and "
+                   "summary, and write NOTHING.")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the result as JSON instead of a human summary.")
+@click.option("--library", "library_path", envvar="HELIXGEN_LIBRARY",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Block library used for the conversion. Defaults to the tone library.")
+@click.option("--irs-dir", "irs_dir", envvar="HELIXGEN_IRS",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="IRs directory used for room-IR lookup.")
+def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
+              dry_run: bool, as_json: bool, library_path: Path | None,
+              irs_dir: Path | None) -> None:
+    """Convert a variant IN PLACE to another venue (what it is played through).
+
+    VARIANT resolves like `library fork`'s SOURCE (logical slug, metadata
+    filename, or a variant's exact `preset_name`; an .hsp path that is a
+    library variant also works). A tone slug with several variants is
+    ambiguous and exits 1 listing each `preset_name`.
+
+    \b
+    VENUES:
+      * headphones -- adds a parallel ROOM IR (pack-matched to the close IR,
+        level energy-matched) on a footswitch, else a Tile ambience block.
+      * direct -- the plain cab chain; from headphones it removes exactly the
+        room stage that was recorded in `venue_detail`.
+      * amp-in -- removes the cabs and adds a post-amp EQ, for playing into
+        a real guitar amp's input. One-way: converting FROM amp-in errors.
+    The same venue as the variant already has errors ("already <venue>"). A
+    variant with no recorded venue is treated as direct.
+
+    The `.hsp` is rewritten and the variant's `venue`/`venue_detail` updated;
+    its key, filename, `preset_name` and `forked_from` are left alone (use
+    `library fork --venue` for a separate variant). `--room-ir` / `--room tile`
+    steer the headphones treatment. Warnings go to stderr, plus a one-line
+    `venue:` summary. `--dry-run` writes nothing.
+    """
+    from helixgen.hsp import write_hsp
+
+    meta, key, hsp = _resolve_fork_source(variant)
+    if meta is None or key is None:
+        raise click.ClickException(
+            f"{variant} is not a registered library variant -- venue "
+            "conversion records its result on the variant.")
+    v = meta.variants[key]
+    res, irs = _apply_venue_cli(
+        read_hsp(hsp), target, source_venue=v.venue, source_detail=v.venue_detail,
+        room_ir=room_ir, room_mode=room_mode,
+        library_path=library_path, irs_dir=irs_dir)
+    summary = _venue_summary(res, irs)
+    if not dry_run:
+        write_hsp(hsp, res.body)
+        v.venue, v.venue_detail = res.venue, res.venue_detail
+        tone_meta.save_tone_meta(meta)
+        gitops.auto_commit(home.helixgen_home(),
+                           f"helixgen: venue {key} -> {res.venue} ({meta.logical_slug})")
+    if as_json:
+        click.echo(json.dumps({
+            "dry_run": dry_run, "tone": meta.logical_slug, "variant": key,
+            "hsp": str(hsp), "venue": res.venue, "venue_detail": res.venue_detail,
+            "warnings": res.warnings}, indent=2))
+        return
+    click.echo(summary, err=True)
+    prefix = "Would convert" if dry_run else "Converted"
+    click.echo(f"{prefix} {key} ({meta.logical_slug}) to {res.venue}: {hsp}")
+    if dry_run:
+        click.echo("Dry run -- nothing was written.")
+
+
 @library.command(name="fork")
 @click.argument("source")
 @click.option("--guitar", "guitar", default=None,
@@ -1145,13 +1272,27 @@ def _resolve_fork_source(source: str) -> tuple[tone_meta.ToneMeta | None, str | 
               help="New descriptor identity (mutually exclusive with "
                    "--artist/--song). Must be the tone name ALONE -- no ' - ' "
                    "separator, no trailing guitar name.")
+@click.option("--venue", "venue_target", default=None,
+              type=click.Choice(["headphones", "direct", "amp-in"]),
+              help="Also convert the copy to this venue (what it is played "
+                   "through). With no other identity/guitar flag this forks the "
+                   "SAME tone on the SAME guitar as another venue variant.")
+@_room_options
 @click.option("--dry-run", "dry_run", is_flag=True, default=False,
               help="Print exactly what would be written and write NOTHING.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the fork record as JSON instead of a human summary.")
+@click.option("--library", "library_path", envvar="HELIXGEN_LIBRARY",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Block library used by --venue. Defaults to the tone library.")
+@click.option("--irs-dir", "irs_dir", envvar="HELIXGEN_IRS",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="IRs directory used by --venue (room IR lookup).")
 def fork_cmd(source: str, guitar: str | None, artist: str | None,
-             song: str | None, descriptor: str | None, dry_run: bool,
-             as_json: bool) -> None:
+             song: str | None, descriptor: str | None, venue_target: str | None,
+             room_ir: str | None, room_mode: str, dry_run: bool,
+             as_json: bool, library_path: Path | None,
+             irs_dir: Path | None) -> None:
     """Fork a tone onto another guitar (or another song) from its .hsp.
 
     THE .hsp IS THE SOURCE. The forked preset is a byte-for-byte copy of the
@@ -1180,6 +1321,17 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
     An existing target variant is an ERROR naming the existing .hsp -- nothing
     is overwritten and nothing is written. Pick a different --guitar, or edit
     the existing .hsp in place with the surgical verbs.
+
+    \b
+    VENUE (--venue headphones|direct|amp-in): after the byte copy, the copy
+    is converted to that venue (`helixgen library venue --help` explains the
+    three). The source variant's own venue/venue_detail say what is being
+    converted FROM, and `forked_from.venue_from` records it. `--venue` alone
+    (same tone, same guitar) is a valid fork: the new variant lives at key
+    `<guitar>@<venue>` with a ` (Amp In)`-style display suffix -- unless the
+    guitar's bare variant already holds that venue, which is an error
+    (nothing written). `--room-ir` / `--room tile` steer the headphones
+    treatment. Warnings go to stderr, plus a one-line `venue:` summary.
 
     PROVENANCE is recorded on the new variant (`forked_from`: source tone,
     source variant, source .hsp, helixgen version, date) and shown by
@@ -1227,9 +1379,6 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
         guitar_slug = guitar_short = None
 
     try:
-        preset_name = naming.display_name(
-            artist=t_artist, song=t_song, descriptor=t_descriptor,
-            guitar_short=guitar_short)
         logical = naming.logical_slug(
             artist=t_artist, song=t_song, descriptor=t_descriptor)
     except ValueError as err:
@@ -1238,11 +1387,22 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
         raise click.ClickException(
             "the tone identity has no slug-able characters (letters or digits) "
             "-- give a --descriptor/--artist/--song with real text.")
-    new_slug = naming.variant_slug(logical, guitar_slug)
-
-    # --- collision + identity guards (BEFORE anything is written) --------
     existing = (tone_meta.load_tone_meta(logical)
                 if tone_meta.meta_path(logical).exists() else None)
+    suffixed = False
+    if venue_target:
+        _key, suffixed = tone_meta.variant_key_for(existing, guitar_slug, venue_target)
+    try:
+        preset_name = naming.display_name(
+            artist=t_artist, song=t_song, descriptor=t_descriptor,
+            guitar_short=guitar_short,
+            venue_suffix=naming.VENUE_SUFFIX[venue_target] if suffixed else None)
+    except ValueError as err:
+        raise click.ClickException(str(err)) from err
+    new_slug = naming.variant_slug(logical, guitar_slug,
+                                   venue=venue_target if suffixed else None)
+
+    # --- collision + identity guards (BEFORE anything is written) --------
     if existing is not None:
         def _norm(v: str | None) -> str | None:
             return v.strip() if v and v.strip() else None
@@ -1296,14 +1456,29 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
                       != guitars.pickup_class(dst_profile))
     checklist = _adaptation_checklist(src_hsp) if pickups_differ else []
 
+    venue_res = None
+    if venue_target:
+        src_venue = src_variant.venue if src_variant else None
+        forked_from["venue_from"] = src_venue
+        venue_res, irs = _apply_venue_cli(
+            read_hsp(src_hsp), venue_target, source_venue=src_venue,
+            source_detail=src_variant.venue_detail if src_variant else None,
+            room_ir=room_ir, room_mode=room_mode,
+            library_path=library_path, irs_dir=irs_dir)
+        click.echo(_venue_summary(venue_res, irs), err=True)
+
     record = {
         "dry_run": dry_run,
         "source": {"tone": forked_from["tone"], "variant": src_key,
                    "hsp": str(src_hsp)},
-        "target": {"tone": logical, "variant": guitar_slug or "generic",
+        "target": {"tone": logical, "variant": (
+                       f"{guitar_slug or 'generic'}@{venue_target}" if suffixed
+                       else guitar_slug or "generic"),
                    "preset_name": preset_name, "hsp": str(dest),
                    "new_logical_tone": new_logical},
         "forked_from": forked_from,
+        "venue": ({"venue": venue_res.venue, "venue_detail": venue_res.venue_detail,
+                   "warnings": venue_res.warnings} if venue_res else None),
         "adaptation": {
             "pickups_differ": pickups_differ,
             "from": guitars.describe_pickups(src_profile),
@@ -1320,7 +1495,8 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
                 new_name=preset_name, logical=logical, new_slug=new_slug,
                 move=False, description_md=description_md,
                 variant_fields={"notes_md": notes_md,
-                                "forked_from": forked_from})
+                                "forked_from": forked_from},
+                venue_result=venue_res)
         except migrate.ToneCollision:
             raise click.ClickException(
                 f"a tone already exists at {dest} -- refusing to overwrite. "
@@ -1496,6 +1672,8 @@ def describe(tone: str) -> None:
         settings = ", ".join(f"{k}={v}" for k, v in variant.guitar_settings.items())
         click.echo(f"  {key}")
         click.echo(f"    preset_name: {variant.preset_name}")
+        if variant.venue:
+            click.echo(f"    venue: {variant.venue}")
         click.echo(f"    guitar_settings: {settings if settings else '(none)'}")
         if variant.forked_from:
             click.echo(f"    {_forked_from_brief(variant.forked_from)}")
