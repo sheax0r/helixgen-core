@@ -26,7 +26,7 @@ import time
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from helixgen.device import content as _content
-from helixgen.device.client import Container, HelixError
+from helixgen.device.client import HelixError
 from helixgen.liveedit import chain as _chain
 from helixgen.liveedit.events import DIRTY_KEY, decode_event
 
@@ -427,22 +427,30 @@ class LiveSession:
         return {"enabled": on}
 
     def save(self) -> dict:
-        """Persist the edit buffer into the ACTIVE preset, in place — the
-        hardware's own Save. Only a preset in the user pool can be saved this
-        way; anything else (a factory preset, an unresolvable id) is refused."""
+        """Persist the edit buffer into the ACTIVE tone's preset, in place — the
+        hardware's own Save. The target is the user-pool preset that holds the
+        tone (for one loaded from a setlist, the preset its setlist entry
+        points at — so the save shows in every setlist holding that preset);
+        a factory preset or an unresolvable id is refused. Returns the pool
+        ``cid`` that was written."""
         with self.devlock:
             with self.cond:
                 self._require_up()
             with self.lease.transient(("editbuffer", "library")):
                 try:
                     pre = self.client.active_preset()
-                    cid, ccid = pre.get("cid"), pre.get("ccid")
-                    if cid is None or ccid != int(Container.POOL):
+                    active = pre.get("cid")
+                    # a tone loaded from a setlist is active under its setlist
+                    # REFERENCE; the content lives in the pool preset behind it
+                    cid = (self.client.resolve_pool_cid(active, pre.get("ccid"))
+                           if active is not None else None)
+                    if cid is None:
                         raise LiveError(
-                            "only a preset in the user pool can be saved in "
-                            f"place (active preset: {pre.get('name') or cid!r}). "
-                            "Use `helixgen device save` to store the edit "
-                            "buffer as a new preset.", status=409)
+                            "only a user preset can be saved in place (active "
+                            f"preset: {pre.get('name') or active!r} is a "
+                            "factory preset or does not resolve). Use "
+                            "`helixgen device save` to store the edit buffer "
+                            "as a new preset.", status=409)
                     ok = self.client.save_edit_buffer(cid)
                 except (HelixError, OSError) as e:
                     self._set_connected(False)
@@ -450,7 +458,7 @@ class LiveSession:
             if not ok:
                 raise LiveError("the device refused the save", status=502)
             with self.cond:
-                self._preset = {"cid": cid, "name": pre.get("name")}
+                self._preset = {"cid": active, "name": pre.get("name")}
                 self._dirty = False
                 self._emit_meta()
         return {"saved": pre.get("name"), "cid": cid}

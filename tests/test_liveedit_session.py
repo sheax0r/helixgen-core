@@ -43,6 +43,7 @@ class FakeClient:
         self.fast_reads = []
         self.preset_reads = 0
         self.firmware = "1.4.1"
+        self.pool_of = {}        # setlist reference cid -> pool preset cid
         self.on_read = None      # hooks: run in the middle of a device call
         self.on_write = None
 
@@ -71,6 +72,13 @@ class FakeClient:
 
     def product_info(self):
         return {"firmware": self.firmware}
+
+    def resolve_pool_cid(self, cid, ccid=None):
+        if self.fail is not None:
+            raise self.fail
+        if ccid == -2:
+            return cid
+        return self.pool_of.get(cid)
 
     def set_param(self, path, block, pid, value, *, force=False, fast=False,
                   ptype=None):
@@ -374,6 +382,17 @@ def test_save_persists_the_active_user_preset_in_place(s):
     assert s.lease.transients == [("editbuffer", "library")]
     assert s.public_state()["dirty"] is False
     assert any(m["t"] == "meta" and m["dirty"] is False for m in _drain(s, v, r)[2])
+
+
+def test_save_of_a_tone_loaded_from_a_setlist_goes_to_its_pool_preset(s):
+    # HW 2026-11-13: the active id of a setlist-loaded tone is the setlist
+    # REFERENCE; saving into the pool preset it points at is what persists
+    # (and what the hardware's own Save does). Refusing it would make Save
+    # useless for anything loaded from a setlist.
+    s.client.preset = {"cid": 1950, "name": "Dream On", "posi": 0, "slot": "1A", "ccid": 1949}
+    s.client.pool_of = {1950: 1750}
+    assert s.save() == {"saved": "Dream On", "cid": 1750}
+    assert s.client.saves == [1750]
 
 
 def test_save_refuses_anything_but_a_user_pool_preset(s):

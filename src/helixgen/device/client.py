@@ -1148,6 +1148,43 @@ class HelixClient:
         return {"cid": cid, "name": ref.get("name"), "posi": ref.get("posi"),
                 "slot": slot_label(ref.get("posi")), "ccid": ref.get("ccid")}
 
+    def resolve_pool_cid(self, cid: int, ccid: Optional[int] = None) -> Optional[int]:
+        """The user-POOL preset that holds the content behind ``cid``.
+
+        A preset in the pool is itself. A tone loaded FROM A SETLIST is active
+        under its setlist REFERENCE (``ccid`` = the setlist, ``rcid`` = the pool
+        preset it points at — HW 2026-11-13: loading reference 1950 made
+        ``server.active.preset.id`` 1950, not pool preset 1750); the content
+        lives in the pool preset, so that is what an in-place save or a
+        ``to-hsp`` must address. ``None`` when ``cid`` is neither — a factory
+        preset, a reference to one, an id that does not resolve.
+
+        Pass ``ccid`` when you already have it (``active_preset()`` returns
+        it) to skip a lookup. Read-only.
+        """
+        pool = int(Container.POOL)
+        ref: Optional[Dict[str, Any]] = None
+        if ccid is None:
+            ref = self.get_ref(int(cid)) or {}
+            ccid = ref.get("ccid")
+        if ccid == pool:
+            return int(cid)
+        if ref is None:
+            ref = self.get_ref(int(cid)) or {}
+        rcid = ref.get("rcid")
+        if isinstance(rcid, int) and not isinstance(rcid, bool):
+            if (self.get_ref(rcid) or {}).get("ccid") == pool:
+                return rcid
+        return None
+
+    def preset_edited(self) -> bool:
+        """Whether the live edit buffer holds UNSAVED changes — the device's
+        own ``volatile.preset.edited`` flag (set by the first edit, cleared by
+        a save or a preset load). Anything that loads a preset discards them.
+        Read-only. (Not available through ``settings get``: the property has no
+        definition record.)"""
+        return bool(self.get_property("volatile.preset.edited").value)
+
     def load_preset(self, cid: int) -> bool:
         return self._ok(self._rpc("/LoadPresetWithCID", [("i", cid)]))
 

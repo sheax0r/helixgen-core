@@ -1932,12 +1932,32 @@ def device_active(as_json: bool, ip: str, port: int) -> None:
     cid via the read-only /GetContentRef. Save/restore the player's
     selection around your own work: note the cid printed here, then
     `device load <cid>` to put it back.
+
+    Two more facts (0.60.0), both in --json:
+
+    `edited` — whether the edit buffer holds UNSAVED changes (the device's own
+    flag; null if it could not be read). CHECK IT BEFORE YOU LOAD ANYTHING:
+    `device load`, and every verb that loads a preset, discards unsaved
+    edits — including whatever the player just dialed in on the hardware or
+    in `device live`. `device to-hsp` reads the STORED preset, so unsaved
+    edits are not in what it returns either.
+
+    `pool_cid` — the user-pool preset that holds the tone. For a tone loaded
+    from a setlist `cid` is the SETLIST REFERENCE (its container is the
+    setlist) and `pool_cid` is the preset it points at: pass `pool_cid`, not
+    `cid`, to `device to-hsp`. Equal to `cid` for a pool preset; null for a
+    factory preset.
     """
     HelixClient, HelixError = _client()
 
     try:
         with HelixClient(ip, port) as h:
             info = h.active_preset()
+            info["pool_cid"] = h.resolve_pool_cid(info["cid"], info.get("ccid"))
+            try:
+                info["edited"] = h.preset_edited()
+            except HelixError:
+                info["edited"] = None
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
@@ -1949,6 +1969,12 @@ def device_active(as_json: bool, ip: str, port: int) -> None:
     click.echo(f"name:  {info.get('name') or '?'}")
     click.echo(f"slot:  {info.get('slot') or '?'}  (posi {info.get('posi')}, "
                f"container {info.get('ccid')})")
+    if info["pool_cid"] != info["cid"]:
+        click.echo(f"pool:  {info['pool_cid'] if info['pool_cid'] is not None else '— (not a user preset)'}"
+                   "  (the preset this entry points at)")
+    if info["edited"]:
+        click.echo("state: UNSAVED edits in the edit buffer — loading any "
+                   "preset discards them")
 
 
 @device.command(name="bypass")
@@ -4972,9 +4998,12 @@ def device_live(http_port: int, no_open: bool, no_lock: bool,
     of whatever tone is loaded, heard at once. Values are sent in the param's
     RAW range and clamped to it (the device itself clamps nothing).
 
-    Nothing persists until Save is pressed on the page. Save is the
-    hardware's own Save: it overwrites the ACTIVE preset in place, and only
-    when that preset lives in the user pool (a factory preset is refused —
+    Nothing persists until Save is pressed on the page (until then the page
+    shows Unsaved, `device active` reports `edited`, and loading any preset
+    discards the changes). Save is the hardware's own Save: it overwrites the
+    ACTIVE tone's preset in place — a preset in the user pool; for a tone
+    loaded from a setlist, the pool preset its setlist entry points at, so
+    the save shows in every setlist holding it (a factory preset is refused —
     use `helixgen device save` to store the edit buffer as a new preset).
     The tone LIBRARY is NOT updated: after a Save the library's `.hsp` for
     that tone is stale, a later `device copy` of it would overwrite the

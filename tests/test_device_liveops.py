@@ -517,3 +517,48 @@ def test_fast_edit_buffer_read_skips_the_settle_drain(monkeypatch):
     assert "first_wait" not in seen["kw"]            # a slow reply still gets the full timeout
     h.get_edit_buffer()
     assert "settle" not in seen["kw"]                # default behaviour unchanged
+
+
+# --- which preset is "the active preset", really (HW 2026-11-13) --------------
+# A tone loaded FROM A SETLIST reports the setlist REFERENCE as active
+# (cid 1950, ccid = the setlist, rcid = pool preset 1750). The content lives in
+# the pool preset; that is what a save or a to-hsp must address.
+
+def _refs(monkeypatch, h, table):
+    monkeypatch.setattr(h, "get_ref", lambda cid: table.get(cid))
+
+
+def test_resolve_pool_cid_of_a_pool_preset_is_itself(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    _refs(monkeypatch, h, {})
+    assert h.resolve_pool_cid(2037, -2) == 2037                 # no round-trip needed
+
+
+def test_resolve_pool_cid_follows_a_setlist_reference(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    _refs(monkeypatch, h, {1950: {"cid_": 1950, "ccid": 1949, "cctp": 1003, "rcid": 1750},
+                           1750: {"cid_": 1750, "ccid": -2}})
+    assert h.resolve_pool_cid(1950, 1949) == 1750
+    assert h.resolve_pool_cid(1950) == 1750                     # container looked up
+
+
+def test_resolve_pool_cid_refuses_what_is_not_a_user_preset(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    _refs(monkeypatch, h, {7: {"cid_": 7, "ccid": -1},                       # factory
+                           8: {"cid_": 8, "ccid": 30, "rcid": 7},            # reference to factory
+                           9: {"cid_": 9, "ccid": 30}})                      # reference with no target
+    assert h.resolve_pool_cid(7, -1) is None
+    assert h.resolve_pool_cid(8, 30) is None
+    assert h.resolve_pool_cid(9, 30) is None
+    assert h.resolve_pool_cid(404) is None                      # unresolvable
+
+
+def test_preset_edited_reads_the_unsaved_flag(monkeypatch):
+    h = HelixClient("10.0.0.99")
+    seen = []
+
+    def prop(key):
+        seen.append(key)
+        return type("PV", (), {"value": 1})()
+    monkeypatch.setattr(h, "get_property", prop)
+    assert h.preset_edited() is True and seen == ["volatile.preset.edited"]
