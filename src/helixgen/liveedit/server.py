@@ -43,6 +43,12 @@ def _client(body: dict):
     return c if isinstance(c, str) and 0 < len(c) <= 64 else None
 
 
+def _rev(body: dict):
+    """The structure revision the writing page is showing (optional)."""
+    r = body.get("rev")
+    return r if isinstance(r, int) and not isinstance(r, bool) else None
+
+
 def _route(session: LiveSession, path: str, b: dict):
     """Mutating endpoints -> response dict, or ``None`` for an unknown route."""
     if path == "/param":
@@ -52,12 +58,14 @@ def _route(session: LiveSession, path: str, b: dict):
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise LiveError("field 'value' must be a number")
         return session.set_param(_int(b, "path"), _int(b, "block"),
-                                 _int(b, "pid"), v, client=_client(b))
+                                 _int(b, "pid"), v, client=_client(b),
+                                 rev=_rev(b))
     if path == "/bypass":
         if not isinstance(b.get("enabled"), bool):
             raise LiveError("field 'enabled' must be true or false")
         return session.set_bypass(_int(b, "path"), _int(b, "block"),
-                                  b["enabled"], client=_client(b))
+                                  b["enabled"], client=_client(b),
+                                  rev=_rev(b))
     if path == "/save":
         return session.save()
     if path == "/reread":

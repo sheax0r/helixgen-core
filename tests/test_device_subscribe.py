@@ -251,3 +251,16 @@ def test_missing_pyzmq_raises_helixerror(monkeypatch):
     sub = HelixSubscriber("10.0.0.99")
     with pytest.raises(HelixError):
         sub.connect()
+
+
+def test_boolean_event_args_decode_to_bools():
+    # a bool param's change arrives with the value in the OSC TYPE TAG
+    # (`…,iiiiiiT`); it must reach consumers as True/False, not None.
+    from helixgen.device.osc import osc_encode
+    from helixgen.device.subscribe import HelixSubscriber
+    sub = HelixSubscriber("10.0.0.99")
+    on = sub._parse_frame(2001, b"\x00" * 12 + osc_encode(
+        "/setParamValue", [("i", 1), ("i", 2), ("i", 0), ("i", 0), ("i", 0), ("i", 4), ("T", None)]))
+    off = sub._parse_frame(2001, b"\x00" * 12 + osc_encode(
+        "/setParamValue", [("i", 1), ("i", 2), ("i", 0), ("i", 0), ("i", 0), ("i", 4), ("F", None)]))
+    assert on.args[-1] is True and off.args[-1] is False

@@ -1256,8 +1256,22 @@ class HelixClient:
         items.sort(key=lambda m: m.get("posi", 1 << 30))
         return items
 
+    @staticmethod
+    def _param_arg(ptype: Optional[str], value: Any) -> Tuple[str, Any]:
+        """The OSC arg for a param value of defs type ``ptype``. The device
+        takes each param in ITS OWN OSC type — a float-encoded int or bool
+        write is silently dropped (no ack, no change; HW 2026-11-13, fw
+        1.4.1): ``i`` -> int32, ``b`` -> the ``T``/``F`` boolean tags,
+        anything else -> float32."""
+        if ptype == "b":
+            return ("T" if value else "F", None)
+        if ptype == "i":
+            return ("i", int(round(float(value))))
+        return ("f", float(value))
+
     def set_param(self, path: int, block: int, param_id: int, value: float,
-                  *, force: bool = False, fast: bool = False) -> bool:
+                  *, force: bool = False, fast: bool = False,
+                  ptype: Optional[str] = None) -> bool:
         """Set a param in the edit buffer:
         ``/ParamValueSet [_, path, grid_slot, 0, paramId, value, -1]``.
 
@@ -1277,6 +1291,15 @@ class HelixClient:
         from the firmware, so it can be narrower than what the hardware
         actually accepts.
 
+        ``ptype`` is the param's defs type (``'f'`` / ``'i'`` / ``'b'``, as
+        :meth:`edit_buffer_params` reports it) and decides the OSC encoding
+        (see :meth:`_param_arg`) — it matters: an int/enum param sent as a
+        float, or a bool sent as anything but ``T``/``F``, is silently
+        dropped by the device. The range-checked path fills it in from the
+        model defs; a ``force=True`` write looks it up with one edit-buffer
+        read unless ``ptype`` is given or ``fast`` is set (a ``fast`` caller
+        must pass it for a non-float param).
+
         ``fast=True`` is the live-control path (a knob UI issuing many writes
         a second): wait only for the device's ack instead of also draining the
         0.4 s settle window, and return ``False`` if no ack arrives within
@@ -1287,27 +1310,43 @@ class HelixClient:
         """
         slot = _grid_slot(block)
         if not force:
-            self._check_param_range(path, slot, param_id, value)
+            checked = self._check_param_range(path, slot, param_id, value)
+            if ptype is None:
+                ptype = checked
+        elif ptype is None and not fast:
+            ptype = self._param_type(path, slot, param_id)
         args = [("i", path), ("i", slot), ("i", 0), ("i", param_id),
-                ("f", float(value)), ("i", -1)]
+                self._param_arg(ptype, value), ("i", -1)]
         if fast:
             return self._ok(self._rpc_fast("/ParamValueSet", args))
         return self._ok(self._rpc("/ParamValueSet", args))
 
+    def _param_type(self, path: int, slot: int, param_id: int) -> Optional[str]:
+        """Best-effort defs type of one param (one edit-buffer read); ``None``
+        when it cannot be determined — the write then goes out as a float."""
+        try:
+            row = next((p for p in self.edit_buffer_params(path, slot)["params"]
+                        if p["pid"] == param_id), None)
+        except HelixError:
+            return None
+        return row.get("type") if row else None
+
     def _check_param_range(self, path: int, slot: int, param_id: int,
-                           value: float) -> None:
+                           value: float) -> Optional[str]:
         """Raise :class:`HelixError` if ``value`` falls outside the range the
         model defs advertise for ``param_id`` (bounds inclusive).
 
         A pid with no advertised min/max — an unknown pid, or one the defs
-        leave open — is not validated. A failed edit-buffer read propagates
+        leave open — is not validated. Returns the param's defs type
+        (``'f'``/``'i'``/``'b'``; ``None`` for an unknown pid) so the caller
+        can encode the write correctly. A failed edit-buffer read propagates
         rather than being swallowed: silently skipping the check would turn a
         transient read failure into an unvalidated write.
         """
         row = next((p for p in self.edit_buffer_params(path, slot)["params"]
                     if p["pid"] == param_id), None)
         if row is None:
-            return
+            return None
         lo, hi = row.get("min"), row.get("max")
         if (lo is not None and value < lo) or (hi is not None and value > hi):
             raise HelixError(
@@ -1317,6 +1356,7 @@ class HelixClient:
                 "out-of-range write lands and is applied; pass --force if "
                 "you mean it (the range is the vendored model defs', which "
                 "can be narrower than the firmware's).")
+        return row.get("type")
 
     def _find_by_pos_retry(self, container: int, pos: int,
                            tries: int = 4, delay: float = 0.25

@@ -344,7 +344,7 @@ def _wire_recording(client, frames):
 def test_set_param_default_keeps_the_settle_drain():
     h = HelixClient("10.0.0.99")
     _wire_recording(h, [_status_ack(1000)])
-    assert h.set_param(0, 13, 2, -6.0, force=True) is True
+    assert h.set_param(0, 13, 2, -6.0, force=True, ptype="f") is True
     # first poll waits the full rpc timeout, the post-ack poll the 0.4 s settle
     assert h.poller.timeouts == [2000, 400]
 
@@ -419,3 +419,85 @@ def test_save_edit_buffer_reports_a_refusal():
     h = HelixClient("10.0.0.99")
     _wire_recording(h, [_status_ack(1000, code=1)])
     assert h.save_edit_buffer(1863) is False
+
+
+# --- typed param encoding (hgc-58a, HW 2026-11-13) ---------------------------
+# The device takes each param in ITS OWN OSC type: float params as `f`, int /
+# enum params as `i`, bool params as `T`/`F`. A float-encoded int or bool write
+# is silently dropped — no ack, no change.
+
+def _last_sent_tagged(h):
+    raw = h.sock.sent[-1]
+    _addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    return args
+
+
+def test_set_param_ptype_int_goes_on_the_wire_as_an_int():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_param(0, 0, 2, 2.0, force=True, fast=True, ptype="i") is True
+    args = _last_sent_tagged(h)
+    assert args[5] == ("i", 2)                            # the value slot
+    assert [t for t, _ in args] == ["i", "i", "i", "i", "i", "i", "i"]
+
+
+def test_set_param_ptype_bool_uses_the_boolean_tags():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    h.set_param(0, 0, 4, 1.0, force=True, fast=True, ptype="b")
+    assert _last_sent_tagged(h)[5][0] == "T"
+    _wire_recording(h, [_status_ack(1001)])
+    h.set_param(0, 0, 4, False, force=True, fast=True, ptype="b")
+    assert _last_sent_tagged(h)[5][0] == "F"
+
+
+def test_forced_write_still_learns_the_type_from_the_defs(monkeypatch):
+    # --force skips the RANGE check, not the encoding: `device set-param
+    # --force` on a list param must still go out as an int.
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    eb = {"sfg_": {"flow": [{"blks": [
+        0, {"mdls": [{"id__": 770, "parm": [{"pid_": 2, "valu": 1}]}], "enbl": 1}]}]}}
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: eb)
+    h.set_param(0, 0, 2, 99, force=True)                   # out of range, forced
+    assert _last_sent_tagged(h)[5] == ("i", 99)
+
+
+def test_forced_write_falls_back_to_float_when_the_type_cannot_be_read(monkeypatch):
+    from helixgen.device.client import HelixError
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+
+    def boom():
+        raise HelixError("no edit-buffer blob")
+    monkeypatch.setattr(h, "read_edit_buffer", boom)
+    h.set_param(0, 13, 2, -6.0, force=True)
+    assert _last_sent_tagged(h)[5] == ("f", -6.0)
+
+
+def test_fast_forced_write_never_reads_the_device(monkeypatch):
+    # the live path: the caller already knows the type and has clamped
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    monkeypatch.setattr(h, "read_edit_buffer",
+                        lambda: (_ for _ in ()).throw(AssertionError("read!")))
+    h.set_param(0, 13, 2, -6.0, force=True, fast=True)
+    assert _last_sent_tagged(h)[5] == ("f", -6.0)
+
+
+def test_set_param_takes_the_type_from_the_model_defs_when_it_checks_the_range(monkeypatch):
+    # the non-forced path already reads the block's params to range-check; it
+    # must use the type it finds there, so `device set-param` works for list /
+    # int params (it never did: they were sent as floats and dropped).
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    eb = {"sfg_": {"flow": [{"blks": [
+        0, {"mdls": [{"id__": 770, "parm": [{"pid_": 2, "valu": 1},
+                                           {"pid_": 4, "valu": True}]}], "enbl": 1}]}]}}
+    monkeypatch.setattr(h, "read_edit_buffer", lambda: eb)
+    h.set_param(0, 0, 2, 2)                                # P35_InputInst1 Pad: int 1..2
+    assert _last_sent_tagged(h)[5] == ("i", 2)
+    h.set_param(0, 0, 4, 0)                                # noiseGate: bool
+    assert _last_sent_tagged(h)[5][0] == "F"
+    h.set_param(0, 0, 3, -6.0)                             # Trim: float
+    assert _last_sent_tagged(h)[5] == ("f", -6.0)

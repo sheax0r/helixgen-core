@@ -37,6 +37,9 @@ class FakeClient:
         self.fail: Exception | None = None
         self.last_request_id = None
         self._rid = 1000
+        self.ptypes = []
+        self.edited = 0
+        self.property_fails = False
 
     def _next(self):
         if self.fail is not None:
@@ -55,10 +58,18 @@ class FakeClient:
             raise self.fail
         return dict(self.preset)
 
-    def set_param(self, path, block, pid, value, *, force=False, fast=False):
+    def set_param(self, path, block, pid, value, *, force=False, fast=False,
+                  ptype=None):
         self._next()
         self.params.append((path, block, pid, value, force, fast))
+        self.ptypes.append(ptype)
         return self.ack
+
+    def get_property(self, key):
+        if self.property_fails or self.fail is not None:
+            raise HelixError("property read failed")
+        assert key == "volatile.preset.edited"
+        return type("PV", (), {"key": key, "type": "i", "value": self.edited})()
 
     def set_block_enable(self, path, block, enable, *, fast=False):
         self._next()
@@ -132,6 +143,25 @@ def test_decode_structural_events():
         assert events.decode_event(addr, [1, 2, 3]) == ("reread", addr)
 
 
+def test_decode_dirty_flag_property_from_the_wire_blob():
+    # on the wire the property is a `lavppgsm` value blob, not a dict
+    from helixgen.device import settings
+    blob = settings.encode_value_blob("volatile.preset.edited", "i", 1)
+    assert events.decode_event("/setPropertyValue", [1, 2, blob]) == ("dirty", True)
+    blob = settings.encode_value_blob("volatile.preset.edited", "i", 0)
+    assert events.decode_event("/setPropertyValue", [1, 2, blob]) == ("dirty", False)
+    other = settings.encode_value_blob("preset.expsw.active", "i", 1)
+    assert events.decode_event("/setPropertyValue", [1, 2, other]) is None
+    assert events.decode_event("/setPropertyValue", [1, 2, b"garbage"]) is None
+
+
+def test_decode_bool_param_event():
+    # bool params arrive as real bools (OSC T/F tags)
+    assert events.decode_event("/setParamValue", [1, 1004, 0, 0, 0, 4, False]) == \
+        ("param", 1004, 0, 0, 4, 0.0)
+    assert events.decode_event("/setParamValue", [1, 1004, 0, 0, 0, 4, None]) is None
+
+
 def test_decode_dirty_flag_property():
     on = {"key_": "volatile.preset.edited", "type": "i", "val_": 1}
     assert events.decode_event("/setPropertyValue", [1, 2, on]) == ("dirty", True)
@@ -159,6 +189,25 @@ def test_load_is_exactly_one_edit_buffer_read(s):
     assert [seg["block"]["block"] for seg in st["paths"][0]["segments"]] == [0, 1, 2, 13]
 
 
+def test_unsaved_flag_comes_from_the_device_property_not_the_buffer():
+    c = FakeClient()
+    c.eb["hist"] = 1                     # history present, but nothing unsaved
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    assert sess.public_state()["dirty"] is False
+    c.edited = 1
+    sess.reread()
+    assert sess.public_state()["dirty"] is True
+
+
+def test_unreadable_unsaved_flag_does_not_block_the_load():
+    c = FakeClient()
+    c.property_fails = True
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    assert sess.public_state()["dirty"] is False and sess.public_state()["paths"]
+
+
 def test_load_failure_is_a_live_error_and_marks_disconnected():
     c = FakeClient()
     c.fail = HelixError("no route")
@@ -177,6 +226,31 @@ def test_set_param_writes_fast_forced_and_clamped(s):
     assert s.client.params == [(0, 2, DRIVE, 1.0, True, True)]
     assert _value(s, 0, 2, DRIVE) == 1.0
     assert s.lease.ensured == 1
+
+
+def test_each_param_is_written_in_its_own_type(s):
+    # the device drops an int or bool sent as a float (HW 2026-11-13)
+    s.set_param(0, 0, 3, -6.0)           # input Trim   : float
+    s.set_param(0, 0, 2, 2)              # input Pad    : int / list
+    s.set_param(0, 0, 4, 0)              # input gate   : bool
+    assert s.client.ptypes == ["f", "i", "b"]
+    assert [p[3] for p in s.client.params] == [-6.0, 2.0, 0.0]
+
+
+def test_a_write_from_a_page_showing_an_older_structure_is_refused(s):
+    # the page's control may now sit over a DIFFERENT param (preset or model
+    # changed between its render and this write) — never write it blind.
+    old = s.rev
+    s.reread()
+    with pytest.raises(LiveError) as e:
+        s.set_param(0, 1, 1, 0.9, rev=old)
+    assert e.value.status == 409 and e.value.value == pytest.approx(0.3)
+    with pytest.raises(LiveError) as e:
+        s.set_bypass(0, 1, False, rev=old)
+    assert e.value.status == 409 and e.value.value is True
+    assert s.client.params == [] and s.client.enables == []
+    assert s.set_param(0, 1, 1, 0.9, rev=s.rev) == {"value": 0.9}
+    assert s.set_bypass(0, 1, False, rev=s.rev) == {"enabled": False}
 
 
 def test_set_param_emits_a_delta_not_a_restructure(s):
@@ -377,7 +451,7 @@ def test_pushed_edit_buffer_rebuilds_without_a_device_read(s, monkeypatch):
     assert st["preset"] == {"cid": 2037, "name": "White Limo"}
     assert any(seg["kind"] == "parallel" for seg in st["paths"][0]["segments"])
     assert s.rev > r
-    assert s.public_state()["dirty"] is False
+    assert s.public_state()["dirty"] is False      # a freshly loaded preset
 
 
 def test_lone_preset_ref_for_a_different_preset_rereads(s):

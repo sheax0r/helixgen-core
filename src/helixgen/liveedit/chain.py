@@ -14,7 +14,7 @@ through the flow's ``bmap`` — and ``bflw``, the flow that target lives in
 
 Shape returned by :func:`build_chain`::
 
-    {"snapshot": int | None, "snapshots": [name, …], "dirty": bool,
+    {"snapshot": int | None, "snapshots": [name, …],
      "paths": [{"path": 0, "segments": [SEG, …], "extra": [SEG, …]}]}
 
     SEG   = {"kind": "block", "block": BLOCK}
@@ -25,6 +25,9 @@ Shape returned by :func:`build_chain`::
     PARAM = {pid, name, label, type, ctl ("knob" | "toggle" | "select"),
              value, min, max, default, unit, scale, display_min, display_max,
              labels, internal, snap}
+
+Whether the tone has unsaved edits is NOT in the buffer (its ``hist`` field
+stays set after a save); that is the ``volatile.preset.edited`` property.
 
 ``extra`` holds row-1 blocks no split feeds (a row with its own real input).
 Every modeled block except the "None" endpoints appears exactly once. Values
@@ -264,7 +267,6 @@ def build_chain(eb: Any) -> dict:
     return {
         "snapshot": asnp if isinstance(asnp, int) and not isinstance(asnp, bool) else None,
         "snapshots": _snapshot_names(cg),
-        "dirty": bool(eb.get("hist")),
         "paths": paths,
     }
 

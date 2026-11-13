@@ -85,6 +85,19 @@ def test_client_id_is_passed_through_and_junk_ids_are_dropped(srv):
     assert [m.get("client") for m in msgs] == ["tab-a", None, None]
 
 
+def test_stale_rev_is_409_with_the_value_to_show(srv):
+    c, s, server = srv
+    old = s.rev
+    s.reread()
+    code, _, data = req(server, "POST", "/param",
+                        {"path": 0, "block": 1, "pid": 1, "value": 0.9, "rev": old})
+    assert code == 409 and _j(data)["value"] == pytest.approx(0.3)
+    assert c.params == []
+    code, _, data = req(server, "POST", "/param",
+                        {"path": 0, "block": 1, "pid": 1, "value": 0.9, "rev": s.rev})
+    assert code == 200
+
+
 def test_bypass_write(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/bypass", {"path": 0, "block": 1, "enabled": False})

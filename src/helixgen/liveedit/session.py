@@ -28,7 +28,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from helixgen.device import content as _content
 from helixgen.device.client import Container, HelixError
 from helixgen.liveedit import chain as _chain
-from helixgen.liveedit.events import decode_event
+from helixgen.liveedit.events import DIRTY_KEY, decode_event
 
 DEAD_AFTER = 6.0      # s of total silence on the PUB streams = disconnected
 RETRY_EVERY = 3.0     # s between reconnect attempts while disconnected
@@ -120,7 +120,8 @@ class LiveSession:
                 self._connected = up
                 self._emit_meta()
 
-    def _install(self, eb: Any, preset: Optional[dict]) -> None:
+    def _install(self, eb: Any, preset: Optional[dict],
+                 dirty: bool = False) -> None:
         built = _chain.build_chain(eb)
         with self.cond:
             self._chain = built
@@ -128,7 +129,7 @@ class LiveSession:
             self._blocks = _chain.block_index(built)
             if preset is not None:
                 self._preset = {"cid": preset.get("cid"), "name": preset.get("name")}
-            self._dirty = built["dirty"]
+            self._dirty = dirty
             self._connected = True
             self._own.clear()
             self.rev += 1
@@ -184,8 +185,12 @@ class LiveSession:
             except (HelixError, OSError) as e:
                 self._set_connected(False)
                 raise LiveError(f"could not read the device: {e}", status=502) from e
+            try:      # the unsaved-edits flag is a device property, not in the buffer
+                dirty = bool(self.client.get_property(DIRTY_KEY).value)
+            except Exception:  # noqa: BLE001 — cosmetic; never block a load on it
+                dirty = False
             self._awaiting_ref = False
-            self._install(eb, preset)
+            self._install(eb, preset, dirty)
 
     reread = load
 
@@ -215,8 +220,18 @@ class LiveSession:
             e.value = current       # the page puts the control back
             raise
 
+    def _require_rev(self, rev: Optional[int], current: Any) -> None:
+        """Refuse a write from a page still showing an OLDER structure: its
+        control may now sit over a different param (the preset, the snapshot or
+        a model changed between its render and this request)."""
+        if rev is not None and rev != self.rev:
+            raise LiveError("the tone changed on the device — this control "
+                            "was refreshed instead of written", status=409,
+                            value=current)
+
     def set_param(self, path: int, block: int, pid: int, value: Any, *,
-                  client: Optional[str] = None) -> dict:
+                  client: Optional[str] = None,
+                  rev: Optional[int] = None) -> dict:
         """Write one param to the live edit buffer. The value is clamped to the
         range the model advertises (the device clamps nothing); returns
         ``{"value": <what was written>}``. ``client`` (the writing page's id)
@@ -232,15 +247,16 @@ class LiveSession:
             with self.cond:
                 self._require_up()
                 p = self._params.get(key)
+                self._require_rev(rev, p["value"] if p else None)
                 if p is None:
                     raise LiveError("no such control on the loaded tone "
                                     "(did the preset change?)", status=404)
                 v = _chain.clamp(p, v)
-                current = p["value"]
+                current, ptype = p["value"], p["type"]
             self._ensure_lease(current)
             try:
                 ok = self.client.set_param(key[0], key[1], key[2], v,
-                                           force=True, fast=True)
+                                           force=True, fast=True, ptype=ptype)
                 rid = getattr(self.client, "last_request_id", None)
             except (HelixError, OSError) as e:
                 self._set_connected(False)
@@ -263,7 +279,8 @@ class LiveSession:
         return {"value": v}
 
     def set_bypass(self, path: int, block: int, enabled: Any, *,
-                   client: Optional[str] = None) -> dict:
+                   client: Optional[str] = None,
+                   rev: Optional[int] = None) -> dict:
         """Enable/bypass one block in the live edit buffer."""
         key = (int(path), int(block))
         on = bool(enabled)
@@ -271,6 +288,7 @@ class LiveSession:
             with self.cond:
                 self._require_up()
                 b = self._blocks.get(key)
+                self._require_rev(rev, b["enabled"] if b else None)
                 if b is None:
                     raise LiveError("no such block on the loaded tone "
                                     "(did the preset change?)", status=404)

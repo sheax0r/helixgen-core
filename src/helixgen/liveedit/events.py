@@ -7,11 +7,13 @@ Arg layouts (captured on a Stadium XL, fw 1.4; ``seq`` of an echo equals the
 request id of the write that caused it):
 
   /setParamValue    [origin, seq, path, grid_slot, snap, pid, value]
+                    (value typed like the param: float, int, or OSC T/F)
   /setBlockEnable   [origin, seq, path, grid_slot, enable]
   /activateSnapshot [origin, seq, index]
   /setEditBuffer    [origin, seq, <edit-buffer blob>]   (preset load, LIVE buffer)
   /loadContentRef   [origin, seq, {cid_, name, posi, …}]
-  /setPropertyValue [origin, seq, {key_, type, val_}]   (``volatile.preset.edited``)
+  /setPropertyValue [origin, seq, <value blob: key_, type, val_>]
+                    (``volatile.preset.edited`` = the unsaved-edits flag)
 
 Actions returned by :func:`decode_event`:
 
@@ -27,6 +29,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from helixgen.device import settings as _settings
+
 # Edit-buffer changes with no per-control decoding here: a model swap made on
 # the hardware, per-snapshot bypass state, the batch of values a snapshot
 # recall applies. The right response to each is one fresh read of the buffer.
@@ -37,6 +41,21 @@ REREAD_ADDRS = frozenset({
 })
 
 DIRTY_KEY = "volatile.preset.edited"
+
+
+def _property(arg: Any) -> tuple:
+    """``(key, value)`` of a ``/setPropertyValue`` payload: on the wire a
+    ``lavppgsm`` value blob (the same one ``/PropertyValueGet`` answers with);
+    a decoded ``{key_, val_}`` map is accepted too."""
+    if isinstance(arg, dict):
+        return arg.get("key_"), arg.get("val_")
+    if isinstance(arg, (bytes, bytearray)):
+        try:
+            pv = _settings.decode_value_blob(bytes(arg))
+        except Exception:  # noqa: BLE001 — not a value blob: not ours
+            return None, None
+        return pv.key, pv.value
+    return None, None
 
 
 def _int(v: Any) -> int:
@@ -67,10 +86,9 @@ def decode_event(addr: str, args: list) -> Optional[tuple]:
         return ("editbuffer", bytes(args[2]))
     if addr == "/loadContentRef" and len(args) >= 3 and isinstance(args[2], dict):
         return ("presetref", args[2].get("cid_"), args[2].get("name"))
-    if addr == "/setPropertyValue" and len(args) >= 3 and isinstance(args[2], dict):
-        if args[2].get("key_") == DIRTY_KEY:
-            return ("dirty", bool(args[2].get("val_")))
-        return None
+    if addr == "/setPropertyValue" and len(args) >= 3:
+        key, val = _property(args[2])
+        return ("dirty", bool(val)) if key == DIRTY_KEY else None
     if addr in REREAD_ADDRS:
         return ("reread", addr)
     return None

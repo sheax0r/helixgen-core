@@ -69,11 +69,13 @@ def test_serial_chain_is_blocks_in_grid_order_without_none_endpoints():
     assert _slots(p["segments"]) == [0, 1, 2, 13]      # 14/27 None endpoints hidden
 
 
-def test_snapshot_and_dirty_come_from_the_buffer():
+def test_snapshot_comes_from_the_buffer_but_dirty_does_not():
     st = chain.build_chain(_serial())
     assert st["snapshot"] == 2
-    assert st["dirty"] is True
-    assert chain.build_chain(_eb({0: _blk(IN_INST1)}))["dirty"] is False
+    # `hist` is NOT the unsaved flag (HW 2026-11-13: still 1 right after a
+    # save) — that is the `volatile.preset.edited` property, read by the
+    # session. The chain says nothing about it.
+    assert "dirty" not in st
 
 
 def test_block_fields():

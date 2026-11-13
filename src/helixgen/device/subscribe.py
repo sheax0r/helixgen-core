@@ -148,7 +148,12 @@ class HelixSubscriber:
     @staticmethod
     def _decode_arg(tag: str, value):
         """Decode one OSC arg value; blobs become msgpack objects, except a
-        ``_sbepgsm`` content blob which stays raw ``bytes``."""
+        ``_sbepgsm`` content blob which stays raw ``bytes``; ``T``/``F`` tags
+        become ``True``/``False``."""
+        if tag in ("T", "F"):
+            # an OSC boolean lives in the type tag (a bool param's change
+            # arrives as `/setParamValue …,iiiiiiT`); hand consumers the bool
+            return tag == "T"
         if tag != "b":
             return value
         if isinstance(value, (bytes, bytearray)) and bytes(value[:8]) == _content.MAGIC:

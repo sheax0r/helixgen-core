@@ -117,3 +117,15 @@ def test_unknown_tag_rejected_on_encode():
 def test_osc_address_skips_binary_header():
     frame = b"\x00\x00" + osc_encode("/Head", [("i", 1)])
     assert osc_address(frame) == "/Head"
+
+
+def test_boolean_tags_carry_no_payload_and_round_trip():
+    # OSC booleans live in the type tag. The Stadium requires them for bool
+    # params: a float- or int-encoded write is silently dropped (HW
+    # 2026-11-13, fw 1.4.1 — only `T`/`F` was acked and applied).
+    from helixgen.device.osc import osc_encode, parse_osc_message
+    raw = osc_encode("/ParamValueSet", [("i", 1000), ("T", None), ("F", None), ("i", -1)])
+    addr, args, _ = parse_osc_message(raw)
+    assert addr == "/ParamValueSet"
+    assert [t for t, _ in args] == ["i", "T", "F", "i"]
+    assert args[0][1] == 1000 and args[3][1] == -1       # nothing consumed by T/F
