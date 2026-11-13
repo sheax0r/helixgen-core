@@ -228,6 +228,27 @@ def test_write_is_refused_while_another_process_holds_the_device(s):
     assert s.client.params == []
 
 
+def test_busy_refusal_tells_the_page_what_to_show(s):
+    s.lease.busy = "locked by agent-x"
+    with pytest.raises(LiveError) as e:
+        s.set_param(0, 1, 1, 0.9)
+    assert e.value.value == pytest.approx(0.3)
+    with pytest.raises(LiveError) as e:
+        s.set_bypass(0, 1, False)
+    assert e.value.status == 409 and e.value.value is True
+
+
+def test_page_writes_carry_the_writers_id_so_it_can_skip_its_own(s):
+    v, r = s.version, s.rev
+    s.set_param(0, 1, 1, 0.5, client="tab-a")
+    s.set_bypass(0, 1, False, client="tab-a")
+    msgs = _drain(s, v, r)[2]
+    assert {"t": "param", "path": 0, "block": 1, "pid": 1, "value": 0.5,
+            "client": "tab-a"} in msgs
+    assert {"t": "bypass", "path": 0, "block": 1, "enabled": False,
+            "client": "tab-a"} in msgs
+
+
 # --- bypass ------------------------------------------------------------------
 
 def test_set_bypass_writes_fast_and_updates_state(s):

@@ -208,10 +208,19 @@ class LiveSession:
         while len(self._own) > _OWN_MAX:
             self._own.popitem(last=False)
 
-    def set_param(self, path: int, block: int, pid: int, value: Any) -> dict:
+    def _ensure_lease(self, current: Any) -> None:
+        try:
+            self.lease.ensure()
+        except LiveError as e:
+            e.value = current       # the page puts the control back
+            raise
+
+    def set_param(self, path: int, block: int, pid: int, value: Any, *,
+                  client: Optional[str] = None) -> dict:
         """Write one param to the live edit buffer. The value is clamped to the
         range the model advertises (the device clamps nothing); returns
-        ``{"value": <what was written>}``."""
+        ``{"value": <what was written>}``. ``client`` (the writing page's id)
+        is echoed on the change message so that page can skip its own write."""
         try:
             v = float(value)
         except (TypeError, ValueError):
@@ -228,7 +237,7 @@ class LiveSession:
                                     "(did the preset change?)", status=404)
                 v = _chain.clamp(p, v)
                 current = p["value"]
-            self.lease.ensure()
+            self._ensure_lease(current)
             try:
                 ok = self.client.set_param(key[0], key[1], key[2], v,
                                            force=True, fast=True)
@@ -245,12 +254,16 @@ class LiveSession:
                 live = self._params.get(key)
                 if live is not None:
                     live["value"] = v
-                self._emit({"t": "param", "path": key[0], "block": key[1],
-                            "pid": key[2], "value": v})
+                msg = {"t": "param", "path": key[0], "block": key[1],
+                       "pid": key[2], "value": v}
+                if client:
+                    msg["client"] = client
+                self._emit(msg)
                 self._set_dirty(True)
         return {"value": v}
 
-    def set_bypass(self, path: int, block: int, enabled: Any) -> dict:
+    def set_bypass(self, path: int, block: int, enabled: Any, *,
+                   client: Optional[str] = None) -> dict:
         """Enable/bypass one block in the live edit buffer."""
         key = (int(path), int(block))
         on = bool(enabled)
@@ -262,7 +275,7 @@ class LiveSession:
                     raise LiveError("no such block on the loaded tone "
                                     "(did the preset change?)", status=404)
                 current = b["enabled"]
-            self.lease.ensure()
+            self._ensure_lease(current)
             try:
                 ok = self.client.set_block_enable(key[0], key[1], on, fast=True)
                 rid = getattr(self.client, "last_request_id", None)
@@ -278,8 +291,11 @@ class LiveSession:
                 live = self._blocks.get(key)
                 if live is not None:
                     live["enabled"] = on
-                self._emit({"t": "bypass", "path": key[0], "block": key[1],
-                            "enabled": on})
+                msg = {"t": "bypass", "path": key[0], "block": key[1],
+                       "enabled": on}
+                if client:
+                    msg["client"] = client
+                self._emit(msg)
                 self._set_dirty(True)
         return {"enabled": on}
 
