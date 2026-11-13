@@ -125,6 +125,67 @@ def test_bad_requests_are_400_and_write_nothing(srv):
     assert c.params == [] and c.enables == []
 
 
+def test_a_boolean_is_not_a_param_value(srv):
+    c, s, server = srv
+    code, *_ = req(server, "POST", "/param", {"path": 0, "block": 1, "pid": 1, "value": True})
+    assert code == 400 and c.params == []
+
+
+def test_huge_numbers_are_400_not_500(srv):
+    c, s, server = srv
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    body = '{"path": 0, "block": 1, "pid": 1, "value": 1' + "0" * 400 + "}"
+    conn.request("POST", "/param", body, {"Content-Type": "application/json"})
+    r = conn.getresponse()
+    r.read()
+    assert r.status == 400 and c.params == []
+
+
+def test_oversized_and_chunked_bodies_are_refused_unread(srv):
+    c, s, server = srv
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    conn.putrequest("POST", "/param")
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("Content-Length", str(64 * 1024 * 1024))
+    conn.endheaders()
+    r = conn.getresponse()
+    assert r.status == 413 and r.getheader("Connection") == "close"
+    conn.close()
+    # a chunked body would otherwise sit unread on the socket and be parsed as
+    # a SECOND request — one whose headers the sender chooses freely
+    smuggled = (b'POST /param HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n'
+                b'Content-Type: application/json\r\nContent-Length: 47\r\n\r\n'
+                b'{"path": 0, "block": 1, "pid": 1, "value": 0.9}' % server.server_address[1])
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    conn.putrequest("POST", "/param")
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("Transfer-Encoding", "chunked")
+    conn.endheaders()
+    conn.send(b"%x\r\n%s\r\n0\r\n\r\n" % (len(smuggled), smuggled))
+    r = conn.getresponse()
+    assert r.status == 400 and r.getheader("Connection") == "close"
+    conn.close()
+    assert c.params == []
+
+
+def test_a_refused_cross_origin_post_closes_the_connection(srv):
+    c, s, server = srv
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+    conn.request("POST", "/param", json.dumps({"path": 0, "block": 1, "pid": 1, "value": 0.9}),
+                 {"Content-Type": "application/json", "Origin": "http://evil.example"})
+    r = conn.getresponse()
+    assert r.status == 403 and r.getheader("Connection") == "close"
+
+
+def test_the_page_cannot_be_framed(srv):
+    conn = http.client.HTTPConnection("127.0.0.1", srv[2].server_address[1], timeout=5)
+    conn.request("GET", "/")
+    r = conn.getresponse()
+    r.read()
+    assert r.getheader("X-Frame-Options") == "DENY"
+    assert "frame-ancestors 'none'" in r.getheader("Content-Security-Policy")
+
+
 def test_unknown_control_is_404(srv):
     code, _, data = req(srv[2], "POST", "/param", {"path": 0, "block": 9, "pid": 1, "value": 0.5})
     assert code == 404 and "error" in _j(data)
@@ -288,17 +349,72 @@ def test_lease_is_taken_on_first_write_and_released_when_idle(lockroot):
     assert not _held(lockroot, "editbuffer")                 # nothing until a write
     lease.ensure()
     assert _held(lockroot, "editbuffer")
-    now[0] = 1.0
-    lease.ensure()
+    lease.done()
+    now[0] = 1.5
+    lease.ensure()                                           # a second write...
+    lease.done()
+    now[0] = 3.0
     lease.tick()
-    assert _held(lockroot, "editbuffer")                     # still in use
-    now[0] = 3.5
+    assert _held(lockroot, "editbuffer")                     # ...restarts the idle clock
+    now[0] = 3.6
     lease.tick()
     assert not _held(lockroot, "editbuffer")                 # idle -> others may drive
     lease.ensure()
     assert _held(lockroot, "editbuffer")
     lease.release()
     assert not _held(lockroot, "editbuffer")
+
+
+def test_lease_is_never_dropped_under_a_write_in_progress(lockroot):
+    now = [0.0]
+    lease = EditLease(IP, idle=2.0, clock=lambda: now[0])
+    lease.ensure()                                           # a write starts...
+    now[0] = 30.0                                            # ...and takes forever (reconnect loop)
+    lease.tick()
+    assert _held(lockroot, "editbuffer")
+    lease.done()
+    now[0] = 31.0
+    lease.tick()
+    assert _held(lockroot, "editbuffer")                     # idle is counted from the END of the write
+    now[0] = 33.0
+    lease.tick()
+    assert not _held(lockroot, "editbuffer")
+
+
+def test_a_long_unbroken_session_retakes_the_lease_before_its_ttl(lockroot):
+    now = [0.0]
+    lease = EditLease(IP, idle=2.0, max_hold=300.0, clock=lambda: now[0])
+    lease.ensure(); lease.done()
+    first = (lockroot / IP / "editbuffer.lock").read_text()
+    for t in range(1, 400):                                  # a write a second, never idle
+        now[0] = float(t)
+        lease.ensure(); lease.done(); lease.tick()
+    assert _held(lockroot, "editbuffer")
+    assert (lockroot / IP / "editbuffer.lock").read_text() != first   # a fresh lease, not the 400 s old one
+    lease.release()
+
+
+def test_no_write_can_retake_the_lease_after_shutdown(lockroot):
+    lease = EditLease(IP)
+    lease.ensure(); lease.done()
+    lease.release(final=True)
+    with pytest.raises(LiveError) as e:
+        lease.ensure()
+    assert e.value.status == 503 and not _held(lockroot, "editbuffer")
+
+
+def test_a_dangling_lock_token_stops_the_page_like_any_other_verb(lockroot, monkeypatch):
+    # $HELIXGEN_LOCK_TOKEN says "I am inside a held session". If that session
+    # is gone, taking a fresh lease under the token would quietly re-arm it
+    # for every sibling verb.
+    monkeypatch.setenv("HELIXGEN_LOCK_TOKEN", "tok-reclaimed")
+    lease = EditLease(IP)
+    with pytest.raises(LiveError) as e:
+        lease.ensure()
+    assert e.value.status == 409 and not _held(lockroot, "editbuffer")
+    with pytest.raises(LiveError):
+        with lease.transient(("editbuffer", "library")):
+            pass
 
 
 def test_lease_refuses_fast_when_someone_else_holds_the_device(lockroot):
@@ -314,6 +430,7 @@ def test_lease_refuses_fast_when_someone_else_holds_the_device(lockroot):
     finally:
         other.release()
     lease.ensure()                                           # free again -> fine
+    lease.done()
     lease.release()
 
 

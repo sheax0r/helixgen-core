@@ -501,3 +501,19 @@ def test_set_param_takes_the_type_from_the_model_defs_when_it_checks_the_range(m
     assert _last_sent_tagged(h)[5][0] == "F"
     h.set_param(0, 0, 3, -6.0)                             # Trim: float
     assert _last_sent_tagged(h)[5] == ("f", -6.0)
+
+
+def test_fast_edit_buffer_read_skips_the_settle_drain(monkeypatch):
+    from helixgen.device import content as _content
+    h = HelixClient("10.0.0.99")
+    seen = {}
+
+    def rpc(addr, args, **kw):
+        seen["addr"], seen["kw"] = addr, kw
+        return [("/getEditBufferState", [1000, _content.MAGIC + b"x"])]
+    monkeypatch.setattr(h, "_rpc", rpc)
+    h.get_edit_buffer(fast=True)
+    assert seen["addr"] == "/EditBufferStateGet" and seen["kw"].get("settle") == 0.0
+    assert "first_wait" not in seen["kw"]            # a slow reply still gets the full timeout
+    h.get_edit_buffer()
+    assert "settle" not in seen["kw"]                # default behaviour unchanged

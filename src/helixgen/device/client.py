@@ -742,17 +742,24 @@ class HelixClient:
                 return m
         return None
 
-    def get_edit_buffer(self) -> bytes:
-        """Return the current edit buffer as a raw ``_sbepgsm`` content blob."""
-        for _addr, args in self._rpc("/EditBufferStateGet", [], raw_blobs=True):
+    def get_edit_buffer(self, *, fast: bool = False) -> bytes:
+        """Return the current edit buffer as a raw ``_sbepgsm`` content blob.
+
+        ``fast=True`` returns as soon as the reply lands instead of also
+        draining the 0.4 s settle window (it still waits the full RPC timeout
+        for the reply itself) — for a live UI that re-reads on every snapshot
+        switch."""
+        kw = {"settle": 0.0} if fast else {}
+        for _addr, args in self._rpc("/EditBufferStateGet", [], raw_blobs=True, **kw):
             for v in args:
                 if isinstance(v, (bytes, bytearray)) and bytes(v[:8]) == _content.MAGIC:
                     return bytes(v)
         raise HelixError("no edit-buffer blob in /getEditBufferState reply")
 
-    def read_edit_buffer(self) -> Any:
-        """Decode the current edit buffer into a nested dict (4CC string keys)."""
-        return _content.decode_content(self.get_edit_buffer())
+    def read_edit_buffer(self, *, fast: bool = False) -> Any:
+        """Decode the current edit buffer into a nested dict (4CC string keys).
+        ``fast``: see :meth:`get_edit_buffer`."""
+        return _content.decode_content(self.get_edit_buffer(fast=fast))
 
     def get_content(self, cid: int) -> bytes:
         """Return preset ``cid``'s stored content blob **without activating it**.

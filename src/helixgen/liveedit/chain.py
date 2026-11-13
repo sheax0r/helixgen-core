@@ -37,12 +37,14 @@ model and harness params (e.g. Trails) have no known live-write address.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from helixgen.device import defs, paraminfo
 
 ROW1_INPUT, ROW1_OUTPUT = 14, 27
+MAX_SNAPSHOTS = 64        # the device has 8; a wild index must not size a list
 _PREFIX = re.compile(r"^[A-Za-z0-9]+_")
 _NONE_ENDPOINTS = ("InputNone", "OutputNone")
 
@@ -90,7 +92,8 @@ def _num(v: Any) -> Optional[float]:
 
 def _params(mid: int, model: Optional[str], m0: dict) -> List[dict]:
     stored: Dict[int, Any] = {}
-    for p in (m0.get("parm") or []):
+    parm = m0.get("parm")
+    for p in (parm if isinstance(parm, list) else []):
         if isinstance(p, dict) and isinstance(p.get("pid_"), int):
             stored[p["pid_"]] = p
     out = []
@@ -104,7 +107,8 @@ def _params(mid: int, model: Optional[str], m0: dict) -> List[dict]:
             raw = meta.get("def")
         value = _num(raw)
         lo, hi = _num(meta.get("min")), _num(meta.get("max"))
-        if value is None or lo is None or hi is None:
+        if (value is None or lo is None or hi is None
+                or not all(math.isfinite(x) for x in (value, lo, hi))):
             continue                      # nothing a control could address
         try:
             info = paraminfo.param_info(model, name) if model else {}
@@ -274,10 +278,12 @@ def build_chain(eb: Any) -> dict:
 def _snapshot_names(cg: dict) -> List[str]:
     """Snapshot names by index (``cg__.entt.snps[]``, each keyed by ``si__``)."""
     entt = cg.get("entt") if isinstance(cg.get("entt"), dict) else {}
+    snps = entt.get("snps")
     named = {}
-    for s in entt.get("snps") or []:
-        if isinstance(s, dict) and isinstance(s.get("si__"), int):
-            named[s["si__"]] = str(s.get("name") or f"Snapshot {s['si__'] + 1}")
+    for s in (snps if isinstance(snps, list) else []):
+        i = s.get("si__") if isinstance(s, dict) else None
+        if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < MAX_SNAPSHOTS:
+            named[i] = str(s.get("name") or f"Snapshot {i + 1}")
     return [named.get(i, f"Snapshot {i + 1}") for i in range(max(named) + 1)] if named else []
 
 

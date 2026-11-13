@@ -4941,7 +4941,8 @@ def device_link_key(app, timeout, keep_debug_app, as_json):
 
 
 @device.command(name="live")
-@click.option("--port-http", "http_port", type=int, default=8765, show_default=True,
+@click.option("--port-http", "http_port", type=click.IntRange(0, 65535),
+              default=8765, show_default=True,
               help="Local port for the page (bound to 127.0.0.1 only). "
                    "0 picks a free port.")
 @click.option("--no-open", is_flag=True, default=False,
@@ -4990,13 +4991,19 @@ def device_live(http_port: int, no_open: bool, no_lock: bool,
     swaps. Only each block's primary model is shown — not a dual cab's
     second cab, nor harness settings such as Trails.
 
+    Needs firmware 1.4 or later (the page relies on the device acknowledging
+    every live write, which older firmware does not do for bypass).
+
     LOCKING: unlike the other live-ops verbs this does NOT hold a device lock
     for its lifetime. It takes the `editbuffer` scope only while the page is
     actually writing and releases it about 2 s after the last change, so
     other verbs (`device load` of the next tone, `device copy`, …) keep
     working while the page is open. If another helixgen process holds the
     device, the page's writes are refused and it says who is driving. Save
-    takes `editbuffer` + `library` for the moment it runs.
+    takes `editbuffer` + `library` for the moment it runs. With
+    $HELIXGEN_LOCK_TOKEN set, the page writes under that session (other verbs
+    carrying the token pass through its lease), and a token whose session is
+    gone stops the page's writes just as it stops any other verb.
     """
     import signal
     import webbrowser
@@ -5019,17 +5026,29 @@ def device_live(http_port: int, no_open: bool, no_lock: bool,
     def _term(*_a):
         raise KeyboardInterrupt
 
+    import errno
+
     lease = None
     try:
         with HelixClient(ip, port) as h:
             dev_ip = getattr(h, "ip", None) or ip
+            try:
+                fw = (h.product_info() or {}).get("firmware") or ""
+                parts = tuple(int(x) for x in fw.split(".")[:2])
+            except Exception:  # noqa: BLE001 — unknown firmware: let it try
+                parts = ()
+            if parts and parts < (1, 4):
+                raise click.ClickException(
+                    f"`device live` needs Stadium firmware 1.4 or later (this "
+                    f"device reports {fw}).")
             lease = EditLease(dev_ip, enabled=not no_lock)
             session = LiveSession(h, lease=lease, liveness=True)
             session.load()
-            try:
-                signal.signal(signal.SIGTERM, _term)   # stop cleanly when killed
-            except ValueError:
-                pass                                   # not the main thread
+            for sig in ("SIGTERM", "SIGHUP"):          # stop cleanly when killed
+                try:
+                    signal.signal(getattr(signal, sig), _term)
+                except (ValueError, AttributeError):
+                    pass                               # not the main thread / no such signal
             _server.serve(session, "127.0.0.1", http_port,
                           subscriber=HelixSubscriber(dev_ip, ports=(2001, 2003)),
                           on_ready=_ready)
@@ -5038,10 +5057,14 @@ def device_live(http_port: int, no_open: bool, no_lock: bool,
     except HelixError as e:
         raise click.ClickException(str(e)) from e
     except OSError as e:
-        raise click.ClickException(
-            f"could not serve the page on 127.0.0.1:{http_port} ({e}) — is "
-            "another `helixgen device live` already running? Pass "
-            "--port-http to use a different port.") from e
+        if e.errno in (errno.EADDRINUSE, errno.EACCES):
+            raise click.ClickException(
+                f"could not serve the page on 127.0.0.1:{http_port} ({e}) — is "
+                "another `helixgen device live` already running? Pass "
+                "--port-http to use a different port.") from e
+        if e.errno == errno.EPIPE:
+            return                                     # our stdout went away: just stop
+        raise click.ClickException(str(e)) from e
     finally:
         if lease is not None:
-            lease.release()
+            lease.release(final=True)

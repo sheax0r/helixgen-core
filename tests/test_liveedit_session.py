@@ -40,6 +40,11 @@ class FakeClient:
         self.ptypes = []
         self.edited = 0
         self.property_fails = False
+        self.fast_reads = []
+        self.preset_reads = 0
+        self.firmware = "1.4.1"
+        self.on_read = None      # hooks: run in the middle of a device call
+        self.on_write = None
 
     def _next(self):
         if self.fail is not None:
@@ -47,22 +52,34 @@ class FakeClient:
         self.last_request_id = self._rid
         self._rid += 1
 
-    def read_edit_buffer(self):
+    def read_edit_buffer(self, *, fast=False):
         if self.fail is not None:
             raise self.fail
         self.reads += 1
-        return copy.deepcopy(self.eb)
+        self.fast_reads.append(fast)
+        out = copy.deepcopy(self.eb)
+        if self.on_read is not None:
+            hook, self.on_read = self.on_read, None
+            hook()
+        return out
 
     def active_preset(self):
         if self.fail is not None:
             raise self.fail
+        self.preset_reads += 1
         return dict(self.preset)
+
+    def product_info(self):
+        return {"firmware": self.firmware}
 
     def set_param(self, path, block, pid, value, *, force=False, fast=False,
                   ptype=None):
         self._next()
         self.params.append((path, block, pid, value, force, fast))
         self.ptypes.append(ptype)
+        if self.on_write is not None:
+            hook, self.on_write = self.on_write, None
+            hook()
         return self.ack
 
     def get_property(self, key):
@@ -85,12 +102,15 @@ class FakeClient:
 class FakeLease:
     def __init__(self):
         self.busy = None
-        self.ensured, self.transients, self.ticks = 0, [], 0
+        self.ensured, self.transients, self.ticks, self.dones = 0, [], 0, 0
 
     def ensure(self):
         if self.busy:
             raise LiveError(self.busy, status=409)
         self.ensured += 1
+
+    def done(self):
+        self.dones += 1
 
     def transient(self, scopes):
         if self.busy:
@@ -571,3 +591,298 @@ def test_second_path_block_is_addressable(s):
     s.reread()
     assert s.set_param(1, 0, 3, -6.0) == {"value": -6.0}      # input Trim, dB
     assert s.client.params[-1][:4] == (1, 0, 3, -6.0)
+
+
+# --- findings from the adversarial review (each reproduced before the fix) ----
+
+def test_load_reads_the_buffer_without_the_settle_drain(s):
+    assert s.client.fast_reads == [True]
+
+
+def test_a_snapshot_reread_is_the_buffer_only(s):
+    # same preset: its identity and unsaved flag did not change, so the
+    # switch costs ONE round-trip, not four
+    presets = s.client.preset_reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 3)])
+    assert s.client.reads == 2 and s.client.preset_reads == presets
+    assert s.public_state()["preset"] == {"cid": 1863, "name": "Venom"}
+
+
+def test_unsaved_flag_survives_a_snapshot_reread(s):
+    s.set_param(0, 1, 1, 0.5)
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 3)])
+    assert s.public_state()["dirty"] is True
+
+
+def test_values_that_preceded_a_reread_in_the_same_batch_are_not_replayed(s):
+    # [knob moved, block bypassed, THEN snapshot switched] in one poll batch:
+    # the re-read returns the new snapshot; the two older events must not be
+    # laid back on top of it.
+    s.handle_events([_ev("/setParamValue", 1, 77, 0, 1, 0, 1, 0.95),
+                     _ev("/setBlockEnable", 1, 78, 0, 1, 0),
+                     _ev("/activateSnapshot", 1, 79, 2)])
+    assert _value(s, 0, 1, 1) == pytest.approx(0.3)       # what the device holds
+    assert s.block(0, 1)["enabled"] is True
+
+
+def test_own_echo_after_a_foreign_change_is_what_the_device_holds(s):
+    # stream order = device order: [hardware 0.70, then OUR 0.40]. Our ack was
+    # processed first, so state went 0.40 -> 0.70; the echo must bring it back.
+    s.set_param(0, 1, 1, 0.40)                             # rid 1000
+    v, r = s.version, s.rev
+    s.handle_events([_ev("/setParamValue", 9, 77, 0, 1, 0, 1, 0.70),
+                     _ev("/setParamValue", 9, 1000, 0, 1, 0, 1, 0.40)])
+    assert _value(s, 0, 1, 1) == pytest.approx(0.40)
+    values = [m["value"] for m in _drain(s, v, r)[2] if m["t"] == "param"]
+    assert values == [pytest.approx(0.70), pytest.approx(0.40)]
+
+
+def test_a_remembered_request_id_is_consumed_by_its_echo(s):
+    # request ids are small counters every helixgen process starts at 1000
+    s.set_param(0, 1, 1, 0.40)                             # rid 1000
+    s.handle_events([_ev("/setParamValue", 9, 1000, 0, 1, 0, 1, 0.40)])   # its echo
+    s.set_param(0, 1, 1, 0.50)                             # rid 1001
+    s.handle_events([_ev("/setParamValue", 9, 1001, 0, 1, 0, 1, 0.50)])
+    # another process now writes 0.40 and happens to use seq 1000 too
+    s.handle_events([_ev("/setParamValue", 9, 1000, 0, 1, 0, 1, 0.40)])
+    assert _value(s, 0, 1, 1) == pytest.approx(0.40)
+
+
+def test_remembered_echoes_do_not_survive_a_new_buffer(s):
+    s.set_param(0, 1, 1, 0.40)                             # rid 1000
+    s.set_param(0, 1, 1, 0.50)                             # rid 1001 (1000 is now "stale")
+    s.reread()                                             # device (fake) still says 0.3
+    s.handle_events([_ev("/setParamValue", 9, 1000, 0, 1, 0, 1, 0.40)])
+    assert _value(s, 0, 1, 1) == pytest.approx(0.40)       # not swallowed as an old echo
+
+
+def test_preset_switch_while_a_write_is_on_the_wire(s, monkeypatch):
+    # slot 13 is the output (pid 2: level, -120..+20 dB). While our +12 dB
+    # write is in flight the device loads a preset whose slot 13 pid 2 is a
+    # 0..1 knob. 12.0 must NOT be written into the new tone's state.
+    other = _eb({0: _blk(IN_INST1), 13: _blk(SCREAM, {1: 0.3, 2: 0.8})})
+    monkeypatch.setattr("helixgen.liveedit.session.decode_blob", lambda blob: other)
+    s.client.on_write = lambda: s.handle_events(
+        [_ev("/setEditBuffer", 1, 2, b"blob"),
+         _ev("/loadContentRef", 1, 3, {"cid_": 7, "name": "Other"})])
+    with pytest.raises(LiveError) as e:
+        s.set_param(0, 13, 2, 12.0)
+    assert e.value.status == 409
+    assert e.value.value == pytest.approx(0.8)             # the NEW tone's value
+    assert _value(s, 0, 13, 2) == pytest.approx(0.8)
+    # ...and the truth is fetched: the stray write may have landed on the new tone
+    reads = s.client.reads
+    s.tick()
+    assert s.client.reads == reads + 1
+    s.tick()
+    assert s.client.reads == reads + 1                     # once
+
+
+def test_bypass_commit_is_also_guarded_against_a_switch(s, monkeypatch):
+    class Enabler:
+        pass
+    other = _eb({0: _blk(IN_INST1), 1: _blk(AMP), 13: _blk(OUT_MATRIX)})
+    monkeypatch.setattr("helixgen.liveedit.session.decode_blob", lambda blob: other)
+    real = s.client.set_block_enable
+
+    def racing(path, block, enable, *, fast=False):
+        out = real(path, block, enable, fast=fast)
+        s.handle_events([_ev("/setEditBuffer", 1, 2, b"blob")])
+        return out
+    s.client.set_block_enable = racing
+    with pytest.raises(LiveError) as e:
+        s.set_bypass(0, 1, False)
+    assert e.value.status == 409 and s.block(0, 1)["enabled"] is True
+
+
+def test_a_read_overtaken_by_a_pushed_buffer_is_discarded(s, monkeypatch):
+    # the page's Re-read is in flight (it read preset A) when the device
+    # pushes preset B; installing the read afterwards would put A back.
+    b_eb = _split_join()
+    monkeypatch.setattr("helixgen.liveedit.session.decode_blob", lambda blob: b_eb)
+
+    def pushed_meanwhile():
+        s.client.eb = b_eb                                 # the device now holds B
+        s.client.preset = {"cid": 2037, "name": "B", "posi": 1, "slot": "1A", "ccid": -2}
+        s.handle_events([_ev("/setEditBuffer", 1, 2, b"blob"),
+                         _ev("/loadContentRef", 1, 3, {"cid_": 2037, "name": "B"})])
+    s.client.on_read = pushed_meanwhile
+    s.reread()
+    st = s.public_state()
+    assert st["preset"]["name"] == "B"
+    assert any(seg["kind"] == "parallel" for seg in st["paths"][0]["segments"])
+
+
+def test_blob_then_its_ref_in_a_later_batch_only_patches_the_label(s, monkeypatch):
+    monkeypatch.setattr("helixgen.liveedit.session.decode_blob", lambda blob: _split_join())
+    s.handle_events([_ev("/setEditBuffer", 1, 2, b"blob")])
+    assert s.public_state()["preset"] == {"cid": None, "name": None}
+    reads = s.client.reads
+    s.handle_events([_ev("/loadContentRef", 1, 3, {"cid_": 2037, "name": "White Limo"})])
+    assert s.client.reads == reads                         # NOT "a different preset"
+    assert s.public_state()["preset"] == {"cid": 2037, "name": "White Limo"}
+
+
+def test_value_events_before_a_pushed_buffer_belong_to_the_old_tone(s, monkeypatch):
+    monkeypatch.setattr("helixgen.liveedit.session.decode_blob", lambda blob: _rig())
+    s.handle_events([_ev("/setParamValue", 1, 77, 0, 1, 0, 1, 0.95),
+                     _ev("/setEditBuffer", 1, 2, b"blob")])
+    assert _value(s, 0, 1, 1) == pytest.approx(0.3)
+
+
+def test_reconnect_attempts_are_spaced_out():
+    now = [100.0]
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease(), clock=lambda: now[0])
+    sess.load()
+    c.fail = HelixError("gone")
+    with pytest.raises(LiveError):
+        sess.set_param(0, 1, 1, 0.9)
+    c.fail = None
+    c.ack = True
+    calls = []
+    real = c.read_edit_buffer
+    c.read_edit_buffer = lambda **k: (calls.append(1), (_ for _ in ()).throw(HelixError("still gone")))[1]
+    sess.tick()
+    now[0] += 0.5
+    sess.tick()
+    now[0] += 0.5
+    sess.tick()
+    assert len(calls) == 1                                 # not once per half-second pass
+    now[0] += 3.0
+    c.read_edit_buffer = real
+    sess.tick()
+    assert sess.public_state()["connected"] is True
+
+
+def test_nothing_is_written_or_saved_while_disconnected(s):
+    s.client.fail = HelixError("gone")
+    with pytest.raises(LiveError):
+        s.set_param(0, 1, 1, 0.9)
+    s.client.fail = None
+    for call in (lambda: s.set_bypass(0, 1, False), s.save):
+        with pytest.raises(LiveError) as e:
+            call()
+        assert e.value.status == 503
+    assert s.client.enables == [] and s.client.saves == []
+
+
+def test_absurd_numbers_are_a_400_not_a_crash(s):
+    with pytest.raises(LiveError) as e:
+        s.set_param(0, 1, 1, 10 ** 400)
+    assert e.value.status == 400 and s.client.params == []
+
+
+def test_every_write_releases_its_hold_on_the_lease(s):
+    s.set_param(0, 1, 1, 0.5)
+    s.set_bypass(0, 1, False)
+    s.client.ack = False
+    with pytest.raises(LiveError):
+        s.set_param(0, 1, 1, 0.6)
+    s.client.fail = HelixError("gone")
+    s.client.ack = True
+    with pytest.raises(LiveError):
+        s.set_param(0, 1, 1, 0.7)
+    assert s.lease.ensured == 4 and s.lease.dones == 4
+
+
+def test_session_survives_concurrent_writers_events_and_rereads():
+    """No test here ran LiveSession on more than one thread; the server does.
+    Hammer it from page threads, the subscriber thread and re-reads at once:
+    nothing may raise, deadlock, or leave state the fake device cannot explain."""
+    import threading
+    c = FakeClient()
+    lock = threading.Lock()
+    real_set = c.set_param
+
+    def serial_set(*a, **k):                   # the real client is not thread-safe:
+        assert lock.acquire(blocking=False), "two device calls at once"   # devlock must serialize
+        try:
+            return real_set(*a, **k)
+        finally:
+            lock.release()
+    c.set_param = serial_set
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    errors, stop = [], threading.Event()
+
+    def writer(pid, n):
+        try:
+            for i in range(n):
+                try:
+                    sess.set_param(0, 1, pid, (i % 10) / 10.0, rev=None)
+                except LiveError:
+                    pass
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    def events():
+        try:
+            i = 0
+            while not stop.is_set():
+                i += 1
+                sess.handle_events([_ev("/setParamValue", 1, 5000 + i, 0, 2, 0, DRIVE, (i % 7) / 7.0)])
+                if i % 25 == 0:
+                    sess.handle_events([_ev("/activateSnapshot", 1, 2, i % 8)])
+                sess.tick()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    def reader():
+        try:
+            v = r = -1
+            while not stop.is_set():
+                v, r, _ = sess.changes_since(v, r)
+                sess.wait(v, r, 0.01)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(pid, 150)) for pid in (1, 2, 3)]
+    aux = [threading.Thread(target=events), threading.Thread(target=reader),
+           threading.Thread(target=lambda: [sess.reread() for _ in range(20)])]
+    for th in threads + aux:
+        th.start()
+    for th in threads:
+        th.join(timeout=20)
+    stop.set()
+    for th in aux:
+        th.join(timeout=20)
+    assert not errors, errors
+    assert not any(th.is_alive() for th in threads + aux), "deadlock"
+    st = sess.public_state()
+    assert st["connected"] is True and st["paths"]
+    assert sess.lease.ensured == sess.lease.dones
+
+
+def test_an_echo_that_beats_its_own_ack_is_still_recognised(s):
+    # the subscriber thread can see our write's echo BEFORE the writing thread
+    # has the ack (and so before the request id is remembered). It must not be
+    # mistaken for someone else's change and broadcast a second time.
+    def echo_arrives_first():
+        s.handle_events([_ev("/setParamValue", 9, 1000, 0, 1, 0, 1, 0.31)])
+    s.client.on_write = echo_arrives_first
+    v, r = s.version, s.rev
+    s.set_param(0, 1, 1, 0.31, client="tab-a")
+    msgs = [m for m in _drain(s, v, r)[2] if m["t"] == "param"]
+    assert msgs == [{"t": "param", "path": 0, "block": 1, "pid": 1,
+                     "value": 0.31, "client": "tab-a"}]
+
+
+def test_a_foreign_event_during_our_write_is_not_lost(s):
+    # ...but an event for that control from someone else, arriving in the same
+    # window, still has to land (after ours, in stream order)
+    def hardware_moves_it_too():
+        s.handle_events([_ev("/setParamValue", 9, 1000, 0, 1, 0, 1, 0.31),   # our echo
+                         _ev("/setParamValue", 9, 77, 0, 1, 0, 1, 0.66)])    # then the hardware
+    s.client.on_write = hardware_moves_it_too
+    s.set_param(0, 1, 1, 0.31)
+    assert _value(s, 0, 1, 1) == pytest.approx(0.66)
+
+
+def test_events_deferred_by_a_failed_write_still_apply(s):
+    s.client.ack = False
+    s.client.on_write = lambda: s.handle_events(
+        [_ev("/setParamValue", 9, 77, 0, 1, 0, 1, 0.66)])
+    with pytest.raises(LiveError):
+        s.set_param(0, 1, 1, 0.9)
+    assert _value(s, 0, 1, 1) == pytest.approx(0.66)

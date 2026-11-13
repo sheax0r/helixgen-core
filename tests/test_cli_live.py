@@ -79,12 +79,82 @@ def test_live_fails_cleanly_when_the_device_cannot_be_read(monkeypatch):
     assert "session" not in seen                         # never started serving
 
 
-def test_live_reports_a_port_in_use(monkeypatch):
-    def serve(*a, **k):
-        raise OSError(48, "Address already in use")
-    fake = FakeClient()
+def _run_with_serve(monkeypatch, serve, args=("--no-open",), client=None):
+    fake = client or FakeClient()
     monkeypatch.setattr(cli_device, "_client", lambda: (lambda ip, port: _Ctx(fake), HelixError))
     monkeypatch.setattr("helixgen.liveedit.server.serve", serve)
     monkeypatch.setattr("helixgen.device.subscribe.HelixSubscriber", _Sub)
-    r = CliRunner().invoke(cli, ["device", "live", "--ip", "10.0.0.9", "--no-open"])
+    return CliRunner().invoke(cli, ["device", "live", "--ip", "10.0.0.9", *args]), fake
+
+
+def test_live_reports_a_port_in_use(monkeypatch):
+    import errno
+
+    def serve(*a, **k):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+    r, _ = _run_with_serve(monkeypatch, serve)
     assert r.exit_code != 0 and "--port-http" in r.output
+
+
+def test_live_does_not_blame_the_port_for_other_os_errors(monkeypatch):
+    import errno
+
+    def serve(*a, **k):
+        raise OSError(errno.ENOSPC, "No space left on device")
+    r, _ = _run_with_serve(monkeypatch, serve)
+    assert r.exit_code != 0
+    assert "No space left" in r.output and "--port-http" not in r.output
+
+
+def test_live_rejects_an_impossible_port_before_touching_the_device(monkeypatch):
+    def serve(*a, **k):
+        raise AssertionError("served")
+    r, fake = _run_with_serve(monkeypatch, serve, args=("--no-open", "--port-http", "70000"))
+    assert r.exit_code == 2 and "70000" in r.output and fake.reads == 0
+
+
+def test_live_refuses_firmware_older_than_1_4(monkeypatch):
+    # older firmware does not acknowledge a live bypass, so every bypass on
+    # the page would be reported as failed
+    c = FakeClient()
+    c.firmware = "1.3.2"
+    r, _ = _run_with_serve(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(AssertionError("served")), client=c)
+    assert r.exit_code != 0 and "1.4" in r.output and "1.3.2" in r.output
+
+
+def test_live_releases_the_lease_for_good_on_every_exit(monkeypatch):
+    import errno
+    from helixgen.liveedit import lease as lease_mod
+    made = []
+
+    class Spy(lease_mod.EditLease):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.released = []
+            made.append(self)
+
+        def release(self, *, final=False):
+            self.released.append(final)
+            super().release(final=final)
+    monkeypatch.setattr(lease_mod, "EditLease", Spy)
+    _run_with_serve(monkeypatch, lambda *a, **k: None)                       # normal stop
+    assert made[-1].released == [True]
+
+    def boom(*a, **k):
+        raise OSError(errno.EADDRINUSE, "in use")
+    _run_with_serve(monkeypatch, boom)                                       # failed start
+    assert made[-1].released == [True]
+
+
+def test_live_stops_cleanly_on_sigterm_and_sighup(monkeypatch):
+    import signal
+    seen = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, fn: seen.__setitem__(sig, fn))
+    _run_with_serve(monkeypatch, lambda *a, **k: None)
+    assert set(seen) >= {signal.SIGTERM, signal.SIGHUP}
+    try:
+        seen[signal.SIGTERM](signal.SIGTERM, None)
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("SIGTERM must unwind the server like Ctrl-C")

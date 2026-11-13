@@ -211,17 +211,22 @@ def test_two_pairs_then_tap_in_one_path():
 
 
 def test_bblk_is_an_instance_id_resolved_through_bmap():
-    # the split names instance 99; bmap says instance 99 sits at grid slot 15
+    # the split names instance 99; bmap says instance 99 sits at grid slot 17.
+    # Row 1 ALSO holds a block at 15 that this split does not feed: only the
+    # bmap resolution can tell them apart (the no-pointer fallback would start
+    # the lane at 15 and claim both).
     bmap = list(range(28))
-    bmap[15] = 99
+    bmap[17] = 99
     eb = _eb({
         0: _blk(IN_INST1),
         4: _blk(SPLIT_Y, bblk=99), 5: _blk(AMP), 6: _blk(JOIN, bblk=20),
         13: _blk(OUT_MATRIX),
-        14: _blk(IN_NONE), 15: _blk(IR), 27: _blk(OUT_NONE),
+        14: _blk(IN_NONE), 15: _blk(SCREAM), 17: _blk(IR), 27: _blk(OUT_NONE),
     }, bmap=bmap)
-    par = chain.build_chain(eb)["paths"][0]["segments"][1]
-    assert par["kind"] == "parallel" and _slots(par["b"]) == [15]
+    p = chain.build_chain(eb)["paths"][0]
+    par = p["segments"][1]
+    assert par["kind"] == "parallel" and _slots(par["b"]) == [17]
+    assert _slots(p["extra"]) == [15]
 
 
 def test_split_without_a_usable_pointer_still_claims_its_lane():
@@ -288,6 +293,22 @@ def test_every_real_block_appears_exactly_once():
                 if mid not in (IN_NONE, OUT_NONE):
                     want.add((pi, blks[i]))
         assert set(seen) == want
+
+
+def test_garbage_inside_the_buffer_does_not_raise_or_explode():
+    eb = _serial()
+    eb["cg__"]["entt"] = {"snps": 5}                       # a scalar where a list belongs
+    assert chain.build_chain(eb)["snapshots"] == []
+    eb["cg__"]["entt"] = {"snps": [7, {"si__": 10 ** 9, "name": "x"}, {"si__": 1, "name": "ok"}]}
+    assert chain.build_chain(eb)["snapshots"] == ["Snapshot 1", "ok"]   # a wild index sizes nothing
+    blks = eb["sfg_"]["flow"][0]["blks"]
+    blks[1]["mdls"][0]["parm"] = 9                         # scalar parm
+    blks[3]["mdls"][0]["parm"] = [{"pid_": 1, "valu": float("nan")}, "junk"]
+    st = chain.build_chain(eb)
+    scream = chain.block_index(st)[(0, 1)]
+    assert all(p["pid"] != 1 for p in scream["params"])    # a NaN is not a knob position
+    import json
+    json.dumps(st, allow_nan=False)                        # the state is always valid JSON
 
 
 def test_malformed_buffers_do_not_raise():
