@@ -322,7 +322,7 @@ def test_stale_tap_is_moved_after_the_new_last_block():
 
 
 def test_edit_verbs_work_on_a_tapped_tone(tmp_path, hsp_library, prefs):
-    """Review HIGH: add/remove_block refuse a path holding a split — the tap
+    """Review HIGH: add/remove_block refuse edits inside a split region or on lane 1 — the tap
     split included. The edit verbs lift the taps around the edit."""
     from helixgen.generate import generate_preset
     spec = tmp_path / "in.json"

@@ -271,6 +271,7 @@ def place_tone(
     description_md: Optional[str],
     tags: Optional[List[str]] = None,
     variant_fields: Optional[Dict[str, Any]] = None,
+    venue_result: Any = None,
 ) -> Path:
     """Place one ``.hsp`` into the tone library and record its metadata.
 
@@ -286,7 +287,11 @@ def place_tone(
     (``library fork`` uses it for ``forked_from`` and an inherited
     ``notes_md``) BEFORE the single metadata save, so a caller never needs a
     second load → mutate → save round (which would double the advisory
-    commit)."""
+    commit).
+
+    ``venue_result`` (a ``venue.VenueResult``) replaces the copied body with
+    the venue-converted one and records ``venue``/``venue_detail`` on the
+    variant, whose key then follows ``tone_meta.variant_key_for``."""
     libinit.ensure_initialized()
     tones = home.tones_dir()
     tones.mkdir(parents=True, exist_ok=True)
@@ -300,23 +305,26 @@ def place_tone(
 
     _data_safe_place(src, dest, move=move)
 
-    body = read_hsp(dest)
+    body = venue_result.body if venue_result is not None else read_hsp(dest)
     body.setdefault("meta", {})["name"] = new_name
     write_hsp(dest, body)
 
     existing = (tone_meta.load_tone_meta(logical)
                 if tone_meta.meta_path(logical).exists() else None)
+    venue = venue_result.venue if venue_result is not None else None
+    key, _ = tone_meta.variant_key_for(existing, guitar_slug, venue)
     meta = tone_meta.upsert_variant(
         existing, artist=artist, song=song, descriptor=descriptor,
         guitar_slug=guitar_slug, guitar_short=guitar_short, hsp_path=dest,
-        tags=tags,
+        tags=tags, venue=venue,
+        venue_detail=venue_result.venue_detail if venue_result is not None else None,
     )
     if description_md is not None:
         meta.description_md = description_md
     if variant_fields:
-        variant = meta.variants[guitar_slug if guitar_slug is not None else "generic"]
-        for key, value in variant_fields.items():
-            setattr(variant, key, value)
+        variant = meta.variants[key]
+        for attr, value in variant_fields.items():
+            setattr(variant, attr, value)
     tone_meta.save_tone_meta(meta)
     return dest
 

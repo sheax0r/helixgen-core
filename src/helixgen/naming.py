@@ -16,7 +16,10 @@ from __future__ import annotations
 import re
 import unicodedata
 
-__all__ = ["slugify", "display_name", "logical_slug", "variant_slug"]
+__all__ = ["slugify", "display_name", "logical_slug", "variant_slug", "VENUE_SUFFIX"]
+
+# Display-name suffix per venue (only used for a second variant on one guitar).
+VENUE_SUFFIX = {"headphones": "HP", "direct": "Direct", "amp-in": "Amp In"}
 
 # Characters normalized to a plain dash before punctuation-stripping.
 _DASH_LIKE = re.compile(r"[\s_–—]+")  # whitespace, underscore, en-dash, em-dash
@@ -67,6 +70,7 @@ def display_name(
     song: str | None = None,
     descriptor: str | None = None,
     guitar_short: str | None = None,
+    venue_suffix: str | None = None,
 ) -> str:
     """Build the display name ``"Artist - Song - Guitar"`` / ``"Descriptor - Guitar"``.
 
@@ -77,9 +81,8 @@ def display_name(
     """
     _validate_identity(artist=artist, song=song, descriptor=descriptor)
     base = f"{artist} - {song}" if not _is_blank(artist) else descriptor
-    if guitar_short is None:
-        return base
-    return f"{base} - {guitar_short}"
+    name = base if guitar_short is None else f"{base} - {guitar_short}"
+    return name if venue_suffix is None else f"{name} ({venue_suffix})"
 
 
 def logical_slug(
@@ -99,12 +102,11 @@ def logical_slug(
     return slugify(base)
 
 
-def variant_slug(logical: str, guitar_slug: str | None) -> str:
+def variant_slug(logical: str, guitar_slug: str | None, venue: str | None = None) -> str:
     """Per-``.hsp`` filename slug: ``logical`` with the guitar slug appended.
 
     ``guitar_slug=None`` leaves the logical slug unchanged (guitar-agnostic
     variant, the ``"generic"`` variant key).
     """
-    if guitar_slug is None:
-        return logical
-    return f"{logical}-{guitar_slug}"
+    slug = logical if guitar_slug is None else f"{logical}-{guitar_slug}"
+    return slug if venue is None else f"{slug}-{venue}"

@@ -928,3 +928,37 @@ def test_scaffold_carries_the_shipped_target_and_its_provenance(
     assert src["measure_via"] == "meters"   # NOT a LUFS target
     # and it round-trips through the loader as a real target
     assert load_preferences(path).normalization.target_db == 17.5
+
+
+def test_default_venue_from_file_and_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"default_venue": "headphones"}))
+    assert load_preferences(path).default_venue == "headphones"
+    monkeypatch.setenv("HELIXGEN_DEFAULT_VENUE", "direct")
+    assert load_preferences(path).default_venue == "direct"
+
+
+def test_default_venue_absent_is_none_and_bad_value_errors(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    path = tmp_path / "preferences.json"
+    path.write_text("{}")
+    assert load_preferences(path).default_venue is None
+    path.write_text(json.dumps({"default_venue": "bogus"}))
+    with pytest.raises(PreferencesError):
+        load_preferences(path)
+
+
+def test_default_venue_in_scaffold(tmp_path):
+    path = scaffold_default(tmp_path / "preferences.json")
+    assert json.loads(path.read_text())["default_venue"] is None
+
+
+def test_env_default_venue_blank_is_unset_and_bad_raises(tmp_path, monkeypatch):
+    path = tmp_path / "preferences.json"
+    path.write_text(json.dumps({"default_venue": "amp-in"}))
+    monkeypatch.setenv("HELIXGEN_DEFAULT_VENUE", "  ")
+    assert load_preferences(path).default_venue == "amp-in"
+    monkeypatch.setenv("HELIXGEN_DEFAULT_VENUE", "moon")
+    with pytest.raises(PreferencesError):
+        load_preferences(path)

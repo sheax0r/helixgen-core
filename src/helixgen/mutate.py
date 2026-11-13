@@ -58,6 +58,9 @@ __all__ = [
     "set_enabled",
     "add_block",
     "remove_block",
+    "wrap_in_split",
+    "unwrap_split",
+    "LaneFullError",
     "swap_model",
     "set_ir",
     "set_trails",
@@ -79,6 +82,10 @@ _FLOW_PSEUDO_BLOCKS = ("input", "output", "split", "join", "merge")
 
 class MutateError(ValueError):
     """A `.hsp` body-level mutation could not be applied (bad address, etc.)."""
+
+
+class LaneFullError(MutateError):
+    """The edit needs more user slots than the lane has (12 per lane)."""
 
 
 def _bnn_keys(path_dict: dict[str, Any]) -> list[str]:
@@ -648,20 +655,68 @@ def set_enabled(
 
 def _is_parallel_routed(path_dict: dict[str, Any]) -> bool:
     """True if `path_dict` contains a `split`/`join` structural block --
-    i.e. this path has a parallel-routed lane 1 branch.
-
-    `split`/`join` blocks live in lane 0 and carry `branch`/`endpoint` keys
-    that cross-reference specific `bNN` keys by name (see module docstring).
-    Nothing in this module reads those pointers: `add_block` still shifts
-    `bNN` keys out from under them, and `remove_block` would happily delete a
-    block one of them names. Both refuse the path rather than silently
-    corrupting the split/join wiring or desyncing lane 1.
-    """
+    i.e. this path has a parallel-routed lane 1 branch."""
     return any(
         isinstance(path_dict.get(k), dict) and path_dict[k].get("type") in ("split", "join")
         for k in _bnn_keys(path_dict)
         if _lane_pos(k)[0] == 0
     )
+
+
+def _lane0_chain(path_dict: dict[str, Any]) -> list[str]:
+    """Lane-0 keys (blocks AND splits/joins) in chain order."""
+    return sorted(
+        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == 0),
+        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
+    )
+
+
+def _split_spans(path_dict: dict[str, Any], chain: list[str]) -> list[tuple[int, int]] | None:
+    """`(split_index, end_index)` into `chain` for every split region: each
+    split paired with its join in grid order (as `untranscode._endpoint_pointers`
+    pairs them), and an unpaired split -- a USB tap, whose B side runs to
+    b27 -- spanning to the end of the lane (`end_index == len(chain)`).
+    `None` for a join with no split before it (wiring we can't reason about).
+
+    Lane-0 positions STRICTLY inside a span are the split region: an edit
+    there would change what the branch hears, and lane 1 is not renumbered.
+    """
+    spans: list[tuple[int, int]] = []
+    open_splits: list[int] = []
+    for i, k in enumerate(chain):
+        typ = path_dict[k].get("type")
+        if typ == "split":
+            open_splits.append(i)
+        elif typ == "join":
+            if not open_splits:
+                return None
+            spans.append((open_splits.pop(), i))
+    return spans + [(s, len(chain)) for s in open_splits]
+
+
+def _repoint_splits(path_dict: dict[str, Any], key_map: dict[str, str]) -> None:
+    """Rewrite split/join `branch`/`endpoint` pointers after lane 0 moved
+    (`key_map`: old key -> new key, already applied to `path_dict`).
+
+    The pointers name `bNN` keys (see `generate._emit_splits`): `endpoint` is
+    the partner, `branch` a lane-1 key -- or the partner when no lane-1 block
+    sits in the region. Lane 1 is never renumbered here, so a lane-1 `branch`
+    stays put, EXCEPT a split's `branch` aimed at the empty row-1 slot
+    beneath it (`b{14+pos}`, what `to-hsp` writes for a split with nothing
+    in its region, e.g. a pulled USB tap): it follows the split, or the
+    transcoder keeps feeding row 1 from the column the split left.
+    """
+    for old, new in key_map.items():
+        bnn = path_dict[new]
+        if bnn.get("type") not in ("split", "join"):
+            continue
+        beneath = f"b{14 + int(old[1:]):02d}"
+        for ptr in ("branch", "endpoint"):
+            if bnn.get(ptr) in key_map:
+                bnn[ptr] = key_map[bnn[ptr]]
+        if (bnn.get("type") == "split" and bnn.get("branch") == beneath
+                and beneath not in path_dict):
+            bnn["branch"] = f"b{14 + int(new[1:]):02d}"
 
 
 def _find_block(model: str, library: Library) -> Block:
@@ -694,7 +749,7 @@ def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str,
             f"Lane {lane}: {len(ordered)} blocks but {len(positions)} positions."
         )
     if positions and positions[-1] > _MAX_LANE_SLOTS:
-        raise MutateError(
+        raise LaneFullError(
             f"Lane {lane} would have {len(ordered)} blocks; only "
             f"{_MAX_LANE_SLOTS} user slots "
             f"(b{14 * lane + 1:02d}..b{14 * lane + _MAX_LANE_SLOTS:02d}) available."
@@ -858,19 +913,11 @@ def add_block(
     if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
         raise MutateError(f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
     path_dict = flow[path]
-    if _is_parallel_routed(path_dict):
-        raise MutateError(
-            "add_block not supported on a parallel-routed path yet (path "
-            f"{path} contains a split/join)."
-        )
 
     block = _find_block(model, library)
     lane = 0
 
-    existing_keys = sorted(
-        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == lane),
-        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
-    )
+    existing_keys = _lane0_chain(path_dict)
     ordered = [path_dict[k] for k in existing_keys]
 
     if after is None:
@@ -879,13 +926,32 @@ def add_block(
         after_fi, after_key, _si = resolve_slot(body, after, library, path=path, lane=lane)
         insert_at = existing_keys.index(after_key) + 1
 
+    spans = _split_spans(path_dict, existing_keys)
+    if spans is None or any(s < insert_at <= e for s, e in spans):
+        raise MutateError(
+            "add_block not supported inside a split region or on lane 1 yet "
+            f"(path {path} contains a split/join)."
+        )
+
     new_bnn = _to_hsp_bnn(block, params or {}, position=0, path_index=lane)
+    return _insert_lane0(body, path, insert_at, new_bnn, warnings_out)[0]
+
+
+def _insert_lane0(body: dict[str, Any], path: int, insert_at: int, new_bnn: dict[str, Any],
+                  warnings_out: list[str] | None) -> tuple[str, dict[str, str]]:
+    """Put `new_bnn` at chain index `insert_at` of path `path`'s lane 0, keeping
+    the lane's layout (`_insert_positions`), and rewrite split pointers and MIDI
+    records to match. Returns `(new key, {old key: new key})` for the lane's
+    existing entries. Callers check split regions and capacity first."""
+    path_dict = body["preset"]["flow"][path]
+    existing_keys = _lane0_chain(path_dict)
+    ordered = [path_dict[k] for k in existing_keys]
     ordered.insert(insert_at, new_bnn)
 
     old_positions = [_lane_pos(k)[1] for k in existing_keys]
     positions = _insert_positions(old_positions, insert_at)
     if positions is None:
-        new_keys = _renumber_lane(path_dict, lane, ordered)   # raises if lane full
+        new_keys = _renumber_lane(path_dict, 0, ordered)   # raises if lane full
         msg = (f"path {path} records grid coordinates that cannot be honoured "
                f"(not ascending, duplicated, or off-grid); re-packing its "
                f"blocks onto b01..b{len(ordered):02d}.")
@@ -898,11 +964,14 @@ def add_block(
         pos_map = {p: (j + 1 if j < insert_at else j + 2)
                    for j, p in enumerate(old_positions)}
     else:
-        new_keys = _renumber_lane(path_dict, lane, ordered, positions)
+        new_keys = _renumber_lane(path_dict, 0, ordered, positions)
         pos_map = dict(zip(old_positions,
                            positions[:insert_at] + positions[insert_at + 1:]))
-    _remap_midi_positions(body, path, lane, pos_map)
-    return new_keys[insert_at]
+    key_map = {old: new_keys[j if j < insert_at else j + 1]
+               for j, old in enumerate(existing_keys)}
+    _repoint_splits(path_dict, key_map)
+    _remap_midi_positions(body, path, 0, pos_map)
+    return new_keys[insert_at], key_map
 
 
 def remove_block(
@@ -926,16 +995,186 @@ def remove_block(
     """
     fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     path_dict = body["preset"]["flow"][fi]
-    if _is_parallel_routed(path_dict):
-        raise MutateError(
-            "remove_block not supported on a parallel-routed path yet (path "
-            f"{fi} contains a split/join)."
-        )
     del_lane, del_pos = _lane_pos(key)
+    if del_lane == 1:
+        refused = _is_parallel_routed(path_dict)
+    else:
+        chain = _lane0_chain(path_dict)
+        spans = _split_spans(path_dict, chain)
+        i = chain.index(key)
+        refused = spans is None or any(s < i < e for s, e in spans)
+    if refused:
+        raise MutateError(
+            "remove_block not supported inside a split region or on lane 1 yet "
+            f"(path {fi} contains a split/join)."
+        )
     del path_dict[key]
     # Nothing moved, so the only MIDI records to reconcile are the removed
     # block's own — they are dropped, with a warning.
     _remap_midi_positions(body, fi, del_lane, {}, removed_pos=del_pos)
+
+
+# --- wrap_in_split / unwrap_split ----------------------------------------------
+
+def _wire_bnn(kind: str, model: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    """A split/join bNN skeleton, shaped exactly as `generate._emit_splits` writes
+    it (pointers and position are filled in by the caller)."""
+    params = dict(params or {})
+    try:
+        flowparams.validate_wire_params(model, params)
+    except ValueError as exc:
+        raise MutateError(f"{kind}: {exc}") from exc
+    params = flowparams.coerce_wire_params(model, params)
+    return {"@enabled": {"value": True}, "type": kind, "position": 0, "path": 0,
+            "slot": [{"model": model, "@enabled": {"value": True},
+                      "params": {k: {"value": v} for k, v in params.items()}}]}
+
+
+def wrap_in_split(
+    body: dict[str, Any],
+    block: str,
+    sibling: str,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+    sibling_params: dict[str, Any] | None = None,
+    sibling_ir: str | None = None,
+    irs: Any = None,
+    split_type: str = "y",
+    split_params: dict[str, Any] | None = None,
+    join_params: dict[str, Any] | None = None,
+    warnings_out: list[str] | None = None,
+) -> dict[str, str]:
+    """Put a placed lane-0 `block` inside a new split, beside a new lane-1
+    `sibling`: `split -> [block | sibling] -> join`, in place. Returns the
+    bNN keys `{"split", "block", "sibling", "join"}`.
+
+    Lane 0 gets the split right before `block` and the join right after it,
+    each inserted the way `add_block` inserts (the run in the way slides one
+    slot, split pointers and MIDI records follow). The sibling takes the next
+    lane-1 slot after any existing lane-1 block (`b15` on a path with none),
+    as `generate._assign_positions` numbers lane 1. The split/join are shaped
+    as `generate._emit_splits` writes them, so wrapping a generated chain gives
+    the body the equivalent split recipe generates. `sibling_ir` (a wav
+    basename or hash, resolved against `irs` like `set_ir`) binds an IR
+    sibling's `irhash`.
+
+    Refuses (`MutateError`) a `block` on lane 1 or already inside a split
+    region; raises `LaneFullError` when lane 0 has no room for the split and
+    join or lane 1 none for the sibling. The body is untouched on any error.
+    """
+    fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    path_dict = body["preset"]["flow"][fi]
+    if _lane_pos(key)[0] != 0:
+        raise MutateError(f"Block {block!r} is on lane 1; only a lane-0 block can be wrapped.")
+    chain = _lane0_chain(path_dict)
+    i = chain.index(key)
+    spans = _split_spans(path_dict, chain)
+    if spans is None or any(s < i < e for s, e in spans):
+        raise MutateError(f"Block {block!r} is already inside a split region (path {fi}).")
+    if len(chain) + 2 > _MAX_LANE_SLOTS:
+        raise LaneFullError(
+            f"Lane 0 of path {fi} has {len(chain)} entries; a split and join need "
+            f"2 more of its {_MAX_LANE_SLOTS} user slots.")
+    lane1 = [p for ln, p in map(_lane_pos, _bnn_keys(path_dict))
+             if ln == 1 and 1 <= p <= _MAX_LANE_SLOTS]
+    sib_pos = max(lane1, default=0) + 1
+    if sib_pos > _MAX_LANE_SLOTS:
+        raise LaneFullError(f"Lane 1 of path {fi} has no free slot after b{14 + sib_pos - 1}.")
+
+    sib_block = _find_block(sibling, library)
+    validate_params(sib_block, sibling_params or {})
+    irhash = None
+    if sibling_ir is not None:
+        if not sib_block.model_id.startswith(IR_MODEL_PREFIX):
+            raise MutateError(f"Sibling {sibling!r} is not an IR block; sibling_ir needs one.")
+        try:
+            irhash = _resolve_irhash(block_default=None, spec_ir=sibling_ir, irs=irs)
+        except GenerateError as exc:
+            raise MutateError(str(exc)) from exc
+    if split_type not in flowparams.SPLIT_TYPES:
+        raise MutateError(f"Unknown split type {split_type!r}; "
+                          f"valid: {sorted(flowparams.SPLIT_TYPES)}.")
+    split = _wire_bnn("split", flowparams.SPLIT_TYPES[split_type], split_params)
+    join = _wire_bnn("join", flowparams.JOIN_MODEL, join_params)
+    sib_bnn = _to_hsp_bnn(sib_block, sibling_params or {}, position=sib_pos,
+                          path_index=1, irhash=irhash)
+
+    split_key, km = _insert_lane0(body, fi, i, split, warnings_out)
+    key = km[key]
+    join_key, km = _insert_lane0(body, fi, i + 2, join, warnings_out)
+    split_key, key = km[split_key], km[key]
+    sib_key = f"b{14 + sib_pos:02d}"
+    path_dict[sib_key] = sib_bnn
+    split.update(branch=sib_key, endpoint=join_key)
+    join.update(branch=sib_key, endpoint=split_key)
+    return {"split": split_key, "block": key, "sibling": sib_key, "join": join_key}
+
+
+def _close_up(positions: list[int], freed: int) -> list[int]:
+    """`positions` (ascending) with the unbroken run right after the freed
+    slot slid back one -- undoing the slide `_insert_positions` makes."""
+    out, nxt = [], freed + 1
+    for p in positions:
+        if p == nxt:
+            out.append(p - 1)
+            nxt += 1
+        else:
+            out.append(p)
+    return out
+
+
+def unwrap_split(
+    body: dict[str, Any],
+    block: str,
+    library: Library,
+    *,
+    path: int | None = None,
+    lane: int | None = None,
+    pos: int | None = None,
+    warnings_out: list[str] | None = None,
+) -> str:
+    """The inverse of `wrap_in_split`, in place: `block` must be the only lane-0
+    block of a split region whose B lane holds exactly one lane-1 block; the
+    split, the join and that lane-1 block are deleted and `block`'s new key is
+    returned.
+
+    Each freed lane-0 slot pulls the unbroken run right after it back one
+    slot, undoing the slide the wrap's inserts made: on a lane the wrap slid
+    right (always, on a packed generated lane) the original keys come back
+    exactly. Split pointers and MIDI records follow; the deleted sibling's
+    MIDI records are dropped with a warning, as `remove_block` does.
+    """
+    fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
+    path_dict = body["preset"]["flow"][fi]
+    chain = _lane0_chain(path_dict) if _lane_pos(key)[0] == 0 else []
+    i = chain.index(key) if key in chain else -1
+    region = next(((s, e) for s, e in _split_spans(path_dict, chain) or []
+                   if s < i < e < len(chain)), None)
+    if region is None:
+        raise MutateError(f"Block {block!r} is not inside a split/join region.")
+    s, e = region
+    split_key, join_key = chain[s], chain[e]
+    if e - s != 2:
+        raise MutateError(f"The split around {block!r} holds other lane-0 blocks too.")
+    sib = path_dict[split_key].get("branch")
+    if not (isinstance(sib, str) and sib in path_dict and _lane_pos(sib)[0] == 1
+            and path_dict[join_key].get("branch") == sib):
+        raise MutateError(
+            f"The split around {block!r} must hold exactly one lane-1 block to unwrap.")
+
+    for k in (split_key, join_key, sib):
+        del path_dict[k]
+    _remap_midi_positions(body, fi, 1, {}, removed_pos=_lane_pos(sib)[1])
+    keys = [k for k in chain if k not in (split_key, join_key)]
+    old = [_lane_pos(k)[1] for k in keys]
+    new = _close_up(_close_up(old, _lane_pos(join_key)[1]), _lane_pos(split_key)[1])
+    new_keys = _renumber_lane(path_dict, 0, [path_dict[k] for k in keys], new)
+    _repoint_splits(path_dict, {k: new_keys[j] for j, k in enumerate(keys)})
+    _remap_midi_positions(body, fi, 0, dict(zip(old, new)))
+    return new_keys[keys.index(key)]
 
 
 # --- swap_model --------------------------------------------------------------
