@@ -157,3 +157,11 @@ class TestVariantSlug:
             naming.variant_slug(logical, "gibson-les-paul-junior")
             == "foo-fighters-white-limo-gibson-les-paul-junior"
         )
+
+
+def test_venue_suffix_in_display_name_and_slug():
+    assert naming.display_name(descriptor="Probe", guitar_short="Ibanez Prestige",
+                               venue_suffix="Amp In") == "Probe - Ibanez Prestige (Amp In)"
+    assert naming.variant_slug("probe", "ibanez-prestige", "amp-in") == "probe-ibanez-prestige-amp-in"
+    assert naming.variant_slug("probe", "ibanez-prestige") == "probe-ibanez-prestige"
+    assert naming.VENUE_SUFFIX == {"headphones": "HP", "direct": "Direct", "amp-in": "Amp In"}

@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
 from helixgen import gitops, home, libinit, naming
+from helixgen.venue import VENUES
 
 if TYPE_CHECKING:  # avoid a runtime import cycle; only for type hints
     from helixgen.guitars import GuitarProfile
@@ -124,6 +125,13 @@ class Variant:
     older reader round-trips it through ``extra``. Absent on a variant that
     was authored rather than forked.
 
+    ``venue`` (one of ``venue.VENUES``: headphones / direct / amp-in) records
+    what the variant is played through, and ``venue_detail`` is an open dict
+    of venue-specific facts (e.g. the room IR used). Both are optional and
+    advisory like ``normalized`` (schema stays 1; an older reader round-trips
+    them via ``extra``). A second variant on the same guitar is keyed
+    ``<guitar>@<venue>`` (see ``split_variant_key`` / ``variant_key_for``).
+
     ``extra`` holds any on-disk keys this dataclass doesn't model
     (hand-edits, future fields); they are written back verbatim on save.
     """
@@ -134,6 +142,8 @@ class Variant:
     notes_md: Optional[str] = None
     normalized: Optional[Dict[str, Any]] = None
     forked_from: Optional[Dict[str, Any]] = None
+    venue: Optional[str] = None
+    venue_detail: Optional[Dict[str, Any]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -180,6 +190,26 @@ class ToneMeta:
 # value is stripped but case-preserved. Filtering/removal queries share one
 # rule: a query with ``=`` matches by key (empty value = any value for that
 # key); a query without ``=`` matches a bare tag exactly.
+
+
+def split_variant_key(key: str) -> tuple[str, Optional[str]]:
+    """``"ibanez-prestige@amp-in"`` -> ``("ibanez-prestige", "amp-in")``;
+    a key without ``@`` -> ``(key, None)``."""
+    guitar, sep, venue = key.partition("@")
+    return (guitar, venue) if sep else (key, None)
+
+
+def variant_key_for(
+    meta: Optional[ToneMeta], guitar_slug: Optional[str], venue: Optional[str]
+) -> tuple[str, bool]:
+    """``(key, suffixed)`` for a new variant on ``guitar_slug``: the bare
+    guitar key (``"generic"`` when no guitar) unless it is already taken AND
+    a venue is given, in which case ``<guitar>@<venue>`` with ``suffixed``
+    True. With no venue a taken bare key is simply replaced (legacy)."""
+    bare = guitar_slug if guitar_slug is not None else "generic"
+    if venue is not None and meta is not None and bare in meta.variants:
+        return f"{bare}@{venue}", True
+    return bare, False
 
 
 def parse_tag(tag: str) -> tuple[Optional[str], str]:
@@ -249,7 +279,7 @@ def apply_tag_edits(
 # never strips a hand-edit (backlog #83b).
 _VARIANT_KEYS = frozenset({
     "hsp", "preset_name", "guitar_settings", "notes_md", "normalized",
-    "forked_from",
+    "forked_from", "venue", "venue_detail",
 })
 _META_KEYS = frozenset({
     "schema", "artist", "song", "descriptor", "tags", "description_md",
@@ -267,6 +297,8 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
         # must serialize verbatim (unknown per-target keys included)
         "normalized": copy.deepcopy(v.normalized) if v.normalized else None,
         "forked_from": copy.deepcopy(v.forked_from) if v.forked_from else None,
+        "venue": v.venue,
+        "venue_detail": copy.deepcopy(v.venue_detail) if v.venue_detail else None,
     }
     for k, val in v.extra.items():
         d.setdefault(k, copy.deepcopy(val))
@@ -276,6 +308,7 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
 def _variant_from_dict(d: Dict[str, Any]) -> Variant:
     normalized = d.get("normalized")
     forked_from = d.get("forked_from")
+    venue_detail = d.get("venue_detail")
     return Variant(
         hsp=d["hsp"],
         preset_name=d["preset_name"],
@@ -285,6 +318,9 @@ def _variant_from_dict(d: Dict[str, Any]) -> Variant:
                     if isinstance(normalized, dict) else None),
         forked_from=(copy.deepcopy(forked_from)
                      if isinstance(forked_from, dict) else None),
+        venue=d.get("venue"),
+        venue_detail=(copy.deepcopy(venue_detail)
+                      if isinstance(venue_detail, dict) else None),
         extra={k: copy.deepcopy(v) for k, v in d.items()
                if k not in _VARIANT_KEYS},
     )
@@ -533,6 +569,8 @@ def upsert_variant(
     guitar_short: Optional[str],
     hsp_path: Path | str,
     tags: Optional[Iterable[str]] = None,
+    venue: Optional[str] = None,
+    venue_detail: Optional[Dict[str, Any]] = None,
 ) -> ToneMeta:
     """Create ``meta`` if absent, then add/replace one variant in place.
 
@@ -581,11 +619,13 @@ def upsert_variant(
             )
 
     today = date.today().isoformat()
-    key = guitar_slug if guitar_slug is not None else "generic"
+    key, suffixed = variant_key_for(meta, guitar_slug, venue)
     preset_name = naming.display_name(
-        artist=artist, song=song, descriptor=descriptor, guitar_short=guitar_short
+        artist=artist, song=song, descriptor=descriptor, guitar_short=guitar_short,
+        venue_suffix=naming.VENUE_SUFFIX[venue] if suffixed else None,
     )
-    variant = Variant(hsp=_to_library_relative(hsp_path), preset_name=preset_name)
+    variant = Variant(hsp=_to_library_relative(hsp_path), preset_name=preset_name,
+                      venue=venue, venue_detail=venue_detail)
 
     tag_list = list(tags or [])
 
@@ -661,9 +701,21 @@ def validate_tone_meta(
     library_root = Path(tones_dir).parent
 
     for key, variant in meta.variants.items():
-        if key not in allowed_keys:
+        base, key_venue = split_variant_key(key)
+        if base not in allowed_keys:
             problems.append(
                 f"variant {key!r}: not a known guitar slug (or 'generic')"
+            )
+        for label, v in (("key suffix", key_venue), ("venue", variant.venue)):
+            if v is not None and v not in VENUES:
+                problems.append(
+                    f"variant {key!r}: {label} {v!r} is not a valid venue "
+                    f"(one of {', '.join(VENUES)})"
+                )
+        if key_venue is not None and variant.venue != key_venue:
+            problems.append(
+                f"variant {key!r}: key venue {key_venue!r} disagrees with "
+                f"variant venue {variant.venue!r}"
             )
         resolved = _resolve_variant_hsp(variant.hsp, library_root)
         if resolved is None:
@@ -701,7 +753,7 @@ def guitar_settings_warnings(
     if not guitar_profiles:
         return warnings
     for key, variant in meta.variants.items():
-        profile = guitar_profiles.get(key)
+        profile = guitar_profiles.get(split_variant_key(key)[0])
         if profile is None:
             continue
         # Case-insensitive: the rest of the guitar surface matches labels

@@ -1222,7 +1222,7 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
                 f"--guitar {guitar!r} has no slug-able characters (needs letters "
                 "or digits) -- pick a different guitar label.")
     elif src_key and src_key != "generic":
-        guitar_slug, guitar_short = _resolve_guitar(src_key)
+        guitar_slug, guitar_short = _resolve_guitar(tone_meta.split_variant_key(src_key)[0])
     else:
         guitar_slug = guitar_short = None
 
@@ -1290,7 +1290,7 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
             src_meta.description_md)
 
     # --- adaptation checklist (advisory) ---------------------------------
-    src_profile = (guitars.find_profile(src_key) if src_key else None)
+    src_profile = (guitars.find_profile(tone_meta.split_variant_key(src_key)[0]) if src_key else None)
     dst_profile = (guitars.find_profile(guitar_slug) if guitar_slug else None)
     pickups_differ = (guitars.pickup_class(src_profile)
                       != guitars.pickup_class(dst_profile))
