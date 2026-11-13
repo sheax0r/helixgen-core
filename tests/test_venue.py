@@ -403,3 +403,137 @@ def test_tile_dropped_to_keep_the_usb_tap(lib, irs):
     r = venue.apply_venue(body, "headphones", lib, irs)
     assert r.venue_detail["ambience_block"] is None
     assert usbtaps._find_tap(r.body["preset"]["flow"][0]) == ("b12", "P35_OutputUSB3_4")
+
+
+# --- Task 5: direct reversal and amp-in -------------------------------------
+
+def _to_direct(r, lib, irs):
+    return venue.apply_venue(r.body, "direct", lib, irs,
+                             source_venue="headphones", source_detail=r.venue_detail)
+
+
+@needs_sf
+@pytest.mark.parametrize("which", ["single_ir_body", "tapped_body"])
+def test_headphones_then_direct_restores_the_original_chain(which, request, lib, irs):
+    body = request.getfixturevalue(which)
+    a = venue.apply_venue(body, "headphones", lib, irs)
+    assert a.venue_detail["treatment"] == "room-ir"
+    b = _to_direct(a, lib, irs)
+    assert b.venue == "direct" and b.venue_detail == {}
+    assert view(b.body, lib, irs=irs) == view(body, lib, irs=irs)
+    assert venue._normal_form(b.body) == venue._normal_form(body)
+
+
+@needs_sf
+def test_tile_fallback_and_none_reverse_too(lib, irs):
+    for body in (_body(lib, irs, blocks=_chain({"block": "4x12 Greenback 25"})),
+                 _body(lib, irs, blocks=_chain(ir=None))):
+        a = venue.apply_venue(body, "headphones", lib, irs)
+        assert view(_to_direct(a, lib, irs).body, lib, irs=irs) == view(body, lib, irs=irs)
+
+
+def test_direct_without_detail_errors(single_ir_body, lib, irs):
+    with pytest.raises(venue.VenueError, match="venue_detail"):
+        venue.apply_venue(single_ir_body, "direct", lib, irs, source_venue="headphones")
+
+
+def _hand_edit_swap_room(body):
+    for b in _flow_blocks(body):
+        if b["slot"][0].get("irhash") == ROOM:
+            b["slot"][0]["irhash"] = LONER
+
+
+def _hand_edit_drop_tile(body):
+    flow = body["preset"]["flow"][0]
+    for k in [k for k, b in flow.items() if isinstance(b, dict) and b.get("slot")
+              and b["slot"][0].get("model") == "HD2_RvbTile"]:
+        del flow[k]
+
+
+@needs_sf
+@pytest.mark.parametrize("hand_edit,named", [
+    (_hand_edit_swap_room, "room_ir"), (_hand_edit_drop_tile, "Tile")])
+def test_direct_after_hand_edit_errors_and_names_mismatch(single_ir_body, lib, irs,
+                                                          hand_edit, named):
+    a = venue.apply_venue(single_ir_body, "headphones", lib, irs)
+    hand_edit(a.body)
+    before = copy.deepcopy(a.body)
+    with pytest.raises(venue.VenueError, match=named):
+        _to_direct(a, lib, irs)
+    assert a.body == before
+
+
+@needs_sf
+def test_direct_refuses_blocks_added_inside_the_split(single_ir_body, lib, irs):
+    a = venue.apply_venue(single_ir_body, "headphones", lib, irs)
+
+    def add_in_b_lane(rec):     # a hand edit: a second block on the room IR's lane
+        blocks = rec["paths"][0]["blocks"]
+        i = next(i for i, b in enumerate(blocks) if b.get("lane") == 1)
+        blocks.insert(i + 1, {"block": "Plate", "lane": 1, "pos": 2})
+    a.body = venue._roundtrip(a.body, lib, irs, add_in_b_lane)
+    with pytest.raises(venue.VenueError, match="added inside the room IR split"):
+        _to_direct(a, lib, irs)
+
+
+def _eq_block():
+    return {"block": "Parametric Mono", "params": {
+        "LowCut": 90.0, "LowCutSlope": 2, "HighCut": 5500.0, "HighCutSlope": 2}}
+
+
+def test_amp_in_removes_cabs_and_adds_eq_after_last_amp(single_ir_body, lib, irs):
+    r = venue.apply_venue(single_ir_body, "amp-in", lib, irs)
+    assert r.venue == "amp-in" and r.venue_detail == {"eq_block": "Parametric Mono"}
+    v = view(r.body, lib, irs=irs)
+    blocks = [{k: x for k, x in b.items() if k not in ("lane", "pos")}
+              for b in v["paths"][0]["blocks"] if "structural" not in b]
+    assert blocks == [{"block": "Scream 808"},
+                      {"block": "Brit 2204 Custom", "params": {"Drive": 0.55}},
+                      _eq_block(), {"block": "Plate"}]
+    v0 = view(single_ir_body, lib, irs=irs)
+    for k in ("snapshots", "footswitches", "expression"):
+        assert v[k] == v0[k]
+
+
+def test_amp_in_drops_controls_on_removed_cabs_with_a_warning(lib, irs):
+    body = _body(lib, irs, blocks=_chain({"block": "4x12 Greenback 25"}),
+                 snapshots=[{"name": "A"}, {"name": "B", "params": {"IR": {"Level": -20.0}}}],
+                 footswitches=[{"switch": "FS2", "block": "4x12 Greenback 25"}])
+    r = venue.apply_venue(body, "amp-in", lib, irs)
+    v = view(r.body, lib, irs=irs)
+    assert "footswitches" not in v and "params" not in v["snapshots"][1]
+    assert len(r.warnings) == 2 and all("removed" in w for w in r.warnings)
+
+
+@needs_sf
+def test_amp_in_from_headphones_also_drops_room_stage(tapped_body, lib, irs):
+    a = venue.apply_venue(tapped_body, "headphones", lib, irs)
+    c = venue.apply_venue(a.body, "amp-in", lib, irs, source_venue="headphones",
+                          source_detail=a.venue_detail)
+    direct_amp_in = venue.apply_venue(tapped_body, "amp-in", lib, irs)
+    assert view(c.body, lib, irs=irs) == view(direct_amp_in.body, lib, irs=irs)
+    assert c.venue_detail == {"eq_block": "Parametric Mono"}
+    assert usbtaps._find_tap(c.body["preset"]["flow"][0])[1] == "P35_OutputUSB3_4"
+
+
+def test_amp_in_without_an_amp_errors(lib, irs):
+    body = _body(lib, irs, blocks=[{"block": "Scream 808"}, {"block": "IR"}])
+    with pytest.raises(venue.VenueError, match="no amp"):
+        venue.apply_venue(body, "amp-in", lib, irs)
+
+
+@pytest.mark.parametrize("target", ["direct", "headphones"])
+def test_from_amp_in_to_anything_errors(single_ir_body, lib, irs, target):
+    with pytest.raises(venue.VenueError, match="cannot restore a cab from an amp-in variant"):
+        venue.apply_venue(single_ir_body, target, lib, irs, source_venue="amp-in")
+
+
+@pytest.mark.parametrize("v", venue.VENUES)
+def test_same_venue_errors(single_ir_body, lib, irs, v):
+    with pytest.raises(venue.VenueError, match=f"already {v}"):
+        venue.apply_venue(single_ir_body, v, lib, irs, source_venue=v, source_detail={})
+
+
+def test_unspecified_to_direct_is_a_no_op(single_ir_body, lib, irs):
+    r = venue.apply_venue(single_ir_body, "direct", lib, irs)
+    assert r.body == single_ir_body and r.venue_detail == {}
