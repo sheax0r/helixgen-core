@@ -515,6 +515,7 @@ class Preferences:
     preset_output_dir: str | None = None
     author: str | None = None
     default_guitar: str | None = None
+    default_venue: str | None = None
     instruments: list[Instrument] = field(default_factory=list)
     volume_normalize_snapshots: bool = True
     volume_normalize_baseline: bool = True
@@ -640,6 +641,16 @@ def _validate_default_guitar(value: Any) -> str | None:
     return value
 
 
+def _validate_default_venue(value: Any, *, name: str = "default_venue") -> str | None:
+    """Default venue for new variants: one of ``venue.VENUES`` or null."""
+    from helixgen.venue import validate_venue
+
+    try:
+        return validate_venue(value)
+    except ValueError as e:
+        raise PreferencesError(f"{name}: {e}") from None
+
+
 def _validate_git_commit_tones(value: Any, *, name: str = "git_commit_tones") -> str:
     """Normalize to one of "auto" / "true" / "false".
 
@@ -761,6 +772,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         preset_output_dir=data.get("preset_output_dir"),
         author=data.get("author"),
         default_guitar=_validate_default_guitar(data.get("default_guitar")),
+        default_venue=_validate_default_venue(data.get("default_venue")),
         instruments=_parse_instruments(data.get("instruments")),
         volume_normalize_snapshots=bool(data.get("volume_normalize_snapshots", True)),
         volume_normalize_baseline=bool(data.get("volume_normalize_baseline", True)),
@@ -789,6 +801,10 @@ def load_preferences(path: Path | None = None) -> Preferences:
         prefs.author = os.environ["HELIXGEN_AUTHOR"]
     if "HELIXGEN_DEFAULT_GUITAR" in os.environ:
         prefs.default_guitar = os.environ["HELIXGEN_DEFAULT_GUITAR"]
+    if "HELIXGEN_DEFAULT_VENUE" in os.environ:
+        prefs.default_venue = _validate_default_venue(
+            os.environ["HELIXGEN_DEFAULT_VENUE"], name="HELIXGEN_DEFAULT_VENUE"
+        )
     if "HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS" in os.environ:
         prefs.volume_normalize_snapshots = _parse_bool_env(
             "HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS",
@@ -823,6 +839,7 @@ def _default_scaffold_dict() -> dict:
         "preset_output_dir": None,
         "author": None,
         "default_guitar": None,
+        "default_venue": None,
         "instruments": [],
         "volume_normalize_snapshots": True,
         "volume_normalize_baseline": True,
