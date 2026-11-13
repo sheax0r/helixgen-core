@@ -16,6 +16,7 @@ def validate_venue(value: str | None) -> str | None:
 
 import ctypes
 import math
+import re
 from pathlib import Path
 
 from helixgen import ir as _ir
@@ -52,13 +53,17 @@ def _norm(path: str) -> str:
     return path.lower().replace("-", " ").replace("_", " ")
 
 
+_PAIR_HALF = re.compile(r" ROOM[ -]?[LR]\.wav$", re.IGNORECASE)
+
+
 def find_room_ir(
     close_wav: Path, irs: IrMapping, override: str | None = None
 ) -> tuple[str, Path] | None:
     """The room IR to blend under ``close_wav``: ``(hash, path)`` or None.
 
     Candidates: registered IRs whose basename has `` ROOM`` and whose text
-    before it (plus a space) prefixes the close IR's basename. Prefer
+    before it (plus a space) prefixes the close IR's basename. Prefer single
+    captures over ``ROOM L``/``ROOM R`` stereo-pair halves, then
     ``natural-phase`` paths, then highest energy, then lowest basename.
     ``override`` is a hash or basename and skips selection.
     """
@@ -84,6 +89,11 @@ def find_room_ir(
             cands.append((h, irs.resolve_by_hash(h)))
     if not cands:
         return None
+    # ``ROOM L`` / ``ROOM R`` are the two halves of one stereo capture; used
+    # alone as a centred mono mic, half a pair is the wrong tool when the pack
+    # also ships single room captures (``ROOM 1``, ``ROOM-2``, ...).
+    singles = [c for c in cands if not _PAIR_HALF.search(c[1].name)]
+    cands = singles or cands
     natural = [c for c in cands if "natural phase" in _norm(str(c[1]))]
     cands = natural or cands
     return min(cands, key=lambda c: (-ir_energy_db(c[1]), c[1].name))
