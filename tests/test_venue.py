@@ -88,7 +88,7 @@ def test_missing_room_wav_is_a_clear_error():
 
 import copy
 
-from helixgen import usbtaps
+from helixgen import mutate, usbtaps
 from helixgen.generate import compose_preset
 from helixgen.library import Block
 from helixgen.spec import parse_spec
@@ -117,6 +117,12 @@ def lib(tmp_path):
                 "HighCut": {"type": "float"}, "HighCutSlope": {"type": "int"}},
         exemplar={"@model": "HD2_EQParametric", "@type": "fx", "@enabled": True,
                   "LowCut": 19.9, "LowCutSlope": 0, "HighCut": 20100.0, "HighCutSlope": 0},
+        first_seen=src))
+    lib.save_block(Block(
+        model_id="HD2_WahUKWah846", category="filter", display_name="UK Wah 846",
+        params={"Pedal": {"type": "float"}, "Mix": {"type": "float"}},
+        exemplar={"@model": "HD2_WahUKWah846", "@type": "fx", "@enabled": True,
+                  "Pedal": 0.5, "Mix": 1.0},
         first_seen=src))
     lib.rebuild_index()
     return lib
@@ -212,31 +218,39 @@ def test_room_switch_is_a_level_param_toggle_not_a_bypass(single_ir_body, lib, i
     assert tile["color"] == "turquoise"
 
 
-def _strip_added(nf, added_sources=()):
-    """The normal form minus what the headphones transform adds."""
-    nf = copy.deepcopy(nf)
-    for p in nf["paths"]:
-        p["lane0"] = [b for b in p["lane0"] if b.get("type") not in ("split", "join")
-                      and b["slot"][0].get("model") != "HD2_RvbTile"]
-        p["lane1"] = []
-    for k in added_sources:
-        nf["sources"].pop(k)
-    return nf
+def _treatment_keys(path):
+    """bNN keys the headphones treatment added to a path: the room IR, its
+    split and join, and the Tile."""
+    path = {k: b for k, b in path.items() if k[1:].isdigit()}
+    room = [k for k, b in path.items() if b.get("slot") and b["slot"][0].get("irhash") == ROOM]
+    split = [k for k, b in path.items() if b.get("type") == "split" and b.get("branch") in room]
+    join = [path[k]["endpoint"] for k in split]
+    tile = [k for k, b in path.items() if b.get("slot") and b["slot"][0].get("model") == "HD2_RvbTile"]
+    return set(room + split + join + tile)
+
+
+def _kept(path, skip=()):
+    """A path's bNN dicts in grid order, minus ``skip``, without the grid
+    coordinates an insert legitimately moves (key, position, split pointers)."""
+    keys = sorted((k for k in path if k[1:].isdigit() and k not in skip), key=lambda k: int(k[1:]))
+    return [{f: v for f, v in path[k].items() if f not in ("position", "branch", "endpoint")}
+            for k in keys]
+
+
+def _sid(body, switch):
+    return venue._sid(body, switch)
 
 
 @needs_sf
 def test_everything_else_is_unchanged(single_ir_body, lib, irs):
-    before = venue._normal_form(single_ir_body)
-    after = venue._normal_form(venue.apply_venue(single_ir_body, "headphones", lib, irs).body)
-    added = set(after["sources"]) - set(before["sources"])
-    assert len(added) == 2   # ROOM MIC + TILE switches
-    assert _strip_added(after, added) == _strip_added(before)
-    # ...and the lane-0 order of the original blocks is untouched
-    v0 = view(single_ir_body, lib, irs=irs)
-    v1 = view(venue.apply_venue(single_ir_body, "headphones", lib, irs).body, lib, irs=irs)
-    for k in ("snapshots", "expression"):
-        assert v1[k] == v0[k]
-    assert [f for f in v1["footswitches"] if f["switch"] == "FS1"] == v0["footswitches"]
+    r = venue.apply_venue(single_ir_body, "headphones", lib, irs)
+    before, after = single_ir_body["preset"]["flow"][0], r.body["preset"]["flow"][0]
+    assert _kept(after, _treatment_keys(after)) == _kept(before)
+    rest = lambda b: {k: v for k, v in b["preset"].items() if k not in ("flow", "sources")}
+    assert rest(r.body) == rest(single_ir_body) and r.body["meta"] == single_ir_body["meta"]
+    src0, src1 = single_ir_body["preset"]["sources"], r.body["preset"]["sources"]
+    assert {k: v for k, v in src1.items() if k in src0} == src0     # FS1 untouched
+    assert set(src1) - set(src0) == {str(_sid(r.body, "FS2")), str(_sid(r.body, "FS3"))}
 
 
 @pytest.fixture
@@ -257,7 +271,7 @@ def test_usb_taps_survive(tapped_body, lib, irs):
     assert usbtaps._find_tap(f0)[1] == "P35_OutputUSB3_4" and not usbtaps._stale(f0)
     assert usbtaps._find_tap(f1)[1] == "P35_OutputUSB5_6"
     # the mic path, tap and all, comes through untouched
-    assert venue._normal_form(r.body)["paths"][1] == venue._normal_form(tapped_body)["paths"][1]
+    assert f1 == tapped_body["preset"]["flow"][1]
     assert usbtaps.apply(copy.deepcopy(r.body), {"guitar": "3/4", "mic": "5/6"})["status"] == "present"
 
 
@@ -330,8 +344,7 @@ def test_per_snapshot_values_survive(lib, irs):
     ir_level = lambda b: [x for x in _flow_blocks(b)
                           if x["slot"][0].get("irhash") == CLOSE][0]["slot"][0]["params"]["Level"]
     assert ir_level(r.body)["snapshots"][:2] == ir_level(body)["snapshots"][:2] == [-18.0, -24.0]
-    nf = venue._normal_form
-    amp = lambda b: [x for x in nf(b)["paths"][0]["lane0"] if x.get("type") == "amp"][0]
+    amp = lambda b: [x for x in _flow_blocks(b) if x.get("type") == "amp"][0]
     assert amp(r.body) == amp(body)
 
 
@@ -346,30 +359,16 @@ def body_with_unknown_controller(single_ir_body):
     return body
 
 
-def test_lossy_preset_is_refused(body_with_unknown_controller, lib, irs):
-    with pytest.raises(venue.VenueError, match="losslessly"):
-        venue.apply_venue(body_with_unknown_controller, "headphones", lib, irs)
-
-
-def test_guard_names_the_first_difference(single_ir_body, lib, irs, monkeypatch):
-    real = venue.compose_preset
-
-    def lossy(*a, **k):
-        out = real(*a, **k)
-        [b for b in _flow_blocks(out) if b.get("type") == "amp"][0]["slot"][0]["params"]["Mid"]["value"] = 0.9
-        return out
-    monkeypatch.setattr(venue, "compose_preset", lossy)
-    with pytest.raises(venue.VenueError, match=r"losslessly: .*Mid"):
-        venue.apply_venue(single_ir_body, "headphones", lib, irs)
-
-
-def test_normal_form_ignores_snapshot_rebase(single_ir_body):
-    """Base re-synced to another snapshot's values, overrides adjusted: same
-    per-snapshot effective values, same normal form."""
-    body = copy.deepcopy(single_ir_body)
-    drive = [b for b in _flow_blocks(body) if b.get("type") == "amp"][0]["slot"][0]["params"]["Drive"]
-    drive["value"] = drive["snapshots"][1]
-    assert venue._normal_form(body) == venue._normal_form(single_ir_body)
+@needs_sf
+def test_unknown_controller_is_carried_verbatim(body_with_unknown_controller, lib, irs):
+    """The old regenerate-from-`view` design had to refuse this preset; editing
+    in place carries the controller it cannot represent through untouched."""
+    r = venue.apply_venue(body_with_unknown_controller, "headphones", lib, irs)
+    assert r.venue_detail["treatment"] == "room-ir"
+    amp = lambda b: [x for x in _flow_blocks(b) if x.get("type") == "amp"][0]
+    assert amp(r.body) == amp(body_with_unknown_controller)
+    assert _to_direct(r, lib, irs).body["preset"]["flow"] == \
+        body_with_unknown_controller["preset"]["flow"]
 
 
 def _long(n_delays):
@@ -391,9 +390,18 @@ def test_tile_dropped_with_warning_when_lane_is_full(lib, irs):
 
 
 @needs_sf
-def test_no_room_for_split_is_an_error(lib, irs):
+def test_no_room_for_the_split_falls_back_to_tile(lib, irs):
+    r = venue.apply_venue(_body(lib, irs, blocks=_long(7)), "headphones", lib, irs)  # 11 blocks
+    d = r.venue_detail
+    assert d["treatment"] == "tile" and "no room" in d["fallback_reason"]
+    assert d["room_ir"] is None and d["room_level_db"] is None and d["ambience_block"] == "Tile"
+    assert not any(b.get("type") == "split" for b in _flow_blocks(r.body))
+
+
+@needs_sf
+def test_no_room_for_split_or_tile_is_an_error(lib, irs):
     with pytest.raises(venue.VenueError, match="no room"):
-        venue.apply_venue(_body(lib, irs, blocks=_long(7)), "headphones", lib, irs)
+        venue.apply_venue(_body(lib, irs, blocks=_long(8)), "headphones", lib, irs)  # 12 blocks
 
 
 @needs_sf
@@ -421,7 +429,10 @@ def test_headphones_then_direct_restores_the_original_chain(which, request, lib,
     b = _to_direct(a, lib, irs)
     assert b.venue == "direct" and b.venue_detail == {}
     assert view(b.body, lib, irs=irs) == view(body, lib, irs=irs)
-    assert venue._normal_form(b.body) == venue._normal_form(body)
+    # the flow comes back byte for byte; `sources` keeps a blank strip entry for
+    # each released switch (this corpus chassis lacks them; real presets have one
+    # for every switch -- see the real-shape round trip below)
+    assert b.body["preset"]["flow"] == body["preset"]["flow"]
 
 
 @needs_sf
@@ -466,12 +477,11 @@ def test_direct_after_hand_edit_errors_and_names_mismatch(single_ir_body, lib, i
 @needs_sf
 def test_direct_refuses_blocks_added_inside_the_split(single_ir_body, lib, irs):
     a = venue.apply_venue(single_ir_body, "headphones", lib, irs)
-
-    def add_in_b_lane(rec):     # a hand edit: a second block on the room IR's lane
-        blocks = rec["paths"][0]["blocks"]
-        i = next(i for i, b in enumerate(blocks) if b.get("lane") == 1)
-        blocks.insert(i + 1, {"block": "Plate", "lane": 1, "pos": 2})
-    a.body = venue._roundtrip(a.body, lib, irs, add_in_b_lane)
+    flow0 = a.body["preset"]["flow"][0]          # a hand edit: a second block on the B lane
+    flow0["b16"] = copy.deepcopy(flow0["b15"])
+    flow0["b16"].update(position=2)
+    flow0["b16"]["slot"][0]["irhash"] = LONER
+    flow0["b05"]["branch"] = "b16"
     with pytest.raises(venue.VenueError, match="added inside the room IR split"):
         _to_direct(a, lib, irs)
 
@@ -537,3 +547,111 @@ def test_same_venue_errors(single_ir_body, lib, irs, v):
 def test_unspecified_to_direct_is_a_no_op(single_ir_body, lib, irs):
     r = venue.apply_venue(single_ir_body, "direct", lib, irs)
     assert r.body == single_ir_body and r.venue_detail == {}
+
+
+# --- real-shape preset ------------------------------------------------------
+#
+# What the 126 library presets look like and the old regenerate-from-`view`
+# design lost: a mic path, a wah on EXP1 + toe switch (EXP controller
+# `bypassed: true`), per-snapshot values on UNNAMED snapshot slots (written
+# into the body, as the device saves them), USB taps on both paths, and a
+# blank `sources` entry for every switch.
+
+@pytest.fixture
+def real_shape(lib, irs):
+    recipe = {
+        "name": "Real", "paths": [
+            {"blocks": [{"block": "UK Wah 846"}, *_chain()]},
+            {"input": "mic", "blocks": [{"block": "Digital"}]}],
+        "snapshots": [{"name": "Rhythm"},
+                      {"name": "Lead", "params": {"Brit 2204 Custom": {"Drive": 0.85}}},
+                      {"name": "Clean", "disable": ["Scream 808"]}],
+        "footswitches": [{"switch": "FS1", "block": "Scream 808"},
+                         {"switch": "EXP1Toe", "block": "UK Wah 846"}],
+        "expression": [{"pedal": "EXP1", "targets": [
+            {"block": "UK Wah 846", "param": "Pedal", "min": 0.0, "max": 1.0}]}]}
+    body = compose_preset(parse_spec(recipe), lib, source="t", irs=irs)
+    flow0 = body["preset"]["flow"][0]
+    by_model = {b["slot"][0]["model"]: b for k, b in flow0.items() if k[1:].isdigit()}
+    by_model["HD2_AmpBrit2204Custom"]["slot"][0]["params"]["Mid"] = {
+        "value": 0.5, "snapshots": [0.5, 0.5, 0.5, 0.5, 0.7, 0.5, 0.2, 0.5]}
+    ir = [b for b in by_model.values() if b["slot"][0].get("irhash") == CLOSE][0]
+    ir["slot"][0]["params"]["Level"] = {
+        "value": -18.0, "snapshots": [-18.0, -18.0, -18.0, -18.0, -18.0, -21.0, -18.0, -18.0]}
+    flow0["b13"]["slot"][0]["params"]["gain"] = {
+        "value": 0.0, "snapshots": [0.0, 0.0, 0.0, -2.0, -2.0, 0.0, 0.0, 0.0]}
+    by_model["HD2_WahUKWah846"]["slot"][0]["params"]["Pedal"]["controller"]["bypassed"] = True
+    assert usbtaps.apply(body, {"guitar": "3/4", "mic": "5/6"})["status"] == "added"
+    for s in venue.FREE_SWITCHES:
+        body["preset"]["sources"].setdefault(str(_sid(body, s)), {
+            "bypass": False, "fs_color": "auto", "fs_label": "", "fs_topidx": 0})
+    return body
+
+
+def _rest(body):
+    return {k: v for k, v in body["preset"].items() if k not in ("flow", "sources")}
+
+
+@needs_sf
+def test_real_shape_headphones_touches_nothing_else(real_shape, lib, irs):
+    r = venue.apply_venue(real_shape, "headphones", lib, irs)
+    assert r.venue_detail["treatment"] == "room-ir" and not r.warnings
+    before, after = real_shape["preset"]["flow"], r.body["preset"]["flow"]
+    assert len(_treatment_keys(after[0])) == 4
+    assert _kept(after[0], _treatment_keys(after[0])) == _kept(before[0])
+    assert after[1] == before[1]
+    assert _rest(r.body) == _rest(real_shape) and r.body["meta"] == real_shape["meta"]
+    src0, src1 = real_shape["preset"]["sources"], r.body["preset"]["sources"]
+    assert {k for k in src0 if src0[k] != src1[k]} == {
+        str(_sid(r.body, "FS2")), str(_sid(r.body, "FS3"))}
+    assert set(src1) == set(src0)
+
+
+@needs_sf
+def test_real_shape_headphones_then_direct_is_the_original(real_shape, lib, irs):
+    a = venue.apply_venue(real_shape, "headphones", lib, irs)
+    assert _to_direct(a, lib, irs).body == real_shape     # grid keys included
+
+
+def _model_chain(path):
+    return [path[k]["slot"][0]["model"] for k in mutate._lane0_chain(path)]
+
+
+def test_real_shape_amp_in(real_shape, lib, irs):
+    r = venue.apply_venue(real_shape, "amp-in", lib, irs)
+    flow0 = r.body["preset"]["flow"][0]
+    assert _model_chain(flow0) == ["HD2_WahUKWah846", "HD2_DistScream808Mono", "HD2_AmpBrit2204Custom",
+                                   "HD2_EQParametric", "HD2_RvbPlate", "P35_AppDSPSplitY"]
+    before = real_shape["preset"]["flow"]
+    ir = [k for k, b in before[0].items() if k[1:].isdigit() and b["slot"][0].get("irhash")]
+    eq = [k for k, b in flow0.items() if k[1:].isdigit()
+          and b["slot"][0]["model"] == "HD2_EQParametric"]
+    assert _kept(flow0, eq) == _kept(before[0], ir)
+    assert r.body["preset"]["flow"][1] == before[1]
+    assert _rest(r.body) == _rest(real_shape)
+    assert r.body["preset"]["sources"] == real_shape["preset"]["sources"]
+    assert r.warnings == ["per-snapshot values on 'IR' removed with the cab"]
+
+
+@needs_sf
+def test_real_shape_amp_in_from_headphones(real_shape, lib, irs):
+    a = venue.apply_venue(real_shape, "headphones", lib, irs)
+    c = venue.apply_venue(a.body, "amp-in", lib, irs, source_venue="headphones",
+                          source_detail=a.venue_detail)
+    assert c.body == venue.apply_venue(real_shape, "amp-in", lib, irs).body
+
+
+@needs_sf
+def test_a_pushed_device_tap_comes_back_as_itself(lib, irs):
+    """A device-pulled tap split carries a ``branch`` into the row-1 cell beneath
+    it. Headphones pushes the tap from b11 to b12 (8 blocks + 3); the tap must
+    move as its own dicts (branch following it), and direct must put it back."""
+    body = _body(lib, irs, blocks=_long(4))
+    assert usbtaps.apply(body, {"guitar": "3/4"})["status"] == "added"
+    flow0 = body["preset"]["flow"][0]
+    flow0["b11"]["branch"] = "b25"
+    a = venue.apply_venue(body, "headphones", lib, irs)
+    assert a.venue_detail["treatment"] == "room-ir" and a.venue_detail["ambience_block"]
+    tap = a.body["preset"]["flow"][0]["b12"]
+    assert (tap["type"], tap["position"], tap["branch"]) == ("split", 12, "b26")
+    assert _to_direct(a, lib, irs).body["preset"]["flow"] == body["preset"]["flow"]

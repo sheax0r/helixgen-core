@@ -97,26 +97,36 @@ def room_level_db(
     return round(close_level - diff - offset_db, 1)
 
 
+
+
 # --- transforms ------------------------------------------------------------
+#
+# Every transform edits a deep copy of the body in place with `helixgen.mutate`
+# verbs and touches nothing else: blocks it does not add or remove come through
+# byte for byte (snapshot arrays on named and unnamed slots, controllers,
+# harness, raw slots), and so do `sources`, snapshot metadata and `meta`.
+# The edited path's USB tap is lifted around the edit and re-placed after it,
+# as the edit verbs do (`usbtaps.lifted`), but as its own bNN dicts; a tap that
+# no longer fits counts as a capacity failure, never a dropped tap.
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-from helixgen import usbtaps
+from helixgen import controllers, mutate, usbtaps
 from helixgen.generate import (
-    HSP_SNAPSHOT_SLOTS, GenerateError, _is_amp, _is_cab, authoring_defaults,
-    compose_preset,
+    GenerateError, ParamValidationError, _is_amp, _is_cab, authoring_defaults,
 )
 from helixgen.ir import IR_MODEL_PREFIX
 from helixgen.library import Library
-from helixgen.spec import SpecError, parse_spec
-from helixgen.view import view
+from helixgen.spec import SpecError
 
 FREE_SWITCHES = ("FS1", "FS2", "FS3", "FS4", "FS5",
                  "FS7", "FS8", "FS9", "FS10", "FS11")
 TILE = {"block": "Tile", "params": {"Decay": 0.2, "Mix": 0.2}}
 JOIN_PARAMS = {"A Level": 0.0, "B Level": 0.0, "A Pan": 0.5, "B Pan": 0.5, "Level": 0.0}
+EQ = {"block": "Parametric Mono", "params": {"LowCut": 90, "LowCutSlope": 2,
+                                             "HighCut": 5500, "HighCutSlope": 2}}
 AMP_IN_ERROR = ("cannot restore a cab from an amp-in variant; "
                 "fork from the direct or headphones variant")
 
@@ -130,331 +140,129 @@ class VenueResult:
 
 
 class _NoRoom(Exception):
-    """The edited chain does not fit the grid (lane capacity or USB tap)."""
+    """The USB tap does not fit after the edit."""
 
 
-def _eff(w: Any) -> Any:
-    """A ``{"value", "snapshots"?}`` wrapper as its per-snapshot effective values."""
-    if not (isinstance(w, dict) and "value" in w):
-        return w
-    out = {k: v for k, v in w.items() if k not in ("value", "snapshots")}
-    out["value"] = (list(w["snapshots"]) if "snapshots" in w
-                    else [w["value"]] * HSP_SNAPSHOT_SLOTS)
-    return out
-
-
-def _block_form(b: dict) -> dict:
-    out = {k: v for k, v in b.items()
-           if k not in ("position", "path", "branch", "endpoint", "slot", "@enabled")}
-    out["@enabled"] = _eff(b.get("@enabled"))
-    out["slot"] = [{**{k: v for k, v in s.items() if k != "params"},
-                    "@enabled": _eff(s.get("@enabled")),
-                    "params": {k: _eff(v) for k, v in (s.get("params") or {}).items()}}
-                   for s in b.get("slot") or [] if isinstance(s, dict)]
-    return out
-
-
-def _normal_form(body: dict) -> dict:
-    """What a venue transform must keep, independent of grid layout.
-
-    The lossless guard and the "everything else unchanged" tests both compare
-    this, never raw dicts: regenerating a preset from `view` re-bases every
-    param's ``value`` onto snapshot 0 and moves the overrides to match, which
-    is the same preset on every snapshot but not the same dict. So:
-
-    - each path is its lane-0 and lane-1 bNN blocks (endpoints included) in
-      grid order, WITHOUT keys/positions/split pointers;
-    - every ``{"value", "snapshots"}`` wrapper (block bypass, slot enable,
-      each param) becomes its 8 per-snapshot effective values, keeping any
-      controller (footswitch / expression) attached to it;
-    - plus preset ``snapshots`` metadata, ``sources`` (switch scribble
-      strips) and preset ``params`` minus ``activesnapshot`` (regeneration
-      always writes 0, with the base synced to snapshot 0).
-    """
-    preset = body.get("preset") or {}
-    paths = []
-    for p in preset.get("flow") or []:
-        keys = sorted((k for k in p if k.startswith("b") and k[1:].isdigit()),
-                      key=lambda k: int(k[1:]))
-        paths.append({
-            "flow": {k: v for k, v in p.items() if k not in keys},
-            "lane0": [_block_form(p[k]) for k in keys if int(k[1:]) < 14],
-            "lane1": [_block_form(p[k]) for k in keys if int(k[1:]) >= 14],
-        })
-    params = {k: v for k, v in (preset.get("params") or {}).items() if k != "activesnapshot"}
-    return {"paths": paths, "snapshots": preset.get("snapshots"),
-            "sources": preset.get("sources"), "params": params}
-
-
-def _first_diff(a: Any, b: Any, at: str = "") -> str | None:
-    """Where ``a`` (regenerated) first differs from ``b`` (original), or None."""
-    if isinstance(a, dict) and isinstance(b, dict):
-        for k in sorted(set(a) | set(b), key=str):
-            if k not in a or k not in b:
-                return f"{at}.{k} ({'added' if k in a else 'lost'})"
-            d = _first_diff(a[k], b[k], f"{at}.{k}")
-            if d:
-                return d
-        return None
-    if isinstance(a, list) and isinstance(b, list):
-        if len(a) != len(b):
-            return f"{at} (length {len(b)} -> {len(a)})"
-        for i, (x, y) in enumerate(zip(a, b)):
-            d = _first_diff(x, y, f"{at}[{i}]")
-            if d:
-                return d
-        return None
-    return None if a == b else f"{at}: {b!r} -> {a!r}"
-
-
-def _untapped(body: dict) -> tuple[dict, dict[int, str]]:
-    """A copy of ``body`` with its USB taps lifted, and the taps taken."""
+def _untapped(body: dict, path: int) -> tuple[dict, dict[int, tuple[str, dict, dict]]]:
+    """A deep copy of ``body`` with the USB tap of the path being edited
+    lifted, and the tap taken: ``{path: (split key, split bNN, b27 bNN)}``.
+    Other paths keep theirs untouched."""
     work = copy.deepcopy(body)
-    flows = (work.get("preset") or {}).get("flow") or []
-    return work, usbtaps._lift(flows, range(len(flows)))
+    flows = work["preset"]["flow"]
+    t = usbtaps._find_tap(flows[path])
+    taps = {path: (t[0], flows[path][t[0]], flows[path]["b27"])} if t else {}
+    usbtaps._lift(flows, taps)
+    return work, taps
 
 
-def _recipe(body: dict, library: Library, irs: IrMapping) -> dict:
-    """`view` of ``body`` without its USB taps; refuses unrepresentable controllers."""
-    recipe = view(_untapped(body)[0], library, irs=irs)
-    if recipe.get("unknown_controllers"):
-        raise VenueError("preset cannot be transformed losslessly: it has "
-                         "controllers view cannot represent (unknown_controllers)")
-    return recipe
+def _retap(work: dict, taps: dict[int, tuple[str, dict, dict]]) -> None:
+    """Put the lifted taps back where `usbtaps` places taps (the first of b11 /
+    b12 after every block), as themselves: their own bNN dicts, not fresh
+    ones, with a device-written split ``branch`` beneath them following the move."""
+    if not taps:
+        return
+    flows = work["preset"]["flow"]
+    r = usbtaps._place(flows, {i: usbtaps._model(t[2]) for i, t in taps.items()})
+    if r["status"] != "added":
+        raise _NoRoom(f"no room for the USB tap: {r['detail']}")
+    for i, (key, split, tap) in taps.items():
+        p = flows[i]
+        new = usbtaps._find_tap(p)[0]
+        if new != key:
+            split = {**split, "position": int(new[1:])}
+            if split.get("branch") == f"b{14 + int(key[1:])}":
+                split["branch"] = f"b{14 + int(new[1:])}"
+        p[new], p["b27"] = split, tap
 
 
-def _compose(body: dict, library: Library, irs: IrMapping,
-             edit: Callable[[dict], None]) -> dict:
-    taps = _untapped(body)[1]
-    recipe = _recipe(body, library, irs)
-    edit(recipe)
-    out = compose_preset(parse_spec(recipe, source="venue"), library,
-                         source="venue", irs=irs)
-    if taps:
-        # the `usb-taps` / edit-verb code path: put the same taps back after
-        # the (possibly new) last block, all or nothing
-        r = usbtaps._place(out["preset"]["flow"], taps)
-        if r["status"] != "added":
-            raise _NoRoom(f"no room for the USB tap: {r['detail']}")
-    # what the recipe cannot carry comes across from the original
-    out["meta"] = copy.deepcopy(body.get("meta") or {})
-    for k in ("snapshots", "clip"):
-        if k in (body.get("preset") or {}):
-            out["preset"][k] = copy.deepcopy(body["preset"][k])
-    return out
+def _slots(body: dict, library: Library, pi: int | None = None) -> list[tuple]:
+    """``(path, key, Block, lane, pos)`` for each user block, in path then column order."""
+    return sorted(((fi, k, blk, ln, p) for fi, k, _, blk, ln, p in mutate._iter_slots(body, library)
+                   if pi is None or fi == pi), key=lambda t: (t[0], t[4], t[3]))
 
 
-def _roundtrip(body: dict, library: Library, irs: IrMapping,
-               edit: Callable[[dict], None]) -> dict:
-    """``body`` rebuilt from its `view` recipe after ``edit(recipe)``.
-
-    USB taps are lifted before `view` and re-placed after composing with
-    usbtaps' own placement; ``meta`` (and snapshot metadata / clip) are
-    copied across. Guard: the same rebuild with NO edit must have the same
-    :func:`_normal_form` as ``body``, else ``VenueError`` naming the first
-    difference — the preset uses something the recipe cannot express.
-    """
-    try:
-        noop = _compose(body, library, irs, lambda r: None)
-    except (GenerateError, SpecError, LookupError, _NoRoom) as e:
-        raise VenueError(f"preset cannot be transformed losslessly: {e}") from e
-    diff = _first_diff(_normal_form(noop), _normal_form(body))
-    if diff:
-        raise VenueError(f"preset cannot be transformed losslessly: {diff}")
-    return _compose(body, library, irs, edit)
+def _bnn(body: dict, fi: int, key: str) -> dict:
+    return body["preset"]["flow"][fi][key]
 
 
-# --- recipe helpers ---------------------------------------------------------
-#
-# Edits work on the `view` recipe of one path's ``blocks`` list. Every entry
-# carries explicit ``lane``/``pos`` (view emits them); inserting or removing
-# a block shifts the later cells of its lane so the rest keep their layout.
-# Block references (snapshots, footswitches, expression, MIDI) are bound to
-# the entry dicts they name BEFORE an edit and re-pointed at those entries'
-# final coordinates after it, so they survive shifts and new name clashes
-# (the room IR shares the close IR's name).
-
-def _lib_block(library: Library, entry: dict):
-    try:
-        return library.find_block(entry["block"])
-    except (KeyError, LookupError):
-        return None
+def _slot0(bnn: dict) -> dict:
+    return (bnn.get("slot") or [{}])[0]
 
 
-def _at(blocks: list[dict], entry: dict) -> int:
-    return next(i for i, b in enumerate(blocks) if b is entry)
+def _instrument_path(body: dict, library: Library) -> int:
+    """The first path with an amp in it; path 0 when there is none."""
+    return next((t[0] for t in _slots(body, library) if _is_amp(t[2])), 0)
 
 
-def _lane(blocks: list[dict], lane: int) -> list[dict]:
-    return [b for b in blocks if b.get("lane", 0) == lane and "structural" not in b
-            and b.get("pos") is not None]
+def _cabs_after_amp(body: dict, library: Library, pi: int) -> list[tuple]:
+    sl = _slots(body, library, pi)
+    last = max((i for i, t in enumerate(sl) if _is_amp(t[2])), default=-1)
+    return [t for t in sl[last + 1:] if _is_cab(t[2])]
 
 
-def _insert(blocks: list[dict], i: int, entry: dict) -> None:
-    """Insert ``entry`` at list index ``i``, into the grid cell its ``pos``
-    names; later cells of its lane move one right."""
-    if entry.get("pos") is not None:
-        for b in _lane(blocks, entry.get("lane", 0)):
-            if b["pos"] >= entry["pos"]:
-                b["pos"] += 1
-    blocks.insert(i, entry)
+def _varies(w: Any) -> bool:
+    snaps = w.get("snapshots") if isinstance(w, dict) else None
+    return isinstance(snaps, list) and len({repr(v) for v in snaps}) > 1
 
 
-def _remove(blocks: list[dict], entry: dict) -> None:
-    """Remove ``entry``; later cells of its lane move one left."""
-    del blocks[_at(blocks, entry)]
-    if entry.get("pos") is not None:
-        for b in _lane(blocks, entry.get("lane", 0)):
-            if b["pos"] > entry["pos"]:
-                b["pos"] -= 1
+def _sid(body: dict, switch: str) -> int:
+    return controllers.resolve_controller_source(mutate._chassis_device_id(body), switch)
 
 
-def _lane0_end(blocks: list[dict]) -> int:
-    return max((b["pos"] for b in _lane(blocks, 0)), default=0) + 1
+def _free_switches(body: dict) -> list[str]:
+    return [s for s in FREE_SWITCHES if not mutate._source_in_use(body, _sid(body, s))]
 
 
-def _refs(recipe: dict) -> list[tuple[str, list, dict]]:
-    """``(label, container, ref)`` for every block reference in ``recipe``.
-    String and name-keyed forms are rewritten to their dict/list equivalents
-    so each ref is a mutable dict."""
-    out: list[tuple[str, list, dict]] = []
-    for s in recipe.get("snapshots") or []:
-        if "disable" in s:
-            s["disable"] = [{"block": d} if isinstance(d, str) else d for d in s["disable"]]
-            out += [(f"snapshot {s['name']!r} disable", s["disable"], r) for r in s["disable"]]
-        if isinstance(s.get("params"), dict):
-            s["params"] = [{"block": n, "params": ov} for n, ov in s["params"].items()]
-        out += [(f"snapshot {s['name']!r} params", s["params"], r) for r in s.get("params") or []]
-    fss = recipe.get("footswitches") or []
-    out += [(f"footswitch {f.get('switch')}", fss, f) for f in fss if "block" in f]
-    for kind, key in (("expression", "pedal"), ("midi", "cc")):
-        for a in recipe.get(kind) or []:
-            ts = a.get("targets") or []
-            out += [(f"{kind} {a.get(key)}", ts, t) for t in ts if "block" in t]
-    return out
+def _release(body: dict, sid: int) -> None:
+    """Blank a source's scribble strip once nothing uses it: the shape every
+    unused switch has in a real preset's ``sources`` (the entry itself stays)."""
+    if not mutate._source_in_use(body, sid):
+        entry = (body["preset"].get("sources") or {}).get(str(sid))
+        if isinstance(entry, dict):
+            if "fs_label" in entry:
+                entry["fs_label"] = ""
+            if "fs_color" in entry:
+                entry["fs_color"] = "auto"
 
 
-def _bind(recipe: dict) -> list[tuple[str, list, dict, dict]]:
-    """``(label, container, ref, entry)``: each reference with the block entry it names."""
-    idx: dict[str, list[tuple[int, dict]]] = {}
-    for pi, p in enumerate(recipe["paths"]):
-        for b in p["blocks"]:
-            if "block" in b:
-                idx.setdefault(b["block"], []).append((pi, b))
-    out = []
-    for label, c, ref in _refs(recipe):
-        hits = [b for pi, b in idx.get(ref["block"], [])
-                if all(ref.get(k) is None or ref[k] == v
-                       for k, v in (("path", pi), ("lane", b.get("lane", 0)), ("pos", b.get("pos"))))]
-        if len(hits) == 1:
-            out.append((label, c, ref, hits[0]))
-    return out
-
-
-def _rebind(recipe: dict, bound: list) -> list:
-    """Point each still-present bound reference at its entry's current
-    ``path``/``lane``/``pos``; return the bindings whose entry was removed."""
-    where = {id(b): pi for pi, p in enumerate(recipe["paths"]) for b in p["blocks"]}
-    gone = []
-    for t in bound:
-        _, c, ref, b = t
-        if not any(x is ref for x in c):
-            continue                      # the reference itself was dropped
-        if id(b) not in where:
-            gone.append(t)
-        else:
-            ref.update(path=where[id(b)], lane=b.get("lane", 0), pos=b.get("pos"))
-    return gone
-
-
-def _drop(container: list, ref: dict) -> None:
-    del container[_at(container, ref)]
-
-
-def _tidy(recipe: dict) -> None:
-    """Drop controller groups an edit emptied (parse_spec wants targets)."""
-    for kind in ("expression", "midi"):
-        if kind in recipe:
-            recipe[kind] = [a for a in recipe[kind] if a.get("targets")]
-    for kind in ("footswitches", "expression", "midi"):
-        if kind in recipe and not recipe[kind]:
-            del recipe[kind]
-
-
-def _ir_hash(entry: dict, irs: IrMapping) -> str | None:
-    """The IR hash a view entry's ``ir`` (hash or unique basename) names."""
-    ir = entry.get("ir")
-    if not ir:
-        return None
-    if ir in irs.entries:
-        return ir
-    hits = [k for k, p in irs.entries.items() if Path(p).name == ir]
-    return hits[0] if len(hits) == 1 else (ir if len(ir) == 32 else None)
-
-
-def _ir_wav(entry: dict, irs: IrMapping) -> Path | None:
-    h = _ir_hash(entry, irs)
-    if h is None or h not in irs.entries:
+def _ir_wav(bnn: dict, irs: IrMapping) -> Path | None:
+    h = _slot0(bnn).get("irhash")
+    if h not in irs.entries:
         return None
     wav = irs.resolve_by_hash(h)
     return wav if wav.is_file() else None
 
 
-def _is(library: Library, entry: dict, pred) -> bool:
-    blk = _lib_block(library, entry) if "block" in entry else None
-    return blk is not None and pred(blk)
-
-
-def _instrument_path(recipe: dict, library: Library) -> int:
-    for pi, p in enumerate(recipe["paths"]):
-        if any(_is(library, b, _is_amp) for b in p["blocks"]):
-            return pi
-    return 0
-
-
-def _cabs_after_amp(blocks: list[dict], library: Library) -> list[dict]:
-    real = [b for b in blocks if "block" in b]
-    last_amp = max((i for i, b in enumerate(real) if _is(library, b, _is_amp)), default=-1)
-    return [b for b in real[last_amp + 1:] if _is(library, b, _is_cab)]
-
-
-def _free_switches(recipe: dict) -> list[str]:
-    used = {f.get("switch") for f in (recipe.get("footswitches") or [])
-            + (recipe.get("commands") or [])}
-    return [s for s in FREE_SWITCHES if s not in used]
-
-
-def _find(blocks: list[dict], like: dict) -> dict:
-    """The entry in a fresh recipe at ``like``'s coordinates."""
-    return next(b for b in blocks if b.get("block") == like["block"]
-                and b.get("lane", 0) == like.get("lane", 0) and b.get("pos") == like.get("pos"))
-
-
-def _capacity(e: Exception) -> bool:
-    return isinstance(e, _NoRoom) or "user slot" in str(e)
+def _snapshot_name(body: dict, i: int) -> str:
+    meta = (body["preset"].get("snapshots") or [])
+    name = meta[i].get("name") if i < len(meta) and isinstance(meta[i], dict) else None
+    return name or f"#{i + 1}"
 
 
 # --- → headphones -----------------------------------------------------------
 
-def _room_ir_blocker(recipe, pi, close, cabs, library, irs, room_mode) -> str | None:
+def _room_ir_blocker(body, pi, cabs, irs, room_mode) -> str | None:
     """Why the room-IR treatment cannot run (the Tile fallback's reason), or None."""
     if room_mode == "tile":
         return "room mode tile requested"
     if len(cabs) != 1:
         return f"{len(cabs)} cab blocks after the amp; the room IR needs exactly one"
-    blk = _lib_block(library, close)
-    if close.get("enabled", blk.exemplar.get("@enabled", True)) is False:
-        return f"the cab {close['block']!r} is bypassed at base"
-    for label, _, _, e in _bind(recipe):
-        if e is close and label.endswith(" disable"):
-            return f"the cab is bypassed in {label.removesuffix(' disable')}"
+    fi, key, blk, lane, _ = cabs[0]
+    bnn = _bnn(body, fi, key)
+    en = bnn.get("@enabled") if isinstance(bnn.get("@enabled"), dict) else {}
+    if en.get("value") is False:
+        return f"the cab {blk.display_name!r} is bypassed at base"
+    off = [i for i, v in enumerate(en.get("snapshots") or []) if v is False]
+    if off:
+        return f"the cab is bypassed in snapshot {_snapshot_name(body, off[0])!r}"
     if not blk.model_id.startswith(IR_MODEL_PREFIX):
-        return f"{close['block']!r} is a stock cab, not an IR block"
-    if _ir_wav(close, irs) is None:
-        return f"the close IR's wav ({close.get('ir')}) is not registered or not on disk"
-    if close.get("lane", 0) != 0 or any("split" in b or "join" in b
-           or (b.get("structural") or {}).get("type") in ("split", "join")
-           for b in recipe["paths"][pi]["blocks"]):
+        return f"{blk.display_name!r} is a stock cab, not an IR block"
+    if _ir_wav(bnn, irs) is None:
+        return (f"the close IR's wav ({_slot0(bnn).get('irhash')}) is not registered "
+                "or not on disk")
+    path = body["preset"]["flow"][pi]
+    if lane != 0 or any(isinstance(b, dict) and b.get("type") in ("split", "join")
+                        for b in path.values()):
         return "the path already has a split"
     return None
 
@@ -465,201 +273,205 @@ def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> Ve
     detail: dict[str, Any] = {"treatment": "none", "room_ir": None, "room_level_db": None,
                               "room_switch": None, "ambience_block": None,
                               "ambience_switch": None, "fallback_reason": None}
-    recipe = _recipe(body, library, irs)
-    pi = _instrument_path(recipe, library)
-    cabs = _cabs_after_amp(recipe["paths"][pi]["blocks"], library)
+    pi = _instrument_path(body, library)
+    base, _ = _untapped(body, pi)
+    cabs = _cabs_after_amp(base, library, pi)
     if not cabs:
         return VenueResult(copy.deepcopy(body), "headphones", detail,
                            ["no cab or IR block after the amp: chain left unchanged"])
-    close = cabs[0]
-    reason = _room_ir_blocker(recipe, pi, close, cabs, library, irs, room_mode)
-    room = None
+    reason = _room_ir_blocker(base, pi, cabs, irs, room_mode)
+    _, ckey, cblk, _, cpos = cabs[0]
+    room = level = None
     if reason is None:
-        close_wav = _ir_wav(close, irs)
+        close_wav = _ir_wav(_bnn(base, pi, ckey), irs)
         room = find_room_ir(close_wav, irs, override=room_ir)
         if room is None:
             reason = f"no room IR registered for {close_wav.name}"
     warnings: list[str] = []
-    level = None
     if room is not None:
-        params = close.get("params") or {}
-        close_level = float(params["Level"] if "Level" in params
-                            else authoring_defaults(_lib_block(library, close)).get("Level", -18.0))
+        lvl = (_slot0(_bnn(base, pi, ckey)).get("params") or {}).get("Level")
+        close_level = float(lvl["value"] if isinstance(lvl, dict) and "value" in lvl
+                            else authoring_defaults(cblk).get("Level", -18.0))
         level = room_level_db(close_level, close_wav, room[1], room_offset_db)
-        detail.update(treatment="room-ir", room_ir=room[0], room_level_db=level)
-    else:
-        detail.update(treatment="tile", fallback_reason=reason)
-        warnings.append(f"room IR treatment skipped ({reason}); Tile ambience added instead")
 
-    def edit(rec: dict, with_tile: bool) -> dict:
+    def edit(work: dict, use_room: bool, with_tile: bool) -> dict:
         d = dict(detail)
-        blocks = rec["paths"][pi]["blocks"]
-        bound = _bind(rec)
-        free = _free_switches(rec)
-        new_fs = []
-        if room is not None:
-            c = _find(blocks, close)
-            i = _at(blocks, c)
-            _insert(blocks, i, {"split": {"type": "y"}, "lane": 0, "pos": c["pos"]})
-            blocks.insert(i + 2, {"block": c["block"], "lane": 1, "ir": room[0],
-                                  "params": {"Level": level}})
-            _insert(blocks, i + 3, {"join": {"params": dict(JOIN_PARAMS)},
-                                    "lane": 0, "pos": c["pos"] + 1})
+        free = _free_switches(work)
+        if use_room:
+            d.update(treatment="room-ir", room_ir=room[0], room_level_db=level)
+            keys = mutate.wrap_in_split(
+                work, cblk.display_name, cblk.model_id, library, path=pi, lane=0, pos=cpos,
+                sibling_params={"Level": level}, sibling_ir=room[0], irs=irs,
+                join_params=JOIN_PARAMS)
             if free:
                 d["room_switch"] = s = free.pop(0)
-                new_fs.append({"switch": s, "block": c["block"], "path": pi, "lane": 1,
-                               "param": "Level", "min": -60.0, "max": level,
-                               "label": "ROOM MIC", "color": "purple"})
+                mutate.wire_footswitch(
+                    work, s, cblk.display_name, "latching", library, path=pi, lane=1,
+                    pos=int(keys["sibling"][1:]) - 14, param="Level", min=-60.0, max=level,
+                    label="ROOM MIC", color="purple")
         if with_tile:
-            tile = {**copy.deepcopy(TILE), "lane": 0, "pos": _lane0_end(blocks),
-                    **({"enabled": False} if room is not None else {})}
-            blocks.append(tile)
-            d["ambience_block"] = "Tile"
+            tpos = int(mutate.add_block(work, TILE["block"], library, path=pi,
+                                        params=TILE["params"])[1:])
+            if use_room:
+                mutate.set_enabled(work, TILE["block"], False, library, path=pi, lane=0, pos=tpos)
+            d["ambience_block"] = TILE["block"]
             if free:
                 d["ambience_switch"] = s = free.pop(0)
-                new_fs.append({"switch": s, "block": "Tile", "path": pi, "lane": 0,
-                               "pos": tile["pos"], "label": "TILE", "color": "turquoise"})
-        _rebind(rec, bound)
-        rec["footswitches"] = (rec.get("footswitches") or []) + new_fs
-        _tidy(rec)
+                mutate.wire_footswitch(work, s, TILE["block"], "latching", library, path=pi,
+                                       lane=0, pos=tpos, label="TILE", color="turquoise")
         return d
 
+    # room IR + disabled Tile, then room IR alone, then the Tile fallback: the
+    # first that fits the grid (lane capacity, USB tap) wins.
+    attempts = ([(True, True), (True, False)] if room is not None else []) + [(False, True)]
     last: Exception | None = None
-    for with_tile in (True, False) if room is not None else (True,):
-        out: dict = {}
+    for use_room, with_tile in attempts:
+        work, taps = _untapped(body, pi)
         try:
-            body_out = _roundtrip(body, library, irs,
-                                  lambda rec: out.update(edit(rec, with_tile)))
-        except (_NoRoom, GenerateError) as e:
-            if not _capacity(e):
-                raise VenueError(str(e)) from e
+            out = edit(work, use_room, with_tile)
+            _retap(work, taps)
+        except (mutate.LaneFullError, _NoRoom) as e:
             last = e
             continue
-        if not with_tile:
+        if use_room and not with_tile:
             warnings.append(f"no room for the Tile block ({last}); added without it")
-        if room is not None and out["room_switch"] is None:
+        if not use_room:
+            if room is not None:
+                reason = f"no room in the chain for the room IR split ({last})"
+            out["fallback_reason"] = reason
+            warnings.append(f"room IR treatment skipped ({reason}); Tile ambience added instead")
+            out["treatment"] = "tile"
+        if out["room_ir"] and out["room_switch"] is None:
             warnings.append("no free footswitch for the room IR level (ROOM MIC)")
         if out["ambience_block"] and out["ambience_switch"] is None:
             warnings.append("no free footswitch for the Tile block (TILE)")
-        return VenueResult(body_out, "headphones", out, warnings)
+        return VenueResult(work, "headphones", out, warnings)
     raise VenueError(f"no room in the chain for the headphones treatment: {last}")
 
 
 # --- → direct (from headphones) ---------------------------------------------
 
-def _strip_room_stage(rec: dict, detail: dict, library: Library, irs: IrMapping) -> None:
-    """Remove exactly what ``detail`` recorded from the recipe ``rec``; any
-    mismatch with the chain is a ``VenueError`` naming it (no best effort)."""
-    pi = _instrument_path(rec, library)
-    blocks = rec["paths"][pi]["blocks"]
-    bound = _bind(rec)
-    target = {id(ref): e for _, _, ref, e in bound}
-    fss = rec.get("footswitches") or []
-    removed: list[dict] = []
-    dropped: list[dict] = []
+def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
+    """Remove exactly what ``detail`` recorded from ``work`` (taps lifted).
+    Everything is verified before anything is edited; a mismatch with the
+    chain is a ``VenueError`` naming it (no best effort)."""
+    pi = _instrument_path(work, library)
+    path = work["preset"]["flow"][pi]
+    added: list[tuple[str, dict, int | None]] = []   # (name, bNN, recorded switch source)
+    close = tile = None
     room_ir = detail.get("room_ir")
     if room_ir:
-        rooms = [b for b in blocks if "block" in b and b.get("lane") == 1
-                 and _ir_hash(b, irs) == room_ir]
+        rooms = [k for k, b in path.items() if k[1:].isdigit() and int(k[1:]) >= 14
+                 and isinstance(b, dict) and _slot0(b).get("irhash") == room_ir]
         if len(rooms) != 1:
             raise VenueError(f"room_ir {room_ir} is not a lane-1 IR of the instrument path "
                              "(swapped or removed by hand?); cannot reverse")
-        room = rooms[0]
-        i = _at(blocks, room)
-        split = max((j for j in range(i) if "split" in blocks[j]), default=None)
-        join = next((j for j in range(i + 1, len(blocks)) if "join" in blocks[j]), None)
-        if split is None or join is None:
+        rk = rooms[0]
+        sk = next((k for k, b in path.items() if isinstance(b, dict)
+                   and b.get("type") == "split" and b.get("branch") == rk), None)
+        chain = mutate._lane0_chain(path)
+        jk = path[sk].get("endpoint") if sk else None
+        join = path.get(jk) if jk in chain else None
+        if not (isinstance(join, dict) and join.get("type") == "join"
+                and join.get("endpoint") == sk and chain.index(sk) < chain.index(jk)):
             raise VenueError("the room IR is no longer inside a split/join; cannot reverse")
-        inside = blocks[split + 1:join]
-        if ([b for b in inside if b.get("lane") == 1] != [room]
-                or len([b for b in inside if b.get("lane", 0) == 0]) != 1):
+        inside = chain[chain.index(sk) + 1:chain.index(jk)]
+        close = next((t for t in _slots(work, library, pi) if t[1] in inside), None)
+        if join.get("branch") != rk or len(inside) != 1 or close is None:
             raise VenueError("blocks were added inside the room IR split; cannot reverse")
-        removed += [blocks[split], room, blocks[join]]
         rs = detail.get("room_switch")
+        sid = _sid(work, rs) if rs else None
         if rs:
-            hits = [f for f in fss if f.get("switch") == rs and f.get("param") == "Level"
-                    and target.get(id(f)) is room]
-            if not hits:
+            ctrl = ((_slot0(path[rk]).get("params") or {}).get("Level") or {}).get("controller")
+            if not (isinstance(ctrl, dict) and ctrl.get("source") == sid
+                    and ctrl.get("type") == "param"):
                 raise VenueError(f"room_switch {rs} no longer toggles the room IR Level; "
                                  "cannot reverse")
-            dropped += hits
+        added.append(("the room IR", path[rk], sid))
     name = detail.get("ambience_block")
     if name:
+        tiles = [t for t in _slots(work, library, pi) if t[3] == 0 and t[2].display_name == name]
         sw = detail.get("ambience_switch")
+        sid = _sid(work, sw) if sw else None
         if sw:
-            hits = [f for f in fss if f.get("switch") == sw and "param" not in f
-                    and (target.get(id(f)) or {}).get("block") == name
-                    and any(b is target[id(f)] for b in blocks)]
-            if not hits:
+            tiles = [t for t in tiles if ((_bnn(work, pi, t[1]).get("@enabled") or {})
+                                          .get("controller") or {}).get("source") == sid]
+            if not tiles:
                 raise VenueError(f"ambience_switch {sw} no longer toggles {name!r} "
                                  "(re-wired or the block removed?); cannot reverse")
-            tile = target[id(hits[0])]
-            dropped += hits
-        else:
-            tiles = [b for b in _lane(blocks, 0) if b.get("block") == name]
-            if not tiles:
-                raise VenueError(f"ambience_block {name!r} is not in the instrument path; "
+        elif not tiles:
+            raise VenueError(f"ambience_block {name!r} is not in the instrument path; "
+                             "cannot reverse")
+        tile = tiles[-1]
+        added.append((repr(name), _bnn(work, pi, tile[1]), sid))
+    for what, bnn, sid in added:          # nothing else may point at them
+        for w in mutate._iter_controller_wrappers(work, only=bnn):
+            c = w.get("controller")
+            if (isinstance(c, dict) and c.get("source") != sid) or _varies(w):
+                raise VenueError(f"a {'controller' if isinstance(c, dict) else 'snapshot'} "
+                                 f"references {what}, which the headphones treatment added; "
                                  "cannot reverse")
-            tile = tiles[-1]
-        removed.append(tile)
-    for f in dropped:
-        _drop(fss, f)
-    for b in removed:
-        _remove(blocks, b)
-    gone = _rebind(rec, bound)
-    if gone:
-        label, _, _, e = gone[0]
-        raise VenueError(f"{label} references {e['block']!r}, which the headphones "
-                         "treatment added; cannot reverse")
-    _tidy(rec)
+
+    for _, bnn, sid in added:             # verified: now edit
+        if sid is not None:
+            for w in mutate._iter_controller_wrappers(work, only=bnn):
+                w.pop("controller", None)
+            _release(work, sid)
+    if tile is not None:
+        mutate.remove_block(work, tile[2].display_name, library, path=pi, lane=0, pos=tile[4])
+    if close is not None:
+        mutate.unwrap_split(work, close[2].display_name, library, path=pi, lane=0, pos=close[4])
 
 
-def _direct(body, library, irs, detail) -> VenueResult:
+def _direct(body, library, detail) -> VenueResult:
     if detail is None:
         raise VenueError("cannot reverse a headphones variant without its venue_detail "
                          "(it records what the treatment added)")
     if detail.get("treatment") == "none":
         return VenueResult(copy.deepcopy(body), "direct", {}, [])
-    _strip_room_stage(_recipe(body, library, irs), detail, library, irs)  # verify first
-    out = _roundtrip(body, library, irs, lambda rec: _strip_room_stage(rec, detail, library, irs))
-    return VenueResult(out, "direct", {}, [])
+    work, taps = _untapped(body, _instrument_path(body, library))
+    _strip_room_stage(work, detail, library)
+    _retap(work, taps)      # only blocks were removed, so the tap fits where it was
+    return VenueResult(work, "direct", {}, [])
 
 
 # --- → amp-in ---------------------------------------------------------------
 
-EQ = {"block": "Parametric Mono", "params": {"LowCut": 90, "LowCutSlope": 2,
-                                             "HighCut": 5500, "HighCutSlope": 2}}
-
-
-def _amp_in(body, library, irs) -> VenueResult:
-    if not any(_is(library, b, _is_amp) for p in _recipe(body, library, irs)["paths"]
-               for b in p["blocks"]):
+def _amp_in(body, library) -> VenueResult:
+    amps = [t for t in _slots(body, library) if _is_amp(t[2])]
+    if not amps:
         raise VenueError("amp-in needs an amp block; this preset has no amp")
+    work, taps = _untapped(body, amps[-1][0])     # the EQ lands on the last amp's path
+    sl = _slots(work, library)
+    amps = [t for t in sl if _is_amp(t[2])]
+    device = mutate._chassis_device_id(work)
     warnings: list[str] = []
-
-    def edit(rec: dict) -> None:
-        bound = _bind(rec)
-        amp = None
-        for p in rec["paths"]:
-            for b in list(p["blocks"]):
-                if _is(library, b, _is_cab):
-                    _remove(p["blocks"], b)
-                elif _is(library, b, _is_amp):
-                    amp = (p["blocks"], b)
-        blocks, a = amp
-        _insert(blocks, _at(blocks, a) + 1,
-                {**copy.deepcopy(EQ), "lane": a.get("lane", 0), "pos": a["pos"] + 1})
-        for label, c, ref, e in _rebind(rec, bound):
-            _drop(c, ref)
-            warnings.append(f"{label} on {e['block']!r} removed with the cab")
-        _tidy(rec)
-
+    for fi, key, blk, lane, pos in (t for t in sl if _is_cab(t[2])):
+        wrappers = list(mutate._iter_controller_wrappers(work, only=_bnn(work, fi, key)))
+        sids = [w["controller"].get("source") for w in wrappers
+                if isinstance(w.get("controller"), dict)]
+        warnings += [f"{controllers.controller_name_for_source(device, s) or f'controller {s}'} "
+                     f"on {blk.display_name!r} removed with the cab" for s in sids]
+        if any(_varies(w) for w in wrappers):
+            warnings.append(f"per-snapshot values on {blk.display_name!r} removed with the cab")
+        try:
+            mutate.remove_block(work, blk.display_name, library, path=fi, lane=lane, pos=pos)
+        except mutate.MutateError as e:
+            raise VenueError(f"amp-in cannot remove {blk.display_name!r} (path {fi}, "
+                             f"{key}): it sits inside a split") from e
+        for s in sids:
+            _release(work, s)
+    fi, _, amp, lane, pos = amps[-1]
+    if lane != 0:
+        raise VenueError(f"amp-in puts the EQ after the last amp, {amp.display_name!r}, "
+                         "which sits on lane 1; not supported")
     try:
-        out = _roundtrip(body, library, irs, edit)
-    except (_NoRoom, GenerateError) as e:
-        raise VenueError(f"no room in the chain for the amp-in EQ: {e}" if _capacity(e)
-                         else str(e)) from e
-    return VenueResult(out, "amp-in", {"eq_block": EQ["block"]}, warnings)
+        mutate.add_block(work, EQ["block"], library, path=fi, after=amp.display_name,
+                         params=EQ["params"])
+        _retap(work, taps)
+    except (mutate.LaneFullError, _NoRoom) as e:
+        raise VenueError(f"no room in the chain for the amp-in EQ: {e}") from e
+    return VenueResult(work, "amp-in", {"eq_block": EQ["block"]}, warnings)
 
 
 def apply_venue(
@@ -680,14 +492,17 @@ def apply_venue(
         raise VenueError(f"already {target}")
     if source_venue == "amp-in":
         raise VenueError(AMP_IN_ERROR)
-    if target == "headphones":
-        return _headphones(body, library, irs, room_ir=room_ir, room_mode=room_mode,
-                           room_offset_db=room_offset_db)
-    if source_venue == "headphones":
-        direct = _direct(body, library, irs, source_detail)
+    try:
+        if target == "headphones":
+            return _headphones(body, library, irs, room_ir=room_ir, room_mode=room_mode,
+                               room_offset_db=room_offset_db)
+        if source_venue == "headphones":
+            direct = _direct(body, library, source_detail)
+            if target == "direct":
+                return direct
+            body = direct.body
         if target == "direct":
-            return direct
-        body = direct.body
-    if target == "direct":
-        return VenueResult(copy.deepcopy(body), "direct", {}, [])   # unspecified = direct
-    return _amp_in(body, library, irs)
+            return VenueResult(copy.deepcopy(body), "direct", {}, [])   # unspecified = direct
+        return _amp_in(body, library)
+    except (SpecError, mutate.MutateError, GenerateError, ParamValidationError) as e:
+        raise VenueError(str(e)) from e
