@@ -239,16 +239,28 @@ def _free_switches(body: dict) -> list[str]:
     return [s for s in FREE_SWITCHES if not mutate._source_in_use(body, _sid(body, s))]
 
 
-def _release(body: dict, sid: int) -> None:
+def _release(body: dict, sid: int, drop: bool = False) -> None:
     """Blank a source's scribble strip once nothing uses it: the shape every
-    unused switch has in a real preset's ``sources`` (the entry itself stays)."""
+    unused switch has in a real preset's ``sources`` (the entry itself stays,
+    unless ``drop``: the transform created it, so the plain preset had none)."""
     if not mutate._source_in_use(body, sid):
-        entry = (body["preset"].get("sources") or {}).get(str(sid))
+        sources = body["preset"].get("sources") or {}
+        if drop:
+            sources.pop(str(sid), None)
+            return
+        entry = sources.get(str(sid))
         if isinstance(entry, dict):
             if "fs_label" in entry:
                 entry["fs_label"] = ""
             if "fs_color" in entry:
                 entry["fs_color"] = "auto"
+
+
+def _note_fresh(body: dict, detail: dict, switch: str) -> None:
+    """Record a switch whose ``sources`` entry does not exist yet, so reversing
+    can remove it again (real presets already carry one per switch)."""
+    if str(_sid(body, switch)) not in (body["preset"].get("sources") or {}):
+        detail.setdefault("sources_added", []).append(switch)
 
 
 def _ir_wav(bnn: dict, irs: IrMapping) -> Path | None:
@@ -333,6 +345,7 @@ def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> Ve
                 join_params=JOIN_PARAMS)
             if free:
                 d["room_switch"] = s = free.pop(0)
+                _note_fresh(work, d, s)
                 mutate.wire_footswitch(
                     work, s, cblk.display_name, "latching", library, path=pi, lane=1,
                     pos=int(keys["sibling"][1:]) - 14, param="Level", min=-60.0, max=level,
@@ -345,6 +358,7 @@ def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> Ve
             d["ambience_block"] = TILE["block"]
             if free:
                 d["ambience_switch"] = s = free.pop(0)
+                _note_fresh(work, d, s)
                 mutate.wire_footswitch(work, s, TILE["block"], "latching", library, path=pi,
                                        lane=0, pos=tpos, label="TILE", color="turquoise")
         return d
@@ -374,7 +388,10 @@ def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> Ve
         if out["ambience_block"] and out["ambience_switch"] is None:
             warnings.append("no free footswitch for the Tile block (TILE)")
         return VenueResult(work, "headphones", out, warnings)
-    raise VenueError(f"no room in the chain for the headphones treatment: {last}")
+    # Not even Tile fits: leave the chain unchanged rather than fail the caller.
+    detail["fallback_reason"] = (reason := f"no room in the chain for the Tile block ({last})")
+    return VenueResult(copy.deepcopy(body), "headphones", detail,
+                       [f"headphones treatment skipped ({reason}); chain left unchanged"])
 
 
 # --- → direct (from headphones) ---------------------------------------------
@@ -440,11 +457,12 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
                                  f"references {what}, which the headphones treatment added; "
                                  "cannot reverse")
 
+    fresh = {_sid(work, sw) for sw in detail.get("sources_added") or []}
     for _, bnn, sid in added:             # verified: now edit
         if sid is not None:
             for w in mutate._iter_controller_wrappers(work, only=bnn):
                 w.pop("controller", None)
-            _release(work, sid)
+            _release(work, sid, drop=sid in fresh)
     if tile is not None:
         mutate.remove_block(work, tile[2].display_name, library, path=pi, lane=0, pos=tile[4])
     if close is not None:

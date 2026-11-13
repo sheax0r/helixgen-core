@@ -201,7 +201,7 @@ def test_headphones_adds_parallel_room_ir_and_disabled_tile(single_ir_body, lib,
         "treatment": "room-ir", "room_ir": ROOM,
         "room_level_db": pytest.approx(EXPECTED_LEVEL, abs=0.1),
         "room_switch": "FS2", "ambience_block": "Tile", "ambience_switch": "FS3",
-        "fallback_reason": None}
+        "fallback_reason": None, "sources_added": ["FS2", "FS3"]}
     assert r.body["meta"] == single_ir_body["meta"]
 
 
@@ -399,9 +399,21 @@ def test_no_room_for_the_split_falls_back_to_tile(lib, irs):
 
 
 @needs_sf
-def test_no_room_for_split_or_tile_is_an_error(lib, irs):
-    with pytest.raises(venue.VenueError, match="no room"):
-        venue.apply_venue(_body(lib, irs, blocks=_long(8)), "headphones", lib, irs)  # 12 blocks
+def test_no_room_for_split_or_tile_leaves_the_chain_unchanged(lib, irs):
+    body = _body(lib, irs, blocks=_long(8))      # 12 blocks: not even Tile fits
+    r = venue.apply_venue(body, "headphones", lib, irs)
+    assert r.venue == "headphones" and r.venue_detail["treatment"] == "none"
+    assert "no room" in r.venue_detail["fallback_reason"]
+    assert r.body == body
+    assert any("chain left unchanged" in w and "no room" in w for w in r.warnings)
+
+
+@needs_sf
+def test_direct_after_headphones_removes_the_sources_it_created(single_ir_body, lib, irs):
+    a = venue.apply_venue(single_ir_body, "headphones", lib, irs)
+    assert {str(venue._sid(a.body, s)) for s in ("FS2", "FS3")} <= set(a.body["preset"]["sources"])
+    b = _to_direct(a, lib, irs)
+    assert b.body["preset"]["sources"] == single_ir_body["preset"]["sources"]
 
 
 @needs_sf

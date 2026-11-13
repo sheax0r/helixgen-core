@@ -1256,8 +1256,9 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
             f"{variant} is not a registered library variant -- venue "
             "conversion records its result on the variant.")
     v = meta.variants[key]
+    before = read_hsp(hsp)
     res, irs = _apply_venue_cli(
-        read_hsp(hsp), target, source_venue=v.venue, source_detail=v.venue_detail,
+        before, target, source_venue=v.venue, source_detail=v.venue_detail,
         room_ir=room_ir, room_mode=room_mode,
         library_path=library_path, irs_dir=irs_dir)
     summary = _venue_summary(res, irs)
@@ -1265,6 +1266,8 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
         original = hsp.read_bytes()
         _atomic_write(hsp, dumps_hsp(res.body))
         v.venue, v.venue_detail = res.venue, res.venue_detail
+        if res.body != before:
+            v.normalized = None  # loudness changed; the old stamp is stale
         try:
             tone_meta.save_tone_meta(meta)
         except BaseException:

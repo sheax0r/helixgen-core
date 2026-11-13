@@ -290,6 +290,9 @@ def generate_cmd(
         chassis = library.load_chassis()
         shape = chassis.get(CHASSIS_SHAPE_KEY, "hlx")
 
+        if output_path is not None and (room_ir or room_mode != "auto"):
+            click.echo("warning: --room-ir/--room only apply to --venue headphones; "
+                       "ignored with -o", err=True)
         if output_path is not None:
             # LEGACY -o: exactly today's behavior. No metadata; naming flags
             # (if any) are ignored by design -- but say so out loud. Passing
@@ -354,12 +357,16 @@ def generate_cmd(
             r_artist, r_song, r_descriptor = artist, song, descriptor
         else:
             r_artist, r_song, r_descriptor = None, None, spec.name
+        explicit_venue = venue_target is not None
         if venue_target is None:
             from helixgen import preferences as _prefs
             try:
                 venue_target = _prefs.load_preferences().default_venue
             except _prefs.PreferencesError as e:
                 raise click.ClickException(str(e)) from e
+        if not venue_target and (room_ir or room_mode != "auto"):
+            click.echo("warning: --room-ir/--room only apply to --venue headphones; "
+                       "ignored (no venue applies)", err=True)
         try:
             logical = naming.logical_slug(
                 artist=r_artist, song=r_song, descriptor=r_descriptor,
@@ -367,7 +374,10 @@ def generate_cmd(
         except ValueError as e:
             raise click.ClickException(str(e)) from e
         suffixed = False
-        if venue_target and logical and tone_meta.meta_path(logical).exists():
+        # Only an explicit --venue mints a suffixed key; a default_venue keeps
+        # the bare key so the slug-collision refusal fires as it does without one.
+        if (explicit_venue and venue_target and logical
+                and tone_meta.meta_path(logical).exists()):
             _k, suffixed = tone_meta.variant_key_for(
                 tone_meta.load_tone_meta(logical), guitar_slug, venue_target)
         try:

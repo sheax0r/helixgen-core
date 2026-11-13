@@ -114,6 +114,7 @@ def _isolate_device_ip(monkeypatch: pytest.MonkeyPatch):
     change fail-fast behavior). Tests that assert on env resolution set it
     themselves via monkeypatch."""
     monkeypatch.delenv("HELIXGEN_HELIX_IP", raising=False)
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
 
 
 @pytest.fixture(autouse=True)
