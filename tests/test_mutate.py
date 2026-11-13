@@ -620,6 +620,107 @@ def test_resulting_body_copies_to_device_format(headphones_body, library, tapped
     assert got == content.decode_any(transcode.hsp_to_sbepgsm(want, strict=False))
 
 
+# --- wrap_in_split / unwrap_split ---------------------------------------------
+#
+# Same bar as above: wrapping the IR of the plain chain must give the body
+# `_headphones_recipe()` generates fresh (raw flow equality, which is stronger
+# than view equality), and unwrapping must give the plain chain back.
+
+_JOIN = {"A Level": 0.0, "B Level": 0.0, "Level": 0.0}
+
+
+def _plain_recipe(before_split=(), after_join=()):
+    r = _headphones_recipe(before_split, after_join)
+    r["paths"][0]["blocks"] = [b for b in r["paths"][0]["blocks"]
+                               if "split" not in b and "join" not in b and b.get("lane") != 1]
+    return r
+
+
+def _wrap(body, library):
+    return mutate.wrap_in_split(body, "IR", "4x12 Greenback 25", library, join_params=_JOIN)
+
+
+def test_wrap_in_split_matches_a_fresh_generate(library, tapped):
+    body = _generate(_plain_recipe(), library, taps=tapped)
+    keys = _wrap(body, library)
+    assert keys == {"split": "b03", "block": "b04", "sibling": "b15", "join": "b05"}
+    want = _generate(_headphones_recipe(), library, taps=tapped)
+    assert body["preset"]["flow"] == want["preset"]["flow"]
+
+
+def test_wrap_in_split_copies_to_device_format(library, tapped):
+    from helixgen.device import content, transcode
+    body = _generate(_plain_recipe(after_join=["Digital"]), library, taps=tapped)
+    _wrap(body, library)
+    want = _generate(_headphones_recipe(after_join=["Digital"]), library, taps=tapped)
+    got = content.decode_any(transcode.hsp_to_sbepgsm(body, strict=False))
+    assert got == content.decode_any(transcode.hsp_to_sbepgsm(want, strict=False))
+
+
+def test_unwrap_split_is_the_inverse(library, tapped):
+    plain = _generate(_plain_recipe(after_join=["Digital"]), library, taps=tapped)
+    body = copy.deepcopy(plain)
+    _wrap(body, library)
+    assert mutate.unwrap_split(body, "IR", library) == "b03"
+    assert body == plain
+
+
+def test_wrap_in_split_sets_sibling_params_and_split_type(library):
+    body = _generate(_plain_recipe(), library)
+    keys = mutate.wrap_in_split(body, "IR", "Digital", library, sibling_params={"Mix": 0.3},
+                                split_type="ab", split_params={"RouteTo": 0.25})
+    flow0 = body["preset"]["flow"][0]
+    sib = flow0[keys["sibling"]]
+    assert sib["path"] == 1 and sib["slot"][0]["params"]["Mix"] == {"value": 0.3}
+    split = flow0[keys["split"]]["slot"][0]
+    assert split["model"] == "P35_AppDSPSplitAB" and split["params"] == {"RouteTo": {"value": 0.25}}
+
+
+def test_wrap_in_split_sibling_ir_needs_an_ir_block(library):
+    body = _generate(_plain_recipe(), library)
+    before = copy.deepcopy(body)
+    with pytest.raises(mutate.MutateError, match="not an IR block"):
+        mutate.wrap_in_split(body, "IR", "Digital", library, sibling_ir="a" * 32)
+    assert body == before
+
+
+def test_wrap_in_split_lane_full_is_typed_and_atomic(library):
+    # 11 lane-0 blocks: the split + join need 2 more slots than the lane has.
+    body = _generate(_plain_recipe(after_join=["Digital"] * 7), library)
+    before = copy.deepcopy(body)
+    with pytest.raises(mutate.LaneFullError):
+        _wrap(body, library)
+    assert body == before
+
+
+def test_add_block_on_a_full_lane_raises_lane_full(library):
+    body = _generate(_plain_recipe(after_join=["Digital"] * 8), library)   # 12 blocks
+    with pytest.raises(mutate.LaneFullError):
+        mutate.add_block(body, "Digital", library)
+
+
+@pytest.mark.parametrize("op", [
+    lambda b, lib: mutate.wrap_in_split(b, "IR", "Digital", lib),            # already inside
+    lambda b, lib: mutate.wrap_in_split(b, "4x12 Greenback 25", "Digital", lib),  # lane 1
+    lambda b, lib: mutate.unwrap_split(b, "Plate", lib),                     # not in a split
+], ids=["wrap-inside-split", "wrap-lane-1", "unwrap-outside-split"])
+def test_wrap_and_unwrap_refuse_bad_targets(headphones_body, library, op):
+    before = copy.deepcopy(headphones_body)
+    with pytest.raises(mutate.MutateError):
+        op(headphones_body, library)
+    assert headphones_body == before
+
+
+def test_unwrap_split_refuses_a_region_with_more_than_one_lane1_block(headphones_body, library):
+    flow0 = headphones_body["preset"]["flow"][0]
+    flow0["b16"] = copy.deepcopy(flow0["b15"])
+    flow0["b05"]["branch"] = "b16"              # the join now closes a 2-block B lane
+    before = copy.deepcopy(headphones_body)
+    with pytest.raises(mutate.MutateError, match="exactly one lane-1 block"):
+        mutate.unwrap_split(headphones_body, "IR", library)
+    assert headphones_body == before
+
+
 # --- gapped grid rows (hgc-hhp) ----------------------------------------------
 #
 # A preset pulled off the hardware with `device to-hsp` keeps the grid slots it
