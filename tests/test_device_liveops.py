@@ -307,3 +307,85 @@ def test_active_preset_unresolvable_ref(monkeypatch):
     monkeypatch.setattr(h, "get_ref", lambda cid: None)
     info = h.active_preset()
     assert info["cid"] == 0 and info["name"] is None and info["slot"] == ""
+
+
+# --- fast-ack live writes (hgc-58a) ----------------------------------------
+# A live knob UI issues many writes a second. The default RPC keeps polling a
+# 0.4 s settle window AFTER the ack has arrived (614 ms / write measured on a
+# Stadium XL, 2026-11-12); `fast=True` waits only for the ack (10 ms measured).
+
+class _RecordingPoller:
+    """Hands out one frame per poll until exhausted; records each timeout."""
+
+    def __init__(self, frames):
+        self._remaining = len(frames)
+        self.timeouts = []
+
+    def register(self, *_a, **_k):
+        pass
+
+    def poll(self, ms):
+        self.timeouts.append(ms)
+        if self._remaining > 0:
+            self._remaining -= 1
+            return [("sock", 1)]
+        return []
+
+
+def _status_ack(rid, code=0):
+    return osc_encode("/status", [("i", rid), ("i", code)])
+
+
+def _wire_recording(client, frames):
+    client.sock = _FakeSock(frames)
+    client.poller = _RecordingPoller(frames)
+
+
+def test_set_param_default_keeps_the_settle_drain():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_param(0, 13, 2, -6.0, force=True) is True
+    # first poll waits the full rpc timeout, the post-ack poll the 0.4 s settle
+    assert h.poller.timeouts == [2000, 400]
+
+
+def test_set_param_fast_waits_only_for_the_ack():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_param(0, 13, 2, -6.0, force=True, fast=True) is True
+    addr, args = _last_sent(h)
+    assert addr == "/ParamValueSet"
+    assert args[1:] == [0, 13, 0, 2, -6.0, -1]       # same wire shape
+    first, after_ack = h.poller.timeouts
+    assert 0 < first <= 500                           # short ack wait
+    assert after_ack == 0                             # NO settle drain
+
+
+def test_set_param_fast_reports_a_missing_ack():
+    # a write at a slot with no block is silently dropped (no ack) — the fast
+    # path must still surface that as False, not as success.
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [])
+    assert h.set_param(0, 13, 2, -6.0, force=True, fast=True) is False
+
+
+def test_set_block_enable_fast_waits_only_for_the_ack():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [_status_ack(1000)])
+    assert h.set_block_enable(0, 3, False, fast=True) is True
+    addr, args = _last_sent(h)
+    assert addr == "/BlockEnableSet" and args[1:] == [0, 3, 0]
+    assert h.poller.timeouts[-1] == 0
+
+
+def test_set_block_enable_fast_reports_a_missing_ack():
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [])
+    assert h.set_block_enable(0, 3, False, fast=True) is False
+
+
+def test_set_block_enable_default_still_returns_true_without_an_ack():
+    # legacy contract (the verb treats the call as fire-and-confirm-by-echo)
+    h = HelixClient("10.0.0.99")
+    _wire_recording(h, [])
+    assert h.set_block_enable(0, 3, False) is True

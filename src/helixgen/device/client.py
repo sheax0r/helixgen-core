@@ -130,6 +130,13 @@ GRID_SLOTS = 28
 ACTIVE_PRESET_KEY = "server.active.preset.id"
 
 
+# Ack wait for a ``fast=True`` live write (hgc-58a): long enough to ride out
+# LAN jitter (acks land in ~10 ms on a Stadium XL), short enough that a write
+# the device silently dropped does not stall a live control for the full RPC
+# timeout.
+_FAST_ACK_WAIT = 0.5
+
+
 def _grid_slot(block: int) -> int:
     """Validate a public block coordinate (the device's DSP **grid slot**).
 
@@ -928,18 +935,38 @@ class HelixClient:
         self._rpc("/activateSnapshot", [("i", i)])
         return True
 
-    def set_block_enable(self, path: int, block: int, enable: bool) -> bool:
+    def set_block_enable(self, path: int, block: int, enable: bool, *,
+                         fast: bool = False) -> bool:
         """Bypass/enable a block in the live edit buffer.
 
         ``/BlockEnableSet [reqid, dsp, grid_slot, enable]``. ``path`` = DSP
         index (0/1), ``block`` = the grid slot printed by ``device blocks`` /
         :meth:`edit_buffer_blocks`, sent unchanged (see :func:`_grid_slot`
         for the 2026-07-15 indexing erratum).
+
+        ``fast=True`` is the live-control path (see :meth:`set_param`): wait
+        only for the device's ack, skip the settle drain, and return whether
+        the ack arrived. The default keeps the legacy contract (always
+        ``True``; the change is confirmed by its 2001 echo).
         """
-        self._rpc("/BlockEnableSet",
-                  [("i", int(path)), ("i", _grid_slot(block)),
-                   ("i", 1 if enable else 0)])
+        args = [("i", int(path)), ("i", _grid_slot(block)),
+                ("i", 1 if enable else 0)]
+        if fast:
+            return self._ok(self._rpc_fast("/BlockEnableSet", args))
+        self._rpc("/BlockEnableSet", args)
         return True
+
+    def _rpc_fast(self, addr: str, args: Sequence) -> List[tuple]:
+        """One RPC that returns as soon as OUR ack lands — no settle drain.
+
+        The default :meth:`_rpc` keeps polling ``settle`` (0.4 s) after the
+        reply in case more frames follow; a live write has exactly one reply,
+        so that drain is pure latency (614 ms vs 10 ms per ``/ParamValueSet``,
+        measured on a Stadium XL 2026-11-12). The ack is still consumed, so
+        the DEALER receive buffer stays clean."""
+        return self._rpc(addr, args,
+                         first_wait=min(self.rpc_timeout, _FAST_ACK_WAIT),
+                         settle=0.0)
 
     def set_block_model(self, path: int, block: int, model_id: int) -> bool:
         """Set a block's model in the live edit buffer.
@@ -1213,7 +1240,7 @@ class HelixClient:
         return items
 
     def set_param(self, path: int, block: int, param_id: int, value: float,
-                  *, force: bool = False) -> bool:
+                  *, force: bool = False, fast: bool = False) -> bool:
         """Set a param in the edit buffer:
         ``/ParamValueSet [_, path, grid_slot, 0, paramId, value, -1]``.
 
@@ -1232,14 +1259,23 @@ class HelixClient:
         skips the check: the range comes from the vendored model defs, not
         from the firmware, so it can be narrower than what the hardware
         actually accepts.
+
+        ``fast=True`` is the live-control path (a knob UI issuing many writes
+        a second): wait only for the device's ack instead of also draining the
+        0.4 s settle window, and return ``False`` if no ack arrives within
+        ~0.5 s (a write at a slot with no block is silently dropped). It does
+        NOT skip the range check — pair it with ``force=True`` only when the
+        caller has already clamped the value to the advertised range, since
+        the check costs a full edit-buffer read per write.
         """
         slot = _grid_slot(block)
         if not force:
             self._check_param_range(path, slot, param_id, value)
-        return self._ok(self._rpc(
-            "/ParamValueSet",
-            [("i", path), ("i", slot), ("i", 0), ("i", param_id),
-             ("f", float(value)), ("i", -1)]))
+        args = [("i", path), ("i", slot), ("i", 0), ("i", param_id),
+                ("f", float(value)), ("i", -1)]
+        if fast:
+            return self._ok(self._rpc_fast("/ParamValueSet", args))
+        return self._ok(self._rpc("/ParamValueSet", args))
 
     def _check_param_range(self, path: int, slot: int, param_id: int,
                            value: float) -> None:
