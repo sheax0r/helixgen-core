@@ -440,6 +440,25 @@ def test_snapshot_switch_rereads_once_per_batch(s):
     assert s.rev == r + 1                                  # page re-renders
 
 
+def test_batched_values_trailing_a_snapshot_reread_do_not_cost_a_second_read():
+    # HW 2026-11-13: /activateSnapshot and its /setBatchedParamVals arrive in
+    # DIFFERENT poll batches when the first re-read (~1.5 s) is slow — the
+    # values were already in that read, so the straggler must not trigger
+    # another one (and another full re-render of the page).
+    now = [100.0]
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease(), clock=lambda: now[0])
+    sess.load()
+    sess.handle_events([_ev("/activateSnapshot", 1, 2, 3)])
+    assert c.reads == 2
+    now[0] += 0.05                                   # next poll, straight after
+    sess.handle_events([_ev("/setBatchedParamVals", 1, 3, b"x")])
+    assert c.reads == 2
+    now[0] += 5.0                                    # an unrelated batch later on
+    sess.handle_events([_ev("/setBatchedParamVals", 1, 9, b"x")])
+    assert c.reads == 3
+
+
 def test_pushed_edit_buffer_rebuilds_without_a_device_read(s, monkeypatch):
     new = _split_join()
     monkeypatch.setattr("helixgen.liveedit.session.decode_blob", lambda blob: new)

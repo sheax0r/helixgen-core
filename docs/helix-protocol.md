@@ -425,7 +425,7 @@ msgpack map.
 
 | Op | Address | Typetags / args | Reply | Notes |
 |----|---------|-----------------|-------|-------|
-| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, grid_slot, 0, paramId, floatValue, -1]` | `/status` + edit-buffer echo on 2001 | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `grid_slot` = the block's **grid slot** — the int PAIRED with the block dict in `blks` (§4). **ERRATUM 2026-07-15** to the 2026-07-14 `(blks_key−1)/2` finding: that formula translated the block's flat-list *position* and only coincided with the true slot for chains occupying contiguous slots from 0 (all early captures) — the output block (slot 13) was unaddressable under it. HW-proof: slot-13 `gain` write acked `/status 0` and read back via `/ParamValueGet`; a write at a slot with no block is silently dropped (no ack). The `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). `floatValue` is `f` in the param's **raw units** (dB floats accepted verbatim); int/bool params are passed as their float encoding. |
+| **PARAM SET** | `/ParamValueSet` | `,iiiiifi` → `[reqid, path, grid_slot, 0, paramId, floatValue, -1]` | `/status` + edit-buffer echo on 2001 | **Layout confirmed live.** Sets one parameter. `path` = signal-path/DSP index; `grid_slot` = the block's **grid slot** — the int PAIRED with the block dict in `blks` (§4). **ERRATUM 2026-07-15** to the 2026-07-14 `(blks_key−1)/2` finding: that formula translated the block's flat-list *position* and only coincided with the true slot for chains occupying contiguous slots from 0 (all early captures) — the output block (slot 13) was unaddressable under it. HW-proof: slot-13 `gain` write acked `/status 0` and read back via `/ParamValueGet`; a write at a slot with no block is silently dropped (no ack). The `0` (4th) and trailing `-1` are fixed in captures. `paramId` is the **numeric** param id from the model defs (§8). The value is in the param's **raw units** (dB floats accepted verbatim) and **must be sent in the param's own OSC type**: `f` for a float param, `i` for an int/enum param, and the OSC boolean tags `T`/`F` (no payload) for a bool param — so the type string is `,iiiiifi`, `,iiiiiii` or `,iiiiiTi`/`,iiiiiFi`. **ERRATUM 2026-11-13** (HW, Stadium XL fw 1.4.1) to the earlier "int/bool params are passed as their float encoding": a float-encoded int write and a float- or int-encoded bool write are **silently dropped** — no `/status`, no echo, value unchanged (input `Pad` 1→2 as `f`: dropped, as `i`: acked + applied; `noiseGate` as `f` or `i`: dropped, as `F`/`T`: acked + applied). |
 | **PARAM GET** | `/ParamValueGet` | `,iiiii` → `[reqid, path, grid_slot, 0, paramId]` | `/getParamValue [reqid, path, grid_slot, 0, paramId, value]` | **Live-verified 2026-07-15.** Reads one parameter's current value in RAW units. A coordinate with no block/param answers with a SHORT reply (no value field) rather than an error. Backs `helixgen device params` / `get_param`. |
 | **MODEL SET** | `/ModelSet` | `,iiiii` → `[cmd, dsp, grid_slot, subpos, modelId]` | edit-buffer update (echo `/setModelWithMID`) | Places/replaces a model. Args **decoded 2026-07-14** (e.g. `[117, 0, 4, 0, 70]`); the block coordinate is the **grid slot** (2026-07-15 erratum, same as PARAM SET — the capture's `4` was a contiguous chain where slot == `(blks_key−1)/2`); `modelId` is the **numeric** model id from the model defs (§8). A model swap **cascades**: `/setBlockEnable`, `/setBlockFavorite`, `/assignSnapshotBypass`, `/attachBlockBypassControllerWithBlob` (a `lrtcpgsm` blob), `/setControllerSource`+`/setSourceEnable`, and a batch of `/setPropertyValue` param defaults for the new model — replay these for a faithful live swap. |
 | **SNAPSHOT NAME** | `/SetSnapshotName` | `,iis` → `[reqid, snapshotIndex, "Name"]` | `/status` | Renames snapshot `snapshotIndex` (0–7). |
@@ -457,12 +457,14 @@ is the stream to follow for live tracking — polling `/EditBufferStateGet` is
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/setParamValue` | `[origin, seq, path, grid_slot, snap, pid, value]` | One param changed. `value` is in raw units (bools arrive as bools). Captured 2026-10-28 and re-confirmed 2026-11-12: `[78129, 1005, 0, 2, 0, 2, 0.55]`. |
+| `/setParamValue` | `[origin, seq, path, grid_slot, snap, pid, value]` | One param changed. `value` is in raw units and typed like the param: `f`, `i`, or — for a bool — the OSC `T`/`F` tag in the last position (`,iiiiiiT`), which carries no payload (`HelixSubscriber` hands it over as `True`/`False`). Captured 2026-10-28, re-confirmed 2026-11-12/13: `[78129, 1005, 0, 2, 0, 2, 0.55]`. A write to a snapshot-assigned param is additionally announced with `/setSnapshotValue`. |
 | `/setBlockEnable` | `[origin, seq, path, grid_slot, enable]` | A block was bypassed/enabled. Confirmed 2026-11-12: `[12593, 1004, 0, 2, 1]`. |
 | `/activateSnapshot` | `[origin, seq, index]` | The active snapshot changed (followed by `/setBatchedParamVals`, the batch of values the recall applied). |
 | `/setEditBuffer` | `[origin, seq, <_sbepgsm blob>]` | A preset was loaded: the WHOLE new live buffer, decodable exactly like the `/EditBufferStateGet` reply — a preset switch needs no read. |
 | `/loadContentRef` | `[origin, seq, {cid_, name, posi, cctp, type, …}]` | The loaded preset's identity; trails its `/setEditBuffer` by ~70 ms. Also sent alone for a rename/recolor of the loaded preset. |
-| `/setPropertyValue` | `[origin, seq, {key_, type, val_}]` | Dotted-key properties; `volatile.preset.edited` is the unsaved-edits flag. |
+| `/setPropertyValue` | `[origin, seq, <lavppgsm value blob>]` | Dotted-key properties, as the same value blob `/PropertyValueGet` answers with (`settings.decode_value_blob`). `volatile.preset.edited` is the **unsaved-edits flag** (1 after the first edit, 0 after a save or a load) — also readable with `/PropertyValueGet`. The edit buffer's own `hist` field is NOT that flag: it is still 1 right after a save. |
+| `/saveContentRef` | — | Follows an in-place save (`/SavePresetWithCID`). |
+| `/setSelectedBlock`, `/setSourceEnable` | — | UI selection / controller-source chatter around loads and snapshot switches; no edit-buffer content. |
 
 **Acks (2002).** `/ParamValueSet` and `/BlockEnableSet` are both answered
 with a reqid-correlated `/status [reqid, 0, dirty]` — the third field is the
@@ -479,6 +481,25 @@ echo's `seq` equals the request id of the write that caused it** (reqid 1005
 and never re-write on one (that loops); matching `seq` to its own recent
 request ids lets it drop a late echo of an older value instead of letting it
 drag a control backwards mid-gesture.
+
+**What a re-read shows (HW 2026-11-13, fw 1.4.1).** `/EditBufferStateGet`
+reflects live state: a param written with `/ParamValueSet` reads back at once,
+and so does a live bypass (`enbl` of the block goes to 0) — on this firmware
+the buffer is not "the saved preset until you save". After
+`/activateSnapshot` it holds the new snapshot's values and `cg__.asnp` is the
+new index.
+
+**Snapshots and live writes (HW 2026-11-13).** `/ParamValueSet` (trailing
+`-1`) behaves exactly like the hardware knob: a param that is
+snapshot-assigned (`snap: true` on its `parm` entry) changes in the ACTIVE
+snapshot only — the other snapshots keep their values, and the edit is still
+there after switching away and back; a param that is not snapshot-assigned
+changes for every snapshot.
+
+**In-place save (HW 2026-11-13).** `/SavePresetWithCID [cid, 0, 0]` on the
+ACTIVE preset's own cid persists the live buffer over it (verified by loading
+another preset and coming back); it acks `/status` and clears
+`volatile.preset.edited`.
 
 **Latency note for implementers.** `HelixClient._rpc` gathers replies until a
 `settle` window (0.4 s) passes with no further frame. For a command with

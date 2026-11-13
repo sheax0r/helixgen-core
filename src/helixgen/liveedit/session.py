@@ -30,6 +30,11 @@ from helixgen.device.client import Container, HelixError
 from helixgen.liveedit import chain as _chain
 from helixgen.liveedit.events import DIRTY_KEY, decode_event
 
+# A snapshot recall is announced as /activateSnapshot followed by the batch of
+# values it applied. When our re-read for the first is slow, the second is
+# still queued when it finishes — and what it describes is already in that
+# read. Within this window after a snapshot re-read, the batch is not news.
+SNAPSHOT_SETTLE = 1.0
 DEAD_AFTER = 6.0      # s of total silence on the PUB streams = disconnected
 RETRY_EVERY = 3.0     # s between reconnect attempts while disconnected
 _OWN_MAX = 256        # own write echoes remembered
@@ -89,6 +94,7 @@ class LiveSession:
         self._connected = True
         self._awaiting_ref = False
         self._own: "collections.OrderedDict[int, tuple]" = collections.OrderedDict()
+        self._snapshot_reread_at = -math.inf
         self._last_event: Optional[float] = None
         self._last_retry = -math.inf
 
@@ -391,7 +397,7 @@ class LiveSession:
         if events:
             self._last_event = self._clock()
         blob = ref = None
-        reread = False
+        reread = snapshot = False
         late: List[tuple] = []
         for ev in events:
             if getattr(ev, "port", 2001) != 2001:
@@ -402,10 +408,16 @@ class LiveSession:
             kind = action[0]
             if kind == "editbuffer":
                 blob, ref, reread, late = action[1], None, False, []
+                snapshot = False
             elif kind == "presetref":
                 ref = (action[1], action[2])
-            elif kind in ("snapshot", "reread"):
-                reread = True
+            elif kind == "snapshot":
+                reread = snapshot = True
+            elif kind == "reread":
+                straggler = (action[1] == "/setBatchedParamVals" and
+                             self._clock() - self._snapshot_reread_at < SNAPSHOT_SETTLE)
+                if not straggler:
+                    reread = True
             else:
                 late.append(action)
 
@@ -431,6 +443,8 @@ class LiveSession:
                 reread = True          # another preset, and its blob never came
         if reread:
             self._reread_quiet()
+            if snapshot:
+                self._snapshot_reread_at = self._clock()
         for action in late:
             self._apply(action)
 

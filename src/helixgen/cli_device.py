@@ -1851,8 +1851,9 @@ def device_blocks(as_json: bool, ip: str, port: int) -> None:
     the output block sits at slot 13/27). These are exactly the coordinates
     `device bypass` / `device model` / `device set-param` / `device params`
     address. Reads the active edit buffer (does not change the tone).
-    The on/off shown is the preset's *saved* base bypass; a volatile live
-    `device bypass` toggle is not reflected here until the preset is saved.
+    On fw 1.4 the on/off shown is LIVE — a `device bypass` (or footswitch)
+    toggle shows here at once (HW 2026-11-13); on fw 1.3 and earlier it was
+    the preset's saved base bypass until the preset was saved.
     """
     HelixClient, HelixError = _client()
     from helixgen.ingest import humanize_model_id
