@@ -1138,6 +1138,9 @@ def _apply_venue_cli(body, target, *, source_venue, source_detail, room_ir,
     from helixgen import venue as _venue
     from helixgen.cli import _resolved_irs, _resolved_library
 
+    if target != "headphones" and (room_ir or room_mode != "auto"):
+        click.echo(f"warning: --room-ir/--room only apply to --venue headphones; "
+                   f"ignored for {target}", err=True)
     irs = _resolved_irs(irs_dir)
     try:
         res = _venue.apply_venue(
@@ -1185,6 +1188,21 @@ def _resolve_fork_source(source: str) -> tuple[tone_meta.ToneMeta | None, str | 
     return meta, key, hsp
 
 
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write via a same-directory temp file + ``os.replace`` (never leaves a
+    truncated file behind)."""
+    import os
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 @library.command(name="venue")
 @click.argument("variant")
 @click.argument("target", metavar="VENUE",
@@ -1228,7 +1246,7 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
     steer the headphones treatment. Warnings go to stderr, plus a one-line
     `venue:` summary. `--dry-run` writes nothing.
     """
-    from helixgen.hsp import write_hsp
+    from helixgen.hsp import dumps_hsp
 
     meta, key, hsp = _resolve_fork_source(variant)
     if meta is None or key is None:
@@ -1242,9 +1260,14 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
         library_path=library_path, irs_dir=irs_dir)
     summary = _venue_summary(res, irs)
     if not dry_run:
-        write_hsp(hsp, res.body)
+        original = hsp.read_bytes()
+        _atomic_write(hsp, dumps_hsp(res.body))
         v.venue, v.venue_detail = res.venue, res.venue_detail
-        tone_meta.save_tone_meta(meta)
+        try:
+            tone_meta.save_tone_meta(meta)
+        except BaseException:
+            _atomic_write(hsp, original)  # keep .hsp and metadata in step
+            raise
         gitops.auto_commit(home.helixgen_home(),
                            f"helixgen: venue {key} -> {res.venue} ({meta.logical_slug})")
     if as_json:
@@ -1373,7 +1396,7 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
             raise click.ClickException(
                 f"--guitar {guitar!r} has no slug-able characters (needs letters "
                 "or digits) -- pick a different guitar label.")
-    elif src_key and src_key != "generic":
+    elif src_key and tone_meta.split_variant_key(src_key)[0] != "generic":
         guitar_slug, guitar_short = _resolve_guitar(tone_meta.split_variant_key(src_key)[0])
     else:
         guitar_slug = guitar_short = None
@@ -1450,7 +1473,9 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
             src_meta.description_md)
 
     # --- adaptation checklist (advisory) ---------------------------------
-    src_profile = (guitars.find_profile(tone_meta.split_variant_key(src_key)[0]) if src_key else None)
+    src_guitar = tone_meta.split_variant_key(src_key)[0] if src_key else None
+    src_profile = (guitars.find_profile(src_guitar)
+                   if src_guitar and src_guitar != "generic" else None)
     dst_profile = (guitars.find_profile(guitar_slug) if guitar_slug else None)
     pickups_differ = (guitars.pickup_class(src_profile)
                       != guitars.pickup_class(dst_profile))

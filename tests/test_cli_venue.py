@@ -174,3 +174,46 @@ def test_describe_and_show_print_venue(lib, recipe, monkeypatch):
     assert d.exit_code == 0 and "venue: amp-in" in d.output
     s = _run("library", "show", "probe")
     assert s.exit_code == 0 and "venue amp-in" in s.output
+
+
+def test_library_venue_restores_hsp_when_metadata_save_fails(lib, recipe, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    _gen(lib, recipe)
+    from helixgen import home
+    hsp = home.tones_dir() / "probe.hsp"
+    before = hsp.read_bytes()
+
+    def boom(_meta):
+        raise OSError("disk full")
+    monkeypatch.setattr(tone_meta, "save_tone_meta", boom)
+    r = _run("library", "venue", "probe", "amp-in", "--library", str(lib.root))
+    assert r.exit_code != 0
+    assert hsp.read_bytes() == before
+    assert not list(home.tones_dir().glob("*.tmp"))
+
+
+def test_fork_from_suffixed_generic_variant(lib, recipe, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    _gen(lib, recipe)
+    r = _run("library", "fork", "probe", "--venue", "direct", "--library", str(lib.root))
+    assert r.exit_code == 0, r.output
+    name = _meta().variants["generic@direct"].preset_name
+    r = _run("library", "fork", name, "--venue", "amp-in", "--library", str(lib.root))
+    assert r.exit_code == 0, r.output
+    assert "generic@amp-in" in _meta().variants
+
+
+def test_fork_records_non_null_venue_from(lib, recipe, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    _gen(lib, recipe, "--venue", "direct")
+    r = _run("library", "fork", "probe", "--venue", "amp-in", "--library", str(lib.root))
+    assert r.exit_code == 0, r.output
+    assert _meta().variants["generic@amp-in"].forked_from["venue_from"] == "direct"
+
+
+def test_room_flags_warn_when_venue_is_not_headphones(lib, recipe, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    r = _run("generate", str(recipe), "--library", str(lib.root),
+             "--descriptor", "Probe", "--venue", "amp-in", "--room", "tile")
+    assert r.exit_code == 0, r.output
+    assert "only apply to --venue headphones" in r.output
