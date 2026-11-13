@@ -182,6 +182,8 @@ def test_library_venue_restores_hsp_when_metadata_save_fails(lib, recipe, monkey
     from helixgen import home
     hsp = home.tones_dir() / "probe.hsp"
     before = hsp.read_bytes()
+    hsp.chmod(0o644)
+    mode = hsp.stat().st_mode
 
     def boom(_meta):
         raise OSError("disk full")
@@ -189,18 +191,27 @@ def test_library_venue_restores_hsp_when_metadata_save_fails(lib, recipe, monkey
     r = _run("library", "venue", "probe", "amp-in", "--library", str(lib.root))
     assert r.exit_code != 0
     assert hsp.read_bytes() == before
+    assert hsp.stat().st_mode == mode
     assert not list(home.tones_dir().glob("*.tmp"))
 
 
 def test_fork_from_suffixed_generic_variant(lib, recipe, monkeypatch):
+    from helixgen import guitars, naming
     monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    guitars.save_profile(guitars.GuitarProfile(
+        name="Ibanez Prestige", short_name="Ibanez Prestige", type="guitar",
+        active=False, pickups="HSH", construction=None, character_md=None))
     _gen(lib, recipe)
     r = _run("library", "fork", "probe", "--venue", "direct", "--library", str(lib.root))
     assert r.exit_code == 0, r.output
     name = _meta().variants["generic@direct"].preset_name
     r = _run("library", "fork", name, "--venue", "amp-in", "--library", str(lib.root))
     assert r.exit_code == 0, r.output
-    assert "generic@amp-in" in _meta().variants
+    v = _meta().variants["generic@amp-in"]
+    assert v.preset_name == naming.display_name(
+        descriptor="Probe", guitar_short=None,
+        venue_suffix=naming.VENUE_SUFFIX["amp-in"])
+    assert v.hsp.endswith(f"{naming.variant_slug('probe', None, 'amp-in')}.hsp")
 
 
 def test_fork_records_non_null_venue_from(lib, recipe, monkeypatch):
@@ -217,3 +228,14 @@ def test_room_flags_warn_when_venue_is_not_headphones(lib, recipe, monkeypatch):
              "--descriptor", "Probe", "--venue", "amp-in", "--room", "tile")
     assert r.exit_code == 0, r.output
     assert "only apply to --venue headphones" in r.output
+
+
+def test_library_venue_rewrite_keeps_file_mode(lib, recipe, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_DEFAULT_VENUE", raising=False)
+    _gen(lib, recipe)
+    from helixgen import home
+    hsp = home.tones_dir() / "probe.hsp"
+    hsp.chmod(0o644)
+    r = _run("library", "venue", "probe", "amp-in", "--library", str(lib.root))
+    assert r.exit_code == 0, r.output
+    assert hsp.stat().st_mode & 0o777 == 0o644

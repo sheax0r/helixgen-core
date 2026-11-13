@@ -1197,6 +1197,8 @@ def _atomic_write(path: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+        if path.exists():
+            os.chmod(tmp, path.stat().st_mode & 0o7777)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
