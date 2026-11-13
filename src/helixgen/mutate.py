@@ -929,8 +929,8 @@ def add_block(
     spans = _split_spans(path_dict, existing_keys)
     if spans is None or any(s < insert_at <= e for s, e in spans):
         raise MutateError(
-            "add_block not supported on a parallel-routed path yet (path "
-            f"{path} contains a split/join)."
+            "add_block not supported inside a split region or on lane 1 yet "
+            f"(path {path} contains a split/join)."
         )
 
     new_bnn = _to_hsp_bnn(block, params or {}, position=0, path_index=lane)
@@ -1005,8 +1005,8 @@ def remove_block(
         refused = spans is None or any(s < i < e for s, e in spans)
     if refused:
         raise MutateError(
-            "remove_block not supported on a parallel-routed path yet (path "
-            f"{fi} contains a split/join)."
+            "remove_block not supported inside a split region or on lane 1 yet "
+            f"(path {fi} contains a split/join)."
         )
     del path_dict[key]
     # Nothing moved, so the only MIDI records to reconcile are the removed

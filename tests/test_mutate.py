@@ -586,7 +586,7 @@ def test_remove_block_outside_split(headphones_body, library):
 ], ids=["add-inside-split", "remove-inside-split", "remove-lane-1"])
 def test_edit_inside_split_or_on_lane_1_still_refused(headphones_body, library, op):
     before = copy.deepcopy(headphones_body)
-    with pytest.raises(mutate.MutateError, match="parallel-routed"):
+    with pytest.raises(mutate.MutateError, match="split region or on lane 1"):
         op(headphones_body, library)
     assert headphones_body == before
 
@@ -596,7 +596,7 @@ def test_append_past_a_usb_tap_split_is_refused(library):
     # (The CLI lifts taps around every edit, so it never gets here.)
     body = _generate(_headphones_recipe(), library, taps=True)
     before = copy.deepcopy(body)
-    with pytest.raises(mutate.MutateError, match="parallel-routed"):
+    with pytest.raises(mutate.MutateError, match="split region or on lane 1"):
         mutate.add_block(body, "Digital", library)
     assert body == before
 

@@ -6,6 +6,8 @@
 
 **Architecture:** A new `helixgen/venue.py` holds the vocabulary, room-IR selection, level maths, and the transforms. Transforms run at the **recipe level**: `view()` the `.hsp` to a recipe dict, edit the block list (insert split / room IR / join, or drop cabs), regenerate with `compose_preset`, and carry the original `meta` across. A no-op round-trip check guards against presets `view` cannot represent losslessly. Metadata, naming and the CLI learn a `venue` dimension; `mutate.add_block` / `remove_block` are relaxed just enough to keep working on a room-treated path.
 
+**Superseded during execution:** transforms edit the preset body in place via mutate primitives (wrap_in_split / unwrap_split); the recipe-level round trip proved lossy on real presets.
+
 **Tech Stack:** Python, click, pytest (`python3 -m pytest`), libsndfile via the existing `helixgen.ir._load_libsndfile` for reading IR wavs.
 
 **Spec:** `helixgen` plugin repo, `docs/superpowers/specs/2026-11-11-venue-variants-design.md`. Read it first; this plan argues from it. Companion plan (skill, docs sync, library migration): plugin repo `docs/plans/2026-11-12-venue-variants-plugin.md`.

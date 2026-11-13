@@ -518,6 +518,10 @@ the block is **bypassed** (manually or via a footswitch):
 - Editing an existing `.hsp` never needs `trails`: `set-param`/edit verbs
   preserve the block's `harness` (and its `Trails`) verbatim in place.
 
+## Venue is not a recipe field
+
+A venue (`headphones` / `direct` / `amp-in`) is never written in a recipe: recipes are always the direct form. Apply a venue with `generate --venue`, the `default_venue` preference, `library fork --venue`, or `library venue` (in place).
+
 ## Optional: per-block verbatim state (`raw`)
 
 A recipe block may carry an optional `"raw"` object holding verbatim Stadium bNN
