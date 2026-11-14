@@ -68,16 +68,24 @@ def make_server(session: LibrarySession, host: str = "127.0.0.1",
         timeout = SOCKET_TIMEOUT
 
         def _send(self, code: int, body: bytes, ctype: str) -> None:
-            self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
-            if self.close_connection:
-                self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
+            # A client that navigates away mid-response (common: the page
+            # reloads during a multi-second device read) drops the socket.
+            # That is normal, not a server error — swallow it quietly rather
+            # than logging a traceback.
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Content-Security-Policy",
+                                 "frame-ancestors 'none'")
+                if self.close_connection:
+                    self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
 
         def _json(self, code: int, obj) -> None:
             self._send(code, json.dumps(obj).encode(), "application/json")
