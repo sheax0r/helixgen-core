@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from urllib.parse import urlsplit
 
 from helixgen import home
 
@@ -54,9 +55,15 @@ def find_chromium(*, is_macos=None, exists=os.path.exists, which=shutil.which):
     return None
 
 
-def user_data_dir() -> str:
-    """Dedicated, isolated browser profile dir under the helixgen home."""
-    return str(home.helixgen_home() / "live-window")
+def user_data_dir(url: str) -> str:
+    """Dedicated, isolated browser profile dir under the helixgen home, keyed
+    on the editor's HTTP port (each ``device live`` binds its own) so two
+    concurrent editors never share one Chromium profile. Sharing it means the
+    second launch hits the profile's SingletonLock, Chromium forwards the
+    ``--app`` to the FIRST window and the new process exits at once, whose
+    ``on_exit`` then kills the second editor's server (hgc-yoq)."""
+    port = urlsplit(url).port or "default"
+    return str(home.helixgen_home() / "live-window" / str(port))
 
 
 def app_command(binary: str, url: str, data_dir: str) -> list[str]:
@@ -72,7 +79,7 @@ def launch(url: str, *, on_exit=None, binary=None):
     binary = binary or find_chromium()
     if not binary:
         return None
-    data_dir = user_data_dir()
+    data_dir = user_data_dir(url)
     os.makedirs(data_dir, exist_ok=True)
     proc = subprocess.Popen(app_command(binary, url, data_dir),  # noqa: S603
                             stdout=subprocess.DEVNULL,

@@ -35,17 +35,21 @@ def test_find_chromium_returns_none_when_absent():
 
 def test_app_command_is_chromeless_and_isolated():
     url = "http://127.0.0.1:8765/"
-    ddir = "/home/u/.helixgen/live-window"
+    ddir = "/home/u/.helixgen/live-window/8765"
     cmd = window.app_command(_CHROME, url, ddir)
     assert cmd[0] == _CHROME
     assert f"--app={url}" in cmd                 # chromeless: no tabs, no address bar
     assert f"--user-data-dir={ddir}" in cmd      # isolated: not the real profile
 
 
-def test_user_data_dir_lives_under_helixgen_home(monkeypatch, tmp_path):
+def test_user_data_dir_is_per_port_under_helixgen_home(monkeypatch, tmp_path):
+    # keyed on the editor's HTTP port so two concurrent editors never share one
+    # Chromium profile (hgc-yoq)
     monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path))
-    d = window.user_data_dir()
-    assert d == str(tmp_path / "live-window")
+    assert window.user_data_dir("http://127.0.0.1:8765/") == \
+        str(tmp_path / "live-window" / "8765")
+    assert window.user_data_dir("http://127.0.0.1:9100/") == \
+        str(tmp_path / "live-window" / "9100")
 
 
 def test_launch_returns_none_without_a_chromium(monkeypatch):
