@@ -743,8 +743,17 @@ class LiveSession:
         # stale values. (Snapshot-bypass state is NOT in the batch and still
         # rides the re-read path — decoding it needs a hardware capture.)
         if blob is None and (snapshot or batch is not None):
-            if batch is not None and self._apply_snapshot_batch(
-                    snap_index if snapshot else None, batch):
+            # Block-enable/bypass is NOT a param, so it can never ride inside the
+            # /setBatchedParamVals batch ([dsp,block,sub,pid,value]) — a snapshot
+            # that flips a block on/off sends that as a SEPARATE event (a
+            # ("bypass", ...) action here). The in-place path drops every non-
+            # "dirty" late action, so take it only when the batch applies cleanly
+            # AND the poll carries nothing but params + an optional dirty flag;
+            # anything else (a bypass, a straggler param) forces the proven
+            # full re-read rather than a silent stale switch.
+            droppable = all(a[0] == "dirty" for a in late)
+            if (droppable and batch is not None and self._apply_snapshot_batch(
+                    snap_index if snapshot else None, batch)):
                 # the deltas ARE the post-switch values; value events earlier
                 # in this poll are pre-switch and must not land on top
                 late = [a for a in late if a[0] == "dirty"]

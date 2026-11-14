@@ -759,6 +759,20 @@ def test_snapshot_batch_falls_back_to_reread_for_an_unknown_control(s):
     assert s.rev == r + 1                     # and a re-render
 
 
+def test_snapshot_batch_with_a_bypass_change_rereads(s):
+    # a snapshot that flips a block on/off sends the enable as a SEPARATE event
+    # (/setBlockEnable) — it is NOT in the param batch. The in-place path would
+    # drop it, so a poll carrying a bypass action MUST fall back to a re-read
+    # (hgc-9qd review), not silently apply the batch and leave stale on/off.
+    r, reads = s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 2),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 1, 0, 1, 0.9))),
+                     _ev("/setBlockEnable", 1, 4, 0, 1, 0)])
+    assert s.client.reads == reads + 1       # fell back to a re-read
+    assert s.rev == r + 1                     # and a re-render
+
+
 def test_snapshot_without_a_batch_falls_back_to_reread(s):
     # /activateSnapshot alone (its batch undecodable or not yet here) still
     # re-reads, as before — never a silent stale switch
