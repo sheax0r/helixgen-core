@@ -466,9 +466,11 @@ class LiveSession:
     # --- page-initiated switching ---------------------------------------------
     def activate_snapshot(self, index: Any) -> dict:
         """Recall a snapshot on the device (0-based, 0..7). Does NOT discard the
-        edit buffer, so the page prompts for nothing. The ``/activateSnapshot``
-        the device emits in response re-reads and re-renders the page — no local
-        state change is made here (hgc-9qd will make it in-place)."""
+        edit buffer, so the page prompts for nothing. No local state change is
+        made here: the device answers with ``/activateSnapshot`` +
+        ``/setBatchedParamVals``, which :meth:`handle_events` applies in place
+        (hgc-9qd), falling back to a re-read only when the batch cannot be
+        decoded."""
         try:
             i = int(index)
         except (TypeError, ValueError):
@@ -622,6 +624,41 @@ class LiveSession:
         elif kind == "dirty":
             self._set_dirty(action[1])
 
+    def _apply_snapshot_batch(self, index: Optional[int],
+                              deltas: List[tuple]) -> bool:
+        """Apply a snapshot recall's ``/setBatchedParamVals`` deltas in place:
+        move the active-snapshot indicator to ``index`` (when known) and set
+        each changed param's value, with NO device read and NO page re-render
+        (the page gets ``meta`` + ``param`` messages, not a fresh structure).
+
+        Returns ``False`` — the caller then falls back to a full re-read — when
+        ``index`` is out of range or a ``sub == 0`` delta names a control this
+        page does not model, so a switch never leaves stale values on screen.
+        Deltas with ``sub != 0`` (a dual-cab second model or harness param,
+        hgc-5gh — no known live-write address) are skipped, not a failure."""
+        with self.cond:
+            resolved = []
+            for dsp, block, sub, pid, value in deltas:
+                if sub != 0:
+                    continue
+                p = self._params.get((dsp, block, pid))
+                if p is None:
+                    return False
+                resolved.append((p, dsp, block, pid, value))
+            if index is not None:
+                if not (isinstance(index, int) and 0 <= index <= 7):
+                    return False
+                if self._chain.get("snapshot") != index:
+                    self._chain["snapshot"] = index
+                    self._emit_meta()
+            for p, dsp, block, pid, value in resolved:
+                if _close(p["value"], value):
+                    continue
+                p["value"] = value
+                self._emit({"t": "param", "path": dsp, "block": block,
+                            "pid": pid, "value": value})
+        return True
+
     def handle_events(self, events: list) -> None:
         """Digest one poll batch from the device's PUB stream(s). Value changes
         apply in place; however many structural events a batch holds, at most
@@ -629,7 +666,8 @@ class LiveSession:
         Never raises: a failed re-read marks the session disconnected."""
         if events:
             self._last_event = self._clock()
-        blob = ref = None
+        blob = ref = batch = None
+        snap_index: Optional[int] = None
         reread = snapshot = identity = False
         late: List[tuple] = []
         for ev in events:
@@ -641,11 +679,14 @@ class LiveSession:
             kind = action[0]
             if kind == "editbuffer":
                 blob, ref, reread, late = action[1], None, False, []
-                snapshot = False
+                snapshot, batch, snap_index = False, None, None
             elif kind == "presetref":
                 ref = (action[1], action[2])
             elif kind == "snapshot":
-                reread = snapshot = True
+                snapshot = True
+                snap_index = action[1]
+            elif kind == "batch":
+                batch = action[1]
             elif kind == "reread":
                 straggler = (action[1] == "/setBatchedParamVals" and
                              self._clock() - self._snapshot_reread_at < SNAPSHOT_SETTLE)
@@ -673,6 +714,20 @@ class LiveSession:
                     self._emit_meta()
             if not same:
                 reread = identity = True   # another preset, and its blob never came
+        # A snapshot recall carries its param deltas (/setBatchedParamVals):
+        # apply them in place — no device read, no page re-render (hgc-9qd).
+        # Fall back to a full re-read when the deltas are missing, could not be
+        # decoded, or name a control we do not model, so a switch never shows
+        # stale values. (Snapshot-bypass state is NOT in the batch and still
+        # rides the re-read path — decoding it needs a hardware capture.)
+        if blob is None and (snapshot or batch is not None):
+            if batch is not None and self._apply_snapshot_batch(
+                    snap_index if snapshot else None, batch):
+                # the deltas ARE the post-switch values; value events earlier
+                # in this poll are pre-switch and must not land on top
+                late = [a for a in late if a[0] == "dirty"]
+            else:
+                reread = True
         if reread:
             self._reread_quiet(identity=identity)
             if snapshot:

@@ -20,6 +20,7 @@ Actions returned by :func:`decode_event`:
   ("param", seq, path, block, pid, value)
   ("bypass", seq, path, block, enabled)
   ("snapshot", index)
+  ("batch", [(dsp, block, sub, pid, value), …])  — a snapshot recall's deltas
   ("editbuffer", blob)
   ("presetref", cid, name)
   ("dirty", bool)
@@ -27,17 +28,19 @@ Actions returned by :func:`decode_event`:
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, List, Optional
 
+from helixgen.device import content as _content
 from helixgen.device import settings as _settings
 
 # Edit-buffer changes with no per-control decoding here: a model swap made on
-# the hardware, per-snapshot bypass state, the batch of values a snapshot
-# recall applies. The right response to each is one fresh read of the buffer.
+# the hardware, per-snapshot bypass state. The right response is one fresh read
+# of the buffer. (A snapshot recall's /setBatchedParamVals is decoded to a
+# "batch" action below and applied in place; it falls back to a re-read only
+# when its deltas cannot be decoded.)
 REREAD_ADDRS = frozenset({
     "/setModelWithMID",
     "/setSnapshotBypassState",
-    "/setBatchedParamVals",
 })
 
 DIRTY_KEY = "volatile.preset.edited"
@@ -64,6 +67,40 @@ def _int(v: Any) -> int:
     return v
 
 
+def _batched_param_deltas(args: list) -> Optional[List[tuple]]:
+    """The deltas of a ``/setBatchedParamVals`` as
+    ``[(dsp, block, sub, paramId, value), …]`` (a snapshot recall's undo-history
+    msgpack array of 5-tuples), or ``None`` if no arg holds that array. The
+    subscriber already msgpack-decodes a blob arg into the nested list; a
+    still-raw blob is decoded here too."""
+    for arg in args:
+        if isinstance(arg, (bytes, bytearray)):
+            try:
+                arg = _content.decode_blob(bytes(arg))
+            except Exception:  # noqa: BLE001 — not msgpack: not the batch
+                continue
+        if not isinstance(arg, (list, tuple)) or not arg:
+            continue
+        out: List[tuple] = []
+        for t in arg:
+            if not (isinstance(t, (list, tuple)) and len(t) == 5):
+                out = []
+                break
+            val = t[4]
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                out = []
+                break
+            try:
+                out.append((_int(t[0]), _int(t[1]), _int(t[2]), _int(t[3]),
+                            float(val)))
+            except TypeError:
+                out = []
+                break
+        if out:
+            return out
+    return None
+
+
 def decode_event(addr: str, args: list) -> Optional[tuple]:
     """One 2001 event -> an action tuple, or ``None`` if it is not ours."""
     try:
@@ -82,6 +119,9 @@ def decode_event(addr: str, args: list) -> Optional[tuple]:
             return ("snapshot", _int(args[2]))
     except TypeError:
         return None
+    if addr == "/setBatchedParamVals":
+        deltas = _batched_param_deltas(args)
+        return ("batch", deltas) if deltas else ("reread", addr)
     if addr == "/setEditBuffer" and len(args) >= 3 and isinstance(args[2], (bytes, bytearray)):
         return ("editbuffer", bytes(args[2]))
     if addr == "/loadContentRef" and len(args) >= 3 and isinstance(args[2], dict):

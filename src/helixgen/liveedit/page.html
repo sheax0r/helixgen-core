@@ -569,7 +569,10 @@ function onMsg(m) {
     if (!same) { undoS = []; redoS = []; }
     S = m; pending.clear(); render(); meta(m);
   } else if (m.t === "meta") {
-    if (S) Object.assign(S, m); meta(m);
+    const snapChanged = S && S.snapshot !== m.snapshot;
+    if (S) Object.assign(S, m);
+    if (snapChanged) renderSnaps();   // an in-place snapshot switch moves the bar highlight
+    meta(m);
   } else if (m.t === "param" || m.t === "bypass") {
     const isP = m.t === "param";
     const key = m.path + "/" + m.block + (isP ? "/" + m.pid : "");

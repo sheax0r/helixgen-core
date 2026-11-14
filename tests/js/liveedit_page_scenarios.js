@@ -128,6 +128,16 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     x.sse({ t: "param", path: 0, block: 2, pid: 1, value: 0.8 });
     ok("a hardware change shows up and causes no write", x.api.P.get(K).p.value === 0.8 && x.posts.length === 0, x.api.P.get(K).p.value);
   }
+  { // S18: in-place snapshot switch — the bar re-highlights, params move, no re-render
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshots: ["S1", "S2"], snapshot: 0 }));
+    x.sse({ t: "meta", dirty: false, connected: true, preset: { cid: 7, name: "T" }, snapshot: 1, snapshot_name: "S2" });
+    x.sse({ t: "param", path: 0, block: 2, pid: 1, value: 0.9 });
+    const on = x.ids.snaprow.find((e) => e.tagName === "button" && e.classList.contains("on"));
+    ok("S18 an in-place snapshot switch re-highlights the bar and moves the knob",
+      x.api.P.get(K).p.value === 0.9 && on.length === 1 && on[0].textContent.indexOf("2") === 0,
+      JSON.stringify([x.api.P.get(K).p.value, on.map((b) => b.textContent)]));
+  }
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

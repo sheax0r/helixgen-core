@@ -203,6 +203,25 @@ def test_decode_structural_events():
         assert events.decode_event(addr, [1, 2, 3]) == ("reread", addr)
 
 
+def test_decode_batched_param_vals(s=None):
+    import msgpack
+    deltas = [[0, 1, 0, 1, 0.5], [0, 2, 0, 2, 0.25]]
+    # the subscriber already msgpack-decodes a blob arg into this nested list
+    assert events.decode_event("/setBatchedParamVals", [257, 945, deltas]) == \
+        ("batch", [(0, 1, 0, 1, 0.5), (0, 2, 0, 2, 0.25)])
+    # defensive: a still-raw msgpack blob is decoded here too
+    blob = msgpack.packb(deltas, use_bin_type=True)
+    assert events.decode_event("/setBatchedParamVals", [257, 945, blob]) == \
+        ("batch", [(0, 1, 0, 1, 0.5), (0, 2, 0, 2, 0.25)])
+    # anything that is not a 5-tuple array -> the safety-net re-read
+    assert events.decode_event("/setBatchedParamVals", [1, 2, b"x"]) == \
+        ("reread", "/setBatchedParamVals")
+    assert events.decode_event("/setBatchedParamVals", [1, 2, 3]) == \
+        ("reread", "/setBatchedParamVals")
+    assert events.decode_event("/setBatchedParamVals", [1, 2, [[0, 1, 0]]]) == \
+        ("reread", "/setBatchedParamVals")
+
+
 def test_decode_dirty_flag_property_from_the_wire_blob():
     # on the wire the property is a `lavppgsm` value blob, not a dict
     from helixgen.device import settings
@@ -691,6 +710,63 @@ def test_values_that_preceded_a_reread_in_the_same_batch_are_not_replayed(s):
                      _ev("/activateSnapshot", 1, 79, 2)])
     assert _value(s, 0, 1, 1) == pytest.approx(0.3)       # what the device holds
     assert s.block(0, 1)["enabled"] is True
+
+
+def _batched(*deltas):
+    # the undo-history array a snapshot recall broadcasts right after
+    # /activateSnapshot, already msgpack-decoded (as the subscriber hands it)
+    return [list(d) for d in deltas]
+
+
+def test_snapshot_batch_applies_deltas_in_place_without_a_reread(s):
+    v, r, reads = s.version, s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 2),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 1, 0, 1, 0.9), (0, 2, 0, DRIVE, 0.1)))])
+    assert s.client.reads == reads          # no device re-read
+    assert s.rev == r                        # no page re-render
+    st = s.public_state()
+    assert st["snapshot"] == 2
+    assert _value(s, 0, 1, 1) == pytest.approx(0.9)
+    assert _value(s, 0, 2, DRIVE) == pytest.approx(0.1)
+    msgs = _drain(s, v, r)[2]
+    assert any(m["t"] == "meta" and m["snapshot"] == 2 for m in msgs)
+    moved = {(m["path"], m["block"], m["pid"], round(m["value"], 3))
+             for m in msgs if m["t"] == "param"}
+    assert moved == {(0, 1, 1, 0.9), (0, 2, DRIVE, 0.1)}
+
+
+def test_snapshot_batch_skips_sub_nonzero_params(s):
+    # dual-cab 2nd model / harness params (sub>0, hgc-5gh) have no page control:
+    # skipped, the modeled delta still applies in place, no re-read
+    reads = s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 1),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 2, 1, 99, 0.9), (0, 1, 0, 1, 0.42)))])
+    assert s.client.reads == reads
+    assert _value(s, 0, 1, 1) == pytest.approx(0.42)
+    assert s.public_state()["snapshot"] == 1
+
+
+def test_snapshot_batch_falls_back_to_reread_for_an_unknown_control(s):
+    # a sub==0 delta naming a control we do not model -> take the safety-net
+    # full re-read + re-render rather than leave stale values on screen
+    r, reads = s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 1),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 9, 0, 1, 0.9)))])    # no block 9
+    assert s.client.reads == reads + 1       # fell back to a re-read
+    assert s.rev == r + 1                     # and a re-render
+
+
+def test_snapshot_without_a_batch_falls_back_to_reread(s):
+    # /activateSnapshot alone (its batch undecodable or not yet here) still
+    # re-reads, as before — never a silent stale switch
+    r, reads = s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 3),
+                     _ev("/setBatchedParamVals", 1, 3, b"x")])
+    assert s.client.reads == reads + 1
+    assert s.rev == r + 1
 
 
 def test_own_echo_after_a_foreign_change_is_what_the_device_holds(s):
