@@ -4972,14 +4972,22 @@ def device_link_key(app, timeout, keep_debug_app, as_json):
               help="Local port for the page (bound to 127.0.0.1 only). "
                    "0 picks a free port.")
 @click.option("--no-open", is_flag=True, default=False,
-              help="Do not open the page in a browser; just print its URL.")
+              help="Do not open the page at all; just print its URL (for "
+                   "agents).")
+@click.option("--browser", "force_browser", is_flag=True, default=False,
+              help="Open the page as a tab in your DEFAULT browser instead of "
+                   "a standalone app window. By default, if a Chromium-family "
+                   "browser (Chrome/Edge/Brave/Chromium) is installed, the "
+                   "page opens in a chromeless app window with its own "
+                   "profile (no 127.0.0.1 URL in your browser history), and "
+                   "closing that window stops the editor.")
 @click.option("--no-lock", "no_lock", is_flag=True, default=False,
               help="Do not take the advisory `editbuffer` device lock around "
                    "the page's writes (DANGEROUS: the page may then write "
                    "while another helixgen process is driving the device).")
 @_device_option
-def device_live(http_port: int, no_open: bool, no_lock: bool,
-                ip: str, port: int) -> None:
+def device_live(http_port: int, no_open: bool, force_browser: bool,
+                no_lock: bool, ip: str, port: int) -> None:
     """Open the LIVE CHAIN EDITOR: a local browser page for dialing the ACTIVE
     tone by hand.
 
@@ -4993,6 +5001,13 @@ def device_live(http_port: int, no_open: bool, no_lock: bool,
     should start this in the BACKGROUND, give the user the URL, and stop
     there: the human turns the knobs, and nothing about the page needs
     narrating.
+
+    OPENING: by default the page opens in a standalone, chromeless app window
+    (its own isolated profile, so no 127.0.0.1 URL clutters the user's browser
+    history) when a Chromium-family browser is installed; closing that window
+    stops the editor. Pass --browser to open it as a tab in the default
+    browser instead, or --no-open to open nothing and just print the URL (what
+    an agent running in the background should use).
 
     EVERY CONTROL WRITES TO THE DEVICE IMMEDIATELY — to the live edit buffer
     of whatever tone is loaded, heard at once. Values are sent in the param's
@@ -5039,18 +5054,25 @@ def device_live(http_port: int, no_open: bool, no_lock: bool,
 
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.liveedit import server as _server
+    from helixgen.liveedit import window as _window
     from helixgen.liveedit.lease import EditLease
     from helixgen.liveedit.session import LiveError, LiveSession
 
     HelixClient, HelixError = _client()
 
-    def _ready(url: str) -> None:
+    def _ready(url: str, srv=None) -> None:
         click.echo(f"live editor: {url}")
         click.echo("every control on the page writes to the device; "
                    "Ctrl-C here stops the editor.")
         sys.stdout.flush()
-        if not no_open:
-            webbrowser.open(url)
+        if no_open:
+            return
+        if not force_browser:
+            # a chromeless app window; closing it stops the server
+            on_exit = srv.shutdown if srv is not None else None
+            if _window.launch(url, on_exit=on_exit) is not None:
+                return
+        webbrowser.open(url)              # --browser, or no Chromium installed
 
     def _term(*_a):
         raise KeyboardInterrupt

@@ -26,7 +26,7 @@ class _Sub:
         _Sub.made.append((ip, tuple(ports)))
 
 
-def _run(monkeypatch, args, client=None):
+def _run(monkeypatch, args, client=None, window_launch=None):
     fake = client or FakeClient()
     seen = {}
     _Sub.made = []
@@ -40,40 +40,62 @@ def _run(monkeypatch, args, client=None):
     monkeypatch.setattr("helixgen.liveedit.server.serve", serve)
     monkeypatch.setattr("helixgen.device.subscribe.HelixSubscriber", _Sub)
     opened = []
+    launched = []
     monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+
+    def _launch(url, *, on_exit=None, binary=None):
+        launched.append(url)
+        # default stub: an app window opened, so no browser fallback
+        return object() if window_launch is None else window_launch(url)
+    monkeypatch.setattr("helixgen.liveedit.window.launch", _launch)
     r = CliRunner().invoke(cli, ["device", "live", "--ip", "10.0.0.9", *args])
-    return r, fake, seen, opened
+    return r, fake, seen, opened, launched
 
 
 def test_live_loads_once_and_serves_on_localhost(monkeypatch):
-    r, fake, seen, opened = _run(monkeypatch, ["--no-open"])
+    r, fake, seen, opened, launched = _run(monkeypatch, ["--no-open"])
     assert r.exit_code == 0, r.output
     assert fake.reads == 1                               # ONE edit-buffer read
     assert seen["host"] == "127.0.0.1" and seen["port"] == 8765
     assert seen["session"].liveness is True
     assert _Sub.made == [("10.0.0.99", (2001, 2003))]    # the client's resolved ip
     assert "live editor: http://127.0.0.1:8765/" in r.output
-    assert opened == []
+    assert opened == [] and launched == []               # --no-open opens nothing
 
 
-def test_live_opens_the_browser_by_default_and_takes_a_port(monkeypatch):
-    r, fake, seen, opened = _run(monkeypatch, ["--port-http", "9001"])
+def test_live_opens_an_app_window_by_default_and_takes_a_port(monkeypatch):
+    r, fake, seen, opened, launched = _run(monkeypatch, ["--port-http", "9001"])
     assert r.exit_code == 0, r.output
     assert seen["port"] == 9001
-    assert opened == ["http://127.0.0.1:9001/"]
+    assert launched == ["http://127.0.0.1:9001/"]        # app window, not a tab
+    assert opened == []                                  # default browser untouched
+
+
+def test_live_browser_flag_forces_the_default_browser(monkeypatch):
+    r, fake, seen, opened, launched = _run(monkeypatch, ["--browser"])
+    assert r.exit_code == 0, r.output
+    assert opened == ["http://127.0.0.1:8765/"] and launched == []
+
+
+def test_live_falls_back_to_the_browser_without_a_chromium(monkeypatch):
+    r, fake, seen, opened, launched = _run(
+        monkeypatch, [], window_launch=lambda url: None)  # no app window available
+    assert r.exit_code == 0, r.output
+    assert launched == ["http://127.0.0.1:8765/"]         # tried the app window
+    assert opened == ["http://127.0.0.1:8765/"]           # then fell back
 
 
 def test_live_uses_the_write_lease_unless_no_lock(monkeypatch):
-    r, _, seen, _ = _run(monkeypatch, ["--no-open"])
+    r, _, seen, _, _ = _run(monkeypatch, ["--no-open"])
     assert seen["session"].lease.enabled is True
-    r, _, seen, _ = _run(monkeypatch, ["--no-open", "--no-lock"])
+    r, _, seen, _, _ = _run(monkeypatch, ["--no-open", "--no-lock"])
     assert seen["session"].lease.enabled is False
 
 
 def test_live_fails_cleanly_when_the_device_cannot_be_read(monkeypatch):
     c = FakeClient()
     c.fail = HelixError("no reply from 10.0.0.9")
-    r, _, seen, _ = _run(monkeypatch, ["--no-open"], client=c)
+    r, _, seen, _, _ = _run(monkeypatch, ["--no-open"], client=c)
     assert r.exit_code != 0
     assert "no reply" in r.output and "Traceback" not in r.output
     assert "session" not in seen                         # never started serving

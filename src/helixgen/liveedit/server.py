@@ -232,13 +232,15 @@ def run_subscriber(server, subscriber, *, session: LiveSession = None,
 
 def serve(session: LiveSession, host: str = "127.0.0.1", port: int = 8765,
           subscriber=None, on_ready=None) -> None:
-    """Serve until interrupted. ``on_ready(url)`` is called once listening."""
+    """Serve until interrupted. ``on_ready(url, srv)`` is called once
+    listening; ``srv.shutdown()`` from another thread stops it (how the app
+    window closing stops the server)."""
     srv = make_server(session, host, port)
     if subscriber is not None:
         threading.Thread(target=run_subscriber, args=(srv, subscriber),
                          daemon=True).start()
     if on_ready is not None:
-        on_ready(f"http://127.0.0.1:{srv.server_address[1]}/")
+        on_ready(f"http://127.0.0.1:{srv.server_address[1]}/", srv)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
