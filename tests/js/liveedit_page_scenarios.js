@@ -163,6 +163,10 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S19 matching knobs in the active amp light up", hl("0/2/1").contains("hl-on") && hl("0/2/2").contains("hl-on"),
       cn("0/2/1") + " | " + cn("0/2/2"));
     ok("S19 the direction hint is set (amp Drive down)", x.knobOf("0/2/1").root.dataset.hldir === "↓", x.knobOf("0/2/1").root.dataset.hldir);
+    ok("S19 a turn-down knob gets hl-down, not hl-up (amp Drive)",
+      hl("0/2/1").contains("hl-down") && !hl("0/2/1").contains("hl-up"), cn("0/2/1"));
+    ok("S19 a turn-up knob gets hl-up, not hl-down (amp Mid)",
+      hl("0/2/2").contains("hl-up") && !hl("0/2/2").contains("hl-down"), cn("0/2/2"));
     ok("S19 a non-affected knob (reverb Mix) is de-emphasised, not lit",
       hl("0/3/1").contains("hl-off") && !hl("0/3/1").contains("hl-on"), cn("0/3/1"));
     ok("S19 a matching knob in a BYPASSED block is not lit",
@@ -173,7 +177,8 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     // clearing the box removes every highlight
     x.ids.adjsearch.value = ""; x.ids.adjsearch.fire("input");
     ok("S19 clearing the search removes all highlighting",
-      !hl("0/2/1").contains("hl-on") && !hl("0/2/1").contains("hl-off") && !hl("0/3/1").contains("hl-off"),
+      !hl("0/2/1").contains("hl-on") && !hl("0/2/1").contains("hl-down") && !hl("0/2/2").contains("hl-up")
+      && !hl("0/2/1").contains("hl-off") && !hl("0/3/1").contains("hl-off"),
       cn("0/2/1") + " | " + cn("0/3/1"));
   }
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
