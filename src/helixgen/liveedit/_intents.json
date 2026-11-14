@@ -1,0 +1,783 @@
+[
+ {
+  "id": "crunchier",
+  "label": "Crunchier",
+  "aliases": [
+   "crunchy",
+   "gritty",
+   "hairy",
+   "raw",
+   "dirty",
+   "filthy",
+   "gnarly",
+   "edge-of-breakup",
+   "bite",
+   "clean-with-hair"
+  ],
+  "meaning": "More low-order grit and pick-bite without full saturation; pedal-forward, amp back.",
+  "requires": [
+   "gain_source"
+  ],
+  "moves": [
+   {
+    "role": "drive_pedal",
+    "param": "Gain",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.4,
+    "reach": 0.6
+   },
+   {
+    "role": "amp",
+    "param": "Mid",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.6
+   }
+  ]
+ },
+ {
+  "id": "cleaner",
+  "label": "Cleaner",
+  "aliases": [
+   "clean",
+   "pristine",
+   "pure",
+   "clear-up-the-dirt"
+  ],
+  "meaning": "Less breakup; notes ring clear.",
+  "requires": [
+   "gain_source"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "drive_pedal",
+    "param": "Gain",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 1.0
+   }
+  ]
+ },
+ {
+  "id": "saturated",
+  "label": "More saturated",
+  "aliases": [
+   "saturated",
+   "singing",
+   "liquid",
+   "molten",
+   "sustain-y",
+   "heavy",
+   "high-gain",
+   "thick-lead"
+  ],
+  "meaning": "More gain compression and sustain; smeared overtones.",
+  "requires": [
+   "amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "boost",
+    "param": "Gain",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.8
+   }
+  ]
+ },
+ {
+  "id": "aggressive",
+  "label": "More aggressive",
+  "aliases": [
+   "aggressive",
+   "mean",
+   "brutal",
+   "tight",
+   "percussive-metal",
+   "djent",
+   "chuggy-tight"
+  ],
+  "meaning": "Fast, hard, controlled attack; metal rhythm feel.",
+  "requires": [
+   "gain_source",
+   "cab_or_amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.8
+   },
+   {
+    "role": "amp",
+    "param": "Mid",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.6
+   },
+   {
+    "role": "cab",
+    "param": "LowCut",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.6
+   },
+   {
+    "role": "gate",
+    "param": "Threshold",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.6
+   },
+   {
+    "role": "amp",
+    "param": "Presence",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.6
+   }
+  ]
+ },
+ {
+  "id": "vintage",
+  "label": "More vintage",
+  "aliases": [
+   "vintage",
+   "organic",
+   "tubey",
+   "spongy",
+   "sag-y",
+   "woody"
+  ],
+  "meaning": "Soft compressing power-amp feel instead of stiff preamp gain.",
+  "requires": [
+   "amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Master",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.8
+   },
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 0.6
+   },
+   {
+    "role": "amp",
+    "param": "Presence",
+    "dir": -1,
+    "onset": 0.4,
+    "reach": 0.6
+   },
+   {
+    "role": "cab",
+    "param": "HighCut",
+    "dir": -1,
+    "onset": 0.5,
+    "reach": 0.6
+   }
+  ]
+ },
+ {
+  "id": "warmer",
+  "label": "Warmer",
+  "aliases": [
+   "warm",
+   "dark",
+   "round",
+   "mellow",
+   "smooth-top",
+   "fat-top-off"
+  ],
+  "meaning": "Less high-frequency energy; rounder.",
+  "requires": [
+   "cab_or_amp"
+  ],
+  "moves": [
+   {
+    "role": "cab",
+    "param": "HighCut",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 0.7
+   },
+   {
+    "role": "amp",
+    "param": "Treble",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 0.7
+   },
+   {
+    "role": "amp",
+    "param": "Presence",
+    "dir": -1,
+    "onset": 0.4,
+    "reach": 0.7
+   },
+   {
+    "role": "amp",
+    "param": "Bass",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.4
+   }
+  ]
+ },
+ {
+  "id": "brighter",
+  "label": "Brighter",
+  "aliases": [
+   "bright",
+   "crisp",
+   "airy",
+   "glassy",
+   "zingy",
+   "cutting-top",
+   "sparkle"
+  ],
+  "meaning": "More top-end sheen and air.",
+  "requires": [
+   "cab_or_amp"
+  ],
+  "moves": [
+   {
+    "role": "cab",
+    "param": "HighCut",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.7
+   },
+   {
+    "role": "amp",
+    "param": "Treble",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.7
+   },
+   {
+    "role": "amp",
+    "param": "Presence",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.7
+   }
+  ]
+ },
+ {
+  "id": "cut",
+  "label": "More cut",
+  "aliases": [
+   "cutting",
+   "forward",
+   "vocal",
+   "present",
+   "singing-mids",
+   "honky"
+  ],
+  "meaning": "Pokes through the mix; mids first, gain last.",
+  "requires": [
+   "amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Mid",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 1.0
+   }
+  ]
+ },
+ {
+  "id": "scooped",
+  "label": "More scooped",
+  "aliases": [
+   "scooped",
+   "modern",
+   "hi-fi",
+   "mid-less",
+   "metal-scoop"
+  ],
+  "meaning": "Big alone, mid-gutted; inverse of cut.",
+  "requires": [
+   "amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Mid",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "amp",
+    "param": "Bass",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.6
+   },
+   {
+    "role": "amp",
+    "param": "Treble",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.6
+   }
+  ]
+ },
+ {
+  "id": "thicker",
+  "label": "Thicker",
+  "aliases": [
+   "thick",
+   "fat",
+   "full",
+   "beefy",
+   "meaty",
+   "bold",
+   "big"
+  ],
+  "meaning": "More body and weight.",
+  "requires": [
+   "amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Bass",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.8
+   },
+   {
+    "role": "amp",
+    "param": "Mid",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.6
+   },
+   {
+    "role": "cab",
+    "param": "Level",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.5
+   }
+  ]
+ },
+ {
+  "id": "thinner",
+  "label": "Thinner",
+  "aliases": [
+   "thin",
+   "lean",
+   "tight-bottom",
+   "wiry"
+  ],
+  "meaning": "Less body; cut the flub.",
+  "requires": [
+   "cab_or_amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Bass",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 0.8
+   },
+   {
+    "role": "cab",
+    "param": "LowCut",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.7
+   }
+  ]
+ },
+ {
+  "id": "boomier",
+  "label": "Boomier",
+  "aliases": [
+   "boomy",
+   "bassy",
+   "subby",
+   "chunky-low",
+   "chug"
+  ],
+  "meaning": "More sub and low weight.",
+  "requires": [
+   "cab_or_amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Bass",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.8
+   },
+   {
+    "role": "cab",
+    "param": "LowCut",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 0.8
+   }
+  ]
+ },
+ {
+  "id": "clearer",
+  "label": "Clearer",
+  "aliases": [
+   "clear-mud",
+   "defined",
+   "articulate",
+   "un-congested",
+   "tighten-mud"
+  ],
+  "meaning": "Fix low-mid congestion without losing body.",
+  "requires": [
+   "cab_or_amp"
+  ],
+  "moves": [
+   {
+    "role": "cab",
+    "param": "LowCut",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.5
+   },
+   {
+    "role": "amp",
+    "param": "Bass",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 0.5
+   },
+   {
+    "role": "cab",
+    "param": "HighCut",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.4
+   },
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.5,
+    "reach": 0.5
+   }
+  ]
+ },
+ {
+  "id": "compressed",
+  "label": "More compressed",
+  "aliases": [
+   "compressed",
+   "even",
+   "polished",
+   "squished",
+   "glued",
+   "sustain"
+  ],
+  "meaning": "Evened dynamics and polish without more dirt.",
+  "requires": [
+   "compressor"
+  ],
+  "moves": [
+   {
+    "role": "comp",
+    "param": "PeakReduction",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "comp",
+    "param": "Gain",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.6
+   }
+  ]
+ },
+ {
+  "id": "dynamic",
+  "label": "More dynamic",
+  "aliases": [
+   "dynamic",
+   "open",
+   "breathing",
+   "raw-feel",
+   "responsive",
+   "lively"
+  ],
+  "meaning": "Let pick dynamics through.",
+  "requires": [
+   "compressor_or_gain"
+  ],
+  "moves": [
+   {
+    "role": "comp",
+    "param": "PeakReduction",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.4,
+    "reach": 0.6
+   }
+  ]
+ },
+ {
+  "id": "punchier",
+  "label": "Punchier",
+  "aliases": [
+   "punchy",
+   "percussive",
+   "snappy",
+   "spanky",
+   "tight-attack"
+  ],
+  "meaning": "Harder transient and pick attack.",
+  "requires": [
+   "cab_or_amp"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Presence",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.7
+   },
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.4,
+    "reach": 0.5
+   }
+  ]
+ },
+ {
+  "id": "quieter",
+  "label": "Quieter",
+  "aliases": [
+   "quiet",
+   "less-noise",
+   "less-hiss",
+   "gated",
+   "clean-up",
+   "tame-the-squeal"
+  ],
+  "meaning": "Reduce hum, hiss and string scrape; gain multiplies noise.",
+  "requires": [
+   "gate_or_gain"
+  ],
+  "moves": [
+   {
+    "role": "gate",
+    "param": "Threshold",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 0.8
+   },
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.4,
+    "reach": 0.6
+   }
+  ]
+ },
+ {
+  "id": "ambient",
+  "label": "More ambient",
+  "aliases": [
+   "ambient",
+   "spacious",
+   "washy",
+   "lush",
+   "atmospheric",
+   "dreamy",
+   "wet",
+   "huge",
+   "cavernous"
+  ],
+  "meaning": "More space and bloom.",
+  "requires": [
+   "time_fx"
+  ],
+  "moves": [
+   {
+    "role": "reverb",
+    "param": "Mix",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "delay",
+    "param": "Mix",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "delay",
+    "param": "Feedback",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.7
+   }
+  ]
+ },
+ {
+  "id": "drier",
+  "label": "Drier",
+  "aliases": [
+   "dry",
+   "direct",
+   "intimate",
+   "in-your-face",
+   "tight-in-time"
+  ],
+  "meaning": "Less wash; immediate.",
+  "requires": [
+   "time_fx"
+  ],
+  "moves": [
+   {
+    "role": "reverb",
+    "param": "Mix",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "delay",
+    "param": "Mix",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 1.0
+   }
+  ]
+ },
+ {
+  "id": "droney",
+  "label": "Droney",
+  "aliases": [
+   "droney",
+   "hypnotic",
+   "wall-of-sound",
+   "bloom",
+   "shoegaze-wall"
+  ],
+  "meaning": "Low gain keeps string separation so ringing overtones stack into a wall.",
+  "requires": [
+   "gain_source",
+   "time_fx"
+  ],
+  "moves": [
+   {
+    "role": "amp",
+    "param": "Drive",
+    "dir": -1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "amp",
+    "param": "Mid",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.6
+   },
+   {
+    "role": "delay",
+    "param": "Mix",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.8
+   },
+   {
+    "role": "reverb",
+    "param": "Mix",
+    "dir": 1,
+    "onset": 0.5,
+    "reach": 0.8
+   }
+  ]
+ },
+ {
+  "id": "swirly",
+  "label": "More swirly",
+  "aliases": [
+   "swirly",
+   "watery",
+   "shimmery",
+   "lush-chorus",
+   "phasey",
+   "chewy"
+  ],
+  "meaning": "Movement and shimmer in the tone.",
+  "requires": [
+   "modulation"
+  ],
+  "moves": [
+   {
+    "role": "modulation",
+    "param": "Mix",
+    "dir": 1,
+    "onset": 0.0,
+    "reach": 1.0
+   },
+   {
+    "role": "modulation",
+    "param": "Depth",
+    "dir": 1,
+    "onset": 0.4,
+    "reach": 0.8
+   }
+  ]
+ }
+]

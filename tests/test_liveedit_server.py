@@ -67,6 +67,16 @@ def test_state_endpoint(srv):
     assert j["paths"][0]["segments"][1]["block"]["name"] == "Scream 808 Mono"
 
 
+def test_intents_endpoint_serves_the_adjective_map(srv):
+    code, ctype, data = req(srv[2], "GET", "/intents")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert "crunchier" in [i["id"] for i in j["intents"]]
+    assert "crunchy" in [a.lower() for a in j["aliases"]]       # type-ahead term
+    crunch = next(i for i in j["intents"] if i["id"] == "crunchier")
+    assert {"role", "param", "dir"} == set(crunch["moves"][0])   # which-params only
+
+
 def test_param_write(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/param",

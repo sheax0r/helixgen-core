@@ -80,7 +80,7 @@ include = ["helixgen*"]
 "helixgen" = ["assets/*.wav"]
 # The live chain editor's page (`helixgen device live`): one self-contained
 # HTML file served from the package directory. 0.60.0 shipped without it.
-"helixgen.liveedit" = ["page.html"]
+"helixgen.liveedit" = ["page.html", "_intents.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

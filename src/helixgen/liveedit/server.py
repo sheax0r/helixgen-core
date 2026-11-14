@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from helixgen.liveedit import intents
 from helixgen.liveedit.session import LiveError, LiveSession
 
 _PAGE = Path(__file__).with_name("page.html")
@@ -120,6 +121,10 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 self._send(200, _PAGE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/state":
                 self._json(200, session.public_state())
+            elif path == "/intents":
+                # static adjective -> affected-knob map + alias list for the
+                # search box; the page does the role-matching client-side
+                self._json(200, intents.payload())
             elif path == "/presets":
                 try:
                     self._json(200, session.list_presets())
