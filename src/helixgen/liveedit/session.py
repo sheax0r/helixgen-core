@@ -38,6 +38,7 @@ SNAPSHOT_SETTLE = 1.0
 DEAD_AFTER = 6.0      # s of total silence on the PUB streams = disconnected
 RETRY_EVERY = 3.0     # s between reconnect attempts while disconnected
 _OWN_MAX = 256        # own write echoes remembered
+_SEQ_MOD = 1 << 32    # the 2001 header sequence is a uint32; wraps at 2**32
 
 
 class LiveError(Exception):
@@ -109,6 +110,7 @@ class LiveSession:
         self._snapshot_reread_at = -math.inf
         self._last_event: Optional[float] = None
         self._last_retry = -math.inf
+        self._seq: Dict[int, int] = {}   # port -> last 2001 header sequence seen
 
     # --- state (all under cond) ---------------------------------------------
     def _meta(self) -> dict:
@@ -463,6 +465,95 @@ class LiveSession:
                 self._emit_meta()
         return {"saved": pre.get("name"), "cid": cid}
 
+    # --- page-initiated switching ---------------------------------------------
+    def activate_snapshot(self, index: Any) -> dict:
+        """Recall a snapshot on the device (0-based, 0..7). Does NOT discard the
+        edit buffer, so the page prompts for nothing. No local state change is
+        made here: the device answers with ``/activateSnapshot`` +
+        ``/setBatchedParamVals``, which :meth:`handle_events` applies in place
+        (hgc-9qd), falling back to a re-read only when the batch cannot be
+        decoded."""
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            raise LiveError("snapshot index must be an integer") from None
+        if not 0 <= i <= 7:
+            raise LiveError("snapshot index out of range 0..7")
+        with self.devlock:
+            with self.cond:
+                self._require_up()
+            self.lease.ensure()
+            try:
+                self.client.activate_snapshot(i)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not activate the snapshot: {e}",
+                                status=502) from e
+            finally:
+                self.lease.done()
+        return {"snapshot": i}
+
+    def load_preset(self, cid: Any) -> dict:
+        """Load a preset on the device by cid — a user-pool preset, or a setlist
+        REFERENCE cid (what :meth:`list_presets` hands the page for a setlist
+        entry; the device makes that reference active, see
+        :meth:`HelixClient.resolve_pool_cid`). This DISCARDS the live edit
+        buffer; the page guards unsaved work before calling it. The device's
+        ``/setEditBuffer`` + ``/loadContentRef`` push re-reads and re-renders
+        the page."""
+        try:
+            c = int(cid)
+        except (TypeError, ValueError):
+            raise LiveError("preset cid must be an integer") from None
+        with self.devlock:
+            with self.cond:
+                self._require_up()
+            self.lease.ensure()
+            try:
+                ok = self.client.load_preset(c)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not load the preset: {e}",
+                                status=502) from e
+            finally:
+                self.lease.done()
+        if not ok:
+            raise LiveError("the device refused the preset load", status=502)
+        return {"cid": c}
+
+    def list_presets(self) -> dict:
+        """The device's loadable presets, for the page's preset picker: each
+        user setlist with the presets it references, then the user pool. A
+        setlist entry's ``cid`` is its REFERENCE cid (what :meth:`load_preset`
+        loads); ``active`` is the cid currently loaded, so the page can mark it.
+
+        Read-only, serialized on ``devlock`` (the client's socket is not
+        thread-safe) — it does NOT take the write lease: browsing presets must
+        not lock other verbs out of the device. Fetched lazily when the picker
+        is first opened, never at page load."""
+        def _entries(items):
+            return [{"cid": m["cid_"], "name": m.get("name") or "(unnamed)"}
+                    for m in items if m.get("cid_") is not None]
+
+        with self.devlock:
+            try:
+                pool = self.client.list_presets()
+                groups = []
+                for sl in self.client.list_setlists():
+                    scid = sl.get("cid_")
+                    if scid is None:
+                        continue
+                    groups.append({"name": sl.get("name") or "Setlist",
+                                   "presets": _entries(self.client.list_container(scid))})
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not list the device's presets: {e}",
+                                status=502) from e
+        with self.cond:
+            active = self._preset.get("cid")
+        groups.append({"name": "Pool", "presets": _entries(pool)})
+        return {"active": active, "groups": groups}
+
     # --- 2001 events ----------------------------------------------------------------
     def _own_echo(self, seq: int, key: tuple, value: Any) -> Optional[str]:
         """Is this event the echo of one of OUR writes?
@@ -535,6 +626,54 @@ class LiveSession:
         elif kind == "dirty":
             self._set_dirty(action[1])
 
+    def _apply_snapshot_batch(self, index: Optional[int],
+                              deltas: List[tuple]) -> bool:
+        """Apply a snapshot recall's ``/setBatchedParamVals`` deltas in place:
+        move the active-snapshot indicator to ``index`` (when known) and set
+        each changed param's value, with NO device read and NO page re-render
+        (the page gets ``meta`` + ``param`` messages, not a fresh structure).
+
+        Returns ``False`` — the caller then falls back to a full re-read — when
+        ``index`` is out of range or a ``sub == 0`` delta names a control this
+        page does not model, so a switch never leaves stale values on screen.
+        Deltas with ``sub != 0`` (a dual-cab second model or harness param,
+        hgc-5gh — no known live-write address) are skipped, not a failure."""
+        with self.cond:
+            resolved = []
+            for dsp, block, sub, pid, value in deltas:
+                if sub != 0:
+                    continue
+                p = self._params.get((dsp, block, pid))
+                if p is None:
+                    return False
+                resolved.append((p, dsp, block, pid, value))
+            if index is not None:
+                if not (isinstance(index, int) and 0 <= index <= 7):
+                    return False
+                if self._chain.get("snapshot") != index:
+                    self._chain["snapshot"] = index
+                    self._emit_meta()
+            for p, dsp, block, pid, value in resolved:
+                if _close(p["value"], value):
+                    continue
+                p["value"] = value
+                self._emit({"t": "param", "path": dsp, "block": block,
+                            "pid": pid, "value": value})
+        return True
+
+    def _seq_gap(self, port: int, seq: Optional[int]) -> bool:
+        """Record this frame's 2001 header sequence and report whether it skipped
+        one. The first frame on a stream (no prior seq) is never a gap; a normal
+        consecutive frame (``seq == last + 1``) is not; a uint32 wraparound
+        (``0xFFFFFFFF`` -> ``0``) is continuity. Updating ``_seq`` to the latest
+        on every frame makes a jump fire at most once: the next consecutive
+        frame is measured against the new value, not the pre-gap one."""
+        if seq is None:
+            return False
+        last = self._seq.get(port)
+        self._seq[port] = seq
+        return last is not None and (seq - last) % _SEQ_MOD != 1
+
     def handle_events(self, events: list) -> None:
         """Digest one poll batch from the device's PUB stream(s). Value changes
         apply in place; however many structural events a batch holds, at most
@@ -542,23 +681,34 @@ class LiveSession:
         Never raises: a failed re-read marks the session disconnected."""
         if events:
             self._last_event = self._clock()
-        blob = ref = None
+        blob = ref = batch = None
+        snap_index: Optional[int] = None
         reread = snapshot = identity = False
         late: List[tuple] = []
         for ev in events:
-            if getattr(ev, "port", 2001) != 2001:
+            port = getattr(ev, "port", 2001)
+            if port != 2001:
                 continue
+            if self._seq_gap(port, getattr(ev, "seq", None)):
+                # frames were dropped (the SUB socket reconnected silently, or a
+                # frame was unparseable) — whatever changed while we were deaf is
+                # not in our state. Reconcile with the same full read the
+                # disconnect-return uses, rather than wait for a per-control event.
+                reread = identity = True
             action = decode_event(ev.addr, ev.args)
             if action is None:
                 continue
             kind = action[0]
             if kind == "editbuffer":
                 blob, ref, reread, late = action[1], None, False, []
-                snapshot = False
+                snapshot, batch, snap_index = False, None, None
             elif kind == "presetref":
                 ref = (action[1], action[2])
             elif kind == "snapshot":
-                reread = snapshot = True
+                snapshot = True
+                snap_index = action[1]
+            elif kind == "batch":
+                batch = action[1]
             elif kind == "reread":
                 straggler = (action[1] == "/setBatchedParamVals" and
                              self._clock() - self._snapshot_reread_at < SNAPSHOT_SETTLE)
@@ -586,6 +736,29 @@ class LiveSession:
                     self._emit_meta()
             if not same:
                 reread = identity = True   # another preset, and its blob never came
+        # A snapshot recall carries its param deltas (/setBatchedParamVals):
+        # apply them in place — no device read, no page re-render (hgc-9qd).
+        # Fall back to a full re-read when the deltas are missing, could not be
+        # decoded, or name a control we do not model, so a switch never shows
+        # stale values. (Snapshot-bypass state is NOT in the batch and still
+        # rides the re-read path — decoding it needs a hardware capture.)
+        if blob is None and (snapshot or batch is not None):
+            # Block-enable/bypass is NOT a param, so it can never ride inside the
+            # /setBatchedParamVals batch ([dsp,block,sub,pid,value]) — a snapshot
+            # that flips a block on/off sends that as a SEPARATE event (a
+            # ("bypass", ...) action here). The in-place path drops every non-
+            # "dirty" late action, so take it only when the batch applies cleanly
+            # AND the poll carries nothing but params + an optional dirty flag;
+            # anything else (a bypass, a straggler param) forces the proven
+            # full re-read rather than a silent stale switch.
+            droppable = all(a[0] == "dirty" for a in late)
+            if (droppable and batch is not None and self._apply_snapshot_batch(
+                    snap_index if snapshot else None, batch)):
+                # the deltas ARE the post-switch values; value events earlier
+                # in this poll are pre-switch and must not land on top
+                late = [a for a in late if a[0] == "dirty"]
+            else:
+                reread = True
         if reread:
             self._reread_quiet(identity=identity)
             if snapshot:

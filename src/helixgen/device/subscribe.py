@@ -49,11 +49,16 @@ except Exception:  # noqa: BLE001 - optional dep absent
 class Event(NamedTuple):
     """One decoded PUB message: which port it came from, its OSC address, and
     its already-decoded argument values (blob args msgpack-decoded, except a
-    ``_sbepgsm`` content blob which is left as raw ``bytes``)."""
+    ``_sbepgsm`` content blob which is left as raw ``bytes``).
+
+    ``seq`` is the 2001 header's per-stream sequence counter (``None`` on a
+    stream with no header, e.g. 2003). It is monotonically increasing modulo
+    2**32; a jump means frames were dropped — e.g. a silent SUB reconnect."""
 
     port: int
     addr: str
     args: list
+    seq: Optional[int] = None
 
 
 class HelixSubscriber:
@@ -167,9 +172,14 @@ class HelixSubscriber:
         i = raw.find(b"/")
         if i < 0:
             return None
+        # A 2001 frame carries a 12-byte header (version, sequence, length) in
+        # front of the OSC packet; its offset-4 field is a per-stream sequence
+        # counter. 2003 has no header (OSC starts at 0). The header's presence
+        # is exactly what pushes the first '/' to offset 12.
+        seq = struct.unpack_from(">I", raw, 4)[0] if i >= 12 else None
         addr, rargs, _ = parse_osc_message(raw, i)
         args = [self._decode_arg(t, v) for t, v in rargs]
-        return Event(port=port, addr=addr, args=args)
+        return Event(port=port, addr=addr, args=args, seq=seq)
 
     # -- poll --------------------------------------------------------------
     def poll(self, timeout: float = 0.5) -> List[Event]:

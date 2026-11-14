@@ -67,6 +67,16 @@ def test_state_endpoint(srv):
     assert j["paths"][0]["segments"][1]["block"]["name"] == "Scream 808 Mono"
 
 
+def test_intents_endpoint_serves_the_adjective_map(srv):
+    code, ctype, data = req(srv[2], "GET", "/intents")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert "crunchier" in [i["id"] for i in j["intents"]]
+    assert "crunchy" in [a.lower() for a in j["aliases"]]       # type-ahead term
+    crunch = next(i for i in j["intents"] if i["id"] == "crunchier")
+    assert {"role", "param", "dir"} == set(crunch["moves"][0])   # which-params only
+
+
 def test_param_write(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/param",
@@ -112,6 +122,56 @@ def test_save_and_reread(srv):
     reads = c.reads
     code, _, data = req(server, "POST", "/reread", {})
     assert code == 200 and _j(data) == {"ok": True} and c.reads == reads + 1
+
+
+def test_snapshot_switch_activates_on_the_device_under_the_lease(srv):
+    c, s, server = srv
+    ensured = s.lease.ensured
+    code, _, data = req(server, "POST", "/snapshot", {"index": 3})
+    assert code == 200 and _j(data) == {"ok": True, "snapshot": 3}
+    assert c.snapshots_activated == [3]
+    assert s.lease.ensured == ensured + 1 and s.lease.dones >= 1
+
+
+def test_snapshot_out_of_range_is_refused_and_writes_nothing(srv):
+    c, s, server = srv
+    assert req(server, "POST", "/snapshot", {"index": 9})[0] == 400
+    assert req(server, "POST", "/snapshot", {"index": "two"})[0] == 400
+    assert c.snapshots_activated == []
+
+
+def test_preset_load_resolves_the_cid_and_loads_under_the_lease(srv):
+    c, s, server = srv
+    ensured = s.lease.ensured
+    code, _, data = req(server, "POST", "/preset", {"cid": 1950})
+    assert code == 200 and _j(data) == {"ok": True, "cid": 1950}
+    assert c.loaded == [1950]              # the setlist REFERENCE cid, as sent
+    assert s.lease.ensured == ensured + 1 and s.lease.dones >= 1
+
+
+def test_preset_load_needs_an_integer_cid(srv):
+    c, s, server = srv
+    assert req(server, "POST", "/preset", {})[0] == 400
+    assert req(server, "POST", "/preset", {"cid": "x"})[0] == 400
+    assert c.loaded == []
+
+
+def test_preset_list_groups_setlists_then_pool_with_the_active_cid(srv):
+    c, s, server = srv
+    code, ctype, data = req(server, "GET", "/presets")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert j["active"] == 1863          # Venom is loaded in the fixture
+    assert [g["name"] for g in j["groups"]] == ["Rock", "Pool"]
+    assert j["groups"][0]["presets"] == [{"cid": 1950, "name": "Venom Live"}]
+    assert j["groups"][1]["presets"] == [{"cid": 1863, "name": "Venom"}]
+
+
+def test_preset_list_reports_a_device_read_failure_as_502(srv):
+    c, s, server = srv
+    c.fail = HelixError("timeout")
+    code, _, data = req(server, "GET", "/presets")
+    assert code == 502 and "error" in _j(data)
 
 
 def test_bad_requests_are_400_and_write_nothing(srv):

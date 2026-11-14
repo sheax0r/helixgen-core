@@ -46,6 +46,13 @@ class FakeClient:
         self.pool_of = {}        # setlist reference cid -> pool preset cid
         self.on_read = None      # hooks: run in the middle of a device call
         self.on_write = None
+        self.snapshots_activated = []
+        self.loaded = []
+        # what the preset picker lists: the user pool + one setlist of refs
+        self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
+        self.setlists = [{"cid_": 100, "name": "Rock", "cctp": 1001, "posi": 0}]
+        self.setlist_contents = {100: [{"cid_": 1950, "name": "Venom Live",
+                                        "cctp": 1003, "posi": 0}]}
 
     def _next(self):
         if self.fail is not None:
@@ -105,6 +112,31 @@ class FakeClient:
         self._next()
         self.saves.append(cid)
         return self.ack
+
+    def activate_snapshot(self, index):
+        self._next()
+        self.snapshots_activated.append(int(index))
+        return True
+
+    def load_preset(self, cid):
+        self._next()
+        self.loaded.append(int(cid))
+        return self.ack
+
+    def list_presets(self, container=-2, *, strict=False):
+        if self.fail is not None:
+            raise self.fail
+        return [dict(m) for m in self.pool_presets]
+
+    def list_setlists(self, *, strict=False):
+        if self.fail is not None:
+            raise self.fail
+        return [dict(m) for m in self.setlists]
+
+    def list_container(self, cid, *, strict=False):
+        if self.fail is not None:
+            raise self.fail
+        return [dict(m) for m in self.setlist_contents.get(cid, [])]
 
 
 class FakeLease:
@@ -169,6 +201,25 @@ def test_decode_structural_events():
     # things that change the buffer in ways we do not model -> re-read
     for addr in ("/setModelWithMID", "/setSnapshotBypassState", "/setBatchedParamVals"):
         assert events.decode_event(addr, [1, 2, 3]) == ("reread", addr)
+
+
+def test_decode_batched_param_vals(s=None):
+    import msgpack
+    deltas = [[0, 1, 0, 1, 0.5], [0, 2, 0, 2, 0.25]]
+    # the subscriber already msgpack-decodes a blob arg into this nested list
+    assert events.decode_event("/setBatchedParamVals", [257, 945, deltas]) == \
+        ("batch", [(0, 1, 0, 1, 0.5), (0, 2, 0, 2, 0.25)])
+    # defensive: a still-raw msgpack blob is decoded here too
+    blob = msgpack.packb(deltas, use_bin_type=True)
+    assert events.decode_event("/setBatchedParamVals", [257, 945, blob]) == \
+        ("batch", [(0, 1, 0, 1, 0.5), (0, 2, 0, 2, 0.25)])
+    # anything that is not a 5-tuple array -> the safety-net re-read
+    assert events.decode_event("/setBatchedParamVals", [1, 2, b"x"]) == \
+        ("reread", "/setBatchedParamVals")
+    assert events.decode_event("/setBatchedParamVals", [1, 2, 3]) == \
+        ("reread", "/setBatchedParamVals")
+    assert events.decode_event("/setBatchedParamVals", [1, 2, [[0, 1, 0]]]) == \
+        ("reread", "/setBatchedParamVals")
 
 
 def test_decode_dirty_flag_property_from_the_wire_blob():
@@ -338,6 +389,23 @@ def test_busy_refusal_tells_the_page_what_to_show(s):
     with pytest.raises(LiveError) as e:
         s.set_bypass(0, 1, False)
     assert e.value.status == 409 and e.value.value is True
+
+
+def test_snapshot_and_preset_are_refused_while_another_process_holds_the_device(s):
+    s.lease.busy = "locked by agent-x"
+    for call in (lambda: s.activate_snapshot(2), lambda: s.load_preset(1950)):
+        with pytest.raises(LiveError) as e:
+            call()
+        assert e.value.status == 409 and "agent-x" in str(e.value)
+    assert s.client.snapshots_activated == [] and s.client.loaded == []
+
+
+def test_preset_load_device_failure_marks_disconnected(s):
+    s.client.fail = HelixError("connection lost")
+    with pytest.raises(LiveError) as e:
+        s.load_preset(1950)
+    assert e.value.status == 502
+    assert s.public_state()["connected"] is False
 
 
 def test_page_writes_carry_the_writers_id_so_it_can_skip_its_own(s):
@@ -644,6 +712,77 @@ def test_values_that_preceded_a_reread_in_the_same_batch_are_not_replayed(s):
     assert s.block(0, 1)["enabled"] is True
 
 
+def _batched(*deltas):
+    # the undo-history array a snapshot recall broadcasts right after
+    # /activateSnapshot, already msgpack-decoded (as the subscriber hands it)
+    return [list(d) for d in deltas]
+
+
+def test_snapshot_batch_applies_deltas_in_place_without_a_reread(s):
+    v, r, reads = s.version, s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 2),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 1, 0, 1, 0.9), (0, 2, 0, DRIVE, 0.1)))])
+    assert s.client.reads == reads          # no device re-read
+    assert s.rev == r                        # no page re-render
+    st = s.public_state()
+    assert st["snapshot"] == 2
+    assert _value(s, 0, 1, 1) == pytest.approx(0.9)
+    assert _value(s, 0, 2, DRIVE) == pytest.approx(0.1)
+    msgs = _drain(s, v, r)[2]
+    assert any(m["t"] == "meta" and m["snapshot"] == 2 for m in msgs)
+    moved = {(m["path"], m["block"], m["pid"], round(m["value"], 3))
+             for m in msgs if m["t"] == "param"}
+    assert moved == {(0, 1, 1, 0.9), (0, 2, DRIVE, 0.1)}
+
+
+def test_snapshot_batch_skips_sub_nonzero_params(s):
+    # dual-cab 2nd model / harness params (sub>0, hgc-5gh) have no page control:
+    # skipped, the modeled delta still applies in place, no re-read
+    reads = s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 1),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 2, 1, 99, 0.9), (0, 1, 0, 1, 0.42)))])
+    assert s.client.reads == reads
+    assert _value(s, 0, 1, 1) == pytest.approx(0.42)
+    assert s.public_state()["snapshot"] == 1
+
+
+def test_snapshot_batch_falls_back_to_reread_for_an_unknown_control(s):
+    # a sub==0 delta naming a control we do not model -> take the safety-net
+    # full re-read + re-render rather than leave stale values on screen
+    r, reads = s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 1),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 9, 0, 1, 0.9)))])    # no block 9
+    assert s.client.reads == reads + 1       # fell back to a re-read
+    assert s.rev == r + 1                     # and a re-render
+
+
+def test_snapshot_batch_with_a_bypass_change_rereads(s):
+    # a snapshot that flips a block on/off sends the enable as a SEPARATE event
+    # (/setBlockEnable) — it is NOT in the param batch. The in-place path would
+    # drop it, so a poll carrying a bypass action MUST fall back to a re-read
+    # (hgc-9qd review), not silently apply the batch and leave stale on/off.
+    r, reads = s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 2),
+                     _ev("/setBatchedParamVals", 1, 3,
+                         _batched((0, 1, 0, 1, 0.9))),
+                     _ev("/setBlockEnable", 1, 4, 0, 1, 0)])
+    assert s.client.reads == reads + 1       # fell back to a re-read
+    assert s.rev == r + 1                     # and a re-render
+
+
+def test_snapshot_without_a_batch_falls_back_to_reread(s):
+    # /activateSnapshot alone (its batch undecodable or not yet here) still
+    # re-reads, as before — never a silent stale switch
+    r, reads = s.rev, s.client.reads
+    s.handle_events([_ev("/activateSnapshot", 1, 2, 3),
+                     _ev("/setBatchedParamVals", 1, 3, b"x")])
+    assert s.client.reads == reads + 1
+    assert s.rev == r + 1
+
+
 def test_own_echo_after_a_foreign_change_is_what_the_device_holds(s):
     # stream order = device order: [hardware 0.70, then OUR 0.40]. Our ack was
     # processed first, so state went 0.40 -> 0.70; the echo must bring it back.
@@ -905,3 +1044,55 @@ def test_events_deferred_by_a_failed_write_still_apply(s):
     with pytest.raises(LiveError):
         s.set_param(0, 1, 1, 0.9)
     assert _value(s, 0, 1, 1) == pytest.approx(0.66)
+
+
+# --- 2001 sequence-gap reconciliation (hgc-0a0) ------------------------------
+# A silent SUB reconnect drops frames without any disconnect: the 2001 header's
+# per-stream sequence counter jumps. A jump means we missed changes, so we
+# reconcile with one full re-read. `s.load()` in the fixture leaves reads == 1.
+
+def _seqf(seq, addr="/ping", *args, port=2001):
+    return Event(port, addr, list(args), seq)
+
+
+def test_consecutive_sequences_do_not_reread(s):
+    s.handle_events([_seqf(5)])          # first frame: establishes the baseline
+    s.handle_events([_seqf(6), _seqf(7)])
+    assert s.client.reads == 1
+
+
+def test_first_frame_never_rereads(s):
+    s.handle_events([_seqf(100)])
+    assert s.client.reads == 1
+
+
+def test_a_sequence_jump_rereads_exactly_once(s):
+    s.handle_events([_seqf(5)])          # baseline
+    s.handle_events([_seqf(9)])          # jumped: frames 6,7,8 were dropped
+    assert s.client.reads == 2
+    s.handle_events([_seqf(10), _seqf(11)])   # resumed in order: no further read
+    assert s.client.reads == 2
+
+
+def test_uint32_wraparound_is_not_a_gap(s):
+    s.handle_events([_seqf(0xFFFFFFFF)])      # baseline at the top of the range
+    s.handle_events([_seqf(0)])               # wrapped: continuous
+    assert s.client.reads == 1
+
+
+def test_a_later_jump_rereads_again(s):
+    s.handle_events([_seqf(5)])
+    s.handle_events([_seqf(9)])               # gap 1
+    s.handle_events([_seqf(10)])              # back in order
+    s.handle_events([_seqf(20)])              # gap 2
+    assert s.client.reads == 3
+
+
+def test_sequence_tracked_per_stream(s):
+    # the counter is per-stream: each port's run is measured on its own, so one
+    # stream's jump is neither masked nor caused by another's frame
+    assert s._seq_gap(2001, 5) is False      # first frame on each stream
+    assert s._seq_gap(2003, 100) is False
+    assert s._seq_gap(2001, 6) is False      # 2001 continues in order
+    assert s._seq_gap(2003, 105) is True     # 2003 jumped, on its own count
+    assert s._seq_gap(2001, 7) is False      # 2001 is still fine

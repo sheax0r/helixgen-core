@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from helixgen.liveedit import intents
 from helixgen.liveedit.session import LiveError, LiveSession
 
 _PAGE = Path(__file__).with_name("page.html")
@@ -68,6 +69,10 @@ def _route(session: LiveSession, path: str, b: dict):
         return session.set_bypass(_int(b, "path"), _int(b, "block"),
                                   b["enabled"], client=_client(b),
                                   rev=_rev(b))
+    if path == "/snapshot":
+        return session.activate_snapshot(_int(b, "index"))
+    if path == "/preset":
+        return session.load_preset(_int(b, "cid"))
     if path == "/save":
         return session.save()
     if path == "/reread":
@@ -116,6 +121,15 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 self._send(200, _PAGE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/state":
                 self._json(200, session.public_state())
+            elif path == "/intents":
+                # static adjective -> affected-knob map + alias list for the
+                # search box; the page does the role-matching client-side
+                self._json(200, intents.payload())
+            elif path == "/presets":
+                try:
+                    self._json(200, session.list_presets())
+                except LiveError as e:
+                    self._json(e.status, {"error": str(e)})
             elif path == "/events":
                 self._sse()
             else:
@@ -232,13 +246,15 @@ def run_subscriber(server, subscriber, *, session: LiveSession = None,
 
 def serve(session: LiveSession, host: str = "127.0.0.1", port: int = 8765,
           subscriber=None, on_ready=None) -> None:
-    """Serve until interrupted. ``on_ready(url)`` is called once listening."""
+    """Serve until interrupted. ``on_ready(url, srv)`` is called once
+    listening; ``srv.shutdown()`` from another thread stops it (how the app
+    window closing stops the server)."""
     srv = make_server(session, host, port)
     if subscriber is not None:
         threading.Thread(target=run_subscriber, args=(srv, subscriber),
                          daemon=True).start()
     if on_ready is not None:
-        on_ready(f"http://127.0.0.1:{srv.server_address[1]}/")
+        on_ready(f"http://127.0.0.1:{srv.server_address[1]}/", srv)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -128,6 +128,54 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     x.sse({ t: "param", path: 0, block: 2, pid: 1, value: 0.8 });
     ok("a hardware change shows up and causes no write", x.api.P.get(K).p.value === 0.8 && x.posts.length === 0, x.api.P.get(K).p.value);
   }
+  { // S18: in-place snapshot switch — the bar re-highlights, params move, no re-render
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshots: ["S1", "S2"], snapshot: 0 }));
+    x.sse({ t: "meta", dirty: false, connected: true, preset: { cid: 7, name: "T" }, snapshot: 1, snapshot_name: "S2" });
+    x.sse({ t: "param", path: 0, block: 2, pid: 1, value: 0.9 });
+    const on = x.ids.snaprow.find((e) => e.tagName === "button" && e.classList.contains("on"));
+    ok("S18 an in-place snapshot switch re-highlights the bar and moves the knob",
+      x.api.P.get(K).p.value === 0.9 && on.length === 1 && on[0].textContent.indexOf("2") === 0,
+      JSON.stringify([x.api.P.get(K).p.value, on.map((b) => b.textContent)]));
+  }
+  { // S19: adjective search highlights the affecting knobs in ACTIVE blocks only (hgc-nci)
+    const x = boot();
+    const amp = Blk({ path: 0, block: 2, model: "HD2_AmpA", category: "amp" },
+      [P_({ pid: 1, name: "Drive", label: "Drive", value: 0.5 }),
+       P_({ pid: 2, name: "Mid", label: "Mid", value: 0.5 })]);
+    const rev = Blk({ path: 0, block: 3, model: "HD2_Rev", category: "reverb" },
+      [P_({ pid: 1, name: "Mix", label: "Mix", value: 0.3 })]);
+    const ampOff = Blk({ path: 0, block: 4, model: "HD2_AmpB", category: "amp", enabled: false },
+      [P_({ pid: 1, name: "Drive", label: "Drive", value: 0.5 })]);
+    x.sse(State([amp, rev, ampOff]));
+    // lazy-load the adjective map on first focus, then choose "crunchier"
+    x.ids.adjsearch.fire("focus");
+    const ir = x.posts.find((p) => p.url === "/intents");
+    ok("S19 the search box fetches the adjective map on first use", !!ir, JSON.stringify(x.posts.map((p) => p.url)));
+    ir.reply(200, { aliases: ["Crunchier", "crunchy"], intents: [
+      { id: "crunchier", label: "Crunchier", aliases: ["crunchy", "gritty"], meaning: "pedal-forward crunch",
+        moves: [{ role: "drive_pedal", param: "Gain", dir: 1 },
+                { role: "amp", param: "Drive", dir: -1 }, { role: "amp", param: "Mid", dir: 1 }] }] });
+    await x.tick();
+    x.ids.adjsearch.value = "crunchier"; x.ids.adjsearch.fire("input");
+    const hl = (key) => x.knobOf(key).root.classList;
+    const cn = (key) => x.knobOf(key).root.className;
+    ok("S19 matching knobs in the active amp light up", hl("0/2/1").contains("hl-on") && hl("0/2/2").contains("hl-on"),
+      cn("0/2/1") + " | " + cn("0/2/2"));
+    ok("S19 the direction hint is set (amp Drive down)", x.knobOf("0/2/1").root.dataset.hldir === "↓", x.knobOf("0/2/1").root.dataset.hldir);
+    ok("S19 a non-affected knob (reverb Mix) is de-emphasised, not lit",
+      hl("0/3/1").contains("hl-off") && !hl("0/3/1").contains("hl-on"), cn("0/3/1"));
+    ok("S19 a matching knob in a BYPASSED block is not lit",
+      !hl("0/4/1").contains("hl-on"), cn("0/4/1"));
+    // un-bypass the second amp from the hardware -> its Drive must now light, with no re-render
+    x.sse({ t: "bypass", path: 0, block: 4, enabled: true });
+    ok("S19 un-bypassing a block re-evaluates the highlight", hl("0/4/1").contains("hl-on"), cn("0/4/1"));
+    // clearing the box removes every highlight
+    x.ids.adjsearch.value = ""; x.ids.adjsearch.fire("input");
+    ok("S19 clearing the search removes all highlighting",
+      !hl("0/2/1").contains("hl-on") && !hl("0/2/1").contains("hl-off") && !hl("0/3/1").contains("hl-off"),
+      cn("0/2/1") + " | " + cn("0/3/1"));
+  }
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

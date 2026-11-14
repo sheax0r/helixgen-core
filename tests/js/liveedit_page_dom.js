@@ -28,11 +28,12 @@ class El {
 }
 function boot() {
   const ids = {}; El.body = new El("body");
-  ["led", "preset", "snap", "undo", "redo", "reread", "save", "banner", "rig", "toasts"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
+  ["led", "preset", "snap", "undo", "redo", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
+   "adjsearch", "adjlist", "adjhint"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
   const document = { get body2(){return El.body}, getElementById: (i) => ids[i], createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };
   const win = {}; const posts = []; const toasts = ids.toasts; let es = null;
-  const fetch = (url, opt) => new Promise((resolve, reject) => { posts.push({ url, body: JSON.parse(opt.body), reject,
+  const fetch = (url, opt) => new Promise((resolve, reject) => { posts.push({ url, body: (opt && opt.body) ? JSON.parse(opt.body) : null, reject,
     reply: (status, j) => resolve({ ok: status >= 200 && status < 300, status, json: async () => j }) }); });
   class EventSource { constructor() { es = this; } }
   const src = fs.readFileSync(PAGE, "utf8").split("<script>")[1].split("</script>")[0];
