@@ -1,6 +1,6 @@
 [project]
 name = "helixgen"
-version = "0.60.0"
+version = "0.60.1"
 description = "Generate Line 6 Helix Stadium .hsp / legacy .hlx preset files from JSON tone specs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -78,6 +78,9 @@ include = ["helixgen*"]
 # replaying a fixed loop is the default for everyone -- not only for users
 # whose agent happened to run a setup skill first. 703 KB, CC0.
 "helixgen" = ["assets/*.wav"]
+# The live chain editor's page (`helixgen device live`): one self-contained
+# HTML file served from the package directory. 0.60.0 shipped without it.
+"helixgen.liveedit" = ["page.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
