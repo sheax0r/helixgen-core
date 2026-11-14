@@ -46,6 +46,13 @@ class FakeClient:
         self.pool_of = {}        # setlist reference cid -> pool preset cid
         self.on_read = None      # hooks: run in the middle of a device call
         self.on_write = None
+        self.snapshots_activated = []
+        self.loaded = []
+        # what the preset picker lists: the user pool + one setlist of refs
+        self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
+        self.setlists = [{"cid_": 100, "name": "Rock", "cctp": 1001, "posi": 0}]
+        self.setlist_contents = {100: [{"cid_": 1950, "name": "Venom Live",
+                                        "cctp": 1003, "posi": 0}]}
 
     def _next(self):
         if self.fail is not None:
@@ -105,6 +112,31 @@ class FakeClient:
         self._next()
         self.saves.append(cid)
         return self.ack
+
+    def activate_snapshot(self, index):
+        self._next()
+        self.snapshots_activated.append(int(index))
+        return True
+
+    def load_preset(self, cid):
+        self._next()
+        self.loaded.append(int(cid))
+        return self.ack
+
+    def list_presets(self, container=-2, *, strict=False):
+        if self.fail is not None:
+            raise self.fail
+        return [dict(m) for m in self.pool_presets]
+
+    def list_setlists(self, *, strict=False):
+        if self.fail is not None:
+            raise self.fail
+        return [dict(m) for m in self.setlists]
+
+    def list_container(self, cid, *, strict=False):
+        if self.fail is not None:
+            raise self.fail
+        return [dict(m) for m in self.setlist_contents.get(cid, [])]
 
 
 class FakeLease:
@@ -338,6 +370,23 @@ def test_busy_refusal_tells_the_page_what_to_show(s):
     with pytest.raises(LiveError) as e:
         s.set_bypass(0, 1, False)
     assert e.value.status == 409 and e.value.value is True
+
+
+def test_snapshot_and_preset_are_refused_while_another_process_holds_the_device(s):
+    s.lease.busy = "locked by agent-x"
+    for call in (lambda: s.activate_snapshot(2), lambda: s.load_preset(1950)):
+        with pytest.raises(LiveError) as e:
+            call()
+        assert e.value.status == 409 and "agent-x" in str(e.value)
+    assert s.client.snapshots_activated == [] and s.client.loaded == []
+
+
+def test_preset_load_device_failure_marks_disconnected(s):
+    s.client.fail = HelixError("connection lost")
+    with pytest.raises(LiveError) as e:
+        s.load_preset(1950)
+    assert e.value.status == 502
+    assert s.public_state()["connected"] is False
 
 
 def test_page_writes_carry_the_writers_id_so_it_can_skip_its_own(s):

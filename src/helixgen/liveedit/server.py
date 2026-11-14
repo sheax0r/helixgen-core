@@ -68,6 +68,10 @@ def _route(session: LiveSession, path: str, b: dict):
         return session.set_bypass(_int(b, "path"), _int(b, "block"),
                                   b["enabled"], client=_client(b),
                                   rev=_rev(b))
+    if path == "/snapshot":
+        return session.activate_snapshot(_int(b, "index"))
+    if path == "/preset":
+        return session.load_preset(_int(b, "cid"))
     if path == "/save":
         return session.save()
     if path == "/reread":
@@ -116,6 +120,11 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 self._send(200, _PAGE.read_bytes(), "text/html; charset=utf-8")
             elif path == "/state":
                 self._json(200, session.public_state())
+            elif path == "/presets":
+                try:
+                    self._json(200, session.list_presets())
+                except LiveError as e:
+                    self._json(e.status, {"error": str(e)})
             elif path == "/events":
                 self._sse()
             else:

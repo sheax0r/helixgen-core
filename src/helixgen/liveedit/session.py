@@ -463,6 +463,93 @@ class LiveSession:
                 self._emit_meta()
         return {"saved": pre.get("name"), "cid": cid}
 
+    # --- page-initiated switching ---------------------------------------------
+    def activate_snapshot(self, index: Any) -> dict:
+        """Recall a snapshot on the device (0-based, 0..7). Does NOT discard the
+        edit buffer, so the page prompts for nothing. The ``/activateSnapshot``
+        the device emits in response re-reads and re-renders the page — no local
+        state change is made here (hgc-9qd will make it in-place)."""
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            raise LiveError("snapshot index must be an integer") from None
+        if not 0 <= i <= 7:
+            raise LiveError("snapshot index out of range 0..7")
+        with self.devlock:
+            with self.cond:
+                self._require_up()
+            self.lease.ensure()
+            try:
+                self.client.activate_snapshot(i)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not activate the snapshot: {e}",
+                                status=502) from e
+            finally:
+                self.lease.done()
+        return {"snapshot": i}
+
+    def load_preset(self, cid: Any) -> dict:
+        """Load a preset on the device by cid — a user-pool preset, or a setlist
+        REFERENCE cid (what :meth:`list_presets` hands the page for a setlist
+        entry; the device makes that reference active, see
+        :meth:`HelixClient.resolve_pool_cid`). This DISCARDS the live edit
+        buffer; the page guards unsaved work before calling it. The device's
+        ``/setEditBuffer`` + ``/loadContentRef`` push re-reads and re-renders
+        the page."""
+        try:
+            c = int(cid)
+        except (TypeError, ValueError):
+            raise LiveError("preset cid must be an integer") from None
+        with self.devlock:
+            with self.cond:
+                self._require_up()
+            self.lease.ensure()
+            try:
+                ok = self.client.load_preset(c)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not load the preset: {e}",
+                                status=502) from e
+            finally:
+                self.lease.done()
+        if not ok:
+            raise LiveError("the device refused the preset load", status=502)
+        return {"cid": c}
+
+    def list_presets(self) -> dict:
+        """The device's loadable presets, for the page's preset picker: each
+        user setlist with the presets it references, then the user pool. A
+        setlist entry's ``cid`` is its REFERENCE cid (what :meth:`load_preset`
+        loads); ``active`` is the cid currently loaded, so the page can mark it.
+
+        Read-only, serialized on ``devlock`` (the client's socket is not
+        thread-safe) — it does NOT take the write lease: browsing presets must
+        not lock other verbs out of the device. Fetched lazily when the picker
+        is first opened, never at page load."""
+        def _entries(items):
+            return [{"cid": m["cid_"], "name": m.get("name") or "(unnamed)"}
+                    for m in items if m.get("cid_") is not None]
+
+        with self.devlock:
+            try:
+                pool = self.client.list_presets()
+                groups = []
+                for sl in self.client.list_setlists():
+                    scid = sl.get("cid_")
+                    if scid is None:
+                        continue
+                    groups.append({"name": sl.get("name") or "Setlist",
+                                   "presets": _entries(self.client.list_container(scid))})
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not list the device's presets: {e}",
+                                status=502) from e
+        with self.cond:
+            active = self._preset.get("cid")
+        groups.append({"name": "Pool", "presets": _entries(pool)})
+        return {"active": active, "groups": groups}
+
     # --- 2001 events ----------------------------------------------------------------
     def _own_echo(self, seq: int, key: tuple, value: Any) -> Optional[str]:
         """Is this event the echo of one of OUR writes?

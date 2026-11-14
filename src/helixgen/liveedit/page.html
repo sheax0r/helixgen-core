@@ -49,6 +49,35 @@ body.dirty .btn.save{background:var(--warn);border-color:var(--warn);color:#1b14
   border-bottom:1px solid #6b2229;font-weight:600}
 body.down .banner{display:block}
 
+/* ---------- snapshot bar + preset picker ---------- */
+.snaprow{display:flex;flex-wrap:wrap;gap:7px;align-items:center;padding:9px 20px;
+  border-bottom:1px solid var(--edge);background:rgba(16,22,38,.5)}
+.snaprow:empty{display:none}
+.snaprow .cap{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);margin-right:4px}
+.snap-btn{background:#14203d;border:1px solid #34508f;color:#cfe0ff;border-radius:999px;
+  padding:5px 12px;cursor:pointer;font-size:12px;white-space:nowrap}
+.snap-btn:hover{border-color:#5f84d6}
+.snap-btn.on{background:#2c66d6;border-color:#2c66d6;color:#fff;font-weight:700}
+body.down .snaprow{opacity:.5;pointer-events:none}
+.ov{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
+  background:rgba(4,6,10,.62);backdrop-filter:blur(3px)}
+.ov[hidden]{display:none}
+.modal{background:var(--panel);border:1px solid var(--edge2);border-radius:16px;
+  box-shadow:0 20px 60px rgba(0,0,0,.6);max-width:520px;width:calc(100% - 32px);
+  max-height:calc(100% - 64px);display:flex;flex-direction:column;overflow:hidden}
+.modal h2{margin:0;padding:16px 20px;font-size:15px;border-bottom:1px solid var(--edge)}
+.modal .body{padding:8px 20px 16px;overflow:auto}
+.modal .foot-row{display:flex;gap:10px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--edge)}
+.modal p{color:var(--dim);font-size:13px;line-height:1.5}
+.grp{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;
+  color:#9fb4ff;margin:16px 0 6px}
+.grp:first-child{margin-top:4px}
+.pz{display:block;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--edge2);
+  border-radius:9px;padding:9px 12px;margin:4px 0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pz:hover{border-color:#5a6680}
+.pz.on{border-color:#2c66d6;color:#cfe0ff}
+.pz.on::after{content:" · loaded";color:var(--faint);font-size:11px}
+
 /* ---------- rig ---------- */
 main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .path{margin-bottom:44px}
@@ -158,10 +187,12 @@ body.down main{opacity:.55}
   <span class="chip dirty" title="the tone has changes that are not saved on the device">Unsaved</span>
   <button class="btn" id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
   <button class="btn" id="redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
+  <button class="btn" id="load" title="Load a different preset from the device">Load…</button>
   <button class="btn" id="reread" title="Read the whole tone from the device again">Re-read</button>
   <button class="btn save" id="save" title="Save the tone on the device (same as Save on the hardware)">Save</button>
 </header>
 <p class="banner" id="banner">Device disconnected — retrying. Controls are paused.</p>
+<div class="snaprow" id="snaprow"></div>
 <main id="rig"></main>
 <div id="toasts"></div>
 <script>
@@ -465,7 +496,22 @@ function column(segs) {
   segs.forEach((s, i) => { if (i) c.append(wire()); c.append(segEl(s)); });
   return c;
 }
+function renderSnaps() {
+  const row = $("snaprow"); row.textContent = "";
+  const names = (S && S.snapshots) || [];
+  if (!names.length) return;
+  row.append(el("span", "cap", "Snapshot"));
+  names.forEach((nm, i) => {
+    const b = el("button", "snap-btn" + (i === S.snapshot ? " on" : ""),
+      (i + 1) + (nm ? " · " + nm : ""));
+    b.type = "button";
+    b.onclick = () => { if (down || i === S.snapshot) return;
+      send("/snapshot", { index: i }, () => {}, () => {}); };   // the device's event re-renders
+    row.append(b);
+  });
+}
 function render() {
+  renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
   const fkey = focused && focused.dataset.k;
   P.clear(); B.clear(); dragging = null;
@@ -492,7 +538,7 @@ function setDown(isDown, why) {
   down = isDown;
   document.body.classList.toggle("down", down);
   $("rig").inert = down;          // not just unclickable: unreachable by keyboard too
-  $("save").disabled = down; $("reread").disabled = false;
+  $("save").disabled = down; $("reread").disabled = false; $("load").disabled = down;
   if (why) $("banner").textContent = why;
   if (down) pending.clear();
   syncHist();
@@ -545,6 +591,68 @@ function connect() {
     if (es.readyState === 2) { es.close(); setTimeout(connect, 3000); }   // the browser gave up: try again ourselves
   };
 }
+/* ---------- preset picker + unsaved-work guard ---------- */
+let overlay = null;
+function closeOverlay() { if (overlay) { overlay.remove(); overlay = null; } }
+function modal(title) {
+  closeOverlay();
+  overlay = el("div", "ov");
+  const m = el("div", "modal"), body = el("div", "body"), foot = el("div", "foot-row");
+  m.append(el("h2", null, title), body, foot);
+  overlay.append(m);
+  overlay.onclick = (e) => { if (e.target === overlay) closeOverlay(); };   // backdrop dismiss
+  document.body.append(overlay);
+  return { body, foot };
+}
+function footBtn(foot, text, cls, fn) {
+  const b = el("button", "btn" + (cls ? " " + cls : ""), text);
+  b.type = "button"; b.onclick = fn; foot.append(b); return b;
+}
+function loadPreset(cid) {
+  closeOverlay();
+  send("/preset", { cid }, () => toast("Loading the preset on the device…", true), () => {});
+}
+function guard(cid, name) {
+  // loading DISCARDS the edit buffer — ask before throwing unsaved work away
+  const { body, foot } = modal("Unsaved changes");
+  body.append(el("p", null, "The tone on the device has changes that are not saved. "
+    + "Loading “" + (name || "that preset") + "” will discard them."));
+  footBtn(foot, "Cancel", "", closeOverlay);
+  footBtn(foot, "Discard & load", "", () => loadPreset(cid));
+  footBtn(foot, "Save, then load", "save", async () => {
+    await drained();                                   // the last tweak must land before Save
+    send("/save", {}, () => loadPreset(cid),           // load only if the Save took
+      () => {});                                       // Save refused (e.g. a factory preset): keep the buffer, send() says why
+  });
+}
+function pick(cid, name) {
+  if (down) return;
+  if (document.body.classList.contains("dirty")) guard(cid, name);
+  else loadPreset(cid);
+}
+async function openPicker() {
+  if (down) return;
+  const { body } = modal("Load a preset");
+  body.append(el("p", null, "Loading the list from the device…"));
+  const r = await fetch("/presets").then((x) => x.json()).catch(() => null);
+  if (!overlay) return;                                // dismissed while the list was loading
+  body.textContent = "";
+  if (!r || r.error || !r.groups) { body.append(el("p", null, "Could not list the device's presets.")); return; }
+  let any = false;
+  r.groups.forEach((g) => {
+    if (!g.presets.length) return;
+    any = true;
+    body.append(el("div", "grp", g.name));
+    g.presets.forEach((p) => {
+      const b = el("button", "pz" + (p.cid === r.active ? " on" : ""), p.name);
+      b.type = "button"; b.onclick = () => pick(p.cid, p.name);
+      body.append(b);
+    });
+  });
+  if (!any) body.append(el("p", null, "No presets on the device."));
+}
+addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
+$("load").onclick = openPicker;
 $("undo").onclick = undo; $("redo").onclick = redo;
 $("reread").onclick = () => send("/reread", {}, () => toast("Re-read from the device", true), () => {});
 $("save").onclick = async () => {
