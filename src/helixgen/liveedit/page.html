@@ -10,6 +10,7 @@
   --bg:#0b0d12; --panel:#161a22; --panel2:#1c212b; --edge:#2a3140; --edge2:#3a4356;
   --ink:#eef1f7; --dim:#8a93a8; --faint:#5b6478;
   --wire:#3d6bff; --wire-glow:rgba(61,107,255,.45);
+  --up:#35d08a; --up-glow:rgba(53,208,138,.5); --down:#ff7ac2; --down-glow:rgba(255,122,194,.5);
   --ok:#35d08a; --warn:#ffb020; --bad:#ff5d5d;
   --gap:22px; --wireh:34px;
 }
@@ -70,13 +71,25 @@ body.down .snaprow{opacity:.5;pointer-events:none}
 #adjsearch::placeholder{color:var(--faint)}
 .adjhint{font-size:11px;color:var(--faint)}
 body.seeking .adjhint{color:#9fb4ff}
-/* while an adjective is chosen: matching knobs in ACTIVE blocks glow, the rest recede */
+.adjlegend{display:none;gap:12px;font-size:11px;font-weight:800;letter-spacing:.02em}
+body.seeking .adjlegend{display:inline-flex}
+.lg-up{color:var(--up)}
+.lg-down{color:var(--down)}
+/* while an adjective is chosen: matching knobs in ACTIVE blocks glow, the rest recede.
+   green = turn up for more of the quality (↑), pink = turn down for more (↓); the
+   ↑/↓ arrow carries the same cue so the colour is never the only signal. */
 .hl-off{opacity:.2;filter:grayscale(.7)}
 .hl-on{position:relative}
 .hl-on::after{content:attr(data-hldir);position:absolute;top:-7px;right:0;font-size:12px;font-weight:800;
   color:var(--wire);text-shadow:0 0 7px var(--wire-glow)}
 .hl-on .arc{stroke:var(--wire)!important;filter:drop-shadow(0 0 6px var(--wire-glow))}
 .hl-on .sw.on{background:var(--wire)}
+.hl-up::after{color:var(--up);text-shadow:0 0 7px var(--up-glow)}
+.hl-up .arc{stroke:var(--up)!important;filter:drop-shadow(0 0 6px var(--up-glow))}
+.hl-up .sw.on{background:var(--up)}
+.hl-down::after{color:var(--down);text-shadow:0 0 7px var(--down-glow)}
+.hl-down .arc{stroke:var(--down)!important;filter:drop-shadow(0 0 6px var(--down-glow))}
+.hl-down .sw.on{background:var(--down)}
 .ov{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;
   background:rgba(4,6,10,.62);backdrop-filter:blur(3px)}
 .ov[hidden]{display:none}
@@ -217,6 +230,7 @@ body.down main{opacity:.55}
     placeholder="a quality… crunchier, brighter, droney" aria-label="Highlight the knobs that affect a tone quality">
   <datalist id="adjlist"></datalist>
   <span class="adjhint" id="adjhint"></span>
+  <span class="adjlegend"><b class="lg-up">↑ turn up for more</b><b class="lg-down">↓ turn down for more</b></span>
 </div>
 <main id="rig"></main>
 <div id="toasts"></div>
@@ -585,6 +599,8 @@ function applyHighlight() {        // purely presentational: toggle classes, no 
     const role = activeIntent && c.b.enabled && roleOf(c.b);   // bypassed blocks never light
     const mv = role && activeIntent.moves.find((m) => m.role === role && m.param === c.p.name);
     c.root.classList.toggle("hl-on", !!mv);
+    c.root.classList.toggle("hl-up", !!mv && mv.dir > 0);
+    c.root.classList.toggle("hl-down", !!mv && mv.dir < 0);
     c.root.classList.toggle("hl-off", !!activeIntent && !mv);
     c.root.dataset.hldir = mv ? (mv.dir > 0 ? "↑" : mv.dir < 0 ? "↓" : "") : "";
   });
