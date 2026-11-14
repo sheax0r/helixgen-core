@@ -50,6 +50,17 @@ def _default_copy_tone(client, hsp_path, *, setlist, pos) -> dict:
                            with_irs=True)
 
 
+def _default_remove_tone(client, name, *, setlist, also_pool, cid) -> dict:
+    from helixgen.device import copy as _copy
+    return _copy.remove_tone(client, name, setlist=setlist,
+                             also_pool=also_pool, cid=cid)
+
+
+def _default_move_tone(client, name, *, setlist, to, cid) -> dict:
+    from helixgen.device import copy as _copy
+    return _copy.move_tone(client, name, setlist=setlist, to=to, cid=cid)
+
+
 def _default_pull_tone(client, cid, *, tones_dir) -> dict:  # noqa: ARG001
     """The real `device to-hsp` + `library import`: read the device preset,
     untranscode to a .hsp, and register it in the library (placing the file IS
@@ -94,6 +105,8 @@ class LibrarySession:
         library_root: Optional[Path] = None,
         copy_fn: Callable[..., dict] = _default_copy_tone,
         pull_fn: Callable[..., dict] = _default_pull_tone,
+        remove_fn: Callable[..., dict] = _default_remove_tone,
+        move_fn: Callable[..., dict] = _default_move_tone,
     ):
         self._client_factory = client_factory
         self._tone_loader = tone_loader
@@ -102,6 +115,8 @@ class LibrarySession:
         self._library_root = Path(library_root) if library_root else None
         self._copy_fn = copy_fn
         self._pull_fn = pull_fn
+        self._remove_fn = remove_fn
+        self._move_fn = move_fn
         # One global lock serialises every device-mutating action; the Helix
         # client is not safe to drive from two requests at once.
         # ponytail: single mutate lock, split per-scope only if it ever bottlenecks.
@@ -283,6 +298,135 @@ class LibrarySession:
                     raise LibraryError(str(e) or "a tone with that name "
                                        "already exists", status=409) from e
                 raise LibraryError(f"pull failed: {e}", status=502) from e
+
+    # -- setlist management ------------------------------------------------
+
+    def _run(self, fn: Callable[[Any], dict]) -> dict:
+        """Open a client under the mutate lock, run ``fn(h)``, and normalise
+        failures: a name the device can't disambiguate or a collision → 409,
+        anything else from the device → 502. ``LibraryError`` passes through."""
+        if self._client_factory is None:
+            raise LibraryError("no Stadium connected", status=409)
+        with self._mutate_lock:
+            try:
+                with self._client_factory() as h:
+                    return fn(h)
+            except LibraryError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                name = type(e).__name__
+                if name in ("AmbiguousName", "ClickException", "ToneCollision",
+                            "UsageError"):
+                    raise LibraryError(str(e), status=409) from e
+                raise LibraryError(f"{e}", status=502) from e
+
+    def setlist_create(self, name: str) -> dict:
+        def go(h):
+            if not (name or "").strip():
+                raise LibraryError("a setlist name is required", status=400)
+            if h.resolve_setlist_cid(name) is not None:
+                raise LibraryError(f"setlist {name!r} already exists",
+                                   status=409)
+            cid = h.create_setlist(name)
+            if cid is None:
+                raise LibraryError(f"device refused to create {name!r}",
+                                   status=502)
+            return {"name": name, "cid": cid}
+        return self._run(go)
+
+    def setlist_rename(self, name: str, new_name: str) -> dict:
+        def go(h):
+            if not (new_name or "").strip():
+                raise LibraryError("a new name is required", status=400)
+            cid = h.resolve_setlist_cid(name)
+            if cid is None:
+                raise LibraryError(f"setlist {name!r} not found", status=404)
+            if h.resolve_setlist_cid(new_name) is not None:
+                raise LibraryError(f"a setlist named {new_name!r} already "
+                                   "exists", status=409)
+            if not h.rename(cid, new_name):
+                raise LibraryError(f"failed to rename {name!r}", status=502)
+            return {"name": new_name, "cid": cid}
+        return self._run(go)
+
+    def setlist_delete(self, name: str) -> dict:
+        def go(h):
+            cid = h.resolve_setlist_cid(name)
+            if cid is None:
+                raise LibraryError(f"setlist {name!r} not found", status=404)
+            if not h.delete_setlist(cid):
+                raise LibraryError(f"failed to delete {name!r}", status=502)
+            return {"name": name, "cid": cid}
+        return self._run(go)
+
+    def setlist_duplicate(self, src: str, dst: str) -> dict:
+        def go(h):
+            src_cid = h.resolve_setlist_cid(src)
+            if src_cid is None:
+                raise LibraryError(f"setlist {src!r} not found", status=404)
+            if not (dst or "").strip():
+                raise LibraryError("a destination name is required",
+                                   status=400)
+            dst_cid = h.resolve_setlist_cid(dst)
+            if dst_cid is None:
+                dst_cid = h.create_setlist(dst)
+                if dst_cid is None:
+                    raise LibraryError(f"device refused to create {dst!r}",
+                                       status=502)
+            copied = h.duplicate_setlist_refs(src_cid, dst_cid)
+            return {"src": src, "dst": dst, "copied": copied}
+        return self._run(go)
+
+    def setlist_add(self, to: str, *, hsp: Any = None, cid: Any = None,
+                    pos: Any = None) -> dict:
+        """Add membership to a setlist. An authored tone (``hsp``) is copied in
+        (IRs and all); a pool-only preset (``cid``) is referenced at ``pos``."""
+        if not (to or "").strip():
+            raise LibraryError("a target setlist is required", status=400)
+        if hsp:
+            return self.copy_to_device(hsp, to=to, pos=pos)
+        if cid is not None:
+            try:
+                cid = int(cid)
+            except (TypeError, ValueError) as e:
+                raise LibraryError("cid must be an integer", status=400) from e
+            if pos is None:
+                raise LibraryError("a setlist reference needs a position",
+                                   status=400)
+            pos = int(pos)
+
+            def go(h):
+                dest = h.resolve_setlist_cid(to)
+                if dest is None:
+                    raise LibraryError(f"setlist {to!r} not found", status=404)
+                if h.find_by_pos(dest, pos, strict=True) is not None:
+                    raise LibraryError(f"setlist {to!r} position {pos} is not "
+                                       "empty", status=409)
+                ref = h.reference_into_setlist(dest, cid, pos)
+                if ref is None:
+                    raise LibraryError("device refused the reference",
+                                       status=502)
+                return {"setlist": to, "pos": pos, "ref_cid": ref,
+                        "pool_cid": cid}
+            return self._run(go)
+        raise LibraryError("nothing to add — give a tone file or a cid",
+                           status=400)
+
+    def setlist_remove(self, name: str, setlist: str, *, also_pool: bool = False,
+                       cid: Any = None) -> dict:
+        if not (setlist or "").strip():
+            raise LibraryError("a setlist is required", status=400)
+        return self._run(lambda h: self._remove_fn(
+            h, name, setlist=setlist, also_pool=also_pool, cid=cid))
+
+    def setlist_move(self, name: str, setlist: str, to: Any,
+                     cid: Any = None) -> dict:
+        try:
+            to = int(to)
+        except (TypeError, ValueError) as e:
+            raise LibraryError("position must be an integer", status=400) from e
+        return self._run(lambda h: self._move_fn(
+            h, name, setlist=setlist, to=to, cid=cid))
 
 
 def _ordered_variants(variants: List[dict]) -> List[dict]:

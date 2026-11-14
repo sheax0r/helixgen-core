@@ -31,6 +31,24 @@ def _route(session: LibrarySession, path: str, body: dict):
                                       pos=body.get("pos"))
     if path == "/pull":
         return session.pull_from_device(body.get("cid"))
+    if path == "/setlist/create":
+        return session.setlist_create(body.get("name"))
+    if path == "/setlist/rename":
+        return session.setlist_rename(body.get("name"), body.get("new_name"))
+    if path == "/setlist/delete":
+        return session.setlist_delete(body.get("name"))
+    if path == "/setlist/duplicate":
+        return session.setlist_duplicate(body.get("src"), body.get("dst"))
+    if path == "/setlist/add":
+        return session.setlist_add(body.get("to"), hsp=body.get("hsp"),
+                                   cid=body.get("cid"), pos=body.get("pos"))
+    if path == "/setlist/remove":
+        return session.setlist_remove(body.get("name"), body.get("setlist"),
+                                      also_pool=bool(body.get("also_pool")),
+                                      cid=body.get("cid"))
+    if path == "/setlist/move":
+        return session.setlist_move(body.get("name"), body.get("setlist"),
+                                    body.get("to"), cid=body.get("cid"))
     return None
 
 

@@ -69,6 +69,12 @@
   .badge.unavail { color: #dc2626; border-color: #dc2626; }
   button.act { font-size: 11px; padding: 2px 8px; margin-left: 2px; }
   button.act:disabled { opacity: .5; cursor: default; border-color: var(--line); }
+  #setlists { display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+              margin-bottom: 12px; }
+  #setlists:empty { display: none; }
+  .slchip { display: inline-flex; align-items: center; gap: 4px;
+            background: var(--chip); border: 1px solid var(--line);
+            border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12px; }
   .empty { color: var(--muted); padding: 24px 8px; text-align: center; }
   .offline { border: 1px dashed var(--line); border-radius: 9px;
              padding: 20px; text-align: center; color: var(--muted); }
@@ -90,6 +96,7 @@
   </section>
   <section class="pane" id="device-pane">
     <h2>On the Helix</h2>
+    <div id="setlists"></div>
     <div id="device"></div>
   </section>
 </main>
@@ -135,23 +142,65 @@ function badge(presence, available) {
   return el("span", "badge", "computer only");
 }
 
-function actionButton(v) {
-  if (!v) return null;
+function mkBtn(label, onClick) {
+  const b = el("button", "act", label);
+  b.addEventListener("click", ev => { ev.stopPropagation(); onClick(b); });
+  return b;
+}
+
+function rowActions(v) {
+  if (!v) return [];
+  const btns = [];
   if (v.presence === "device" && v.device_cid != null) {
-    const b = el("button", "act", "Pull ←");
-    b.addEventListener("click", ev => {
-      ev.stopPropagation(); postAction("/pull", { cid: v.device_cid }, b);
-    });
-    return b;
+    btns.push(mkBtn("Pull ←", b => postAction("/pull", { cid: v.device_cid }, b)));
   }
   if (v.available && v.hsp) {
-    const b = el("button", "act", v.presence === "both" ? "Re-copy →" : "Copy →");
-    b.addEventListener("click", ev => {
-      ev.stopPropagation(); postAction("/copy", { hsp: v.hsp }, b);
-    });
-    return b;
+    btns.push(mkBtn(v.presence === "both" ? "Re-copy →" : "Copy →",
+                    b => postAction("/copy", { hsp: v.hsp }, b)));
+    btns.push(mkBtn("+ setlist", b => {
+      const sl = prompt("Add this tone to which setlist?");
+      if (sl) postAction("/setlist/add", { to: sl, hsp: v.hsp }, b);
+    }));
   }
-  return null;
+  if (v.presence !== "computer" && v.preset_name) {  // it's on the device
+    btns.push(mkBtn("− setlist", b => {
+      const sl = prompt("Remove " + v.preset_name + " from which setlist?");
+      if (sl) postAction("/setlist/remove",
+                         { name: v.preset_name, setlist: sl }, b);
+    }));
+  }
+  return btns;
+}
+
+function renderSetlists() {
+  const host = document.getElementById("setlists");
+  host.replaceChildren();
+  const d = state.data;
+  if (!d || !d.connected) return;
+  const newb = mkBtn("+ New setlist", b => {
+    const n = prompt("New setlist name:");
+    if (n) postAction("/setlist/create", { name: n }, b);
+  });
+  host.appendChild(newb);
+  for (const sl of (d.setlists || [])) {
+    const name = sl && sl.name;
+    if (!name) continue;
+    const chip = el("span", "slchip");
+    chip.appendChild(el("b", null, name));
+    chip.appendChild(mkBtn("rename", b => {
+      const nn = prompt("Rename " + name + " to:");
+      if (nn) postAction("/setlist/rename", { name, new_name: nn }, b);
+    }));
+    chip.appendChild(mkBtn("dup", b => {
+      const nn = prompt("Duplicate " + name + " as:");
+      if (nn) postAction("/setlist/duplicate", { src: name, dst: nn }, b);
+    }));
+    chip.appendChild(mkBtn("del", b => {
+      if (confirm("Delete setlist " + name + "? (its presets stay in the pool)"))
+        postAction("/setlist/delete", { name }, b);
+    }));
+    host.appendChild(chip);
+  }
 }
 
 function toneCard(tone) {
@@ -166,8 +215,7 @@ function toneCard(tone) {
   }
   row.append(caret, title, badge(tone.presence));
   if (tone.variants.length <= 1) {
-    const b = actionButton(tone.variants[0]);
-    if (b) row.appendChild(b);
+    for (const b of rowActions(tone.variants[0])) row.appendChild(b);
   }
   card.appendChild(row);
   const vwrap = el("div", "variants");
@@ -193,8 +241,7 @@ function variantRow(v) {
   const lab = el("span", "vlabel", v.preset_name);
   const venue = el("span", "venue", variantLabel(v));
   r.append(lab, venue, badge(v.presence, v.available));
-  const b = actionButton(v);
-  if (b) r.appendChild(b);
+  for (const b of rowActions(v)) r.appendChild(b);
   return r;
 }
 
@@ -242,6 +289,7 @@ function renderFacets() {
 
 function render() {
   renderFacets();
+  renderSetlists();
   const d = state.data;
   const dot = document.getElementById("dot");
   const conn = document.getElementById("conn");
