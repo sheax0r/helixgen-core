@@ -67,6 +67,8 @@
   .badge.both { color: var(--both); border-color: var(--both); }
   .badge.device { color: var(--device); border-color: var(--device); }
   .badge.unavail { color: #dc2626; border-color: #dc2626; }
+  button.act { font-size: 11px; padding: 2px 8px; margin-left: 2px; }
+  button.act:disabled { opacity: .5; cursor: default; border-color: var(--line); }
   .empty { color: var(--muted); padding: 24px 8px; text-align: center; }
   .offline { border: 1px dashed var(--line); border-radius: 9px;
              padding: 20px; text-align: center; color: var(--muted); }
@@ -133,6 +135,25 @@ function badge(presence, available) {
   return el("span", "badge", "computer only");
 }
 
+function actionButton(v) {
+  if (!v) return null;
+  if (v.presence === "device" && v.device_cid != null) {
+    const b = el("button", "act", "Pull ←");
+    b.addEventListener("click", ev => {
+      ev.stopPropagation(); postAction("/pull", { cid: v.device_cid }, b);
+    });
+    return b;
+  }
+  if (v.available && v.hsp) {
+    const b = el("button", "act", v.presence === "both" ? "Re-copy →" : "Copy →");
+    b.addEventListener("click", ev => {
+      ev.stopPropagation(); postAction("/copy", { hsp: v.hsp }, b);
+    });
+    return b;
+  }
+  return null;
+}
+
 function toneCard(tone) {
   const card = el("div", "tone");
   const row = el("div", "row");
@@ -144,6 +165,10 @@ function toneCard(tone) {
     title.appendChild(sub);
   }
   row.append(caret, title, badge(tone.presence));
+  if (tone.variants.length <= 1) {
+    const b = actionButton(tone.variants[0]);
+    if (b) row.appendChild(b);
+  }
   card.appendChild(row);
   const vwrap = el("div", "variants");
   for (const v of tone.variants) vwrap.appendChild(variantRow(v));
@@ -168,7 +193,28 @@ function variantRow(v) {
   const lab = el("span", "vlabel", v.preset_name);
   const venue = el("span", "venue", variantLabel(v));
   r.append(lab, venue, badge(v.presence, v.available));
+  const b = actionButton(v);
+  if (b) r.appendChild(b);
   return r;
+}
+
+async function postAction(path, payload, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error) { alert(data.error || ("action failed: " + r.status)); return; }
+    if (Array.isArray(data.errors) && data.errors.length) alert(data.errors.join("\n"));
+    await load("/refresh");
+  } catch (e) {
+    alert("" + e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function renderFacets() {

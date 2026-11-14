@@ -25,7 +25,12 @@ SOCKET_TIMEOUT = 20.0
 
 def _route(session: LibrarySession, path: str, body: dict):
     """Mutating endpoints -> response dict, or ``None`` for an unknown route.
-    Filled in by Tasks 3–5; for now there are no POST actions."""
+    (Setlist/IR routes land in Tasks 4–5.)"""
+    if path == "/copy":
+        return session.copy_to_device(body.get("hsp"), to=body.get("to"),
+                                      pos=body.get("pos"))
+    if path == "/pull":
+        return session.pull_from_device(body.get("cid"))
     return None
 
 
