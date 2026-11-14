@@ -264,3 +264,19 @@ def test_boolean_event_args_decode_to_bools():
     off = sub._parse_frame(2001, b"\x00" * 12 + osc_encode(
         "/setParamValue", [("i", 1), ("i", 2), ("i", 0), ("i", 0), ("i", 0), ("i", 4), ("F", None)]))
     assert on.args[-1] is True and off.args[-1] is False
+
+
+def test_2001_header_sequence_is_parsed_and_2003_has_none():
+    # the 2001 header is 12 bytes (version, sequence, length, big-endian uint32);
+    # offset 4 is the per-stream sequence counter. 2003 frames have no header.
+    import struct
+
+    from helixgen.device.osc import osc_encode
+    from helixgen.device.subscribe import HelixSubscriber
+    sub = HelixSubscriber("10.0.0.99")
+    osc = osc_encode("/setParamValue",
+                     [("i", 1), ("i", 2), ("i", 0), ("i", 0), ("i", 0), ("i", 4), ("f", 0.5)])
+    ev = sub._parse_frame(2001, struct.pack(">III", 7, 4242, len(osc)) + osc)
+    assert ev.seq == 4242
+    # 2003: the frame IS the OSC packet, so no sequence
+    assert sub._parse_frame(2003, osc_encode("/heartbeat", [])).seq is None

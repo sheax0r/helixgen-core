@@ -1030,3 +1030,55 @@ def test_events_deferred_by_a_failed_write_still_apply(s):
     with pytest.raises(LiveError):
         s.set_param(0, 1, 1, 0.9)
     assert _value(s, 0, 1, 1) == pytest.approx(0.66)
+
+
+# --- 2001 sequence-gap reconciliation (hgc-0a0) ------------------------------
+# A silent SUB reconnect drops frames without any disconnect: the 2001 header's
+# per-stream sequence counter jumps. A jump means we missed changes, so we
+# reconcile with one full re-read. `s.load()` in the fixture leaves reads == 1.
+
+def _seqf(seq, addr="/ping", *args, port=2001):
+    return Event(port, addr, list(args), seq)
+
+
+def test_consecutive_sequences_do_not_reread(s):
+    s.handle_events([_seqf(5)])          # first frame: establishes the baseline
+    s.handle_events([_seqf(6), _seqf(7)])
+    assert s.client.reads == 1
+
+
+def test_first_frame_never_rereads(s):
+    s.handle_events([_seqf(100)])
+    assert s.client.reads == 1
+
+
+def test_a_sequence_jump_rereads_exactly_once(s):
+    s.handle_events([_seqf(5)])          # baseline
+    s.handle_events([_seqf(9)])          # jumped: frames 6,7,8 were dropped
+    assert s.client.reads == 2
+    s.handle_events([_seqf(10), _seqf(11)])   # resumed in order: no further read
+    assert s.client.reads == 2
+
+
+def test_uint32_wraparound_is_not_a_gap(s):
+    s.handle_events([_seqf(0xFFFFFFFF)])      # baseline at the top of the range
+    s.handle_events([_seqf(0)])               # wrapped: continuous
+    assert s.client.reads == 1
+
+
+def test_a_later_jump_rereads_again(s):
+    s.handle_events([_seqf(5)])
+    s.handle_events([_seqf(9)])               # gap 1
+    s.handle_events([_seqf(10)])              # back in order
+    s.handle_events([_seqf(20)])              # gap 2
+    assert s.client.reads == 3
+
+
+def test_sequence_tracked_per_stream(s):
+    # the counter is per-stream: each port's run is measured on its own, so one
+    # stream's jump is neither masked nor caused by another's frame
+    assert s._seq_gap(2001, 5) is False      # first frame on each stream
+    assert s._seq_gap(2003, 100) is False
+    assert s._seq_gap(2001, 6) is False      # 2001 continues in order
+    assert s._seq_gap(2003, 105) is True     # 2003 jumped, on its own count
+    assert s._seq_gap(2001, 7) is False      # 2001 is still fine

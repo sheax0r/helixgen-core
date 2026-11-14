@@ -38,6 +38,7 @@ SNAPSHOT_SETTLE = 1.0
 DEAD_AFTER = 6.0      # s of total silence on the PUB streams = disconnected
 RETRY_EVERY = 3.0     # s between reconnect attempts while disconnected
 _OWN_MAX = 256        # own write echoes remembered
+_SEQ_MOD = 1 << 32    # the 2001 header sequence is a uint32; wraps at 2**32
 
 
 class LiveError(Exception):
@@ -109,6 +110,7 @@ class LiveSession:
         self._snapshot_reread_at = -math.inf
         self._last_event: Optional[float] = None
         self._last_retry = -math.inf
+        self._seq: Dict[int, int] = {}   # port -> last 2001 header sequence seen
 
     # --- state (all under cond) ---------------------------------------------
     def _meta(self) -> dict:
@@ -659,6 +661,19 @@ class LiveSession:
                             "pid": pid, "value": value})
         return True
 
+    def _seq_gap(self, port: int, seq: Optional[int]) -> bool:
+        """Record this frame's 2001 header sequence and report whether it skipped
+        one. The first frame on a stream (no prior seq) is never a gap; a normal
+        consecutive frame (``seq == last + 1``) is not; a uint32 wraparound
+        (``0xFFFFFFFF`` -> ``0``) is continuity. Updating ``_seq`` to the latest
+        on every frame makes a jump fire at most once: the next consecutive
+        frame is measured against the new value, not the pre-gap one."""
+        if seq is None:
+            return False
+        last = self._seq.get(port)
+        self._seq[port] = seq
+        return last is not None and (seq - last) % _SEQ_MOD != 1
+
     def handle_events(self, events: list) -> None:
         """Digest one poll batch from the device's PUB stream(s). Value changes
         apply in place; however many structural events a batch holds, at most
@@ -671,8 +686,15 @@ class LiveSession:
         reread = snapshot = identity = False
         late: List[tuple] = []
         for ev in events:
-            if getattr(ev, "port", 2001) != 2001:
+            port = getattr(ev, "port", 2001)
+            if port != 2001:
                 continue
+            if self._seq_gap(port, getattr(ev, "seq", None)):
+                # frames were dropped (the SUB socket reconnected silently, or a
+                # frame was unparseable) — whatever changed while we were deaf is
+                # not in our state. Reconcile with the same full read the
+                # disconnect-return uses, rather than wait for a per-control event.
+                reread = identity = True
             action = decode_event(ev.addr, ev.args)
             if action is None:
                 continue
