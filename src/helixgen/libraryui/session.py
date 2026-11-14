@@ -39,6 +39,43 @@ def _default_guitar_loader() -> List[Any]:
     return load_all_profiles()
 
 
+def _default_ir_local_loader() -> List[dict]:
+    """Every locally-registered IR as ``{hash, name, wav}`` — the IrMapping is
+    the authority on which IRs the computer holds; the wav basename labels it."""
+    from helixgen.ir import IrMapping
+    try:
+        mapping = IrMapping.load()
+    except Exception:  # noqa: BLE001 — no mapping yet is just "no local IRs"
+        return []
+    return [{"hash": h, "name": Path(str(wav)).name, "wav": str(wav)}
+            for h, wav in mapping.entries.items()]
+
+
+def _normalize_device_irs(h) -> List[dict]:
+    """The device's IRs as ``{hash, name, mono}``. One RPC (no per-IR file
+    lookup — the actions address IRs by hash, so the on-device basename isn't
+    needed for the hub)."""
+    return [{"hash": m.get("hash"), "name": m.get("name"), "mono": m.get("mono")}
+            for m in h.list_irs(strict=True)]
+
+
+def _default_push_ir(h, wav_path) -> dict:
+    from helixgen.device import sftp as _sftp
+    return _sftp.push_ir(h.ip, str(wav_path))
+
+
+def _default_delete_ir(h, name_or_hash) -> dict:
+    from helixgen.device import maintenance as mt
+    return mt.delete_device_ir(h, name_or_hash, ip=h.ip)
+
+
+def _default_rename_ir(h, name_or_hash, new_name) -> dict:
+    from helixgen.device import maintenance as mt
+    target = mt.resolve_device_ir_live(h, name_or_hash)
+    ok = h.rename(target["cid_"], new_name)
+    return {"ok": bool(ok), "name": target.get("name"), "new_name": new_name}
+
+
 def _default_copy_tone(client, hsp_path, *, setlist, pos) -> dict:
     """The real `device copy`: upsert the .hsp by meta.name, uploading IRs.
 
@@ -101,12 +138,15 @@ class LibrarySession:
         *,
         tone_loader: Callable[[], List[ToneMeta]] = _default_tone_loader,
         guitar_loader: Callable[[], List[Any]] = _default_guitar_loader,
-        ir_local_loader: Callable[[], List[Any]] = lambda: [],
+        ir_local_loader: Callable[[], List[Any]] = _default_ir_local_loader,
         library_root: Optional[Path] = None,
         copy_fn: Callable[..., dict] = _default_copy_tone,
         pull_fn: Callable[..., dict] = _default_pull_tone,
         remove_fn: Callable[..., dict] = _default_remove_tone,
         move_fn: Callable[..., dict] = _default_move_tone,
+        push_ir_fn: Callable[..., dict] = _default_push_ir,
+        delete_ir_fn: Callable[..., dict] = _default_delete_ir,
+        rename_ir_fn: Callable[..., dict] = _default_rename_ir,
     ):
         self._client_factory = client_factory
         self._tone_loader = tone_loader
@@ -117,6 +157,9 @@ class LibrarySession:
         self._pull_fn = pull_fn
         self._remove_fn = remove_fn
         self._move_fn = move_fn
+        self._push_ir_fn = push_ir_fn
+        self._delete_ir_fn = delete_ir_fn
+        self._rename_ir_fn = rename_ir_fn
         # One global lock serialises every device-mutating action; the Helix
         # client is not safe to drive from two requests at once.
         # ponytail: single mutate lock, split per-scope only if it ever bottlenecks.
@@ -160,6 +203,10 @@ class LibrarySession:
             with client as h:
                 pool_rows = list(h.list_presets())
                 setlists = list(h.list_setlists())
+                try:
+                    device_irs = _normalize_device_irs(h)
+                except Exception:  # noqa: BLE001 — an IR hiccup ≠ no device
+                    device_irs = []
         except Exception:  # noqa: BLE001 — a flaky device is just "offline"
             return None
         pool: Dict[str, List[int]] = {}
@@ -167,7 +214,8 @@ class LibrarySession:
             name = m.get("name")
             if name is not None:
                 pool.setdefault(name, []).append(m.get("cid_"))
-        return {"pool": pool, "pool_rows": pool_rows, "setlists": setlists}
+        return {"pool": pool, "pool_rows": pool_rows, "setlists": setlists,
+                "irs": device_irs}
 
     # -- public state ------------------------------------------------------
 
@@ -248,9 +296,32 @@ class LibrarySession:
             "connected": device is not None,
             "tones": tones,
             "setlists": device["setlists"] if device else [],
-            "irs": {"computer": [], "device": []},  # Task 5
+            "irs": self._ir_view(device),
             "facets": {k: sorted(v) for k, v in facets.items()},
         }
+
+    def _ir_view(self, device: Optional[dict]) -> List[dict]:
+        """One flat IR list, computer ∪ device, matched by hash. Each row:
+        ``{hash, name, wav, presence}`` (presence computer|device|both)."""
+        computer = self._ir_local_loader() or []
+        device_irs = device["irs"] if device else []
+        dev_by_hash = {m.get("hash"): m for m in device_irs if m.get("hash")}
+        seen: set = set()
+        rows: List[dict] = []
+        for c in computer:
+            h = c.get("hash")
+            seen.add(h)
+            on_dev = h in dev_by_hash
+            rows.append({"hash": h, "name": c.get("name"), "wav": c.get("wav"),
+                         "presence": "both" if on_dev else "computer"})
+        for m in device_irs:
+            h = m.get("hash")
+            if h in seen:
+                continue
+            rows.append({"hash": h, "name": m.get("name"), "wav": None,
+                         "presence": "device"})
+        rows.sort(key=lambda r: (r.get("name") or "").lower())
+        return rows
 
     # -- reconcile actions -------------------------------------------------
 
@@ -427,6 +498,57 @@ class LibrarySession:
             raise LibraryError("position must be an integer", status=400) from e
         return self._run(lambda h: self._move_fn(
             h, name, setlist=setlist, to=to, cid=cid))
+
+    # -- IR actions --------------------------------------------------------
+
+    def _resolve_wav(self, wav: Any) -> Path:
+        if not isinstance(wav, str) or not wav.strip():
+            raise LibraryError("no IR file given", status=400)
+        p = Path(wav)
+        if not p.is_absolute():
+            p = self._root() / wav
+        if not p.exists():
+            raise LibraryError(f"IR file not found: {wav}", status=404)
+        return p
+
+    def push_ir(self, wav: Any) -> dict:
+        """Upload a local .wav onto the device (``device push-ir``). A full
+        device (fw 1.4's 2048-IR cap) comes back as a LibraryError, not a
+        crash."""
+        p = self._resolve_wav(wav)
+
+        def go(h):
+            res = self._push_ir_fn(h, p)
+            if not res.get("ok", True):
+                raise LibraryError(f"upload of {p.name} failed", status=502)
+            return res
+        return self._run(go)
+
+    def delete_ir(self, name_or_hash: Any) -> dict:
+        if not (name_or_hash or "").strip():
+            raise LibraryError("an IR name or hash is required", status=400)
+
+        def go(h):
+            res = self._delete_ir_fn(h, name_or_hash)
+            if not res.get("ok"):
+                raise LibraryError(f"failed to delete IR {name_or_hash!r}",
+                                   status=502)
+            return res
+        return self._run(go)
+
+    def rename_ir(self, name_or_hash: Any, new_name: Any) -> dict:
+        if not (name_or_hash or "").strip():
+            raise LibraryError("an IR name or hash is required", status=400)
+        if not (new_name or "").strip():
+            raise LibraryError("a new name is required", status=400)
+
+        def go(h):
+            res = self._rename_ir_fn(h, name_or_hash, new_name)
+            if not res.get("ok"):
+                raise LibraryError(f"failed to rename IR {name_or_hash!r}",
+                                   status=502)
+            return res
+        return self._run(go)
 
 
 def _ordered_variants(variants: List[dict]) -> List[dict]:

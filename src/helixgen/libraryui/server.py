@@ -49,6 +49,12 @@ def _route(session: LibrarySession, path: str, body: dict):
     if path == "/setlist/move":
         return session.setlist_move(body.get("name"), body.get("setlist"),
                                     body.get("to"), cid=body.get("cid"))
+    if path == "/ir/push":
+        return session.push_ir(body.get("wav"))
+    if path == "/ir/delete":
+        return session.delete_ir(body.get("name_or_hash"))
+    if path == "/ir/rename":
+        return session.rename_ir(body.get("name_or_hash"), body.get("new_name"))
     return None
 
 

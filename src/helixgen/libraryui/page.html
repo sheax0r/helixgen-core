@@ -75,6 +75,13 @@
   .slchip { display: inline-flex; align-items: center; gap: 4px;
             background: var(--chip); border: 1px solid var(--line);
             border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12px; }
+  #ir-pane { padding: 12px 16px; border-top: 1px solid var(--line); }
+  #ir-pane h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+                color: var(--muted); margin: 0 0 10px; }
+  .irrow { display: flex; align-items: center; gap: 8px; padding: 7px 11px;
+           background: var(--panel); border: 1px solid var(--line);
+           border-radius: 9px; margin-bottom: 6px; }
+  .irrow .vlabel { flex: 1; font-weight: 600; }
   .empty { color: var(--muted); padding: 24px 8px; text-align: center; }
   .offline { border: 1px dashed var(--line); border-radius: 9px;
              padding: 20px; text-align: center; color: var(--muted); }
@@ -100,6 +107,10 @@
     <div id="device"></div>
   </section>
 </main>
+<section id="ir-pane">
+  <h2>Impulse responses</h2>
+  <div id="irs"></div>
+</section>
 <script>
 "use strict";
 const state = { data: null, q: "", filters: {} };  // filters: {kind: Set}
@@ -287,9 +298,49 @@ function renderFacets() {
   }
 }
 
+function irActions(m) {
+  const btns = [];
+  if (m.presence === "computer" && m.wav) {
+    btns.push(mkBtn("Push →", b => postAction("/ir/push", { wav: m.wav }, b)));
+  }
+  if (m.presence !== "computer" && m.hash) {
+    btns.push(mkBtn("rename", b => {
+      const nn = prompt("Rename IR to:");
+      if (nn) postAction("/ir/rename", { name_or_hash: m.hash, new_name: nn }, b);
+    }));
+    btns.push(mkBtn("delete", b => {
+      if (confirm("Delete IR " + (m.name || m.hash) + " from the device?"))
+        postAction("/ir/delete", { name_or_hash: m.hash }, b);
+    }));
+  }
+  return btns;
+}
+
+function renderIRs() {
+  const host = document.getElementById("irs");
+  host.replaceChildren();
+  const irs = (state.data && state.data.irs) || [];
+  const q = state.q.toLowerCase();
+  const shown = irs.filter(m =>
+    !q || ((m.name || "") + " " + (m.hash || "")).toLowerCase().includes(q));
+  if (!shown.length) {
+    host.appendChild(el("div", "empty", "No impulse responses."));
+    return;
+  }
+  for (const m of shown) {
+    const r = el("div", "irrow");
+    r.append(el("span", "vlabel", m.name || m.hash || "(unnamed)"),
+             el("span", "venue", (m.hash || "").slice(0, 8)),
+             badge(m.presence));
+    for (const b of irActions(m)) r.appendChild(b);
+    host.appendChild(r);
+  }
+}
+
 function render() {
   renderFacets();
   renderSetlists();
+  renderIRs();
   const d = state.data;
   const dot = document.getElementById("dot");
   const conn = document.getElementById("conn");
