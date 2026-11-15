@@ -367,11 +367,26 @@ def test_view_no_phantom_scene_after_middle_remove(no_snaps, library):
 
 def test_view_nulls_variance_without_configured_name(no_snaps, library):
     # per-snapshot variance but every slot is a placeholder name -> no
-    # configured snapshots project (unchanged view behaviour)
+    # configured snapshots project (unchanged view behaviour). NOTE: hgc-0c3
+    # tracks that this drops device-origin blank-named-but-valid snapshots'
+    # deltas in the to-hsp->view->generate loop; the fix reverses #118's
+    # "unnamed variance is not a scene" model and is deferred for owner review.
     no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
     mutate.set_param(no_snaps, "Brit 2204 Custom", "Drive", 0.6, library,
                      snapshot=1)
     assert view.view(no_snaps, library).get("snapshots") in (None, [])
+
+
+def test_set_snapshot_pads_a_malformed_short_meta(no_snaps, library):
+    # hgc-dsd: a present-but-malformed sub-8-slot `snapshots` meta (hand-edited
+    # / legacy) must not raise a bare IndexError — set_snapshot pads it to the
+    # device's 8 slots and succeeds with a graceful, valid result.
+    no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()[:4]
+    mutate.set_snapshot(no_snaps, index=6, name="High", library=library)
+    meta = no_snaps["preset"]["snapshots"]
+    assert len(meta) == 8
+    assert meta[6]["name"] == "High"
+    assert meta[5]["name"] == "Snap 6"  # padded slot got its index-correct name
 
 
 def test_patch_atomic_bad_op_leaves_body_untouched(body, library):
