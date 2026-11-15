@@ -283,7 +283,7 @@ def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
     return []
 
 
-def apply_stored_defaults(recipe: Any) -> None:
+def apply_stored_defaults(recipe: Any, shape: str = "hsp") -> None:
     """Apply stored user preferences to a RAW recipe dict, in place.
 
     Call this immediately before `parse_spec` at every entry point that turns
@@ -292,14 +292,19 @@ def apply_stored_defaults(recipe: Any) -> None:
     preference wired into only some of them is worse than one wired into
     none: it would apply or not depending on which verb the user reached for.
 
+    `shape` is the chassis shape (`"hsp"` / `"hlx"`). The mic preference
+    injects an `input` (Stadium-only routing); a `.hlx` chassis ignores input
+    routing, so applying it there only trips the "Stadium-only ... ignored"
+    warning for a field the user never authored — skip it for `.hlx` (hgc-srv).
+
     Never raises — a malformed preferences file disables the defaults rather
     than failing the generate, and says so on stderr.
     """
-    if not isinstance(recipe, dict):
+    if not isinstance(recipe, dict) or shape != "hsp":
         return
-    from helixgen.preferences import load_preferences
+    from helixgen.preferences import load_preferences, _parse_mic_input
     try:
-        mic = load_preferences().mic_input
+        mic = _parse_mic_input(load_preferences().mic_input)
     except Exception as e:
         print(f"stored preferences ignored (mic_input not applied): {e}",
               file=sys.stderr)

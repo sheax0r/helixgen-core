@@ -228,6 +228,30 @@ def test_compose_preset_hlx_no_warn_on_empty_output(
     assert "Stadium-only" not in capsys.readouterr().err
 
 
+def test_hlx_generate_skips_mic_preference(
+    tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block,
+    tmp_path, monkeypatch, capsys
+):
+    """hgc-srv: the mic preference injects an `input` (Stadium-only routing).
+    A .hlx chassis ignores input routing, so applying it there injects a field
+    the user never authored and trips the "Stadium-only ... ignored" warning.
+    Skip the preference for .hlx — no injection, no spurious warning."""
+    lib = Library(tmp_library)
+    populate_library_and_chassis(lib, sample_serial_preset, sample_amp_block, sample_cab_block)
+
+    prefs = tmp_path / "preferences.json"
+    prefs.write_text(json.dumps({"mic_input": {"enabled": True, "path": 1}}))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(prefs))
+
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps({
+        "name": "HlxMic",
+        "paths": [{"blocks": [{"block": "Brit 2204 Custom"}]}],
+    }))
+    generate_preset(spec_path, tmp_path / "out.hlx", lib)
+    assert "Stadium-only" not in capsys.readouterr().err
+
+
 def test_compose_preset_writes_provenance(
     tmp_library, sample_serial_preset, sample_amp_block, sample_cab_block
 ):
