@@ -815,7 +815,7 @@ def _recover_commands(
         for rec in sorted(
                 (r for r in records if isinstance(r, dict)),
                 key=lambda r: r.get("ordinal", 0)):
-            entry = _recover_one_command(rec, switch, scrib)
+            entry = _recover_one_command(rec, switch, scrib, source_id, unknowns)
             if entry is None:
                 continue
             if switch in fs_switches:
@@ -848,16 +848,48 @@ def _cmd_val(params: dict, name: str) -> int:
     return 0
 
 
-def _recover_one_command(rec: dict, switch: str,
-                         scrib: dict) -> dict[str, Any] | None:
+def _surface_out_of_spec_command(unknowns: list[dict[str, Any]], source_id: int,
+                                 switch: str, rec: dict, why: str) -> None:
+    """Keep a real device command whose value is outside helixgen's authorable
+    range in ``unknown_controllers`` (never silently dropped — hgc-qf3). It
+    still round-trips through ``preset.commands``; this only makes it visible
+    in the projection instead of vanishing."""
+    ctype = rec.get("type")
+    print(
+        f"warning: {switch} carries a Command Center {ctype} command with "
+        f"{why} — outside helixgen's authorable range; kept under "
+        f"unknown_controllers (not emitted as a `commands` entry).",
+        file=sys.stderr,
+    )
+    unknowns.append({
+        "kind": "command",
+        "source": f"0x{source_id:08x}",
+        "switch": switch,
+        "label": (f"Command Center {ctype} command with {why} — outside "
+                  f"helixgen's authorable range"),
+        "command": {"type": ctype, "params": rec.get("params")},
+    })
+
+
+def _recover_one_command(rec: dict, switch: str, scrib: dict,
+                         source_id: int,
+                         unknowns: list[dict[str, Any]]) -> dict[str, Any] | None:
     ctype = rec.get("type")
     params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
     # Mirror parse_spec's ranges so a hand-corrupted / params-incomplete record
     # can't project a `commands` entry the parser would then reject (the #33
-    # residual-2 discipline). MIDI needs a 1..16 channel; snapshot 0..7.
+    # residual-2 discipline). MIDI needs a 1..16 channel; snapshot 0..7. A real
+    # device command outside those ranges is SURFACED in `unknown_controllers`
+    # rather than silently dropped (hgc-qf3) — e.g. a device MIDI channel of 0,
+    # if the hardware ever 0-bases it (uncaptured, so the range is NOT widened
+    # here), stays visible in the projection instead of vanishing.
     if ctype == "MIDI" and _cmd_val(params, "MIDI Ch") not in range(1, 17):
+        _surface_out_of_spec_command(unknowns, source_id, switch, rec,
+                                     "a MIDI channel outside 1..16")
         return None
     if ctype == "PresetSnapshot" and not (0 <= _cmd_val(params, "Snapshot") <= 7):
+        _surface_out_of_spec_command(unknowns, source_id, switch, rec,
+                                     "a snapshot index outside 0..7")
         return None
     entry: dict[str, Any] = {"switch": switch}
     if ctype == "PresetSnapshot":

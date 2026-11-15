@@ -880,6 +880,14 @@ def set_snapshot(
     if not preset.get("snapshots"):
         preset["snapshots"] = _default_snapshot_meta()
     meta = preset["snapshots"]
+    # A present-but-malformed sub-8-slot meta (hand-edited / legacy) skips the
+    # synthesize guard above, so `meta[target]` would raise a bare IndexError
+    # for a target the 0..7 ceiling allowed but `len(meta)` doesn't (hgc-dsd).
+    # The device always has 8 slots, so pad a short meta up to 8 with
+    # index-correct placeholder defaults before any slot access — the op then
+    # succeeds with a valid 8-slot meta instead of crashing opaquely.
+    if len(meta) < HSP_SNAPSHOT_SLOTS:
+        meta.extend(_default_snapshot_meta()[len(meta):])
     if not (isinstance(meta[target], dict)):
         meta[target] = {}
 

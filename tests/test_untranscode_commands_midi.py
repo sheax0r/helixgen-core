@@ -234,3 +234,24 @@ def test_recovered_body_reprojects_through_view(tmp_path):
     parse_spec({"name": "x", "paths": [{"blocks": [
         {"block": "Minotaur Mono"}, {"block": "Brit Plexi Nrm"}]}],
         "commands": projected["commands"], "midi": projected["midi"]})
+
+
+def test_out_of_spec_midi_command_surfaces_in_unknowns(tmp_path):
+    # hgc-qf3: a device-origin Command Center command whose MIDI channel is
+    # outside 1..16 (e.g. a backup that 0-bases the channel) must land in
+    # `unknown_controllers` — visible — rather than vanishing silently from the
+    # view projection. It still round-trips through preset.commands.
+    from helixgen.view import view
+    body, library = _authored(tmp_path)
+    # Corrupt the Instant1 midi_cc command's channel to an out-of-range 0.
+    for recs in body["preset"]["commands"].values():
+        for rec in recs:
+            if rec.get("type") == "MIDI":
+                rec["params"]["MIDI Ch"]["value"] = 0
+    proj = view(body, library)
+    # No longer emitted as a first-class `commands` entry...
+    assert not any(str(c.get("command", "")).startswith("midi")
+                   for c in proj.get("commands", []))
+    # ...but surfaced (not silently dropped) under unknown_controllers.
+    assert any(u.get("kind") == "command"
+               for u in proj.get("unknown_controllers", []))
