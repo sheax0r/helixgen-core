@@ -958,6 +958,116 @@ def remove_expression_cmd(preset_path, pedal, library_path, irs_dir):
     _run_mutation(preset_path, library_path, irs_dir, _mutation)
 
 
+@cli.command(name="set-snapshot")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--index", type=int, default=None, metavar="0-7",
+              help="Target slot (0-based). Required to CREATE a snapshot, and "
+                   "to disambiguate a --name that matches more than one slot.")
+@click.option("--name", default=None,
+              help="Name the slot. A name is REQUIRED to create a snapshot "
+                   "(an unnamed slot is unconfigured, so there is nothing to "
+                   "create without one); set-only — clear it with "
+                   "remove-snapshot.")
+@click.option("--active", is_flag=True, default=False,
+              help="Make this the load-active snapshot, re-syncing every "
+                   "varying param's base value to this slot.")
+@click.option("--clone-from", default=None, metavar="NAME_OR_INDEX",
+              help="Copy a CONFIGURED source slot's full per-snapshot state "
+                   "(block bypasses + param values + output) into the target "
+                   "— state only, NOT the source's name. Inline content below "
+                   "is applied on top (last-wins).")
+@click.option("--disable", "disable", multiple=True, metavar="BLOCK",
+              help="Bypass this block in this snapshot (repeatable).")
+@click.option("--enable", "enable", multiple=True, metavar="BLOCK",
+              help="Un-bypass this block in this snapshot (repeatable; for a "
+                   "cloned/inherited scene).")
+@click.option("--param", "params", multiple=True, nargs=3,
+              metavar="BLOCK PARAM VALUE",
+              help="Per-snapshot param override (repeatable). VALUE is "
+                   "auto-coerced. For a block placed more than once, use the "
+                   "`set_snapshot` patch op with path/lane/pos.")
+@click.option("--output-level", type=float, default=None, metavar="DB",
+              help="Per-snapshot output level (dB) on the output endpoint.")
+@click.option("--output-pan", type=float, default=None, metavar="PAN",
+              help="Per-snapshot output pan on the output endpoint.")
+@click.option("--output-path", type=int, default=0, show_default=True,
+              help="DSP path for --output-level/--output-pan.")
+@_library_option
+@_irs_option
+def set_snapshot_cmd(preset_path, index, name, active, clone_from, disable,
+                     enable, params, output_level, output_pan, output_path,
+                     library_path, irs_dir):
+    """Create / name / activate / clone a snapshot SCENE, in place — the
+    single-op form of the `set_snapshot` patch op.
+
+    The Stadium always has 8 physical snapshot slots; "create" means NAME a
+    slot (plus optional content). This is the ONLY way to add, name, activate,
+    or clone a snapshot on an EXISTING .hsp with no decompile->regenerate: a
+    preset whose recipe omitted snapshots gains the 8-slot meta in place the
+    first time you name one.
+
+    Target with `--index` and/or `--name`. CREATING a configured snapshot
+    requires `--name` and `--index`; editing an already-named slot (or adding
+    content/`--active`/`--clone-from`) may use `--index` alone. A `--name` that
+    resolves to one slot can target by name alone; a name matching MORE THAN
+    ONE slot needs an explicit `--index`, and a `--name`+`--index` that point
+    at different slots is a contradiction (error). Duplicate names are allowed
+    (the hardware permits them). A snapshot is CONFIGURED iff it has a
+    non-placeholder name.
+
+    `--clone-from NAME_OR_INDEX` copies a configured source's full per-snapshot
+    state into the target (state only, never its name). Inline `--disable` /
+    `--enable` / `--param` / `--output-level`/`--output-pan` are SUGAR over the
+    per-snapshot writers (identical to `set-param --snapshot` / `disable
+    --snapshot`), applied after the clone (last-wins). Configured snapshots
+    round-trip through `view` and are realized on the device by `device
+    copy`/`install`. Physical reordering of slots is out of scope.
+    """
+    def _mutation(body, library, irs):
+        output = {}
+        if output_level is not None:
+            output["level"] = output_level
+        if output_pan is not None:
+            output["pan"] = output_pan
+        if output:
+            output["path"] = output_path
+        param_list = [{"block": b, "param": p, "value": _coerce_cli_value(v)}
+                      for (b, p, v) in params]
+        return mutate.set_snapshot(
+            body, index=index, name=name, active=active,
+            clone_from=clone_from,
+            disable=list(disable) or None, enable=list(enable) or None,
+            params=param_list or None, output=output or None, library=library,
+        )
+
+    _run_mutation(preset_path, library_path, irs_dir, _mutation)
+
+
+@cli.command(name="remove-snapshot")
+@click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
+@click.option("--index", type=int, default=None, metavar="0-7",
+              help="Target slot (0-based).")
+@click.option("--name", default=None, help="Target slot by name.")
+@_library_option
+@_irs_option
+def remove_snapshot_cmd(preset_path, index, name, library_path, irs_dir):
+    """Remove (unconfigure) a snapshot SCENE, in place — the single-op form of
+    the `remove_snapshot` patch op.
+
+    Reverts the slot's name to its `Snap N` placeholder, marks it `valid:
+    false`, and reverts every per-snapshot override on that slot back to the
+    base/home scene. If the removed slot was active, the active snapshot falls
+    back to 0. The 8 physical slots are kept (there is no count to shrink);
+    only the one slot's name/valid and its overrides change. Target with
+    `--index` or `--name`. Errors if the slot is NOT CONFIGURED (no name —
+    nothing to remove), mirroring `remove-footswitch`.
+    """
+    def _mutation(body, library, irs):
+        return mutate.remove_snapshot(body, index=index, name=name)
+
+    _run_mutation(preset_path, library_path, irs_dir, _mutation)
+
+
 @cli.command(name="patch")
 @click.argument("preset_path", type=click.Path(exists=True, path_type=Path))
 @click.argument("ops", type=click.File("r"))
@@ -981,7 +1091,11 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
        {"op": "set_expression", "pedal": "EXP1",
         "targets": [{"block": "Pitch Wham Mono", "param": "Pedal"}]},
        {"op": "remove_footswitch", "switch": "FS2"},
-       {"op": "remove_expression", "pedal": "EXP1"}]
+       {"op": "remove_expression", "pedal": "EXP1"},
+       {"op": "set_snapshot", "index": 1, "name": "Lead", "active": true,
+        "params": [{"block": "Brit 2204 Custom", "param": "Drive",
+                    "value": 0.85}]},
+       {"op": "remove_snapshot", "name": "Clean"}]
 
     All ops are applied to an in-memory copy and the file is written ONCE at
     the end — an invalid op anywhere in the list (unknown op, bad param,
@@ -1013,6 +1127,17 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
     ("switch", optional "block" to unwire one target of a merge switch) and
     "remove_expression" ("pedal") delete an assignment and error if there is
     none to remove.
+
+    Snapshot SCENE ops create/name/activate/clone/remove a snapshot on an
+    EXISTING .hsp with no decompile->regenerate (see `set-snapshot --help`).
+    "set_snapshot" takes "index" and/or "name" (creating needs both; a name
+    matching >1 slot needs an explicit "index"), plus optional "active",
+    "clone_from" (a configured source — state only, not its name), and inline
+    "disable"/"enable" (block-ref lists), "params" (each {block, param, value
+    [, path/lane/pos]}) and "output" ({level?, pan?, path?}) — all sugar over
+    the per-snapshot writers, so last-wins-equivalent to the --snapshot verbs.
+    "remove_snapshot" ("index" or "name") unconfigures a slot and errors if it
+    is not configured.
 
     Warnings (e.g. swap_model params it had to drop) go to stderr, or into
     the --json result's "warnings" list. Exit 0 = file patched.

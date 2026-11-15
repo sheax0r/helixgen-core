@@ -261,6 +261,18 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
      ["EXP1 or EXP2", "heel", "toe"]),
     (["remove-expression"],
      ["EXP1 or EXP2", "Errors if"]),
+    # --- snapshot scene single-op verbs (companion to set_/remove_snapshot) ---
+    # The agent contract: 8 physical slots, create needs a name, the
+    # disambiguation rules, clone copies state not name, inline content is
+    # sugar over the --snapshot writers, and it round-trips through view.
+    (["set-snapshot"],
+     ["8 physical snapshot slots", "decompile->regenerate", "requires",
+      "CONFIGURED", "MORE THAN ONE slot", "contradiction",
+      "clone-from", "state only, never its name", "last-wins", "view"]),
+    (["remove-snapshot"],
+     ["unconfigure", "Snap N", "valid: false", "falls back to 0",
+      "NOT CONFIGURED", "remove-footswitch"]),
+    (["patch"], ["set_snapshot", "remove_snapshot", "clone_from"]),
 ]
 
 

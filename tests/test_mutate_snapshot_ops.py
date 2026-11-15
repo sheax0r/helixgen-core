@@ -17,7 +17,7 @@ import copy
 
 import pytest
 
-from helixgen import mutate
+from helixgen import mutate, view
 from helixgen.hsp import read_hsp
 from tests.golden import harness
 
@@ -299,6 +299,28 @@ def test_patch_set_snapshot_missing_required_field(body, library):
     # neither index nor name -> required-field guard
     with pytest.raises(mutate.MutateError):
         mutate.apply_operations(body, [{"op": "set_snapshot"}], library)
+
+
+# ============================ view projection (confirming) ==================
+
+def test_view_projects_snapshot_created_in_place(no_snaps, library):
+    # create a named scene with content on a preset that had NO snapshots meta,
+    # then confirm `view` projects it (the round-trip Task 5 asserts is wired)
+    mutate.set_snapshot(no_snaps, index=1, name="Lead", library=library,
+                        params=[{"block": "Brit 2204 Custom", "param": "Drive",
+                                 "value": 0.7}])
+    proj = view.view(no_snaps, library)
+    lead = next(s for s in (proj.get("snapshots") or []) if s.get("name") == "Lead")
+    assert lead["params"]["Brit 2204 Custom"]["Drive"] == 0.7
+
+
+def test_view_nulls_variance_without_configured_name(no_snaps, library):
+    # per-snapshot variance but every slot is a placeholder name -> no
+    # configured snapshots project (unchanged view behaviour)
+    no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
+    mutate.set_param(no_snaps, "Brit 2204 Custom", "Drive", 0.6, library,
+                     snapshot=1)
+    assert view.view(no_snaps, library).get("snapshots") in (None, [])
 
 
 def test_patch_atomic_bad_op_leaves_body_untouched(body, library):
