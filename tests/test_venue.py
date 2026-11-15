@@ -225,6 +225,7 @@ def test_headphones_adds_parallel_room_ir_and_disabled_tile(single_ir_body, lib,
         "treatment": "room-ir", "room_ir": ROOM,
         "room_level_db": pytest.approx(EXPECTED_LEVEL, abs=0.1),
         "room_switch": "FS2", "ambience_block": "Tile", "ambience_switch": "FS3",
+        "room_highcut": None, "room_lowcut": None, "close_cut_before": None,
         "fallback_reason": None, "sources_added": ["FS2", "FS3"]}
     assert r.body["meta"] == single_ir_body["meta"]
 
@@ -739,3 +740,114 @@ def test_amp_in_still_removes_a_dead_cab(lib, irs):
     r = venue.apply_venue(_dead_cab_body(lib, irs), "amp-in", lib, irs)
     assert not any(b["slot"][0]["model"] in ("HD2_Cab4x12Greenback25", "HX2_ImpulseResponseWithPan")
                    for k, b in r.body["preset"]["flow"][0].items() if k[1:].isdigit())
+
+
+# --- headphones High Cut ceiling on both mics (2026-11-15) -------------------
+
+def _ir_params(body, irhash, pi=0):
+    b = [x for x in _flow_blocks(body, pi) if x["slot"][0].get("irhash") == irhash][0]
+    return b["slot"][0].get("params") or {}
+
+
+def _ir_hc(body, irhash):
+    w = _ir_params(body, irhash).get("HighCut")
+    return w["value"] if isinstance(w, dict) else w
+
+
+def _close_cut_chain(hc=6500.0):
+    return [{"block": "Scream 808"},
+            {"block": "Brit 2204 Custom", "params": {"Drive": 0.55}},
+            {"block": "IR", "ir": CLOSE, "params": {"HighCut": hc}},
+            {"block": "Plate"}]
+
+
+@needs_sf
+def test_wide_open_close_gets_ceiling_on_both_mics(single_ir_body, lib, irs):
+    r = venue.apply_venue(single_ir_body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    assert r.venue_detail["treatment"] == "room-ir"
+    assert _ir_hc(r.body, CLOSE) == 8000.0        # close clamped from wide open
+    assert _ir_hc(r.body, ROOM) == 8000.0         # room mirrors the close cut
+    assert r.venue_detail["room_highcut"] == 8000.0
+    assert r.venue_detail["close_cut_before"] == {"HighCut": 20100.0}
+
+
+@needs_sf
+def test_no_ceiling_leaves_both_mics_wide_open(single_ir_body, lib, irs):
+    r = venue.apply_venue(single_ir_body, "headphones", lib, irs, close_highcut_hz=None)
+    assert _ir_hc(r.body, CLOSE) == 20100.0       # untouched, block default
+    assert _ir_hc(r.body, ROOM) == 20100.0        # room left at its default too
+    assert r.venue_detail["room_highcut"] is None and r.venue_detail["close_cut_before"] is None
+
+
+@needs_sf
+def test_authored_close_cut_is_kept_and_mirrored_to_room(lib, irs):
+    body = _body(lib, irs, blocks=_close_cut_chain(6500.0))
+    r = venue.apply_venue(body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    assert _ir_hc(r.body, CLOSE) == 6500.0        # author's cut not re-clamped
+    assert _ir_hc(r.body, ROOM) == 6500.0         # room mirrors it
+    assert r.venue_detail["room_highcut"] == 6500.0
+    assert r.venue_detail["close_cut_before"] is None   # close was not changed
+
+
+@needs_sf
+def test_per_snapshot_close_cut_is_mirrored_to_room(lib, irs):
+    body = _body(lib, irs, blocks=_close_cut_chain(6500.0),
+                 snapshots=[{"name": "A"},
+                            {"name": "B", "params": {"IR": {"HighCut": 4000.0}}}])
+    r = venue.apply_venue(body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    room_hc = _ir_params(r.body, ROOM)["HighCut"]
+    assert room_hc["value"] == 6500.0
+    assert room_hc["snapshots"][:2] == [6500.0, 4000.0]
+
+
+@needs_sf
+def test_round_trip_headphones_direct_headphones(single_ir_body, lib, irs):
+    a = venue.apply_venue(single_ir_body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    d = _to_direct(a, lib, irs)
+    assert _ir_hc(d.body, CLOSE) == 20100.0                 # close restored to wide open
+    assert d.body["preset"]["flow"] == single_ir_body["preset"]["flow"]  # byte-exact
+    a2 = venue.apply_venue(d.body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    assert a2.body == a.body                                # full cycle is idempotent
+
+
+@needs_sf
+def test_ir_energy_band_limit_guts_a_top_of_band_signal(tmp_path):
+    big = 2 ** 23 - 1
+    nyq = _write_synth_wav(tmp_path / "hf.wav", 200,
+                           samples_per_channel=[[big if i % 2 == 0 else -big
+                                                 for i in range(200)]])
+    full = venue.ir_energy_db(nyq)
+    assert venue.ir_energy_db(nyq, highcut=1000.0) < full - 10
+
+
+# --- retrofit existing headphones variants ----------------------------------
+
+@needs_sf
+def test_retrofit_brings_an_old_variant_in_line(single_ir_body, lib, irs):
+    old = venue.apply_venue(single_ir_body, "headphones", lib, irs, close_highcut_hz=None)
+    assert _ir_hc(old.body, ROOM) == 20100.0               # built the old way (room wide open)
+    res = venue.retrofit_headphones(old.body, old.venue_detail, lib, irs,
+                                    close_highcut_hz=8000.0)
+    assert res.changed and res.skip_reason is None
+    assert _ir_hc(res.body, CLOSE) == 8000.0 and _ir_hc(res.body, ROOM) == 8000.0
+    assert res.venue_detail["room_highcut"] == 8000.0
+
+
+@needs_sf
+def test_retrofit_is_a_noop_when_already_in_line(single_ir_body, lib, irs):
+    cut = venue.apply_venue(single_ir_body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    res = venue.retrofit_headphones(cut.body, cut.venue_detail, lib, irs,
+                                    close_highcut_hz=8000.0)
+    assert not res.changed and res.skip_reason is None
+
+
+@needs_sf
+def test_retrofit_skips_a_hand_edited_room_ir(single_ir_body, lib, irs):
+    old = venue.apply_venue(single_ir_body, "headphones", lib, irs, close_highcut_hz=None)
+    room = [x for x in _flow_blocks(old.body) if x["slot"][0].get("irhash") == ROOM][0]
+    room["slot"][0].setdefault("params", {})["HighCut"] = {"value": 7000.0}  # by hand
+    before = copy.deepcopy(old.body)
+    res = venue.retrofit_headphones(old.body, old.venue_detail, lib, irs,
+                                    close_highcut_hz=8000.0)
+    assert not res.changed and "hand" in res.skip_reason
+    assert old.body == before                              # left untouched

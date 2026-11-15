@@ -516,6 +516,11 @@ class Preferences:
     author: str | None = None
     default_guitar: str | None = None
     default_venue: str | None = None
+    #: Headphones close-mic High Cut ceiling, Hz. Applied to the close IR (and
+    #: mirrored to the room IR) by the `headphones` venue when the close IR is
+    #: wide open. `null` disables it. Default 8000 (one-tone evidence; where
+    #: Blackstar Beam / Kemper room sims roll off).
+    headphones_highcut_hz: float | None = 8000.0
     instruments: list[Instrument] = field(default_factory=list)
     volume_normalize_snapshots: bool = True
     volume_normalize_baseline: bool = True
@@ -651,6 +656,32 @@ def _validate_default_venue(value: Any, *, name: str = "default_venue") -> str |
         raise PreferencesError(f"{name}: {e}") from None
 
 
+_HEADPHONES_HIGHCUT_RANGE = (1000.0, 20100.0)
+
+
+def _validate_headphones_highcut(value: Any, *,
+                                 name: str = "headphones_highcut_hz") -> float | None:
+    """The headphones close-mic High Cut ceiling in Hz, within the IR block's
+    treble range, or ``null``/``off`` to disable it.
+
+    A low cap (< 1 kHz) is rejected: it would gut the tone, and is far more
+    likely a typo (80 for 8000) than an intent."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in ("off", "none", "null", ""):
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise PreferencesError(f"{name} must be a number (Hz), null, or \"off\"; got {value!r}")
+    try:
+        hz = float(value)
+    except ValueError:
+        raise PreferencesError(f"{name} must be a number (Hz), null, or \"off\"; got {value!r}") from None
+    lo, hi = _HEADPHONES_HIGHCUT_RANGE
+    if not (lo <= hz <= hi):
+        raise PreferencesError(f"{name} must be within [{lo}, {hi}] Hz (got {hz}).")
+    return hz
+
+
 def _validate_git_commit_tones(value: Any, *, name: str = "git_commit_tones") -> str:
     """Normalize to one of "auto" / "true" / "false".
 
@@ -773,6 +804,8 @@ def load_preferences(path: Path | None = None) -> Preferences:
         author=data.get("author"),
         default_guitar=_validate_default_guitar(data.get("default_guitar")),
         default_venue=_validate_default_venue(data.get("default_venue")),
+        headphones_highcut_hz=_validate_headphones_highcut(
+            data.get("headphones_highcut_hz", 8000.0)),
         instruments=_parse_instruments(data.get("instruments")),
         volume_normalize_snapshots=bool(data.get("volume_normalize_snapshots", True)),
         volume_normalize_baseline=bool(data.get("volume_normalize_baseline", True)),
@@ -804,6 +837,10 @@ def load_preferences(path: Path | None = None) -> Preferences:
     if os.environ.get("HELIXGEN_DEFAULT_VENUE", "").strip():
         prefs.default_venue = _validate_default_venue(
             os.environ["HELIXGEN_DEFAULT_VENUE"], name="HELIXGEN_DEFAULT_VENUE"
+        )
+    if "HELIXGEN_HEADPHONES_HIGHCUT_HZ" in os.environ:
+        prefs.headphones_highcut_hz = _validate_headphones_highcut(
+            os.environ["HELIXGEN_HEADPHONES_HIGHCUT_HZ"], name="HELIXGEN_HEADPHONES_HIGHCUT_HZ"
         )
     if "HELIXGEN_VOLUME_NORMALIZE_SNAPSHOTS" in os.environ:
         prefs.volume_normalize_snapshots = _parse_bool_env(
@@ -840,6 +877,7 @@ def _default_scaffold_dict() -> dict:
         "author": None,
         "default_guitar": None,
         "default_venue": None,
+        "headphones_highcut_hz": 8000,
         "instruments": [],
         "volume_normalize_snapshots": True,
         "volume_normalize_baseline": True,

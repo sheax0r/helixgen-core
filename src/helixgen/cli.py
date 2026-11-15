@@ -195,6 +195,10 @@ def ingest_cmd(path: Path, library_path: Path | None) -> None:
               default="auto", show_default=True,
               help="Headphones treatment: auto = room IR when possible, else "
                    "Tile; tile = force the Tile fallback.")
+@click.option("--room-highcut", "room_highcut", default=None, metavar="HZ|off",
+              help="Headphones close-mic High Cut ceiling (Hz), mirrored onto the "
+                   "room IR; `off` disables it. Default: the `headphones_highcut_hz` "
+                   "preference (8000).")
 @_library_option
 @_irs_option
 def generate_cmd(
@@ -207,6 +211,7 @@ def generate_cmd(
     venue_target: str | None,
     room_ir: str | None,
     room_mode: str,
+    room_highcut: str | None,
     library_path: Path | None,
     irs_dir: Path | None,
 ) -> None:
@@ -290,9 +295,9 @@ def generate_cmd(
         chassis = library.load_chassis()
         shape = chassis.get(CHASSIS_SHAPE_KEY, "hlx")
 
-        if output_path is not None and (room_ir or room_mode != "auto"):
-            click.echo("warning: --room-ir/--room only apply to --venue headphones; "
-                       "ignored with -o", err=True)
+        if output_path is not None and (room_ir or room_mode != "auto" or room_highcut):
+            click.echo("warning: --room-ir/--room/--room-highcut only apply to "
+                       "--venue headphones; ignored with -o", err=True)
         if output_path is not None:
             # LEGACY -o: exactly today's behavior. No metadata; naming flags
             # (if any) are ignored by design -- but say so out loud. Passing
@@ -364,9 +369,9 @@ def generate_cmd(
                 venue_target = _prefs.load_preferences().default_venue
             except _prefs.PreferencesError as e:
                 raise click.ClickException(str(e)) from e
-        if not venue_target and (room_ir or room_mode != "auto"):
-            click.echo("warning: --room-ir/--room only apply to --venue headphones; "
-                       "ignored (no venue applies)", err=True)
+        if not venue_target and (room_ir or room_mode != "auto" or room_highcut):
+            click.echo("warning: --room-ir/--room/--room-highcut only apply to "
+                       "--venue headphones; ignored (no venue applies)", err=True)
         try:
             logical = naming.logical_slug(
                 artist=r_artist, song=r_song, descriptor=r_descriptor,
@@ -450,7 +455,8 @@ def generate_cmd(
             venue_res, _irs = _apply_venue_cli(
                 json.loads(data[HSP_MAGIC_LEN:].decode("utf-8")), venue_target,
                 source_venue=None, source_detail=None, room_ir=room_ir,
-                room_mode=room_mode, library_path=library_path, irs_dir=irs_dir)
+                room_mode=room_mode, room_highcut=room_highcut,
+                library_path=library_path, irs_dir=irs_dir)
             data = dumps_hsp(venue_res.body)
         out.write_bytes(data)
 

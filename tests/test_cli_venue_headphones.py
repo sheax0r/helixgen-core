@@ -123,3 +123,61 @@ def test_room_flags_warn_when_no_venue_applies(lib, irs, tmp_path):
     r = _run("generate", str(rec), "--library", str(lib.root), "--irs-dir",
              str(irs.irs_dir), "-o", str(out), "--room-ir", ROOM)
     assert r.exit_code == 0 and "only apply to --venue headphones" in r.output
+
+
+# --- headphones High Cut ceiling (flag + preference + retrofit) --------------
+
+def _ir_hc(hp, irhash):
+    flow0 = hp["preset"]["flow"][0]
+    for b in flow0.values():
+        if isinstance(b, dict) and b.get("slot") and b["slot"][0].get("irhash") == irhash:
+            w = (b["slot"][0].get("params") or {}).get("HighCut")
+            return w["value"] if isinstance(w, dict) else w
+    return None
+
+
+@needs_sf
+def test_room_highcut_off_leaves_both_mics_wide_open(lib, irs, tmp_path):
+    from helixgen import home
+    irs.save()
+    rec = _write(tmp_path, _chain())
+    assert _gen(lib, irs, rec, "--venue", "headphones", "--room-highcut", "off").exit_code == 0
+    hp = read_hsp(home.tones_dir() / "probe.hsp")
+    assert _ir_hc(hp, CLOSE) == 20100.0 and _ir_hc(hp, ROOM) == 20100.0
+
+
+@needs_sf
+def test_room_highcut_defaults_to_pref_and_flag_overrides(lib, irs, tmp_path):
+    from helixgen import home
+    irs.save()
+    rec = _write(tmp_path, _chain())
+    assert _gen(lib, irs, rec, "--venue", "headphones", descriptor="Dfl").exit_code == 0
+    hp = read_hsp(home.tones_dir() / "dfl.hsp")
+    assert _ir_hc(hp, CLOSE) == 8000.0 and _ir_hc(hp, ROOM) == 8000.0   # preference default
+    assert _gen(lib, irs, rec, "--venue", "headphones", "--room-highcut", "6000",
+                descriptor="Six").exit_code == 0
+    hp = read_hsp(home.tones_dir() / "six.hsp")
+    assert _ir_hc(hp, CLOSE) == 6000.0 and _ir_hc(hp, ROOM) == 6000.0
+
+
+@needs_sf
+def test_venue_retrofit_dry_run_then_apply(lib, irs, tmp_path):
+    from helixgen import home
+    irs.save()
+    rec = _write(tmp_path, _chain())
+    # an old-style variant: room mic wide open
+    assert _gen(lib, irs, rec, "--venue", "headphones", "--room-highcut", "off").exit_code == 0
+    probe = home.tones_dir() / "probe.hsp"
+    assert _ir_hc(read_hsp(probe), ROOM) == 20100.0
+
+    dry = _run("library", "venue-retrofit", "--library", str(lib.root),
+               "--irs-dir", str(irs.irs_dir))
+    assert dry.exit_code == 0, dry.output
+    assert "Would update 1" in dry.output
+    assert _ir_hc(read_hsp(probe), ROOM) == 20100.0            # nothing written
+
+    ap = _run("library", "venue-retrofit", "--apply", "--library", str(lib.root),
+              "--irs-dir", str(irs.irs_dir))
+    assert ap.exit_code == 0, ap.output
+    assert _ir_hc(read_hsp(probe), ROOM) == 8000.0 and _ir_hc(read_hsp(probe), CLOSE) == 8000.0
+    assert _meta().variants["generic"].venue_detail["room_highcut"] == 8000.0
