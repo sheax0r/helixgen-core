@@ -67,8 +67,14 @@ def user_data_dir(url: str) -> str:
 
 
 def app_command(binary: str, url: str, data_dir: str) -> list[str]:
-    """argv for a chromeless, profile-isolated app window."""
-    return [binary, f"--app={url}", f"--user-data-dir={data_dir}"]
+    """argv for a chromeless, profile-isolated app window.
+
+    The fresh per-port ``--user-data-dir`` means Chrome treats every launch as
+    a first run — hence ``--no-first-run`` (skip the welcome flow) and
+    ``--no-default-browser-check`` (skip the "make Chrome your default?"
+    nag), neither of which the app window should ever raise."""
+    return [binary, f"--app={url}", f"--user-data-dir={data_dir}",
+            "--no-first-run", "--no-default-browser-check"]
 
 
 def launch(url: str, *, on_exit=None, binary=None):
