@@ -98,6 +98,61 @@ def _default_move_tone(client, name, *, setlist, to, cid) -> dict:
     return _copy.move_tone(client, name, setlist=setlist, to=to, cid=cid)
 
 
+def _semantic_canon_blob(blob: bytes, lib):
+    from helixgen.device import untranscode
+    return untranscode.sbe_bytes_to_hsp(blob, name="x", library=lib, author=None)
+
+
+def _semantic_canon_body(body: dict, lib):
+    from helixgen.device import transcode
+    return _semantic_canon_blob(transcode.hsp_to_sbepgsm(body), lib)
+
+
+def _default_diff(client, cid: int, hsp_path) -> str:
+    """Does device preset ``cid`` differ from the library ``hsp_path``? Returns
+    ``same`` | ``changed`` | ``indeterminate``.
+
+    Compares on the semantic-equivalence projection, not raw bytes: the device
+    re-serializes on Save (cg__ ids, key order, scratch keys), so a byte
+    compare false-positives on musically-identical tones. ``canon(x)`` pushes
+    ``x`` through transcode→untranscode; HW-validated (2026-11-14) to reach a
+    fixed point after one device pass with zero float-precision flapping across
+    106 on-both tones. Both sides get the same name/author, so editable
+    metadata never counts as a tone change. A tone whose structure transcode
+    can't round-trip is ``indeterminate`` (the badge shows "?" not a lie)."""
+    from helixgen.hsp import read_hsp
+    from helixgen.library import Library, default_library_path
+
+    lib = Library(default_library_path())
+    blob = client.get_content(cid)
+    try:
+        dev = _semantic_canon_blob(blob, lib)
+        loc = _semantic_canon_body(read_hsp(hsp_path), lib)
+    except Exception:  # noqa: BLE001 — a tone transcode can't round-trip
+        return "indeterminate"
+    return "same" if dev == loc else "changed"
+
+
+def _default_update_local(client, cid: int, hsp_path) -> dict:
+    """Pull device preset ``cid`` back OVER ``hsp_path`` in place (the
+    stale-after-device-save reconcile), then auto-commit. Unlike a library
+    import, this overwrites the variant's own file and keeps its metadata."""
+    from helixgen import cli_device, gitops, home
+    from helixgen.device import untranscode
+    from helixgen.hsp import write_hsp
+    from helixgen.library import Library, default_library_path
+    from pathlib import Path as _Path
+
+    blob = client.get_content(cid)
+    name = cli_device._preset_name_for_cid(client, cid) or _Path(hsp_path).stem
+    body = untranscode.sbe_bytes_to_hsp(
+        blob, name=name, library=Library(default_library_path()))
+    write_hsp(hsp_path, body)
+    gitops.auto_commit(home.helixgen_home(),
+                       f"helixgen: update {_Path(hsp_path).name} from device")
+    return {"name": name, "hsp": str(hsp_path)}
+
+
 def _default_pull_tone(client, cid, *, tones_dir) -> dict:  # noqa: ARG001
     """The real `device to-hsp` + `library import`: read the device preset,
     untranscode to a .hsp, and register it in the library (placing the file IS
@@ -142,6 +197,8 @@ class LibrarySession:
         library_root: Optional[Path] = None,
         copy_fn: Callable[..., dict] = _default_copy_tone,
         pull_fn: Callable[..., dict] = _default_pull_tone,
+        diff_fn: Callable[..., str] = _default_diff,
+        update_local_fn: Callable[..., dict] = _default_update_local,
         remove_fn: Callable[..., dict] = _default_remove_tone,
         move_fn: Callable[..., dict] = _default_move_tone,
         push_ir_fn: Callable[..., dict] = _default_push_ir,
@@ -155,6 +212,8 @@ class LibrarySession:
         self._library_root = Path(library_root) if library_root else None
         self._copy_fn = copy_fn
         self._pull_fn = pull_fn
+        self._diff_fn = diff_fn
+        self._update_local_fn = update_local_fn
         self._remove_fn = remove_fn
         self._move_fn = move_fn
         self._push_ir_fn = push_ir_fn
@@ -395,6 +454,34 @@ class LibrarySession:
                     raise LibraryError(str(e) or "a tone with that name "
                                        "already exists", status=409) from e
                 raise LibraryError(f"pull failed: {e}", status=502) from e
+
+    # -- content diff (phase 2: the "changed" badge) -----------------------
+
+    def content_diff(self, cid: Any, hsp: Any) -> dict:
+        """Does the device preset ``cid`` differ from the library ``hsp``?
+
+        Returns ``{cid, state}`` with state ``same`` | ``changed`` |
+        ``indeterminate``. Read-only, but takes the mutate lock to serialise
+        the device read against writes. The projection lives in ``_diff_fn``
+        (``_default_diff``)."""
+        cid = self._opt_int(cid, "cid")
+        if cid is None:
+            raise LibraryError("cid is required", status=400)
+        abs_hsp = self._resolve_hsp(hsp)
+        state = self._run(lambda h: self._diff_fn(h, cid, abs_hsp))
+        return {"cid": cid, "state": state}
+
+    def update_local(self, cid: Any, hsp: Any) -> dict:
+        """Pull a device preset back OVER the existing library ``.hsp`` in
+        place — the stale-after-device-save reconcile the "changed" badge
+        points to. Unlike ``pull_from_device`` (``library import``, which
+        refuses a name collision), ``_update_local_fn`` overwrites the
+        variant's own file, keeps its metadata sidecar, and auto-commits."""
+        cid = self._opt_int(cid, "cid")
+        if cid is None:
+            raise LibraryError("cid is required", status=400)
+        abs_hsp = self._resolve_hsp(hsp)
+        return self._run(lambda h: self._update_local_fn(h, cid, abs_hsp))
 
     # -- setlist management ------------------------------------------------
 

@@ -31,6 +31,10 @@ def _route(session: LibrarySession, path: str, body: dict):
                                       pos=body.get("pos"))
     if path == "/pull":
         return session.pull_from_device(body.get("cid"))
+    if path == "/diff":
+        return session.content_diff(body.get("cid"), body.get("hsp"))
+    if path == "/update-local":
+        return session.update_local(body.get("cid"), body.get("hsp"))
     if path == "/setlist/create":
         return session.setlist_create(body.get("name"))
     if path == "/setlist/rename":
