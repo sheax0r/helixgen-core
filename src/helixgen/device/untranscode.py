@@ -107,6 +107,28 @@ def _source_id(locl: Any, ctxt: Any) -> Optional[int]:
     return None
 
 
+# Device command ``srcs`` (locl, ctxt, type) -> ``.hsp`` Command Center source
+# id (bead hgc-mid). Inverse of ``transcode._command_locl_ctxt_type``: a
+# footswitch is ctxt 1 / type 1 / locl 25+n (bank A); an Instant slot is ctxt 0
+# / type 4 / locl 0..5. The ``.hsp`` source id is the key of ``preset.commands``
+# (``controllers.command_switch_for_source`` resolves it to a switch name).
+def _command_source_id(locl: Any, ctxt: Any, srtype: Any) -> Optional[int]:
+    if not all(isinstance(v, int) and not isinstance(v, bool)
+               for v in (locl, ctxt, srtype)):
+        return None
+    if ctxt == 1 and srtype == 1 and 25 <= locl <= 25 + 0xFF:  # footswitch bank A
+        return 0x01010100 | (locl - 25)
+    if ctxt == 0 and srtype == 4 and 0 <= locl <= 5:           # Instant 1..6
+        return 0x04040100 | locl
+    return None
+
+
+# Device MIDI ``func`` enum -> ``.hsp`` native ``Command`` subtype. Inverse of
+# ``transcode._HSP_TO_DEVICE_MIDI_FUNC`` (Note/MMC are swapped between the two
+# encodings; the map is its own inverse for that pair).
+_DEVICE_TO_HSP_MIDI_FUNC = {0: 0, 1: 1, 2: 3, 3: 2}
+
+
 def _warn(msg: str) -> None:
     print(f"warning: {msg}", file=sys.stderr)
 
@@ -363,7 +385,6 @@ class _Cg:
         self.ctl_bypass: Dict[int, dict] = {}
         self.ctl_params: Dict[Tuple[int, int, int], dict] = {}
         self.source_bypass_flag: Dict[int, bool] = {}
-        self.dropped_midi = 0
         for c in (entt.get("ctrl") or []):
             if not isinstance(c, dict):
                 continue
@@ -374,9 +395,9 @@ class _Cg:
             if not sid:
                 # ``trig == 0`` is a MIDI CC controller (no physical source);
                 # its ``.hsp`` home is the helixgen-namespaced
-                # ``preset._helixgen_midi`` list, not modeled here (bead
-                # hgc-mid).
-                self.dropped_midi += 1
+                # ``preset._helixgen_midi`` list, recovered by
+                # :func:`_recover_midi` (bead hgc-mid) — not a block-level
+                # controller assignment, so it is skipped here.
                 continue
             src = srcs.get(sid) or {}
             source = _source_id(src.get("locl"), src.get("ctxt"))
@@ -749,6 +770,198 @@ def _flow_entry(fi: int, flow: dict, cg: _Cg, rev: Dict[int, str],
     return out
 
 
+# --- Command Center + MIDI CC (bead hgc-mid) ---------------------------------
+
+def _eid_blocks(doc: dict) -> Dict[int, Tuple[int, int, dict]]:
+    """``device instance id (eID_) -> (flow index, grid pos, block dict)``.
+
+    Built by the same ``_iter_blocks`` traversal the block emitter uses, so a
+    preset reordered ON the hardware (a permuted ``bmap`` with stable-but-
+    shuffled ids) resolves to its real coordinate rather than an assumed
+    ``28*flow + gp``. Used to place a MIDI CC controller's target block."""
+    out: Dict[int, Tuple[int, int, dict]] = {}
+    for fi, flow in enumerate((doc.get("sfg_") or {}).get("flow") or []):
+        if not isinstance(flow, dict):
+            continue
+        for gp, blk in _iter_blocks(flow):
+            eid = blk.get("id__")
+            if (isinstance(gp, int) and isinstance(eid, int)
+                    and not isinstance(eid, bool)):
+                out[eid] = (fi, gp, blk)
+    return out
+
+
+def _decode_command(cm: dict, ctxt: Any) -> Optional[dict]:
+    """One device ``cmnd`` record -> a native ``preset.commands`` record.
+
+    Inverse of ``transcode._command_payload`` (and the shape
+    ``mutate._command_native_record`` writes). ``ctxt`` — 1 footswitch, 0
+    Instant — selects the MIDI pvl layout: the footswitch reserves ``pvlb`` for
+    the subtype and shifts its data +1 vs the Instant layout. ``None`` for a
+    family this build does not know (so the caller reports it, never silently
+    drops it)."""
+    def pvl(i: int) -> Any:
+        return cm.get(f"pvl{chr(ord('a') + i)}", 0)
+
+    def record(ctype: str, params: Dict[str, int]) -> dict:
+        return {
+            "behavior": _BEHAVIOR.get(cm.get("behv"), "latching"),
+            "curve": "linear", "delay": 0, "goid": 0,
+            "params": {k: {"value": v} for k, v in params.items()},
+            "threshold": 0.0, "toggle": bool(cm.get("togl", False)),
+            "type": ctype,
+        }
+
+    ctype = cm.get("type")
+    if ctype == 1:          # PresetSnapshot (5 int slots, Mandarin Fuzz anchor)
+        return record("PresetSnapshot", {
+            "Action": pvl(0), "Command": pvl(1), "Preset": pvl(2),
+            "Setlist": pvl(3), "Snapshot": pvl(4)})
+    if ctype != 6:          # not a cmnd family this build models
+        return None
+    hsp_func = _DEVICE_TO_HSP_MIDI_FUNC.get(cm.get("func"))
+    if hsp_func is None:
+        return None
+    # All 11 MIDI params present, as the corpus carries them; ``Command`` is
+    # the .hsp subtype. Slots the layout does not encode stay 0 (the forward
+    # path writes constants into them and never reads them back).
+    params = {"CC#": 0, "Command": hsp_func, "LSB": 0, "MIDI Ch": 0,
+              "MSB": 0, "Message": 0, "Note": 0, "NoteOff": 0, "PC": 0,
+              "Value": 0, "Velocity": 0}
+    if ctxt == 1:           # footswitch 12-slot layout (pvlb = subtype)
+        params["MIDI Ch"] = pvl(2)
+        if hsp_func == 0:       # PC / Bank
+            params["PC"], params["MSB"], params["LSB"] = pvl(0), pvl(3), pvl(4)
+        elif hsp_func == 1:     # CC
+            params["CC#"], params["Value"] = pvl(6), pvl(7)
+        elif hsp_func == 3:     # Note (device func 2); no NoteOff slot here
+            params["Note"], params["Velocity"] = pvl(8), pvl(9)
+        elif hsp_func == 2:     # MMC (device func 3)
+            params["Message"] = pvl(11)
+    else:                   # Instant 12-slot layout (ch @ pvlb, no subtype slot)
+        params["MIDI Ch"] = pvl(1)
+        if hsp_func == 0:       # PC
+            params["PC"], params["MSB"], params["LSB"] = pvl(0), pvl(2), pvl(3)
+        elif hsp_func == 1:     # CC
+            params["CC#"], params["Value"] = pvl(5), pvl(6)
+        elif hsp_func == 3:     # Note
+            params["Velocity"] = pvl(8)
+            params["Note"], params["NoteOff"] = pvl(10), pvl(11)
+        elif hsp_func == 2:     # MMC
+            params["Message"] = pvl(7)
+    return record("MIDI", params)
+
+
+def _recover_commands(doc: dict, lost: List[str]) -> Dict[str, Any]:
+    """Device ``cg__.entt.cmnd`` records -> ``preset.commands`` (bead hgc-mid).
+
+    Inverse of ``transcode._synth_commands``. Each command is keyed by its
+    ``.hsp`` Command Center source id — resolved from the ``trig`` srcs record's
+    ``(locl, ctxt, type)`` — and keeps the device's cmnd creation order as the
+    native per-source ``ordinal``. A command on an unrecognised source or an
+    unparseable family is reported on stderr and skipped, never silently lost."""
+    entt = (doc.get("cg__") or {}).get("entt") or {}
+    cmnds = [c for c in entt.get("cmnd") or [] if isinstance(c, dict)]
+    if not cmnds:
+        return {}
+    srcs = {s.get("id__"): s for s in entt.get("srcs") or []
+            if isinstance(s, dict)}
+    out: Dict[str, List[dict]] = {}
+    for cm in cmnds:
+        src = srcs.get(cm.get("trig")) or {}
+        source = _command_source_id(src.get("locl"), src.get("ctxt"),
+                                    src.get("type"))
+        if source is None:
+            lost.append(
+                f"Command Center command on device source (locl "
+                f"{src.get('locl')}, ctxt {src.get('ctxt')}, type "
+                f"{src.get('type')}) has no .hsp command source id; it was "
+                f"dropped")
+            continue
+        rec = _decode_command(cm, src.get("ctxt"))
+        if rec is None:
+            lost.append(
+                f"Command Center command (type {cm.get('type')}, func "
+                f"{cm.get('func')}) on source {source:#010x} is an unrecognised "
+                f"family; it was dropped")
+            continue
+        bucket = out.setdefault(str(source), [])
+        rec["ordinal"] = len(bucket)
+        bucket.append(rec)
+    return out
+
+
+def _recover_midi(doc: dict, eid_blocks: Dict[int, Tuple[int, int, dict]],
+                  rev: Dict[int, str], library: Optional[Library],
+                  lost: List[str]) -> List[dict]:
+    """Device MIDI CC ``ctrl`` records (``trig == 0``) -> ``preset._helixgen_midi``
+    (bead hgc-mid). Inverse of ``transcode._new_midi_ctrl`` +
+    ``bridge._hsp_midi_by_coord``.
+
+    Each record names the target block by its authoritative ``(path, lane,
+    pos)`` coordinate (what a re-install targets) plus its model id, and the
+    driven param — ``None`` for a block-bypass toggle. A record whose CC number,
+    target or param cannot be recovered is reported on stderr and skipped. Ctrl
+    order is preserved, which keeps the forward re-synthesis byte-exact."""
+    entt = (doc.get("cg__") or {}).get("entt") or {}
+    trgs = {t.get("id__"): t for t in entt.get("trgs") or []
+            if isinstance(t, dict)}
+    out: List[dict] = []
+    for c in entt.get("ctrl") or []:
+        if not isinstance(c, dict) or c.get("trig"):
+            continue      # a physical-source controller, handled by _Cg
+        cc = c.get("cnt2")
+        if not (isinstance(cc, int) and not isinstance(cc, bool)):
+            midi = c.get("midi")
+            cc = (midi & 0x7F) if isinstance(midi, int) else None
+        if not isinstance(cc, int) or isinstance(cc, bool) or not (0 <= cc <= 127):
+            lost.append("a MIDI CC controller has no recoverable CC number; "
+                        "it was dropped")
+            continue
+        trg = trgs.get(c.get("tid_"))
+        if not isinstance(trg, dict):
+            lost.append(f"MIDI CC {cc} targets a missing trgs record; it was "
+                        f"dropped")
+            continue
+        placed = eid_blocks.get(trg.get("eID_"))
+        if placed is None:
+            lost.append(f"MIDI CC {cc} targets instance {trg.get('eID_')}, which "
+                        f"is not placed in any flow; it was dropped")
+            continue
+        fi, gp, blk = placed
+        lane = 1 if gp >= _ROW1_INPUT else 0
+        pos = gp - _GRID_SLOTS // 2 * lane
+        si = _trg_slot(trg)
+        mdls = blk.get("mdls") or [{}]
+        dev_id = mdls[si].get("id__") if si < len(mdls) else None
+        hsp_model = _hsp_model(dev_id, rev) if isinstance(dev_id, int) else None
+        if hsp_model is None:
+            lost.append(f"MIDI CC {cc} targets a block with no helixgen model "
+                        f"(device id {dev_id}); it was dropped")
+            continue
+        rec: Dict[str, Any] = {"cc": cc, "path": fi, "lane": lane, "pos": pos,
+                               "block": hsp_model}
+        if c.get("type") == 1:          # block-bypass toggle
+            rec["param"] = None
+        elif c.get("type") == 3:        # param sweep
+            names = {pid: name
+                     for pid, name in _param_plan(dev_id, hsp_model, library)}
+            name = names.get(trg.get("pid_"))
+            if name is None:
+                lost.append(f"MIDI CC {cc} targets param id {trg.get('pid_')} on "
+                            f"{hsp_model}, which has no .hsp name; it was dropped")
+                continue
+            rec["param"] = name
+            rec["min"] = c.get("min_", 0.0)
+            rec["max"] = c.get("max_", 1.0)
+        else:
+            lost.append(f"MIDI CC {cc} controller has an unknown type "
+                        f"{c.get('type')}; it was dropped")
+            continue
+        out.append(rec)
+    return out
+
+
 # --- top level ----------------------------------------------------------------
 
 def _live_value_divergence(preset: dict) -> List[str]:
@@ -828,12 +1041,8 @@ def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
     if unresolved:
         _warn(f"{len(unresolved)} block(s) had no helixgen model for device "
               f"model id(s) {sorted(set(unresolved))}; they were dropped.")
-    if cg.dropped_midi:
-        _warn(f"{cg.dropped_midi} MIDI CC controller(s) dropped — MIDI bindings "
-              f"are not yet reversed (bead hgc-mid).")
-    if (doc.get("cg__") or {}).get("entt", {}).get("cmnd"):
-        _warn("Command Center commands dropped — not yet reversed "
-              "(bead hgc-mid).")
+    commands = _recover_commands(doc, lost)
+    midi = _recover_midi(doc, _eid_blocks(doc), rev, library, lost)
     for line in lost:
         _warn(line)
 
@@ -873,6 +1082,10 @@ def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
             "y": pm.get("preset.xyctrl.y", 0),
         },
     }
+    if commands:
+        preset["commands"] = commands
+    if midi:
+        preset["_helixgen_midi"] = midi
     diverged = _live_value_divergence(preset)
     if diverged:
         shown = ", ".join(diverged[:3])

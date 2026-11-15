@@ -180,10 +180,14 @@ several ways. Recorded because the pattern generalises:
 
 ## Deliberately out of scope
 
-- **Command Center commands (#16)** and **MIDI CC controller bindings (#33)** are dropped
-  with a warning naming how many. Both are EXPERIMENTAL in the forward direction, both have
-  uncaptured slot layouts, and neither appears anywhere in the 66-blob corpus — so there is
-  nothing to validate an inverse against. Filed as a follow-up bead.
+- ~~**Command Center commands (#16)** and **MIDI CC controller bindings (#33)** are dropped
+  with a warning naming how many.~~ **Reversed in bead hgc-mid** (`untranscode._recover_commands`
+  / `_recover_midi`): `cmnd` records reverse into `preset.commands`, MIDI CC `ctrl` records
+  (`trig == 0`) into `preset._helixgen_midi`, both byte-exact against the forward path via the
+  `recipe → .sbe → .hsp → .sbe` oracle. No hardware capture was needed: the inverse reverses
+  whatever the forward writes, so it is self-consistent even where the forward's own Instant
+  Note/MMC pvl layout is itself uncaptured. The byte-exact-on-a-real-captured-`.sbe` acceptance
+  criterion still wants a hardware capture carrying each, which has not been taken.
 - **Per-block `harness` state.** Emitted for the input/output endpoints (a real export
   carries it there) but not for user blocks. The forward path ignores `.hsp` `harness`
   entirely and synthesizes a canonical `hrns` from `_HRNS_BY_CATEGORY`; since the round
