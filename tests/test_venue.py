@@ -851,3 +851,54 @@ def test_retrofit_skips_a_hand_edited_room_ir(single_ir_body, lib, irs):
                                     close_highcut_hz=8000.0)
     assert not res.changed and "hand" in res.skip_reason
     assert old.body == before                              # left untouched
+
+
+@needs_sf
+def test_per_snapshot_close_cut_round_trips(lib, irs):
+    body = _body(lib, irs, blocks=_close_cut_chain(6500.0),
+                 snapshots=[{"name": "A"},
+                            {"name": "B", "params": {"IR": {"HighCut": 4000.0}}}])
+    a = venue.apply_venue(body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    assert _ir_params(a.body, ROOM)["HighCut"]["snapshots"][:2] == [6500.0, 4000.0]
+    d = _to_direct(a, lib, irs)                                  # must not raise
+    assert d.body["preset"]["flow"] == body["preset"]["flow"]    # byte-exact
+    a2 = venue.apply_venue(d.body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    assert a2.body == a.body
+
+
+@needs_sf
+def test_wide_close_with_a_snapshot_cut_is_not_clamped_and_round_trips(lib, irs):
+    # close base is wide open but a snapshot cuts it: the ceiling must NOT clamp
+    # the base (that edit is inaudible under the per-snapshot array), and the
+    # mirrored room array must still reverse cleanly.
+    body = _body(lib, irs,
+                 snapshots=[{"name": "A"},
+                            {"name": "B", "params": {"IR": {"HighCut": 4000.0}}}])
+    a = venue.apply_venue(body, "headphones", lib, irs, close_highcut_hz=8000.0)
+    assert _ir_hc(a.body, CLOSE) == 20100.0                      # base untouched
+    assert a.venue_detail["close_cut_before"] is None
+    assert _ir_params(a.body, ROOM)["HighCut"]["snapshots"][:2] == [20100.0, 4000.0]
+    d = _to_direct(a, lib, irs)                                  # must not raise
+    assert d.body["preset"]["flow"] == body["preset"]["flow"]
+
+
+@needs_sf
+def test_retrofit_of_a_per_snapshot_variant_round_trips(lib, irs):
+    body = _body(lib, irs, blocks=_close_cut_chain(6500.0),
+                 snapshots=[{"name": "A"},
+                            {"name": "B", "params": {"IR": {"HighCut": 4000.0}}}])
+    old = venue.apply_venue(body, "headphones", lib, irs, close_highcut_hz=None)
+    res = venue.retrofit_headphones(old.body, old.venue_detail, lib, irs,
+                                    close_highcut_hz=8000.0)
+    assert res.skip_reason is None                               # not rejected by _varies
+    assert _ir_params(res.body, ROOM)["HighCut"]["snapshots"][:2] == [6500.0, 4000.0]
+
+
+@needs_sf
+def test_retrofit_warns_when_it_resets_a_tuned_room_level(single_ir_body, lib, irs):
+    old = venue.apply_venue(single_ir_body, "headphones", lib, irs, close_highcut_hz=None)
+    room = [x for x in _flow_blocks(old.body) if x["slot"][0].get("irhash") == ROOM][0]
+    room["slot"][0]["params"]["Level"]["value"] = -45.0          # tuned by ear
+    res = venue.retrofit_headphones(old.body, old.venue_detail, lib, irs,
+                                    close_highcut_hz=8000.0)
+    assert res.changed and any("tuned to -45" in w for w in res.warnings)

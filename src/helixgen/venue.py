@@ -409,7 +409,10 @@ def _cut_plan(close_bnn: dict, cblk, close_highcut_hz: float | None) -> _CutPlan
     base_hc, base_lc = _base_value(hc_w, wide_hc), _base_value(lc_w, wide_lc)
     hc_snaps, lc_snaps = _snapshot_values(hc_w), _snapshot_values(lc_w)
 
-    apply_ceiling = close_highcut_hz is not None and base_hc == wide_hc
+    # Clamp only a close mic that is wide open AND not snapshot-varying: a
+    # per-snapshot HighCut is an authored cut (and a base edit under it would be
+    # inaudible on-device), so leave it and just mirror it.
+    apply_ceiling = close_highcut_hz is not None and base_hc == wide_hc and hc_snaps is None
     eff_hc = float(close_highcut_hz) if apply_ceiling else base_hc
 
     def mirror(eff, wide, snaps):
@@ -545,6 +548,10 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
     pi = _instrument_path(work, library)
     path = work["preset"]["flow"][pi]
     added: list[tuple[str, dict, int | None]] = []   # (name, bNN, recorded switch source)
+    # wrappers whose per-snapshot variation the treatment itself wrote (the room
+    # IR's mirrored High/Low Cut): they leave with the block on unwrap, so they
+    # must not trip the "nothing else may point at the added block" guard.
+    exempt_varies: set[int] = set()
     close = tile = None
     room_ir = detail.get("room_ir")
     if room_ir:
@@ -575,6 +582,11 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
                 raise VenueError(f"room_switch {rs} no longer toggles the room IR Level; "
                                  "cannot reverse")
         added.append(("the room IR", path[rk], sid))
+        room_params = _slot0(path[rk]).get("params") or {}
+        for p in ("HighCut", "LowCut"):
+            w = room_params.get(p)
+            if isinstance(w, dict):
+                exempt_varies.add(id(w))
     name = detail.get("ambience_block")
     if name:
         tiles = [t for t in _slots(work, library, pi) if t[3] == 0 and t[2].display_name == name]
@@ -594,8 +606,10 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
     for what, bnn, sid in added:          # nothing else may point at them
         for w in mutate._iter_controller_wrappers(work, only=bnn):
             c = w.get("controller")
-            if (isinstance(c, dict) and c.get("source") != sid) or _varies(w):
-                raise VenueError(f"a {'controller' if isinstance(c, dict) else 'snapshot'} "
+            bad_ctrl = isinstance(c, dict) and c.get("source") != sid
+            bad_snap = _varies(w) and id(w) not in exempt_varies
+            if bad_ctrl or bad_snap:
+                raise VenueError(f"a {'controller' if bad_ctrl else 'snapshot'} "
                                  f"references {what}, which the headphones treatment added; "
                                  "cannot reverse")
 
@@ -744,9 +758,12 @@ def retrofit_headphones(
     rblk = library.load_block(mutate._translate_model_id(_slot0(rooms[0]).get("model", "")))
     wide_hc = float(authoring_defaults(rblk).get("HighCut", 20100.0))
     cur_hc = _base_value(_param_wrapper(rooms[0], "HighCut"), wide_hc)
-    if cur_hc != wide_hc and not detail.get("room_highcut"):
+    # Leave a hand-set room High Cut alone: it is neither wide open (old,
+    # untouched) nor the value we recorded setting (ours) -- someone cut it.
+    if cur_hc != wide_hc and cur_hc != detail.get("room_highcut"):
         return RetrofitResult(body, detail, False,
                               "room IR High Cut was set by hand; left as-is")
+    cur_level = _base_value(_param_wrapper(rooms[0], "Level"), 0.0)
     try:
         direct = _direct(body, library, detail)
         fresh = _headphones(direct.body, library, irs, room_ir=room_hash,
@@ -757,4 +774,14 @@ def retrofit_headphones(
     changed = any(fresh.venue_detail.get(k) != detail.get(k)
                   for k in ("room_highcut", "room_lowcut", "close_cut_before",
                             "room_level_db"))
-    return RetrofitResult(fresh.body, fresh.venue_detail, changed, None, fresh.warnings)
+    warnings = list(fresh.warnings)
+    recorded = detail.get("room_level_db")
+    new_level = fresh.venue_detail.get("room_level_db")
+    # The re-match overwrites the room Level. Warn when the live Level was tuned
+    # away from what we recorded, so an ear-tuned blend is not silently reset.
+    if (changed and recorded is not None and new_level is not None
+            and abs(cur_level - recorded) > 0.05):
+        warnings.append(
+            f"room Level was tuned to {cur_level} dB (recorded {recorded}); "
+            f"retrofit re-matches it to {new_level} dB -- re-tune by ear if needed")
+    return RetrofitResult(fresh.body, fresh.venue_detail, changed, None, warnings)
