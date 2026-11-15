@@ -318,6 +318,8 @@ def _compose_preset_hlx(
 
     meta = preset.setdefault("data", {}).setdefault("meta", {})
     meta["name"] = spec.name
+    # Clear the donor chassis's factory notes — see recipe.apply_recipe (hgc-a8p).
+    meta["info"] = ""
     if spec.author is not None:
         meta["author"] = spec.author
     meta["helixgen"] = _provenance(source)
@@ -1008,13 +1010,13 @@ def generate_preset(
         irs = IrMapping.load()  # default location; returns empty mapping if no file
 
     raw = json.loads(spec_path.read_text())
+    shape = library.load_chassis().get(CHASSIS_SHAPE_KEY, "hlx")
     from helixgen.recipe import apply_stored_defaults
-    apply_stored_defaults(raw)
+    apply_stored_defaults(raw, shape)
     spec = parse_spec(raw, source=str(spec_path))
     preset = compose_preset(spec, library, source=str(spec_path), irs=irs)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    shape = library.load_chassis().get(CHASSIS_SHAPE_KEY, "hlx")
     if shape == "hsp":
         # No sidecar: the .hsp is the sole source of truth (surgical edits
         # mutate it in place via `mutate.py`).

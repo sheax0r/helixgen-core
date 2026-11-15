@@ -1047,7 +1047,11 @@ def sbepgsm_to_hsp(doc: dict, *, name: Optional[str] = None,
         _warn(line)
 
     snapshots = [{
-        "name": s.get("name") or f"SNAPSHOT {i + 1}",
+        # The device leaves an unused/unconfigured snapshot's name EMPTY (it
+        # renders its own "SNAPSHOT N" label on the fly); emit the blank as-is
+        # rather than inventing a name that a re-install would write back as
+        # real state (bead hgc-dym).
+        "name": s.get("name") or "",
         "color": _color_name(s.get("colr")),
         "expsw": s.get("exsw", -1),
         "source": 0,

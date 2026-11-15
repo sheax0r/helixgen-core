@@ -66,6 +66,31 @@ def test_generate_from_recipe_returns_hsp_bytes(tmp_path):
     assert out[:8] == HSP_MAGIC
 
 
+def test_generate_does_not_inherit_donor_meta_info(tmp_path):
+    # hgc-a8p: the donor chassis's `meta.info` is the factory preset's own rig
+    # notes. Carrying it verbatim annotated every authored tone with someone
+    # else's rig description (visible as the preset's notes on-device). Generate
+    # must clear it, even when the donor info lives in a chassis already stored
+    # in a library (so the fix is at author time, not chassis-extract time).
+    from helixgen.recipe import apply_recipe
+
+    library = harness.build_corpus_library(tmp_path)
+    chassis = _corpus_chassis()
+    chassis["meta"]["info"] = (
+        "Instrument: Les Paul (all pickups) / Playback System: Studio "
+        "headphones / This is a 2-guitar starting point..."
+    )
+
+    body = apply_recipe(
+        {"name": "Clean Tone", "paths": [{"blocks": [{"block": "Scream 808"}]}]},
+        library,
+        chassis=chassis,
+    )
+
+    assert body["meta"]["info"] == ""
+    assert "2-guitar starting point" not in body["meta"]["info"]
+
+
 @pytest.mark.parametrize("blocks", [
     # a 13th block on one lane
     [{"block": "Scream 808"} for _ in range(13)],

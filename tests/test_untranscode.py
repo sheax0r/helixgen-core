@@ -167,6 +167,22 @@ def test_snapshot_deltas_roundtrip():
     assert len(names) == 8
 
 
+def test_blank_snapshot_name_is_not_invented():
+    """The device leaves an unused snapshot's name EMPTY; untranscode must emit
+    that blank name as-is, not invent ``SNAPSHOT N`` for it (bead hgc-dym)."""
+    recipe = {"name": "rt",
+              "snapshots": [{"name": "Lead"}, {"name": "Clean"}],
+              "paths": [{"blocks": [{"block": DRIVE, "params": {"Gain": 0.5}}]}]}
+    doc = transcode.recipe_to_sbepgsm(recipe)
+    # a device-native unused 5th snapshot: empty name, vald False
+    doc["cg__"]["entt"]["snps"][4]["name"] = ""
+    doc["cg__"]["entt"]["snps"][4]["vald"] = False
+    body = untranscode.sbe_bytes_to_hsp(
+        content.encode_content_data(doc), name="rt")
+    names = [s.get("name") for s in body["preset"]["snapshots"]]
+    assert names[4] == "", names
+
+
 def test_constant_snapshot_arrays_roundtrip():
     """A snapshot target whose 8 values are all EQUAL is still a target (bead
     hgc-xh3).

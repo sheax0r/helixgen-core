@@ -155,11 +155,12 @@ Verbs — full signatures + per-flag detail in [`docs/CLI.md`](docs/CLI.md) "Com
   output level -- -3`). Block names `input` / `output` / `split` / `join` (`merge` alias) = **signal-flow pseudo-blocks** addressing path's endpoints / split / merge mixer.
 - `enable` / `disable <preset> <block>` — un-bypass / bypass at base level.
 - `add-block`, `remove-block`, `swap-model` (same-category only; carries over shared params, warns on dropped ones — surface those warnings).
-- `view <preset.hsp>` — read-only `.hsp` → recipe projection.
+- `set-snapshot` / `remove-snapshot` — create/name/activate/clone/remove a snapshot **scene** in place, the decompile-free counterpart to the controller verbs. The Stadium has **8 fixed slots**; a snapshot is **configured** iff it has a non-placeholder name. `set-snapshot` **synthesizes the `preset.snapshots` meta when absent** — the point: a preset authored without snapshots gains them with no regenerate. Create needs `--index`+`--name`; `--active`/`--clone-from` (state only, never the source's name)/inline `--param`/`--disable`/`--enable`/`--output-*` edit a slot, the inline content being **sugar over the `--snapshot` writers**. `remove-snapshot` reverts a slot to its `Snap N` placeholder + `valid:false`, errors if unconfigured. Reorder is out of scope.
+- `view <preset.hsp>` — read-only `.hsp` → recipe projection (lists configured snapshots).
 
 `--snapshot NAME-or-INDEX` on `set-param`/`enable`/`disable` targets ONE snapshot's slot instead of base. **Gotcha:** once param's per-snapshot array varies, device applies it on every snapshot — later plain base edit of that param inaudible on-device (`set-param` warns). `--path`/`--lane`/`--pos` disambiguate duplicate block names — block addressing = `(path, lane, pos)`; no `--index`.
 
-Multi-edit session: **`helixgen patch <preset.hsp> <ops.json|->`** applies JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`, `set_input`, plus **controller ops** `set_footswitch`/`set_expression`/`remove_footswitch`/`remove_expression`) in one atomic invocation — invalid op anywhere leaves `.hsp` untouched. Op fields mirror single-op verbs' flags. **Controller ops are the ONLY way to add/change a footswitch or EXP assignment on an existing `.hsp`** (`patch --help` / `docs/CLI.md` for the shapes) — same `mutate.wire_*` verbs `generate` uses, last-wins, permissive like the hardware. Agent edit loop = single `patch` call on file — no decompile/regenerate round-trip:
+Multi-edit session: **`helixgen patch <preset.hsp> <ops.json|->`** applies JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`, `set_input`, plus **controller ops** `set_footswitch`/`set_expression`/`remove_footswitch`/`remove_expression` and **snapshot ops** `set_snapshot`/`remove_snapshot`) in one atomic invocation — invalid op anywhere leaves `.hsp` untouched. Op fields mirror single-op verbs' flags. **Controller ops are the ONLY way to add/change a footswitch or EXP assignment on an existing `.hsp`** (`patch --help` / `docs/CLI.md` for the shapes) — same `mutate.wire_*` verbs `generate` uses, last-wins, permissive like the hardware. Agent edit loop = single `patch` call on file — no decompile/regenerate round-trip:
 
 ```bash
 echo '[{"op": "set_param", "block": "Tape Echo", "param": "Mix", "value": 0.3},
@@ -169,7 +170,7 @@ echo '[{"op": "set_param", "block": "Tape Echo", "param": "Mix", "value": 0.3},
 
 ## Generation notes
 
-- Chassis = whatever first ingested. Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from originating export currently expected.
+- Chassis = whatever first ingested. Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `device_id` from originating export currently expected. **`meta.info` is NOT carried over** (hgc-a8p): the donor's `info` is the factory preset's own rig notes, so generate clears it to `""` rather than annotating every authored tone with someone else's rig (set per-preset notes later via `device set-info`).
 - Some Stadium model IDs translated on ingest (e.g. `HD2_DistScream808Mono` → `HD2_DrvScream808`); generate translates back when writing `.hsp`.
 
 ## Project layout
