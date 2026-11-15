@@ -178,6 +178,25 @@ class LibrarySession:
             p = self._root() / hsp
         return p.exists()
 
+    @staticmethod
+    def _require_str(value: Any, what: str) -> str:
+        """A required, non-empty string argument, or a clean 400. Guards the
+        trust boundary: a non-string JSON value (int/list/bool) must not reach
+        ``.strip()`` and surface as a 500."""
+        if not isinstance(value, str) or not value.strip():
+            raise LibraryError(f"{what} is required", status=400)
+        return value.strip()
+
+    @staticmethod
+    def _opt_int(value: Any, what: str) -> Optional[int]:
+        """An optional integer argument (None passes through), or a 400."""
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError) as e:
+            raise LibraryError(f"{what} must be an integer", status=400) from e
+
     def _resolve_hsp(self, hsp: Any) -> Path:
         if not isinstance(hsp, str) or not hsp.strip():
             raise LibraryError("no tone file given", status=400)
@@ -198,15 +217,19 @@ class LibrarySession:
         the computer side is never taken down with it."""
         if self._client_factory is None:
             return None
+        # Serialise device reads against writes (and each other): a GET /state
+        # must not drive a device session concurrently with a mid-copy write.
+        # The client is per-request, but the hardware is one device.
         try:
-            client = self._client_factory()
-            with client as h:
-                pool_rows = list(h.list_presets())
-                setlists = list(h.list_setlists())
-                try:
-                    device_irs = _normalize_device_irs(h)
-                except Exception:  # noqa: BLE001 — an IR hiccup ≠ no device
-                    device_irs = []
+            with self._mutate_lock:
+                client = self._client_factory()
+                with client as h:
+                    pool_rows = list(h.list_presets())
+                    setlists = list(h.list_setlists())
+                    try:
+                        device_irs = _normalize_device_irs(h)
+                    except Exception:  # noqa: BLE001 — an IR hiccup ≠ no device
+                        device_irs = []
         except Exception:  # noqa: BLE001 — a flaky device is just "offline"
             return None
         pool: Dict[str, List[int]] = {}
@@ -333,6 +356,9 @@ class LibrarySession:
         ambiguous device name, or a device failure."""
         if self._client_factory is None:
             raise LibraryError("no Stadium connected", status=409)
+        if to is not None:
+            to = self._require_str(to, "a setlist")
+        pos = self._opt_int(pos, "position")
         abs_hsp = self._resolve_hsp(hsp)
         with self._mutate_lock:
             try:
@@ -392,9 +418,9 @@ class LibrarySession:
                 raise LibraryError(f"{e}", status=502) from e
 
     def setlist_create(self, name: str) -> dict:
+        name = self._require_str(name, "a setlist name")
+
         def go(h):
-            if not (name or "").strip():
-                raise LibraryError("a setlist name is required", status=400)
             if h.resolve_setlist_cid(name) is not None:
                 raise LibraryError(f"setlist {name!r} already exists",
                                    status=409)
@@ -406,9 +432,10 @@ class LibrarySession:
         return self._run(go)
 
     def setlist_rename(self, name: str, new_name: str) -> dict:
+        name = self._require_str(name, "a setlist")
+        new_name = self._require_str(new_name, "a new name")
+
         def go(h):
-            if not (new_name or "").strip():
-                raise LibraryError("a new name is required", status=400)
             cid = h.resolve_setlist_cid(name)
             if cid is None:
                 raise LibraryError(f"setlist {name!r} not found", status=404)
@@ -421,6 +448,8 @@ class LibrarySession:
         return self._run(go)
 
     def setlist_delete(self, name: str) -> dict:
+        name = self._require_str(name, "a setlist")
+
         def go(h):
             cid = h.resolve_setlist_cid(name)
             if cid is None:
@@ -431,13 +460,13 @@ class LibrarySession:
         return self._run(go)
 
     def setlist_duplicate(self, src: str, dst: str) -> dict:
+        src = self._require_str(src, "a source setlist")
+        dst = self._require_str(dst, "a destination name")
+
         def go(h):
             src_cid = h.resolve_setlist_cid(src)
             if src_cid is None:
                 raise LibraryError(f"setlist {src!r} not found", status=404)
-            if not (dst or "").strip():
-                raise LibraryError("a destination name is required",
-                                   status=400)
             dst_cid = h.resolve_setlist_cid(dst)
             if dst_cid is None:
                 dst_cid = h.create_setlist(dst)
@@ -452,19 +481,15 @@ class LibrarySession:
                     pos: Any = None) -> dict:
         """Add membership to a setlist. An authored tone (``hsp``) is copied in
         (IRs and all); a pool-only preset (``cid``) is referenced at ``pos``."""
-        if not (to or "").strip():
-            raise LibraryError("a target setlist is required", status=400)
+        to = self._require_str(to, "a target setlist")
         if hsp:
             return self.copy_to_device(hsp, to=to, pos=pos)
         if cid is not None:
-            try:
-                cid = int(cid)
-            except (TypeError, ValueError) as e:
-                raise LibraryError("cid must be an integer", status=400) from e
+            cid = self._opt_int(cid, "cid")
+            pos = self._opt_int(pos, "position")
             if pos is None:
                 raise LibraryError("a setlist reference needs a position",
                                    status=400)
-            pos = int(pos)
 
             def go(h):
                 dest = h.resolve_setlist_cid(to)
@@ -485,17 +510,20 @@ class LibrarySession:
 
     def setlist_remove(self, name: str, setlist: str, *, also_pool: bool = False,
                        cid: Any = None) -> dict:
-        if not (setlist or "").strip():
-            raise LibraryError("a setlist is required", status=400)
+        name = self._require_str(name, "a preset name")
+        setlist = self._require_str(setlist, "a setlist")
+        cid = self._opt_int(cid, "cid")
         return self._run(lambda h: self._remove_fn(
             h, name, setlist=setlist, also_pool=also_pool, cid=cid))
 
     def setlist_move(self, name: str, setlist: str, to: Any,
                      cid: Any = None) -> dict:
-        try:
-            to = int(to)
-        except (TypeError, ValueError) as e:
-            raise LibraryError("position must be an integer", status=400) from e
+        name = self._require_str(name, "a preset name")
+        setlist = self._require_str(setlist, "a setlist")
+        cid = self._opt_int(cid, "cid")
+        to = self._opt_int(to, "position")
+        if to is None:
+            raise LibraryError("a destination position is required", status=400)
         return self._run(lambda h: self._move_fn(
             h, name, setlist=setlist, to=to, cid=cid))
 
@@ -525,8 +553,7 @@ class LibrarySession:
         return self._run(go)
 
     def delete_ir(self, name_or_hash: Any) -> dict:
-        if not (name_or_hash or "").strip():
-            raise LibraryError("an IR name or hash is required", status=400)
+        name_or_hash = self._require_str(name_or_hash, "an IR name or hash")
 
         def go(h):
             res = self._delete_ir_fn(h, name_or_hash)
@@ -537,10 +564,8 @@ class LibrarySession:
         return self._run(go)
 
     def rename_ir(self, name_or_hash: Any, new_name: Any) -> dict:
-        if not (name_or_hash or "").strip():
-            raise LibraryError("an IR name or hash is required", status=400)
-        if not (new_name or "").strip():
-            raise LibraryError("a new name is required", status=400)
+        name_or_hash = self._require_str(name_or_hash, "an IR name or hash")
+        new_name = self._require_str(new_name, "a new name")
 
         def go(h):
             res = self._rename_ir_fn(h, name_or_hash, new_name)
