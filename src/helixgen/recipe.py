@@ -518,6 +518,12 @@ def apply_recipe(
     # --- meta + provenance --------------------------------------------------
     meta = body.setdefault("meta", {})
     meta["name"] = spec.name
+    # The donor chassis's `info` is the factory preset's notes (its rig
+    # description) — carrying it verbatim annotated every authored tone with
+    # someone else's rig (hgc-a8p). Clear it here, the generate-side authority
+    # on output meta: chassis-extract-time clearing would miss chassis already
+    # stored in a library. We have no tone description to substitute, so blank.
+    meta["info"] = ""
     if spec.author is not None:
         meta["author"] = spec.author
     meta["helixgen"] = _provenance(source)
