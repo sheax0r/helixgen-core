@@ -318,6 +318,8 @@ def _compose_preset_hlx(
 
     meta = preset.setdefault("data", {}).setdefault("meta", {})
     meta["name"] = spec.name
+    # Clear the donor chassis's factory notes — see recipe.apply_recipe (hgc-a8p).
+    meta["info"] = ""
     if spec.author is not None:
         meta["author"] = spec.author
     meta["helixgen"] = _provenance(source)
