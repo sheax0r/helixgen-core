@@ -1101,7 +1101,11 @@ def _inherited_note(source_label: str, target_label: str, when: str,
 
 
 def _room_options(f):
-    """--room-ir / --room, shared by every verb that applies a venue."""
+    """--room-ir / --room / --room-highcut, shared by every venue verb."""
+    f = click.option("--room-highcut", "room_highcut", default=None, metavar="HZ|off",
+                     help="Headphones close-mic High Cut ceiling (Hz), mirrored onto "
+                          "the room IR; `off` disables it. Default: the "
+                          "`headphones_highcut_hz` preference (8000).")(f)
     f = click.option("--room", "room_mode", type=click.Choice(["auto", "tile"]),
                      default="auto", show_default=True,
                      help="Headphones treatment: auto = parallel room IR when the "
@@ -1110,6 +1114,15 @@ def _room_options(f):
                         help="Room IR for the headphones treatment: a registered "
                              "hash or wav basename. Default: the close IR's "
                              "pack-matched ROOM IR.")(f)
+
+
+def _resolve_close_highcut(room_highcut: str | None) -> float | None:
+    """Resolve the headphones ceiling: the `--room-highcut` flag wins, else the
+    `headphones_highcut_hz` preference. `off`/`none` disables it."""
+    from helixgen import preferences as PREFS
+    if room_highcut is None:
+        return PREFS.load_preferences().headphones_highcut_hz
+    return PREFS._validate_headphones_highcut(room_highcut, name="--room-highcut")
 
 
 def _venue_summary(res, irs) -> str:
@@ -1132,21 +1145,25 @@ def _venue_summary(res, irs) -> str:
 
 
 def _apply_venue_cli(body, target, *, source_venue, source_detail, room_ir,
-                     room_mode, library_path=None, irs_dir=None):
+                     room_mode, room_highcut=None, library_path=None, irs_dir=None):
     """Run ``venue.apply_venue`` with CLI error mapping; echo its warnings
     (stderr). Returns ``(result, irs)``."""
     from helixgen import venue as _venue
     from helixgen.cli import _resolved_irs, _resolved_library
 
-    if target != "headphones" and (room_ir or room_mode != "auto"):
-        click.echo(f"warning: --room-ir/--room only apply to --venue headphones; "
-                   f"ignored for {target}", err=True)
+    if target != "headphones" and (room_ir or room_mode != "auto" or room_highcut is not None):
+        click.echo(f"warning: --room-ir/--room/--room-highcut only apply to "
+                   f"--venue headphones; ignored for {target}", err=True)
+    try:
+        close_highcut_hz = _resolve_close_highcut(room_highcut)
+    except Exception as err:  # noqa: BLE001 -- PreferencesError et al.
+        raise click.ClickException(f"venue: {err}") from err
     irs = _resolved_irs(irs_dir)
     try:
         res = _venue.apply_venue(
             body, target, _resolved_library(library_path), irs,
             source_venue=source_venue, source_detail=source_detail,
-            room_ir=room_ir, room_mode=room_mode)
+            room_ir=room_ir, room_mode=room_mode, close_highcut_hz=close_highcut_hz)
     except (_venue.VenueError, ValueError, KeyError, LookupError) as err:
         raise click.ClickException(f"venue: {err}") from err
     for w in res.warnings:
@@ -1222,8 +1239,8 @@ def _atomic_write(path: Path, data: bytes) -> None:
               type=click.Path(file_okay=False, path_type=Path), default=None,
               help="IRs directory used for room-IR lookup.")
 def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
-              dry_run: bool, as_json: bool, library_path: Path | None,
-              irs_dir: Path | None) -> None:
+              room_highcut: str | None, dry_run: bool, as_json: bool,
+              library_path: Path | None, irs_dir: Path | None) -> None:
     """Convert a variant IN PLACE to another venue (what it is played through).
 
     VARIANT resolves like `library fork`'s SOURCE (logical slug, metadata
@@ -1259,7 +1276,7 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
     before = read_hsp(hsp)
     res, irs = _apply_venue_cli(
         before, target, source_venue=v.venue, source_detail=v.venue_detail,
-        room_ir=room_ir, room_mode=room_mode,
+        room_ir=room_ir, room_mode=room_mode, room_highcut=room_highcut,
         library_path=library_path, irs_dir=irs_dir)
     summary = _venue_summary(res, irs)
     if not dry_run:
@@ -1286,6 +1303,98 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
     click.echo(f"{prefix} {key} ({meta.logical_slug}) to {res.venue}: {hsp}")
     if dry_run:
         click.echo("Dry run -- nothing was written.")
+
+
+@library.command(name="venue-retrofit")
+@click.option("--room-highcut", "room_highcut", default=None, metavar="HZ|off",
+              help="Close-mic High Cut ceiling to bring variants to. Default: the "
+                   "`headphones_highcut_hz` preference (8000); `off` disables it.")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="Write the changes. Without it this is a dry run (reports only).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the sweep result as JSON.")
+@click.option("--library", "library_path", envvar="HELIXGEN_LIBRARY",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Block library used for the conversion. Defaults to the tone library.")
+@click.option("--irs-dir", "irs_dir", envvar="HELIXGEN_IRS",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="IRs directory used for room-IR lookup.")
+def venue_retrofit_cmd(room_highcut: str | None, apply_changes: bool, as_json: bool,
+                       library_path: Path | None, irs_dir: Path | None) -> None:
+    """Bring existing headphones variants in line with the room-mic High Cut.
+
+    Older headphones variants were built with the room IR wide open. This sweeps
+    every room-IR headphones variant and mirrors the close mic's cut onto the
+    room IR (applying the ceiling to a wide-open close), re-matching the room
+    Level. A room IR whose High Cut was set by hand is LEFT ALONE.
+
+    DRY RUN by default -- reports what would change. `--apply` writes each
+    `.hsp` and `venue_detail` and commits.
+    """
+    from helixgen import venue as _venue
+    from helixgen.cli import _resolved_irs, _resolved_library
+    from helixgen.hsp import dumps_hsp
+
+    try:
+        close_highcut_hz = _resolve_close_highcut(room_highcut)
+    except Exception as err:  # noqa: BLE001
+        raise click.ClickException(f"venue-retrofit: {err}") from err
+    irs = _resolved_irs(irs_dir)
+    library = _resolved_library(library_path)
+    rows: List[dict] = []
+    for meta in tone_meta.load_all_tone_metas():
+        for key, v in meta.variants.items():
+            if v.venue != "headphones":
+                continue
+            hsp = tone_meta._resolve_variant_hsp(v.hsp, home.library_dir())
+            if hsp is None or not hsp.is_file():
+                rows.append({"tone": meta.logical_slug, "variant": key,
+                             "status": "skipped", "reason": "missing .hsp"})
+                continue
+            res = _venue.retrofit_headphones(read_hsp(hsp), v.venue_detail, library,
+                                             irs, close_highcut_hz=close_highcut_hz)
+            for w in res.warnings:
+                click.echo(f"warning: {meta.logical_slug}/{key}: {w}", err=True)
+            if not res.changed:
+                rows.append({"tone": meta.logical_slug, "variant": key,
+                             "status": "skipped" if res.skip_reason else "up-to-date",
+                             "reason": res.skip_reason})
+                continue
+            row = {"tone": meta.logical_slug, "variant": key, "status": "would-update",
+                   "room_highcut": res.venue_detail.get("room_highcut"),
+                   "room_level_db": res.venue_detail.get("room_level_db")}
+            if apply_changes:
+                original = hsp.read_bytes()
+                _atomic_write(hsp, dumps_hsp(res.body))
+                v.venue_detail = res.venue_detail
+                v.normalized = None  # loudness changed; the old stamp is stale
+                try:
+                    tone_meta.save_tone_meta(meta)
+                except BaseException:
+                    _atomic_write(hsp, original)  # keep .hsp and metadata in step
+                    raise
+                gitops.auto_commit(
+                    home.helixgen_home(),
+                    f"helixgen: venue-retrofit {key} ({meta.logical_slug})")
+                row["status"] = "updated"
+            rows.append(row)
+
+    if as_json:
+        click.echo(json.dumps({"apply": apply_changes, "variants": rows}, indent=2))
+        return
+    changed = [r for r in rows if r["status"] in ("would-update", "updated")]
+    for r in rows:
+        extra = ""
+        if r.get("reason"):
+            extra = f" ({r['reason']})"
+        elif r.get("room_highcut"):
+            extra = f" -> High Cut {r['room_highcut']} Hz, room {r['room_level_db']} dB"
+        click.echo(f"  {r['tone']}/{r['variant']}: {r['status']}{extra}")
+    verb = "Updated" if apply_changes else "Would update"
+    click.echo(f"{verb} {len(changed)} headphones variant(s); "
+               f"{len(rows) - len(changed)} unchanged.")
+    if not apply_changes and changed:
+        click.echo("Dry run -- nothing written. Re-run with --apply to write.")
 
 
 @library.command(name="fork")
@@ -1318,8 +1427,8 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
               help="IRs directory used by --venue (room IR lookup).")
 def fork_cmd(source: str, guitar: str | None, artist: str | None,
              song: str | None, descriptor: str | None, venue_target: str | None,
-             room_ir: str | None, room_mode: str, dry_run: bool,
-             as_json: bool, library_path: Path | None,
+             room_ir: str | None, room_mode: str, room_highcut: str | None,
+             dry_run: bool, as_json: bool, library_path: Path | None,
              irs_dir: Path | None) -> None:
     """Fork a tone onto another guitar (or another song) from its .hsp.
 
@@ -1493,7 +1602,7 @@ def fork_cmd(source: str, guitar: str | None, artist: str | None,
         venue_res, irs = _apply_venue_cli(
             read_hsp(src_hsp), venue_target, source_venue=src_venue,
             source_detail=src_variant.venue_detail if src_variant else None,
-            room_ir=room_ir, room_mode=room_mode,
+            room_ir=room_ir, room_mode=room_mode, room_highcut=room_highcut,
             library_path=library_path, irs_dir=irs_dir)
         click.echo(_venue_summary(venue_res, irs), err=True)
 

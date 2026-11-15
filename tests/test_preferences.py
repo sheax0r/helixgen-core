@@ -962,3 +962,46 @@ def test_env_default_venue_blank_is_unset_and_bad_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("HELIXGEN_DEFAULT_VENUE", "moon")
     with pytest.raises(PreferencesError):
         load_preferences(path)
+
+
+# ---------------------------------------------------------------------------
+# headphones_highcut_hz
+# ---------------------------------------------------------------------------
+
+
+def test_headphones_highcut_defaults_to_8000(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_HEADPHONES_HIGHCUT_HZ", raising=False)
+    monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
+    assert load_preferences(tmp_path / "nope.json").headphones_highcut_hz == 8000.0
+
+
+def test_headphones_highcut_null_disables(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_HEADPHONES_HIGHCUT_HZ", raising=False)
+    p = tmp_path / "p.json"
+    p.write_text('{"headphones_highcut_hz": null}')
+    assert load_preferences(p).headphones_highcut_hz is None
+
+
+def test_headphones_highcut_from_file_and_env_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_HEADPHONES_HIGHCUT_HZ", raising=False)
+    p = tmp_path / "p.json"
+    p.write_text('{"headphones_highcut_hz": 6500}')
+    assert load_preferences(p).headphones_highcut_hz == 6500.0
+    monkeypatch.setenv("HELIXGEN_HEADPHONES_HIGHCUT_HZ", "off")
+    assert load_preferences(p).headphones_highcut_hz is None
+    monkeypatch.setenv("HELIXGEN_HEADPHONES_HIGHCUT_HZ", "7200")
+    assert load_preferences(p).headphones_highcut_hz == 7200.0
+
+
+def test_headphones_highcut_rejects_an_out_of_range_value(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_HEADPHONES_HIGHCUT_HZ", raising=False)
+    p = tmp_path / "p.json"
+    p.write_text('{"headphones_highcut_hz": 80}')
+    with pytest.raises(PreferencesError, match="within"):
+        load_preferences(p)
+
+
+def test_scaffold_includes_headphones_highcut(tmp_path, monkeypatch):
+    monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
+    path = scaffold_default(tmp_path / "preferences.json")
+    assert json.loads(path.read_text())["headphones_highcut_hz"] == 8000

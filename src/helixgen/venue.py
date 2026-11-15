@@ -27,8 +27,47 @@ class VenueError(ValueError):
     pass
 
 
-def ir_energy_db(wav: Path) -> float:
-    """``10*log10(sum(x**2))`` over channel 0 of ``wav``."""
+def _one_pole(samples: list[float], sr: int, *, highcut: float | None,
+              lowcut: float | None) -> list[float]:
+    """Series one-pole high-pass (``lowcut``) then low-pass (``highcut``).
+
+    A 6 dB/oct approximation of the IR block's Low Cut / High Cut, enough to
+    rebalance the energy match after a cut — the room Level it feeds is a
+    starting point tuned by ear via the ROOM MIC footswitch, not a spec.
+    ponytail: one-pole; the real Helix filter is steeper — the re-match is a
+    seed, so upgrade to a biquad only if the seed lands too far off by ear.
+    """
+    dt = 1.0 / sr
+    out = samples
+    if lowcut and lowcut > 0:
+        rc = 1.0 / (2 * math.pi * lowcut)
+        a = rc / (rc + dt)
+        y = prev = 0.0
+        hp = []
+        for x in out:
+            y = a * (y + x - prev)
+            prev = x
+            hp.append(y)
+        out = hp
+    if highcut and highcut > 0:
+        rc = 1.0 / (2 * math.pi * highcut)
+        a = dt / (rc + dt)
+        y = 0.0
+        lp = []
+        for x in out:
+            y += a * (x - y)
+            lp.append(y)
+        out = lp
+    return out
+
+
+def ir_energy_db(wav: Path, highcut: float | None = None,
+                 lowcut: float | None = None) -> float:
+    """``10*log10(sum(x**2))`` over channel 0 of ``wav``.
+
+    With ``highcut`` / ``lowcut`` set, the channel is band-limited by a one-pole
+    filter first, so the energy reflects what survives the IR block's cut (used
+    to re-match the room Level after a High Cut is applied to both mics)."""
     wav = Path(wav)
     if not wav.is_file():
         raise VenueError(f"IR file not found: {wav}")
@@ -41,9 +80,13 @@ def ir_energy_db(wav: Path) -> float:
         ch = max(info.channels, 1)
         buf = (ctypes.c_float * (info.frames * ch))()
         n = sf.sf_readf_float(h, buf, info.frames)
+        sr = info.samplerate or 48000
     finally:
         sf.sf_close(h)
-    total = sum(buf[i * ch] ** 2 for i in range(n))
+    chan = [buf[i * ch] for i in range(n)]
+    if highcut or lowcut:
+        chan = _one_pole(chan, sr, highcut=highcut, lowcut=lowcut)
+    total = sum(x * x for x in chan)
     if total <= 0:
         raise VenueError(f"IR file is silent: {wav}")
     return 10 * math.log10(total)
@@ -100,10 +143,19 @@ def find_room_ir(
 
 
 def room_level_db(
-    close_level: float, close_wav: Path, room_wav: Path, offset_db: float = 4.0
+    close_level: float, close_wav: Path, room_wav: Path, offset_db: float = 4.0,
+    *, highcut: float | None = None, lowcut: float | None = None
 ) -> float:
-    """Room IR Level that sits ``offset_db`` under the close IR, energy-matched."""
-    diff = ir_energy_db(room_wav) - ir_energy_db(close_wav)
+    """Room IR Level that sits ``offset_db`` under the close IR, energy-matched.
+
+    When ``highcut`` / ``lowcut`` are given, both IRs are measured through that
+    same band limit, so the offset reflects the post-cut balance (a room mic,
+    hashier up top, loses more to a High Cut and so needs a touch more Level)."""
+    # Keep the 1-arg call shape when there is no cut, so callers that stub
+    # ``ir_energy_db`` for the plain match keep working.
+    e = ((lambda w: ir_energy_db(w, highcut=highcut, lowcut=lowcut))
+         if (highcut or lowcut) else ir_energy_db)
+    diff = e(room_wav) - e(close_wav)
     return round(close_level - diff - offset_db, 1)
 
 
@@ -317,12 +369,77 @@ def _room_ir_blocker(body, pi, cabs, irs, room_mode) -> str | None:
     return None
 
 
-def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> VenueResult:
+def _param_wrapper(bnn: dict, name: str) -> Any:
+    return (_slot0(bnn).get("params") or {}).get(name)
+
+
+def _base_value(w: Any, default: float) -> float:
+    return float(w["value"] if isinstance(w, dict) and "value" in w else default)
+
+
+def _snapshot_values(w: Any) -> list | None:
+    s = w.get("snapshots") if isinstance(w, dict) else None
+    return s if isinstance(s, list) and len({repr(v) for v in s}) > 1 else None
+
+
+@dataclass
+class _CutPlan:
+    """How the close/room mics' High Cut / Low Cut land, computed once."""
+    apply_close_ceiling: bool          # set the close IR's base HighCut to the ceiling
+    close_highcut: float               # close IR's effective base HighCut
+    close_cut_before: dict | None      # {"HighCut": <was>} to restore on reverse, or None
+    room_highcut: float | None         # base HighCut to put on the room IR (None = leave default)
+    room_lowcut: float | None
+    room_highcut_snaps: list | None    # per-snapshot HighCut to mirror onto the room IR
+    room_lowcut_snaps: list | None
+    eff_highcut: float | None          # band-limit for the energy re-match (None = no cut)
+    eff_lowcut: float | None
+
+
+def _cut_plan(close_bnn: dict, cblk, close_highcut_hz: float | None) -> _CutPlan:
+    """The close/room cut from the close IR's current cuts and the ceiling.
+
+    The ceiling lands on the close IR only when its base HighCut is wide open
+    (== the block default); an author's own cut is left alone. The room IR
+    mirrors whatever the close IR ends up with (base + per-snapshot)."""
+    defaults = authoring_defaults(cblk)
+    wide_hc = float(defaults.get("HighCut", 20100.0))
+    wide_lc = float(defaults.get("LowCut", 19.9))
+    hc_w, lc_w = _param_wrapper(close_bnn, "HighCut"), _param_wrapper(close_bnn, "LowCut")
+    base_hc, base_lc = _base_value(hc_w, wide_hc), _base_value(lc_w, wide_lc)
+    hc_snaps, lc_snaps = _snapshot_values(hc_w), _snapshot_values(lc_w)
+
+    # Clamp only a close mic that is wide open AND not snapshot-varying: a
+    # per-snapshot HighCut is an authored cut (and a base edit under it would be
+    # inaudible on-device), so leave it and just mirror it.
+    apply_ceiling = close_highcut_hz is not None and base_hc == wide_hc and hc_snaps is None
+    eff_hc = float(close_highcut_hz) if apply_ceiling else base_hc
+
+    def mirror(eff, wide, snaps):
+        # only write a room value that differs from the room block's own
+        # default, so a wide-open close leaves the room exactly as today
+        return (eff if eff != wide or snaps else None, snaps)
+
+    room_hc, room_hc_snaps = mirror(eff_hc, wide_hc, hc_snaps)
+    room_lc, room_lc_snaps = mirror(base_lc, wide_lc, lc_snaps)
+    return _CutPlan(
+        apply_close_ceiling=apply_ceiling, close_highcut=eff_hc,
+        close_cut_before={"HighCut": base_hc} if apply_ceiling else None,
+        room_highcut=room_hc, room_lowcut=room_lc,
+        room_highcut_snaps=room_hc_snaps, room_lowcut_snaps=room_lc_snaps,
+        eff_highcut=eff_hc if eff_hc != wide_hc else None,
+        eff_lowcut=base_lc if base_lc != wide_lc else None)
+
+
+def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db,
+                close_highcut_hz=None) -> VenueResult:
     if room_mode not in ("auto", "tile"):
         raise VenueError(f"room_mode must be 'auto' or 'tile'; got {room_mode!r}")
     detail: dict[str, Any] = {"treatment": "none", "room_ir": None, "room_level_db": None,
                               "room_switch": None, "ambience_block": None,
-                              "ambience_switch": None, "fallback_reason": None}
+                              "ambience_switch": None, "room_highcut": None,
+                              "room_lowcut": None, "close_cut_before": None,
+                              "fallback_reason": None}
     pi = _instrument_path(body, library)
     base, _ = _untapped(body, pi)
     cabs = _live_cabs_after_amp(base, library, pi)
@@ -331,7 +448,7 @@ def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> Ve
                            ["no live cab or IR block after the amp: chain left unchanged"])
     reason = _room_ir_blocker(base, pi, cabs, irs, room_mode)
     _, ckey, cblk, _, cpos = cabs[0]
-    room = level = None
+    room = level = plan = None
     if reason is None:
         close_wav = _ir_wav(_bnn(base, pi, ckey), irs)
         room = find_room_ir(close_wav, irs, override=room_ir)
@@ -339,20 +456,38 @@ def _headphones(body, library, irs, *, room_ir, room_mode, room_offset_db) -> Ve
             reason = f"no room IR registered for {close_wav.name}"
     warnings: list[str] = []
     if room is not None:
+        plan = _cut_plan(_bnn(base, pi, ckey), cblk, close_highcut_hz)
         lvl = (_slot0(_bnn(base, pi, ckey)).get("params") or {}).get("Level")
         close_level = float(lvl["value"] if isinstance(lvl, dict) and "value" in lvl
                             else authoring_defaults(cblk).get("Level", -18.0))
-        level = room_level_db(close_level, close_wav, room[1], room_offset_db)
+        level = room_level_db(close_level, close_wav, room[1], room_offset_db,
+                              highcut=plan.eff_highcut, lowcut=plan.eff_lowcut)
 
     def edit(work: dict, use_room: bool, with_tile: bool) -> dict:
         d = dict(detail)
         free = _free_switches(work)
         if use_room:
-            d.update(treatment="room-ir", room_ir=room[0], room_level_db=level)
+            d.update(treatment="room-ir", room_ir=room[0], room_level_db=level,
+                     room_highcut=plan.room_highcut, room_lowcut=plan.room_lowcut,
+                     close_cut_before=plan.close_cut_before)
+            if plan.apply_close_ceiling:
+                mutate.set_param(work, cblk.display_name, "HighCut", plan.close_highcut,
+                                 library, path=pi, lane=0, pos=cpos)
+            sib_params = {"Level": level}
+            if plan.room_highcut is not None:
+                sib_params["HighCut"] = plan.room_highcut
+            if plan.room_lowcut is not None:
+                sib_params["LowCut"] = plan.room_lowcut
             keys = mutate.wrap_in_split(
                 work, cblk.display_name, cblk.model_id, library, path=pi, lane=0, pos=cpos,
-                sibling_params={"Level": level}, sibling_ir=room[0], irs=irs,
+                sibling_params=sib_params, sibling_ir=room[0], irs=irs,
                 join_params=JOIN_PARAMS)
+            sib_pos = int(keys["sibling"][1:]) - 14
+            for pname, snaps in (("HighCut", plan.room_highcut_snaps),
+                                 ("LowCut", plan.room_lowcut_snaps)):
+                for i, v in enumerate(snaps or []):
+                    mutate.set_param(work, cblk.display_name, pname, v, library,
+                                     path=pi, lane=1, pos=sib_pos, snapshot=i)
             if free:
                 d["room_switch"] = s = free.pop(0)
                 _note_fresh(work, d, s)
@@ -413,6 +548,10 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
     pi = _instrument_path(work, library)
     path = work["preset"]["flow"][pi]
     added: list[tuple[str, dict, int | None]] = []   # (name, bNN, recorded switch source)
+    # wrappers whose per-snapshot variation the treatment itself wrote (the room
+    # IR's mirrored High/Low Cut): they leave with the block on unwrap, so they
+    # must not trip the "nothing else may point at the added block" guard.
+    exempt_varies: set[int] = set()
     close = tile = None
     room_ir = detail.get("room_ir")
     if room_ir:
@@ -443,6 +582,11 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
                 raise VenueError(f"room_switch {rs} no longer toggles the room IR Level; "
                                  "cannot reverse")
         added.append(("the room IR", path[rk], sid))
+        room_params = _slot0(path[rk]).get("params") or {}
+        for p in ("HighCut", "LowCut"):
+            w = room_params.get(p)
+            if isinstance(w, dict):
+                exempt_varies.add(id(w))
     name = detail.get("ambience_block")
     if name:
         tiles = [t for t in _slots(work, library, pi) if t[3] == 0 and t[2].display_name == name]
@@ -462,8 +606,10 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
     for what, bnn, sid in added:          # nothing else may point at them
         for w in mutate._iter_controller_wrappers(work, only=bnn):
             c = w.get("controller")
-            if (isinstance(c, dict) and c.get("source") != sid) or _varies(w):
-                raise VenueError(f"a {'controller' if isinstance(c, dict) else 'snapshot'} "
+            bad_ctrl = isinstance(c, dict) and c.get("source") != sid
+            bad_snap = _varies(w) and id(w) not in exempt_varies
+            if bad_ctrl or bad_snap:
+                raise VenueError(f"a {'controller' if bad_ctrl else 'snapshot'} "
                                  f"references {what}, which the headphones treatment added; "
                                  "cannot reverse")
 
@@ -476,7 +622,18 @@ def _strip_room_stage(work: dict, detail: dict, library: Library) -> None:
     if tile is not None:
         mutate.remove_block(work, tile[2].display_name, library, path=pi, lane=0, pos=tile[4])
     if close is not None:
-        mutate.unwrap_split(work, close[2].display_name, library, path=pi, lane=0, pos=close[4])
+        new_key = mutate.unwrap_split(work, close[2].display_name, library,
+                                      path=pi, lane=0, pos=close[4])
+        # Restore the close IR's High Cut the headphones treatment clamped, back
+        # to its wide-open value, so direct is wide open again and headphones ->
+        # direct -> headphones round trips (the room IR's own cuts left with the
+        # unwrap). The ceiling only lands on an otherwise-wide-open close, so the
+        # recorded value is the block default and the restore is byte-exact.
+        before = detail.get("close_cut_before")
+        if before:
+            for pname, val in before.items():
+                mutate.set_param(work, close[2].display_name, pname, val, library,
+                                 path=pi, lane=0, pos=int(new_key[1:]))
 
 
 def _direct(body, library, detail) -> VenueResult:
@@ -534,11 +691,14 @@ def apply_venue(
     body: dict, target: str, library: Library, irs: IrMapping, *,
     source_venue: str | None = None, source_detail: dict | None = None,
     room_ir: str | None = None, room_mode: str = "auto", room_offset_db: float = 4.0,
+    close_highcut_hz: float | None = None,
 ) -> VenueResult:
     """Transform ``body`` (a parsed `.hsp`, never mutated) into its ``target``
     venue form. ``source_venue``/``source_detail`` describe ``body``; None =
-    unspecified, treated as direct. See docs/superpowers/specs/
-    2026-11-11-venue-variants-design.md ("Transform: ...")."""
+    unspecified, treated as direct. ``close_highcut_hz`` is the headphones
+    close-mic High Cut ceiling (``None`` = no ceiling); the CLI resolves it from
+    the ``headphones_highcut_hz`` preference. See docs/superpowers/specs/
+    2026-11-11-venue-variants-design.md and 2026-11-15-headphones-highcut-design.md."""
     try:
         validate_venue(target)
         validate_venue(source_venue)
@@ -551,7 +711,8 @@ def apply_venue(
     try:
         if target == "headphones":
             return _headphones(body, library, irs, room_ir=room_ir, room_mode=room_mode,
-                               room_offset_db=room_offset_db)
+                               room_offset_db=room_offset_db,
+                               close_highcut_hz=close_highcut_hz)
         if source_venue == "headphones":
             direct = _direct(body, library, source_detail)
             if target == "direct":
@@ -562,3 +723,65 @@ def apply_venue(
         return _amp_in(body, library)
     except (SpecError, mutate.MutateError, GenerateError, ParamValidationError) as e:
         raise VenueError(str(e)) from e
+
+
+# --- retrofit existing headphones variants ----------------------------------
+
+@dataclass
+class RetrofitResult:
+    body: dict
+    venue_detail: dict
+    changed: bool
+    skip_reason: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+def retrofit_headphones(
+    body: dict, detail: dict | None, library: Library, irs: IrMapping, *,
+    close_highcut_hz: float | None,
+) -> RetrofitResult:
+    """Bring a room-IR headphones variant built the old way (room mic wide open)
+    in line with the current room-cut behaviour: reverse to direct and re-apply
+    headphones with the same room IR. A variant already in line reports
+    ``changed=False``. Skipped (left untouched) when the room IR carries a High
+    Cut that was not recorded as ours — someone cut it by hand."""
+    if not detail or detail.get("treatment") != "room-ir":
+        return RetrofitResult(body, detail or {}, False,
+                              "not a room-IR headphones variant")
+    room_hash = detail.get("room_ir")
+    pi = _instrument_path(body, library)
+    path = body["preset"]["flow"][pi]
+    rooms = [b for k, b in path.items() if k[1:].isdigit()
+             and _slot0(b).get("irhash") == room_hash]
+    if len(rooms) != 1:
+        return RetrofitResult(body, detail, False, "room IR not found in the chain")
+    rblk = library.load_block(mutate._translate_model_id(_slot0(rooms[0]).get("model", "")))
+    wide_hc = float(authoring_defaults(rblk).get("HighCut", 20100.0))
+    cur_hc = _base_value(_param_wrapper(rooms[0], "HighCut"), wide_hc)
+    # Leave a hand-set room High Cut alone: it is neither wide open (old,
+    # untouched) nor the value we recorded setting (ours) -- someone cut it.
+    if cur_hc != wide_hc and cur_hc != detail.get("room_highcut"):
+        return RetrofitResult(body, detail, False,
+                              "room IR High Cut was set by hand; left as-is")
+    cur_level = _base_value(_param_wrapper(rooms[0], "Level"), 0.0)
+    try:
+        direct = _direct(body, library, detail)
+        fresh = _headphones(direct.body, library, irs, room_ir=room_hash,
+                            room_mode="auto", room_offset_db=4.0,
+                            close_highcut_hz=close_highcut_hz)
+    except (VenueError, mutate.MutateError) as e:
+        return RetrofitResult(body, detail, False, f"cannot retrofit safely: {e}")
+    changed = any(fresh.venue_detail.get(k) != detail.get(k)
+                  for k in ("room_highcut", "room_lowcut", "close_cut_before",
+                            "room_level_db"))
+    warnings = list(fresh.warnings)
+    recorded = detail.get("room_level_db")
+    new_level = fresh.venue_detail.get("room_level_db")
+    # The re-match overwrites the room Level. Warn when the live Level was tuned
+    # away from what we recorded, so an ear-tuned blend is not silently reset.
+    if (changed and recorded is not None and new_level is not None
+            and abs(cur_level - recorded) > 0.05):
+        warnings.append(
+            f"room Level was tuned to {cur_level} dB (recorded {recorded}); "
+            f"retrofit re-matches it to {new_level} dB -- re-tune by ear if needed")
+    return RetrofitResult(fresh.body, fresh.venue_detail, changed, None, warnings)
