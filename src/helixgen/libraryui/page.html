@@ -229,7 +229,10 @@ async function openEditor(cid, btn) {
     if (!r.ok || data.error || !data.url) {
       alert(data.error || "could not open the live editor"); return;
     }
-    if (!window.open(data.url, "_blank"))
+    // one named target → repeated Edits reuse the single editor tab (there is
+    // only ever one editor, following the device's active tone) instead of
+    // piling up duplicate windows
+    if (!window.open(data.url, "helixgen-live"))
       alert("Live editor: " + data.url + "\n(allow pop-ups to open it here).");
   } catch (e) {
     alert("" + e);

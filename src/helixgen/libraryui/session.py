@@ -507,7 +507,22 @@ class LibrarySession:
         cid = self._opt_int(cid, "cid")
         if cid is None:
             raise LibraryError("cid is required", status=400)
-        loaded = self._run(lambda h: {"ok": bool(h.load_preset(cid))})
+
+        def go(h):
+            # Loading a preset discards the edit buffer, so refuse while the
+            # editor (or the hardware) holds unsaved edits — otherwise a second
+            # Edit silently throws away the tweaks the user is making.
+            try:
+                dirty = bool(h.preset_edited())
+            except Exception:  # noqa: BLE001 — property absent: don't block
+                dirty = False
+            if dirty:
+                raise LibraryError(
+                    "the live editor has unsaved changes — Save or discard "
+                    "them before loading another tone", status=409)
+            return {"ok": bool(h.load_preset(cid))}
+
+        loaded = self._run(go)
         if not loaded.get("ok"):
             raise LibraryError(f"the device would not load preset {cid}",
                                status=502)

@@ -10,6 +10,7 @@ it all down. No subprocess, no shelling out to the CLI.
 """
 from __future__ import annotations
 
+import contextlib
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -39,45 +40,66 @@ def start(ip: str, port: int, *, http_port: int = 0,
     from helixgen.liveedit.session import LiveSession
 
     client = HelixClient(ip, port).connect()
-    dev_ip = getattr(client, "ip", None) or ip
+    lease = None
+    # Everything after the socket is open must clean it up on ANY failure —
+    # `session.load()` alone raises on a busy/asleep/mid-reboot device, the
+    # common case. `device live` got this free from `with HelixClient(...) as
+    # h:`; this bare connect does not, so guard it explicitly.
     try:
-        fw = (client.product_info() or {}).get("firmware") or ""
-        parts = tuple(int(x) for x in fw.split(".")[:2])
-    except Exception:  # noqa: BLE001 — unknown firmware: let it try
-        parts = ()
-    if parts and parts < (1, 4):
-        client.close()
-        raise HelixError("the live editor needs Stadium firmware 1.4 or later "
-                         f"(this device reports {fw})")
-
-    lease = EditLease(dev_ip, enabled=True)
-    session = LiveSession(client, lease=lease, liveness=True)
-    session.load()
-    subscriber = HelixSubscriber(dev_ip, ports=(2001, 2003))
-
-    ready = threading.Event()
-    box: dict[str, Any] = {}
-
-    def _ready(url: str, srv=None) -> None:
-        box["url"], box["srv"] = url, srv
-        ready.set()
-
-    def _run() -> None:
+        dev_ip = getattr(client, "ip", None) or ip
         try:
-            _server.serve(session, "127.0.0.1", http_port,
-                          subscriber=subscriber, on_ready=_ready)
-        finally:
-            ready.set()  # unblock the waiter even if serve() never got ready
+            fw = (client.product_info() or {}).get("firmware") or ""
+            parts = tuple(int(x) for x in fw.split(".")[:2])
+        except Exception:  # noqa: BLE001 — unknown firmware: let it try
+            parts = ()
+        if parts and parts < (1, 4):
+            raise HelixError("the live editor needs Stadium firmware 1.4 or "
+                             f"later (this device reports {fw})")
 
-    threading.Thread(target=_run, daemon=True).start()
-    if not ready.wait(ready_timeout) or "url" not in box:
-        try:
-            lease.release(final=True)
-        finally:
+        lease = EditLease(dev_ip, enabled=True)
+        session = LiveSession(client, lease=lease, liveness=True)
+        session.load()
+        subscriber = HelixSubscriber(dev_ip, ports=(2001, 2003))
+
+        ready = threading.Event()
+        guard = threading.Lock()
+        box: dict[str, Any] = {}
+        cancelled = [False]
+
+        def _ready(url: str, srv=None) -> None:
+            # If start() already gave up (timed out), don't publish this server
+            # — shut it down here, or it orphans on a bound port forever.
+            with guard:
+                if cancelled[0]:
+                    if srv is not None:
+                        srv.shutdown()
+                    return
+                box["url"], box["srv"] = url, srv
+            ready.set()
+
+        def _run() -> None:
+            try:
+                _server.serve(session, "127.0.0.1", http_port,
+                              subscriber=subscriber, on_ready=_ready)
+            finally:
+                ready.set()  # unblock the waiter even if serve() never readied
+
+        threading.Thread(target=_run, daemon=True).start()
+        if not ready.wait(ready_timeout) or "url" not in box:
+            with guard:
+                cancelled[0] = True
+                late = box.get("srv")  # readied between wait() and the lock
+            if late is not None:
+                late.shutdown()
+            raise HelixError("the live editor did not start in time")
+        srv = box["srv"]
+    except BaseException:  # noqa: BLE001 — cleanup then re-raise, never swallow
+        if lease is not None:
+            with contextlib.suppress(Exception):
+                lease.release(final=True)
+        with contextlib.suppress(Exception):
             client.close()
-        raise HelixError("the live editor did not start in time")
-
-    srv = box.get("srv")
+        raise
 
     def _stop() -> None:
         try:

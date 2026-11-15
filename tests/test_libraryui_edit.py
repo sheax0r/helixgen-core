@@ -12,9 +12,10 @@ _SENTINEL = object()
 
 
 class _FakeClient:
-    def __init__(self, load_ok=True):
+    def __init__(self, load_ok=True, dirty=False):
         self.loaded = None
         self._ok = load_ok
+        self._dirty = dirty
 
     def __enter__(self):
         return self
@@ -22,13 +23,16 @@ class _FakeClient:
     def __exit__(self, *a):
         return False
 
+    def preset_edited(self):
+        return self._dirty
+
     def load_preset(self, cid):
         self.loaded = cid
         return self._ok
 
 
-def _session(*, offline=False, launcher=_SENTINEL, load_ok=True):
-    client = _FakeClient(load_ok)
+def _session(*, offline=False, launcher=_SENTINEL, load_ok=True, dirty=False):
+    client = _FakeClient(load_ok, dirty)
     kw = dict(tone_loader=lambda: [], guitar_loader=lambda: [],
               ir_local_loader=lambda: [])
     if launcher is not _SENTINEL:
@@ -82,3 +86,15 @@ def test_edit_offline_is_409():
     with pytest.raises(LibraryError) as ei:
         st.edit_handoff(7)
     assert ei.value.status == 409
+
+
+def test_edit_refuses_when_editor_has_unsaved_edits():
+    # loading a preset discards the edit buffer — a second Edit must not throw
+    # away unsaved tweaks silently.
+    called = []
+    st, client = _session(dirty=True,
+                          launcher=lambda: called.append(1) or "x")
+    with pytest.raises(LibraryError) as ei:
+        st.edit_handoff(7)
+    assert ei.value.status == 409
+    assert client.loaded is None and not called  # neither loaded nor opened
