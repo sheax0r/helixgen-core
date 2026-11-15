@@ -197,7 +197,10 @@ function rowActions(v) {
                                     v.presence === "both" ? v.device_cid : undefined)));
     btns.push(mkBtn("+ setlist", b => {
       const sl = prompt("Add this tone to which setlist?");
-      if (sl) postAction("/setlist/add", { to: sl, hsp: v.hsp }, b);
+      // on-both: this upserts the library .hsp onto the device, re-syncing
+      // the pair, so clear any stale "changed" badge for it
+      if (sl) postAction("/setlist/add", { to: sl, hsp: v.hsp }, b,
+                         v.presence === "both" ? v.device_cid : undefined);
     }));
   }
   if (v.presence !== "computer" && v.preset_name) {  // it's on the device

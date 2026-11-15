@@ -264,6 +264,12 @@ class LibrarySession:
             p = self._root() / hsp
         if not p.exists():
             raise LibraryError(f"tone file not found: {hsp}", status=404)
+        # Contain to the library root: ``update_local`` WRITES through this
+        # resolver, so an absolute path or ``../`` escape must not become an
+        # arbitrary-file overwrite. (copy only reads, but the same containment
+        # is correct there — you only copy library tones.)
+        if not p.resolve().is_relative_to(self._root().resolve()):
+            raise LibraryError("tone file is outside the library", status=400)
         return p
 
     def _tones_dir(self) -> Path:

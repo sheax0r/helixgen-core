@@ -113,6 +113,29 @@ def test_update_local_missing_hsp_is_404(tmp_path):
     assert ei.value.status == 404
 
 
+def test_update_local_rejects_absolute_path_outside_library(tmp_path):
+    # update_local WRITES; an absolute path outside the library must not become
+    # an arbitrary-file overwrite primitive.
+    victim = tmp_path.parent / "victim.hsp"
+    victim.write_text("ORIGINAL")
+    wrote = []
+    st = _session(tmp_path,
+                  update_local_fn=lambda *a: wrote.append(1) or {"name": "x"})
+    with pytest.raises(LibraryError) as ei:
+        st.update_local(1, str(victim))
+    assert ei.value.status == 400
+    assert victim.read_text() == "ORIGINAL" and not wrote
+
+
+def test_update_local_rejects_dotdot_traversal(tmp_path):
+    victim = tmp_path.parent / "victim2.hsp"
+    victim.write_text("ORIGINAL")
+    st = _session(tmp_path, update_local_fn=lambda *a: {"name": "x"})
+    with pytest.raises(LibraryError) as ei:
+        st.update_local(1, "../victim2.hsp")
+    assert ei.value.status == 400
+
+
 # -- the default projection (pinned via stubbed canon helpers) -------------
 # ``_semantic_canon_*`` are module globals in ``session`` so patching on ``S``
 # works; ``read_hsp`` / ``Library`` / ``default_library_path`` are imported
