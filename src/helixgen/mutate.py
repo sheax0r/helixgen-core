@@ -56,6 +56,8 @@ __all__ = [
     "set_param",
     "set_flow_param",
     "set_enabled",
+    "set_snapshot",
+    "remove_snapshot",
     "add_block",
     "remove_block",
     "wrap_in_split",
@@ -649,6 +651,315 @@ def set_enabled(
     wrapped["snapshots"] = snaps
     wrapped["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
     _mark_snapshot_valid(body, idx)
+
+
+# --- set_snapshot / remove_snapshot (scene-level ops) -----------------------
+
+def _default_snapshot_meta() -> list[dict[str, Any]]:
+    """The 8-slot `preset.snapshots` meta for a preset that had none.
+
+    Matches `generate._build_snapshot_metadata`'s placeholder shape — name
+    `Snap N`, `valid: True` — NOT `device to-hsp`'s `valid: false`/unnamed
+    shape, because `view._snapshot_names` is built to trim exactly `Snap N`
+    placeholders: an empty/absent name reads as a configured snapshot and
+    would make `view` project 8 blank scenes. All 8 valid matches what
+    `generate` ships for an authored preset, so an in-place create is
+    indistinguishable from one.
+    """
+    return [{"name": f"Snap {i + 1}", "color": "auto",
+             "expsw": 1 if i == 0 else -1, "source": 0, "tempo": 120.0,
+             "valid": True} for i in range(HSP_SNAPSHOT_SLOTS)]
+
+
+def _snapshot_meta(body: dict[str, Any]) -> list:
+    return (body.get("preset") or {}).get("snapshots") or []
+
+
+def _is_placeholder_name(name: Any, idx: int) -> bool:
+    """A slot's name is a placeholder (unconfigured) iff it is empty/absent or
+    the generator's `Snap N` default. Matches `view._snapshot_names`'s trim."""
+    return not name or name == f"Snap {idx + 1}"
+
+
+def _is_configured(body: dict[str, Any], idx: int) -> bool:
+    """A snapshot is CONFIGURED iff it carries a non-default (non-placeholder)
+    name — the user-facing "exists" test (distinct from the device-fidelity
+    `valid` flag, which the ops maintain underneath)."""
+    meta = _snapshot_meta(body)
+    if not (0 <= idx < len(meta) and isinstance(meta[idx], dict)):
+        return False
+    return not _is_placeholder_name(meta[idx].get("name"), idx)
+
+
+def _resolve_snapshot_target(
+    body: dict[str, Any], index: int | None, name: str | None,
+) -> int:
+    """Resolve an `index`/`name` pair to a target snapshot index, enforcing the
+    disambiguation rules shared by `set_snapshot` and `remove_snapshot`:
+
+    - `name` matching >1 slot requires an explicit `index` (one of those slots);
+      an `index` outside them is a contradiction.
+    - `name` matching exactly one slot plus a different `index` is a
+      contradiction.
+    - `name` matching no slot (a create target) requires an `index`.
+    - neither given is an error.
+
+    Returns the target index (validated into range). Does NOT create meta or
+    check `configured` — callers layer those on.
+    """
+    meta = _snapshot_meta(body)
+    if name is not None:
+        matches = [i for i, s in enumerate(meta)
+                   if isinstance(s, dict) and s.get("name") == name]
+        if len(matches) > 1:
+            if index is None:
+                raise MutateError(
+                    f"Snapshot name {name!r} matches slots {matches}; "
+                    f"disambiguate with an explicit index.")
+            if index not in matches:
+                raise MutateError(
+                    f"Snapshot name {name!r} is at slots {matches}, not "
+                    f"index {index}.")
+            target = index
+        elif len(matches) == 1:
+            if index is not None and index != matches[0]:
+                raise MutateError(
+                    f"Snapshot name {name!r} already names index {matches[0]}, "
+                    f"so --name targets that slot, not index {index} — the name "
+                    f"and index contradict. To edit slot {matches[0]}, drop "
+                    f"--index; to configure slot {index}, give it a distinct "
+                    f"name.")
+            target = matches[0] if index is None else index
+        else:  # name resolves to nothing -> a create needs an index
+            if index is None:
+                raise MutateError(
+                    f"Snapshot {name!r} does not exist; creating it requires "
+                    f"an explicit --index (0..{HSP_SNAPSHOT_SLOTS - 1}).")
+            target = index
+    elif index is not None:
+        target = index
+    else:
+        raise MutateError("Target a snapshot by --index or --name.")
+
+    if not (0 <= target < HSP_SNAPSHOT_SLOTS):
+        raise MutateError(
+            f"Snapshot index {target} out of range "
+            f"(0..{HSP_SNAPSHOT_SLOTS - 1}).")
+    return target
+
+
+def _iter_snapshot_wrappers(body: dict[str, Any]):
+    """Yield every param / `@enabled` / output wrapper dict in the preset that
+    carries a per-snapshot `snapshots` array. The single walk shared by
+    `active`-resync, `clone_from`, and `remove_snapshot`'s revert — so none of
+    them re-implements the flow traversal. Yields `(kind, wrapped)` where
+    `kind` is "enabled" (densify-to-True semantics) or "value" (densify-to-base,
+    for params and output gain/pan)."""
+    flow = (body.get("preset") or {}).get("flow") or []
+    for path_dict in flow:
+        if not isinstance(path_dict, dict):
+            continue
+        for key, bnn in path_dict.items():
+            if not (isinstance(key, str) and key.startswith("b")
+                    and isinstance(bnn, dict)):
+                continue
+            en = bnn.get("@enabled")
+            if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
+                yield "enabled", en
+            for slot in (bnn.get("slot") or []):
+                if not isinstance(slot, dict):
+                    continue
+                for w in (slot.get("params") or {}).values():
+                    if isinstance(w, dict) and isinstance(w.get("snapshots"), list):
+                        yield "value", w
+
+
+def _resync_values_to_active(body: dict[str, Any]) -> None:
+    """Re-sync every snapshot-tracked wrapper's load `value` to the active
+    snapshot's slot — the invariant `value == snapshots[active]` that each
+    per-snapshot writer maintains per-write, applied across the whole preset
+    after `activesnapshot` itself moved."""
+    for _kind, w in _iter_snapshot_wrappers(body):
+        snaps = w["snapshots"]
+        if snaps:
+            w["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
+
+
+def _apply_snapshot_content(
+    body: dict[str, Any], idx: int, library: Library | None,
+    *, enable, disable, params, output,
+) -> None:
+    """Apply inline scene content to snapshot `idx`, each a thin sugar over the
+    existing per-snapshot writer (so it is last-wins-equivalent to the
+    `--snapshot` verbs). `enable`/`disable` are block-ref lists; `params` a
+    list of `{block, param, value[, path/lane/pos]}`; `output` a
+    `{level?, pan?, path?}`."""
+    if (enable or disable or params or output) and library is None:
+        raise MutateError("inline snapshot content requires a library.")
+    for ref in (enable or []):
+        _set_enabled_from_ref(body, ref, True, library, idx)
+    for ref in (disable or []):
+        _set_enabled_from_ref(body, ref, False, library, idx)
+    for p in (params or []):
+        if not isinstance(p, dict) or "block" not in p or "param" not in p \
+                or "value" not in p:
+            raise MutateError(
+                "each snapshot param needs 'block', 'param' and 'value'.")
+        set_param(body, p["block"], p["param"], p["value"], library,
+                  snapshot=idx, path=p.get("path"), lane=p.get("lane"),
+                  pos=p.get("pos"))
+    if output:
+        if not isinstance(output, dict):
+            raise MutateError("snapshot 'output' must be an object.")
+        opath = output.get("path", 0)
+        for field in ("level", "pan"):
+            if field in output:
+                set_flow_param(body, "output", field, output[field],
+                               path=opath, snapshot=idx)
+
+
+def _set_enabled_from_ref(body, ref, enabled, library, idx):
+    """`set_enabled` from a block ref that is either a bare name or a
+    `{block, path?, lane?, pos?}` dict (the recipe's disable/enable form)."""
+    if isinstance(ref, dict):
+        set_enabled(body, ref["block"], enabled, library, snapshot=idx,
+                    path=ref.get("path"), lane=ref.get("lane"),
+                    pos=ref.get("pos"))
+    else:
+        set_enabled(body, ref, enabled, library, snapshot=idx)
+
+
+def set_snapshot(
+    body: dict[str, Any],
+    *,
+    index: int | None = None,
+    name: str | None = None,
+    active: bool = False,
+    clone_from: Any = None,
+    disable: list | None = None,
+    enable: list | None = None,
+    params: list | None = None,
+    output: dict | None = None,
+    library: Library | None = None,
+) -> list[str]:
+    """Create / name / activate / clone a snapshot scene, in place.
+
+    The Stadium always has 8 physical slots; "create" means NAME a slot (plus
+    optional content). When the preset carries no `preset.snapshots` meta (its
+    recipe omitted snapshots), this synthesizes the 8-slot meta first so the
+    per-snapshot writers don't error — which is what lets a preset shipped
+    without snapshots gain them with no regenerate.
+
+    Target the slot with `index` and/or `name` (see `_resolve_snapshot_target`
+    for the rules). Creating a configured snapshot needs a `name`; editing an
+    already-configured slot or adding content may use `index` alone.
+
+    `active` makes the slot load-active (re-syncing every wrapper's `value`).
+    `clone_from` (index or name of a CONFIGURED source) copies that slot's full
+    per-snapshot state into the target — state only, never the source's name,
+    so a clone can't backdoor a duplicate name. Inline `enable`/`disable`/
+    `params`/`output` are sugar over the `--snapshot` writers, applied AFTER
+    the clone (last-wins). Returns a list of warnings.
+    """
+    target = _resolve_snapshot_target(body, index, name)
+
+    # set_snapshot is the CONFIGURED-scene op: it must leave the target named.
+    # Targeting an unconfigured slot by index alone — even to set active or
+    # write content — needs a --name, else the slot stays unconfigured (invisible
+    # to `view` and un-removable), and `--active` would load the preset on a
+    # phantom scene. Per-snapshot content on an unnamed slot is still available
+    # via the `--snapshot` verbs; this op always produces a named scene.
+    if name is None and not _is_configured(body, target):
+        raise MutateError(
+            f"Slot {target} is unconfigured; set_snapshot needs a --name to "
+            f"create a scene there (--active/content on an unnamed slot would "
+            f"leave it invisible to `view` and `remove-snapshot`). Pass --name, "
+            f"or target an already-named slot to edit it.")
+
+    preset = body.setdefault("preset", {})
+    if not preset.get("snapshots"):
+        preset["snapshots"] = _default_snapshot_meta()
+    meta = preset["snapshots"]
+    if not (isinstance(meta[target], dict)):
+        meta[target] = {}
+
+    if name is not None:
+        meta[target]["name"] = name
+    _mark_snapshot_valid(body, target)
+
+    if active:
+        preset.setdefault("params", {})["activesnapshot"] = target
+
+    if clone_from is not None:
+        src = _resolve_snapshot_index(body, clone_from)
+        if not (0 <= src < HSP_SNAPSHOT_SLOTS):
+            raise MutateError(
+                f"clone_from index {src} out of range "
+                f"(0..{HSP_SNAPSHOT_SLOTS - 1}).")
+        if not _is_configured(body, src):
+            raise MutateError(
+                f"clone_from snapshot {clone_from!r} is not configured "
+                f"(no name) — nothing to copy.")
+        if src == target:
+            raise MutateError("clone_from cannot be the target snapshot.")
+        for _kind, w in _iter_snapshot_wrappers(body):
+            snaps = w["snapshots"]
+            if len(snaps) == HSP_SNAPSHOT_SLOTS:
+                snaps[target] = snaps[src]
+                w["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
+        _mark_snapshot_valid(body, target)
+
+    _apply_snapshot_content(body, target, library, enable=enable,
+                            disable=disable, params=params, output=output)
+
+    if active:
+        _resync_values_to_active(body)
+    return []
+
+
+def remove_snapshot(
+    body: dict[str, Any],
+    *,
+    index: int | None = None,
+    name: str | None = None,
+) -> list[str]:
+    """Remove (unconfigure) a snapshot scene, in place — the inverse of
+    `set_snapshot`'s create.
+
+    Reverts the slot's name to its `Snap N` placeholder, sets `valid: false`,
+    and reverts every per-snapshot array slot to the HOME scene — snapshot 0,
+    the base anchor `view` itself reads a param's base from (`_output_base`) —
+    so the removed slot stops carrying its own overrides (and does NOT inherit
+    whatever scene happened to be active). If the removed slot was the active
+    snapshot, `activesnapshot` falls back to 0. Errors if the slot is not
+    CONFIGURED (no name — mirrors `remove_footswitch`). The 8-slot meta is
+    kept; only the one slot's name/valid and the per-snapshot arrays change.
+
+    Removing snapshot 0 itself is a near no-op on the arrays (it IS the base
+    anchor, so there is nothing to revert it to) — only its name/valid clear.
+    """
+    target = _resolve_snapshot_target(body, index, name)
+    if not _is_configured(body, target):
+        raise MutateError(
+            f"Snapshot {index if index is not None else name!r} is not "
+            f"configured (no name) — nothing to remove.")
+
+    params = body.setdefault("preset", {}).setdefault("params", {})
+    if _active_snapshot(body) == target:
+        params["activesnapshot"] = 0
+    # Revert the slot to the HOME scene (snapshot 0), not the active one: an
+    # active non-home scene must not bleed its overrides into the removed slot.
+    for kind, w in _iter_snapshot_wrappers(body):
+        snaps = w["snapshots"]
+        if len(snaps) != HSP_SNAPSHOT_SLOTS:
+            continue
+        snaps[target] = snaps[0]
+        w["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
+
+    meta = _snapshot_meta(body)
+    meta[target]["name"] = f"Snap {target + 1}"
+    meta[target]["valid"] = False
+    return []
 
 
 # --- add_block / remove_block -----------------------------------------------
@@ -2070,6 +2381,19 @@ def _op_remove_expression(body: dict, library: Library, o: dict) -> list[str]:
     return []
 
 
+def _op_set_snapshot(body: dict, library: Library, o: dict) -> list[str]:
+    return set_snapshot(
+        body, index=o.get("index"), name=o.get("name"),
+        active=bool(o.get("active", False)), clone_from=o.get("clone_from"),
+        disable=o.get("disable"), enable=o.get("enable"),
+        params=o.get("params"), output=o.get("output"), library=library,
+    )
+
+
+def _op_remove_snapshot(body: dict, library: Library, o: dict) -> list[str]:
+    return remove_snapshot(body, index=o.get("index"), name=o.get("name"))
+
+
 PATCH_OPS = {
     "set_param": _op_set_param,
     "set_enabled": _op_set_enabled,
@@ -2081,6 +2405,8 @@ PATCH_OPS = {
     "set_expression": _op_set_expression,
     "remove_footswitch": _op_remove_footswitch,
     "remove_expression": _op_remove_expression,
+    "set_snapshot": _op_set_snapshot,
+    "remove_snapshot": _op_remove_snapshot,
 }
 
 # Required fields per op, validated up front so a missing key reports itself
@@ -2097,6 +2423,10 @@ _PATCH_OP_REQUIRED = {
     "set_expression": ("pedal", "targets"),
     "remove_footswitch": ("switch",),
     "remove_expression": ("pedal",),
+    # index-or-name (+ create needs a name) is enforced inside set_snapshot;
+    # no single key is unconditionally required here.
+    "set_snapshot": (),
+    "remove_snapshot": (),
 }
 
 
@@ -2109,7 +2439,8 @@ def apply_operations(
 
     The op vocabulary is :data:`PATCH_OPS` (`set_param`, `set_enabled`,
     `add_block`, `remove_block`, `swap_model`, `set_input`, `set_footswitch`,
-    `set_expression`, `remove_footswitch`, `remove_expression`), each
+    `set_expression`, `remove_footswitch`, `remove_expression`, `set_snapshot`,
+    `remove_snapshot`), each
     dispatching to the matching surgical verb in this module. An unknown op raises
     :class:`MutateError` — callers apply ops to an in-memory body and only
     write the file after ALL ops succeeded, so a bad op never half-patches

@@ -344,8 +344,21 @@ def _ref(name: str, pi: int, lane: int, pos: int, idx: dict) -> dict:
     return ref
 
 
+def _is_snapshot_placeholder(name: str, idx: int) -> bool:
+    """A snapshot slot is an unconfigured placeholder iff its name is empty or
+    the generator's `Snap <idx+1>` default. Mirrors `mutate._is_placeholder_name`
+    (the user-facing "configured" test) so `view` and the snapshot ops agree on
+    which slots exist."""
+    return not name or name == f"Snap {idx + 1}"
+
+
 def _snapshot_names(body: dict) -> list[str]:
-    """Names from preset.snapshots, trimmed of trailing `Snap N` placeholders."""
+    """Names from preset.snapshots, trimmed of trailing `Snap N` placeholders.
+
+    Kept positional (index i == snapshot i) for override attribution; the emit
+    loop in `_recover_snapshots` skips the interior/leading placeholder slots so
+    a non-contiguous layout (a scene created at a high index, or a middle one
+    removed) does not project phantom blank scenes."""
     raw = (body.get("preset") or {}).get("snapshots") or []
     names = [s.get("name", "") for s in raw]
     # A slot is a placeholder iff named exactly "Snap <i+1>".
@@ -501,6 +514,11 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
 
     snaps: list[dict[str, Any]] = []
     for i, nm in enumerate(names):
+        # Skip interior/leading placeholder slots so a non-contiguous layout
+        # projects only its configured (named) scenes, never phantom blanks —
+        # `names` stays positional above only for override attribution.
+        if _is_snapshot_placeholder(nm, i):
+            continue
         s: dict[str, Any] = {"name": nm}
         # disable: bare string if unambiguous, else coordinate dict
         dis = []
