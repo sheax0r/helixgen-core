@@ -541,8 +541,10 @@ def test_synthesized_ir_doc_lifts_irhash_back_to_recipe():
 #     the inverse of the ``.hsp`` ``@enabled`` arrays;
 #   * every snapshot-tracked entity is BOUND to its target: the block dict
 #     (bypass) or parm leaf (param) carries ``snap=True, tid_=<trg id>``;
-#     untracked blocks/leaves carry ``snap=False, tid_=0`` (an FS-only bypass
-#     target does NOT set the block's ``tid_``);
+#     a controller-ONLY bypass target carries ``snap=False, tid_=<trg id>`` —
+#     the device sets a block's ``tid_`` to its bypass target whether that
+#     target is snapshot- or controller-driven (bead hgc-pnp); truly untracked
+#     blocks/leaves carry ``snap=False, tid_=0``;
 #   * ``tamv``/names cover all 8 snapshots from the .hsp's dense arrays (the
 #     trailing "Snap N" defaults are real state, not padding).
 
@@ -675,23 +677,29 @@ def test_snapshot_tracked_entities_are_bound():
     assert leaf["snap"] is True and leaf["tid_"] == par["id__"]
 
 
-def test_fs_only_bypass_is_not_snapshot_bound():
-    """A block with an FS bypass but NO snapshot variation keeps
-    ``snap=False, tid_=0`` at block level (its trg exists only for the ctrl),
-    and untracked blocks/endpoints carry ``tid_=0`` (no sequential ids that
-    collide with real target ids)."""
+def test_controller_only_bypass_sets_block_back_pointer():
+    """A block whose bypass is driven ONLY by a controller (an FS, no snapshot
+    variation) still carries the device's block-level back-pointer
+    ``tid_=<bypass trg id>`` with ``snap=False`` (bead hgc-pnp): the device sets
+    a block's ``tid_`` to its bypass target whether snapshot- or
+    controller-driven. It is NOT snapshot-tracked, so ``snap`` stays False and
+    the trg is absent from the ``stid`` set. Truly untracked blocks/endpoints
+    (no bypass trg at all) still carry ``tid_=0``."""
     doc = _snap_doc()
     entt = doc["cg__"]["entt"]
     blocks = _blocks_by_mid(doc)
     delay = blocks[defs.model_id_for("HD2_DL4TapeEchoStereo")]
     delay_byp = _trg_by(entt, type=1, eID_=delay["id__"])
-    assert delay["snap"] is False and delay["tid_"] == 0
+    assert delay["tid_"] == delay_byp["id__"], "block tid_ must point at its bypass trg"
+    assert delay["snap"] is False, "a controller-only bypass is NOT snapshot-tracked"
     # the FS trg still exists and is NOT in the snapshot-tracked stid set
     assert delay_byp["id__"] not in entt["ctm_"]["stid"]
-    # untracked leaves (endpoints included) never carry a stale tid_
-    for b in _blocks_by_mid(doc).values():
-        if b["snap"] is False:
+    # a block with NO bypass trg of its own never carries a stale tid_
+    byp_eids = {t["eID_"] for t in entt["trgs"] if t.get("type") == 1}
+    for b in blocks.values():
+        if b["snap"] is False and b["id__"] not in byp_eids:
             assert b["tid_"] == 0, b
+    # the fix is block-level bypass only — untracked param leaves stay tid_=0
     for p in delay["mdls"][0]["parm"]:
         if p["snap"] is False:
             assert p["tid_"] == 0
@@ -727,14 +735,39 @@ def test_sparse_snapshot_arrays_fall_back_to_base():
 
 def test_degenerate_snapshot_meta_does_not_crash():
     """A hand-edited .hsp with ``tempo: null`` / ``expsw: null`` in a snapshot
-    slot must transcode (None -> defaults), now that all 8 slots are read."""
+    slot must transcode (None -> defaults), now that all 8 slots are read. A
+    blank/None name stays EMPTY — the device's own encoding for an unconfigured
+    slot — rather than being invented as ``SNAPSHOT N`` (bead hgc-dym)."""
     body = _snapshot_hsp_body()
     body["preset"]["snapshots"][2] = {"name": None, "tempo": None,
                                       "expsw": None}
     doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
     snps = sorted(doc["cg__"]["entt"]["snps"], key=lambda s: s["si__"])
-    assert snps[2]["name"] == "SNAPSHOT 3"
+    assert snps[2]["name"] == ""
     assert snps[2]["exsw"] == -1 and snps[2]["bpm_"] == 120.0
+
+
+def test_invalid_snapshot_dropping_real_deltas_warns(capsys):
+    """A hand-edited .hsp marking a snapshot ``valid:false`` while that slot
+    still carries a real per-snapshot delta loses the delta silently on install
+    (the device stores no ``tamv`` for an invalid snapshot). ``hsp_to_sbepgsm``
+    must warn so the author sees the loss (bead hgc-6e1)."""
+    body = _snapshot_hsp_body()
+    # snapshot 2 ("Clean", index 1) carries drive-OFF (b02 @enabled[1]=False,
+    # differs from the base True); marking it invalid drops that delta.
+    body["preset"]["snapshots"][1]["valid"] = False
+    transcode.hsp_to_sbepgsm(body)
+    err = capsys.readouterr().err
+    assert "valid:false" in err and "drop" in err.lower()
+    assert "2" in err or "Clean" in err, err
+
+
+def test_valid_snapshot_deltas_do_not_warn(capsys):
+    """Ordinary valid-snapshot deltas do not trigger the dropped-delta warning
+    (bead hgc-6e1)."""
+    transcode.hsp_to_sbepgsm(_snapshot_hsp_body())
+    err = capsys.readouterr().err
+    assert "valid:false" not in err
 
 
 def _input_bypass_hsp_body(*, base_bypassed=True, snapshots=True):
