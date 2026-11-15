@@ -724,8 +724,11 @@ def _resolve_snapshot_target(
         elif len(matches) == 1:
             if index is not None and index != matches[0]:
                 raise MutateError(
-                    f"Snapshot name {name!r} is at index {matches[0]}, not "
-                    f"{index} — the name and index contradict.")
+                    f"Snapshot name {name!r} already names index {matches[0]}, "
+                    f"so --name targets that slot, not index {index} — the name "
+                    f"and index contradict. To edit slot {matches[0]}, drop "
+                    f"--index; to configure slot {index}, give it a distinct "
+                    f"name.")
             target = matches[0] if index is None else index
         else:  # name resolves to nothing -> a create needs an index
             if index is None:
@@ -860,12 +863,18 @@ def set_snapshot(
     """
     target = _resolve_snapshot_target(body, index, name)
 
-    has_content = bool(enable or disable or params or output or clone_from or active)
-    if name is None and not has_content and not _is_configured(body, target):
+    # set_snapshot is the CONFIGURED-scene op: it must leave the target named.
+    # Targeting an unconfigured slot by index alone — even to set active or
+    # write content — needs a --name, else the slot stays unconfigured (invisible
+    # to `view` and un-removable), and `--active` would load the preset on a
+    # phantom scene. Per-snapshot content on an unnamed slot is still available
+    # via the `--snapshot` verbs; this op always produces a named scene.
+    if name is None and not _is_configured(body, target):
         raise MutateError(
-            "Nothing to do: creating a snapshot requires a --name (an unnamed "
-            "slot is unconfigured). Pass --name, or content/--active/"
-            "--clone-from to edit an existing slot.")
+            f"Slot {target} is unconfigured; set_snapshot needs a --name to "
+            f"create a scene there (--active/content on an unnamed slot would "
+            f"leave it invisible to `view` and `remove-snapshot`). Pass --name, "
+            f"or target an already-named slot to edit it.")
 
     preset = body.setdefault("preset", {})
     if not preset.get("snapshots"):
@@ -918,11 +927,16 @@ def remove_snapshot(
     `set_snapshot`'s create.
 
     Reverts the slot's name to its `Snap N` placeholder, sets `valid: false`,
-    and reverts every per-snapshot array slot to the base/home scene (the value
-    at the active snapshot after fallback). If the removed slot was the active
+    and reverts every per-snapshot array slot to the HOME scene — snapshot 0,
+    the base anchor `view` itself reads a param's base from (`_output_base`) —
+    so the removed slot stops carrying its own overrides (and does NOT inherit
+    whatever scene happened to be active). If the removed slot was the active
     snapshot, `activesnapshot` falls back to 0. Errors if the slot is not
     CONFIGURED (no name — mirrors `remove_footswitch`). The 8-slot meta is
     kept; only the one slot's name/valid and the per-snapshot arrays change.
+
+    Removing snapshot 0 itself is a near no-op on the arrays (it IS the base
+    anchor, so there is nothing to revert it to) — only its name/valid clear.
     """
     target = _resolve_snapshot_target(body, index, name)
     if not _is_configured(body, target):
@@ -933,14 +947,14 @@ def remove_snapshot(
     params = body.setdefault("preset", {}).setdefault("params", {})
     if _active_snapshot(body) == target:
         params["activesnapshot"] = 0
-    anchor = _clamped_active_snapshot(body, HSP_SNAPSHOT_SLOTS)
-
+    # Revert the slot to the HOME scene (snapshot 0), not the active one: an
+    # active non-home scene must not bleed its overrides into the removed slot.
     for kind, w in _iter_snapshot_wrappers(body):
         snaps = w["snapshots"]
         if len(snaps) != HSP_SNAPSHOT_SLOTS:
             continue
-        snaps[target] = snaps[anchor]
-        w["value"] = snaps[anchor]
+        snaps[target] = snaps[0]
+        w["value"] = snaps[_clamped_active_snapshot(body, len(snaps))]
 
     meta = _snapshot_meta(body)
     meta[target]["name"] = f"Snap {target + 1}"

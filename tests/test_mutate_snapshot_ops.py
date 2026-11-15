@@ -128,6 +128,29 @@ def test_set_active_updates_activesnapshot(body, library):
     assert _active(body) == 2
 
 
+def test_active_on_unconfigured_slot_requires_name(no_snaps, library):
+    # review finding 3: --active on an unnamed slot would load the preset on a
+    # scene `view` won't show — require a name
+    with pytest.raises(mutate.MutateError):
+        mutate.set_snapshot(no_snaps, index=6, active=True, library=library)
+
+
+def test_inline_content_on_unconfigured_slot_requires_name(no_snaps, library):
+    with pytest.raises(mutate.MutateError):
+        mutate.set_snapshot(no_snaps, index=6, library=library,
+                            params=[{"block": "Brit 2204 Custom",
+                                     "param": "Drive", "value": 0.5}])
+
+
+def test_edit_configured_slot_without_name_ok(body, library):
+    # index-only edit of an ALREADY-configured slot (Clean) is still allowed
+    mutate.set_snapshot(body, index=2, active=True, library=library,
+                        params=[{"block": "Brit 2204 Custom", "param": "Drive",
+                                 "value": 0.4}])
+    assert _active(body) == 2
+    assert _drive(body)["snapshots"][2] == 0.4
+
+
 def test_index_out_of_range_errors(no_snaps, library):
     for bad in (8, -1):
         with pytest.raises(mutate.MutateError):
@@ -272,6 +295,16 @@ def test_remove_resyncs_value_after_active_fallback(body, library):
     assert _drive(body)["value"] == _drive(body)["snapshots"][0]
 
 
+def test_remove_reverts_to_home_not_active_scene(body, library):
+    # review finding 4: with a non-home scene active, removing a DIFFERENT
+    # snapshot must revert it to snapshot 0 (home), not inherit the active
+    # scene's override. Lead(1) active, Lead has Drive 0.85; remove Clean(2).
+    body["preset"]["params"]["activesnapshot"] = 1
+    home = _drive(body)["snapshots"][0]            # 0.5
+    mutate.remove_snapshot(body, index=2)
+    assert _drive(body)["snapshots"][2] == home    # NOT Lead's 0.85
+
+
 def test_remove_contradicting_index_name_errors(body, library):
     with pytest.raises(mutate.MutateError):
         mutate.remove_snapshot(body, index=3, name="Lead")
@@ -305,13 +338,31 @@ def test_patch_set_snapshot_missing_required_field(body, library):
 
 def test_view_projects_snapshot_created_in_place(no_snaps, library):
     # create a named scene with content on a preset that had NO snapshots meta,
-    # then confirm `view` projects it (the round-trip Task 5 asserts is wired)
+    # then confirm `view` projects it — and ONLY it (no phantom placeholder
+    # scene from the slot-0 gap; review finding 1)
     mutate.set_snapshot(no_snaps, index=1, name="Lead", library=library,
                         params=[{"block": "Brit 2204 Custom", "param": "Drive",
                                  "value": 0.7}])
     proj = view.view(no_snaps, library)
-    lead = next(s for s in (proj.get("snapshots") or []) if s.get("name") == "Lead")
-    assert lead["params"]["Brit 2204 Custom"]["Drive"] == 0.7
+    assert [s["name"] for s in proj["snapshots"]] == ["Lead"]
+    assert proj["snapshots"][0]["params"]["Brit 2204 Custom"]["Drive"] == 0.7
+
+
+def test_view_no_phantom_scene_on_high_index_create(no_snaps, library):
+    # review finding 1: creating at a non-zero index must not leak the leading
+    # placeholder slots as blank scenes
+    mutate.set_snapshot(no_snaps, index=6, name="Lead", library=library)
+    assert [s["name"] for s in view.view(no_snaps, library)["snapshots"]] == ["Lead"]
+
+
+def test_view_no_phantom_scene_after_middle_remove(no_snaps, library):
+    # review finding 1: configure 0/1/2 then remove the middle one — view must
+    # show [A, C], not [A, <blank>, C]
+    no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
+    for i, nm in ((0, "A"), (1, "B"), (2, "C")):
+        mutate.set_snapshot(no_snaps, index=i, name=nm, library=library)
+    mutate.remove_snapshot(no_snaps, index=1)
+    assert [s["name"] for s in view.view(no_snaps, library)["snapshots"]] == ["A", "C"]
 
 
 def test_view_nulls_variance_without_configured_name(no_snaps, library):
