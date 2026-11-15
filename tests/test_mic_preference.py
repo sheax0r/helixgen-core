@@ -69,7 +69,24 @@ def test_enabled_must_be_a_boolean():
 def test_loads_from_a_prefs_file(tmp_path):
     p = tmp_path / "preferences.json"
     p.write_text(json.dumps({"mic_input": {"enabled": True, "level": 3.5}}))
-    assert load_preferences(p).mic_input.level == 3.5
+    # mic_input is stored RAW (parsed by its consumer, hgc-6en).
+    assert _parse_mic_input(load_preferences(p).mic_input).level == 3.5
+
+
+def test_bad_mic_input_does_not_break_load_preferences(tmp_path):
+    """hgc-6en: a mic_input typo must not raise in load_preferences, or it
+    takes down unrelated verbs (device normalize/calibrate, migrate). The
+    error is deferred to the consumer (generate)."""
+    p = tmp_path / "preferences.json"
+    p.write_text(json.dumps({
+        "mic_input": {"enabled": True, "lowcutt": 80},  # typo: lowcutt
+        "author": "me",
+    }))
+    prefs = load_preferences(p)  # must NOT raise
+    assert prefs.author == "me"
+    # Still surfaced when the consumer parses it.
+    with pytest.raises(PreferencesError, match="lowcutt"):
+        _parse_mic_input(prefs.mic_input)
 
 
 def test_input_field_omits_unset_params():

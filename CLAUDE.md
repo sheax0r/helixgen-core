@@ -170,7 +170,7 @@ echo '[{"op": "set_param", "block": "Tape Echo", "param": "Mix", "value": 0.3},
 
 ## Generation notes
 
-- Chassis = whatever first ingested. Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `meta.info` / `device_id` from originating export currently expected.
+- Chassis = whatever first ingested. Stadium chassis (`_helixgen_chassis_shape: "hsp"`) produces `.hsp` output; `.hlx` chassis produces `.hlx`. Carryover `meta.color` / `device_id` from originating export currently expected. **`meta.info` is NOT carried over** (hgc-a8p): the donor's `info` is the factory preset's own rig notes, so generate clears it to `""` rather than annotating every authored tone with someone else's rig (set per-preset notes later via `device set-info`).
 - Some Stadium model IDs translated on ingest (e.g. `HD2_DistScream808Mono` → `HD2_DrvScream808`); generate translates back when writing `.hsp`.
 
 ## Project layout

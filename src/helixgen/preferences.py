@@ -526,7 +526,11 @@ class Preferences:
     volume_normalize_baseline: bool = True
     git_commit_tones: str = "auto"
     normalization: Normalization = field(default_factory=Normalization)
-    mic_input: MicInput = field(default_factory=MicInput)
+    # RAW `mic_input` block, parsed by its consumer (`recipe.apply_stored_defaults`)
+    # via `_parse_mic_input` — a typo there must not break unrelated verbs
+    # (device normalize/calibrate, migrate all call load_preferences). Mirrors
+    # usb_taps below: parse errors are scoped to generate, not fatal to load.
+    mic_input: Any = None
     # RAW `usb_taps` block, validated by its consumer (`usbtaps.configured`)
     # via `parse_usb_taps` — a typo there must not break unrelated verbs.
     usb_taps: Any = None
@@ -811,7 +815,7 @@ def load_preferences(path: Path | None = None) -> Preferences:
         volume_normalize_baseline=bool(data.get("volume_normalize_baseline", True)),
         git_commit_tones=_validate_git_commit_tones(data.get("git_commit_tones", "auto")),
         normalization=_parse_normalization(data.get("normalization")),
-        mic_input=_parse_mic_input(data.get("mic_input")),
+        mic_input=data.get("mic_input"),  # raw; parsed by consumer (hgc-6en)
         usb_taps=data.get("usb_taps"),
     )
 
