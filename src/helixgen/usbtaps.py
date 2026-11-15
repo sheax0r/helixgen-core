@@ -53,6 +53,10 @@ _MIC_INPUT = "P35_InputMic"
 _AMP_OUTPUTS = frozenset({"P35_OutputQtrInch"})
 _SPLIT_CHOICES = (11, 12)
 
+# ponytail: process-local one-shot flag, so a malformed prefs file warns once
+# across a multi-preset write (e.g. `device sync`) rather than on every .hsp.
+_warned_bad_prefs = False
+
 
 def _model(block: Any) -> str:
     slots = (block or {}).get("slot") or [{}]
@@ -253,7 +257,13 @@ def apply_preference(body: dict) -> dict:
     try:
         taps = configured()
     except PreferencesError as e:
-        print(f"stored preferences ignored (usb_taps not applied): {e}", file=sys.stderr)
+        # A malformed prefs file (often unrelated to usb_taps) would otherwise
+        # warn on every single .hsp write — once per preset in a sync. Warn
+        # once per process instead (hgc-iwt).
+        global _warned_bad_prefs
+        if not _warned_bad_prefs:
+            print(f"stored preferences ignored (usb_taps not applied): {e}", file=sys.stderr)
+            _warned_bad_prefs = True
         return body
     if not taps or not isinstance((body.get("preset") or {}).get("flow"), list):
         return body

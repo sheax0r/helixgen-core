@@ -17,6 +17,14 @@ from helixgen.preferences import PreferencesError, parse_usb_taps
 TAPS = {"guitar": "3/4", "mic": "5/6"}
 
 
+@pytest.fixture(autouse=True)
+def _reset_warn_once():
+    # apply_preference warns once per process (hgc-iwt); reset so order doesn't
+    # decide whether a test sees the warning.
+    usbtaps._warned_bad_prefs = False
+    yield
+
+
 def _io(model: str, pos: int) -> dict:
     return {"@enabled": {"value": True}, "position": pos, "path": 0,
             "slot": [{"model": model, "@enabled": {"value": True}, "params": {}}],
@@ -197,6 +205,19 @@ def test_malformed_preference_warns_and_writes(tmp_path, monkeypatch, capsys):
     body = _body(_path(cells=(1,)))
     assert json.loads(dumps_hsp(body)[8:]) == body
     assert "usb_taps" in capsys.readouterr().err
+
+
+def test_unrelated_malformed_prefs_warns_only_once(tmp_path, monkeypatch, capsys):
+    """hgc-iwt: a prefs file malformed in an UNRELATED field (here device.model),
+    with usb_taps unset, must not warn 'usb_taps not applied' on every .hsp
+    write — once per process (e.g. once per `device sync`, not per preset)."""
+    p = tmp_path / "prefs.json"
+    p.write_text(json.dumps({"device": {"model": "NotARealModel"}}))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(p))
+    body = _body(_path(cells=(1,)))
+    for _ in range(3):
+        dumps_hsp(body)
+    assert capsys.readouterr().err.count("usb_taps not applied") == 1
 
 
 # --- the verb ----------------------------------------------------------------
