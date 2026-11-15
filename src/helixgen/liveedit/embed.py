@@ -72,7 +72,11 @@ def start(ip: str, port: int, *, http_port: int = 0,
             with guard:
                 if cancelled[0]:
                     if srv is not None:
-                        srv.shutdown()
+                        # shutdown() blocks until serve_forever() runs — but
+                        # we ARE the serving thread and haven't reached it yet,
+                        # so call it off-thread or we deadlock ourselves.
+                        threading.Thread(target=srv.shutdown,
+                                         daemon=True).start()
                     return
                 box["url"], box["srv"] = url, srv
             ready.set()
