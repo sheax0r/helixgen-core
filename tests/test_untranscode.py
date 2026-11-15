@@ -691,28 +691,68 @@ def test_param_plan_falls_back_without_a_library():
     assert {n for _, n in plan} == set(defs.model_params_for(mid))
 
 
-# --- warnings for what is NOT yet reversed ------------------------------------
+# --- Command Center + MIDI CC recovery (bead hgc-mid) -------------------------
 
-def test_midi_controllers_are_dropped_with_a_warning(capsys):
-    doc = transcode.recipe_to_sbepgsm({"name": "midi", "paths": [{"blocks": [
+def test_midi_controller_bypass_reverses_into_helixgen_midi(capsys):
+    """A MIDI CC bypass toggle (``trig == 0`` ctrl) comes back as a
+    ``preset._helixgen_midi`` record and the round trip is byte-exact."""
+    recipe = {"name": "midi", "paths": [{"blocks": [
         {"block": DRIVE, "params": {}, "midi_bypass": {"cc": 20}},
-    ]}]})
+    ]}]}
+    doc = transcode.recipe_to_sbepgsm(recipe)
     assert any(c.get("trig") == 0 for c in doc["cg__"]["entt"]["ctrl"])
-    body = untranscode.sbepgsm_to_hsp(doc, name="x")
-    assert "MIDI" in capsys.readouterr().err
-    assert "controller" not in body["preset"]["flow"][0]["b01"]["@enabled"]
+    body = _assert_roundtrip(recipe)
+    recs = body["preset"]["_helixgen_midi"]
+    assert recs == [{"cc": 20, "path": 0, "lane": 0, "pos": 1,
+                     "block": DRIVE, "param": None}]
+    assert "not yet reversed" not in capsys.readouterr().err
 
 
-def test_commands_are_dropped_with_a_warning(capsys):
+def test_midi_controller_param_reverses_with_range():
+    """A MIDI CC param sweep carries its min/max and device param name back."""
+    recipe = {"name": "midi", "paths": [{"blocks": [
+        {"block": DRIVE, "params": {},
+         "midi_params": {"Gain": {"cc": 61, "min": 0.1, "max": 0.9}}},
+    ]}]}
+    body = _assert_roundtrip(recipe)
+    rec = body["preset"]["_helixgen_midi"][0]
+    assert rec["cc"] == 61 and rec["param"] == "Gain"
+    assert rec["min"] == pytest.approx(0.1) and rec["max"] == pytest.approx(0.9)
+
+
+def test_command_snapshot_reverses_into_preset_commands(capsys):
+    """A PresetSnapshot command reverses into ``preset.commands`` keyed by the
+    ``.hsp`` source id, byte-exact."""
+    recipe = {
+        "name": "cmd",
+        "commands": [{"source": 0x01010100, "type": "PresetSnapshot",
+                      "func": 0, "params": {"Snapshot": 1}}],
+        "paths": [{"blocks": [{"block": AMP, "params": {}}]}],
+    }
+    doc = transcode.recipe_to_sbepgsm(recipe)
+    assert doc["cg__"]["entt"]["cmnd"]
+    body = _assert_roundtrip(recipe)
+    cmds = body["preset"]["commands"][str(0x01010100)]
+    assert cmds[0]["type"] == "PresetSnapshot"
+    assert cmds[0]["params"]["Snapshot"]["value"] == 1
+    assert "not yet reversed" not in capsys.readouterr().err
+
+
+def test_command_on_unmappable_source_warns_and_drops(capsys):
+    """A cmnd whose source has no ``.hsp`` command id is reported, not silent."""
     doc = transcode.recipe_to_sbepgsm({
         "name": "cmd",
         "commands": [{"source": 0x01010100, "type": "PresetSnapshot",
                       "func": 0, "params": {"Snapshot": 1}}],
         "paths": [{"blocks": [{"block": AMP, "params": {}}]}],
     })
-    assert doc["cg__"]["entt"]["cmnd"]
-    untranscode.sbepgsm_to_hsp(doc, name="x")
-    assert "Command Center" in capsys.readouterr().err
+    # Corrupt the command source so it no longer reverse-maps (locl < 25 is
+    # neither a bank-A footswitch nor an Instant slot).
+    src = next(s for s in doc["cg__"]["entt"]["srcs"] if s.get("type") == 1)
+    src["locl"] = 10
+    body = untranscode.sbepgsm_to_hsp(doc, name="x")
+    assert "no .hsp command source id" in capsys.readouterr().err
+    assert "commands" not in body["preset"]
 
 
 def _one_amp_doc() -> dict:

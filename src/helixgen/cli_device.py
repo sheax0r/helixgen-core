@@ -2216,14 +2216,13 @@ def device_to_hsp(source: str, outfile: Path, preset_name, author,
     name is all digits is ambiguous and is REFUSED rather than guessed — write
     `./42` for the file.
 
-    Fidelity covers models, params, snapshots, footswitch/EXP assignments, IR
-    references, EVERY model slot of a dual-cab block (the B cab's own mic,
-    level and EQ), and the full signal graph (dual-DSP, parallel splits,
-    dual-amp).
+    Fidelity covers models, params, snapshots, footswitch/EXP assignments,
+    Command Center commands, MIDI CC controller bindings, IR references, EVERY
+    model slot of a dual-cab block (the B cab's own mic, level and EQ), and the
+    full signal graph (dual-DSP, parallel splits, dual-amp).
 
     **Anything that cannot be carried is reported on stderr, one line per
-    loss** — read those warnings. Silence means nothing was dropped. NOT yet
-    reversed at all: Command Center commands and MIDI CC controller bindings.
+    loss** — read those warnings. Silence means nothing was dropped.
 
     Not every stderr line is a loss, though: device state the rest of helixgen
     does not model is reported there too. One case exists today — a block or
@@ -2832,9 +2831,9 @@ def device_decode(source: Path, indent: int) -> None:
     """Print a .sbe content blob as native JSON. Wholly OFFLINE.
 
     Renders the device's own content structure (4CC keys) losslessly — no
-    transcoder, so nothing is dropped the way `device to-hsp` drops Command
-    Center and MIDI CC bindings. This is what `device backup` wires as git's
-    textconv driver, so a photograph diffs as readable JSON instead of binary.
+    transcoder, so nothing is dropped the way `device to-hsp` reports any state
+    it cannot carry. This is what `device backup` wires as git's textconv
+    driver, so a photograph diffs as readable JSON instead of binary.
     Reads stdin when SOURCE is '-'.
     """
     from helixgen.device import content as _content
@@ -3359,9 +3358,11 @@ def device_backup(root, dry_run: bool, as_json: bool, ip: str, port: int) -> Non
     Writes the device's OWN content bytes (pool/<Name>.sbe), each setlist's
     references with their positions (setlists/<Name>.json: [{name, posi}] —
     fw 1.4 setlists keep real gaps), the device's processed IRs, and
-    device.json. `.sbe` rather than `.hsp` because `device to-hsp` drops
-    Command Center and MIDI CC bindings — an .hsp backup would restore a
-    damaged preset. `device decode` renders the bytes for git diffs.
+    device.json. `.sbe` rather than `.hsp` because it is the device's OWN bytes:
+    a backup must restore exactly what was on the device, including state the
+    `.hsp` model does not carry and blocks with no helixgen model, which
+    `device to-hsp` reports and drops. `device decode` renders the bytes for
+    git diffs.
 
     Unchanged files are not rewritten, so a re-run leaves a clean git status;
     presets no longer on the device are pruned from the tree — except after
