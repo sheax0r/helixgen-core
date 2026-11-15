@@ -67,6 +67,10 @@
   .badge.both { color: var(--both); border-color: var(--both); }
   .badge.device { color: var(--device); border-color: var(--device); }
   .badge.unavail { color: #dc2626; border-color: #dc2626; }
+  .badge.changed { color: var(--device); border-color: var(--device);
+                   font-weight: 600; }
+  .badge.checking { opacity: .6; }
+  #checkdiff[aria-busy="true"] { opacity: .6; cursor: default; }
   button.act { font-size: 11px; padding: 2px 8px; margin-left: 2px; }
   button.act:disabled { opacity: .5; cursor: default; border-color: var(--line); }
   #setlists { display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
@@ -92,6 +96,7 @@
 <header>
   <h1>helixgen library</h1>
   <input id="search" type="search" placeholder="Search tones…" autocomplete="off">
+  <button id="checkdiff" title="Compare each on-both tone's device copy with its library file">Check for changes</button>
   <button id="refresh">Refresh</button>
   <span class="status"><span class="dot" id="dot"></span><span id="conn">…</span></span>
 </header>
@@ -113,7 +118,7 @@
 </section>
 <script>
 "use strict";
-const state = { data: null, q: "", filters: {} };  // filters: {kind: Set}
+const state = { data: null, q: "", filters: {}, diffs: {} };  // diffs: {cid: "same"|"changed"|"indeterminate"|"checking"}
 
 function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -145,10 +150,25 @@ function matchesQuery(tone) {
   return hay.includes(state.q.toLowerCase());
 }
 
-function badge(presence, available) {
+const DIFF_BADGE = {
+  checking: ["badge checking", "checking…"],
+  same: ["badge both", "in sync"],
+  changed: ["badge changed", "changed — pull to update"],
+  indeterminate: ["badge", "on both (can't compare)"],
+};
+
+function badge(presence, available, cid) {
   if (available === false && presence !== "device")
     return el("span", "badge unavail", "missing file");
-  if (presence === "both") return el("span", "badge both", "on both");
+  if (presence === "both") {
+    const b = el("span", "badge both", "on both");
+    if (cid != null) {
+      b.dataset.diffCid = cid;
+      const d = state.diffs[cid];
+      if (d && DIFF_BADGE[d]) { b.className = DIFF_BADGE[d][0]; b.textContent = DIFF_BADGE[d][1]; }
+    }
+    return b;
+  }
   if (presence === "device") return el("span", "badge device", "device only");
   return el("span", "badge", "computer only");
 }
@@ -165,12 +185,22 @@ function rowActions(v) {
   if (v.presence === "device" && v.device_cid != null) {
     btns.push(mkBtn("Pull ←", b => postAction("/pull", { cid: v.device_cid }, b)));
   }
+  if (v.presence === "both" && v.device_cid != null && v.available && v.hsp
+      && state.diffs[v.device_cid] === "changed") {
+    btns.push(mkBtn("Update ←", b =>
+      postAction("/update-local", { cid: v.device_cid, hsp: v.hsp }, b,
+                 v.device_cid)));
+  }
   if (v.available && v.hsp) {
     btns.push(mkBtn(v.presence === "both" ? "Re-copy →" : "Copy →",
-                    b => postAction("/copy", { hsp: v.hsp }, b)));
+                    b => postAction("/copy", { hsp: v.hsp }, b,
+                                    v.presence === "both" ? v.device_cid : undefined)));
     btns.push(mkBtn("+ setlist", b => {
       const sl = prompt("Add this tone to which setlist?");
-      if (sl) postAction("/setlist/add", { to: sl, hsp: v.hsp }, b);
+      // on-both: this upserts the library .hsp onto the device, re-syncing
+      // the pair, so clear any stale "changed" badge for it
+      if (sl) postAction("/setlist/add", { to: sl, hsp: v.hsp }, b,
+                         v.presence === "both" ? v.device_cid : undefined);
     }));
   }
   if (v.presence !== "computer" && v.preset_name) {  // it's on the device
@@ -180,7 +210,35 @@ function rowActions(v) {
                          { name: v.preset_name, setlist: sl }, b);
     }));
   }
+  if (v.device_cid != null && v.presence !== "computer") {  // on the device
+    btns.push(mkBtn("Edit ✎", b => openEditor(v.device_cid, b)));
+  }
   return btns;
+}
+
+// Load the tone on the device and open the live chain editor on it (a second
+// in-process page). First use can take a few seconds to boot the editor.
+async function openEditor(cid, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "opening…"; }
+  try {
+    const r = await fetch("/edit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cid }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error || !data.url) {
+      alert(data.error || "could not open the live editor"); return;
+    }
+    // one named target → repeated Edits reuse the single editor tab (there is
+    // only ever one editor, following the device's active tone) instead of
+    // piling up duplicate windows
+    if (!window.open(data.url, "helixgen-live"))
+      alert("Live editor: " + data.url + "\n(allow pop-ups to open it here).");
+  } catch (e) {
+    alert("" + e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Edit ✎"; }
+  }
 }
 
 function renderSetlists() {
@@ -224,9 +282,11 @@ function toneCard(tone) {
     title.appendChild(document.createTextNode("  "));
     title.appendChild(sub);
   }
-  row.append(caret, title, badge(tone.presence));
+  const only = tone.variants.length <= 1 ? tone.variants[0] : null;
+  row.append(caret, title, badge(tone.presence, undefined, only && only.device_cid));
   if (tone.variants.length <= 1) {
     for (const b of rowActions(tone.variants[0])) row.appendChild(b);
+    tagDiffRow(row, only);
   }
   card.appendChild(row);
   const vwrap = el("div", "variants");
@@ -251,12 +311,61 @@ function variantRow(v) {
   const r = el("div", "variant");
   const lab = el("span", "vlabel", v.preset_name);
   const venue = el("span", "venue", variantLabel(v));
-  r.append(lab, venue, badge(v.presence, v.available));
+  r.append(lab, venue, badge(v.presence, v.available, v.device_cid));
   for (const b of rowActions(v)) r.appendChild(b);
+  tagDiffRow(r, v);
   return r;
 }
 
-async function postAction(path, payload, btn) {
+// Tag an on-both row so the "Check for changes" sweep can refresh its badge
+// and actions in place (no full re-render — open cards and scroll survive).
+function tagDiffRow(rowEl, v) {
+  if (v && v.presence === "both" && v.device_cid != null) {
+    rowEl.dataset.diffCid = v.device_cid;
+    rowEl.__v = v;
+  }
+}
+
+function syncDiffRow(rowEl) {
+  const v = rowEl.__v;
+  const badgeEl = rowEl.querySelector(".badge");
+  if (badgeEl) {
+    const d = state.diffs[v.device_cid];
+    const spec = (d && DIFF_BADGE[d]) || ["badge both", "on both"];
+    badgeEl.className = spec[0];
+    badgeEl.textContent = spec[1];
+  }
+  rowEl.querySelectorAll("button.act").forEach(b => b.remove());
+  for (const b of rowActions(v)) rowEl.appendChild(b);
+}
+
+function applyDiff(cid, st) {
+  state.diffs[cid] = st;
+  const tones = new Set();
+  document.querySelectorAll('[data-diff-cid="' + cid + '"]').forEach(r => {
+    syncDiffRow(r);
+    const tone = r.closest(".tone");
+    if (tone) tones.add(tone);
+  });
+  tones.forEach(rollUpToneBadge);
+}
+
+// A collapsed multi-variant tone should flag a changed child, so drift is
+// visible at a glance without expanding. Its header badge carries no cid
+// (single-variant headers do, and syncDiffRow handles those).
+function rollUpToneBadge(toneEl) {
+  const head = toneEl.querySelector(":scope > .row > .badge");
+  if (!head || head.dataset.diffCid != null) return;  // single-variant
+  const states = [...toneEl.querySelectorAll(".variants [data-diff-cid]")]
+    .map(b => state.diffs[b.dataset.diffCid]);
+  if (!states.length) return;
+  let spec = null;
+  if (states.includes("changed")) spec = DIFF_BADGE.changed;
+  else if (states.every(s => s === "same")) spec = DIFF_BADGE.same;
+  if (spec) { head.className = spec[0]; head.textContent = spec[1]; }
+}
+
+async function postAction(path, payload, btn, clearCid) {
   if (btn) btn.disabled = true;
   try {
     const r = await fetch(path, {
@@ -267,6 +376,8 @@ async function postAction(path, payload, btn) {
     const data = await r.json().catch(() => ({}));
     if (!r.ok || data.error) { alert(data.error || ("action failed: " + r.status)); return; }
     if (Array.isArray(data.errors) && data.errors.length) alert(data.errors.join("\n"));
+    // a reconcile re-syncs the pair, so a stale diff badge would now lie
+    if (clearCid != null) delete state.diffs[clearCid];
     await load("/refresh");
   } catch (e) {
     alert("" + e);
@@ -369,6 +480,9 @@ function render() {
     if (!onDevice.length) dev.appendChild(el("div", "empty", "No matching presets on the device."));
     for (const t of onDevice) dev.appendChild(toneCard(t));
   }
+  // re-apply diff roll-ups the fresh DOM lost (search/refresh rebuilds cards)
+  if (Object.keys(state.diffs).length)
+    document.querySelectorAll(".tone").forEach(rollUpToneBadge);
 }
 
 async function load(path) {
@@ -377,10 +491,57 @@ async function load(path) {
   render();
 }
 
+// On-both variants worth comparing: have a device cid and a present .hsp.
+function onBothTargets() {
+  const seen = new Set(), out = [];
+  for (const t of (state.data ? state.data.tones : [])) {
+    for (const v of t.variants) {
+      if (v.presence === "both" && v.device_cid != null && v.available && v.hsp
+          && !seen.has(v.device_cid)) {
+        seen.add(v.device_cid);
+        out.push({ cid: v.device_cid, hsp: v.hsp });
+      }
+    }
+  }
+  return out;
+}
+
+async function checkForChanges(btn) {
+  if (!state.data || !state.data.connected) {
+    alert("Connect a Stadium and Refresh first."); return;
+  }
+  const targets = onBothTargets();
+  if (!targets.length) { alert("No on-both tones to compare."); return; }
+  btn.setAttribute("aria-busy", "true");
+  const base = "Check for changes";
+  let done = 0, changed = 0;
+  // Sequential: the server serialises device reads under one lock anyway, and
+  // one-at-a-time lets each badge resolve live without a full re-render.
+  for (const { cid, hsp } of targets) {
+    applyDiff(cid, "checking");
+    try {
+      const r = await fetch("/diff", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cid, hsp }),
+      });
+      const data = await r.json().catch(() => ({}));
+      applyDiff(cid, (r.ok && data.state) ? data.state : "indeterminate");
+      if (data.state === "changed") changed++;
+    } catch (e) {
+      applyDiff(cid, "indeterminate");
+    }
+    btn.textContent = `Checking… ${++done}/${targets.length}`;
+  }
+  btn.removeAttribute("aria-busy");
+  btn.textContent = changed ? `${base} (${changed} changed)` : base;
+}
+
 document.getElementById("search").addEventListener("input", e => {
   state.q = e.target.value; render();
 });
 document.getElementById("refresh").addEventListener("click", () => load("/refresh"));
+document.getElementById("checkdiff").addEventListener("click",
+  e => checkForChanges(e.currentTarget));
 load("/state");
 </script>
 </body>

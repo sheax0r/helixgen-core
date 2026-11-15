@@ -40,6 +40,8 @@ def test_app_command_is_chromeless_and_isolated():
     assert cmd[0] == _CHROME
     assert f"--app={url}" in cmd                 # chromeless: no tabs, no address bar
     assert f"--user-data-dir={ddir}" in cmd      # isolated: not the real profile
+    assert "--no-first-run" in cmd               # no welcome flow on the fresh profile
+    assert "--no-default-browser-check" in cmd   # no "make Chrome default?" nag
 
 
 def test_user_data_dir_is_per_port_under_helixgen_home(monkeypatch, tmp_path):
