@@ -35,6 +35,8 @@ def _route(session: LibrarySession, path: str, body: dict):
         return session.content_diff(body.get("cid"), body.get("hsp"))
     if path == "/update-local":
         return session.update_local(body.get("cid"), body.get("hsp"))
+    if path == "/edit":
+        return session.edit_handoff(body.get("cid"))
     if path == "/setlist/create":
         return session.setlist_create(body.get("name"))
     if path == "/setlist/rename":

@@ -1764,6 +1764,7 @@ def library_ui(http_port: int, no_open: bool, force_browser: bool,
     import errno
     import os
     import signal
+    import threading
     import webbrowser
 
     from helixgen import locks
@@ -1776,7 +1777,21 @@ def library_ui(http_port: int, no_open: bool, force_browser: bool,
     except Exception:  # noqa: BLE001 — no app-window helper: fall back to tab
         _window = None
 
-    session = LibrarySession(client_factory=lambda: HelixClient(ip, port))
+    # The "Edit →" handoff starts the live chain editor in-process on first
+    # use and reuses it after. It takes only the editbuffer scope (its own
+    # lease), which the hub leaves free, so the two run side by side.
+    _editor: dict = {"inst": None}
+    _editor_lock = threading.Lock()
+
+    def _live_launcher() -> str:
+        with _editor_lock:
+            if _editor["inst"] is None:
+                from helixgen.liveedit import embed
+                _editor["inst"] = embed.start(ip, port)
+            return _editor["inst"].url
+
+    session = LibrarySession(client_factory=lambda: HelixClient(ip, port),
+                             live_launcher=_live_launcher)
 
     # Best-effort device IP for the session lease; offline is fine.
     dev_ip = None
@@ -1834,6 +1849,10 @@ def library_ui(http_port: int, no_open: bool, force_browser: bool,
             return
         raise click.ClickException(str(e)) from e
     finally:
+        inst = _editor["inst"]
+        if inst is not None:
+            with contextlib.suppress(Exception):
+                inst.stop()
         if lease is not None:
             with contextlib.suppress(Exception):
                 lease.release()

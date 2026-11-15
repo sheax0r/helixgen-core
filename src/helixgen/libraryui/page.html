@@ -210,7 +210,32 @@ function rowActions(v) {
                          { name: v.preset_name, setlist: sl }, b);
     }));
   }
+  if (v.device_cid != null && v.presence !== "computer") {  // on the device
+    btns.push(mkBtn("Edit ✎", b => openEditor(v.device_cid, b)));
+  }
   return btns;
+}
+
+// Load the tone on the device and open the live chain editor on it (a second
+// in-process page). First use can take a few seconds to boot the editor.
+async function openEditor(cid, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "opening…"; }
+  try {
+    const r = await fetch("/edit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cid }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error || !data.url) {
+      alert(data.error || "could not open the live editor"); return;
+    }
+    if (!window.open(data.url, "_blank"))
+      alert("Live editor: " + data.url + "\n(allow pop-ups to open it here).");
+  } catch (e) {
+    alert("" + e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Edit ✎"; }
+  }
 }
 
 function renderSetlists() {

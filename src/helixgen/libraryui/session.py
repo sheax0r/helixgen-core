@@ -199,6 +199,7 @@ class LibrarySession:
         pull_fn: Callable[..., dict] = _default_pull_tone,
         diff_fn: Callable[..., str] = _default_diff,
         update_local_fn: Callable[..., dict] = _default_update_local,
+        live_launcher: Optional[Callable[[], str]] = None,
         remove_fn: Callable[..., dict] = _default_remove_tone,
         move_fn: Callable[..., dict] = _default_move_tone,
         push_ir_fn: Callable[..., dict] = _default_push_ir,
@@ -214,6 +215,9 @@ class LibrarySession:
         self._pull_fn = pull_fn
         self._diff_fn = diff_fn
         self._update_local_fn = update_local_fn
+        # starts the in-process live editor once and returns its URL; None when
+        # no editor is wired (offline launch, or a device too old for it)
+        self._live_launcher = live_launcher
         self._remove_fn = remove_fn
         self._move_fn = move_fn
         self._push_ir_fn = push_ir_fn
@@ -488,6 +492,33 @@ class LibrarySession:
             raise LibraryError("cid is required", status=400)
         abs_hsp = self._resolve_hsp(hsp)
         return self._run(lambda h: self._update_local_fn(h, cid, abs_hsp))
+
+    def edit_handoff(self, cid: Any) -> dict:
+        """Load device preset ``cid`` as the ACTIVE tone and open the live
+        chain editor on it (``device live`` in-process). Returns ``{cid,
+        url}``. The editor is started once and reused; it follows later preset
+        switches live, so a second Edit just re-loads and returns the same
+        URL. The tone must already be on the device (the UI only offers Edit
+        for on-device tones)."""
+        if self._live_launcher is None:
+            raise LibraryError("the live editor is not available here "
+                               "(offline, or the device is pre-1.4)",
+                               status=409)
+        cid = self._opt_int(cid, "cid")
+        if cid is None:
+            raise LibraryError("cid is required", status=400)
+        loaded = self._run(lambda h: {"ok": bool(h.load_preset(cid))})
+        if not loaded.get("ok"):
+            raise LibraryError(f"the device would not load preset {cid}",
+                               status=502)
+        try:
+            url = self._live_launcher()
+        except LibraryError:
+            raise
+        except Exception as e:  # noqa: BLE001 — editor bootstrap failed
+            raise LibraryError(f"could not open the live editor: {e}",
+                               status=502) from e
+        return {"cid": cid, "url": url}
 
     # -- setlist management ------------------------------------------------
 
