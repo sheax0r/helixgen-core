@@ -1153,7 +1153,9 @@ def _snap_meta(meta: dict, i: int) -> Tuple[str, int, float, int, bool]:
     """``(name, exsw, bpm_, colr, vald)`` for snapshot ``i`` from a recipe
     snapshot-meta dict (accepts both device keys ``exsw``/``bpm_``/``colr`` and
     ``.hsp`` keys ``expsw``/``bpm``/``tempo``/``color``)."""
-    name = meta.get("name") or f"SNAPSHOT {i + 1}"
+    # A blank name stays blank — the device's own encoding for an
+    # unconfigured slot, which it labels "SNAPSHOT N" on the fly (bead hgc-dym).
+    name = meta.get("name") or ""
     exsw = meta.get("exsw", meta.get("expsw", -1))
     if exsw is None:
         exsw = -1
@@ -1567,10 +1569,14 @@ def _synth_cg_from_recipe(
     # (eID_, model slot, pid_, type) -> trg id
     trg_index: Dict[Tuple[int, int, int, int], int] = {}
     # ``bypass``/``param`` hold snapshot-tracked targets (bound with
-    # ``snap=True``); ``param_ctl`` holds controller-ONLY param targets (#24:
-    # bound with ``snap=False`` — a controller-driven param leaf still carries
-    # its ``tid_`` on real device blobs, matching the ``preset_15x`` fixtures).
-    bindings: Dict[str, dict] = {"bypass": {}, "param": {}, "param_ctl": {}}
+    # ``snap=True``); ``param_ctl``/``bypass_ctl`` hold controller-ONLY targets
+    # (bound with ``snap=False`` — a controller-driven param leaf OR block still
+    # carries its ``tid_`` back-pointer on real device blobs, matching the
+    # ``preset_15x`` fixtures; #24 for params, bead hgc-pnp for bypass). A
+    # target that is ALSO snapshot-tracked sits in ``bypass``/``param`` too,
+    # which win (``snap=True``).
+    bindings: Dict[str, dict] = {"bypass": {}, "param": {}, "param_ctl": {},
+                                 "bypass_ctl": {}}
     # Controller/target/source ids are 1-BASED — the device treats id 0 as
     # null/unassigned, so a 0-based id silently kills the binding (hardware-
     # confirmed against HX Edit's own encoding, 2026-07-13).
@@ -1604,8 +1610,14 @@ def _synth_cg_from_recipe(
         """
         tid = trg_index.get((eid, 0, 0, 1))
         if tid is None:
-            return _new_trg({"eID_": eid, "enty": 2, "mmid": mid, "pid_": 0,
-                             "slot": 0, "type": 1}, (eid, 0, 0, 1))
+            tid = _new_trg({"eID_": eid, "enty": 2, "mmid": mid, "pid_": 0,
+                            "slot": 0, "type": 1}, (eid, 0, 0, 1))
+        # The device stamps a block's own ``tid_`` with its bypass target id
+        # whether that target is snapshot- or controller-driven (bead hgc-pnp).
+        # Record it as a controller-only binding (``snap=False``); a
+        # snapshot-tracked block ALSO lands in ``bindings["bypass"]``
+        # (``snap=True``), which wins in :func:`_bind_snapshot_targets`.
+        bindings["bypass_ctl"][eid] = tid
         return tid
 
     def _register_ptid(eid: int, slot: int, pid: int, tid: int,
@@ -2088,14 +2100,17 @@ def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
     the Stadium app's own import of the same tone, 2026-07-13). A
     controller-ONLY param leaf (EXP sweep / FS param toggle) instead carries
     ``snap=False, tid_=<param trg id>`` (#24 — matching the ``preset_15x``
-    fixtures). Untracked entities (including controller-only *bypass* targets)
-    stay ``snap=False, tid_=0``. Input endpoints CAN be bypass targets (#23),
-    so they are no longer skipped.
+    fixtures); a controller-ONLY *bypass* target likewise stamps the block with
+    ``snap=False, tid_=<bypass trg id>`` (bead hgc-pnp — the device sets a
+    block's ``tid_`` to its bypass target whether snapshot- or
+    controller-driven). Truly untracked entities stay ``snap=False, tid_=0``.
+    Input endpoints CAN be bypass targets (#23), so they are no longer skipped.
     """
     by_bypass = bindings.get("bypass") or {}
+    by_bypass_ctl = bindings.get("bypass_ctl") or {}
     by_param = bindings.get("param") or {}
     by_param_ctl = bindings.get("param_ctl") or {}
-    if not by_bypass and not by_param and not by_param_ctl:
+    if not (by_bypass or by_bypass_ctl or by_param or by_param_ctl):
         return
     for flow in sfg.get("flow", []):
         for item in flow.get("blks", []):
@@ -2106,6 +2121,11 @@ def _bind_snapshot_targets(sfg: dict, bindings: Dict[str, dict]) -> None:
             if tid:
                 item["snap"] = True
                 item["tid_"] = tid
+            elif by_bypass_ctl.get(eid):
+                # controller-only bypass: block carries the back-pointer but is
+                # NOT snapshot-tracked (bead hgc-pnp).
+                item["snap"] = False
+                item["tid_"] = by_bypass_ctl[eid]
             # EVERY model slot, keyed by its index: a dual-cab's two slots
             # share the cab model's pids under one ``eID_``, so the binding
             # must not be stamped by pid alone (bead hgc-3yc).
@@ -2176,6 +2196,56 @@ def _hsp_preset_scalars(hsp_body: dict) -> Dict[str, Any]:
     return {k: v for k, v in out.items() if v is not None}
 
 
+def _warn_dropped_invalid_snapshot_deltas(hsp_body: dict) -> None:
+    """Warn when a snapshot marked ``valid:false`` still carries a per-snapshot
+    value that differs from its target's base.
+
+    The device stores no ``tamv`` for an invalid snapshot, so
+    :func:`_emit_snapshots` emits an empty slot and the delta is dropped
+    silently when the preset is written to the device (bead hgc-6e1).
+    Reachable only by hand-editing the
+    ``.hsp``: ``generate`` always writes ``valid:true`` and ``mutate`` flips the
+    flag true on any snapshot slot it edits.
+    """
+    import sys
+    preset = hsp_body.get("preset") or {}
+    snaps = preset.get("snapshots") or []
+    for i, snap in enumerate(snaps):
+        if not (isinstance(snap, dict) and snap.get("valid") is False):
+            continue
+        hits = 0
+        for flow in preset.get("flow") or []:
+            if not isinstance(flow, dict):
+                continue
+            for key, blk in flow.items():
+                if not (key[:1] == "b" and key[1:].isdigit()
+                        and isinstance(blk, dict)):
+                    continue
+                en = blk.get("@enabled")
+                if isinstance(en, dict):
+                    arr = en.get("snapshots")
+                    if isinstance(arr, list) and i < len(arr) and arr[i] is not None:
+                        base = True if en.get("value") is None else bool(en["value"])
+                        if bool(arr[i]) != base:
+                            hits += 1
+                for slot in blk.get("slot") or []:
+                    for w in (slot.get("params") or {}).values():
+                        if not isinstance(w, dict):
+                            continue
+                        arr = w.get("snapshots")
+                        if (isinstance(arr, list) and i < len(arr)
+                                and arr[i] is not None and arr[i] != w.get("value")):
+                            hits += 1
+        if hits:
+            name = snap.get("name")
+            label = f" ('{name}')" if name else ""
+            print(f"warning: snapshot {i + 1}{label} is marked valid:false but "
+                  f"carries {hits} per-snapshot change(s) that differ from base; "
+                  f"writing this preset to the device will DROP them (the device "
+                  f"stores no snapshot values for an invalid snapshot). Set "
+                  f"valid:true to keep them (bead hgc-6e1).", file=sys.stderr)
+
+
 def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
                    strict: bool = False) -> bytes:
     """Transcode a helixgen ``.hsp`` body into stored device content bytes.
@@ -2192,6 +2262,7 @@ def hsp_to_sbepgsm(hsp_body: dict, *, dsp: Optional[int] = None,
     """
     from . import bridge
 
+    _warn_dropped_invalid_snapshot_deltas(hsp_body)
     paths = bridge.hsp_to_paths(hsp_body, strict=strict)
     if dsp is not None:
         paths = paths[dsp:dsp + 1]
