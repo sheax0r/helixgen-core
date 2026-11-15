@@ -1716,3 +1716,124 @@ def describe(tone: str) -> None:
     if meta.description_md:
         click.echo("")
         click.echo(meta.description_md)
+
+
+# ---------------------------------------------------------------------------
+# library ui -- the library hub (browse/search + device reconcile)
+# ---------------------------------------------------------------------------
+
+
+@library.command(name="ui")
+@click.option("--port-http", "http_port", type=click.IntRange(0, 65535),
+              default=8766, show_default=True,
+              help="Local port for the page (bound to 127.0.0.1 only). "
+                   "0 picks a free port.")
+@click.option("--no-open", is_flag=True, default=False,
+              help="Do not open the page; just print its URL (for agents).")
+@click.option("--browser", "force_browser", is_flag=True, default=False,
+              help="Open a tab in your default browser instead of a "
+                   "standalone app window.")
+@click.option("--ip", default=None,
+              help="Device IP (default: auto-discover / $HELIXGEN_HELIX_IP). "
+                   "The hub runs offline too — the computer side works with no "
+                   "device present.")
+@click.option("--port", default=2002, show_default=True, type=int,
+              help="Device RPC port.")
+def library_ui(http_port: int, no_open: bool, force_browser: bool,
+               ip: str | None, port: int) -> None:
+    """Open the LIBRARY HUB: a local browser page to browse and search the
+    authored tone + IR library, see how it lines up with the connected Helix,
+    and reconcile the two (copy →, pull ←, setlists, IRs).
+
+    LONG-RUNNING: serves http://127.0.0.1:<port>/ until interrupted (Ctrl-C or
+    SIGTERM). The first line printed is `library hub: <url>`. An agent should
+    start this in the BACKGROUND, give the user the URL, and stop there.
+
+    OFFLINE-FIRST: the whole computer side (browse, search, facet filters)
+    works with no device present; the device column shows "no Stadium" and its
+    actions are disabled until a Helix is reachable and you Refresh.
+
+    LOCKING: while a device is reachable the hub holds the `library` + `irs`
+    advisory locks for its lifetime (bound to its pid), so no other helixgen
+    process writes presets or IRs underneath it. The `editbuffer` scope stays
+    free, so `device live` tone-dialing still works alongside. If another
+    process already holds those scopes the hub still opens (read/write, with a
+    warning) rather than failing.
+    """
+    import contextlib
+    import errno
+    import os
+    import signal
+    import webbrowser
+
+    from helixgen import locks
+    from helixgen.device import HelixClient, HelixError  # noqa: F401
+    from helixgen.libraryui import server as _server
+    from helixgen.libraryui.session import LibrarySession
+
+    try:
+        from helixgen.liveedit import window as _window
+    except Exception:  # noqa: BLE001 — no app-window helper: fall back to tab
+        _window = None
+
+    session = LibrarySession(client_factory=lambda: HelixClient(ip, port))
+
+    # Best-effort device IP for the session lease; offline is fine.
+    dev_ip = None
+    try:
+        from helixgen.device import discovery
+        dev_ip = discovery.resolve_ip(ip)
+    except Exception:  # noqa: BLE001 — unresolved = run offline, no lease
+        dev_ip = None
+
+    lease = None
+    if dev_ip:
+        try:
+            lease = locks.acquire(dev_ip, ("library", "irs"),
+                                  label="helixgen library ui",
+                                  pid=os.getpid(), timeout=0)
+        except Exception as e:  # noqa: BLE001 — contended/unreachable: degrade
+            click.echo(f"note: could not take the device lock ({e}); the hub "
+                       "still runs — avoid other helixgen writes while it is "
+                       "open.", err=True)
+            lease = None
+
+    def _ready(url: str, srv=None) -> None:
+        click.echo(f"library hub: {url}")
+        sys.stdout.flush()
+        if no_open:
+            return
+        if not force_browser and _window is not None:
+            on_exit = srv.shutdown if srv is not None else None
+            if _window.launch(url, on_exit=on_exit) is not None:
+                return
+        webbrowser.open(url)
+
+    def _term(*_a):
+        raise KeyboardInterrupt
+
+    for sig in ("SIGTERM", "SIGHUP"):
+        try:
+            signal.signal(getattr(signal, sig), _term)
+        except (ValueError, AttributeError):
+            pass
+
+    lease_cm = lease if lease is not None else contextlib.nullcontext()
+    keep_cm = (locks.keep_alive(dev_ip) if (lease is not None and dev_ip)
+               else contextlib.nullcontext())
+    try:
+        with lease_cm, keep_cm:
+            _server.serve(session, "127.0.0.1", http_port, on_ready=_ready)
+    except OSError as e:
+        if e.errno in (errno.EADDRINUSE, errno.EACCES):
+            raise click.ClickException(
+                f"could not serve the page on 127.0.0.1:{http_port} ({e}) — is "
+                "another `helixgen library ui` already running? Pass "
+                "--port-http to use a different port.") from e
+        if e.errno == errno.EPIPE:
+            return
+        raise click.ClickException(str(e)) from e
+    finally:
+        if lease is not None:
+            with contextlib.suppress(Exception):
+                lease.release()

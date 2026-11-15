@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>helixgen library</title>
+<style>
+  :root {
+    --bg: #fafafa; --panel: #fff; --ink: #1a1a1a; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --both: #16a34a; --device: #d97706;
+    --chip: #f1f5f9; --chip-on: #2563eb; --chip-on-ink: #fff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --panel: #171a21; --ink: #e6e6e6; --muted: #9aa3b2;
+      --line: #262b36; --accent: #60a5fa; --both: #4ade80; --device: #fbbf24;
+      --chip: #222836; --chip-on: #2563eb; --chip-on-ink: #fff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--line);
+           display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  #search { flex: 1 1 240px; min-width: 160px; padding: 7px 10px;
+            border: 1px solid var(--line); border-radius: 7px;
+            background: var(--panel); color: var(--ink); }
+  .status { font-size: 12px; color: var(--muted); display: flex;
+            align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.up { background: var(--both); }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--line);
+           background: var(--panel); color: var(--ink); border-radius: 7px;
+           padding: 6px 10px; }
+  button:hover { border-color: var(--accent); }
+  #facets { padding: 8px 16px; border-bottom: 1px solid var(--line);
+            display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .chip { font-size: 12px; padding: 3px 9px; border-radius: 999px;
+          background: var(--chip); border: 1px solid var(--line);
+          color: var(--ink); cursor: pointer; }
+  .chip.on { background: var(--chip-on); color: var(--chip-on-ink);
+             border-color: var(--chip-on); }
+  .facet-label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                 letter-spacing: .05em; margin-left: 6px; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+  .pane { padding: 12px 16px; min-height: 60vh; }
+  .pane + .pane { border-left: 1px solid var(--line); }
+  .pane h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+             color: var(--muted); margin: 0 0 10px; }
+  .tone { background: var(--panel); border: 1px solid var(--line);
+          border-radius: 9px; margin-bottom: 8px; overflow: hidden; }
+  .tone > .row { display: flex; align-items: center; gap: 8px; padding: 9px 11px;
+                 cursor: pointer; }
+  .tone .title { font-weight: 600; flex: 1; }
+  .tone .sub { color: var(--muted); font-size: 12px; }
+  .variants { border-top: 1px solid var(--line); display: none; }
+  .tone.open .variants { display: block; }
+  .variant { display: flex; align-items: center; gap: 8px;
+             padding: 7px 11px 7px 22px; border-top: 1px solid var(--line); }
+  .variant:first-child { border-top: none; }
+  .variant .vlabel { flex: 1; }
+  .variant .venue { color: var(--muted); font-size: 12px; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px;
+           border: 1px solid var(--line); color: var(--muted); }
+  .badge.both { color: var(--both); border-color: var(--both); }
+  .badge.device { color: var(--device); border-color: var(--device); }
+  .badge.unavail { color: #dc2626; border-color: #dc2626; }
+  button.act { font-size: 11px; padding: 2px 8px; margin-left: 2px; }
+  button.act:disabled { opacity: .5; cursor: default; border-color: var(--line); }
+  #setlists { display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+              margin-bottom: 12px; }
+  #setlists:empty { display: none; }
+  .slchip { display: inline-flex; align-items: center; gap: 4px;
+            background: var(--chip); border: 1px solid var(--line);
+            border-radius: 999px; padding: 2px 4px 2px 10px; font-size: 12px; }
+  #ir-pane { padding: 12px 16px; border-top: 1px solid var(--line); }
+  #ir-pane h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+                color: var(--muted); margin: 0 0 10px; }
+  .irrow { display: flex; align-items: center; gap: 8px; padding: 7px 11px;
+           background: var(--panel); border: 1px solid var(--line);
+           border-radius: 9px; margin-bottom: 6px; }
+  .irrow .vlabel { flex: 1; font-weight: 600; }
+  .empty { color: var(--muted); padding: 24px 8px; text-align: center; }
+  .offline { border: 1px dashed var(--line); border-radius: 9px;
+             padding: 20px; text-align: center; color: var(--muted); }
+  .caret { color: var(--muted); width: 12px; display: inline-block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>helixgen library</h1>
+  <input id="search" type="search" placeholder="Search tones…" autocomplete="off">
+  <button id="refresh">Refresh</button>
+  <span class="status"><span class="dot" id="dot"></span><span id="conn">…</span></span>
+</header>
+<div id="facets"></div>
+<main>
+  <section class="pane" id="computer-pane">
+    <h2>On your computer</h2>
+    <div id="computer"></div>
+  </section>
+  <section class="pane" id="device-pane">
+    <h2>On the Helix</h2>
+    <div id="setlists"></div>
+    <div id="device"></div>
+  </section>
+</main>
+<section id="ir-pane">
+  <h2>Impulse responses</h2>
+  <div id="irs"></div>
+</section>
+<script>
+"use strict";
+const state = { data: null, q: "", filters: {} };  // filters: {kind: Set}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;  // names always via textContent
+  return n;
+}
+
+function matchesFilters(tone) {
+  for (const [kind, set] of Object.entries(state.filters)) {
+    if (!set.size) continue;
+    const vals = tone.variants.flatMap(v => {
+      if (kind === "guitar") return [v.guitar];
+      if (kind === "venue") return [v.venue];
+      if (kind === "treatment") return [v.treatment];
+      return [];
+    }).filter(Boolean);
+    const tagHit = kind === "tag" && tone.tags.some(t => set.has(t));
+    if (!tagHit && !vals.some(x => set.has(x))) return false;
+  }
+  return true;
+}
+
+function matchesQuery(tone) {
+  if (!state.q) return true;
+  const hay = [tone.name, tone.artist, tone.song, tone.descriptor,
+               ...tone.variants.map(v => v.preset_name)]
+              .filter(Boolean).join(" ").toLowerCase();
+  return hay.includes(state.q.toLowerCase());
+}
+
+function badge(presence, available) {
+  if (available === false && presence !== "device")
+    return el("span", "badge unavail", "missing file");
+  if (presence === "both") return el("span", "badge both", "on both");
+  if (presence === "device") return el("span", "badge device", "device only");
+  return el("span", "badge", "computer only");
+}
+
+function mkBtn(label, onClick) {
+  const b = el("button", "act", label);
+  b.addEventListener("click", ev => { ev.stopPropagation(); onClick(b); });
+  return b;
+}
+
+function rowActions(v) {
+  if (!v) return [];
+  const btns = [];
+  if (v.presence === "device" && v.device_cid != null) {
+    btns.push(mkBtn("Pull ←", b => postAction("/pull", { cid: v.device_cid }, b)));
+  }
+  if (v.available && v.hsp) {
+    btns.push(mkBtn(v.presence === "both" ? "Re-copy →" : "Copy →",
+                    b => postAction("/copy", { hsp: v.hsp }, b)));
+    btns.push(mkBtn("+ setlist", b => {
+      const sl = prompt("Add this tone to which setlist?");
+      if (sl) postAction("/setlist/add", { to: sl, hsp: v.hsp }, b);
+    }));
+  }
+  if (v.presence !== "computer" && v.preset_name) {  // it's on the device
+    btns.push(mkBtn("− setlist", b => {
+      const sl = prompt("Remove " + v.preset_name + " from which setlist?");
+      if (sl) postAction("/setlist/remove",
+                         { name: v.preset_name, setlist: sl }, b);
+    }));
+  }
+  return btns;
+}
+
+function renderSetlists() {
+  const host = document.getElementById("setlists");
+  host.replaceChildren();
+  const d = state.data;
+  if (!d || !d.connected) return;
+  const newb = mkBtn("+ New setlist", b => {
+    const n = prompt("New setlist name:");
+    if (n) postAction("/setlist/create", { name: n }, b);
+  });
+  host.appendChild(newb);
+  for (const sl of (d.setlists || [])) {
+    const name = sl && sl.name;
+    if (!name) continue;
+    const chip = el("span", "slchip");
+    chip.appendChild(el("b", null, name));
+    chip.appendChild(mkBtn("rename", b => {
+      const nn = prompt("Rename " + name + " to:");
+      if (nn) postAction("/setlist/rename", { name, new_name: nn }, b);
+    }));
+    chip.appendChild(mkBtn("dup", b => {
+      const nn = prompt("Duplicate " + name + " as:");
+      if (nn) postAction("/setlist/duplicate", { src: name, dst: nn }, b);
+    }));
+    chip.appendChild(mkBtn("del", b => {
+      if (confirm("Delete setlist " + name + "? (its presets stay in the pool)"))
+        postAction("/setlist/delete", { name }, b);
+    }));
+    host.appendChild(chip);
+  }
+}
+
+function toneCard(tone) {
+  const card = el("div", "tone");
+  const row = el("div", "row");
+  const caret = el("span", "caret", tone.variants.length > 1 ? "▸" : "");
+  const title = el("div", "title", tone.name);
+  if (tone.variants.length <= 1 && tone.variants[0]) {
+    const sub = el("span", "sub", variantLabel(tone.variants[0]));
+    title.appendChild(document.createTextNode("  "));
+    title.appendChild(sub);
+  }
+  row.append(caret, title, badge(tone.presence));
+  if (tone.variants.length <= 1) {
+    for (const b of rowActions(tone.variants[0])) row.appendChild(b);
+  }
+  card.appendChild(row);
+  const vwrap = el("div", "variants");
+  for (const v of tone.variants) vwrap.appendChild(variantRow(v));
+  card.appendChild(vwrap);
+  if (tone.variants.length > 1) {
+    row.addEventListener("click", () => {
+      card.classList.toggle("open");
+      caret.textContent = card.classList.contains("open") ? "▾" : "▸";
+    });
+  }
+  return card;
+}
+
+function variantLabel(v) {
+  const parts = [v.guitar];
+  if (v.venue) parts.push(v.venue + (v.treatment ? "/" + v.treatment : ""));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function variantRow(v) {
+  const r = el("div", "variant");
+  const lab = el("span", "vlabel", v.preset_name);
+  const venue = el("span", "venue", variantLabel(v));
+  r.append(lab, venue, badge(v.presence, v.available));
+  for (const b of rowActions(v)) r.appendChild(b);
+  return r;
+}
+
+async function postAction(path, payload, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.error) { alert(data.error || ("action failed: " + r.status)); return; }
+    if (Array.isArray(data.errors) && data.errors.length) alert(data.errors.join("\n"));
+    await load("/refresh");
+  } catch (e) {
+    alert("" + e);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderFacets() {
+  const host = document.getElementById("facets");
+  host.replaceChildren();
+  const f = state.data ? state.data.facets : {};
+  const order = [["guitar", "guitars"], ["venue", "venues"],
+                 ["treatment", "treatments"], ["tag", "tags"]];
+  for (const [kind, key] of order) {
+    const vals = (f && f[key]) || [];
+    if (!vals.length) continue;
+    host.appendChild(el("span", "facet-label", kind));
+    for (const val of vals) {
+      const chip = el("button", "chip", val);
+      const set = state.filters[kind] || (state.filters[kind] = new Set());
+      if (set.has(val)) chip.classList.add("on");
+      chip.addEventListener("click", () => {
+        set.has(val) ? set.delete(val) : set.add(val);
+        render();
+      });
+      host.appendChild(chip);
+    }
+  }
+}
+
+function irActions(m) {
+  const btns = [];
+  if (m.presence === "computer" && m.wav) {
+    btns.push(mkBtn("Push →", b => postAction("/ir/push", { wav: m.wav }, b)));
+  }
+  if (m.presence !== "computer" && m.hash) {
+    btns.push(mkBtn("rename", b => {
+      const nn = prompt("Rename IR to:");
+      if (nn) postAction("/ir/rename", { name_or_hash: m.hash, new_name: nn }, b);
+    }));
+    btns.push(mkBtn("delete", b => {
+      if (confirm("Delete IR " + (m.name || m.hash) + " from the device?"))
+        postAction("/ir/delete", { name_or_hash: m.hash }, b);
+    }));
+  }
+  return btns;
+}
+
+function renderIRs() {
+  const host = document.getElementById("irs");
+  host.replaceChildren();
+  const irs = (state.data && state.data.irs) || [];
+  const q = state.q.toLowerCase();
+  const shown = irs.filter(m =>
+    !q || ((m.name || "") + " " + (m.hash || "")).toLowerCase().includes(q));
+  if (!shown.length) {
+    host.appendChild(el("div", "empty", "No impulse responses."));
+    return;
+  }
+  for (const m of shown) {
+    const r = el("div", "irrow");
+    r.append(el("span", "vlabel", m.name || m.hash || "(unnamed)"),
+             el("span", "venue", (m.hash || "").slice(0, 8)),
+             badge(m.presence));
+    for (const b of irActions(m)) r.appendChild(b);
+    host.appendChild(r);
+  }
+}
+
+function render() {
+  renderFacets();
+  renderSetlists();
+  renderIRs();
+  const d = state.data;
+  const dot = document.getElementById("dot");
+  const conn = document.getElementById("conn");
+  dot.classList.toggle("up", !!(d && d.connected));
+  conn.textContent = d ? (d.connected ? "Stadium connected" : "no Stadium")
+                       : "loading…";
+
+  const comp = document.getElementById("computer");
+  const dev = document.getElementById("device");
+  comp.replaceChildren(); dev.replaceChildren();
+  if (!d) return;
+
+  const shown = d.tones.filter(t => matchesQuery(t) && matchesFilters(t));
+  const onComputer = shown.filter(t => t.presence !== "device");
+  const onDevice = shown.filter(t => t.presence !== "computer");
+
+  if (!onComputer.length) comp.appendChild(el("div", "empty", "No matching tones."));
+  for (const t of onComputer) comp.appendChild(toneCard(t));
+
+  if (!d.connected) {
+    const box = el("div", "offline",
+      "No Stadium connected. Browsing and search work offline; "
+      + "connect a Helix and Refresh to see the device side.");
+    dev.appendChild(box);
+  } else {
+    if (!onDevice.length) dev.appendChild(el("div", "empty", "No matching presets on the device."));
+    for (const t of onDevice) dev.appendChild(toneCard(t));
+  }
+}
+
+async function load(path) {
+  const r = await fetch(path, { headers: { "Accept": "application/json" } });
+  state.data = await r.json();
+  render();
+}
+
+document.getElementById("search").addEventListener("input", e => {
+  state.q = e.target.value; render();
+});
+document.getElementById("refresh").addEventListener("click", () => load("/refresh"));
+load("/state");
+</script>
+</body>
+</html>

@@ -253,6 +253,19 @@ metadata filename (`<slug>.json`), or any variant's `preset_name`; an unknown
 or ambiguous name exits 1. This resolution order is shared by `library show`,
 `library doc`, and the top-level `describe`.
 
+- `helixgen library ui [--port-http PORT] [--no-open] [--browser] [--ip IP]` —
+  open the **library hub**: a local browser page (bound to `127.0.0.1` only) to
+  browse and search the authored tone + IR library, see how it lines up with the
+  connected Helix, and reconcile the two — copy a tone → the device, pull a
+  device preset ← into the library, manage setlists (create / rename / delete /
+  duplicate, add / remove references), and push / rename / delete IRs. **Offline
+  first:** the whole computer side works with no device present; the device
+  column shows "no Stadium" until a Helix is reachable and you Refresh.
+  LONG-RUNNING (serves until Ctrl-C); the first line printed is `library hub:
+  <url>`. While a device is reachable it holds the `library` + `irs` advisory
+  locks for its lifetime (pid-bound) so no other helixgen process writes
+  underneath it — `editbuffer` stays free, so `device live` works alongside.
+  Default port `8766`; `--no-open` just prints the URL (for agents/background).
 - `helixgen library list [--tones|--guitars|--irs] [--json]` — list the
   library's tones, guitar profiles, and per-IR metadata, grouped by section
   (or narrowed to one with a flag). Guitar rows show slug / name / short_name /
