@@ -32,8 +32,9 @@ stays set after a save); that is the ``volatile.preset.edited`` property.
 ``extra`` holds row-1 blocks no split feeds (a row with its own real input).
 Every modeled block except the "None" endpoints appears exactly once. Values
 are RAW units (what ``/ParamValueSet`` takes); bools are encoded 0.0/1.0.
-Each block.s first model (``mdls[0]``) is editable; a dual cab.s second
-model and harness params (e.g. Trails) have no known live-write address.
+Each block's first model (``mdls[0]``) is editable; a dual cab's second model
+is surfaced READ-ONLY (hgc-5gh) and its harness params (e.g. Trails) still
+have no known live-write address.
 """
 from __future__ import annotations
 
