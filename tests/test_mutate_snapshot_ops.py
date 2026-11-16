@@ -411,13 +411,19 @@ def test_view_ignores_a_constant_base_bypassed_enabled_array(no_snaps, library):
     no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
     blk = no_snaps["preset"]["flow"][0]["b02"]
     blk["@enabled"] = {"value": False, "snapshots": [False] * 8}  # off at base + all scenes
+    no_snaps["preset"]["snapshots"][1]["name"] = ""  # a blank-named slot IN the projected range
     assert view.view(no_snaps, library).get("snapshots") in (None, [])
 
 
-# NOTE (hgc-0c3, UNRESOLVED): a genuine @enabled per-snapshot DISABLE on an
-# otherwise-placeholder slot did not project a scene in testing, unlike the
-# param-override case above — either a test subtlety or a real gap in the
-# keep-decision for the @enabled path. Needs verification before this ships.
+def test_view_keeps_a_genuine_per_snapshot_disable_on_a_placeholder(no_snaps, library):
+    # Counterpart: a base-ENABLED block turned OFF in one blank-named (device
+    # origin) slot IS a real override via @enabled and must project (hgc-0c3).
+    no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
+    mutate.set_enabled(no_snaps, "Brit 2204 Custom", False, library, snapshot=1)
+    no_snaps["preset"]["snapshots"][1]["name"] = ""  # device-origin blank name
+    proj = view.view(no_snaps, library)
+    assert [s["name"] for s in proj["snapshots"]] == ["Snap 2"]
+    assert "disable" in proj["snapshots"][0]
 
 
 def test_set_snapshot_pads_a_malformed_short_meta(no_snaps, library):
