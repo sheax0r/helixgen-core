@@ -1010,9 +1010,12 @@ def generate_preset(
         irs = IrMapping.load()  # default location; returns empty mapping if no file
 
     raw = json.loads(spec_path.read_text())
-    shape = library.load_chassis().get(CHASSIS_SHAPE_KEY, "hlx")
+    chassis = library.load_chassis()
+    shape = chassis.get(CHASSIS_SHAPE_KEY, "hlx")
     from helixgen.recipe import apply_stored_defaults
-    apply_stored_defaults(raw, shape)
+    # pass the chassis so the mic-preference fed-by guard sees chassis-baked
+    # output routing, not just recipe-level `output.to` (hgc-2kw.1)
+    apply_stored_defaults(raw, shape, chassis=chassis if shape == "hsp" else None)
     spec = parse_spec(raw, source=str(spec_path))
     preset = compose_preset(spec, library, source=str(spec_path), irs=irs)
 
