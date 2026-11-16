@@ -99,3 +99,23 @@ def launch(url: str, *, on_exit=None, binary=None):
             on_exit()
         threading.Thread(target=_watch, daemon=True).start()
     return proc
+
+
+def terminate(proc) -> bool:
+    """Close a still-running app-window child, if any.
+
+    Ctrl-C stops the editor's server but leaves the chromeless app window open
+    showing a dead ``127.0.0.1`` (hgc-a7h) — the server's own close path can't
+    reach the browser child. The ``device live`` command calls this when the
+    server stops. Returns ``True`` if it terminated a running window, ``False``
+    if the proc was ``None`` or had already exited (e.g. the user closed the
+    window, which is what stopped the server). Never raises."""
+    if proc is None:
+        return False
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+            return True
+    except Exception:  # noqa: BLE001 — teardown is best-effort
+        logger.debug("live editor: app-window terminate failed", exc_info=True)
+    return False

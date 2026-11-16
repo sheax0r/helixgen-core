@@ -163,8 +163,12 @@ def test_preset_list_groups_setlists_then_pool_with_the_active_cid(srv):
     assert code == 200 and ctype == "application/json"
     assert j["active"] == 1863          # Venom is loaded in the fixture
     assert [g["name"] for g in j["groups"]] == ["Rock", "Pool"]
-    assert j["groups"][0]["presets"] == [{"cid": 1950, "name": "Venom Live"}]
-    assert j["groups"][1]["presets"] == [{"cid": 1863, "name": "Venom"}]
+    # Each entry now carries an `active` flag (hgc-6y1). This fixture's setlist
+    # ref declares no rcid, so only the pool's Venom (1863) lights.
+    assert j["groups"][0]["presets"] == [
+        {"cid": 1950, "name": "Venom Live", "active": False}]
+    assert j["groups"][1]["presets"] == [
+        {"cid": 1863, "name": "Venom", "active": True}]
 
 
 def test_preset_list_reports_a_device_read_failure_as_502(srv):
