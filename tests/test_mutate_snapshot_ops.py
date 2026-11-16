@@ -39,11 +39,23 @@ def no_snaps(body):
     """The same preset with the `preset.snapshots` meta removed — a preset
     whose recipe omitted `snapshots` (the create path's real target)."""
     body["preset"].pop("snapshots", None)
-    # drop the now-orphaned per-snapshot arrays so the body is self-consistent
-    for k in ("b01", "b02", "b03"):
-        for w in (body["preset"]["flow"][0][k]["slot"][0].get("params") or {}).values():
-            if isinstance(w, dict):
-                w.pop("snapshots", None)
+    # Drop the now-orphaned per-snapshot arrays EVERYWHERE (every block's params
+    # and @enabled, not just b01-b03) so the body is a genuinely snapshot-free
+    # preset. Any residual variance would otherwise surface as a projected scene
+    # once view keeps delta-carrying placeholder slots (hgc-0c3).
+    for path in body["preset"].get("flow") or []:
+        if not isinstance(path, dict):
+            continue
+        for key, blk in path.items():
+            if not (key[:1] == "b" and key[1:].isdigit() and isinstance(blk, dict)):
+                continue
+            en = blk.get("@enabled")
+            if isinstance(en, dict):
+                en.pop("snapshots", None)
+            for slot in blk.get("slot") or []:
+                for w in (slot.get("params") or {}).values():
+                    if isinstance(w, dict):
+                        w.pop("snapshots", None)
     return body
 
 
@@ -365,15 +377,28 @@ def test_view_no_phantom_scene_after_middle_remove(no_snaps, library):
     assert [s["name"] for s in view.view(no_snaps, library)["snapshots"]] == ["A", "C"]
 
 
-def test_view_nulls_variance_without_configured_name(no_snaps, library):
-    # per-snapshot variance but every slot is a placeholder name -> no
-    # configured snapshots project (unchanged view behaviour). NOTE: hgc-0c3
-    # tracks that this drops device-origin blank-named-but-valid snapshots'
-    # deltas in the to-hsp->view->generate loop; the fix reverses #118's
-    # "unnamed variance is not a scene" model and is deferred for owner review.
+def test_view_keeps_variance_on_a_placeholder_slot(no_snaps, library):
+    # hgc-0c3: a placeholder-named slot (blank, or the `Snap N` default) that
+    # carries a REAL per-snapshot override is projected under its `Snap N`
+    # label, NOT dropped — else `device to-hsp -> view -> generate` silently
+    # loses the scene deltas. (Supersedes the earlier "variance without a name
+    # projects nothing" rule, which #121's blank-name change turned into a
+    # data-loss bug.) A device blank name renders as `SNAPSHOT N` on-device, so
+    # the `Snap N` fallback is a faithful label.
     no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
     mutate.set_param(no_snaps, "Brit 2204 Custom", "Drive", 0.6, library,
                      snapshot=1)
+    no_snaps["preset"]["snapshots"][1]["name"] = ""   # device-origin blank name
+    proj = view.view(no_snaps, library)
+    assert [s["name"] for s in proj["snapshots"]] == ["Snap 2"]
+    assert proj["snapshots"][0]["params"]["Brit 2204 Custom"]["Drive"] == 0.6
+
+
+def test_view_still_drops_truly_empty_placeholder_slots(no_snaps, library):
+    # The hgc-0c3 fix is scoped to slots with REAL overrides: an all-placeholder
+    # meta with no deltas still projects nothing (no phantom blank scenes, the
+    # #118 invariant).
+    no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
     assert view.view(no_snaps, library).get("snapshots") in (None, [])
 
 

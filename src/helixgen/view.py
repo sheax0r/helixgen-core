@@ -514,12 +514,19 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
 
     snaps: list[dict[str, Any]] = []
     for i, nm in enumerate(names):
-        # Skip interior/leading placeholder slots so a non-contiguous layout
-        # projects only its configured (named) scenes, never phantom blanks —
-        # `names` stays positional above only for override attribution.
-        if _is_snapshot_placeholder(nm, i):
+        placeholder = _is_snapshot_placeholder(nm, i)
+        has_overrides = bool(disables[i] or params[i] or outputs[i])
+        # Skip only the TRULY empty placeholder slots, so a non-contiguous
+        # layout projects no phantom blank scenes (#118). BUT keep a placeholder
+        # (blank / `Snap N`) slot that carries REAL overrides, projecting it
+        # under a `Snap N` fallback name (hgc-0c3): the device leaves a valid
+        # delta-carrying snapshot's name blank, and since hgc-dym (#121) emits
+        # that blank verbatim, dropping the slot silently loses its scene deltas
+        # in the `device to-hsp -> view -> generate` re-author loop. Projecting
+        # it preserves the disable/param/output overrides through generate.
+        if placeholder and not has_overrides:
             continue
-        s: dict[str, Any] = {"name": nm}
+        s: dict[str, Any] = {"name": f"Snap {i + 1}" if placeholder else nm}
         # disable: bare string if unambiguous, else coordinate dict
         dis = []
         for (dpi, dlane, dpos, dname) in disables[i]:
