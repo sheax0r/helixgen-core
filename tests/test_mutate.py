@@ -1033,6 +1033,25 @@ def test_set_input_rewrites_endpoint_model(goldfinger_body):
     assert slot["model"] == "P35_InputInst1"
 
 
+def test_set_input_coerces_path_shapes(goldfinger_body):
+    # hgc-2kw.3: a 1-element list [0] and a float 0.0 coerce; a bad shape gives
+    # a clean MutateError, not a raw TypeError from the range comparison.
+    mutate.set_input(goldfinger_body, [0], "inst1")
+    assert goldfinger_body["preset"]["flow"][0]["b00"]["slot"][0]["model"] == "P35_InputInst1"
+    mutate.set_input(goldfinger_body, 0.0, "inst2")  # float coerces to int 0
+    with pytest.raises(mutate.MutateError, match="path must be an integer"):
+        mutate.set_input(goldfinger_body, None, "inst1")
+    with pytest.raises(mutate.MutateError, match="finite integer"):
+        mutate.set_input(goldfinger_body, float("nan"), "inst1")  # no raw ValueError
+
+
+def test_set_input_warns_on_an_occupied_path(goldfinger_body, capsys):
+    # hgc-2kw.6: re-jacking a path that carries processing blocks warns (it does
+    # not clear them; re-jacking a path with an amp silences that amp).
+    mutate.set_input(goldfinger_body, 0, "mic")
+    assert "already carries" in capsys.readouterr().err
+
+
 def test_set_input_both_to_inst_reshapes_params_to_mono(goldfinger_body):
     # path 0's b00 starts stereo (P35_InputInst1_2); give it a stereo-shaped
     # param so the mono rewrite has something to reshape.

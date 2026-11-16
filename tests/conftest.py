@@ -105,6 +105,13 @@ def _isolate_device_slots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HELIXGEN_HOME", str(tmp_path))
     monkeypatch.setenv("HELIXGEN_SETLISTS", str(tmp_path / "_setlists.json"))
     monkeypatch.setenv("HELIXGEN_DEVICE_SLOTS", str(tmp_path / "_device_slots.json"))
+    # Isolate the preferences file too (hgc-2kw.5): `$HELIXGEN_PREFS` OVERRIDES
+    # the $HELIXGEN_HOME-based default, so a developer shell that sets it would
+    # otherwise leak real mic/usb_taps preferences into the offline suite. Drop
+    # it so prefs fall back to the already-isolated $HELIXGEN_HOME default
+    # (absent -> no preference, no "path points at a missing file" warning).
+    # Prefs tests set their own $HELIXGEN_PREFS, which wins over this.
+    monkeypatch.delenv("HELIXGEN_PREFS", raising=False)
 
 
 @pytest.fixture(autouse=True)
