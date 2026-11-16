@@ -420,6 +420,14 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         return []
     # Per-snapshot accumulators keyed by (path_idx, lane, pos, display_name).
     disables: list[list[tuple]] = [[] for _ in names]
+    # `real_disables` is the base-DIFFERING subset of `disables` — used only to
+    # decide whether a placeholder slot is worth keeping (hgc-0c3), never for
+    # projection. A base-bypassed block that is also off in a snapshot matches
+    # base (a constant all-False dense array, which device exports carry), so it
+    # is not a real override and must not make a placeholder slot a scene; but
+    # the PROJECTION stays unfiltered so named-slot disables are byte-identical
+    # to before (keeps decompile round-trips stable).
+    real_disables: list[list[tuple]] = [[] for _ in names]
     params: list[dict[tuple, dict]] = [{} for _ in names]
     flow = (body.get("preset") or {}).get("flow") or []
     for pi, key, bnn, slot in _iter_blocks(flow):
@@ -429,15 +437,19 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         name = _ref_name(block)
         lane, pos = _lane_pos(key)
         coord = (pi, lane, pos, name)
-        # @enabled snapshot overrides (False => disable in that snapshot). The
-        # bNN base @enabled.value may now be False (base-bypassed block), but
-        # disable-recovery keys only off explicit `snapshots[i] is False`, never
-        # the base, so base bypass and per-snapshot bypass stay independent.
+        # @enabled snapshot overrides (False => disable in that snapshot).
+        # Projection records every explicit `snapshots[i] is False` (unchanged);
+        # `real_disables` additionally requires the block to be base-ENABLED, so
+        # a base-bypassed block that is merely off-everywhere doesn't count as a
+        # per-snapshot override for the keep-decision (hgc-0c3 review).
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
+            base_enabled = _unwrap_value(en) is not False
             for i, ov in enumerate(en["snapshots"]):
                 if i < len(names) and ov is False:
                     disables[i].append(coord)
+                    if base_enabled:
+                        real_disables[i].append(coord)
         # param snapshot overrides -- filter dense fills equal to base.
         for pname, wrapped in (slot.get("params") or {}).items():
             if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
@@ -515,7 +527,7 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
     snaps: list[dict[str, Any]] = []
     for i, nm in enumerate(names):
         placeholder = _is_snapshot_placeholder(nm, i)
-        has_overrides = bool(disables[i] or params[i] or outputs[i])
+        has_overrides = bool(real_disables[i] or params[i] or outputs[i])
         # Skip only the TRULY empty placeholder slots, so a non-contiguous
         # layout projects no phantom blank scenes (#118). BUT keep a placeholder
         # (blank / `Snap N`) slot that carries REAL overrides, projecting it

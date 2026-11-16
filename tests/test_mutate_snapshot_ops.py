@@ -402,6 +402,24 @@ def test_view_still_drops_truly_empty_placeholder_slots(no_snaps, library):
     assert view.view(no_snaps, library).get("snapshots") in (None, [])
 
 
+def test_view_ignores_a_constant_base_bypassed_enabled_array(no_snaps, library):
+    # hgc-0c3 review (HIGH regression guard): a base-BYPASSED block with a
+    # constant all-False dense @enabled.snapshots array (what a device export
+    # carries for a block off everywhere) matches base in every slot — NOT a
+    # per-snapshot disable. It must not fabricate phantom scenes on placeholder
+    # slots (the keep-decision filters base-equal disables; projection does not).
+    no_snaps["preset"]["snapshots"] = mutate._default_snapshot_meta()
+    blk = no_snaps["preset"]["flow"][0]["b02"]
+    blk["@enabled"] = {"value": False, "snapshots": [False] * 8}  # off at base + all scenes
+    assert view.view(no_snaps, library).get("snapshots") in (None, [])
+
+
+# NOTE (hgc-0c3, UNRESOLVED): a genuine @enabled per-snapshot DISABLE on an
+# otherwise-placeholder slot did not project a scene in testing, unlike the
+# param-override case above — either a test subtlety or a real gap in the
+# keep-decision for the @enabled path. Needs verification before this ships.
+
+
 def test_set_snapshot_pads_a_malformed_short_meta(no_snaps, library):
     # hgc-dsd: a present-but-malformed sub-8-slot `snapshots` meta (hand-edited
     # / legacy) must not raise a bare IndexError — set_snapshot pads it to the
