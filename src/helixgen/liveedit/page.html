@@ -154,6 +154,7 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .blk.node{align-self:center;min-width:min(420px,100%);border-style:dashed;border-color:#3a4a78;background:#121827}
 .bh{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .cat{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--acc)}
+.nm.swappable{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
 .nm{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xl{font-size:10px;font-weight:700;letter-spacing:.08em;color:#ffd58a;border:1px solid #6d5522;
   background:#2a2110;border-radius:999px;padding:2px 8px;white-space:nowrap}
@@ -486,6 +487,11 @@ function blockEl(b) {
   const hd = el("div", "bh");
   hd.append(el("span", "cat", b.category || "block"), el("span", "nm", b.name));
   hd.lastChild.title = b.model;
+  if (!STRUCT.has(b.category)) {           // swap a real block's model (hgc-cc4)
+    hd.lastChild.classList.add("swappable");
+    hd.lastChild.title = b.model + " · click to swap model";
+    hd.lastChild.onclick = () => openModelPicker(b);
+  }
   if (b.xlink) hd.append(el("span", "xl", "⇄ path " + (b.xlink.path + 1)));
   hd.append(el("span", "grow"));
   if (!NO_BYPASS.has(b.category)) {
@@ -762,6 +768,28 @@ async function openPicker() {
     });
   });
   if (!any) body.append(el("p", null, "No presets on the device."));
+}
+/* ---------- model picker (hgc-cc4: swap a block for a same-category model) ---------- */
+let MODELS = null;
+async function openModelPicker(b) {
+  if (down) return;
+  if (!MODELS) MODELS = await fetch("/models").then((r) => r.json()).catch(() => ({}));
+  if (!MODELS) return;
+  const list = MODELS[b.category] || [];
+  const { body } = modal("Swap “" + b.name + "” for…");
+  if (!list.length) { body.append(el("p", null, "No other " + (b.category || "same-category") + " models to swap to.")); return; }
+  body.append(el("p", "hint", "Same-category only — the swap applies to the live tone (confirm the sound on the rig)."));
+  list.forEach((m) => {
+    const btn = el("button", "pz" + (m.id === b.model_id ? " on" : ""), m.name);
+    btn.type = "button";
+    btn.onclick = () => {
+      closeOverlay();
+      if (m.id === b.model_id) return;
+      send("/swap", { path: b.path, block: b.block, model_id: m.id },
+        () => toast("Swapping model on the device…", true), () => {});
+    };
+    body.append(btn);
+  });
 }
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
 $("load").onclick = openPicker;

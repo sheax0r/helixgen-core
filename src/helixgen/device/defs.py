@@ -128,3 +128,41 @@ def category_for(model_id: Any) -> Optional[str]:
 def list_models() -> list[str]:
     """Sorted list of all known model-id strings."""
     return sorted(load_defs().get("models", {}))
+
+
+def models_in_category(category: str) -> list[dict]:
+    """Every model in ``category`` as ``{"id", "model", "name"}`` dicts, sorted
+    by display name — the swappable choices for a block of that category
+    (hgc-cc4). The device only allows a same-category model swap.
+    """
+    defs = load_defs()
+    out = []
+    for name, mid in (defs.get("models") or {}).items():
+        if not isinstance(mid, int):
+            continue
+        if category_for(mid) != category:
+            continue
+        try:
+            from helixgen.device import paraminfo
+            display = paraminfo.model_display_name(name)
+        except Exception:  # noqa: BLE001
+            display = None
+        out.append({"id": mid, "model": name, "name": display or name})
+    out.sort(key=lambda m: (m["name"].lower(), m["id"]))
+    return out
+
+
+def models_by_category() -> dict:
+    """``{category: [{"id","model","name"}, ...]}`` for every known model — the
+    full swap catalog the live editor's model picker reads once (hgc-cc4)."""
+    out: dict = {}
+    for name, mid in (load_defs().get("models") or {}).items():
+        if not isinstance(mid, int):
+            continue
+        cat = category_for(mid)
+        if cat is None:
+            continue
+        out.setdefault(cat, [])
+    for cat in out:
+        out[cat] = models_in_category(cat)
+    return out

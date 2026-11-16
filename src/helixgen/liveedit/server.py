@@ -69,6 +69,9 @@ def _route(session: LiveSession, path: str, b: dict):
         return session.set_bypass(_int(b, "path"), _int(b, "block"),
                                   b["enabled"], client=_client(b),
                                   rev=_rev(b))
+    if path == "/swap":
+        return session.swap_model(_int(b, "path"), _int(b, "block"),
+                                  _int(b, "model_id"))
     if path == "/snapshot":
         return session.activate_snapshot(_int(b, "index"))
     if path == "/preset":
@@ -125,6 +128,11 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 # static adjective -> affected-knob map + alias list for the
                 # search box; the page does the role-matching client-side
                 self._json(200, intents.payload())
+            elif path == "/models":
+                # static swap catalog {category: [{id,model,name}]} the model
+                # picker reads once (hgc-cc4)
+                from helixgen.device import defs as _defs
+                self._json(200, _defs.models_by_category())
             elif path == "/presets":
                 try:
                     self._json(200, session.list_presets())
