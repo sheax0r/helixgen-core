@@ -82,7 +82,7 @@ def read_hsp(path: Path | str) -> dict[str, Any]:
     return json.loads(raw[HSP_MAGIC_LEN:].decode("utf-8"))
 
 
-def dumps_hsp(body: dict[str, Any]) -> bytes:
+def dumps_hsp(body: dict[str, Any], apply_prefs: bool = True) -> bytes:
     """Serialize `body` as a .hsp file's bytes: magic header + compact UTF-8 JSON.
 
     Compact separators (no spaces) match what the device itself writes, and
@@ -91,9 +91,14 @@ def dumps_hsp(body: dict[str, Any]) -> bytes:
     Every `.hsp` helixgen writes goes through here, so this is where the
     `usb_taps` preference lands (``usbtaps.apply_preference``; a no-op when
     unset). ``body`` itself is never mutated by it.
+
+    `apply_prefs=False` skips that preference layer, for callers that must
+    write the body VERBATIM -- a metadata-only edit (e.g. the `info-backfill`
+    scrub) must not also inject USB tap blocks into every tone it touches.
     """
     from helixgen.usbtaps import apply_preference
-    body = apply_preference(body)
+    if apply_prefs:
+        body = apply_preference(body)
     payload = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
     return HSP_MAGIC + payload.encode("utf-8")
 

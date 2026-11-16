@@ -18,7 +18,7 @@ from helixgen.cli_library import (
     _scan_tones_for_factory_info,
     library,
 )
-from helixgen.hsp import read_hsp, write_hsp
+from helixgen.hsp import dumps_hsp, read_hsp, write_hsp
 
 FACTORY = (
     "Instrument: Les Paul (all pickups) / Playback System: Studio headphones "
@@ -82,6 +82,72 @@ def test_dry_run_writes_nothing(tmp_path: Path):
     assert after == before  # (d) dry run mutates no file
     assert any(r["status"] == "would-clear" and r["file"] == "factory.hsp"
                for r in rows)
+
+
+def _tappable_path() -> dict:
+    """A single guitar path with one block -- a tone usb_taps WOULD tap."""
+    return {
+        "b00": {"type": "input", "position": 0, "path": 0,
+                "slot": [{"model": "P35_InputInst1", "params": {}}]},
+        "b13": {"type": "output", "position": 13, "path": 0,
+                "slot": [{"model": "P35_OutputMatrix", "params": {}}]},
+        "b01": {"@enabled": {"value": True}, "type": "fx", "position": 1, "path": 0,
+                "slot": [{"model": "HD2_DistMinotaurMono", "params": {}}]},
+    }
+
+
+def test_apply_does_not_inject_usb_taps(tmp_path: Path, monkeypatch):
+    # HIGH (hgc-jeo review): a metadata-only scrub must NOT also run the
+    # usb_taps preference layer and inject tap blocks into the tone. With a
+    # usb_taps pref set, --apply changes ONLY meta.info and leaves the flow
+    # byte-identical.
+    import helixgen.usbtaps as _usbtaps
+
+    prefs = tmp_path / "prefs.json"
+    prefs.write_text(json.dumps({"usb_taps": {"guitar": "3/4", "mic": "5/6"}}))
+    monkeypatch.setenv("HELIXGEN_PREFS", str(prefs))
+    _usbtaps._warned_bad_prefs = False
+
+    root = tmp_path / "lib"
+    (root / "tones").mkdir(parents=True)
+    (root / "chassis.json").write_text(
+        json.dumps({"meta": {"name": "donor", "info": FACTORY}}))
+    tone = root / "tones" / "factory.hsp"
+    # Seed the tone tap-free (apply_prefs=False) so any tap in the result came
+    # from the backfill's own write, not from this setup write.
+    tone.write_bytes(dumps_hsp(
+        {"meta": {"name": "factory", "info": FACTORY},
+         "preset": {"flow": [_tappable_path()]}}, apply_prefs=False))
+    original = read_hsp(tone)
+    assert not _usbtaps.has_tap(original)         # seed is tap-free
+
+    _scan_tones_for_factory_info(root, _factory_donor_infos(root), apply=True)
+
+    after = read_hsp(tone)
+    assert after["meta"]["info"] == ""            # the note is cleared
+    assert not _usbtaps.has_tap(after)            # and NO tap block was injected
+    original["meta"]["info"] = ""
+    assert after == original                      # nothing but meta.info moved
+
+
+def test_empty_factory_set_warns_and_clears_nothing(tmp_path: Path):
+    # MEDIUM (hgc-jeo review): with no chassis / no factory string, nothing can
+    # match -- warn loudly, and do NOT mislabel real tones as user notes.
+    root = tmp_path / "lib"
+    (root / "tones").mkdir(parents=True)  # no chassis.json
+    write_hsp(root / "tones" / "a.hsp",
+              {"meta": {"name": "a", "info": FACTORY}, "preset": {"flow": []}})
+
+    assert _factory_donor_infos(root) == set()
+    rows = _scan_tones_for_factory_info(root, set(), apply=True)
+    assert [r["status"] for r in rows] == ["unmatched"]  # not "kept (user note)"
+    assert read_hsp(root / "tones" / "a.hsp")["meta"]["info"] == FACTORY  # untouched
+
+    runner = CliRunner()
+    res = runner.invoke(library, ["info-backfill", str(root)])
+    assert res.exit_code == 0, res.output
+    assert "no factory donor string found" in res.output
+    assert "unmatched" in res.output
 
 
 def test_cli_dry_run_is_default_and_apply_writes(tmp_path: Path):

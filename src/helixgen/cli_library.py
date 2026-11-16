@@ -1758,8 +1758,14 @@ def _scan_tones_for_factory_info(
 ) -> List[Dict[str, Any]]:
     """Scan ``root/tones/*.hsp`` and clear ``meta.info`` where it exactly
     matches a known factory-donor string. Reports one row per tone that
-    carries a non-empty ``meta.info`` (empty ones are silent no-ops). Writes
-    only when ``apply`` is true."""
+    carries a non-empty ``meta.info`` (empty ones are silent no-ops): a match
+    is ``would-clear``/``cleared``; anything else is ``unmatched`` -- NOT
+    asserted to be a user note, since a tone from a previous donor (or an
+    empty reference set) also lands here. Writes only when ``apply`` is true.
+
+    The write passes ``apply_prefs=False``: this is a metadata-only scrub, so
+    it must not also inject the ``usb_taps`` preference's tap blocks into the
+    tone (a signal-chain rewrite disguised as a note edit)."""
     from helixgen.hsp import dumps_hsp
 
     rows: List[Dict[str, Any]] = []
@@ -1773,13 +1779,13 @@ def _scan_tones_for_factory_info(
         if not isinstance(info, str) or not info:
             continue  # already empty / no info -- nothing to backfill
         if info not in factory_infos:
-            rows.append({"file": hsp_path.name, "status": "kept", "info": info})
+            rows.append({"file": hsp_path.name, "status": "unmatched", "info": info})
             continue
         row: Dict[str, Any] = {"file": hsp_path.name, "status": "would-clear",
                                "info": info}
         if apply:
             body["meta"]["info"] = ""
-            _atomic_write(hsp_path, dumps_hsp(body))
+            _atomic_write(hsp_path, dumps_hsp(body, apply_prefs=False))
             row["status"] = "cleared"
         rows.append(row)
     return rows
@@ -1799,27 +1805,38 @@ def info_backfill_cmd(directory: Path | None, apply_changes: bool,
     Tones authored before hgc-a8p carried the donor chassis's factory rig
     notes in ``meta.info``, so the user's Stadium shows someone else's notes.
     This scans ``DIRECTORY/tones/*.hsp`` and blanks ``meta.info`` ONLY where
-    it exactly matches the stored ``chassis.json``'s own factory info -- a
-    per-preset note you set yourself (anything that does not match) is left
-    untouched. DIRECTORY defaults to the resolved tone library.
+    it exactly matches the stored ``chassis.json``'s own factory info. A tone
+    whose ``meta.info`` does not match is reported ``unmatched`` and left
+    untouched -- that is usually a note you set yourself, though a tone from a
+    PREVIOUS donor also lands here (its factory string is not in the current
+    chassis). A note you set that happens to equal the factory text verbatim
+    is indistinguishable and would be cleared. DIRECTORY defaults to the
+    resolved tone library.
 
     DRY RUN by default -- reports which files would change (before -> after).
     Re-run with ``--apply``/``--write`` to rewrite them.
     """
     root = directory or home.library_dir()
-    rows = _scan_tones_for_factory_info(
-        root, _factory_donor_infos(root), apply=apply_changes)
+    factory_infos = _factory_donor_infos(root)
+    rows = _scan_tones_for_factory_info(root, factory_infos, apply=apply_changes)
     changed = [r for r in rows if r["status"] in ("would-clear", "cleared")]
 
     if as_json:
-        click.echo(json.dumps({"apply": apply_changes, "tones": rows}, indent=2))
+        click.echo(json.dumps(
+            {"apply": apply_changes, "factory_strings": len(factory_infos),
+             "tones": rows}, indent=2))
         return
+    if not factory_infos:
+        click.echo(
+            f"no factory donor string found in {root}/chassis.json -- nothing "
+            f"can match; clearing nothing.", err=True)
     for r in rows:
         if r["status"] in ("would-clear", "cleared"):
             click.echo(f"  {r['file']}: {r['status']}  "
                        f"{r['info']!r} -> ''")
-        elif r["status"] == "kept":
-            click.echo(f"  {r['file']}: kept (user note, not a factory string)")
+        elif r["status"] == "unmatched":
+            click.echo(f"  {r['file']}: unmatched (not the factory string; "
+                       f"left untouched)")
         else:
             click.echo(f"  {r['file']}: {r['status']} ({r.get('reason')})", err=True)
     verb = "Cleared" if apply_changes else "Would clear"
