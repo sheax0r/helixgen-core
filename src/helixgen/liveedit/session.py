@@ -25,7 +25,7 @@ import threading
 import time
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
-from helixgen.device import content as _content
+from helixgen.device import content as _content, defs
 from helixgen.device.client import HelixError
 from helixgen.liveedit import chain as _chain
 from helixgen.liveedit.events import DIRTY_KEY, decode_event
@@ -374,6 +374,54 @@ class LiveSession:
                     with self.cond:
                         self._end_write()
         return {"value": v}
+
+    def swap_model(self, path: int, block: int, model_id: int) -> dict:
+        """Swap a block's model in place (hgc-cc4).
+
+        The device allows only a SAME-category swap (a cab for a cab, an amp for
+        an amp), so this validates the category up front, sends ``/ModelSet``,
+        then re-reads the whole edit buffer — the block comes back carrying the
+        new model and the params the device applied. Returns the fresh state for
+        the page to re-render. (The device's own import re-applies the new
+        model's defaults; this reflects whatever the re-read reports, so confirm
+        the result on the rig.)
+        """
+        pth, blk, mid = int(path), int(block), int(model_id)
+        with self.cond:
+            self._require_up()
+            cur = self._blocks.get((pth, blk)) if self._blocks else None
+        if cur is None:
+            raise LiveError("no such block on the loaded tone "
+                            "(did the preset change?)", status=404)
+        if cur.get("category") in ("input", "output", "split", "join"):
+            # endpoints + routing nodes are not model-swappable; /ModelSet on an
+            # endpoint grid slot is unverified/unsafe (hgc-cc4 review MEDIUM).
+            raise LiveError(
+                f"an endpoint / routing block ({cur.get('category')!r}) is not "
+                f"model-swappable — only effect blocks are.", status=400)
+        if defs.model_name_for(mid) is None:
+            raise LiveError(f"unknown model id {mid}", status=400)
+        new_cat = defs.category_for(mid)
+        if new_cat != cur.get("category"):
+            raise LiveError(
+                f"a swap must stay in the same category: a "
+                f"{cur.get('category')!r} block cannot become a {new_cat!r} "
+                f"model (the device rejects a cross-category swap).", status=400)
+        if mid == cur.get("model_id"):
+            return self.public_state()          # already that model: no-op
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                try:
+                    self.client.set_block_model(pth, blk, mid)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device model swap failed: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        self.load()                              # re-read: new model + its params
+        return self.public_state()
 
     def set_bypass(self, path: int, block: int, enabled: Any, *,
                    client: Optional[str] = None,

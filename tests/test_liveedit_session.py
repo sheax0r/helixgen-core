@@ -33,6 +33,7 @@ class FakeClient:
         self.preset = {"cid": 1863, "name": "Venom", "posi": 41, "slot": "11B", "ccid": -2}
         self.reads = 0
         self.params, self.enables, self.saves = [], [], []
+        self.swaps = []          # (path, block, model_id) from set_block_model
         self.ack = True
         self.fail: Exception | None = None
         self.last_request_id = None
@@ -95,6 +96,11 @@ class FakeClient:
         if self.on_write is not None:
             hook, self.on_write = self.on_write, None
             hook()
+        return self.ack
+
+    def set_block_model(self, path, block, model_id):
+        self._next()
+        self.swaps.append((int(path), int(block), int(model_id)))
         return self.ack
 
     def get_property(self, key):
@@ -1125,3 +1131,61 @@ def test_list_presets_still_lights_a_directly_loaded_entry(s):
     out = s.list_presets()
     rock = next(g for g in out["groups"] if g["name"] == "Rock")
     assert rock["presets"][0]["active"] is True
+
+
+# --- model swap (hgc-cc4) --------------------------------------------------
+
+def test_swap_model_same_category_issues_the_swap_and_rereads():
+    # the rig's slot-2 block is AMP (758); swapping to another amp (628) must
+    # send /ModelSet and re-read the buffer, returning fresh state.
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    reads0 = c.reads
+    st = sess.swap_model(0, 2, 628)
+    assert c.swaps == [(0, 2, 628)]          # device swap issued
+    assert c.reads > reads0                   # re-read happened
+    assert "paths" in st                      # fresh state for the page
+
+
+def test_swap_model_rejects_a_cross_category_model():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.swap_model(0, 2, 310)            # amp block -> a distortion (310)
+    assert e.value.status == 400
+    assert c.swaps == []                       # no device write on a bad swap
+
+
+def test_swap_model_rejects_unknown_model_and_missing_block():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e1:
+        sess.swap_model(0, 2, 999999)
+    assert e1.value.status == 400
+    with pytest.raises(LiveError) as e2:
+        sess.swap_model(0, 99, 628)           # no such block
+    assert e2.value.status == 404
+    assert c.swaps == []
+
+
+def test_swap_model_rejects_an_endpoint_or_routing_block():
+    # input/output/split/join are not model-swappable; no /ModelSet on an
+    # endpoint grid slot (hgc-cc4 review).
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.swap_model(0, 0, 771)            # the slot-0 INPUT endpoint
+    assert e.value.status == 400
+    assert c.swaps == []
+
+
+def test_models_in_category_lists_same_category_swaps():
+    from helixgen.device import defs
+    amps = {m["id"] for m in defs.models_in_category("amp")}
+    assert 758 in amps and 628 in amps        # the block's model + a target
+    assert 310 not in amps                     # a distortion is not an amp
+    assert "amp" in defs.models_by_category()
