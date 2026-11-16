@@ -32,8 +32,9 @@ stays set after a save); that is the ``volatile.preset.edited`` property.
 ``extra`` holds row-1 blocks no split feeds (a row with its own real input).
 Every modeled block except the "None" endpoints appears exactly once. Values
 are RAW units (what ``/ParamValueSet`` takes); bools are encoded 0.0/1.0.
-Only each block's first model (``mdls[0]``) is covered: a dual cab's second
-model and harness params (e.g. Trails) have no known live-write address.
+Each block's first model (``mdls[0]``) is editable; a dual cab's second model
+is surfaced READ-ONLY (hgc-5gh) and its harness params (e.g. Trails) still
+have no known live-write address.
 """
 from __future__ import annotations
 
@@ -154,7 +155,7 @@ def _block(path: int, slot: int, raw: dict) -> Optional[dict]:
             name = paraminfo.model_display_name(model)
         except Exception:  # noqa: BLE001
             name = None
-    return {
+    block = {
         "path": path, "block": slot,
         "row": 1 if slot >= ROW1_INPUT else 0,
         "model_id": mid, "model": model or str(mid),
@@ -164,6 +165,28 @@ def _block(path: int, slot: int, raw: dict) -> Optional[dict]:
         "xlink": None,
         "params": _params(mid, model, m0),
     }
+    # Dual-cab SECOND model (mdls[1]): surface it READ-ONLY (hgc-5gh). Its param
+    # values are already in the edit buffer, so they can be shown, but it has no
+    # known live-write address (that needs a hardware probe — the state model
+    # would grow from (path,slot,pid) to (path,slot,sub,pid)), so the page shows
+    # it and sends NO writes. Without this the second cab was invisible.
+    m1 = mdls[1] if isinstance(mdls, list) and len(mdls) > 1 else None
+    if isinstance(m1, dict):
+        mid1 = m1.get("id__")
+        if isinstance(mid1, int) and not isinstance(mid1, bool):
+            model1 = defs.model_name_for(mid1)
+            try:
+                name1 = paraminfo.model_display_name(model1) if model1 else None
+            except Exception:  # noqa: BLE001
+                name1 = None
+            block["second_model"] = {
+                "model_id": mid1,
+                "model": model1 or str(mid1),
+                "name": name1 or _fallback_name(model1, mid1),
+                "params": _params(mid1, model1, m1),
+                "read_only": True,
+            }
+    return block
 
 
 def _is_none_endpoint(b: dict) -> bool:

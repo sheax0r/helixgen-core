@@ -164,6 +164,10 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .foot.on{color:#bff5da;border-color:#256b4b}
 .foot:not(.on){color:var(--dim)}
 .ctl{display:flex;flex-wrap:wrap;gap:14px 16px;align-items:flex-start}
+.secondmodel{margin-top:12px;padding-top:10px;border-top:1px dashed var(--faint);opacity:.72}
+.sm-head{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--faint);margin-bottom:6px}
+.sm-vals{display:flex;flex-wrap:wrap;gap:6px 14px}
+.sm-v{font-size:11px;color:var(--faint)}
 .more{margin-top:10px;background:none;border:0;padding:0;color:var(--faint);cursor:pointer;font-size:11px;letter-spacing:.06em}
 .more:hover{color:var(--dim)}
 .ctl.internal{margin-top:10px;padding-top:10px;border-top:1px dashed var(--edge)}
@@ -507,6 +511,20 @@ function blockEl(b) {
     extra.forEach((p) => row.append(control(p, b)));
     more.onclick = () => { openInternal.has(key) ? openInternal.delete(key) : openInternal.add(key); paint(); };
     paint(); root.append(more, row);
+  }
+  // Dual-cab SECOND model (hgc-5gh): shown READ-ONLY — its values are in the
+  // edit buffer, but it has no known live-write address yet, so no knobs.
+  if (b.second_model) {
+    const sm = b.second_model;
+    const box = el("div", "secondmodel");
+    const h = el("div", "sm-head", sm.name + " · 2nd model (read-only)");
+    h.title = sm.model + " — no live-write address yet (hgc-5gh)";
+    box.append(h);
+    const vals = el("div", "sm-vals");
+    (sm.params || []).filter((p) => !p.internal).forEach((p) =>
+      vals.append(el("span", "sm-v", p.name + ": " + fmt(p, p.value))));
+    box.append(vals);
+    root.append(box);
   }
   return root;
 }

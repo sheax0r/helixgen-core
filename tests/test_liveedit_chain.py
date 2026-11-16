@@ -154,6 +154,28 @@ def test_unknown_pid_is_dropped_and_unknown_model_still_renders():
     assert odd["params"] == [] and odd["name"] == "Model 999999"
 
 
+def test_dual_cab_second_model_is_surfaced_read_only():
+    # hgc-5gh: a block with a second model (mdls[1], e.g. a dual cab) surfaces
+    # it READ-ONLY — its values are shown, but no live-write (no known
+    # sub-address). Previously only mdls[0] was covered, so the second cab was
+    # invisible in `device live`.
+    drive = defs.model_params_for(AMP)["Drive"]["id"]
+    dual = {"enbl": 1, "mdls": [
+        {"id__": AMP, "enbl": 1, "parm": [{"pid_": drive, "valu": 0.74}]},
+        {"id__": SCREAM, "enbl": 1, "parm": []},
+    ]}
+    st = chain.build_chain(_eb({
+        0: _blk(IN_INST1), 1: dual, 13: _blk(OUT_MATRIX),
+        14: _blk(IN_NONE), 27: _blk(OUT_NONE)}))
+    b = chain.block_index(st)[(0, 1)]
+    assert b["model_id"] == AMP                      # first model unchanged
+    sm = b["second_model"]
+    assert sm["model_id"] == SCREAM and sm["read_only"] is True
+    assert sm["params"]                              # second model's params shown
+    # a single-model block has no second_model
+    assert "second_model" not in chain.block_index(st)[(0, 0)]
+
+
 # --- parallel lanes --------------------------------------------------------
 
 def _split_join():
