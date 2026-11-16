@@ -420,6 +420,14 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         return []
     # Per-snapshot accumulators keyed by (path_idx, lane, pos, display_name).
     disables: list[list[tuple]] = [[] for _ in names]
+    # `real_disables` is the base-ENABLED subset of `disables` — used ONLY to
+    # decide whether a blank/placeholder-named slot is a real scene worth
+    # keeping (hgc-0c3), never for projection. A base-bypassed block that is
+    # also off in a snapshot matches base (a constant all-False dense array,
+    # which device exports carry), so it is not a per-snapshot override; the
+    # PROJECTION below stays unfiltered so named-slot disables remain byte-
+    # identical (keeps decompile round-trips stable).
+    real_disables: list[list[tuple]] = [[] for _ in names]
     params: list[dict[tuple, dict]] = [{} for _ in names]
     flow = (body.get("preset") or {}).get("flow") or []
     for pi, key, bnn, slot in _iter_blocks(flow):
@@ -435,9 +443,12 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         # the base, so base bypass and per-snapshot bypass stay independent.
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
+            base_enabled = _unwrap_value(en) is not False
             for i, ov in enumerate(en["snapshots"]):
                 if i < len(names) and ov is False:
                     disables[i].append(coord)
+                    if base_enabled:
+                        real_disables[i].append(coord)
         # param snapshot overrides -- filter dense fills equal to base.
         for pname, wrapped in (slot.get("params") or {}).items():
             if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
@@ -515,9 +526,23 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
     snaps: list[dict[str, Any]] = []
     for i, nm in enumerate(names):
         # Skip interior/leading placeholder slots so a non-contiguous layout
-        # projects only its configured (named) scenes, never phantom blanks —
+        # projects only its configured scenes, never phantom blanks (#118) —
         # `names` stays positional above only for override attribution.
-        if _is_snapshot_placeholder(nm, i):
+        #
+        # EXCEPTION (hgc-0c3): an EMPTY-named slot that carries REAL overrides is
+        # a valid delta-carrying scene the device itself left unnamed (the
+        # `Snap N` default is generate's own unconfigured placeholder — an
+        # unnamed-variance `Snap N` slot stays "not a scene" per #118, so only a
+        # literally blank name qualifies here). Keep it and project the name
+        # VERBATIM (empty stays empty — fabricating a `Snap N` fallback would
+        # collide with generate's placeholder and be re-trimmed on the next
+        # view). parse_spec/generate preserve the empty name, so the
+        # `view -> parse_spec -> generate -> view` loop reaches a fixed point
+        # instead of silently dropping the slot's disable/param/output deltas.
+        blank_configured = nm == "" and bool(
+            real_disables[i] or params[i] or outputs[i]
+        )
+        if _is_snapshot_placeholder(nm, i) and not blank_configured:
             continue
         s: dict[str, Any] = {"name": nm}
         # disable: bare string if unambiguous, else coordinate dict

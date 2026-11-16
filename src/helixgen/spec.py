@@ -408,8 +408,12 @@ def _parse_snapshot(data: Any, *, source: str) -> Snapshot:
         raise _err(source, "must be an object.")
 
     name = data.get("name")
-    if not isinstance(name, str) or not name:
-        raise _err(source, '"name" is required and must be a non-empty string.')
+    # An empty name is the device's own marker for a VALID-but-unnamed snapshot
+    # (hgc-0c3): view emits it verbatim for a blank slot that carries real
+    # deltas, so parse_spec must accept it to re-author that projection. The key
+    # must still be present and a string to catch an outright-missing name.
+    if not isinstance(name, str):
+        raise _err(source, '"name" is required and must be a string.')
 
     disable_raw = data.get("disable", [])
     if not isinstance(disable_raw, list):
