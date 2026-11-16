@@ -1683,7 +1683,10 @@ def set_input(body: dict[str, Any], path: int, jack: str) -> None:
         path = path[0]
     if isinstance(path, bool) or not isinstance(path, (int, float)):
         raise MutateError(f"path must be an integer (got {path!r}).")
-    path = int(path)
+    try:
+        path = int(path)
+    except (ValueError, OverflowError):  # nan / inf: keep the clean-error contract
+        raise MutateError(f"path must be a finite integer (got {path!r}).") from None
 
     flow = (body.get("preset") or {}).get("flow") or []
     if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):

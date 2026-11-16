@@ -1041,6 +1041,8 @@ def test_set_input_coerces_path_shapes(goldfinger_body):
     mutate.set_input(goldfinger_body, 0.0, "inst2")  # float coerces to int 0
     with pytest.raises(mutate.MutateError, match="path must be an integer"):
         mutate.set_input(goldfinger_body, None, "inst1")
+    with pytest.raises(mutate.MutateError, match="finite integer"):
+        mutate.set_input(goldfinger_body, float("nan"), "inst1")  # no raw ValueError
 
 
 def test_set_input_warns_on_an_occupied_path(goldfinger_body, capsys):
