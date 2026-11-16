@@ -1726,6 +1726,127 @@ def ir_backfill_cmd(as_json: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# info-backfill (hgc-jeo -- clear factory donor meta.info from pre-fix tones)
+# ---------------------------------------------------------------------------
+
+
+def _factory_donor_infos(root: Path) -> set[str]:
+    """The known factory-donor ``meta.info`` strings for the library at
+    ``root``: the stored chassis's own ``meta.info``.
+
+    A tone generated before hgc-a8p copied the donor chassis wholesale and
+    kept its factory rig notes in ``meta.info``; ``extract_chassis_from_hsp``
+    preserves the donor's top-level ``meta``, so ``chassis.json`` is the one
+    place the engine still records that exact string. Matching it verbatim is
+    how we tell factory leakage from a note the user set themselves. Returns
+    an empty set when there is no chassis or it carries no info -- then nothing
+    matches and every tone is left untouched.
+    """
+    chassis_path = root / "chassis.json"
+    if not chassis_path.exists():
+        return set()
+    try:
+        chassis = json.loads(chassis_path.read_text())
+    except (OSError, ValueError):
+        return set()
+    info = (chassis.get("meta") or {}).get("info")
+    return {info} if isinstance(info, str) and info else set()
+
+
+def _scan_tones_for_factory_info(
+    root: Path, factory_infos: set[str], apply: bool
+) -> List[Dict[str, Any]]:
+    """Scan ``root/tones/*.hsp`` and clear ``meta.info`` where it exactly
+    matches a known factory-donor string. Reports one row per tone that
+    carries a non-empty ``meta.info`` (empty ones are silent no-ops): a match
+    is ``would-clear``/``cleared``; anything else is ``unmatched`` -- NOT
+    asserted to be a user note, since a tone from a previous donor (or an
+    empty reference set) also lands here. Writes only when ``apply`` is true.
+
+    The write passes ``apply_prefs=False``: this is a metadata-only scrub, so
+    it must not also inject the ``usb_taps`` preference's tap blocks into the
+    tone (a signal-chain rewrite disguised as a note edit)."""
+    from helixgen.hsp import dumps_hsp
+
+    rows: List[Dict[str, Any]] = []
+    for hsp_path in sorted((root / "tones").glob("*.hsp")):
+        try:
+            body = read_hsp(hsp_path)
+        except (OSError, ValueError) as err:
+            rows.append({"file": hsp_path.name, "status": "error", "reason": str(err)})
+            continue
+        info = (body.get("meta") or {}).get("info")
+        if not isinstance(info, str) or not info:
+            continue  # already empty / no info -- nothing to backfill
+        if info not in factory_infos:
+            rows.append({"file": hsp_path.name, "status": "unmatched", "info": info})
+            continue
+        row: Dict[str, Any] = {"file": hsp_path.name, "status": "would-clear",
+                               "info": info}
+        if apply:
+            body["meta"]["info"] = ""
+            _atomic_write(hsp_path, dumps_hsp(body, apply_prefs=False))
+            row["status"] = "cleared"
+        rows.append(row)
+    return rows
+
+
+@library.command(name="info-backfill")
+@click.argument("directory", required=False, default=None,
+                type=click.Path(file_okay=False, path_type=Path))
+@click.option("--apply", "--write", "apply_changes", is_flag=True, default=False,
+              help="Write the changes. Without it this is a dry run (reports only).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the sweep result as JSON.")
+def info_backfill_cmd(directory: Path | None, apply_changes: bool,
+                      as_json: bool) -> None:
+    """Clear factory donor ``meta.info`` from pre-fix authored tones.
+
+    Tones authored before hgc-a8p carried the donor chassis's factory rig
+    notes in ``meta.info``, so the user's Stadium shows someone else's notes.
+    This scans ``DIRECTORY/tones/*.hsp`` and blanks ``meta.info`` ONLY where
+    it exactly matches the stored ``chassis.json``'s own factory info. A tone
+    whose ``meta.info`` does not match is reported ``unmatched`` and left
+    untouched -- that is usually a note you set yourself, though a tone from a
+    PREVIOUS donor also lands here (its factory string is not in the current
+    chassis). A note you set that happens to equal the factory text verbatim
+    is indistinguishable and would be cleared. DIRECTORY defaults to the
+    resolved tone library.
+
+    DRY RUN by default -- reports which files would change (before -> after).
+    Re-run with ``--apply``/``--write`` to rewrite them.
+    """
+    root = directory or home.library_dir()
+    factory_infos = _factory_donor_infos(root)
+    rows = _scan_tones_for_factory_info(root, factory_infos, apply=apply_changes)
+    changed = [r for r in rows if r["status"] in ("would-clear", "cleared")]
+
+    if as_json:
+        click.echo(json.dumps(
+            {"apply": apply_changes, "factory_strings": len(factory_infos),
+             "tones": rows}, indent=2))
+        return
+    if not factory_infos:
+        click.echo(
+            f"no factory donor string found in {root}/chassis.json -- nothing "
+            f"can match; clearing nothing.", err=True)
+    for r in rows:
+        if r["status"] in ("would-clear", "cleared"):
+            click.echo(f"  {r['file']}: {r['status']}  "
+                       f"{r['info']!r} -> ''")
+        elif r["status"] == "unmatched":
+            click.echo(f"  {r['file']}: unmatched (not the factory string; "
+                       f"left untouched)")
+        else:
+            click.echo(f"  {r['file']}: {r['status']} ({r.get('reason')})", err=True)
+    verb = "Cleared" if apply_changes else "Would clear"
+    click.echo(f"{verb} {len(changed)} tone(s); "
+               f"{len(rows) - len(changed)} left untouched.")
+    if not apply_changes and changed:
+        click.echo("Dry run -- nothing written. Re-run with --apply to write.")
+
+
+# ---------------------------------------------------------------------------
 # add-guitar (#79j -- a core write path for new guitar profiles)
 # ---------------------------------------------------------------------------
 
