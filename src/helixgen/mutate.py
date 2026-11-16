@@ -1676,9 +1676,31 @@ def set_input(body: dict[str, Any], path: int, jack: str) -> None:
     between the mono and stereo wrapper shapes when the target's
     channel-count differs from the current model's.
     """
+    # Coerce `path` before the range check (hgc-2kw.3): a 1-element list/tuple
+    # `[N]` -> N (CLI multi-value quirk), a float like 1.7 -> 1, so a bad shape
+    # gives a clean MutateError instead of a raw TypeError from the comparison.
+    if isinstance(path, (list, tuple)) and len(path) == 1:
+        path = path[0]
+    if isinstance(path, bool) or not isinstance(path, (int, float)):
+        raise MutateError(f"path must be an integer (got {path!r}).")
+    path = int(path)
+
     flow = (body.get("preset") or {}).get("flow") or []
     if not (0 <= path < len(flow)) or not isinstance(flow[path], dict):
         raise MutateError(f"Path {path} not in body flow (flow has {len(flow)} path(s)).")
+
+    # Warn when re-jacking a path that already carries processing blocks
+    # (hgc-2kw.6): set_input only rewrites the input endpoint — it does not
+    # clear them, and re-jacking a path that carries an amp silences that amp.
+    occupied = [k for k, v in flow[path].items()
+                if k[:1] == "b" and k[1:].isdigit() and isinstance(v, dict)
+                and v.get("type") not in ("input", "output")]
+    if occupied:
+        import sys
+        print(f"warning: path {path} already carries {len(occupied)} processing "
+              f"block(s); set_input re-jacks its input but does not clear them "
+              f"(re-jacking a path that carries an amp silences that amp).",
+              file=sys.stderr)
 
     device_id = _chassis_device_id(body)
     try:
