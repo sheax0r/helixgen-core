@@ -487,7 +487,7 @@ function blockEl(b) {
   const hd = el("div", "bh");
   hd.append(el("span", "cat", b.category || "block"), el("span", "nm", b.name));
   hd.lastChild.title = b.model;
-  if (!STRUCT.has(b.category)) {           // swap a real block's model (hgc-cc4)
+  if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output") {  // swap an EFFECT block's model (hgc-cc4); endpoints/routing excluded
     hd.lastChild.classList.add("swappable");
     hd.lastChild.title = b.model + " · click to swap model";
     hd.lastChild.onclick = () => openModelPicker(b);
@@ -773,8 +773,13 @@ async function openPicker() {
 let MODELS = null;
 async function openModelPicker(b) {
   if (down) return;
-  if (!MODELS) MODELS = await fetch("/models").then((r) => r.json()).catch(() => ({}));
-  if (!MODELS) return;
+  if (!MODELS) {
+    // don't cache a FAILED fetch (hgc-cc4 review): keep MODELS null so a later
+    // open retries, rather than showing "no models" forever.
+    const r = await fetch("/models").then((x) => x.json()).catch(() => null);
+    if (!r) { const { body } = modal("Swap model"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
+    MODELS = r;
+  }
   const list = MODELS[b.category] || [];
   const { body } = modal("Swap “" + b.name + "” for…");
   if (!list.length) { body.append(el("p", null, "No other " + (b.category || "same-category") + " models to swap to.")); return; }

@@ -1171,6 +1171,18 @@ def test_swap_model_rejects_unknown_model_and_missing_block():
     assert c.swaps == []
 
 
+def test_swap_model_rejects_an_endpoint_or_routing_block():
+    # input/output/split/join are not model-swappable; no /ModelSet on an
+    # endpoint grid slot (hgc-cc4 review).
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.swap_model(0, 0, 771)            # the slot-0 INPUT endpoint
+    assert e.value.status == 400
+    assert c.swaps == []
+
+
 def test_models_in_category_lists_same_category_swaps():
     from helixgen.device import defs
     amps = {m["id"] for m in defs.models_in_category("amp")}

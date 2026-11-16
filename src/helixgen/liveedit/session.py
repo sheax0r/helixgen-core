@@ -393,6 +393,12 @@ class LiveSession:
         if cur is None:
             raise LiveError("no such block on the loaded tone "
                             "(did the preset change?)", status=404)
+        if cur.get("category") in ("input", "output", "split", "join"):
+            # endpoints + routing nodes are not model-swappable; /ModelSet on an
+            # endpoint grid slot is unverified/unsafe (hgc-cc4 review MEDIUM).
+            raise LiveError(
+                f"an endpoint / routing block ({cur.get('category')!r}) is not "
+                f"model-swappable — only effect blocks are.", status=400)
         if defs.model_name_for(mid) is None:
             raise LiveError(f"unknown model id {mid}", status=400)
         new_cat = defs.category_for(mid)
