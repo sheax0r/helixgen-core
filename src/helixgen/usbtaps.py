@@ -232,6 +232,11 @@ def migrate(body: dict, taps: dict[str, str]) -> dict:
     guard, so a tone already matching the preference is a fixed point:
     idempotent, never stacked.
 
+    A tap for a role dropped from the preference is lifted and NOT re-placed —
+    the ``detail`` names every such removal so a ``--dry-run`` preview shows
+    deletions as honestly as additions. A same-pair migrate re-normalizes a
+    hand-built tap to the canonical structure (reported ``migrated``): defensible.
+
     Returns ``{"status": "migrated" | "present" | "skipped", "detail": str}``;
     ``body`` is mutated only on ``"migrated"``.
     """
@@ -241,14 +246,20 @@ def migrate(body: dict, taps: dict[str, str]) -> dict:
     wanted = {i: PAIR_MODELS[taps[role]]
               for i, role in _roles(flows).items() if role in taps}
     trial = copy.deepcopy(flows)
-    _lift(trial, range(len(trial)))
+    taken = _lift(trial, range(len(trial)))
     r = _place(trial, wanted)
     if r["status"] != "added":
         return r                       # nothing to tap, or can't fit — leave as-is
     if trial == flows:
         return {"status": "present", "detail": "already matches the configured taps"}
     flows[:] = trial
-    return {"status": "migrated", "detail": r["detail"]}
+    removed = [i for i in sorted(taken) if "b27" not in trial[i]]
+    detail = r["detail"]
+    if removed:
+        detail += "; " + ", ".join(
+            f"removed path {i + 1}: {taken[i].removeprefix('P35_Output')} tap"
+            for i in removed)
+    return {"status": "migrated", "detail": detail}
 
 
 @contextmanager

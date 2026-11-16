@@ -305,6 +305,35 @@ def test_migrate_leaves_no_orphaned_tap_after_a_pair_change():
     assert len(splits) == 1                          # one tap split, no orphaned old one
 
 
+def test_migrate_detail_reports_a_removed_tap():
+    """A role dropped from the pref has its tap lifted and NOT re-placed; the
+    dry-run detail must disclose that deletion, not only the additions."""
+    body = _body(_path(cells=(1,)), _path(inp="P35_InputMic"))
+    usbtaps.apply(body, TAPS)                         # tapped {guitar, mic}
+    r = usbtaps.migrate(body, {"guitar": "3/4"})     # mic dropped from the pref
+    assert r["status"] == "migrated"
+    assert "removed path 2" in r["detail"] and "USB5_6" in r["detail"]
+    assert "b27" not in body["preset"]["flow"][1]    # mic tap actually gone
+
+
+def test_migrate_verb_skips_a_malformed_tone_and_continues(prefs, tmp_path):
+    """A readable-but-malformed tone in a --migrate <dir> batch is reported
+    skipped; the good tones around it still migrate."""
+    d = tmp_path / "tones"
+    d.mkdir()
+    good = _body(_path(cells=(1,)))
+    usbtaps.apply(good, {"guitar": "5/6"})
+    (d / "good.hsp").write_bytes(b"rpshnosj" + json.dumps(good).encode())
+    bad = {"meta": {"name": "Bad"}, "preset": {"flow": ["not-a-dict"]}}
+    (d / "bad.hsp").write_bytes(b"rpshnosj" + json.dumps(bad).encode())
+    r = CliRunner().invoke(cli, ["usb-taps", "--migrate", "--apply", str(d), "--json"])
+    assert r.exit_code == 0, r.output
+    out = {x["name"]: x["status"] for x in json.loads(r.output)}
+    assert out["Bad"] == "skipped"
+    assert usbtaps._model(
+        read_hsp(d / "good.hsp")["preset"]["flow"][0]["b27"]) == "P35_OutputUSB3_4"
+
+
 def test_migrate_verb_is_a_dry_run_by_default(prefs, tmp_path):
     body = _body(_path(cells=(1,)))
     usbtaps.apply(body, {"guitar": "5/6"})           # tapped under an old pair

@@ -1183,7 +1183,8 @@ def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_migrate: boo
                  do_apply: bool, as_json: bool) -> None:
     """Retrofit the `usb_taps` preference onto existing .hsp files.
 
-    A PRESETS argument may be a .hsp file or a directory (every .hsp in it).
+    A PRESETS argument may be a .hsp file or a directory (every .hsp directly
+    in it — non-recursive).
 
     DRY RUN by default; `--apply` writes. Reports, per tone: added / present
     (already carries a USB tap — left unchanged, taps never stack) / skipped
@@ -1237,7 +1238,15 @@ def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_migrate: boo
             results.append({"path": str(p), "name": p.stem, "status": "skipped",
                             "detail": f"unreadable: {e}"})
             continue
-        r = usbtaps.migrate(body, taps) if do_migrate else usbtaps.apply(body, taps)
+        try:
+            r = usbtaps.migrate(body, taps) if do_migrate else usbtaps.apply(body, taps)
+        except (AttributeError, TypeError, KeyError, IndexError) as e:
+            # A readable but malformed tone (e.g. a flow element that isn't a
+            # dict) must not abort a whole --migrate <dir> batch — skip it.
+            results.append({"path": str(p),
+                            "name": (body.get("meta") or {}).get("name") or p.stem,
+                            "status": "skipped", "detail": f"malformed flow: {e}"})
+            continue
         if do_apply and r["status"] in written:
             write_hsp(p, body)
         results.append({"path": str(p),
