@@ -220,6 +220,37 @@ def apply(body: dict, taps: dict[str, str]) -> dict:
     return r
 
 
+def migrate(body: dict, taps: dict[str, str]) -> dict:
+    """Re-apply ``taps`` to a tone that may ALREADY carry taps.
+
+    Where :func:`apply` stops at the first existing tap (``present``), this
+    lifts EVERY tap out and lays down the full set the current preference
+    wants — completing a pair added to the pref later (e.g. the mic pair) and
+    moving a changed pair (3/4 -> 5/6), with no orphaned old tap left behind.
+    It routes through the SAME builder (:func:`_lift`/:func:`_place`) as the
+    forward path, differing only in dropping the "already tapped -> skip"
+    guard, so a tone already matching the preference is a fixed point:
+    idempotent, never stacked.
+
+    Returns ``{"status": "migrated" | "present" | "skipped", "detail": str}``;
+    ``body`` is mutated only on ``"migrated"``.
+    """
+    flows = (body.get("preset") or {}).get("flow") or []
+    if not isinstance(flows, list):
+        return {"status": "skipped", "detail": "no signal flow"}
+    wanted = {i: PAIR_MODELS[taps[role]]
+              for i, role in _roles(flows).items() if role in taps}
+    trial = copy.deepcopy(flows)
+    _lift(trial, range(len(trial)))
+    r = _place(trial, wanted)
+    if r["status"] != "added":
+        return r                       # nothing to tap, or can't fit — leave as-is
+    if trial == flows:
+        return {"status": "present", "detail": "already matches the configured taps"}
+    flows[:] = trial
+    return {"status": "migrated", "detail": r["detail"]}
+
+
 @contextmanager
 def lifted(body: dict):
     """Take the taps out of ``body`` for the duration of an edit, then put
