@@ -223,6 +223,24 @@ def _lift_input(path_dict: dict, device_id: Any, body: dict) -> "str | dict | No
     return {"source": mode, **lifts}
 
 
+def _wrapper_base(wrapped: Any) -> Any:
+    """The regenerate-consistent BASE of a `{value, snapshots?}` wrapper: slot 0
+    of the per-snapshot array when one is present, else the plain `value`.
+
+    `value` is unreliable as a base whenever a snapshots array is present: a
+    real device export re-syncs `value` to mirror whatever snapshot was ACTIVE
+    at save time (untranscode copies the live `enbl`/param), while regenerate
+    always re-syncs `value` to snaps[0]. So snaps[0], not `value`, is the base
+    that both lands per-snapshot overrides on the right slot and makes the
+    projection a fixed point (hgc-0c3; same reasoning as `_output_base`, but
+    type-agnostic — params may be bool/str/stereo, not just numeric)."""
+    if isinstance(wrapped, dict):
+        snaps = wrapped.get("snapshots")
+        if isinstance(snaps, list) and snaps and snaps[0] is not None:
+            return snaps[0]
+    return _unwrap_value(wrapped)
+
+
 def _output_base(wrapped: Any) -> Any:
     """The projection-consistent BASE of a b13 gain/pan wrapper: slot 0 of a
     per-snapshot `snapshots` array when one is present, else the plain
@@ -420,6 +438,14 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         return []
     # Per-snapshot accumulators keyed by (path_idx, lane, pos, display_name).
     disables: list[list[tuple]] = [[] for _ in names]
+    # `real_disables` is the base-ENABLED subset of `disables` — used ONLY to
+    # decide whether a blank/placeholder-named slot is a real scene worth
+    # keeping (hgc-0c3), never for projection. A base-bypassed block that is
+    # also off in a snapshot matches base (a constant all-False dense array,
+    # which device exports carry), so it is not a per-snapshot override; the
+    # PROJECTION below stays unfiltered so named-slot disables remain byte-
+    # identical (keeps decompile round-trips stable).
+    real_disables: list[list[tuple]] = [[] for _ in names]
     params: list[dict[tuple, dict]] = [{} for _ in names]
     flow = (body.get("preset") or {}).get("flow") or []
     for pi, key, bnn, slot in _iter_blocks(flow):
@@ -435,14 +461,33 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         # the base, so base bypass and per-snapshot bypass stay independent.
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
-            for i, ov in enumerate(en["snapshots"]):
+            arr = en["snapshots"]
+            # A False at slot i is a REAL per-snapshot bypass (for the blank-slot
+            # keep-decision) only if the block's @enabled.snapshots array VARIES
+            # across the named range. Key off the array's OWN variance, never
+            # `@enabled.value`: in a real device export `value` mirrors the
+            # ACTIVE snapshot's live bypass state (untranscode copies `enbl`),
+            # not the base, so an active-on-blank disable would read `value=False`
+            # and be wrongly withheld — the exact silent drop hgc-0c3 fixes. A
+            # base-bypassed block that is off in every snapshot is a constant
+            # all-False array (no variance) and is still correctly rejected as a
+            # phantom scene. The PROJECTION (`disables`) stays unfiltered.
+            en_varies = len(set(arr[:len(names)])) > 1
+            for i, ov in enumerate(arr):
                 if i < len(names) and ov is False:
                     disables[i].append(coord)
+                    if en_varies:
+                        real_disables[i].append(coord)
         # param snapshot overrides -- filter dense fills equal to base.
         for pname, wrapped in (slot.get("params") or {}).items():
             if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
                 continue
-            base = _coerce_param_value(block, pname, _unwrap_value(wrapped))
+            # Base = snaps[0] via `_wrapper_base`, NOT `value`: a device export
+            # saved on a non-zero (blank) active snapshot mirrors that snapshot's
+            # override into `value`, so a value-based base would bake the real
+            # override into the base — dropping it and fabricating a phantom one
+            # on snapshot 0 (hgc-0c3 review).
+            base = _coerce_param_value(block, pname, _wrapper_base(wrapped))
             for i, ov in enumerate(wrapped["snapshots"]):
                 if i >= len(names) or ov is None:
                     continue
@@ -515,9 +560,23 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
     snaps: list[dict[str, Any]] = []
     for i, nm in enumerate(names):
         # Skip interior/leading placeholder slots so a non-contiguous layout
-        # projects only its configured (named) scenes, never phantom blanks —
+        # projects only its configured scenes, never phantom blanks (#118) —
         # `names` stays positional above only for override attribution.
-        if _is_snapshot_placeholder(nm, i):
+        #
+        # EXCEPTION (hgc-0c3): an EMPTY-named slot that carries REAL overrides is
+        # a valid delta-carrying scene the device itself left unnamed (the
+        # `Snap N` default is generate's own unconfigured placeholder — an
+        # unnamed-variance `Snap N` slot stays "not a scene" per #118, so only a
+        # literally blank name qualifies here). Keep it and project the name
+        # VERBATIM (empty stays empty — fabricating a `Snap N` fallback would
+        # collide with generate's placeholder and be re-trimmed on the next
+        # view). parse_spec/generate preserve the empty name, so the
+        # `view -> parse_spec -> generate -> view` loop reaches a fixed point
+        # instead of silently dropping the slot's disable/param/output deltas.
+        blank_configured = nm == "" and bool(
+            real_disables[i] or params[i] or outputs[i]
+        )
+        if _is_snapshot_placeholder(nm, i) and not blank_configured:
             continue
         s: dict[str, Any] = {"name": nm}
         # disable: bare string if unambiguous, else coordinate dict
@@ -1071,7 +1130,11 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
     params: dict[str, Any] = {}
     baseline = authoring_defaults(block)
     for param_name, wrapped in (slot.get("params") or {}).items():
-        value = _unwrap_value(wrapped)
+        # snaps[0], not `value`, is the block's base param: a device export
+        # saved on a non-zero active snapshot mirrors that snapshot's value into
+        # `value`, which would otherwise corrupt the block's base param and
+        # break the per-snapshot override round-trip (hgc-0c3 review).
+        value = _wrapper_base(wrapped)
         default = baseline.get(param_name)
         # Same baseline the generator fills an unmentioned param from — the
         # model default, falling back to the library's sighted value (hgc-x7i)
