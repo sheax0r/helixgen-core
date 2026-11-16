@@ -142,6 +142,23 @@ def test_a_path_fed_by_another_path_is_not_free():
     assert "input" not in r["paths"][1]
 
 
+def test_a_path_fed_by_chassis_routing_is_not_free():
+    # hgc-2kw.1: the recipe doesn't restate the routing, but the CHASSIS's own
+    # b13 output routes path 0 into the mic path (path 1) -> not free.
+    chassis = {"preset": {"flow": [
+        {"b13": {"slot": [{"model": "P35_OutputPath2A"}]}},   # path 0 -> path 2
+        {"b13": {"slot": [{"model": "P35_OutputMatrix"}]}},   # the mic path's own output
+    ]}}
+    r = {"paths": [{"blocks": []}, {"blocks": []}]}
+    why = apply_mic_preference(r, _mic(), chassis=chassis)
+    assert why and "chassis routes path 0" in why[0]
+    assert "input" not in r["paths"][1]
+    # without the chassis, the recipe-only view sees a free path and injects:
+    r2 = {"paths": [{"blocks": []}, {"blocks": []}]}
+    assert apply_mic_preference(r2, _mic()) == []
+    assert r2["paths"][1]["input"] == {"source": "mic"}
+
+
 def test_an_explicit_output_level_is_not_overwritten():
     r = {"paths": [{"blocks": []}, {"blocks": [], "output": {"level": -6.0}}]}
     apply_mic_preference(r, _mic(level=3.5))

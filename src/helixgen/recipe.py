@@ -232,7 +232,7 @@ def _apply_output(path_dict: dict[str, Any], output_spec,
             wrapped.pop("snapshots", None)
 
 
-def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
+def apply_mic_preference(recipe: dict[str, Any], mic, chassis=None) -> list[str]:
     """Inject the stored mic-input preference into a recipe, in place.
 
     The preference is a DEFAULT, not an override, so this backs off in every
@@ -242,7 +242,10 @@ def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
     - that path already carries blocks — it is somebody's second amp, not a
       free slot, and re-jacking its input would silence it;
     - another path's output is routed INTO the mic path (``to: "path2a"`` and
-      friends), which makes an "empty" path anything but.
+      friends), which makes an "empty" path anything but. This is checked in the
+      RECIPE and, when ``chassis`` is given, in the chassis' own ``b13`` output
+      models (``P35_OutputPath2*``) — routing the chassis baked in that the
+      recipe does not restate (hgc-2kw.1).
 
     Returns a list of human-readable reasons it declined, for the caller to
     surface — silence here is what made the original mic bug so expensive.
@@ -275,6 +278,24 @@ def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
             return [f"mic preference skipped: paths[{i}] routes its output "
                     f"into paths[{idx}] ({dest!r}), so that path is not free."]
 
+    # Same fed-by-another-path check against the CHASSIS flow (hgc-2kw.1): a
+    # chassis path whose b13 output model is a `P35_OutputPath2*` routing into
+    # the mic path makes it not free, even when the recipe doesn't restate the
+    # routing. Mirrors the recipe check via the model -> `to` inverse map.
+    cflow = (((chassis or {}).get("preset") or {}).get("flow")
+             if isinstance(chassis, dict) else None) or []
+    for i, pdict in enumerate(cflow):
+        if i == idx or not isinstance(pdict, dict):
+            continue
+        b13 = pdict.get("b13")
+        slots = b13.get("slot") if isinstance(b13, dict) else None
+        model = slots[0].get("model") if isinstance(slots, list) and slots else None
+        to = flowparams.OUTPUT_DESTINATION_BY_MODEL.get(model)
+        if isinstance(to, str) and to.lower().startswith(f"path{idx + 1}"):
+            return [f"mic preference skipped: the chassis routes path {i}'s "
+                    f"output into path {idx} (b13 {model}), so that path is not "
+                    f"free."]
+
     target["input"] = mic.input_field()
     if mic.level is not None:
         out = target.setdefault("output", {})
@@ -283,7 +304,7 @@ def apply_mic_preference(recipe: dict[str, Any], mic) -> list[str]:
     return []
 
 
-def apply_stored_defaults(recipe: Any, shape: str = "hsp") -> None:
+def apply_stored_defaults(recipe: Any, shape: str = "hsp", chassis=None) -> None:
     """Apply stored user preferences to a RAW recipe dict, in place.
 
     Call this immediately before `parse_spec` at every entry point that turns
@@ -309,7 +330,7 @@ def apply_stored_defaults(recipe: Any, shape: str = "hsp") -> None:
         print(f"stored preferences ignored (mic_input not applied): {e}",
               file=sys.stderr)
         return
-    for why in apply_mic_preference(recipe, mic):
+    for why in apply_mic_preference(recipe, mic, chassis=chassis):
         print(why, file=sys.stderr)
 
 
@@ -337,8 +358,10 @@ def apply_recipe(
 
     # The stored mic preference is injected as a recipe-level default so it
     # flows through the ordinary input pipeline — same validation, same
-    # endpoint normalization — rather than being a second way to route.
-    apply_stored_defaults(recipe)
+    # endpoint normalization — rather than being a second way to route. The
+    # chassis is passed so the fed-by-another-path guard also sees routing the
+    # chassis baked into its b13 outputs (hgc-2kw.1).
+    apply_stored_defaults(recipe, chassis=chassis)
 
     spec = recipe if isinstance(recipe, Spec) else parse_spec(recipe, source=source)
 
