@@ -251,6 +251,114 @@ def test_verb_refuses_without_the_preference(tmp_path):
     assert r.exit_code != 0 and "usb_taps preference is not set" in r.output
 
 
+# --- migrate: re-apply the pref to already-tapped tones (hgc-na9) ------------
+
+def _lane_taps(path: dict) -> list[str]:
+    """Models of every USB output tap block on a path (b27 and any orphans)."""
+    return [usbtaps._model(b) for k, b in path.items()
+            if isinstance(b, dict) and b.get("type") == "output"
+            and usbtaps._model(b) in usbtaps._TAP_MODELS]
+
+
+def test_migrate_moves_a_changed_pair():
+    body = _body(_path(cells=(1, 2)))
+    usbtaps.apply(body, {"guitar": "3/4"})
+    assert usbtaps._model(body["preset"]["flow"][0]["b27"]) == "P35_OutputUSB3_4"
+    assert usbtaps.migrate(body, {"guitar": "5/6"})["status"] == "migrated"
+    assert usbtaps._model(body["preset"]["flow"][0]["b27"]) == "P35_OutputUSB5_6"
+
+
+def test_migrate_completes_a_newly_added_pair():
+    body = _body(_path(cells=(1,)), _path(inp="P35_InputMic"))
+    usbtaps.apply(body, {"guitar": "3/4"})           # mic absent from the old pref
+    assert "b27" not in body["preset"]["flow"][1]
+    assert usbtaps.migrate(body, TAPS)["status"] == "migrated"
+    g, m = body["preset"]["flow"]
+    assert usbtaps._model(g["b27"]) == "P35_OutputUSB3_4"   # guitar left as it was
+    assert usbtaps._model(m["b27"]) == "P35_OutputUSB5_6"   # mic completed
+
+
+def test_migrate_is_a_noop_when_already_matching():
+    body = _body(_path(cells=(1,)), _path(inp="P35_InputMic"))
+    usbtaps.apply(body, TAPS)
+    before = copy.deepcopy(body)
+    assert usbtaps.migrate(body, TAPS)["status"] == "present"
+    assert body == before
+
+
+def test_migrate_is_idempotent():
+    body = _body(_path(cells=(1, 2)))
+    usbtaps.apply(body, {"guitar": "3/4"})
+    assert usbtaps.migrate(body, {"guitar": "5/6"})["status"] == "migrated"
+    once = copy.deepcopy(body)
+    assert usbtaps.migrate(body, {"guitar": "5/6"})["status"] == "present"
+    assert body == once
+
+
+def test_migrate_leaves_no_orphaned_tap_after_a_pair_change():
+    body = _body(_path(cells=(1,)))
+    usbtaps.apply(body, {"guitar": "3/4"})
+    usbtaps.migrate(body, {"guitar": "5/6"})
+    f = body["preset"]["flow"][0]
+    assert _lane_taps(f) == ["P35_OutputUSB5_6"]     # the 3/4 tap is gone, not left behind
+    splits = [b for b in f.values() if isinstance(b, dict) and b.get("type") == "split"]
+    assert len(splits) == 1                          # one tap split, no orphaned old one
+
+
+def test_migrate_detail_reports_a_removed_tap():
+    """A role dropped from the pref has its tap lifted and NOT re-placed; the
+    dry-run detail must disclose that deletion, not only the additions."""
+    body = _body(_path(cells=(1,)), _path(inp="P35_InputMic"))
+    usbtaps.apply(body, TAPS)                         # tapped {guitar, mic}
+    r = usbtaps.migrate(body, {"guitar": "3/4"})     # mic dropped from the pref
+    assert r["status"] == "migrated"
+    assert "removed path 2" in r["detail"] and "USB5_6" in r["detail"]
+    assert "b27" not in body["preset"]["flow"][1]    # mic tap actually gone
+
+
+def test_migrate_verb_skips_a_malformed_tone_and_continues(prefs, tmp_path):
+    """A readable-but-malformed tone in a --migrate <dir> batch is reported
+    skipped; the good tones around it still migrate."""
+    d = tmp_path / "tones"
+    d.mkdir()
+    good = _body(_path(cells=(1,)))
+    usbtaps.apply(good, {"guitar": "5/6"})
+    (d / "good.hsp").write_bytes(b"rpshnosj" + json.dumps(good).encode())
+    bad = {"meta": {"name": "Bad"}, "preset": {"flow": ["not-a-dict"]}}
+    (d / "bad.hsp").write_bytes(b"rpshnosj" + json.dumps(bad).encode())
+    r = CliRunner().invoke(cli, ["usb-taps", "--migrate", "--apply", str(d), "--json"])
+    assert r.exit_code == 0, r.output
+    out = {x["name"]: x["status"] for x in json.loads(r.output)}
+    assert out["Bad"] == "skipped"
+    assert usbtaps._model(
+        read_hsp(d / "good.hsp")["preset"]["flow"][0]["b27"]) == "P35_OutputUSB3_4"
+
+
+def test_migrate_verb_is_a_dry_run_by_default(prefs, tmp_path):
+    body = _body(_path(cells=(1,)))
+    usbtaps.apply(body, {"guitar": "5/6"})           # tapped under an old pair
+    f = tmp_path / "t.hsp"
+    f.write_bytes(b"rpshnosj" + json.dumps(body).encode())
+    before = f.read_bytes()
+    r = CliRunner().invoke(cli, ["usb-taps", "--migrate", str(f), "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.output)[0]["status"] == "migrated"
+    assert f.read_bytes() == before                  # --migrate still writes nothing without --apply
+
+
+def test_migrate_verb_apply_writes_a_whole_dir(prefs, tmp_path):
+    d = tmp_path / "tones"
+    d.mkdir()
+    body = _body(_path(cells=(1,)))
+    usbtaps.apply(body, {"guitar": "5/6"})
+    (d / "a.hsp").write_bytes(b"rpshnosj" + json.dumps(body).encode())
+    r = CliRunner().invoke(cli, ["usb-taps", "--migrate", "--apply", str(d)])
+    assert r.exit_code == 0, r.output
+    assert "migrated" in r.output
+    assert usbtaps._model(
+        read_hsp(d / "a.hsp")["preset"]["flow"][0]["b27"]) == "P35_OutputUSB3_4"
+
+
 # --- device format: the tap split's bblk -------------------------------------
 
 def test_transcoded_tap_split_enters_row_one_beneath_itself():

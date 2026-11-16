@@ -220,6 +220,48 @@ def apply(body: dict, taps: dict[str, str]) -> dict:
     return r
 
 
+def migrate(body: dict, taps: dict[str, str]) -> dict:
+    """Re-apply ``taps`` to a tone that may ALREADY carry taps.
+
+    Where :func:`apply` stops at the first existing tap (``present``), this
+    lifts EVERY tap out and lays down the full set the current preference
+    wants — completing a pair added to the pref later (e.g. the mic pair) and
+    moving a changed pair (3/4 -> 5/6), with no orphaned old tap left behind.
+    It routes through the SAME builder (:func:`_lift`/:func:`_place`) as the
+    forward path, differing only in dropping the "already tapped -> skip"
+    guard, so a tone already matching the preference is a fixed point:
+    idempotent, never stacked.
+
+    A tap for a role dropped from the preference is lifted and NOT re-placed —
+    the ``detail`` names every such removal so a ``--dry-run`` preview shows
+    deletions as honestly as additions. A same-pair migrate re-normalizes a
+    hand-built tap to the canonical structure (reported ``migrated``): defensible.
+
+    Returns ``{"status": "migrated" | "present" | "skipped", "detail": str}``;
+    ``body`` is mutated only on ``"migrated"``.
+    """
+    flows = (body.get("preset") or {}).get("flow") or []
+    if not isinstance(flows, list):
+        return {"status": "skipped", "detail": "no signal flow"}
+    wanted = {i: PAIR_MODELS[taps[role]]
+              for i, role in _roles(flows).items() if role in taps}
+    trial = copy.deepcopy(flows)
+    taken = _lift(trial, range(len(trial)))
+    r = _place(trial, wanted)
+    if r["status"] != "added":
+        return r                       # nothing to tap, or can't fit — leave as-is
+    if trial == flows:
+        return {"status": "present", "detail": "already matches the configured taps"}
+    flows[:] = trial
+    removed = [i for i in sorted(taken) if "b27" not in trial[i]]
+    detail = r["detail"]
+    if removed:
+        detail += "; " + ", ".join(
+            f"removed path {i + 1}: {taken[i].removeprefix('P35_Output')} tap"
+            for i in removed)
+    return {"status": "migrated", "detail": detail}
+
+
 @contextmanager
 def lifted(body: dict):
     """Take the taps out of ``body`` for the duration of an edit, then put

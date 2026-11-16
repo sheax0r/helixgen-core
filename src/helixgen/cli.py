@@ -1169,18 +1169,33 @@ def patch_cmd(preset_path: Path, ops, as_json: bool, library_path) -> None:
 @click.argument("presets", nargs=-1, type=click.Path(exists=True, path_type=Path))
 @click.option("--library", "whole_library", is_flag=True, default=False,
               help="Every .hsp in the tone library (library/tones/).")
+@click.option("--migrate", "do_migrate", is_flag=True, default=False,
+              help="RE-APPLY the preference to tones that already carry a tap: "
+                   "complete a pair added to the pref later (e.g. the mic pair) "
+                   "and move a changed pair (3/4->5/6), leaving no orphaned old "
+                   "tap. Without it an already-tapped tone is left as-is "
+                   "(present). Idempotent; never stacks taps.")
 @click.option("--apply/--dry-run", "do_apply", default=False,
               help="--apply writes the taps; --dry-run (the default) only reports.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit a JSON list of {path, name, status, detail}.")
-def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_apply: bool,
-                 as_json: bool) -> None:
+def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_migrate: bool,
+                 do_apply: bool, as_json: bool) -> None:
     """Retrofit the `usb_taps` preference onto existing .hsp files.
+
+    A PRESETS argument may be a .hsp file or a directory (every .hsp directly
+    in it — non-recursive).
 
     DRY RUN by default; `--apply` writes. Reports, per tone: added / present
     (already carries a USB tap — left unchanged, taps never stack) / skipped
     (with the reason, e.g. lane 0 full). All or nothing per tone: one that
     can't take every tap it needs is left untouched, never half-patched.
+
+    `--migrate` instead RE-APPLIES the preference to already-tapped tones so a
+    later pref change reaches them: it completes a pair added to the pref
+    afterwards (e.g. the mic pair) and moves a changed pair (3/4->5/6),
+    reporting `migrated`, leaving no orphaned old tap. It is idempotent — a
+    tone already matching the preference is `present` — and never stacks.
 
     The preference (`~/.helixgen/preferences.json`) names the USB pair per
     role, e.g. `"usb_taps": {"guitar": "3/4", "mic": "5/6"}`; unset = this
@@ -1206,12 +1221,15 @@ def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_apply: bool,
         raise click.ClickException(
             'usb_taps preference is not set — add e.g. "usb_taps": '
             '{"guitar": "3/4", "mic": "5/6"} to ~/.helixgen/preferences.json')
-    paths = list(presets)
+    paths = []
+    for src in presets:
+        paths += sorted(src.glob("*.hsp")) if src.is_dir() else [src]
     if whole_library:
         paths += sorted(home.tones_dir().glob("*.hsp"))
     if not paths:
-        raise click.ClickException("name .hsp files, or pass --library")
+        raise click.ClickException("name .hsp files or a directory, or pass --library")
 
+    written = {"added", "migrated"}
     results = []
     for p in paths:
         try:
@@ -1220,13 +1238,21 @@ def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_apply: bool,
             results.append({"path": str(p), "name": p.stem, "status": "skipped",
                             "detail": f"unreadable: {e}"})
             continue
-        r = usbtaps.apply(body, taps)
-        if do_apply and r["status"] == "added":
+        try:
+            r = usbtaps.migrate(body, taps) if do_migrate else usbtaps.apply(body, taps)
+        except (AttributeError, TypeError, KeyError, IndexError) as e:
+            # A readable but malformed tone (e.g. a flow element that isn't a
+            # dict) must not abort a whole --migrate <dir> batch — skip it.
+            results.append({"path": str(p),
+                            "name": (body.get("meta") or {}).get("name") or p.stem,
+                            "status": "skipped", "detail": f"malformed flow: {e}"})
+            continue
+        if do_apply and r["status"] in written:
             write_hsp(p, body)
         results.append({"path": str(p),
                         "name": (body.get("meta") or {}).get("name") or p.stem, **r})
 
-    if do_apply and any(r["status"] == "added" for r in results):
+    if do_apply and any(r["status"] in written for r in results):
         gitops.auto_commit(home.helixgen_home(), "helixgen: add USB taps to tones")
     if as_json:
         click.echo(json.dumps(results, indent=2))
