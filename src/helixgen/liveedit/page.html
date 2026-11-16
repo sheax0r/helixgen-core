@@ -738,7 +738,7 @@ async function openPicker() {
     any = true;
     body.append(el("div", "grp", g.name));
     g.presets.forEach((p) => {
-      const b = el("button", "pz" + (p.cid === r.active ? " on" : ""), p.name);
+      const b = el("button", "pz" + (p.active ? " on" : ""), p.name);
       b.type = "button"; b.onclick = () => pick(p.cid, p.name);
       body.append(b);
     });

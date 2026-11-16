@@ -1096,3 +1096,32 @@ def test_sequence_tracked_per_stream(s):
     assert s._seq_gap(2001, 6) is False      # 2001 continues in order
     assert s._seq_gap(2003, 105) is True     # 2003 jumped, on its own count
     assert s._seq_gap(2001, 7) is False      # 2001 is still fine
+
+
+def test_list_presets_lights_setlist_entry_loaded_under_pool_cid():
+    # hgc-6y1: a setlist entry is a REFERENCE (rcid -> pool preset). The device
+    # can report the loaded tone under that POOL cid rather than the reference
+    # cid, and the picker must still light the setlist entry.
+    c = FakeClient()
+    # the "Venom Live" setlist reference (cid_ 1950) points at pool preset 1863
+    c.setlist_contents[100][0]["rcid"] = 1863
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    # the device reports the active tone under the POOL cid 1863, not ref 1950
+    sess._preset = {"cid": 1863, "name": "Venom"}
+    out = sess.list_presets()
+    rock = next(g for g in out["groups"] if g["name"] == "Rock")
+    entry = rock["presets"][0]
+    assert entry["cid"] == 1950 and entry.get("pool_cid") == 1863
+    assert entry["active"] is True            # lit via the pool-cid match
+    pool = next(g for g in out["groups"] if g["name"] == "Pool")
+    assert any(e["cid"] == 1863 and e["active"] for e in pool["presets"])
+
+
+def test_list_presets_still_lights_a_directly_loaded_entry(s):
+    # Regression guard: the direct reference/pool-cid match still works when the
+    # device reports the loaded tone under the entry's own cid.
+    s._preset = {"cid": 1950, "name": "Venom Live"}
+    out = s.list_presets()
+    rock = next(g for g in out["groups"] if g["name"] == "Rock")
+    assert rock["presets"][0]["active"] is True

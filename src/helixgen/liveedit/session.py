@@ -532,8 +532,21 @@ class LiveSession:
         not lock other verbs out of the device. Fetched lazily when the picker
         is first opened, never at page load."""
         def _entries(items):
-            return [{"cid": m["cid_"], "name": m.get("name") or "(unnamed)"}
-                    for m in items if m.get("cid_") is not None]
+            out = []
+            for m in items:
+                if m.get("cid_") is None:
+                    continue
+                e = {"cid": m["cid_"], "name": m.get("name") or "(unnamed)"}
+                # A setlist entry is a REFERENCE whose ``rcid`` is the pool
+                # preset it points at. The device may report the loaded tone
+                # under EITHER the reference cid or that pool cid, so carry the
+                # pool cid to light the picker dot in both cases (hgc-6y1). Pool
+                # presets are not references and have no ``rcid``.
+                rcid = m.get("rcid")
+                if rcid is not None:
+                    e["pool_cid"] = rcid
+                out.append(e)
+            return out
 
         with self.devlock:
             try:
@@ -552,6 +565,13 @@ class LiveSession:
         with self.cond:
             active = self._preset.get("cid")
         groups.append({"name": "Pool", "presets": _entries(pool)})
+        # Mark the loaded entry: the device may report the active tone under a
+        # setlist entry's reference cid OR its pool cid, so match either
+        # (hgc-6y1). The page reads this flag instead of comparing cids itself.
+        for g in groups:
+            for e in g["presets"]:
+                e["active"] = active is not None and active in (
+                    e["cid"], e.get("pool_cid"))
         return {"active": active, "groups": groups}
 
     # --- 2001 events ----------------------------------------------------------------

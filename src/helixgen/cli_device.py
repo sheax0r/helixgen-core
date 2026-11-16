@@ -5061,6 +5061,8 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
 
     HelixClient, HelixError = _client()
 
+    _win: list = []  # app-window child(ren) to close when the server stops (hgc-a7h)
+
     def _ready(url: str, srv=None) -> None:
         click.echo(f"live editor: {url}")
         click.echo("every control on the page writes to the device; "
@@ -5071,7 +5073,9 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
         if not force_browser:
             # a chromeless app window; closing it stops the server
             on_exit = srv.shutdown if srv is not None else None
-            if _window.launch(url, on_exit=on_exit) is not None:
+            proc = _window.launch(url, on_exit=on_exit)
+            if proc is not None:
+                _win.append(proc)      # so Ctrl-C can close it (hgc-a7h)
                 return
         webbrowser.open(url)              # --browser, or no Chromium installed
 
@@ -5101,9 +5105,16 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
                     signal.signal(getattr(signal, sig), _term)
                 except (ValueError, AttributeError):
                     pass                               # not the main thread / no such signal
-            _server.serve(session, "127.0.0.1", http_port,
-                          subscriber=HelixSubscriber(dev_ip, ports=(2001, 2003)),
-                          on_ready=_ready)
+            try:
+                _server.serve(session, "127.0.0.1", http_port,
+                              subscriber=HelixSubscriber(dev_ip, ports=(2001, 2003)),
+                              on_ready=_ready)
+            finally:
+                # hgc-a7h: Ctrl-C stops the server but leaves the chromeless app
+                # window showing a dead 127.0.0.1 — close it when we stop. (A
+                # window the user closed is already exited, so this is a no-op.)
+                for proc in _win:
+                    _window.terminate(proc)
     except LiveError as e:
         raise click.ClickException(str(e)) from e
     except HelixError as e:

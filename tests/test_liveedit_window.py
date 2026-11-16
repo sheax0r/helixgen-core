@@ -57,3 +57,39 @@ def test_user_data_dir_is_per_port_under_helixgen_home(monkeypatch, tmp_path):
 def test_launch_returns_none_without_a_chromium(monkeypatch):
     monkeypatch.setattr(window, "find_chromium", lambda: None)
     assert window.launch("http://127.0.0.1:8765/") is None
+
+
+class _FakeProc:
+    def __init__(self, alive):
+        self._alive = alive
+        self.terminated = False
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def terminate(self):
+        self.terminated = True
+
+
+def test_terminate_closes_a_still_running_window():
+    # hgc-a7h: Ctrl-C stops the server but leaves the app window open; the
+    # device-live command calls terminate() to close it.
+    running = _FakeProc(alive=True)
+    assert window.terminate(running) is True
+    assert running.terminated
+
+
+def test_terminate_is_a_noop_on_an_exited_window():
+    # The user closing the window is what stopped the server, so by teardown it
+    # has already exited — terminate must not touch it (or a None proc).
+    closed = _FakeProc(alive=False)
+    assert window.terminate(closed) is False
+    assert not closed.terminated
+    assert window.terminate(None) is False
+
+
+def test_terminate_never_raises_on_a_bad_proc():
+    class _Boom:
+        def poll(self):
+            raise OSError("gone")
+    assert window.terminate(_Boom()) is False
