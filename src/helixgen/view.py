@@ -223,6 +223,24 @@ def _lift_input(path_dict: dict, device_id: Any, body: dict) -> "str | dict | No
     return {"source": mode, **lifts}
 
 
+def _wrapper_base(wrapped: Any) -> Any:
+    """The regenerate-consistent BASE of a `{value, snapshots?}` wrapper: slot 0
+    of the per-snapshot array when one is present, else the plain `value`.
+
+    `value` is unreliable as a base whenever a snapshots array is present: a
+    real device export re-syncs `value` to mirror whatever snapshot was ACTIVE
+    at save time (untranscode copies the live `enbl`/param), while regenerate
+    always re-syncs `value` to snaps[0]. So snaps[0], not `value`, is the base
+    that both lands per-snapshot overrides on the right slot and makes the
+    projection a fixed point (hgc-0c3; same reasoning as `_output_base`, but
+    type-agnostic — params may be bool/str/stereo, not just numeric)."""
+    if isinstance(wrapped, dict):
+        snaps = wrapped.get("snapshots")
+        if isinstance(snaps, list) and snaps and snaps[0] is not None:
+            return snaps[0]
+    return _unwrap_value(wrapped)
+
+
 def _output_base(wrapped: Any) -> Any:
     """The projection-consistent BASE of a b13 gain/pan wrapper: slot 0 of a
     per-snapshot `snapshots` array when one is present, else the plain
@@ -443,17 +461,33 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         # the base, so base bypass and per-snapshot bypass stay independent.
         en = bnn.get("@enabled")
         if isinstance(en, dict) and isinstance(en.get("snapshots"), list):
-            base_enabled = _unwrap_value(en) is not False
-            for i, ov in enumerate(en["snapshots"]):
+            arr = en["snapshots"]
+            # A False at slot i is a REAL per-snapshot bypass (for the blank-slot
+            # keep-decision) only if the block's @enabled.snapshots array VARIES
+            # across the named range. Key off the array's OWN variance, never
+            # `@enabled.value`: in a real device export `value` mirrors the
+            # ACTIVE snapshot's live bypass state (untranscode copies `enbl`),
+            # not the base, so an active-on-blank disable would read `value=False`
+            # and be wrongly withheld — the exact silent drop hgc-0c3 fixes. A
+            # base-bypassed block that is off in every snapshot is a constant
+            # all-False array (no variance) and is still correctly rejected as a
+            # phantom scene. The PROJECTION (`disables`) stays unfiltered.
+            en_varies = len(set(arr[:len(names)])) > 1
+            for i, ov in enumerate(arr):
                 if i < len(names) and ov is False:
                     disables[i].append(coord)
-                    if base_enabled:
+                    if en_varies:
                         real_disables[i].append(coord)
         # param snapshot overrides -- filter dense fills equal to base.
         for pname, wrapped in (slot.get("params") or {}).items():
             if not (isinstance(wrapped, dict) and isinstance(wrapped.get("snapshots"), list)):
                 continue
-            base = _coerce_param_value(block, pname, _unwrap_value(wrapped))
+            # Base = snaps[0] via `_wrapper_base`, NOT `value`: a device export
+            # saved on a non-zero (blank) active snapshot mirrors that snapshot's
+            # override into `value`, so a value-based base would bake the real
+            # override into the base — dropping it and fabricating a phantom one
+            # on snapshot 0 (hgc-0c3 review).
+            base = _coerce_param_value(block, pname, _wrapper_base(wrapped))
             for i, ov in enumerate(wrapped["snapshots"]):
                 if i >= len(names) or ov is None:
                     continue
@@ -1096,7 +1130,11 @@ def _block_entry(bnn: dict, library: Library, irs: IrMapping | None) -> dict[str
     params: dict[str, Any] = {}
     baseline = authoring_defaults(block)
     for param_name, wrapped in (slot.get("params") or {}).items():
-        value = _unwrap_value(wrapped)
+        # snaps[0], not `value`, is the block's base param: a device export
+        # saved on a non-zero active snapshot mirrors that snapshot's value into
+        # `value`, which would otherwise corrupt the block's base param and
+        # break the per-snapshot override round-trip (hgc-0c3 review).
+        value = _wrapper_base(wrapped)
         default = baseline.get(param_name)
         # Same baseline the generator fills an unmentioned param from — the
         # model default, falling back to the library's sighted value (hgc-x7i)
