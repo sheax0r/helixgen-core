@@ -2,6 +2,9 @@
 mounted on a dedicated device client (not the live editor's)."""
 from __future__ import annotations
 
+import hashlib
+import time
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from helixgen.libraryui.session import LibraryError, LibrarySession
@@ -58,12 +61,64 @@ class LibraryDrawer:
                  cache: Any = None, **session_kw):
         self.irs_root = irs_root
         self.cache = cache
+        self._library_root = library_root
         self._session = LibrarySession(
             (lambda: _NonClosing(client_factory())) if client_factory else None,
             library_root=library_root, **session_kw)
 
+    def _hsp_hash(self, hsp) -> Optional[str]:
+        """sha256 of the library .hsp file, the cache's library-side key."""
+        if not hsp:
+            return None
+        p = Path(hsp)
+        if not p.is_absolute() and self._library_root:
+            p = Path(self._library_root) / hsp
+        try:
+            return hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError:
+            return None
+
     def public_state(self) -> dict:
-        return self._session.public_state()
+        """The hub read model, with each on-both variant stamped a provisional
+        ``diff`` badge: the cache's verdict when fresh, else ``verifying``."""
+        st = self._session.public_state()
+        for tone in st.get("tones", []):
+            for v in tone.get("variants", []):
+                if v.get("presence") != "both":
+                    continue
+                h = self._hsp_hash(v.get("hsp"))
+                if not h:
+                    v["diff"] = "indeterminate"
+                elif self.cache is not None:
+                    v["diff"] = (self.cache.verdict(str(v.get("device_cid")), h)
+                                 or "verifying")
+                else:
+                    v["diff"] = "verifying"
+        return st
+
+    def _hsp_for_cid(self, cid):
+        for tone in self._session.public_state().get("tones", []):
+            for v in tone.get("variants", []):
+                if v.get("device_cid") == cid:
+                    return v.get("hsp")
+        return None
+
+    def resolve_diff(self, cid, hsp=None) -> str:
+        """Compute one preset's verdict (``same``/``changed``/``indeterminate``)
+        via the inner session's ``content_diff`` and put it in the cache keyed
+        by the library .hsp hash. ``hsp`` is an optional hint so the reconcile
+        need not re-read the device to map ``cid`` → ``.hsp``. Persisting the
+        cache to disk is the caller's job (the reconcile saves once)."""
+        if hsp is None:
+            hsp = self._hsp_for_cid(cid)
+        if not hsp:
+            return "indeterminate"
+        state = self._session.content_diff(cid, hsp).get("state", "indeterminate")
+        h = self._hsp_hash(hsp)
+        if self.cache is not None and h:
+            self.cache.put(str(cid),
+                           {"hsp_hash": h, "verdict": state, "ts": time.time()})
+        return state
 
     def action(self, name: str, payload: dict) -> dict:
         fn = _ACTIONS.get(name)

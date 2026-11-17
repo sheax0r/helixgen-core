@@ -27,7 +27,10 @@ class DiffCache:
     def load(self) -> None:
         try:
             d = json.loads(self.path.read_text())
-            self._d = d if isinstance(d, dict) else {}
+            # keep only dict entries — a hand-edited/partial file must not make
+            # verdict() raise on a non-dict value
+            self._d = ({k: v for k, v in d.items() if isinstance(v, dict)}
+                       if isinstance(d, dict) else {})
         except (OSError, ValueError):
             self._d = {}
 

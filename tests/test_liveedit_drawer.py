@@ -1,7 +1,16 @@
 from __future__ import annotations
 
 from helixgen.liveedit.drawer import LibraryDrawer
+from helixgen.liveedit.diffcache import DiffCache
 from helixgen.tone_meta import ToneMeta, Variant
+
+
+def _onboth_state():
+    return {"connected": True, "setlists": [], "irs": [], "facets": {},
+            "tones": [{"slug": "x", "name": "X", "presence": "both",
+                       "variants": [{"key": "k", "preset_name": "X",
+                                     "hsp": "tones/a.hsp", "available": True,
+                                     "presence": "both", "device_cid": 5}]}]}
 
 
 def _meta(tmp_path):
@@ -50,3 +59,27 @@ def test_drawer_action_dispatch(tmp_path):
     assert res == {"ok": True}
     assert seen["h"] is client and seen["setlist"] == "Rock"
     assert not closed
+
+
+def test_public_state_badges_provisional(tmp_path):
+    (tmp_path / "tones").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tones" / "a.hsp").write_text("{}")
+    cache = DiffCache(tmp_path / "c.json")
+    d = LibraryDrawer(tmp_path, None, client_factory=None, cache=cache,
+                      **_kw(tmp_path))
+    d._session.public_state = _onboth_state
+    v = d.public_state()["tones"][0]["variants"][0]
+    assert v["diff"] == "verifying"
+
+
+def test_resolve_diff_caches(tmp_path):
+    (tmp_path / "tones").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tones" / "a.hsp").write_text("{}")
+    cache = DiffCache(tmp_path / "c.json")
+    d = LibraryDrawer(tmp_path, None, client_factory=None, cache=cache,
+                      **_kw(tmp_path))
+    d._session.public_state = _onboth_state
+    d._session.content_diff = lambda cid, hsp: {"cid": cid, "state": "same"}
+    assert d.resolve_diff(5) == "same"
+    v = d.public_state()["tones"][0]["variants"][0]
+    assert v["diff"] == "same"
