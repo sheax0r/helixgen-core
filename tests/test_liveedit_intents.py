@@ -1,5 +1,5 @@
 """The live editor's adjective->knob map (hgc-nci): the "which params" half
-ported from tweak-ui. Highlight matching itself runs in the page JS
+ported from an earlier prototype. Highlight matching itself runs in the page JS
 (tests/js/liveedit_page_scenarios.js); here we check the data + resolution."""
 from helixgen.liveedit import intents
 
