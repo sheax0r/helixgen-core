@@ -1,15 +1,14 @@
 """Static tone-adjective -> affected-knob map for the live editor's search box
 (hgc-nci).
 
-Only the "which params" half of the tweak-ui tone engine is ported here: an
-adjective names the real knobs that bear on that quality, the page highlights
-them, and the user turns them. This is NOT a dial -- the dial / projection /
-coordinated-move machinery is deliberately left behind.
+Only the "which params" half of an earlier prototype's tone engine is ported
+here: an adjective names the real knobs that bear on that quality, the page
+highlights them, and the user turns them. This is NOT a dial -- the dial /
+projection / coordinated-move machinery is deliberately left behind.
 
-`_intents.json` is copied verbatim from the unmerged tweak-ui branch's
-`helixgen/tweak/_intents.json`. `resolve_alias` and the category->role map are
-ported (trimmed) from that branch's `tweak/intents.py` and `tweak/chain.py`
-(`classify_role`). liveedit stays self-contained -- no import of `tweak`.
+`_intents.json` is copied verbatim from that prototype. `resolve_alias` and the
+category->role map are ported (trimmed) from its intent/chain code
+(`classify_role`). liveedit stays self-contained.
 
 IR-resolving params are dropped: which IR a `cab` block loads is not a static
 knob, so an IR move would point at nothing the page can light.
@@ -23,10 +22,10 @@ from typing import List, Optional
 
 _DATA = Path(__file__).with_name("_intents.json")
 
-# defs.category_for(...) -> intent role. Ported from tweak/chain.py `_ROLE`
+# defs.category_for(...) -> intent role. Ported from the prototype's `_ROLE`
 # (+ the dynamics gate/comp split). The page JS mirrors this table; keep both
 # in step. Categories with no entry (wah, eq, pitch, ...) have no role and
-# never match an adjective -- as in tweak-ui.
+# never match an adjective -- as in the prototype.
 _CATEGORY_ROLE = {
     "amp": "amp", "preamp": "amp", "distortion": "drive_pedal",
     "cab_ir_interp": "cab", "ir": "cab", "delay": "delay",
@@ -81,7 +80,7 @@ def aliases() -> List[str]:
 
 def resolve_alias(text: str) -> List[dict]:
     """Intents whose label or an alias starts with `text` (type-ahead). Ported
-    from tweak/intents.resolve_alias."""
+    from the prototype's resolve_alias."""
     q = (text or "").strip().lower()
     if not q:
         return []

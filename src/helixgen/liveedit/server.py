@@ -8,8 +8,8 @@ the structure changed. A background thread drains the device's PUB stream into
 the session. All locking lives in :class:`LiveSession`.
 
 The Host / Origin / Content-Type guards (anti DNS-rebind, anti cross-origin)
-and the stream-draining loop are lifted from the unmerged `tweak-ui` branch's
-``tweak/server.py``.
+and the stream-draining loop are lifted from an earlier abandoned prototype's
+server.
 """
 from __future__ import annotations
 
