@@ -29,7 +29,7 @@ class El {
 function boot() {
   const ids = {}; El.body = new El("body");
   ["led", "preset", "snap", "undo", "redo", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
-   "adjsearch", "adjlist", "adjhint"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
+   "adjsearch", "adjlist", "adjhint", "libtoggle", "drawer", "drawerbody"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
   const document = { get body2(){return El.body}, getElementById: (i) => ids[i], createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };
   const win = {}; const posts = []; const toasts = ids.toasts; let es = null;

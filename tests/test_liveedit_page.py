@@ -32,3 +32,9 @@ def test_page_never_builds_markup_from_server_strings():
 def test_page_sends_the_revision_and_its_own_id_with_every_write():
     js = PAGE.read_text()
     assert "body.client = ME; body.rev = S.rev;" in js
+
+
+def test_page_has_library_drawer_and_endpoints():
+    html = PAGE.read_text()
+    for marker in ('id="libtoggle"', 'id="drawer"', "/library/state", '"/library/" + action', '"/preset"'):
+        assert marker in html, marker

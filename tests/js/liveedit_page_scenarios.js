@@ -181,6 +181,29 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       && !hl("0/2/1").contains("hl-off") && !hl("0/3/1").contains("hl-off"),
       cn("0/2/1") + " | " + cn("0/3/1"));
   }
+  { // S20: library drawer
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    x.ids.libtoggle.onclick(); 
+    const st = x.posts.find((p) => p.url === "/library/state");
+    st.reply(200, { connected: true, setlists: [{ name: "SL", cid: 5, members: [] }], irs: [], tones: [
+      { slug: "a", name: "Alpha", variants: [{ key: "k", device_cid: 42, hsp: "a.hsp", diff: "verifying" }] }] });
+    await x.tick(); await x.tick();
+    const txt = () => x.ids.drawerbody.textContent;
+    ok("S20 drawer opens and renders tones from /library/state", x.ids.drawer.hidden === false && txt().includes("Alpha") && txt().includes("verifying"), txt());
+    x.sse({ kind: "badge", cid: 42, diff: "changed" });
+    ok("S20 a verifying badge settles to changed on an SSE delta", txt().includes("changed") && !txt().includes("verifying"), txt());
+    x.sse({ kind: "setlist_members", setlist_cid: 5, members: [1, 2] });
+    ok("S20 setlist membership updates in place", txt().includes("2 tones"), txt());
+    const edit = x.ids.drawerbody.find((e) => e.tagName === "button" && e.textContent === "Edit")[0];
+    edit.onclick();
+    const pr = x.posts.find((p) => p.url === "/preset");
+    ok("S20 Edit posts /preset with the device cid", pr && pr.body.cid === 42, JSON.stringify(pr && pr.body));
+    pr.reply(200, { ok: true }); await x.tick(); await x.tick();
+    ok("S20 Edit collapses the drawer", x.ids.drawer.hidden === true, x.ids.drawer.hidden);
+    const cp = x.ids.drawerbody.find((e) => e.tagName === "button" && e.textContent === "Copy")[0];
+    cp.onclick();
+    ok("S20 Copy posts /library/copy", x.posts.some((p) => p.url === "/library/copy" && p.body.hsp === "a.hsp" && p.body.to === "SL"), JSON.stringify(x.posts.map((p) => p.url)));
+  }
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();
