@@ -1,1 +1,1 @@
-"""The library hub UI (helixgen library ui)."""
+"""The library drawer state engine (mounted by `helixgen device live`)."""
