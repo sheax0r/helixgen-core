@@ -1230,6 +1230,11 @@ def _atomic_write(path: Path, data: bytes) -> None:
 @click.option("--dry-run", "dry_run", is_flag=True, default=False,
               help="Run the conversion in memory, print its warnings and "
                    "summary, and write NOTHING.")
+@click.option("--force", "force", is_flag=True, default=False,
+              help="Proceed even when the conversion would drop a recorded "
+                   "room-IR treatment (its parallel room-mic lane). Without it, "
+                   "such a conversion is refused -- tame the lane in place with "
+                   "`library room-level` instead of replacing the venue.")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the result as JSON instead of a human summary.")
 @click.option("--library", "library_path", envvar="HELIXGEN_LIBRARY",
@@ -1239,7 +1244,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
               type=click.Path(file_okay=False, path_type=Path), default=None,
               help="IRs directory used for room-IR lookup.")
 def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
-              room_highcut: str | None, dry_run: bool, as_json: bool,
+              room_highcut: str | None, dry_run: bool, force: bool, as_json: bool,
               library_path: Path | None, irs_dir: Path | None) -> None:
     """Convert a variant IN PLACE to another venue (what it is played through).
 
@@ -1264,6 +1269,10 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
     `library fork --venue` for a separate variant). `--room-ir` / `--room tile`
     steer the headphones treatment. Warnings go to stderr, plus a one-line
     `venue:` summary. `--dry-run` writes nothing.
+
+    A conversion that would DROP a recorded room-IR treatment (its parallel
+    room-mic lane) is refused unless `--force`; to merely turn a too-loud room
+    down, use `library room-level` instead -- it keeps the lane and the venue.
     """
     from helixgen.hsp import dumps_hsp
 
@@ -1278,6 +1287,17 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
         before, target, source_venue=v.venue, source_detail=v.venue_detail,
         room_ir=room_ir, room_mode=room_mode, room_highcut=room_highcut,
         library_path=library_path, irs_dir=irs_dir)
+    # Guard (hgc-es5): refuse to silently drop a recorded room-IR treatment. A
+    # requested-vs-recorded compare, not a structural read -- in-place param
+    # edits (room-level, set-param) never route through here, so they are free.
+    recorded = (v.venue_detail or {}).get("treatment")
+    produced = (res.venue_detail or {}).get("treatment")
+    if recorded == "room-ir" and produced != "room-ir" and not force and not dry_run:
+        raise click.ClickException(
+            f"{key} records a room-IR treatment (a parallel room-mic lane); "
+            f"converting it to {target} removes that lane. Pass --force to "
+            f"replace it anyway, or tame the lane in place without rebuilding: "
+            f"`helixgen library room-level {variant} -- <dB>`.")
     summary = _venue_summary(res, irs)
     if not dry_run:
         original = hsp.read_bytes()
@@ -1303,6 +1323,77 @@ def venue_cmd(variant: str, target: str, room_ir: str | None, room_mode: str,
     click.echo(f"{prefix} {key} ({meta.logical_slug}) to {res.venue}: {hsp}")
     if dry_run:
         click.echo("Dry run -- nothing was written.")
+
+
+@library.command(name="room-level")
+@click.argument("variant")
+@click.argument("level_db")
+@click.option("--library", "library_path", envvar="HELIXGEN_LIBRARY",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Block library used for the edit. Defaults to the tone library.")
+def room_level_cmd(variant: str, level_db: str, library_path: Path | None) -> None:
+    """Turn a room-IR headphones variant's parallel room-mic lane up or down,
+    IN PLACE -- tame a room that is too loud or noisy WITHOUT rebuilding the
+    tone (which is the big hammer that drops the lane entirely, hgc-es5).
+
+    VARIANT resolves like `library venue`'s. LEVEL_DB is the room IR's new Level
+    in dB; a NEGATIVE value needs the `--` sentinel after any flags:
+
+    \b
+      helixgen library room-level MyTone -- -45
+
+    The venue, the treatment and the lane's structure are untouched -- only the
+    room IR's Level moves, and the ROOM MIC footswitch's "on" level moves with
+    it, so toggling the room on lands at the new blend. The variant's
+    `venue_detail.room_level_db` is updated and any loudness stamp cleared.
+    """
+    import math
+
+    from helixgen import venue as _venue
+    from helixgen.cli import _resolved_library
+    from helixgen.hsp import dumps_hsp
+    try:
+        lvl = float(level_db)
+    except ValueError:
+        raise click.ClickException(
+            f"LEVEL_DB must be a number of dB; got {level_db!r} "
+            "(a negative value needs the `--` sentinel: `... -- -45`).")
+    if not math.isfinite(lvl):
+        raise click.ClickException(
+            f"LEVEL_DB must be a finite number of dB; got {level_db!r}.")
+    meta, key, hsp = _resolve_fork_source(variant)
+    if meta is None or key is None:
+        raise click.ClickException(
+            f"{variant} is not a registered library variant -- room-level "
+            "records its result on the variant.")
+    v = meta.variants[key]
+    before = read_hsp(hsp)
+    try:
+        res = _venue.set_room_level(before, v.venue_detail,
+                                    _resolved_library(library_path), lvl)
+    except _venue.VenueError as err:
+        raise click.ClickException(f"room-level: {err}") from err
+    for w in res.warnings:
+        click.echo(f"warning: {w}", err=True)
+    new_level = res.venue_detail["room_level_db"]
+    if res.body == before:
+        click.echo(f"The room-mic lane of {key} ({meta.logical_slug}) is already "
+                   f"at {new_level} dB: nothing to write.")
+        return
+    original = hsp.read_bytes()
+    _atomic_write(hsp, dumps_hsp(res.body))
+    v.venue_detail = res.venue_detail
+    v.normalized = None  # loudness changed; the old stamp is stale
+    try:
+        tone_meta.save_tone_meta(meta)
+    except BaseException:
+        _atomic_write(hsp, original)  # keep .hsp and metadata in step
+        raise
+    gitops.auto_commit(
+        home.helixgen_home(),
+        f"helixgen: room-level {key} -> {new_level} dB ({meta.logical_slug})")
+    click.echo(f"Set the room-mic lane of {key} ({meta.logical_slug}) to "
+               f"{new_level} dB: {hsp}")
 
 
 @library.command(name="venue-retrofit")

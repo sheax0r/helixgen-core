@@ -89,8 +89,9 @@ def test_headphones_end_to_end_then_direct_and_fork(lib, irs, tmp_path):
     blob = json.dumps(read_hsp(home.helixgen_home() / "library" / fork.hsp))
     assert ROOM not in blob and CLOSE not in blob and "HD2_EQParametric" in blob
 
-    r = _run("library", "venue", str(home.tones_dir() / "probe.hsp"), "direct", "--library", str(lib.root),
-             "--irs-dir", str(irs.irs_dir))
+    # room-ir -> direct drops the room lane: the hgc-es5 guard needs --force.
+    r = _run("library", "venue", str(home.tones_dir() / "probe.hsp"), "direct", "--force",
+             "--library", str(lib.root), "--irs-dir", str(irs.irs_dir))
     assert r.exit_code == 0, r.output
     assert read_hsp(home.tones_dir() / "probe.hsp")["preset"]["flow"] == plain
 

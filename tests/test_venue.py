@@ -902,3 +902,45 @@ def test_retrofit_warns_when_it_resets_a_tuned_room_level(single_ir_body, lib, i
     res = venue.retrofit_headphones(old.body, old.venue_detail, lib, irs,
                                     close_highcut_hz=8000.0)
     assert res.changed and any("tuned to -45" in w for w in res.warnings)
+
+
+# --- hgc-3am: in-place room-lane level knob (pure transform) ----------------
+
+@needs_sf
+def test_set_room_level_tames_the_lane_without_touching_structure(single_ir_body, lib, irs):
+    r = venue.apply_venue(single_ir_body, "headphones", lib, irs)
+    before_flow = copy.deepcopy(r.body["preset"]["flow"])
+    out = venue.set_room_level(r.body, r.venue_detail, lib, -45.0)
+
+    room = [x for x in _flow_blocks(out.body) if x["slot"][0].get("irhash") == ROOM][0]
+    level = room["slot"][0]["params"]["Level"]
+    assert level["value"] == pytest.approx(-45.0)
+    assert level["controller"]["max"] == pytest.approx(-45.0)    # ROOM MIC toe tracks
+    assert out.venue_detail["treatment"] == "room-ir"
+    assert out.venue_detail["room_level_db"] == pytest.approx(-45.0)
+    # same blocks, same split/join, same lanes: only Level values changed
+    def shape(flow):
+        return {k: (b.get("type"), b.get("slot", [{}])[0].get("irhash"),
+                    sorted((b.get("slot", [{}])[0].get("params") or {})))
+                for k, b in flow.items() if isinstance(b, dict)}
+    assert shape(out.body["preset"]["flow"][0]) == shape(before_flow[0])
+    # the close IR lane is left alone
+    close = [x for x in _flow_blocks(out.body) if x["slot"][0].get("irhash") == CLOSE][0]
+    assert close["slot"][0]["params"]["Level"]["value"] == -18.0
+
+
+@needs_sf
+def test_set_room_level_requires_a_room_ir_treatment(single_ir_body, lib, irs):
+    with pytest.raises(venue.VenueError, match="room-IR"):
+        venue.set_room_level(single_ir_body, {"treatment": "none"}, lib, -45.0)
+
+
+@needs_sf
+def test_set_room_level_below_footswitch_off_warns_and_stays_coherent(single_ir_body, lib, irs):
+    r = venue.apply_venue(single_ir_body, "headphones", lib, irs)   # ROOM MIC min=-60
+    out = venue.set_room_level(r.body, r.venue_detail, lib, -70.0)
+    room = [x for x in _flow_blocks(out.body) if x["slot"][0].get("irhash") == ROOM][0]
+    ctrl = room["slot"][0]["params"]["Level"]["controller"]
+    assert ctrl["max"] == pytest.approx(-70.0)
+    assert ctrl["min"] <= ctrl["max"]                               # never inverted
+    assert any("no longer meaningfully toggles" in w for w in out.warnings)
