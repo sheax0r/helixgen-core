@@ -83,3 +83,25 @@ def test_resolve_diff_caches(tmp_path):
     assert d.resolve_diff(5) == "same"
     v = d.public_state()["tones"][0]["variants"][0]
     assert v["diff"] == "same"
+
+
+def test_persisted_cache_shows_verifying_until_confirmed(tmp_path):
+    # A verdict left by a PRIOR session must NOT be shown as confirmed truth:
+    # the device may have drifted (amp edit) while the app was closed, and the
+    # library .hsp hash alone cannot detect that. Must read "verifying" until
+    # this session re-confirms it (spec anti-goal: never lie about the device).
+    (tmp_path / "tones").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tones" / "a.hsp").write_text("{}")
+    cache = DiffCache(tmp_path / "c.json")
+    d = LibraryDrawer(tmp_path, None, client_factory=None, cache=cache,
+                      **_kw(tmp_path))
+    d._session.public_state = _onboth_state
+    cache.put("5", {"hsp_hash": d._hsp_hash("tones/a.hsp"),
+                    "verdict": "same", "ts": 0})
+    # fresh session, cid 5 not yet confirmed -> provisional, not "same"
+    assert d.public_state()["tones"][0]["variants"][0]["diff"] == "verifying"
+    # begin_reconcile() also drops confirmations so a reconnect re-verifies
+    d._confirmed.add(5)
+    assert d.public_state()["tones"][0]["variants"][0]["diff"] == "same"
+    d.begin_reconcile()
+    assert d.public_state()["tones"][0]["variants"][0]["diff"] == "verifying"

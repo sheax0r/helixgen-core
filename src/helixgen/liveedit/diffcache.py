@@ -37,7 +37,9 @@ class DiffCache:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(self.path.name + ".tmp")
-        tmp.write_text(json.dumps(self._d))
+        # snapshot: the subscriber thread may invalidate/put concurrently, and
+        # a plain dict() copy is GIL-atomic (no "changed size during iteration")
+        tmp.write_text(json.dumps(dict(self._d)))
         os.replace(tmp, self.path)
 
     def get(self, cid) -> Optional[dict]:

@@ -63,6 +63,10 @@ class LibraryDrawer:
         self.cache = cache
         self._library_root = library_root
         self._known: set = set()  # device cids we already show (echo guard)
+        self._confirmed: set = set()  # cids re-diffed THIS connect; only these
+        # show a non-provisional badge — a cached verdict is display state, not
+        # confirmed truth (the device may have drifted while the app was closed,
+        # which no library-side hash can detect). begin_reconcile() clears this.
         self._session = LibrarySession(
             (lambda: _NonClosing(client_factory())) if client_factory else None,
             library_root=library_root, **session_kw)
@@ -89,8 +93,11 @@ class LibraryDrawer:
             return None
 
     def public_state(self) -> dict:
-        """The hub read model, with each on-both variant stamped a provisional
-        ``diff`` badge: the cache's verdict when fresh, else ``verifying``."""
+        """The hub read model, with each on-both variant stamped a ``diff``
+        badge. The badge is the cache's verdict ONLY for a cid re-confirmed
+        this connect; otherwise ``verifying`` — a stale cross-session verdict is
+        never shown as confirmed truth (spec anti-goal: never lie about the
+        device). The background reconcile confirms them on each connect."""
         st = self._session.public_state()
         for tone in st.get("tones", []):
             for v in tone.get("variants", []):
@@ -102,12 +109,17 @@ class LibraryDrawer:
                 h = self._hsp_hash(v.get("hsp"))
                 if not h:
                     v["diff"] = "indeterminate"
-                elif self.cache is not None:
-                    v["diff"] = (self.cache.verdict(str(v.get("device_cid")), h)
-                                 or "verifying")
+                elif cid in self._confirmed and self.cache is not None:
+                    v["diff"] = self.cache.verdict(str(cid), h) or "verifying"
                 else:
                     v["diff"] = "verifying"
         return st
+
+    def begin_reconcile(self) -> None:
+        """A (re)connect re-verifies every on-both preset this session: forget
+        prior confirmations so each badge reverts to ``verifying`` until the
+        reconcile reconfirms it against the live device."""
+        self._confirmed.clear()
 
     def _hsp_for_cid(self, cid):
         for tone in self._session.public_state().get("tones", []):
@@ -131,6 +143,7 @@ class LibraryDrawer:
         if self.cache is not None and h:
             self.cache.put(str(cid),
                            {"hsp_hash": h, "verdict": state, "ts": time.time()})
+        self._confirmed.add(cid)  # confirmed against the live device this connect
         return state
 
     def action(self, name: str, payload: dict) -> dict:
@@ -150,6 +163,7 @@ class LibraryDrawer:
         if ce.kind == "save":
             if self.cache is not None and ce.cid is not None:
                 self.cache.invalidate(str(ce.cid))
+            self._confirmed.discard(ce.cid)  # back to provisional until re-diffed
             return {"kind": "badge", "cid": ce.cid, "diff": "verifying"}
         if ce.kind in ("add", "update"):
             if ce.kind == "add" and ce.cid in self._known:

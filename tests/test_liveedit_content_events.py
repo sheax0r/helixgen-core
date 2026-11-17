@@ -30,6 +30,7 @@ def test_saveContentRef_invalidates_and_reverifies(tmp_path):
                                  "hsp": "tones/a.hsp"}]}]}
     cache.put("5", {"hsp_hash": d._hsp_hash("tones/a.hsp"),
                     "verdict": "same", "ts": 0})
+    d._confirmed.add(5)  # confirmed this session -> badge shows the verdict
     assert d.public_state()["tones"][0]["variants"][0]["diff"] == "same"
 
     ce = decode_content_event(_ev("/saveContentRef", [65295, 1014, 5]))

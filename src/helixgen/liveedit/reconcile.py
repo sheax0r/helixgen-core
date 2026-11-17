@@ -14,6 +14,10 @@ from typing import Callable
 
 def run_reconcile(drawer, *, on_update: Callable[[int, str], None],
                   should_stop: Callable[[], bool]) -> None:
+    # Re-verify everything this connect: a persisted verdict is provisional
+    # until confirmed against the live device (amp edits while closed).
+    if hasattr(drawer, "begin_reconcile"):
+        drawer.begin_reconcile()
     did = False
     for tone in drawer.public_state().get("tones", []):
         for v in tone.get("variants", []):
@@ -34,5 +38,5 @@ def _save(drawer, did: bool) -> None:
     if did and cache is not None:
         try:
             cache.save()
-        except OSError:
+        except Exception:  # noqa: BLE001 — a flaky save must not abort the sweep
             pass
