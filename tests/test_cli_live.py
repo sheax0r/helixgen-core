@@ -18,6 +18,26 @@ class _Ctx:
     def __exit__(self, *a):
         return False
 
+    def connect(self, *a, **k):          # the dedicated library client is built
+        return self.c                    # with HelixClient(...).connect()
+
+
+class _FakeLease:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def release(self, *a, **k):
+        pass
+
+
+def _no_locks(monkeypatch):
+    """Keep the advisory library+irs lease off the real filesystem."""
+    monkeypatch.setattr("helixgen.locks.acquire", lambda *a, **k: _FakeLease())
+    monkeypatch.setattr("helixgen.locks.keep_alive", lambda *a, **k: _FakeLease())
+
 
 class _Sub:
     made = []
@@ -31,11 +51,13 @@ def _run(monkeypatch, args, client=None, window_launch=None):
     seen = {}
     _Sub.made = []
 
-    def serve(session, host, port, subscriber=None, on_ready=None):
-        seen.update(session=session, host=host, port=port, sub=subscriber)
+    def serve(session, host, port, subscriber=None, on_ready=None, *, drawer=None):
+        seen.update(session=session, host=host, port=port, sub=subscriber,
+                    drawer=drawer)
         if on_ready:
             on_ready(f"http://127.0.0.1:{port or 54321}/")
 
+    _no_locks(monkeypatch)
     monkeypatch.setattr(cli_device, "_client", lambda: (lambda ip, port: _Ctx(fake), HelixError))
     monkeypatch.setattr("helixgen.liveedit.server.serve", serve)
     monkeypatch.setattr("helixgen.device.subscribe.HelixSubscriber", _Sub)
@@ -59,6 +81,7 @@ def test_live_loads_once_and_serves_on_localhost(monkeypatch):
     assert seen["host"] == "127.0.0.1" and seen["port"] == 8765
     assert seen["session"].liveness is True
     assert _Sub.made == [("10.0.0.99", (2001, 2003))]    # the client's resolved ip
+    assert seen["drawer"] is not None                    # the library drawer is mounted
     assert "live editor: http://127.0.0.1:8765/" in r.output
     assert opened == [] and launched == []               # --no-open opens nothing
 
@@ -103,6 +126,7 @@ def test_live_fails_cleanly_when_the_device_cannot_be_read(monkeypatch):
 
 def _run_with_serve(monkeypatch, serve, args=("--no-open",), client=None):
     fake = client or FakeClient()
+    _no_locks(monkeypatch)
     monkeypatch.setattr(cli_device, "_client", lambda: (lambda ip, port: _Ctx(fake), HelixError))
     monkeypatch.setattr("helixgen.liveedit.server.serve", serve)
     monkeypatch.setattr("helixgen.device.subscribe.HelixSubscriber", _Sub)

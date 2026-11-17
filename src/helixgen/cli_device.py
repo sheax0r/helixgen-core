@@ -5053,9 +5053,12 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     import signal
     import webbrowser
 
+    from helixgen import home, locks
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.liveedit import server as _server
     from helixgen.liveedit import window as _window
+    from helixgen.liveedit.diffcache import DiffCache, default_path
+    from helixgen.liveedit.drawer import LibraryDrawer
     from helixgen.liveedit.lease import EditLease
     from helixgen.liveedit.session import LiveError, LiveSession
 
@@ -5085,11 +5088,15 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     import errno
 
     lease = None
+    adv_lease = None       # advisory library+irs lease (best-effort, pid-bound)
+    lib_client = None      # the drawer's DEDICATED library client (not h)
     try:
         with HelixClient(ip, port) as h:
             dev_ip = getattr(h, "ip", None) or ip
+            pi = {}
             try:
-                fw = (h.product_info() or {}).get("firmware") or ""
+                pi = h.product_info() or {}
+                fw = pi.get("firmware") or ""
                 parts = tuple(int(x) for x in fw.split(".")[:2])
             except Exception:  # noqa: BLE001 — unknown firmware: let it try
                 parts = ()
@@ -5100,15 +5107,37 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
             lease = EditLease(dev_ip, enabled=not no_lock)
             session = LiveSession(h, lease=lease, liveness=True)
             session.load()
+
+            # The library drawer runs on its OWN client (the live editor's is
+            # single-threaded and busy with writes) and its OWN advisory
+            # library+irs lease, both best-effort — the editor works without them.
+            serial = pi.get("serial")
+            lib_client = HelixClient(ip, port).connect()
+            cache = DiffCache(default_path(serial)) if serial else None
+            drawer = LibraryDrawer(home.library_dir(),
+                                   client_factory=lambda: lib_client, cache=cache)
+            try:
+                adv_lease = locks.acquire(dev_ip, ("library", "irs"),
+                                          label="helixgen device live",
+                                          pid=os.getpid(), timeout=0)
+            except Exception as e:  # noqa: BLE001 — contended/offline: degrade
+                click.echo(f"note: could not take the library lock ({e}); the "
+                           "drawer still runs — avoid other helixgen library "
+                           "writes while the page is open.", err=True)
+                adv_lease = None
+
             for sig in ("SIGTERM", "SIGHUP"):          # stop cleanly when killed
                 try:
                     signal.signal(getattr(signal, sig), _term)
                 except (ValueError, AttributeError):
                     pass                               # not the main thread / no such signal
+            keep_cm = (locks.keep_alive(dev_ip) if adv_lease is not None
+                       else contextlib.nullcontext())
             try:
-                _server.serve(session, "127.0.0.1", http_port,
-                              subscriber=HelixSubscriber(dev_ip, ports=(2001, 2003)),
-                              on_ready=_ready)
+                with keep_cm:
+                    _server.serve(session, "127.0.0.1", http_port,
+                                  subscriber=HelixSubscriber(dev_ip, ports=(2001, 2003)),
+                                  on_ready=_ready, drawer=drawer)
             finally:
                 # hgc-a7h: Ctrl-C stops the server but leaves the chromeless app
                 # window showing a dead 127.0.0.1 — close it when we stop. (A
@@ -5131,3 +5160,9 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     finally:
         if lease is not None:
             lease.release(final=True)
+        if adv_lease is not None:
+            with contextlib.suppress(Exception):
+                adv_lease.release()
+        if lib_client is not None:
+            with contextlib.suppress(Exception):
+                lib_client.close()
