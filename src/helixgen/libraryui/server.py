@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from helixgen import localguard
 from helixgen.libraryui.session import LibraryError, LibrarySession
 
 _PAGE = Path(__file__).with_name("page.html")
@@ -96,12 +97,8 @@ def make_server(session: LibrarySession, host: str = "127.0.0.1",
         def _json(self, code: int, obj) -> None:
             self._send(code, json.dumps(obj).encode(), "application/json")
 
-        def _hosts(self) -> set:
-            p = self.server.server_address[1]
-            return {f"127.0.0.1:{p}", f"localhost:{p}"}
-
         def _bad_host(self) -> bool:
-            return self.headers.get("Host") not in self._hosts()
+            return localguard.bad_host(self.headers, self.server.server_address[1])
 
         def do_GET(self):  # noqa: N802
             if self._bad_host():
@@ -119,15 +116,7 @@ def make_server(session: LibrarySession, host: str = "127.0.0.1",
                 self._json(404, {"error": "not found"})
 
         def _guard(self):
-            if self._bad_host():
-                return 403, "bad Host"
-            origin = self.headers.get("Origin")
-            if origin is not None and origin not in {"http://" + h for h in self._hosts()}:
-                return 403, "bad Origin"
-            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if ctype != "application/json":
-                return 415, "Content-Type must be application/json"
-            return None
+            return localguard.guard_post(self.headers, self.server.server_address[1])
 
         def _refuse(self, code: int, msg: str) -> None:
             self.close_connection = True

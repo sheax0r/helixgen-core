@@ -21,14 +21,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from helixgen import localguard
 from helixgen.liveedit import intents
 from helixgen.liveedit.session import LiveError, LiveSession
+from helixgen.libraryui.session import LibraryError
 
 _PAGE = Path(__file__).with_name("page.html")
 logger = logging.getLogger("helixgen.liveedit")
 
 SSE_KEEPALIVE = 15.0
-MAX_BODY = 64 * 1024      # a write is ~100 bytes
+MAX_BODY = 256 * 1024     # a write is ~100 bytes; library payloads are larger
 SOCKET_TIMEOUT = 20.0     # a half-sent request must not park a thread forever
 
 
@@ -85,7 +87,7 @@ def _route(session: LiveSession, path: str, b: dict):
 
 
 def make_server(session: LiveSession, host: str = "127.0.0.1",
-                port: int = 0) -> ThreadingHTTPServer:
+                port: int = 0, *, drawer=None) -> ThreadingHTTPServer:
     if host not in ("127.0.0.1", "localhost"):
         raise ValueError("the live editor binds localhost only")
 
@@ -109,12 +111,8 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
         def _json(self, code: int, obj) -> None:
             self._send(code, json.dumps(obj).encode(), "application/json")
 
-        def _hosts(self) -> set:
-            p = self.server.server_address[1]
-            return {f"127.0.0.1:{p}", f"localhost:{p}"}
-
         def _bad_host(self) -> bool:
-            return self.headers.get("Host") not in self._hosts()
+            return localguard.bad_host(self.headers, self.server.server_address[1])
 
         def do_GET(self):  # noqa: N802
             if self._bad_host():  # anti DNS-rebind: guards reads too
@@ -140,6 +138,12 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                     self._json(e.status, {"error": str(e)})
             elif path == "/events":
                 self._sse()
+            elif path == "/library/state" and drawer is not None:
+                try:
+                    self._json(200, drawer.public_state())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("live editor: library state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
             else:
                 self._json(404, {"error": "not found"})
 
@@ -169,15 +173,7 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 session.wait(version, rev, SSE_KEEPALIVE)
 
         def _guard(self):
-            if self._bad_host():
-                return 403, "bad Host"
-            origin = self.headers.get("Origin")
-            if origin is not None and origin not in {"http://" + h for h in self._hosts()}:
-                return 403, "bad Origin"
-            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if ctype != "application/json":
-                return 415, "Content-Type must be application/json"
-            return None
+            return localguard.guard_post(self.headers, self.server.server_address[1])
 
         def _refuse(self, code: int, msg: str) -> None:
             """Answer and drop the connection WITHOUT reading the body: nothing
@@ -202,7 +198,13 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 b = json.loads(raw or b"{}")
                 if not isinstance(b, dict):
                     raise LiveError("body must be a JSON object")
-                out = _route(session, urlsplit(self.path).path, b)
+                p = urlsplit(self.path).path
+                if p.startswith("/library/") and drawer is not None:
+                    out = drawer.action(p[len("/library/"):], b)
+                else:
+                    out = _route(session, p, b)
+            except LibraryError as e:
+                return self._json(e.status, {"error": str(e)})
             except LiveError as e:
                 body = {"error": str(e)}
                 if e.value is not None:
