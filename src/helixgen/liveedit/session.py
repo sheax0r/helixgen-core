@@ -79,7 +79,7 @@ def _close(a: float, b: float) -> bool:
 class LiveSession:
     LOG_MAX = 512
 
-    def __init__(self, client, *, lease=None, liveness: bool = False,
+    def __init__(self, client=None, *, lease=None, liveness: bool = False,
                  clock: Callable[[], float] = time.monotonic):
         self.client = client
         self.lease = lease if lease is not None else _NoLease()
@@ -95,7 +95,9 @@ class LiveSession:
         self._blocks: Dict[Tuple[int, int], dict] = {}
         self._preset: dict = {"cid": None, "name": None}
         self._dirty = False
-        self._connected = True
+        # Offline cold-start: with no client the page shows a disconnected,
+        # empty chain until a discovery loop calls connect_device().
+        self._connected = client is not None
         self._awaiting_ref = False
         # own writes awaiting their 2001 echo: request id -> (control, value),
         # and per control the request id of our NEWEST write to it
@@ -111,6 +113,22 @@ class LiveSession:
         self._last_event: Optional[float] = None
         self._last_retry = -math.inf
         self._seq: Dict[int, int] = {}   # port -> last 2001 header sequence seen
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    # --- device bring-up ----------------------------------------------------
+    def connect_device(self, client) -> None:
+        """Attach a freshly connected device client and read its edit buffer
+        into state (the eager sequence `device live` used to do at startup,
+        now driven by the discovery loop). Idempotent at the call site: the
+        caller only calls this while disconnected. Raises :class:`LiveError`
+        (and leaves the session disconnected) if the first read fails — the
+        discovery loop then keeps looking."""
+        with self.cond:
+            self.client = client
+        self.load()
 
     # --- state (all under cond) ---------------------------------------------
     def _meta(self) -> dict:
@@ -128,6 +146,16 @@ class LiveSession:
 
     def _emit_meta(self) -> None:
         self._emit({"t": "meta", **self._meta()})
+
+    def emit_library(self, delta: dict) -> None:
+        """Push a library-drawer delta onto the same SSE stream the page
+        consumes for chain changes. Drawer deltas carry ``kind`` (not ``t``),
+        so the page routes them to the library drawer. Used by the diff
+        reconcile (badge settles) and by content-store events."""
+        if not delta:
+            return
+        with self.cond:
+            self._emit(dict(delta))
 
     def _set_dirty(self, dirty: bool) -> None:
         if dirty != self._dirty:
@@ -218,6 +246,9 @@ class LiveSession:
         Raises :class:`LiveError` (502) and marks the session disconnected when
         the device cannot be read. If a pushed buffer is installed while the
         read is in flight, the read is stale and is taken again."""
+        if self.client is None:
+            self._set_connected(False)
+            raise LiveError("no device connected", status=503)
         with self.devlock:
             for attempt in range(3):
                 with self.cond:
@@ -596,6 +627,8 @@ class LiveSession:
                 out.append(e)
             return out
 
+        with self.cond:
+            self._require_up()
         with self.devlock:
             try:
                 pool = self.client.list_presets()

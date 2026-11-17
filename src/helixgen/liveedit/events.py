@@ -28,7 +28,7 @@ Actions returned by :func:`decode_event`:
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any, List, NamedTuple, Optional
 
 from helixgen.device import content as _content
 from helixgen.device import settings as _settings
@@ -132,3 +132,62 @@ def decode_event(addr: str, args: list) -> Optional[tuple]:
     if addr in REREAD_ADDRS:
         return ("reread", addr)
     return None
+
+
+# -- content-store events (library drawer) --------------------------------
+#
+# The 2001 stream also carries content-store changes the library drawer reacts
+# to (captured on a Stadium XL, fw 1.4; args are [reqid, seq, ...payload]):
+#
+#   /addContent            [reqid, seq, {row}]              preset/setlist created
+#   /updateContent         [reqid, seq, {row}]              content updated
+#   /removeContent         [reqid, seq, container_cid, [cids]]
+#   /updateContainerContent[reqid, seq, setlist_cid, [members]]  membership (whole)
+#   /loadContentRef        [reqid, seq, {row}]              active preset changed
+#   /saveContentRef        [reqid, seq, cid]                preset saved IN PLACE
+#
+# A row carries {cid_, ccid, name, posi, type, ...}; a setlist reference row
+# also carries rcid (the pool cid it points at).
+
+_CONTENT_KIND = {
+    "/addContent": "add",
+    "/updateContent": "update",
+    "/removeContent": "remove",
+    "/updateContainerContent": "setlist_members",
+    "/loadContentRef": "load",
+    "/saveContentRef": "save",
+}
+
+
+class ContentEvent(NamedTuple):
+    kind: str                      # add|update|remove|setlist_members|load|save
+    cid: Optional[int]             # add/update/load: row cid_; save: the cid
+    container_cid: Optional[int]   # remove/setlist_members: the container
+    row: Optional[dict]            # add/update/load: the content row
+    cids: Optional[list]           # remove: the removed cids
+    members: Optional[list]        # setlist_members: the whole new member list
+
+
+def decode_content_event(ev) -> Optional["ContentEvent"]:
+    """One 2001 content-store event -> a :class:`ContentEvent`, or ``None`` if
+    it is not one. ``ev`` is a subscriber ``Event`` (``.addr``, ``.args``)."""
+    kind = _CONTENT_KIND.get(getattr(ev, "addr", None))
+    if kind is None:
+        return None
+    payload = list(getattr(ev, "args", None) or [])[2:]
+    if kind in ("add", "update", "load"):
+        row = payload[0] if payload and isinstance(payload[0], dict) else None
+        if row is None:
+            return None
+        return ContentEvent(kind, row.get("cid_"), row.get("ccid"), row, None,
+                            None)
+    if kind == "save":
+        cid = payload[0] if payload and isinstance(payload[0], int) else None
+        return ContentEvent(kind, cid, None, None, None, None) if cid is not None \
+            else None
+    container = payload[0] if payload else None
+    tail = payload[1] if len(payload) > 1 and isinstance(payload[1], (list, tuple)) \
+        else []
+    if kind == "remove":
+        return ContentEvent(kind, None, container, None, list(tail), None)
+    return ContentEvent(kind, None, container, None, None, list(tail))  # members

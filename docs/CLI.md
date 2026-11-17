@@ -256,19 +256,6 @@ metadata filename (`<slug>.json`), or any variant's `preset_name`; an unknown
 or ambiguous name exits 1. This resolution order is shared by `library show`,
 `library doc`, and the top-level `describe`.
 
-- `helixgen library ui [--port-http PORT] [--no-open] [--browser] [--ip IP]` —
-  open the **library hub**: a local browser page (bound to `127.0.0.1` only) to
-  browse and search the authored tone + IR library, see how it lines up with the
-  connected Helix, and reconcile the two — copy a tone → the device, pull a
-  device preset ← into the library, manage setlists (create / rename / delete /
-  duplicate, add / remove references), and push / rename / delete IRs. **Offline
-  first:** the whole computer side works with no device present; the device
-  column shows "no Stadium" until a Helix is reachable and you Refresh.
-  LONG-RUNNING (serves until Ctrl-C); the first line printed is `library hub:
-  <url>`. While a device is reachable it holds the `library` + `irs` advisory
-  locks for its lifetime (pid-bound) so no other helixgen process writes
-  underneath it — `editbuffer` stays free, so `device live` works alongside.
-  Default port `8766`; `--no-open` just prints the URL (for agents/background).
 - `helixgen library list [--tones|--guitars|--irs] [--json]` — list the
   library's tones, guitar profiles, and per-IR metadata, grouped by section
   (or narrowed to one with a flag). Guitar rows show slug / name / short_name /
@@ -930,6 +917,9 @@ These live-ops verbs mutate the ACTIVE tone (decoded + HW-validated 2026-07-14).
   - **It follows the device.** A background subscription to the 2001 change stream applies hardware knob turns and bypass toggles to the page in place; a snapshot switch re-reads the buffer once; a preset load rebuilds from the pushed `/setEditBuffer` blob with no extra read. The page's own writes are recognised by request id and not re-applied. If the device goes silent the page says so and pauses its controls, then re-reads when it is back.
   - **Nothing persists until Save is pressed** — until then the page shows *Unsaved*, `device active` reports `edited: true`, and loading any preset discards the changes. **Save** is the hardware's own Save (`/SavePresetWithCID`), in place, into the user-pool preset that holds the tone: the active preset itself, or — for a tone loaded from a setlist, whose active id is the setlist reference — the pool preset that reference points at (HW-verified 2026-11-13; the save therefore shows in every setlist holding that preset). A factory preset is refused with a pointer at `device save`. **The tone library is not touched**: after a Save the library's `.hsp` for that tone is stale, a later `device copy` of it would overwrite the tweaks, and `device to-hsp` is how the device's version comes back.
   - **Undo / redo** (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z) re-write the previous value; a knob drag is one step (recorded at release); history clears when the preset or the snapshot changes.
+  - **Library drawer (supersedes the removed `helixgen library ui`).** The same page carries the tone + IR library: browse and search the authored library, see how each tone lines up with the connected Helix (a "changed" badge from a content diff, cached per device and refreshed in the background; a stale preset reconciles with Update ←), copy a tone → the device, pull a device preset ← into the library, manage setlists (create / rename / delete / duplicate, add / remove references) and push / rename / delete IRs. Edit on a drawer row loads that tone and follows it in the chain editor. The page reacts to the device's content-store events (preset added / updated / removed, setlist members changed, saved) so the drawer stays current without a refresh.
+  - **Offline cold start.** The page binds and serves with no device: the chain shows disconnected, the drawer's computer side works, its device actions are disabled, and a background discovery loop connects a Stadium when one appears — no restart.
+  - **Drawer locking.** While a device is connected the page holds the `library` + `irs` advisory scopes for its lifetime (pid-bound; if contended it still opens, with a warning); `editbuffer` stays lazy as above, and Save's `editbuffer` + `library` escalation does not deadlock against the drawer's own hold.
   - **Not in scope:** structural edits (add / remove / move a block, model swap — the split *type* is a model, so it is a label, not a control), a dual cab's second cab and harness settings such as Trails (no known live-write address), and any link to the tone library.
   - **Needs firmware 1.4+** (it relies on the device acknowledging every live write; the verb refuses older firmware). Hardware-validated on a Stadium XL, fw 1.4.1, 2026-11-13: ~9 ms per write, an outside param/bypass change on the page in ~15 ms, a snapshot switch in ~0.5 s (one buffer read), a preset load in under a second (no read).
   - **Lock tokens:** with `$HELIXGEN_LOCK_TOKEN` set the page writes under that session (sibling verbs carrying the token pass through its lease); a token whose session is gone stops the page's writes exactly as it stops any other verb.

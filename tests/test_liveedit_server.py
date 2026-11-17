@@ -10,7 +10,7 @@ from helixgen import locks
 from helixgen.device.client import HelixError
 from helixgen.device.subscribe import Event
 from helixgen.liveedit.lease import EditLease
-from helixgen.liveedit.server import make_server, run_subscriber
+from helixgen.liveedit.server import make_server, run_subscriber, serve
 from helixgen.liveedit.session import LiveError, LiveSession
 from tests.test_liveedit_session import DRIVE, FakeClient, FakeLease
 
@@ -353,6 +353,41 @@ def test_events_stream_opens_with_full_state_then_sends_deltas(srv):
         st.close()
 
 
+# --- serve() mounts the drawer -----------------------------------------------
+
+def test_serve_threads_the_drawer_into_the_server():
+    """serve() passes its drawer through to make_server so the real app serves
+    /library/* — not only the hand-built make_server in the unit tests."""
+    c = FakeClient()
+    s = LiveSession(c, lease=FakeLease())
+    s.load()
+
+    class _Drawer:
+        def public_state(self):
+            return {"connected": False, "tones": ["x"]}
+
+    holder = {}
+    ready = threading.Event()
+
+    def on_ready(url, server=None):
+        holder["server"] = server
+        ready.set()
+
+    t = threading.Thread(
+        target=lambda: serve(s, "127.0.0.1", 0, on_ready=on_ready,
+                             drawer=_Drawer()),
+        daemon=True)
+    t.start()
+    assert ready.wait(5)
+    server = holder["server"]
+    try:
+        code, _, data = req(server, "GET", "/library/state")
+        assert code == 200 and _j(data) == {"connected": False, "tones": ["x"]}
+    finally:
+        server.stopping = True
+        server.shutdown()
+
+
 # --- subscriber loop ---------------------------------------------------------
 
 class _FakeSub:
@@ -374,6 +409,48 @@ class _FakeSub:
         if isinstance(b, Exception):
             raise b
         return b
+
+
+class _DrawerSpy:
+    """Records drawer.apply_event calls and returns a scripted delta per kind."""
+    def __init__(self):
+        self.seen = []
+
+    def apply_event(self, ce):
+        self.seen.append(ce.kind)
+        if ce.kind == "add":
+            return {"kind": "add", "row": ce.row}
+        if ce.kind == "save":
+            return {"kind": "badge", "cid": ce.cid, "diff": "verifying"}
+        return None
+
+
+def test_run_subscriber_routes_content_events_to_the_drawer_and_sse(srv):
+    c, s, server = srv
+    d = _DrawerSpy()
+    pushed, scheduled = [], []
+    sub = _FakeSub(server, [
+        [Event(2001, "/addContent", [7, 1, {"cid_": 50, "name": "New"}])],
+        [Event(2001, "/saveContentRef", [7, 2, 50])],
+    ])
+    run_subscriber(server, sub, session=s, drawer=d,
+                   push=pushed.append, schedule=scheduled.append,
+                   error_pause=0)
+    assert d.seen == ["add", "save"]
+    # the add delta is pushed over the same SSE stream the page consumes;
+    # the save schedules an off-thread resolve_diff (never inline — it would
+    # stall the live chain stream on the shared library client)
+    assert {"kind": "add", "row": {"cid_": 50, "name": "New"}} in pushed
+    assert {"kind": "badge", "cid": 50, "diff": "verifying"} in pushed
+    assert scheduled == [50]
+
+
+def test_run_subscriber_without_a_drawer_ignores_content_events(srv):
+    c, s, server = srv
+    sub = _FakeSub(server, [
+        [Event(2001, "/addContent", [7, 1, {"cid_": 50, "name": "New"}])],
+    ])
+    run_subscriber(server, sub, session=s, error_pause=0)   # no drawer: no crash
 
 
 def test_run_subscriber_feeds_the_session_and_survives_a_flaky_stream(srv):

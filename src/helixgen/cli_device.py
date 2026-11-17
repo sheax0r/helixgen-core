@@ -5039,86 +5039,210 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     Needs firmware 1.4 or later (the page relies on the device acknowledging
     every live write, which older firmware does not do for bypass).
 
-    LOCKING: unlike the other live-ops verbs this does NOT hold a device lock
-    for its lifetime. It takes the `editbuffer` scope only while the page is
-    actually writing and releases it about 2 s after the last change, so
-    other verbs (`device load` of the next tone, `device copy`, …) keep
-    working while the page is open. If another helixgen process holds the
+    LIBRARY DRAWER: the page also carries the tone/IR LIBRARY drawer (this
+    supersedes the removed `helixgen library ui`): browse and search the
+    authored library, see how each tone lines up with the connected Helix
+    ("changed" badges, content diffs, stale-after-save reconcile), and
+    reconcile the two — copy a tone to the device, pull a device preset back
+    into the library, manage setlists, push / rename / delete IRs. Edit on a
+    drawer row loads that tone and follows it in the chain editor. Diff badges
+    are cached per device and refreshed in the background.
+
+    OFFLINE COLD START: the page binds and serves with NO device present — the
+    chain shows disconnected, the drawer's computer side (browse, search,
+    filters) works, and its device actions stay disabled. A background
+    discovery loop connects a Stadium when one appears (or wakes); no restart.
+
+    LOCKING: the `editbuffer` scope is NOT held for the lifetime — it is taken
+    only while the page is actually writing and released about 2 s after the
+    last change, so other verbs (`device load` of the next tone, `device copy`,
+    ...) keep working while the page is open. While a device is connected the
+    page DOES hold the `library` + `irs` advisory scopes for its lifetime
+    (pid-bound, for the drawer), so other helixgen processes cannot write
+    presets or IRs underneath it; if another process already holds them the
+    page still opens, with a warning. If another helixgen process holds the
     device, the page's writes are refused and it says who is driving. Save
-    takes `editbuffer` + `library` for the moment it runs. With
-    $HELIXGEN_LOCK_TOKEN set, the page writes under that session (other verbs
-    carrying the token pass through its lease), and a token whose session is
-    gone stops the page's writes just as it stops any other verb.
+    takes `editbuffer` + `library` for the moment it runs (no deadlock with
+    the drawer's own `library` hold). With $HELIXGEN_LOCK_TOKEN set, the page
+    writes under that session (other verbs carrying the token pass through its
+    lease), and a token whose session is gone stops the page's writes just as
+    it stops any other verb.
     """
+    import errno
     import signal
+    import threading
     import webbrowser
 
+    from helixgen import home, locks
+    from helixgen.device import discovery as _discovery
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.liveedit import server as _server
     from helixgen.liveedit import window as _window
+    from helixgen.liveedit.diffcache import DiffCache, default_path
+    from helixgen.liveedit.drawer import LibraryDrawer
     from helixgen.liveedit.lease import EditLease
+    from helixgen.liveedit.reconcile import run_reconcile
     from helixgen.liveedit.session import LiveError, LiveSession
 
     HelixClient, HelixError = _client()
 
+    # COLD START (hgc, task 8/9): the page binds and serves with NO device —
+    # the chain shows disconnected, the library drawer works offline — and a
+    # background discovery loop connects a Stadium when (and if) one appears.
+    session = LiveSession(None, liveness=True)     # no device yet; lease on connect
+    drawer = LibraryDrawer(home.library_dir())     # client + cache wired on connect
+
+    stop_evt = threading.Event()
     _win: list = []  # app-window child(ren) to close when the server stops (hgc-a7h)
+    # shared across the discovery/connect thread and this one
+    state: dict = {"srv": None, "infra": False, "h": None, "libc": None,
+                   "adv": None, "rejected": set()}
+
+    def _keepalive(dev_ip: str) -> None:
+        with contextlib.suppress(Exception):       # best-effort renewal
+            with locks.keep_alive(dev_ip):
+                stop_evt.wait()
+
+    def _push_badge(cid, verdict) -> None:
+        session.emit_library({"kind": "badge", "cid": cid, "diff": verdict})
+
+    def _reconcile() -> None:
+        with contextlib.suppress(Exception):
+            run_reconcile(drawer, on_update=_push_badge,
+                          should_stop=stop_evt.is_set)
+
+    def _settle(cid) -> None:
+        """A device save re-verifies that preset's diff off the subscriber
+        thread (resolve_diff takes the shared library-client lock), then pushes
+        the settled badge to the page."""
+        def _run() -> None:
+            with contextlib.suppress(Exception):
+                verdict = drawer.resolve_diff(cid)
+                if drawer.cache is not None:
+                    with contextlib.suppress(Exception):
+                        drawer.cache.save()
+                _push_badge(cid, verdict)
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _connect(found_ip: str) -> None:
+        """Bring a found device up: firmware gate, read the edit buffer, and
+        (first time only) wire the library drawer, advisory lease, subscriber
+        and diff reconcile. Tolerant of a flaky device — any failure returns
+        and the discovery loop retries."""
+        if found_ip in state["rejected"]:
+            return
+        try:
+            h = HelixClient(found_ip, port).connect()
+        except Exception:  # noqa: BLE001 — asleep/unreachable: the loop retries
+            return
+        try:
+            pi = h.product_info() or {}
+            fw = pi.get("firmware") or ""
+            parts = tuple(int(x) for x in fw.split(".")[:2])
+        except Exception:  # noqa: BLE001 — unknown firmware: let it try
+            pi, parts = {}, ()
+        if parts and parts < (1, 4):
+            click.echo(f"note: {found_ip} reports firmware {fw}; `device live` "
+                       "needs 1.4 or later. Ignoring this device.", err=True)
+            state["rejected"].add(found_ip)
+            with contextlib.suppress(Exception):
+                h.close()
+            return
+        dev_ip = getattr(h, "ip", None) or found_ip
+        session.lease = EditLease(dev_ip, enabled=not no_lock)
+        try:
+            session.connect_device(h)              # read the live edit buffer
+        except LiveError:
+            with contextlib.suppress(Exception):
+                h.close()
+            return                                 # keep discovering
+        old, state["h"] = state.get("h"), h        # drop a stale client (reconnect)
+        if old is not None and old is not h:
+            with contextlib.suppress(Exception):
+                old.close()
+        if state["infra"]:
+            return                                 # subscriber etc. already running
+        state["infra"] = True
+        click.echo(f"live editor: connected to {dev_ip}")
+
+        # The drawer runs on its OWN client (the editor's is single-threaded
+        # and busy with writes) + its OWN best-effort advisory library+irs lease.
+        serial = pi.get("serial")
+        libc = HelixClient(found_ip, port).connect()
+        state["libc"] = libc
+        cache = DiffCache(default_path(serial)) if serial else None
+        drawer.connect(lambda: libc, cache)
+        try:
+            state["adv"] = locks.acquire(dev_ip, ("library", "irs"),
+                                         label="helixgen device live",
+                                         pid=os.getpid(), timeout=0)
+        except Exception as e:  # noqa: BLE001 — contended/offline: degrade
+            click.echo(f"note: could not take the library lock ({e}); the "
+                       "drawer still runs — avoid other helixgen library "
+                       "writes while the page is open.", err=True)
+            state["adv"] = None
+        if state["adv"] is not None:
+            threading.Thread(target=_keepalive, args=(dev_ip,),
+                             daemon=True).start()
+        # One subscriber for the editor's lifetime: zmq reconnects its SUB
+        # socket across device drops, so a later drop + rediscovery reuses it.
+        # It also routes content-store events to the drawer (live badge/add/
+        # remove deltas over SSE; a save re-verifies its diff off-thread).
+        sub = HelixSubscriber(dev_ip, ports=(2001, 2003))
+        threading.Thread(
+            target=_server.run_subscriber, args=(state["srv"], sub),
+            kwargs={"session": session, "drawer": drawer,
+                    "push": session.emit_library, "schedule": _settle},
+            daemon=True).start()
+        threading.Thread(target=_reconcile, daemon=True).start()
+
+    def _discover():
+        """One discovery attempt -> a device ip or None. --ip / a persisted
+        record resolves instantly; otherwise one light mDNS browse."""
+        try:
+            return _discovery.resolve_ip(ip, warn=False)
+        except Exception:  # noqa: BLE001 — no record/flag: try the network
+            pass
+        try:
+            cands = _discovery.mdns_discover(timeout=1.0)
+        except Exception:  # noqa: BLE001 — multicast blocked/denied: no hit
+            cands = []
+        return cands[0].ip if cands else None
 
     def _ready(url: str, srv=None) -> None:
+        state["srv"] = srv
         click.echo(f"live editor: {url}")
         click.echo("every control on the page writes to the device; "
                    "Ctrl-C here stops the editor.")
         sys.stdout.flush()
-        if no_open:
-            return
-        if not force_browser:
-            # a chromeless app window; closing it stops the server
-            on_exit = srv.shutdown if srv is not None else None
-            proc = _window.launch(url, on_exit=on_exit)
-            if proc is not None:
-                _win.append(proc)      # so Ctrl-C can close it (hgc-a7h)
-                return
-        webbrowser.open(url)              # --browser, or no Chromium installed
+        if not no_open:
+            proc = None
+            if not force_browser:
+                on_exit = srv.shutdown if srv is not None else None
+                proc = _window.launch(url, on_exit=on_exit)
+                if proc is not None:
+                    _win.append(proc)      # so Ctrl-C can close it (hgc-a7h)
+            if proc is None:
+                webbrowser.open(url)       # --browser, or no Chromium installed
+        # serving now: start looking for a device (connects when one appears)
+        threading.Thread(
+            target=lambda: _server.run_discovery(
+                _discover, _connect, connected=lambda: session.connected,
+                should_stop=stop_evt.is_set),
+            daemon=True).start()
 
     def _term(*_a):
         raise KeyboardInterrupt
 
-    import errno
+    for sig in ("SIGTERM", "SIGHUP"):              # stop cleanly when killed
+        try:
+            signal.signal(getattr(signal, sig), _term)
+        except (ValueError, AttributeError):
+            pass                                   # not the main thread / no such signal
 
-    lease = None
     try:
-        with HelixClient(ip, port) as h:
-            dev_ip = getattr(h, "ip", None) or ip
-            try:
-                fw = (h.product_info() or {}).get("firmware") or ""
-                parts = tuple(int(x) for x in fw.split(".")[:2])
-            except Exception:  # noqa: BLE001 — unknown firmware: let it try
-                parts = ()
-            if parts and parts < (1, 4):
-                raise click.ClickException(
-                    f"`device live` needs Stadium firmware 1.4 or later (this "
-                    f"device reports {fw}).")
-            lease = EditLease(dev_ip, enabled=not no_lock)
-            session = LiveSession(h, lease=lease, liveness=True)
-            session.load()
-            for sig in ("SIGTERM", "SIGHUP"):          # stop cleanly when killed
-                try:
-                    signal.signal(getattr(signal, sig), _term)
-                except (ValueError, AttributeError):
-                    pass                               # not the main thread / no such signal
-            try:
-                _server.serve(session, "127.0.0.1", http_port,
-                              subscriber=HelixSubscriber(dev_ip, ports=(2001, 2003)),
-                              on_ready=_ready)
-            finally:
-                # hgc-a7h: Ctrl-C stops the server but leaves the chromeless app
-                # window showing a dead 127.0.0.1 — close it when we stop. (A
-                # window the user closed is already exited, so this is a no-op.)
-                for proc in _win:
-                    _window.terminate(proc)
-    except LiveError as e:
-        raise click.ClickException(str(e)) from e
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
+        _server.serve(session, "127.0.0.1", http_port, on_ready=_ready,
+                      drawer=drawer)
     except OSError as e:
         if e.errno in (errno.EADDRINUSE, errno.EACCES):
             raise click.ClickException(
@@ -5126,8 +5250,20 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
                 "another `helixgen device live` already running? Pass "
                 "--port-http to use a different port.") from e
         if e.errno == errno.EPIPE:
-            return                                     # our stdout went away: just stop
+            return                                 # our stdout went away: just stop
         raise click.ClickException(str(e)) from e
     finally:
+        stop_evt.set()
+        for proc in _win:                          # close a dead 127.0.0.1 window
+            _window.terminate(proc)
+        lease = session.lease
         if lease is not None:
-            lease.release(final=True)
+            with contextlib.suppress(Exception):
+                lease.release(final=True)
+        if state["adv"] is not None:
+            with contextlib.suppress(Exception):
+                state["adv"].release()
+        for c in (state["h"], state["libc"]):
+            if c is not None:
+                with contextlib.suppress(Exception):
+                    c.close()
