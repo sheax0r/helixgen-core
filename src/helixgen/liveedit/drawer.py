@@ -67,6 +67,15 @@ class LibraryDrawer:
             (lambda: _NonClosing(client_factory())) if client_factory else None,
             library_root=library_root, **session_kw)
 
+    def connect(self, client_factory: Callable[[], Any],
+                cache: Any = None) -> None:
+        """Wire the dedicated library client + diff cache once a device is
+        found (offline cold-start builds the drawer with neither). The factory
+        is wrapped the same way the constructor wraps it, so actions never
+        close the shared client."""
+        self.cache = cache
+        self._session._client_factory = lambda: _NonClosing(client_factory())
+
     def _hsp_hash(self, hsp) -> Optional[str]:
         """sha256 of the library .hsp file, the cache's library-side key."""
         if not hsp:

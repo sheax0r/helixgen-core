@@ -254,6 +254,33 @@ def run_subscriber(server, subscriber, *, session: LiveSession = None,
                 logger.exception("live editor: event handling failed")
 
 
+def run_discovery(discover, connect, *, connected, should_stop,
+                  interval: float = 2.0, sleep=time.sleep) -> None:
+    """Poll for a device and connect on the first sighting.
+
+    ``discover()`` returns a device ip (or ``None``); ``connect(ip)`` does the
+    bring-up and is expected to flip ``connected()`` to True. While
+    ``connected()`` is True nothing is attempted, so ``connect`` runs at most
+    once per connection — when the device later drops and ``connected()`` goes
+    back to False, polling resumes and reconnects. A ``discover`` or
+    ``connect`` error is logged and the loop keeps going (the device network
+    is flaky)."""
+    while not should_stop():
+        if not connected():
+            ip = None
+            try:
+                ip = discover()
+            except Exception as exc:  # noqa: BLE001 — a flaky scan is normal
+                logger.debug("live editor: discovery failed: %r", exc)
+            if ip:
+                try:
+                    connect(ip)
+                except Exception:  # noqa: BLE001 — unreachable/asleep: retry
+                    logger.debug("live editor: connect to %s failed", ip,
+                                 exc_info=True)
+        sleep(interval)
+
+
 def serve(session: LiveSession, host: str = "127.0.0.1", port: int = 8765,
           subscriber=None, on_ready=None, *, drawer=None) -> None:
     """Serve until interrupted. ``on_ready(url, srv)`` is called once

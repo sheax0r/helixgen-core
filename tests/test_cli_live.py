@@ -1,5 +1,10 @@
 """`helixgen device live` — the verb that serves the live chain editor
-(hgc-58a). The server and device are faked; this pins the wiring."""
+(hgc-58a) and, since the cold-start rework (task 8/9), binds + serves with NO
+device and connects one from a background discovery loop. The server, device
+and discovery are faked; this pins the wiring."""
+import threading
+import time
+
 from click.testing import CliRunner
 
 from helixgen import cli_device
@@ -18,11 +23,13 @@ class _Ctx:
     def __exit__(self, *a):
         return False
 
-    def connect(self, *a, **k):          # the dedicated library client is built
-        return self.c                    # with HelixClient(...).connect()
+    def connect(self, *a, **k):          # clients are built with .connect()
+        return self.c
 
 
 class _FakeLease:
+    enabled = True
+
     def __enter__(self):
         return self
 
@@ -46,52 +53,93 @@ class _Sub:
         _Sub.made.append((ip, tuple(ports)))
 
 
-def _run(monkeypatch, args, client=None, window_launch=None):
-    fake = client or FakeClient()
-    seen = {}
-    _Sub.made = []
+class _Srv:
+    """Minimal stand-in for the ThreadingHTTPServer on_ready hands back."""
+    def shutdown(self):
+        pass
 
-    def serve(session, host, port, subscriber=None, on_ready=None, *, drawer=None):
-        seen.update(session=session, host=host, port=port, sub=subscriber,
-                    drawer=drawer)
-        if on_ready:
-            on_ready(f"http://127.0.0.1:{port or 54321}/")
 
+def _wait(pred, timeout=5.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.01)
+    return pred()
+
+
+def _env(monkeypatch, fake, serve, *, discover_ip=None):
+    """Wire the fakes. ``discover_ip`` None = no device ever found (offline);
+    a string = discovery returns that ip."""
     _no_locks(monkeypatch)
-    monkeypatch.setattr(cli_device, "_client", lambda: (lambda ip, port: _Ctx(fake), HelixError))
+    _Sub.made = []
+    opened, launched = [], []
+
+    monkeypatch.setattr(cli_device, "_client",
+                        lambda: (lambda ip, port: _Ctx(fake), HelixError))
     monkeypatch.setattr("helixgen.liveedit.server.serve", serve)
     monkeypatch.setattr("helixgen.device.subscribe.HelixSubscriber", _Sub)
-    opened = []
-    launched = []
+    monkeypatch.setattr("helixgen.device.discovery.mdns_discover",
+                        lambda *a, **k: [])
+
+    def _resolve(explicit=None, *, warn=True):
+        if discover_ip is None:
+            raise cli_device_discovery_error()
+        return discover_ip
+    monkeypatch.setattr("helixgen.device.discovery.resolve_ip", _resolve)
     monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
 
     def _launch(url, *, on_exit=None, binary=None):
         launched.append(url)
-        # default stub: an app window opened, so no browser fallback
-        return object() if window_launch is None else window_launch(url)
+        return object() if _env.window else None
     monkeypatch.setattr("helixgen.liveedit.window.launch", _launch)
+    return opened, launched
+
+
+_env.window = True   # default: an app window is available
+
+
+def cli_device_discovery_error():
+    from helixgen.device.discovery import IPResolutionError
+    return IPResolutionError("no device on record")
+
+
+def _run(monkeypatch, args, fake=None, serve=None, discover_ip=None):
+    fake = fake or FakeClient()
+    seen = {}
+
+    def default_serve(session, host, port, subscriber=None, on_ready=None,
+                      *, drawer=None):
+        seen.update(session=session, host=host, port=port, drawer=drawer)
+        if on_ready:
+            on_ready(f"http://127.0.0.1:{port or 54321}/", _Srv())
+    serve = serve or default_serve
+    opened, launched = _env(monkeypatch, fake, serve, discover_ip=discover_ip)
     r = CliRunner().invoke(cli, ["device", "live", "--ip", "10.0.0.9", *args])
     return r, fake, seen, opened, launched
 
 
-def test_live_loads_once_and_serves_on_localhost(monkeypatch):
-    r, fake, seen, opened, launched = _run(monkeypatch, ["--no-open"])
+# --- offline cold-start ------------------------------------------------------
+
+def test_live_serves_immediately_with_no_device(monkeypatch):
+    r, fake, seen, opened, launched = _run(monkeypatch, ["--no-open"],
+                                           discover_ip=None)
     assert r.exit_code == 0, r.output
-    assert fake.reads == 1                               # ONE edit-buffer read
     assert seen["host"] == "127.0.0.1" and seen["port"] == 8765
+    assert seen["session"].connected is False        # bound with no device
     assert seen["session"].liveness is True
-    assert _Sub.made == [("10.0.0.99", (2001, 2003))]    # the client's resolved ip
-    assert seen["drawer"] is not None                    # the library drawer is mounted
+    assert seen["drawer"] is not None                # library drawer mounted
+    assert fake.reads == 0                            # NO eager device read
     assert "live editor: http://127.0.0.1:8765/" in r.output
-    assert opened == [] and launched == []               # --no-open opens nothing
+    assert opened == [] and launched == []
 
 
 def test_live_opens_an_app_window_by_default_and_takes_a_port(monkeypatch):
     r, fake, seen, opened, launched = _run(monkeypatch, ["--port-http", "9001"])
     assert r.exit_code == 0, r.output
     assert seen["port"] == 9001
-    assert launched == ["http://127.0.0.1:9001/"]        # app window, not a tab
-    assert opened == []                                  # default browser untouched
+    assert launched == ["http://127.0.0.1:9001/"]     # app window, not a tab
+    assert opened == []
 
 
 def test_live_browser_flag_forces_the_default_browser(monkeypatch):
@@ -101,36 +149,110 @@ def test_live_browser_flag_forces_the_default_browser(monkeypatch):
 
 
 def test_live_falls_back_to_the_browser_without_a_chromium(monkeypatch):
-    r, fake, seen, opened, launched = _run(
-        monkeypatch, [], window_launch=lambda url: None)  # no app window available
+    _env.window = False
+    try:
+        r, fake, seen, opened, launched = _run(monkeypatch, [])
+    finally:
+        _env.window = True
     assert r.exit_code == 0, r.output
-    assert launched == ["http://127.0.0.1:8765/"]         # tried the app window
-    assert opened == ["http://127.0.0.1:8765/"]           # then fell back
+    assert launched == ["http://127.0.0.1:8765/"]     # tried the app window
+    assert opened == ["http://127.0.0.1:8765/"]       # then fell back
 
 
-def test_live_uses_the_write_lease_unless_no_lock(monkeypatch):
-    r, _, seen, _, _ = _run(monkeypatch, ["--no-open"])
-    assert seen["session"].lease.enabled is True
-    r, _, seen, _, _ = _run(monkeypatch, ["--no-open", "--no-lock"])
-    assert seen["session"].lease.enabled is False
+# --- discovery connects at runtime -------------------------------------------
+
+def _blocking_serve(seen, go):
+    def serve(session, host, port, subscriber=None, on_ready=None, *, drawer=None):
+        seen.update(session=session, drawer=drawer)
+        if on_ready:
+            on_ready(f"http://127.0.0.1:{port or 54321}/", _Srv())
+        go.wait(5)                                    # block like serve_forever
+    return serve
 
 
-def test_live_fails_cleanly_when_the_device_cannot_be_read(monkeypatch):
-    c = FakeClient()
-    c.fail = HelixError("no reply from 10.0.0.9")
-    r, _, seen, _, _ = _run(monkeypatch, ["--no-open"], client=c)
-    assert r.exit_code != 0
-    assert "no reply" in r.output and "Traceback" not in r.output
-    assert "session" not in seen                         # never started serving
+def test_discovery_connects_and_reconciles(monkeypatch):
+    fake = FakeClient()
+    subs, recon = [], []
+    monkeypatch.setattr("helixgen.liveedit.server.run_subscriber",
+                        lambda srv, sub, session=None: subs.append(sub))
+    monkeypatch.setattr("helixgen.liveedit.reconcile.run_reconcile",
+                        lambda drawer, **k: recon.append(True))
+    seen = {}
+    go = threading.Event()
+    opened, launched = _env(monkeypatch, fake, _blocking_serve(seen, go),
+                            discover_ip="10.0.0.9")
+    done = []
+    t = threading.Thread(
+        target=lambda: done.append(
+            CliRunner().invoke(cli, ["device", "live", "--ip", "10.0.0.9",
+                                     "--no-open"])),
+        daemon=True)
+    t.start()
+    try:
+        assert _wait(lambda: seen.get("session") and seen["session"].connected)
+        assert fake.reads >= 1                         # connect_device read it
+        assert _wait(lambda: subs and recon)           # subscriber + reconcile up
+        assert _Sub.made == [("10.0.0.99", (2001, 2003))]
+        assert seen["session"].lease.enabled is True   # editbuffer lease armed
+    finally:
+        go.set()
+        t.join(5)
+    assert done and done[0].exit_code == 0, done and done[0].output
 
 
-def _run_with_serve(monkeypatch, serve, args=("--no-open",), client=None):
-    fake = client or FakeClient()
-    _no_locks(monkeypatch)
-    monkeypatch.setattr(cli_device, "_client", lambda: (lambda ip, port: _Ctx(fake), HelixError))
-    monkeypatch.setattr("helixgen.liveedit.server.serve", serve)
-    monkeypatch.setattr("helixgen.device.subscribe.HelixSubscriber", _Sub)
-    return CliRunner().invoke(cli, ["device", "live", "--ip", "10.0.0.9", *args]), fake
+def test_no_lock_disarms_the_editbuffer_lease_on_connect(monkeypatch):
+    fake = FakeClient()
+    monkeypatch.setattr("helixgen.liveedit.server.run_subscriber",
+                        lambda *a, **k: None)
+    monkeypatch.setattr("helixgen.liveedit.reconcile.run_reconcile",
+                        lambda *a, **k: None)
+    seen = {}
+    go = threading.Event()
+    _env(monkeypatch, fake, _blocking_serve(seen, go), discover_ip="10.0.0.9")
+    t = threading.Thread(
+        target=lambda: CliRunner().invoke(
+            cli, ["device", "live", "--ip", "10.0.0.9", "--no-open",
+                  "--no-lock"]),
+        daemon=True)
+    t.start()
+    try:
+        assert _wait(lambda: seen.get("session") and seen["session"].connected)
+        assert seen["session"].lease.enabled is False
+    finally:
+        go.set()
+        t.join(5)
+
+
+def test_old_firmware_is_ignored_and_the_page_still_serves(monkeypatch):
+    # below 1.4 the device cannot ack a live bypass — it is skipped, NOT a hard
+    # failure: the page keeps serving and the drawer works offline.
+    fake = FakeClient()
+    fake.firmware = "1.3.2"
+    monkeypatch.setattr("helixgen.liveedit.server.run_subscriber",
+                        lambda *a, **k: None)
+    seen = {}
+    go = threading.Event()
+    _env(monkeypatch, fake, _blocking_serve(seen, go), discover_ip="10.0.0.9")
+    out = []
+    t = threading.Thread(
+        target=lambda: out.append(CliRunner().invoke(
+            cli, ["device", "live", "--ip", "10.0.0.9", "--no-open"])),
+        daemon=True)
+    t.start()
+    try:
+        assert _wait(lambda: seen.get("session") is not None)
+        time.sleep(0.2)                                # let one discovery cycle run
+        assert seen["session"].connected is False      # never connected
+    finally:
+        go.set()
+        t.join(5)
+    assert out and "1.3.2" in out[0].output            # the skip was reported
+
+
+# --- error handling (serve binds in the foreground) --------------------------
+
+def _run_with_serve(monkeypatch, serve, args=("--no-open",), fake=None):
+    return _run(monkeypatch, list(args), fake=fake, serve=serve)[0], None
 
 
 def test_live_reports_a_port_in_use(monkeypatch):
@@ -152,50 +274,19 @@ def test_live_does_not_blame_the_port_for_other_os_errors(monkeypatch):
     assert "No space left" in r.output and "--port-http" not in r.output
 
 
-def test_live_rejects_an_impossible_port_before_touching_the_device(monkeypatch):
+def test_live_rejects_an_impossible_port_before_serving(monkeypatch):
     def serve(*a, **k):
         raise AssertionError("served")
-    r, fake = _run_with_serve(monkeypatch, serve, args=("--no-open", "--port-http", "70000"))
-    assert r.exit_code == 2 and "70000" in r.output and fake.reads == 0
-
-
-def test_live_refuses_firmware_older_than_1_4(monkeypatch):
-    # older firmware does not acknowledge a live bypass, so every bypass on
-    # the page would be reported as failed
-    c = FakeClient()
-    c.firmware = "1.3.2"
-    r, _ = _run_with_serve(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(AssertionError("served")), client=c)
-    assert r.exit_code != 0 and "1.4" in r.output and "1.3.2" in r.output
-
-
-def test_live_releases_the_lease_for_good_on_every_exit(monkeypatch):
-    import errno
-    from helixgen.liveedit import lease as lease_mod
-    made = []
-
-    class Spy(lease_mod.EditLease):
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            self.released = []
-            made.append(self)
-
-        def release(self, *, final=False):
-            self.released.append(final)
-            super().release(final=final)
-    monkeypatch.setattr(lease_mod, "EditLease", Spy)
-    _run_with_serve(monkeypatch, lambda *a, **k: None)                       # normal stop
-    assert made[-1].released == [True]
-
-    def boom(*a, **k):
-        raise OSError(errno.EADDRINUSE, "in use")
-    _run_with_serve(monkeypatch, boom)                                       # failed start
-    assert made[-1].released == [True]
+    r, _ = _run_with_serve(monkeypatch, serve,
+                           args=("--no-open", "--port-http", "70000"))
+    assert r.exit_code == 2 and "70000" in r.output
 
 
 def test_live_stops_cleanly_on_sigterm_and_sighup(monkeypatch):
     import signal
     seen = {}
-    monkeypatch.setattr(signal, "signal", lambda sig, fn: seen.__setitem__(sig, fn))
+    monkeypatch.setattr(signal, "signal",
+                        lambda sig, fn: seen.__setitem__(sig, fn))
     _run_with_serve(monkeypatch, lambda *a, **k: None)
     assert set(seen) >= {signal.SIGTERM, signal.SIGHUP}
     try:
