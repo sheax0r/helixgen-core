@@ -174,7 +174,7 @@ def test_discovery_connects_and_reconciles(monkeypatch):
     fake = FakeClient()
     subs, recon = [], []
     monkeypatch.setattr("helixgen.liveedit.server.run_subscriber",
-                        lambda srv, sub, session=None: subs.append(sub))
+                        lambda srv, sub, **k: subs.append((sub, k)))
     monkeypatch.setattr("helixgen.liveedit.reconcile.run_reconcile",
                         lambda drawer, **k: recon.append(True))
     seen = {}
@@ -193,6 +193,9 @@ def test_discovery_connects_and_reconciles(monkeypatch):
         assert fake.reads >= 1                         # connect_device read it
         assert _wait(lambda: subs and recon)           # subscriber + reconcile up
         assert _Sub.made == [("10.0.0.99", (2001, 2003))]
+        # the subscriber is wired to route content events to the drawer over SSE
+        assert subs[0][1]["drawer"] is seen["drawer"]
+        assert callable(subs[0][1]["push"]) and callable(subs[0][1]["schedule"])
         assert seen["session"].lease.enabled is True   # editbuffer lease armed
     finally:
         go.set()

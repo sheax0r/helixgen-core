@@ -5093,6 +5093,19 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
             run_reconcile(drawer, on_update=_push_badge,
                           should_stop=stop_evt.is_set)
 
+    def _settle(cid) -> None:
+        """A device save re-verifies that preset's diff off the subscriber
+        thread (resolve_diff takes the shared library-client lock), then pushes
+        the settled badge to the page."""
+        def _run() -> None:
+            with contextlib.suppress(Exception):
+                verdict = drawer.resolve_diff(cid)
+                if drawer.cache is not None:
+                    with contextlib.suppress(Exception):
+                        drawer.cache.save()
+                _push_badge(cid, verdict)
+        threading.Thread(target=_run, daemon=True).start()
+
     def _connect(found_ip: str) -> None:
         """Bring a found device up: firmware gate, read the edit buffer, and
         (first time only) wire the library drawer, advisory lease, subscriber
@@ -5155,9 +5168,14 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
                              daemon=True).start()
         # One subscriber for the editor's lifetime: zmq reconnects its SUB
         # socket across device drops, so a later drop + rediscovery reuses it.
+        # It also routes content-store events to the drawer (live badge/add/
+        # remove deltas over SSE; a save re-verifies its diff off-thread).
         sub = HelixSubscriber(dev_ip, ports=(2001, 2003))
-        threading.Thread(target=_server.run_subscriber, args=(state["srv"], sub),
-                         kwargs={"session": session}, daemon=True).start()
+        threading.Thread(
+            target=_server.run_subscriber, args=(state["srv"], sub),
+            kwargs={"session": session, "drawer": drawer,
+                    "push": session.emit_library, "schedule": _settle},
+            daemon=True).start()
         threading.Thread(target=_reconcile, daemon=True).start()
 
     def _discover():

@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from helixgen import localguard
 from helixgen.liveedit import intents
+from helixgen.liveedit.events import decode_content_event
 from helixgen.liveedit.session import LiveError, LiveSession
 from helixgen.libraryui.session import LibraryError
 
@@ -231,12 +232,33 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
     return srv
 
 
+def _dispatch_content(drawer, ev, push, schedule) -> None:
+    """One PUB event -> the library drawer. ``apply_event`` is pure (no device
+    I/O), so it runs inline; a ``save`` only SCHEDULES the diff re-verify —
+    ``resolve_diff`` hits the shared, mutate-locked library client and must
+    never run on this thread, or a busy library action would stall the live
+    chain stream."""
+    ce = decode_content_event(ev)
+    if ce is None:
+        return
+    delta = drawer.apply_event(ce)
+    if delta and push is not None:
+        push(delta)
+    if ce.kind == "save" and ce.cid is not None and schedule is not None:
+        schedule(ce.cid)
+
+
 def run_subscriber(server, subscriber, *, session: LiveSession = None,
+                   drawer=None, push=None, schedule=None,
                    error_pause: float = 0.5) -> None:
     """Drain the device's PUB stream(s) into the session until the server
     stops. ``subscriber`` is a context manager exposing ``poll(timeout)`` (a
     :class:`HelixSubscriber`, or a fake in tests). A flaky stream must never
-    kill the loop."""
+    kill the loop.
+
+    When ``drawer`` is given, each event is ALSO offered to the library drawer:
+    ``push(delta)`` sends a drawer delta to the page (over the same SSE stream),
+    and ``schedule(cid)`` runs a save's diff re-verify off-thread."""
     session = session if session is not None else server.session
     with subscriber as sub:
         while not server.stopping:
@@ -250,6 +272,9 @@ def run_subscriber(server, subscriber, *, session: LiveSession = None,
             try:
                 session.handle_events(events)
                 session.tick()
+                if drawer is not None:
+                    for ev in events:
+                        _dispatch_content(drawer, ev, push, schedule)
             except Exception:  # noqa: BLE001
                 logger.exception("live editor: event handling failed")
 

@@ -411,6 +411,48 @@ class _FakeSub:
         return b
 
 
+class _DrawerSpy:
+    """Records drawer.apply_event calls and returns a scripted delta per kind."""
+    def __init__(self):
+        self.seen = []
+
+    def apply_event(self, ce):
+        self.seen.append(ce.kind)
+        if ce.kind == "add":
+            return {"kind": "add", "row": ce.row}
+        if ce.kind == "save":
+            return {"kind": "badge", "cid": ce.cid, "diff": "verifying"}
+        return None
+
+
+def test_run_subscriber_routes_content_events_to_the_drawer_and_sse(srv):
+    c, s, server = srv
+    d = _DrawerSpy()
+    pushed, scheduled = [], []
+    sub = _FakeSub(server, [
+        [Event(2001, "/addContent", [7, 1, {"cid_": 50, "name": "New"}])],
+        [Event(2001, "/saveContentRef", [7, 2, 50])],
+    ])
+    run_subscriber(server, sub, session=s, drawer=d,
+                   push=pushed.append, schedule=scheduled.append,
+                   error_pause=0)
+    assert d.seen == ["add", "save"]
+    # the add delta is pushed over the same SSE stream the page consumes;
+    # the save schedules an off-thread resolve_diff (never inline — it would
+    # stall the live chain stream on the shared library client)
+    assert {"kind": "add", "row": {"cid_": 50, "name": "New"}} in pushed
+    assert {"kind": "badge", "cid": 50, "diff": "verifying"} in pushed
+    assert scheduled == [50]
+
+
+def test_run_subscriber_without_a_drawer_ignores_content_events(srv):
+    c, s, server = srv
+    sub = _FakeSub(server, [
+        [Event(2001, "/addContent", [7, 1, {"cid_": 50, "name": "New"}])],
+    ])
+    run_subscriber(server, sub, session=s, error_pause=0)   # no drawer: no crash
+
+
 def test_run_subscriber_feeds_the_session_and_survives_a_flaky_stream(srv):
     c, s, server = srv
     sub = _FakeSub(server, [
