@@ -62,6 +62,7 @@ class LibraryDrawer:
         self.irs_root = irs_root
         self.cache = cache
         self._library_root = library_root
+        self._known: set = set()  # device cids we already show (echo guard)
         self._session = LibrarySession(
             (lambda: _NonClosing(client_factory())) if client_factory else None,
             library_root=library_root, **session_kw)
@@ -84,6 +85,9 @@ class LibraryDrawer:
         st = self._session.public_state()
         for tone in st.get("tones", []):
             for v in tone.get("variants", []):
+                cid = v.get("device_cid")
+                if cid is not None:
+                    self._known.add(cid)
                 if v.get("presence") != "both":
                     continue
                 h = self._hsp_hash(v.get("hsp"))
@@ -126,5 +130,31 @@ class LibraryDrawer:
             raise LibraryError(f"unknown library action {name!r}", status=404)
         return fn(self._session, payload or {})
 
-    def apply_event(self, ev) -> Optional[dict]:
-        return None  # filled in by a later task
+    def apply_event(self, ce) -> Optional[dict]:
+        """React to a decoded content-store :class:`ContentEvent`. Returns a
+        drawer-state delta for the page (or ``None`` for an echo / irrelevant
+        event). A ``save`` invalidates that cid's cached verdict so the badge
+        re-verifies; the caller schedules a ``resolve_diff`` on the library
+        client to settle it."""
+        if ce is None:
+            return None
+        if ce.kind == "save":
+            if self.cache is not None and ce.cid is not None:
+                self.cache.invalidate(str(ce.cid))
+            return {"kind": "badge", "cid": ce.cid, "diff": "verifying"}
+        if ce.kind in ("add", "update"):
+            if ce.kind == "add" and ce.cid in self._known:
+                return None  # echo of a row we already show
+            if ce.cid is not None:
+                self._known.add(ce.cid)
+            return {"kind": ce.kind, "row": ce.row}
+        if ce.kind == "remove":
+            for c in (ce.cids or []):
+                self._known.discard(c)
+            return {"kind": "remove", "cids": list(ce.cids or [])}
+        if ce.kind == "setlist_members":
+            return {"kind": "setlist_members", "setlist_cid": ce.container_cid,
+                    "members": ce.members}
+        if ce.kind == "load":
+            return {"kind": "active", "cid": ce.cid}
+        return None
