@@ -5039,16 +5039,34 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     Needs firmware 1.4 or later (the page relies on the device acknowledging
     every live write, which older firmware does not do for bypass).
 
-    LOCKING: unlike the other live-ops verbs this does NOT hold a device lock
-    for its lifetime. It takes the `editbuffer` scope only while the page is
-    actually writing and releases it about 2 s after the last change, so
-    other verbs (`device load` of the next tone, `device copy`, …) keep
-    working while the page is open. If another helixgen process holds the
+    LIBRARY DRAWER: the page also carries the tone/IR LIBRARY drawer (this
+    supersedes the removed `helixgen library ui`): browse and search the
+    authored library, see how each tone lines up with the connected Helix
+    ("changed" badges, content diffs, stale-after-save reconcile), and
+    reconcile the two — copy a tone to the device, pull a device preset back
+    into the library, manage setlists, push / rename / delete IRs. Edit on a
+    drawer row loads that tone and follows it in the chain editor. Diff badges
+    are cached per device and refreshed in the background.
+
+    OFFLINE COLD START: the page binds and serves with NO device present — the
+    chain shows disconnected, the drawer's computer side (browse, search,
+    filters) works, and its device actions stay disabled. A background
+    discovery loop connects a Stadium when one appears (or wakes); no restart.
+
+    LOCKING: the `editbuffer` scope is NOT held for the lifetime — it is taken
+    only while the page is actually writing and released about 2 s after the
+    last change, so other verbs (`device load` of the next tone, `device copy`,
+    ...) keep working while the page is open. While a device is connected the
+    page DOES hold the `library` + `irs` advisory scopes for its lifetime
+    (pid-bound, for the drawer), so other helixgen processes cannot write
+    presets or IRs underneath it; if another process already holds them the
+    page still opens, with a warning. If another helixgen process holds the
     device, the page's writes are refused and it says who is driving. Save
-    takes `editbuffer` + `library` for the moment it runs. With
-    $HELIXGEN_LOCK_TOKEN set, the page writes under that session (other verbs
-    carrying the token pass through its lease), and a token whose session is
-    gone stops the page's writes just as it stops any other verb.
+    takes `editbuffer` + `library` for the moment it runs (no deadlock with
+    the drawer's own `library` hold). With $HELIXGEN_LOCK_TOKEN set, the page
+    writes under that session (other verbs carrying the token pass through its
+    lease), and a token whose session is gone stops the page's writes just as
+    it stops any other verb.
     """
     import errno
     import signal

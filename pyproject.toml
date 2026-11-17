@@ -81,9 +81,6 @@ include = ["helixgen*"]
 # The live chain editor's page (`helixgen device live`): one self-contained
 # HTML file served from the package directory. 0.60.0 shipped without it.
 "helixgen.liveedit" = ["page.html", "_intents.json"]
-# The library hub's page (`helixgen library ui`): one self-contained HTML file
-# served from the package directory, same as liveedit.
-"helixgen.libraryui" = ["page.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

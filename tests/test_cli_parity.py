@@ -295,7 +295,8 @@ LIVE_SURFACES: list[tuple[list[str], list[str]]] = [
       "WRITES TO THE DEVICE IMMEDIATELY", "RAW range",
       "hardware's own Save", "user pool", "LIBRARY is NOT updated",
       "device to-hsp", "No structural editing",
-      "does NOT hold a device lock for its lifetime", "Ctrl-C"]),
+      "`editbuffer` scope is NOT held for the lifetime", "Ctrl-C",
+      "LIBRARY DRAWER", "OFFLINE COLD START", "library ui"]),
     (["device", "set-param"], ["device live"]),
     # the two facts an agent needs so it cannot discard or misplace hand-dialed
     # work: is the buffer unsaved, and which pool preset holds the tone
@@ -624,3 +625,11 @@ def test_measure_window_default_is_ten_seconds(path):
     assert "[default: 10.0]" in rendered, (
         f"{' '.join(path)}: rendered --seconds help does not advertise "
         f"[default: 10.0]: {rendered!r}")
+
+
+def test_library_ui_command_removed():
+    """`library ui` was folded into `device live` (the library drawer)."""
+    from click.testing import CliRunner
+    from helixgen.cli_library import library
+    assert "ui" not in library.commands
+    assert CliRunner().invoke(library, ["ui"]).exit_code != 0

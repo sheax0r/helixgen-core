@@ -463,7 +463,11 @@ is the stream to follow for live tracking — polling `/EditBufferStateGet` is
 | `/setEditBuffer` | `[origin, seq, <_sbepgsm blob>]` | A preset was loaded: the WHOLE new live buffer, decodable exactly like the `/EditBufferStateGet` reply — a preset switch needs no read. |
 | `/loadContentRef` | `[origin, seq, {cid_, name, posi, cctp, type, …}]` | The loaded preset's identity; trails its `/setEditBuffer` by ~70 ms. Also sent alone for a rename/recolor of the loaded preset. |
 | `/setPropertyValue` | `[origin, seq, <lavppgsm value blob>]` | Dotted-key properties, as the same value blob `/PropertyValueGet` answers with (`settings.decode_value_blob`). `volatile.preset.edited` is the **unsaved-edits flag** (1 after the first edit, 0 after a save or a load) — also readable with `/PropertyValueGet`. The edit buffer's own `hist` field is NOT that flag: it is still 1 right after a save. |
-| `/saveContentRef` | — | Follows an in-place save (`/SavePresetWithCID`). |
+| `/saveContentRef` | `[origin, seq, cid]` | Follows an in-place save (`/SavePresetWithCID`). A preset's `cid_` is **stable across an in-place save** (the same row is updated, not re-created), so a library row keyed by `cid` survives a device Save. |
+| `/addContent` | `[origin, seq, {cid_, ccid, name, cctp, type, …}]` | A content row (preset, setlist, reference) was created. |
+| `/updateContent` | `[origin, seq, {cid_, ccid, name, …}]` | A content row changed in place (rename, recolor, save). |
+| `/removeContent` | `[origin, seq, container_cid, [cids…]]` | Rows removed from a container (`-2` = the pool). |
+| `/updateContainerContent` | `[origin, seq, container_cid, [member cids…]]` | A container's WHOLE new member list (setlist add / remove / reorder). |
 | `/setSelectedBlock`, `/setSourceEnable` | — | UI selection / controller-source chatter around loads and snapshot switches; no edit-buffer content. |
 
 **Acks (2002).** `/ParamValueSet` and `/BlockEnableSet` are both answered
