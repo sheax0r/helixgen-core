@@ -933,3 +933,14 @@ def test_set_room_level_tames_the_lane_without_touching_structure(single_ir_body
 def test_set_room_level_requires_a_room_ir_treatment(single_ir_body, lib, irs):
     with pytest.raises(venue.VenueError, match="room-IR"):
         venue.set_room_level(single_ir_body, {"treatment": "none"}, lib, -45.0)
+
+
+@needs_sf
+def test_set_room_level_below_footswitch_off_warns_and_stays_coherent(single_ir_body, lib, irs):
+    r = venue.apply_venue(single_ir_body, "headphones", lib, irs)   # ROOM MIC min=-60
+    out = venue.set_room_level(r.body, r.venue_detail, lib, -70.0)
+    room = [x for x in _flow_blocks(out.body) if x["slot"][0].get("irhash") == ROOM][0]
+    ctrl = room["slot"][0]["params"]["Level"]["controller"]
+    assert ctrl["max"] == pytest.approx(-70.0)
+    assert ctrl["min"] <= ctrl["max"]                               # never inverted
+    assert any("no longer meaningfully toggles" in w for w in out.warnings)

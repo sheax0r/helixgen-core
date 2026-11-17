@@ -157,3 +157,14 @@ def test_room_level_refuses_a_non_room_ir_tone(lib, irs, tmp_path):
     r = _run("library", "room-level", str(probe), "--library", str(lib.root),
              "--", "-45")
     assert r.exit_code != 0 and "room-IR" in r.output
+
+
+@needs_sf
+def test_room_level_rejects_non_finite(lib, irs, tmp_path):
+    irs.save()
+    assert _gen(lib, irs, _write(tmp_path, _chain()), "--venue", "headphones").exit_code == 0
+    probe = home.tones_dir() / "probe.hsp"
+    for bad in ("nan", "inf", "-inf"):
+        r = _run("library", "room-level", str(probe), "--library", str(lib.root),
+                 "--", bad)
+        assert r.exit_code != 0 and "finite" in r.output, (bad, r.output)

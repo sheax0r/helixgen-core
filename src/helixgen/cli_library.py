@@ -1347,6 +1347,8 @@ def room_level_cmd(variant: str, level_db: str, library_path: Path | None) -> No
     it, so toggling the room on lands at the new blend. The variant's
     `venue_detail.room_level_db` is updated and any loudness stamp cleared.
     """
+    import math
+
     from helixgen import venue as _venue
     from helixgen.cli import _resolved_library
     from helixgen.hsp import dumps_hsp
@@ -1356,19 +1358,29 @@ def room_level_cmd(variant: str, level_db: str, library_path: Path | None) -> No
         raise click.ClickException(
             f"LEVEL_DB must be a number of dB; got {level_db!r} "
             "(a negative value needs the `--` sentinel: `... -- -45`).")
+    if not math.isfinite(lvl):
+        raise click.ClickException(
+            f"LEVEL_DB must be a finite number of dB; got {level_db!r}.")
     meta, key, hsp = _resolve_fork_source(variant)
     if meta is None or key is None:
         raise click.ClickException(
             f"{variant} is not a registered library variant -- room-level "
             "records its result on the variant.")
     v = meta.variants[key]
+    before = read_hsp(hsp)
     try:
-        res = _venue.set_room_level(read_hsp(hsp), v.venue_detail,
+        res = _venue.set_room_level(before, v.venue_detail,
                                     _resolved_library(library_path), lvl)
     except _venue.VenueError as err:
         raise click.ClickException(f"room-level: {err}") from err
-    original = hsp.read_bytes()
+    for w in res.warnings:
+        click.echo(f"warning: {w}", err=True)
     new_level = res.venue_detail["room_level_db"]
+    if res.body == before:
+        click.echo(f"The room-mic lane of {key} ({meta.logical_slug}) is already "
+                   f"at {new_level} dB: nothing to write.")
+        return
+    original = hsp.read_bytes()
     _atomic_write(hsp, dumps_hsp(res.body))
     v.venue_detail = res.venue_detail
     v.normalized = None  # loudness changed; the old stamp is stale

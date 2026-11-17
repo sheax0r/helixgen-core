@@ -814,17 +814,29 @@ def set_room_level(body: dict, detail: dict | None, library: Library,
             f"room IR {room_hash} is not a single lane-1 IR of the instrument "
             "path (swapped or removed by hand?); cannot set its level")
     rk = rooms[0]
-    rblk = library.load_block(mutate._translate_model_id(_slot0(path[rk]).get("model", "")))
     try:
+        rblk = library.load_block(mutate._translate_model_id(_slot0(path[rk]).get("model", "")))
         mutate.set_param(work, rblk.display_name, "Level", level_db, library,
                          path=pi, lane=1, pos=int(rk[1:]) - 14)
-    except (mutate.MutateError, GenerateError, ParamValidationError) as e:
+    except (mutate.MutateError, GenerateError, ParamValidationError, KeyError) as e:
         raise VenueError(str(e)) from e
     w = (_slot0(path[rk]).get("params") or {}).get("Level")
     new_level = w["value"] if isinstance(w, dict) and "value" in w else level_db
-    # keep the ROOM MIC toe at the new level so "room on" is the tamed blend
-    if isinstance(w, dict) and isinstance(w.get("controller"), dict):
-        w["controller"]["max"] = new_level
+    warnings: list[str] = []
+    ctrl = w.get("controller") if isinstance(w, dict) else None
+    if isinstance(ctrl, dict):
+        # Keep the ROOM MIC footswitch coherent: its toe ("room on") tracks the
+        # new level, and its heel ("room off") never sits ABOVE the toe -- which
+        # would make the room louder disengaged than engaged. Tamed at/below the
+        # off level the switch just pins the room there; warn, don't invert.
+        ctrl["max"] = new_level
+        off = ctrl.get("min")
+        if isinstance(off, (int, float)) and new_level <= off:
+            warnings.append(
+                f"room level {new_level} dB is at/below the ROOM MIC off level "
+                f"({off} dB); the footswitch no longer meaningfully toggles the "
+                "room -- toggle it off for a silent room instead")
+            ctrl["min"] = new_level
     new_detail = dict(detail)
     new_detail["room_level_db"] = new_level
-    return VenueResult(work, "headphones", new_detail, [])
+    return VenueResult(work, "headphones", new_detail, warnings)
