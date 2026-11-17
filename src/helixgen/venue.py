@@ -785,3 +785,46 @@ def retrofit_headphones(
             f"room Level was tuned to {cur_level} dB (recorded {recorded}); "
             f"retrofit re-matches it to {new_level} dB -- re-tune by ear if needed")
     return RetrofitResult(fresh.body, fresh.venue_detail, changed, None, warnings)
+
+
+# --- in-place room-lane level (hgc-3am) -------------------------------------
+
+def set_room_level(body: dict, detail: dict | None, library: Library,
+                   level_db: float) -> VenueResult:
+    """Set the parallel room-mic IR lane's Level, IN PLACE, on a room-IR
+    headphones variant. Venue, treatment and the lane's structure are left
+    untouched -- only the room IR's Level value moves, and with it the ROOM MIC
+    footswitch's toe (its controller ``max``), so toggling the switch on lands
+    at the new, tamed blend rather than the old one. ``detail`` is the variant's
+    recorded ``venue_detail``; the returned result carries it with the new
+    ``room_level_db``. Taming a too-loud room never rebuilds the tone."""
+    if not detail or detail.get("treatment") != "room-ir":
+        raise VenueError(
+            f"this variant has no room-IR lane to level "
+            f"(treatment={(detail or {}).get('treatment')!r}); room-level only "
+            "applies to a room-IR headphones variant")
+    room_hash = detail.get("room_ir")
+    work = copy.deepcopy(body)
+    pi = _instrument_path(work, library)
+    path = work["preset"]["flow"][pi]
+    rooms = [k for k, b in path.items() if k[1:].isdigit() and int(k[1:]) >= 14
+             and isinstance(b, dict) and _slot0(b).get("irhash") == room_hash]
+    if len(rooms) != 1:
+        raise VenueError(
+            f"room IR {room_hash} is not a single lane-1 IR of the instrument "
+            "path (swapped or removed by hand?); cannot set its level")
+    rk = rooms[0]
+    rblk = library.load_block(mutate._translate_model_id(_slot0(path[rk]).get("model", "")))
+    try:
+        mutate.set_param(work, rblk.display_name, "Level", level_db, library,
+                         path=pi, lane=1, pos=int(rk[1:]) - 14)
+    except (mutate.MutateError, GenerateError, ParamValidationError) as e:
+        raise VenueError(str(e)) from e
+    w = (_slot0(path[rk]).get("params") or {}).get("Level")
+    new_level = w["value"] if isinstance(w, dict) and "value" in w else level_db
+    # keep the ROOM MIC toe at the new level so "room on" is the tamed blend
+    if isinstance(w, dict) and isinstance(w.get("controller"), dict):
+        w["controller"]["max"] = new_level
+    new_detail = dict(detail)
+    new_detail["room_level_db"] = new_level
+    return VenueResult(work, "headphones", new_detail, [])
