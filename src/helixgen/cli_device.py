@@ -2438,6 +2438,11 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
 @device.command(name="delete-ir")
 @click.argument("name_or_hash")
 @click.option("--yes", is_flag=True, default=False, help="Skip the confirmation prompt.")
+@click.option("--force", is_flag=True, default=False,
+              help="Delete even if on-device presets still reference this IR "
+                   "(they will show a silent cab), or if a preset can't be "
+                   "read to check. Without it, delete-ir refuses while any "
+                   "on-device tone uses the IR — remove those tones first.")
 @click.option("--force-wedge", is_flag=True, default=False,
               help="If a 32-hex hash isn't in the IR registry but its file "
                    "still resolves on the device (the delete->quick-reimport "
@@ -2447,23 +2452,42 @@ def device_list_irs(as_json: bool, ip: str, port: int) -> None:
                    "imports by other clients lag).")
 @_device_option
 @_locked("irs", verb="delete-ir")
-def device_delete_ir(name_or_hash: str, yes: bool, force_wedge: bool,
-                     ip: str, port: int) -> None:
+def device_delete_ir(name_or_hash: str, yes: bool, force: bool,
+                     force_wedge: bool, ip: str, port: int) -> None:
     """Delete one user IR from the device, by name or 32-hex hash.
 
     Removes the IR's registry entry (container -11) AND its backing .wav on
-    the device (best-effort). Presets that referenced it will show a silent
-    cab until it is re-imported. See ``ir-prune`` to clean up ALL unreferenced
-    IRs at once.
+    the device (best-effort). Refuses (unless ``--force``) while on-device
+    presets still reference the IR — those would show a silent cab. See
+    ``ir-prune`` to clean up ALL unreferenced IRs at once.
     """
     HelixClient, HelixError = _client()
     from helixgen.device import maintenance as mt
+    from helixgen.libraryui.session import _default_ir_usage
 
     if not yes:
         click.confirm(
             f"Delete IR {name_or_hash!r} from the device?", abort=True)
     try:
         with HelixClient(ip, port) as h:
+            if not force:
+                u = _default_ir_usage(h, name_or_hash, [])
+                tones, indet = u.get("tones") or [], u.get("indeterminate") or []
+                if tones or indet:
+                    parts = []
+                    if tones:
+                        parts.append(
+                            f"{len(tones)} preset(s) reference it ("
+                            + ", ".join(str(t.get("name") or t.get("cid"))
+                                        for t in tones)
+                            + ")")
+                    if indet:
+                        parts.append(f"{len(indet)} preset(s) couldn't be read "
+                                     "to check")
+                    raise click.ClickException(
+                        f"IR {name_or_hash!r} is still in use: "
+                        + "; ".join(parts)
+                        + ". Remove those tones first, or pass --force.")
             res = mt.delete_device_ir(h, name_or_hash, ip=ip,
                                       force_wedge=force_wedge)
     except (HelixError, ValueError) as e:

@@ -44,9 +44,12 @@ _ACTIONS: Dict[str, Callable[[LibrarySession, dict], dict]] = {
     "setlist_move": lambda s, p: s.setlist_move(
         p.get("name"), p.get("setlist"), p.get("to"), cid=p.get("cid")),
     "push_ir": lambda s, p: s.push_ir(p.get("wav")),
-    "delete_ir": lambda s, p: s.delete_ir(p.get("name_or_hash")),
+    "delete_ir": lambda s, p: s.delete_ir(p.get("name_or_hash"),
+                                          force=bool(p.get("force"))),
     "rename_ir": lambda s, p: s.rename_ir(p.get("name_or_hash"),
                                           p.get("new_name")),
+    "ir_usage": lambda s, p: s.ir_usage(p.get("name_or_hash")),
+    "remove_tone_device": lambda s, p: s.remove_tone_device(p.get("cid")),
 }
 
 # The advisory device-lock scopes each action needs, matching the CLI verbs'
@@ -67,6 +70,8 @@ ACTION_SCOPES: Dict[str, tuple] = {
     "push_ir": ("irs",),
     "delete_ir": ("irs",),
     "rename_ir": ("irs",),
+    "remove_tone_device": ("library",),   # drops pool preset + setlist refs
+    # ir_usage is a read-only sweep -> no lease (like content_diff).
 }
 
 

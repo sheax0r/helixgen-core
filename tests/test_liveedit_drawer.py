@@ -61,6 +61,53 @@ def test_drawer_action_dispatch(tmp_path):
     assert not closed
 
 
+def test_drawer_ir_usage_and_remove_dispatch(tmp_path):
+    _meta(tmp_path)
+
+    class Client:
+        def close(self):
+            pass
+
+    usage = {"hash": "aaa",
+             "tones": [{"cid": 9, "name": "T", "setlists": []}],
+             "indeterminate": []}
+    seen = {}
+    d = LibraryDrawer(
+        tmp_path, None, client_factory=lambda: Client(), cache=None,
+        usage_fn=lambda h, nh, ci: dict(usage),
+        remove_everywhere_fn=lambda h, cid: seen.update(cid=cid)
+        or {"ok": True, "removed_pool": cid},
+        **_kw(tmp_path))
+    assert d.action("ir_usage", {"name_or_hash": "aaa"}) == usage
+    assert d.action("remove_tone_device", {"cid": 9})["ok"] is True
+    assert seen["cid"] == 9
+
+
+def test_drawer_delete_ir_guard_and_force(tmp_path):
+    import pytest
+    from helixgen.libraryui.session import LibraryError
+
+    _meta(tmp_path)
+
+    class Client:
+        def close(self):
+            pass
+
+    calls = []
+    d = LibraryDrawer(
+        tmp_path, None, client_factory=lambda: Client(), cache=None,
+        usage_fn=lambda h, nh, ci: {"hash": nh, "indeterminate": [],
+                                    "tones": [{"cid": 1, "name": "a",
+                                               "setlists": []}]},
+        delete_ir_fn=lambda h, nh: calls.append(nh) or {"ok": True},
+        **_kw(tmp_path))
+    with pytest.raises(LibraryError):
+        d.action("delete_ir", {"name_or_hash": "aaa"})
+    assert not calls
+    d.action("delete_ir", {"name_or_hash": "aaa", "force": True})
+    assert calls == ["aaa"]
+
+
 def test_public_state_badges_provisional(tmp_path):
     (tmp_path / "tones").mkdir(parents=True, exist_ok=True)
     (tmp_path / "tones" / "a.hsp").write_text("{}")

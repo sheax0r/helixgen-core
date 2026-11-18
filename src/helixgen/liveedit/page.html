@@ -228,6 +228,13 @@ body.down main{opacity:.55}
 .lbadge.same{color:#8fe3b1}.lbadge.changed{color:#ffb347;border-color:#ffb347}
 .lbadge.verifying,.lbadge.indeterminate{opacity:.5}
 .lrow{display:flex;gap:8px;align-items:center;font-size:13px;margin-bottom:4px}
+.ltabs{display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--edge)}
+.ltab{padding:6px 12px;font:inherit;font-size:13px;background:none;border:0;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent}
+.ltab.active{color:var(--ink);border-bottom-color:var(--up)}
+.lpanel{display:none}.lpanel.active{display:block}
+.luses{margin:2px 0 10px 10px;padding-left:10px;border-left:2px solid var(--edge2);font-size:12px}
+.luses .lrow{margin-bottom:3px}
+.lblocked{color:var(--warn);font-size:12px;margin:2px 0 6px 10px}
 </style>
 </head>
 <body>
@@ -747,27 +754,91 @@ function libTone(t) {
   });
   return box;
 }
-let LIB = null;
+// IR row: name + "Used by…" (lazy on-device usage sweep) + guarded Delete.
+function renderUses(box, ir, u) {
+  box.textContent = "";
+  const tones = u.tones || [], indet = u.indeterminate || [];
+  if (!tones.length && !indet.length) { box.append(el("div", null, "No on-device tones use this IR.")); return; }
+  tones.forEach((t) => box.append(el("div", "lrow",
+    (t.name || ("cid " + t.cid)) + (t.setlists && t.setlists.length ? " — " + t.setlists.join(", ") : " — pool"))));
+  if (indet.length) box.append(el("div", "lblocked", indet.length + " preset(s) couldn't be read to check."));
+  if (tones.length) {
+    const b = el("button", "btn", "Remove " + tones.length + " tone(s) from device"); b.type = "button";
+    b.onclick = () => {
+      if (!confirm("Remove " + tones.length + " tone(s) from the device? Your local library is untouched.")) return;
+      let left = tones.length;
+      tones.forEach((t) => libAct("remove_tone_device", { cid: t.cid }, () => {
+        if (--left === 0) send("/library/ir_usage", { name_or_hash: ir.name || ir.hash },
+          (u2) => renderUses(box, ir, u2), () => {});
+      }));
+    };
+    box.append(b);
+  }
+}
+function deleteIr(ir, wrap, force) {
+  if (force && !confirm("Delete this IR anyway? Referencing tones will show a silent cab.")) return;
+  send("/library/delete_ir", { name_or_hash: ir.name || ir.hash, force: !!force },
+    () => openDrawer(),
+    (j) => {   // 409 blocked (or error): surface it inline + offer force
+      let bx = wrap.querySelector(".lblocked");
+      if (!bx) { bx = el("div", "lblocked"); wrap.append(bx); }
+      bx.textContent = (j && j.error) ? j.error : "delete failed";
+      if (!wrap.querySelector(".force-del")) {
+        const f = el("button", "btn force-del", "Delete anyway"); f.type = "button";
+        f.onclick = () => deleteIr(ir, wrap, true);
+        bx.append(document.createTextNode(" "), f);
+      }
+    });
+}
+function libIr(i) {
+  const wrap = el("div"), r = el("div", "lrow");
+  r.append(el("span", null, i.name || i.hash || String(i)));
+  const uses = el("div", "luses"); uses.hidden = true;
+  const mk = (txt, fn) => { const b = el("button", "btn", txt); b.type = "button"; b.onclick = fn; return b; };
+  r.append(mk("Used by…", () => {
+    uses.hidden = false; uses.textContent = "checking…";
+    send("/library/ir_usage", { name_or_hash: i.name || i.hash },
+      (u) => renderUses(uses, i, u), () => { uses.textContent = "could not check"; });
+  }));
+  r.append(mk("Delete", () => deleteIr(i, wrap, false)));
+  wrap.append(r, uses);
+  return wrap;
+}
+let LIB = null, activeTab = "Tones";
 function renderLib(st) {
   LIB = st; LIBV.clear(); LIBSL.clear();
   const body = $("drawerbody"); body.textContent = "";
-  body.append(el("h3", null, "Tones"));
+  const names = ["Tones", "Setlists", "IRs"];
+  const tabs = el("div", "ltabs"), panels = {};
+  const showTab = (name) => {
+    activeTab = name;
+    names.forEach((n, idx) => {
+      tabs.children[idx].classList.toggle("active", n === name);
+      panels[n].classList.toggle("active", n === name);
+    });
+  };
+  names.forEach((name) => {
+    const t = el("button", "ltab", name); t.type = "button"; t.onclick = () => showTab(name);
+    tabs.append(t); panels[name] = el("div", "lpanel");
+  });
+  body.append(tabs);
+
   const list = el("div", "ltones"); list.id = "ltones";
   (st.tones || []).forEach((t) => list.append(libTone(t)));
-  body.append(list, el("h3", null, "Setlists"));
+  panels.Tones.append(list);
+
   (st.setlists || []).forEach((s) => {
     const r = el("div", "lrow"), n = el("span", null, (s.members || []).length + " tones");
     r.append(el("b", null, s.name), n);
     if (s.cid != null) LIBSL.set(s.cid, n);
     const d = el("button", "btn", "Delete"); d.type = "button"; d.onclick = () => libAct("setlist_delete", { name: s.name }, openDrawer);
-    r.append(d); body.append(r);
+    r.append(d); panels.Setlists.append(r);
   });
-  body.append(el("h3", null, "IRs"));
-  (st.irs || []).forEach((i) => {
-    const r = el("div", "lrow"); r.append(el("span", null, i.name || i.hash || String(i)));
-    const d = el("button", "btn", "Delete"); d.type = "button"; d.onclick = () => libAct("delete_ir", { name_or_hash: i.name || i.hash }, openDrawer);
-    r.append(d); body.append(r);
-  });
+
+  (st.irs || []).forEach((i) => panels.IRs.append(libIr(i)));
+
+  names.forEach((n) => body.append(panels[n]));
+  showTab(names.includes(activeTab) ? activeTab : "Tones");
 }
 async function openDrawer() {
   libOpen = true; $("drawer").hidden = false;

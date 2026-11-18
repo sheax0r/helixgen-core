@@ -341,6 +341,59 @@ def remove_tone(client, name: str, *, setlist: str, also_pool: bool = False,
     return res
 
 
+def remove_tone_everywhere(client, cid: int) -> Dict[str, Any]:
+    """Delete pool preset ``cid`` from the device entirely: drop its reference
+    from EVERY setlist that holds it, then delete the pool copy.
+
+    Unlike :func:`remove_tone` (one setlist, refuses the pool delete while any
+    *other* setlist still references the preset), this clears every reference
+    first so the pool delete always lands — the complete removal the IR-usage
+    "remove referencing tones" button needs, so that a blocked IR becomes
+    deletable. A pool-only preset (no setlist membership) is deleted straight
+    from the pool.
+
+    Returns ``{ok, removed_refs, removed_pool, errors}``. Listings are strict
+    (#40): an unreadable setlist raises rather than silently leaving a
+    reference behind.
+
+    **Best-effort-forward, not atomic.** References are dropped eagerly as the
+    loop runs; if a later ``remove_reference`` fails or a later setlist listing
+    raises, the refs already dropped are NOT rolled back (the device has no
+    transaction). The ``if not errors`` gate below still prevents orphaning —
+    the pool copy is kept whenever any ref removal failed — so the result is a
+    tone partly de-referenced but still in the pool (``ok: False``). Re-running
+    clears the rest; the pool delete only lands once every reference is gone.
+    """
+    errors: List[str] = []
+    removed_refs: List[int] = []
+    removed_pool: Optional[int] = None
+    with client.mutating():
+        try:
+            for sl in client.list_setlists(strict=True):
+                sl_cid = sl.get("cid_")
+                if sl_cid is None:
+                    continue
+                for m in client.list_container(sl_cid, strict=True):
+                    if m.get("cctp") == Cctp.REFERENCE and m.get("rcid") == cid:
+                        ref_cid = m.get("cid_")
+                        if client.remove_reference(sl_cid, ref_cid):
+                            removed_refs.append(ref_cid)
+                        else:
+                            errors.append(
+                                f"device refused to remove reference "
+                                f"{ref_cid} from setlist "
+                                f"{sl.get('name')!r}")
+            if not errors:
+                if client._raw.delete(int(Container.POOL), [cid]):
+                    removed_pool = cid
+                else:
+                    errors.append(f"device refused to delete pool cid {cid}")
+        except (ValueError, HelixError, OSError) as e:
+            errors.append(str(e))
+    return {"ok": not errors, "removed_refs": removed_refs,
+            "removed_pool": removed_pool, "errors": errors}
+
+
 def move_tone(client, name: str, *, setlist: str, to: int,
               cid: Optional[int] = None) -> Dict[str, Any]:
     """Move ``name`` to position ``to`` within ``setlist``'s reference order.
