@@ -28,6 +28,12 @@ class EditLease:
         self.idle, self.max_hold = idle, max_hold
         self._clock = clock
         self._mu = threading.Lock()
+        # Serializes transient() writes (drawer copy / setlist / IR push, Save)
+        # within this process. With no lifetime library/irs hold, two in-process
+        # writes of the same scope would otherwise overlap: the second passes
+        # through the first's pid-owned lease, then keeps "holding" it after the
+        # first releases the lease FILE, leaving its write unprotected.
+        self._write_mu = threading.Lock()
         self._held: Optional[locks.LeaseSet] = None
         self._since = 0.0
         self._used = 0.0
@@ -88,15 +94,18 @@ class EditLease:
 
     @contextlib.contextmanager
     def transient(self, scopes):
-        """Hold ``scopes`` for the duration of one operation (Save)."""
+        """Hold ``scopes`` for the duration of one operation (Save, or a drawer
+        library/IR write). Serialized process-wide (``_write_mu``) so two
+        in-process writes never overlap on a scope — see ``_write_mu``."""
         if not self.enabled:
             yield
             return
-        held = self._acquire(tuple(scopes))
-        try:
-            yield
-        finally:
-            held.release()
+        with self._write_mu:
+            held = self._acquire(tuple(scopes))
+            try:
+                yield
+            finally:
+                held.release()
 
     def release(self, *, final: bool = False) -> None:
         """Give the lease back now. ``final=True`` (shutdown) also refuses any

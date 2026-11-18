@@ -295,7 +295,7 @@ LIVE_SURFACES: list[tuple[list[str], list[str]]] = [
       "WRITES TO THE DEVICE IMMEDIATELY", "RAW range",
       "hardware's own Save", "user pool", "LIBRARY is NOT updated",
       "device to-hsp", "No structural editing",
-      "`editbuffer` scope is NOT held for the lifetime", "Ctrl-C",
+      "NO advisory scope is held for the page's lifetime", "Ctrl-C",
       "LIBRARY DRAWER", "OFFLINE COLD START", "library ui"]),
     (["device", "set-param"], ["device live"]),
     # the two facts an agent needs so it cannot discard or misplace hand-dialed

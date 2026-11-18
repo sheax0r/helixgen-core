@@ -5053,27 +5053,26 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     filters) works, and its device actions stay disabled. A background
     discovery loop connects a Stadium when one appears (or wakes); no restart.
 
-    LOCKING: the `editbuffer` scope is NOT held for the lifetime — it is taken
-    only while the page is actually writing and released about 2 s after the
-    last change, so other verbs (`device load` of the next tone, `device copy`,
-    ...) keep working while the page is open. While a device is connected the
-    page DOES hold the `library` + `irs` advisory scopes for its lifetime
-    (pid-bound, for the drawer), so other helixgen processes cannot write
-    presets or IRs underneath it; if another process already holds them the
-    page still opens, with a warning. If another helixgen process holds the
-    device, the page's writes are refused and it says who is driving. Save
-    takes `editbuffer` + `library` for the moment it runs (no deadlock with
-    the drawer's own `library` hold). With $HELIXGEN_LOCK_TOKEN set, the page
-    writes under that session (other verbs carrying the token pass through its
-    lease), and a token whose session is gone stops the page's writes just as
-    it stops any other verb.
+    LOCKING: NO advisory scope is held for the page's lifetime. Each write
+    takes only the scope it needs, only while it runs: `editbuffer` for a knob
+    turn (released about 2 s after the last change), `library` for a drawer
+    copy / setlist edit, `irs` for an IR push — exactly the scopes the matching
+    `device` verbs take. So other helixgen processes keep working while the
+    page is open — an agent can generate and `device copy` tones onto the
+    device, and the drawer follows those writes via its content-store
+    subscriber (badges update, no reload). If another helixgen process is
+    writing the same scope at that instant, the page's write is refused and it
+    says who is driving; retry. With $HELIXGEN_LOCK_TOKEN set, the page writes
+    under that session (other verbs carrying the token pass through its lease),
+    and a token whose session is gone stops the page's writes just as it stops
+    any other verb.
     """
     import errno
     import signal
     import threading
     import webbrowser
 
-    from helixgen import home, locks
+    from helixgen import home
     from helixgen.device import discovery as _discovery
     from helixgen.device.subscribe import HelixSubscriber
     from helixgen.liveedit import server as _server
@@ -5096,12 +5095,7 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
     _win: list = []  # app-window child(ren) to close when the server stops (hgc-a7h)
     # shared across the discovery/connect thread and this one
     state: dict = {"srv": None, "infra": False, "h": None, "libc": None,
-                   "adv": None, "rejected": set()}
-
-    def _keepalive(dev_ip: str) -> None:
-        with contextlib.suppress(Exception):       # best-effort renewal
-            with locks.keep_alive(dev_ip):
-                stop_evt.wait()
+                   "rejected": set()}
 
     def _push_badge(cid, verdict) -> None:
         session.emit_library({"kind": "badge", "cid": cid, "diff": verdict})
@@ -5166,24 +5160,17 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
         click.echo(f"live editor: connected to {dev_ip}")
 
         # The drawer runs on its OWN client (the editor's is single-threaded
-        # and busy with writes) + its OWN best-effort advisory library+irs lease.
+        # and busy with writes). It holds NO lifetime library/irs lease — each
+        # drawer write takes only its own scope, transiently, in the server's
+        # action handler (see liveedit.server + drawer.ACTION_SCOPES) — so
+        # other helixgen processes (an agent pushing tones, say) keep working
+        # while the page is open, and the page follows their writes via the
+        # content-store subscriber below.
         serial = pi.get("serial")
         libc = HelixClient(found_ip, port).connect()
         state["libc"] = libc
         cache = DiffCache(default_path(serial)) if serial else None
         drawer.connect(lambda: libc, cache)
-        try:
-            state["adv"] = locks.acquire(dev_ip, ("library", "irs"),
-                                         label="helixgen device live",
-                                         pid=os.getpid(), timeout=0)
-        except Exception as e:  # noqa: BLE001 — contended/offline: degrade
-            click.echo(f"note: could not take the library lock ({e}); the "
-                       "drawer still runs — avoid other helixgen library "
-                       "writes while the page is open.", err=True)
-            state["adv"] = None
-        if state["adv"] is not None:
-            threading.Thread(target=_keepalive, args=(dev_ip,),
-                             daemon=True).start()
         # One subscriber for the editor's lifetime: zmq reconnects its SUB
         # socket across device drops, so a later drop + rediscovery reuses it.
         # It also routes content-store events to the drawer (live badge/add/
@@ -5260,9 +5247,6 @@ def device_live(http_port: int, no_open: bool, force_browser: bool,
         if lease is not None:
             with contextlib.suppress(Exception):
                 lease.release(final=True)
-        if state["adv"] is not None:
-            with contextlib.suppress(Exception):
-                state["adv"].release()
         for c in (state["h"], state["libc"]):
             if c is not None:
                 with contextlib.suppress(Exception):

@@ -49,6 +49,26 @@ _ACTIONS: Dict[str, Callable[[LibrarySession, dict], dict]] = {
                                           p.get("new_name")),
 }
 
+# The advisory device-lock scopes each action needs, matching the CLI verbs'
+# @_locked decorators (helixgen.locks scopes). The page takes these TRANSIENTLY
+# per write — it does NOT sit on library+irs for its whole life, which would
+# lock out an agent pushing tones while the page is open. Actions absent here
+# touch no device library/IR state (reads, or LOCAL-only writes like `pull` /
+# `update_local`) and so take no lease.
+ACTION_SCOPES: Dict[str, tuple] = {
+    "copy": ("library", "irs"),
+    "setlist_create": ("library",),
+    "setlist_rename": ("library",),
+    "setlist_delete": ("library",),
+    "setlist_duplicate": ("library",),
+    "setlist_add": ("library",),
+    "setlist_remove": ("library",),
+    "setlist_move": ("library",),
+    "push_ir": ("irs",),
+    "delete_ir": ("irs",),
+    "rename_ir": ("irs",),
+}
+
 
 class LibraryDrawer:
     """``client_factory`` returns the dedicated library client (or is None for
