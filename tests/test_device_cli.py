@@ -791,13 +791,27 @@ def test_device_delete_ir_by_name_with_yes(monkeypatch):
     # NO real network connect (else it hangs ~75s on TCP-connect timeout).
     removed = []
     _patch_sftp_noop(monkeypatch, removed)
+    # --force bypasses the on-device usage guard (this test exercises the
+    # delete mechanics; the fake presets don't untranscode so the guard would
+    # otherwise block them as indeterminate).
     result = CliRunner().invoke(
-        cli, ["device", "delete-ir", "zzc-test", "--yes"])
+        cli, ["device", "delete-ir", "zzc-test", "--yes", "--force"])
     assert result.exit_code == 0, result.output
     assert IrClient.deleted == [[1160]]
     assert "ZZC-test" in result.output
     # best-effort wav removal still exercised against the mock
     assert removed == ["ZZC-test.wav"]
+
+
+def test_device_delete_ir_blocked_when_in_use(monkeypatch):
+    """Without --force, delete-ir refuses while on-device presets can't be
+    proven clear of the IR (fail-closed: the fake presets are indeterminate)."""
+    IrClient.deleted = []
+    _patch_client(monkeypatch, IrClient)
+    result = CliRunner().invoke(cli, ["device", "delete-ir", "zzc-test", "--yes"])
+    assert result.exit_code != 0
+    assert "still in use" in result.output
+    assert IrClient.deleted == []          # nothing deleted
 
 
 def test_device_delete_ir_requires_confirmation(monkeypatch):
@@ -811,7 +825,7 @@ def test_device_delete_ir_requires_confirmation(monkeypatch):
 
 def test_device_delete_ir_unknown_errors(monkeypatch):
     _patch_client(monkeypatch, IrClient)
-    result = CliRunner().invoke(cli, ["device", "delete-ir", "nope", "--yes"])
+    result = CliRunner().invoke(cli, ["device", "delete-ir", "nope", "--yes", "--force"])
     assert result.exit_code != 0
     assert "no device IR" in result.output
 
@@ -1108,7 +1122,7 @@ def test_device_delete_ir_wedged_hash_reachable_from_cli(monkeypatch):
 
     _patch_client(monkeypatch, WedgeClient)
     result = CliRunner().invoke(
-        cli, ["device", "delete-ir", wedged, "--force-wedge", "--yes"])
+        cli, ["device", "delete-ir", wedged, "--force-wedge", "--yes", "--force"])
     assert result.exit_code == 0, result.output
     assert removed == ["ZZC-w.wav"]
     assert IrClient.deleted == [] or WedgeClient.deleted == []
@@ -1126,7 +1140,7 @@ def test_device_delete_ir_wedged_hash_without_flag_errors(monkeypatch):
             return "/data/stadium-family-fw/ir/ZZC-w.wav"
 
     _patch_client(monkeypatch, WedgeClient)
-    result = CliRunner().invoke(cli, ["device", "delete-ir", wedged, "--yes"])
+    result = CliRunner().invoke(cli, ["device", "delete-ir", wedged, "--yes", "--force"])
     assert result.exit_code != 0
     assert "force-wedge" in result.output
     assert removed == []
