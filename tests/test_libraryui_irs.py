@@ -199,3 +199,66 @@ def test_remove_tone_device_wires_through():
                       "errors": []})
     out = st.remove_tone_device(11)
     assert seen["cid"] == 11 and out["ok"] is True
+
+
+def test_remove_tone_device_raises_on_device_refusal():
+    """A device-refused removal (ok:False) must raise, not report success — so
+    the page's error path fires and a referencing IR isn't falsely cleared."""
+    st = _session(
+        client=_FakeClient(),
+        remove_everywhere_fn=lambda h, cid: {
+            "ok": False, "errors": ["still referenced by 'Studio'"],
+            "removed_refs": [], "removed_pool": None})
+    with pytest.raises(LibraryError) as ei:
+        st.remove_tone_device(9)
+    assert ei.value.status == 502
+    assert "still referenced" in str(ei.value)
+
+
+# -- _default_ir_usage: enumeration + fail-closed resolution ----------------
+
+class _SweepClient:
+    def __init__(self, *, device_irs=None, presets=None, body=None):
+        self._irs = device_irs or []
+        self._presets = presets or []
+        self._body = body
+
+    def list_irs(self, strict=False):
+        return list(self._irs)
+
+    def list_setlists(self, strict=False):
+        return []
+
+    def list_container(self, cid, strict=False):
+        return []
+
+    def list_presets(self, container=-2, strict=False):
+        return list(self._presets)
+
+    def get_content(self, cid):
+        return b"blob"
+
+
+def test_default_ir_usage_unresolved_name_fails_closed():
+    """A *name* that resolves to no hash raises (so the guard blocks) rather
+    than sweeping for the raw name, which never matches a 32-hex irhash."""
+    from helixgen.libraryui.session import _default_ir_usage
+    with pytest.raises(ValueError):
+        _default_ir_usage(_SweepClient(), "MyCab", [])
+
+
+def test_default_ir_usage_matches_any_slot(monkeypatch):
+    """The sweep uses bridge.hsp_ir_hashes (every slot of every block), so a
+    hash carried in slot[1] of a non-HX2 block (dual-cab / Cab+IR) is caught —
+    ir.extract_ir_hashes (slot[0], HX2 only) would miss it and fail OPEN."""
+    from helixgen.libraryui import session as S
+    h32 = "a" * 32
+    body = {"preset": {"flow": [{"b0": {"slot": [
+        {"model": "HX2_Cab_WhateverCab", "irhash": None},
+        {"model": "HX2_Cab_SecondLane", "irhash": h32}]}}]}}
+    monkeypatch.setattr(S, "_semantic_canon_blob", lambda blob, lib: body)
+    c = _SweepClient(device_irs=[{"hash": h32, "name": "Dual"}],
+                     presets=[{"cid_": 5, "name": "P"}])
+    out = S._default_ir_usage(c, h32, [])
+    assert [t["cid"] for t in out["tones"]] == [5]
+    assert out["indeterminate"] == []

@@ -114,9 +114,14 @@ def _default_ir_usage(client, name_or_hash, computer_irs) -> dict:
     the guard treats that as a possible referencer.
 
     Returns ``{hash, tones: [{cid, name, setlists}], indeterminate: [cid]}``.
+    Raises ``ValueError`` when a *name* can't be resolved to a hash (so the
+    caller fails closed rather than sweeping for the raw name string, which
+    never matches a 32-hex irhash and would silently report "unused").
     """
+    import re
+
+    from helixgen.device import bridge
     from helixgen.device.client import Cctp
-    from helixgen.ir import extract_ir_hashes
 
     # resolve name_or_hash -> target hash
     known: Dict[str, Optional[str]] = {}
@@ -131,13 +136,26 @@ def _default_ir_usage(client, name_or_hash, computer_irs) -> dict:
                 known.setdefault(h, m.get("name"))
     except Exception:  # noqa: BLE001 — an IR listing hiccup ≠ no sweep
         pass
-    target = name_or_hash
-    if name_or_hash not in known:
-        want = name_or_hash.strip().casefold()
+    want = (name_or_hash or "").strip()
+    target = None
+    if want in known:
+        target = want
+    else:
+        folded = want.casefold()
         for h, nm in known.items():
-            if nm and nm.strip().casefold() == want:
+            if nm and nm.strip().casefold() == folded:
                 target = h
                 break
+    if target is None:
+        if re.fullmatch(r"[0-9a-fA-F]{8,}", want):
+            target = want          # a hash the listing didn't return; trust it
+        else:
+            # A name we couldn't resolve. Sweeping for the raw name would test
+            # ``name in {32-hex hashes}`` → always False → a false "unused".
+            # Fail closed: the guard must not delete on a bogus empty result.
+            raise ValueError(
+                f"could not resolve IR {name_or_hash!r} to a hash — delete by "
+                "its 32-hex hash, or check the IR listing")
 
     # cid -> [setlist names] (reference rows carry rcid = pool cid)
     members: Dict[int, List[str]] = {}
@@ -164,7 +182,13 @@ def _default_ir_usage(client, name_or_hash, computer_irs) -> dict:
                 from helixgen.library import Library, default_library_path
                 lib = Library(default_library_path())
             body = _semantic_canon_blob(client.get_content(cid), lib)
-            hashes = extract_ir_hashes(body)
+            # bridge.hsp_ir_hashes (not ir.extract_ir_hashes) is the
+            # authoritative "which IRs does this preset reference" — the same
+            # enumeration `device copy`/`install --auto-irs` use. It walks
+            # EVERY slot of EVERY block; extract_ir_hashes only reads slot[0]
+            # of HX2_ImpulseResponse blocks and would miss a dual-cab / Cab+IR
+            # reference, making the guard fail OPEN for those IR types.
+            hashes = bridge.hsp_ir_hashes(body)
         except Exception:  # noqa: BLE001 — unreadable preset -> indeterminate
             indeterminate.append(cid)
             continue
@@ -734,11 +758,22 @@ class LibrarySession:
 
     def remove_tone_device(self, cid: Any) -> dict:
         """Remove a tone from the device entirely (every setlist + the pool);
-        the local library is untouched. See ``copy.remove_tone_everywhere``."""
+        the local library is untouched. See ``copy.remove_tone_everywhere``.
+
+        A device refusal (``ok: False``) raises rather than returning 200 — so
+        the page's error path fires instead of a misleading "done" toast, and a
+        caller clearing an IR's referencing tones learns the IR is still in
+        use. ``errors`` from the removal is surfaced in the message."""
         cid = self._opt_int(cid, "cid")
         if cid is None:
             raise LibraryError("cid is required", status=400)
-        return self._run(lambda h: self._remove_everywhere_fn(h, cid))
+        res = self._run(lambda h: self._remove_everywhere_fn(h, cid))
+        if not res.get("ok", True):
+            raise LibraryError(
+                "device refused to fully remove the tone: "
+                + "; ".join(res.get("errors") or ["unknown error"]),
+                status=502)
+        return res
 
     def delete_ir(self, name_or_hash: Any, force: bool = False) -> dict:
         name_or_hash = self._require_str(name_or_hash, "an IR name or hash")

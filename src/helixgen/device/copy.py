@@ -355,6 +355,14 @@ def remove_tone_everywhere(client, cid: int) -> Dict[str, Any]:
     Returns ``{ok, removed_refs, removed_pool, errors}``. Listings are strict
     (#40): an unreadable setlist raises rather than silently leaving a
     reference behind.
+
+    **Best-effort-forward, not atomic.** References are dropped eagerly as the
+    loop runs; if a later ``remove_reference`` fails or a later setlist listing
+    raises, the refs already dropped are NOT rolled back (the device has no
+    transaction). The ``if not errors`` gate below still prevents orphaning —
+    the pool copy is kept whenever any ref removal failed — so the result is a
+    tone partly de-referenced but still in the pool (``ok: False``). Re-running
+    clears the rest; the pool delete only lands once every reference is gone.
     """
     errors: List[str] = []
     removed_refs: List[int] = []
