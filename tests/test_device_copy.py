@@ -328,6 +328,40 @@ def test_remove_also_pool_deletes_when_nothing_else_references_it():
     assert c.pool == []
 
 
+def test_remove_tone_everywhere_multi_setlist():
+    """Clearing a tone device-wide drops EVERY setlist reference, then the pool
+    preset — the complete removal the IR-usage button needs so a blocked IR can
+    be deleted (single per-setlist remove leaves the pool copy for other
+    setlists, which would keep the IR un-deletable)."""
+    c = StubClient(
+        pool=[{"cid_": 101, "name": "Tone", "posi": 0, "cctp": Cctp.PRESET}],
+        setlists={"Rock": 1234, "Jazz": 5678},
+        refs={1234: [{"cid_": 501, "rcid": 101, "posi": 0,
+                      "cctp": Cctp.REFERENCE}],
+              5678: [{"cid_": 502, "rcid": 101, "posi": 0,
+                      "cctp": Cctp.REFERENCE}]},
+    )
+    res = C.remove_tone_everywhere(c, 101)
+    assert res["ok"] is True
+    assert set(res["removed_refs"]) == {501, 502}
+    assert res["removed_pool"] == 101
+    assert c.pool == []
+
+
+def test_remove_tone_everywhere_pool_only():
+    """A pool-only tone (no setlist membership) is deleted straight from the
+    pool — the button must not demand a setlist name for it."""
+    c = StubClient(
+        pool=[{"cid_": 101, "name": "Solo", "posi": 0, "cctp": Cctp.PRESET}],
+        setlists={}, refs={},
+    )
+    res = C.remove_tone_everywhere(c, 101)
+    assert res["ok"] is True
+    assert res["removed_refs"] == []
+    assert res["removed_pool"] == 101
+    assert c.pool == []
+
+
 def test_explicit_cid_that_matches_nothing_is_an_error_not_a_create(hsp):
     """--cid exists ONLY to disambiguate a duplicate name. A typo'd cid used to
     read as "absent" and CREATE a third preset (adversarial review, HIGH 6)."""
