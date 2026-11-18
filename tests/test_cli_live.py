@@ -226,6 +226,41 @@ def test_no_lock_disarms_the_editbuffer_lease_on_connect(monkeypatch):
         t.join(5)
 
 
+def test_live_does_not_hold_a_lifetime_library_lease(monkeypatch):
+    """Regression (hgc): the drawer must NOT sit on library+irs for its whole
+    life — that locked out agents pushing tones while the page was open. At
+    rest (connected, idle) it holds no library/irs lease; each drawer write
+    takes its scope transiently instead (see the server library-route tests)."""
+    fake = FakeClient()
+    acquired = []
+    reconciled = threading.Event()
+    monkeypatch.setattr("helixgen.liveedit.server.run_subscriber",
+                        lambda *a, **k: None)
+    monkeypatch.setattr("helixgen.liveedit.reconcile.run_reconcile",
+                        lambda *a, **k: reconciled.set())
+    seen = {}
+    go = threading.Event()
+    _env(monkeypatch, fake, _blocking_serve(seen, go), discover_ip="10.0.0.9")
+    # record every acquire's scopes AFTER _env (its _no_locks set a bare fake);
+    # the reconcile thread starts only after the (removed) lifetime acquire, so
+    # waiting on it guarantees any such acquire would already have happened.
+    monkeypatch.setattr(
+        "helixgen.locks.acquire",
+        lambda ip, scopes, **k: (acquired.append(tuple(scopes)), _FakeLease())[1])
+    t = threading.Thread(
+        target=lambda: CliRunner().invoke(
+            cli, ["device", "live", "--ip", "10.0.0.9", "--no-open"]),
+        daemon=True)
+    t.start()
+    try:
+        assert _wait(lambda: reconciled.is_set())
+        assert ("library", "irs") not in acquired
+        assert acquired == []          # nothing acquired at rest
+    finally:
+        go.set()
+        t.join(5)
+
+
 def test_old_firmware_is_ignored_and_the_page_still_serves(monkeypatch):
     # below 1.4 the device cannot ack a live bypass — it is skipped, NOT a hard
     # failure: the page keeps serving and the drawer works offline.

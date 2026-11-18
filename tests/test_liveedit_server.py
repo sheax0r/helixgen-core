@@ -583,6 +583,39 @@ def test_transient_scopes_are_held_only_inside_the_block(lockroot):
     lease.release()
 
 
+def test_concurrent_transient_writes_do_not_overlap_in_process(lockroot):
+    # With no lifetime library hold (the drawer takes each scope per write),
+    # two in-process writes must not both hold `library` at once: the second
+    # would PASS THROUGH the first's pid-owned lease, then keep "holding" it
+    # after the first RELEASED the lease file — leaving its own write
+    # unprotected against another process. The lease serializes them instead.
+    lease = EditLease(IP)
+    order = []
+    a_inside, a_may_exit, b_done = (threading.Event() for _ in range(3))
+
+    def a():
+        with lease.transient(("library",)):
+            order.append("A-in")
+            a_inside.set()
+            a_may_exit.wait(2)
+        order.append("A-out")
+
+    def b():
+        a_inside.wait(2)
+        with lease.transient(("library",)):
+            order.append("B-in")
+        b_done.set()
+
+    ta, tb = threading.Thread(target=a), threading.Thread(target=b)
+    ta.start(); tb.start()
+    assert a_inside.wait(2)
+    assert not b_done.wait(0.3)          # B blocked while A holds the write
+    a_may_exit.set()
+    assert b_done.wait(2)
+    ta.join(2); tb.join(2)
+    assert order == ["A-in", "A-out", "B-in"]
+
+
 def test_disabled_lease_touches_nothing(lockroot):
     lease = EditLease(IP, enabled=False)
     lease.ensure()

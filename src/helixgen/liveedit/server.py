@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 from helixgen import localguard
 from helixgen.liveedit import intents
+from helixgen.liveedit.drawer import ACTION_SCOPES
 from helixgen.liveedit.events import decode_content_event
 from helixgen.liveedit.session import LiveError, LiveSession
 from helixgen.libraryui.session import LibraryError
@@ -201,7 +202,17 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                     raise LiveError("body must be a JSON object")
                 p = urlsplit(self.path).path
                 if p.startswith("/library/") and drawer is not None:
-                    out = drawer.action(p[len("/library/"):], b)
+                    name = p[len("/library/"):]
+                    scopes = ACTION_SCOPES.get(name, ())
+                    # a device-mutating action holds ONLY its own scope, and
+                    # only for the moment it runs — so an agent pushing tones
+                    # while the page is open is not locked out. A foreign
+                    # holder makes transient() raise LiveError(409) below.
+                    if scopes:
+                        with session.lease.transient(scopes):
+                            out = drawer.action(name, b)
+                    else:
+                        out = drawer.action(name, b)
                 else:
                     out = _route(session, p, b)
             except LibraryError as e:
