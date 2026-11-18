@@ -78,6 +78,37 @@ def test_push_ir_takes_irs_transiently(srv):
     assert server.session.lease.transients == [("irs",)]
 
 
+def test_setlist_add_with_hsp_takes_library_and_irs(srv):
+    # adding a tone by `hsp` copies it in IRs-and-all (session.setlist_add ->
+    # copy_to_device, with_irs=True), so it needs `irs` as well as `library`,
+    # exactly like `copy` / the CLI `device copy`.
+    server, d = srv
+    req(server, "POST", "/library/setlist_add", {"to": "Gigs", "hsp": "a.hsp"})
+    assert server.session.lease.transients == [("library", "irs")]
+
+
+def test_remaining_write_actions_take_their_scope(srv):
+    server, d = srv
+    for name, scope in [("setlist_remove", ("library",)),
+                        ("setlist_move", ("library",)),
+                        ("setlist_rename", ("library",)),
+                        ("setlist_duplicate", ("library",)),
+                        ("delete_ir", ("irs",)),
+                        ("rename_ir", ("irs",))]:
+        server.session.lease.transients.clear()
+        req(server, "POST", f"/library/{name}", {})
+        assert server.session.lease.transients == [scope], name
+
+
+def test_local_only_actions_take_no_lease(srv):
+    # content_diff reads; update_local overwrites the LOCAL .hsp — no device write
+    server, d = srv
+    for name in ("content_diff", "update_local"):
+        server.session.lease.transients.clear()
+        req(server, "POST", f"/library/{name}", {})
+        assert server.session.lease.transients == [], name
+
+
 def test_pull_takes_no_device_lease(srv):
     # pull reads the device + writes a LOCAL .hsp — no device write, no lease
     # (matches the CLI `device pull`, which takes no lock).

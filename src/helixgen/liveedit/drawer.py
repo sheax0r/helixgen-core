@@ -61,7 +61,7 @@ ACTION_SCOPES: Dict[str, tuple] = {
     "setlist_rename": ("library",),
     "setlist_delete": ("library",),
     "setlist_duplicate": ("library",),
-    "setlist_add": ("library",),
+    "setlist_add": ("library", "irs"),   # hsp path copies a tone in, IRs and all
     "setlist_remove": ("library",),
     "setlist_move": ("library",),
     "push_ir": ("irs",),
