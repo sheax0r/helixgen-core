@@ -98,6 +98,82 @@ def _default_move_tone(client, name, *, setlist, to, cid) -> dict:
     return _copy.move_tone(client, name, setlist=setlist, to=to, cid=cid)
 
 
+def _default_remove_tone_everywhere(client, cid) -> dict:
+    from helixgen.device import copy as _copy
+    return _copy.remove_tone_everywhere(client, cid)
+
+
+def _default_ir_usage(client, name_or_hash, computer_irs) -> dict:
+    """Which on-device presets reference the IR ``name_or_hash``?
+
+    Resolves ``name_or_hash`` to a hash (an exact hash is used as-is; a name is
+    matched case-insensitively against the computer + device IR listings), then
+    sweeps the device USER pool: each preset's stored blob is untranscoded to a
+    .hsp body and checked with ``extract_ir_hashes``. A preset whose content
+    won't untranscode is ``indeterminate`` (the sweep can't prove it clean) —
+    the guard treats that as a possible referencer.
+
+    Returns ``{hash, tones: [{cid, name, setlists}], indeterminate: [cid]}``.
+    """
+    from helixgen.device.client import Cctp
+    from helixgen.ir import extract_ir_hashes
+
+    # resolve name_or_hash -> target hash
+    known: Dict[str, Optional[str]] = {}
+    for c in (computer_irs or []):
+        h = c.get("hash")
+        if h:
+            known[h] = c.get("name")
+    try:
+        for m in _normalize_device_irs(client):
+            h = m.get("hash")
+            if h:
+                known.setdefault(h, m.get("name"))
+    except Exception:  # noqa: BLE001 — an IR listing hiccup ≠ no sweep
+        pass
+    target = name_or_hash
+    if name_or_hash not in known:
+        want = name_or_hash.strip().casefold()
+        for h, nm in known.items():
+            if nm and nm.strip().casefold() == want:
+                target = h
+                break
+
+    # cid -> [setlist names] (reference rows carry rcid = pool cid)
+    members: Dict[int, List[str]] = {}
+    try:
+        for sl in client.list_setlists():
+            sl_cid, sl_name = sl.get("cid_"), sl.get("name")
+            if sl_cid is None:
+                continue
+            for m in client.list_container(sl_cid):
+                if m.get("cctp") == Cctp.REFERENCE and m.get("rcid") is not None:
+                    members.setdefault(m["rcid"], []).append(sl_name)
+    except Exception:  # noqa: BLE001 — setlist annotation is best-effort
+        pass
+
+    lib = None
+    tones: List[dict] = []
+    indeterminate: List[int] = []
+    for row in client.list_presets():
+        cid = row.get("cid_")
+        if cid is None:
+            continue
+        try:
+            if lib is None:
+                from helixgen.library import Library, default_library_path
+                lib = Library(default_library_path())
+            body = _semantic_canon_blob(client.get_content(cid), lib)
+            hashes = extract_ir_hashes(body)
+        except Exception:  # noqa: BLE001 — unreadable preset -> indeterminate
+            indeterminate.append(cid)
+            continue
+        if target in hashes:
+            tones.append({"cid": cid, "name": row.get("name"),
+                          "setlists": members.get(cid, [])})
+    return {"hash": target, "tones": tones, "indeterminate": indeterminate}
+
+
 def _semantic_canon_blob(blob: bytes, lib):
     from helixgen.device import untranscode
     return untranscode.sbe_bytes_to_hsp(blob, name="x", library=lib, author=None)
@@ -204,6 +280,8 @@ class LibrarySession:
         push_ir_fn: Callable[..., dict] = _default_push_ir,
         delete_ir_fn: Callable[..., dict] = _default_delete_ir,
         rename_ir_fn: Callable[..., dict] = _default_rename_ir,
+        usage_fn: Callable[..., dict] = _default_ir_usage,
+        remove_everywhere_fn: Callable[..., dict] = _default_remove_tone_everywhere,
     ):
         self._client_factory = client_factory
         self._tone_loader = tone_loader
@@ -219,6 +297,8 @@ class LibrarySession:
         self._push_ir_fn = push_ir_fn
         self._delete_ir_fn = delete_ir_fn
         self._rename_ir_fn = rename_ir_fn
+        self._usage_fn = usage_fn
+        self._remove_everywhere_fn = remove_everywhere_fn
         # One global lock serialises every device-mutating action; the Helix
         # client is not safe to drive from two requests at once.
         # ponytail: single mutate lock, split per-scope only if it ever bottlenecks.
@@ -645,8 +725,45 @@ class LibrarySession:
             return res
         return self._run(go)
 
-    def delete_ir(self, name_or_hash: Any) -> dict:
+    def ir_usage(self, name_or_hash: Any) -> dict:
+        """On-device presets that reference an IR. See ``_default_ir_usage``.
+        Returns ``{hash, tones: [{cid, name, setlists}], indeterminate: [cid]}``."""
         name_or_hash = self._require_str(name_or_hash, "an IR name or hash")
+        return self._run(lambda h: self._usage_fn(
+            h, name_or_hash, self._ir_local_loader() or []))
+
+    def remove_tone_device(self, cid: Any) -> dict:
+        """Remove a tone from the device entirely (every setlist + the pool);
+        the local library is untouched. See ``copy.remove_tone_everywhere``."""
+        cid = self._opt_int(cid, "cid")
+        if cid is None:
+            raise LibraryError("cid is required", status=400)
+        return self._run(lambda h: self._remove_everywhere_fn(h, cid))
+
+    def delete_ir(self, name_or_hash: Any, force: bool = False) -> dict:
+        name_or_hash = self._require_str(name_or_hash, "an IR name or hash")
+
+        # Fail closed: refuse while on-device tones reference the IR (or while
+        # a preset can't be read, so we can't prove it clean). `force` is the
+        # only override. The sweep runs in its own device session BEFORE the
+        # delete — the mutate lock is not reentrant, so this must not nest in
+        # ``_run``.
+        if not force:
+            u = self.ir_usage(name_or_hash)
+            tones, indet = u.get("tones") or [], u.get("indeterminate") or []
+            if tones or indet:
+                parts = []
+                if tones:
+                    names = ", ".join(str(t.get("name") or t.get("cid"))
+                                      for t in tones)
+                    parts.append(f"{len(tones)} on-device tone(s) reference it "
+                                 f"({names}) — remove them first")
+                if indet:
+                    parts.append(f"{len(indet)} preset(s) couldn't be read to "
+                                 "check — use force to delete anyway")
+                raise LibraryError(
+                    f"IR {name_or_hash!r} is still in use: " + "; ".join(parts),
+                    status=409)
 
         def go(h):
             res = self._delete_ir_fn(h, name_or_hash)

@@ -28,11 +28,13 @@ class _FakeClient:
 
 
 def _session(*, client=None, computer_irs=None, offline=False, push_ir_fn=None,
-             delete_ir_fn=None, rename_ir_fn=None):
+             delete_ir_fn=None, rename_ir_fn=None, usage_fn=None,
+             remove_everywhere_fn=None):
     kw = dict(tone_loader=lambda: [], guitar_loader=lambda: [],
               ir_local_loader=lambda: (computer_irs or []))
     for k, v in (("push_ir_fn", push_ir_fn), ("delete_ir_fn", delete_ir_fn),
-                 ("rename_ir_fn", rename_ir_fn)):
+                 ("rename_ir_fn", rename_ir_fn), ("usage_fn", usage_fn),
+                 ("remove_everywhere_fn", remove_everywhere_fn)):
         if v is not None:
             kw[k] = v
     factory = None if offline else (lambda: client)
@@ -131,3 +133,69 @@ def test_rename_ir_needs_new_name():
     with pytest.raises(LibraryError) as ei:
         _session(client=_FakeClient()).rename_ir("abc", "")
     assert ei.value.status == 400
+
+
+# -- ir_usage + the fail-closed delete guard -------------------------------
+
+def test_ir_usage_wires_through():
+    canned = {"hash": "aaa",
+              "tones": [{"cid": 11, "name": "A", "setlists": ["Rock"]},
+                        {"cid": 12, "name": "B", "setlists": []}],
+              "indeterminate": [99]}
+    out = _session(client=_FakeClient(),
+                   usage_fn=lambda h, nh, ci: dict(canned)).ir_usage("MyCab")
+    assert out == canned
+
+
+def test_ir_usage_offline_raises():
+    with pytest.raises(LibraryError) as ei:
+        _session(offline=True).ir_usage("x")
+    assert ei.value.status == 409
+
+
+def test_delete_ir_blocked_by_referencing_tone():
+    called = []
+    st = _session(
+        client=_FakeClient(),
+        usage_fn=lambda h, nh, ci: {"hash": "aaa", "indeterminate": [],
+                                    "tones": [{"cid": 11, "name": "A",
+                                               "setlists": []}]},
+        delete_ir_fn=lambda h, nh: called.append(nh) or {"ok": True})
+    with pytest.raises(LibraryError) as ei:
+        st.delete_ir("aaa")
+    assert ei.value.status == 409
+    assert not called          # the IR is NOT deleted while a tone uses it
+
+
+def test_delete_ir_blocked_by_indeterminate():
+    st = _session(
+        client=_FakeClient(),
+        usage_fn=lambda h, nh, ci: {"hash": "aaa", "tones": [],
+                                    "indeterminate": [99]},
+        delete_ir_fn=lambda h, nh: (_ for _ in ()).throw(
+            AssertionError("must not delete")))
+    with pytest.raises(LibraryError) as ei:
+        st.delete_ir("aaa")
+    assert ei.value.status == 409
+
+
+def test_delete_ir_force_skips_sweep_and_deletes():
+    called = []
+    st = _session(
+        client=_FakeClient(),
+        usage_fn=lambda h, nh, ci: (_ for _ in ()).throw(
+            AssertionError("force must not sweep")),
+        delete_ir_fn=lambda h, nh: called.append(nh) or {"ok": True,
+                                                          "hash": nh})
+    st.delete_ir("aaa", force=True)
+    assert called == ["aaa"]
+
+
+def test_remove_tone_device_wires_through():
+    seen = {}
+    st = _session(client=_FakeClient(),
+                  remove_everywhere_fn=lambda h, cid: seen.update(cid=cid)
+                  or {"ok": True, "removed_pool": cid, "removed_refs": [],
+                      "errors": []})
+    out = st.remove_tone_device(11)
+    assert seen["cid"] == 11 and out["ok"] is True
