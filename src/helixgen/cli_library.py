@@ -574,7 +574,7 @@ def audit_cmd(as_json: bool, library_path: Path | None) -> None:
     for hsp in sorted(tones_dir.glob("*.hsp")) if tones_dir.is_dir() else []:
         try:
             ids = [b.get("@model", "") for b in read_hsp_blocks(hsp)]
-        except (OSError, ValueError) as err:
+        except (OSError, ValueError, AttributeError, TypeError) as err:
             click.echo(f"warning: {hsp.name}: unreadable ({err})", err=True)
             continue
         hits = superseded_in(lib, ids)

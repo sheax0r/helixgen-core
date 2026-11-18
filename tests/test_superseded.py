@@ -102,6 +102,7 @@ def test_library_audit_is_read_only_report(lib, tmp_path, tmp_home):
     tones.mkdir(parents=True, exist_ok=True)
     (tones / "old.hsp").write_bytes(legacy.read_bytes())
     (tones / "fine.hsp").write_bytes(native.read_bytes())
+    (tones / "junk.hsp").write_bytes(b"rpshnosj[1,2]")  # wrong shape: skipped
     before = (tones / "old.hsp").read_bytes()
 
     res = CliRunner().invoke(
