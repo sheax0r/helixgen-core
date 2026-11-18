@@ -163,6 +163,28 @@ def ingest_cmd(path: Path, library_path: Path | None) -> None:
     click.echo(_format_summary(summary, library))
 
 
+def _warn_superseded(spec: Any, library: Library) -> None:
+    """Stderr warning (never an error) per recipe block that has a native
+    successor. Unresolvable names are left for generate's own error."""
+    from helixgen.spec import BlockEntry
+    from helixgen.superseded import superseded_in
+    ids = []
+    for path in spec.paths:
+        for entry in path.blocks:
+            if isinstance(entry, BlockEntry):
+                try:
+                    ids.append(library.find_block(entry.block).model_id)
+                except (KeyError, LookupError):
+                    pass
+    for old, new in superseded_in(library, ids):
+        click.echo(
+            f"warning: {old.display_name!r} [{old.model_id}] is a legacy model "
+            f"superseded by {new.display_name!r} [{new.model_id}] -- prefer the "
+            "native one for a new tone. Param names, ranges and UNITS differ: "
+            f"run `show-block \"{new.model_id}\"` before carrying values over.",
+            err=True)
+
+
 @cli.command(name="generate")
 @click.argument("spec_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -237,6 +259,11 @@ def generate_cmd(
     (hgc-x7i). Leaving a knob out means "factory position", so name only the
     params you actually want moved.
 
+    A block that `list-blocks` marks as superseded (a legacy model with a
+    Stadium-native successor, e.g. `Plate` -> `Dynamic Plate Stereo`) still
+    generates, with a stderr warning naming the successor. A legacy model with
+    no successor never warns.
+
     Output modes:
 
     \b
@@ -294,6 +321,7 @@ def generate_cmd(
         spec = parse_spec(raw, source=str(spec_path))
         chassis = library.load_chassis()
         shape = chassis.get(CHASSIS_SHAPE_KEY, "hlx")
+        _warn_superseded(spec, library)
 
         if output_path is not None and (room_ir or room_mode != "auto" or room_highcut):
             click.echo("warning: --room-ir/--room/--room-highcut only apply to "
@@ -1269,7 +1297,9 @@ def usb_taps_cmd(presets: tuple[Path, ...], whole_library: bool, do_migrate: boo
               help="Filter to one category: amp, cab, drive, delay, reverb, "
                    "modulation, filter, eq, dynamics, pitch, volume, send.")
 @click.option("--json", "as_json", is_flag=True, default=False,
-              help="Emit a JSON array of {display_name, model_id, category}.")
+              help="Emit a JSON array of {display_name, model_id, category, "
+                   "superseded_by}; superseded_by is null or the native "
+                   "successor's {display_name, model_id}.")
 @_library_option
 def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | None) -> None:
     """List blocks in the library, grouped by category.
@@ -1284,13 +1314,22 @@ def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | No
     the exact param names, ranges and UNITS before writing params — two blocks
     in the same category can spell "channel volume" as a 0..1 knob and as a dB
     range.
+
+    A line ending `-> superseded by <name> [<model_id>]` is a LEGACY model
+    with a Stadium-native successor of the same kind (legacy `Plate` ->
+    `Dynamic Plate Stereo`, a legacy amp -> its Agoura model). Pick the
+    successor for a new tone. The marker comes from an explicit map, not from
+    the model_id prefix: an unmarked `HD2_` block (every cab, most effects,
+    `'63 Spring`, `Tile`) has nothing newer and is the right choice.
     """
+    from helixgen.superseded import successor, successor_dict
     library = _resolved_library(library_path)
     blocks = library.list_blocks(category=category)
     if as_json:
         click.echo(json.dumps([
             {"display_name": b.display_name, "model_id": b.model_id,
-             "category": b.category}
+             "category": b.category,
+             "superseded_by": successor_dict(library, b.model_id)}
             for b in sorted(blocks, key=lambda x: (x.category, x.display_name))
         ], indent=2))
         return
@@ -1303,7 +1342,10 @@ def list_blocks_cmd(category: str | None, as_json: bool, library_path: Path | No
     for cat in sorted(by_category):
         click.echo(f"{cat}:")
         for b in sorted(by_category[cat], key=lambda x: x.display_name):
-            click.echo(f"  {b.display_name}  [{b.model_id}]")
+            new = successor(library, b.model_id)
+            click.echo(f"  {b.display_name}  [{b.model_id}]" + (
+                f"  -> superseded by {new.display_name} [{new.model_id}]"
+                if new else ""))
 
 
 def _fmt_num(value: Any) -> str:
@@ -1393,7 +1435,9 @@ def _param_lines(name: str, info: dict[str, Any]) -> list[str]:
 @click.argument("name_or_id")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit the schema as JSON ({display_name, model_id, "
-                   "category, aliases, params}); each param carries {type, "
+                   "category, aliases, superseded_by, params}); "
+                   "superseded_by is null or the native successor's "
+                   "{display_name, model_id}; each param carries {type, "
                    "min, max, default, unit, scale, enum_labels, "
                    "sighted, internal} where known. No `observed_range` — "
                    "it was one sighted sample, never a range.")
@@ -1428,6 +1472,10 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
     are aligned to the param's min. A param marked `[internal]` (`IrData`,
     `AmpCabPeak*`) has no control in the editor: it is plumbing, not a knob —
     leave it alone.
+
+    A `superseded by:` line means this is a legacy model with a Stadium-native
+    successor — use that one for a new tone, and `show-block` IT: the params
+    do not carry over by name or by unit.
     """
     library = _resolved_library(library_path)
     try:
@@ -1436,6 +1484,7 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
         raise click.ClickException(str(e)) from e
 
     from helixgen.device.paraminfo import block_param_info
+    from helixgen.superseded import successor, successor_dict
     params = block_param_info(block.model_id, block.params)
 
     if as_json:
@@ -1444,6 +1493,7 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
             "model_id": block.model_id,
             "category": block.category,
             "aliases": list(block.aliases or []),
+            "superseded_by": successor_dict(library, block.model_id),
             "params": params,
         }, indent=2))
         return
@@ -1452,6 +1502,9 @@ def show_block_cmd(name_or_id: str, as_json: bool, library_path: Path | None) ->
     click.echo(f"category: {block.category}")
     if block.aliases:
         click.echo(f"aliases: {', '.join(block.aliases)}")
+    new = successor(library, block.model_id)
+    if new:
+        click.echo(f"superseded by: {new.display_name}  [{new.model_id}]")
     click.echo("params:")
     for name, info in params.items():
         for line in _param_lines(name, info):
