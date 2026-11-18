@@ -292,6 +292,7 @@ def library() -> None:
       doc         set a tone's description_md, or one variant's notes_md
       fork        copy a variant's .hsp onto another guitar (or another song)
       validate    shape + cross-link checks across every tone's metadata
+      audit       read-only: tones still using a superseded legacy model
       add-guitar  scaffold + commit a new guitar profile JSON
 
     Every tone lives at ``library/tones/<logical-slug>.json`` and can be
@@ -542,6 +543,60 @@ def doc_cmd(name: str, source: str | None, variant_key: str | None,
 
     tone_meta.save_tone_meta(meta)
     click.echo(f"Updated {target} for {slug!r} ({len(text)} chars).")
+
+
+@library.command(name="audit")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help='Emit {"tones": [{"hsp", "superseded": [{"display_name", '
+                   '"model_id", "superseded_by": {display_name, model_id}}]}]} '
+                   "JSON instead of a human report.")
+@click.option("--library", "library_path", type=click.Path(path_type=Path),
+              default=None, help="Block library (default: $HELIXGEN_LIBRARY).")
+def audit_cmd(as_json: bool, library_path: Path | None) -> None:
+    """List library tones that still use a superseded legacy model.
+
+    READ-ONLY: reads every ``library/tones/*.hsp`` and reports each block
+    whose model has a Stadium-native successor (the same marker `list-blocks`
+    prints -- legacy `Plate` -> `Dynamic Plate Stereo`, a legacy amp -> its
+    Agoura model). Nothing is rewritten and exit is always 0: a legacy model
+    is a choice to revisit, not an error, and one with no successor
+    (`'63 Spring`, `Tile`, any cab) is never listed. Convert a tone by hand
+    with `swap-model` / `patch` after reading `show-block` for the successor:
+    params do not carry over by name or by unit.
+    """
+    from helixgen.cli import _resolved_library
+    from helixgen.hsp import read_hsp_blocks
+    from helixgen.superseded import superseded_in
+
+    lib = _resolved_library(library_path)
+    tones_dir = home.tones_dir()
+    report: List[Dict[str, Any]] = []
+    for hsp in sorted(tones_dir.glob("*.hsp")) if tones_dir.is_dir() else []:
+        try:
+            ids = [b.get("@model", "") for b in read_hsp_blocks(hsp)]
+        except (OSError, ValueError, AttributeError, TypeError) as err:
+            click.echo(f"warning: {hsp.name}: unreadable ({err})", err=True)
+            continue
+        hits = superseded_in(lib, ids)
+        if hits:
+            report.append({"hsp": hsp.name, "superseded": [
+                {"display_name": old.display_name, "model_id": old.model_id,
+                 "superseded_by": {"display_name": new.display_name,
+                                   "model_id": new.model_id}}
+                for old, new in hits]})
+    if as_json:
+        click.echo(json.dumps({"tones": report}, indent=2))
+        return
+    if not report:
+        click.echo("No library tone uses a superseded model.")
+        return
+    for row in report:
+        click.echo(row["hsp"])
+        for h in row["superseded"]:
+            click.echo(f"  {h['display_name']} [{h['model_id']}] -> "
+                       f"{h['superseded_by']['display_name']} "
+                       f"[{h['superseded_by']['model_id']}]")
+    click.echo(f"{len(report)} tone(s) use a superseded model.")
 
 
 @library.command(name="validate")
