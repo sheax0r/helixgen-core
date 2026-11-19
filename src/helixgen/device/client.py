@@ -497,11 +497,6 @@ class HelixClient:
         out.sort(key=lambda m: m.get("posi", 1 << 30))
         return out
 
-    # spec uses both names; ``list_setlists`` is canonical.
-    def list_user_setlists(self) -> List[Dict[str, Any]]:
-        """Alias of :meth:`list_setlists` — enumerate the real user setlists."""
-        return self.list_setlists()
-
     def list_setlists_by_name(
         self, name: str, *, strict: bool = True,
         setlists: Optional[List[Dict[str, Any]]] = None,

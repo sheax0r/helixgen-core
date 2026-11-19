@@ -96,15 +96,3 @@ def parse_osc_message(buf: bytes, off: int = 0) -> Tuple[str, List[Tuple[str, An
         else:
             args.append(("?" + t, None))
     return addr, args, q
-
-
-def osc_address(raw: bytes) -> str:
-    """Best-effort: return the OSC address in a frame (skip any binary header)."""
-    i = raw.find(b"/")
-    if i < 0:
-        return "?"
-    try:
-        end = raw.index(b"\x00", i)
-        return raw[i:end].decode("latin1")
-    except ValueError:
-        return "?"

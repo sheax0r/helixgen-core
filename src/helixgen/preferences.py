@@ -934,17 +934,7 @@ def save_normalization(changes: dict, path: Path | None = None) -> Path:
     # commonly one): replacing the link itself would leave the real file
     # stale and silently unlinked from the user's repo.
     target = resolved_path.resolve() if resolved_path.is_symlink() else resolved_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # A FIXED tmp name is shared by every concurrent writer, so two runs
-    # interleave bytes into one file and `os.replace` publishes the mix.
-    # This is the first read-modify-write of this file, so it needs its own.
-    tmp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}")
-    try:
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
-        os.replace(tmp, target)
-    finally:
-        if tmp.exists():
-            tmp.unlink()
+    home.atomic_write_text(target, json.dumps(data, indent=2) + "\n")
     return resolved_path
 
 
@@ -959,8 +949,5 @@ def scaffold_default(path: Path | None = None, *, force: bool = False) -> Path:
     if resolved_path.exists() and not force:
         return resolved_path
 
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = resolved_path.with_suffix(resolved_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(_default_scaffold_dict(), indent=2) + "\n")
-    os.replace(tmp, resolved_path)
+    home.atomic_write_text(resolved_path, json.dumps(_default_scaffold_dict(), indent=2) + "\n")
     return resolved_path

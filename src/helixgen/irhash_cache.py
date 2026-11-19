@@ -115,22 +115,12 @@ class IrHashCache:
         Never leaves a half-written cache: on any failure before the replace,
         the temp file is removed and the existing cache is untouched.
         """
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_name(self.path.name + ".tmp")
         payload = {
             "version": _CACHE_VERSION,
             "algo": IRHASH_ALGO,
             "entries": self.entries,
         }
-        try:
-            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
-            os.replace(tmp, self.path)
-        except OSError:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+        home.atomic_write_text(self.path, json.dumps(payload, indent=2, sort_keys=True))
 
     def clear(self) -> None:
         """Empty the in-memory cache and remove the on-disk file."""

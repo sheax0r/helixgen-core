@@ -211,25 +211,6 @@ def test_controller_name_for_source_never_raises_on_untabled():
         assert controllers.controller_name_for_source("stadium_xl", sid) is None
 
 
-def test_english_for_controller_shows_name_and_position():
-    en = controllers.english_for_controller("stadium_xl", "FS5")
-    assert en == "Footswitch 5 (top row, 5th from left)"
-
-
-def test_english_for_controller_bottom_row_and_exp():
-    assert controllers.english_for_controller("stadium_xl", "FS11") == (
-        "Footswitch 11 (bottom row, 5th from left)"
-    )
-    en_exp = controllers.english_for_controller("stadium_xl", "EXP1")
-    assert "Expression Pedal 1" in en_exp
-
-
-def test_english_for_controller_stable_across_calls():
-    a = controllers.english_for_controller("stadium_xl", "FS1")
-    b = controllers.english_for_controller("stadium_xl", "FS1")
-    assert a == b
-
-
 def test_controller_mapping_is_json_serialisable_full_table():
     import json
     mapping = controllers.controller_mapping("stadium_xl")

@@ -24,7 +24,33 @@ for a pre-flip ``mapping.json`` still at ``legacy_irs_dir()``.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
+
+
+def atomic_write_text(path: Path | str, text: str, *, encoding: str = "utf-8") -> Path:
+    """Atomically publish ``text`` to ``path``.
+
+    Writes a per-process-unique temp file in the destination directory, then
+    ``os.replace`` it into place -- the only step that touches ``path``, and
+    atomic on POSIX and Windows. Creates the parent directory. On any failure
+    before the replace the temp file is removed and an existing file at
+    ``path`` is left untouched. The single writer behind every ``.helixgen``
+    JSON (prefs, manifests, IR metadata, caches)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
 
 
 def helixgen_home() -> Path:

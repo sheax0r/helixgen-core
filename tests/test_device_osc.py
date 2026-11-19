@@ -5,7 +5,7 @@ import struct
 
 import pytest
 
-from helixgen.device.osc import osc_encode, parse_osc_message, osc_address
+from helixgen.device.osc import osc_encode, parse_osc_message
 
 
 def test_roundtrip_int():
@@ -112,11 +112,6 @@ def test_message_with_no_args():
 def test_unknown_tag_rejected_on_encode():
     with pytest.raises(ValueError):
         osc_encode("/bad", [("z", 1)])
-
-
-def test_osc_address_skips_binary_header():
-    frame = b"\x00\x00" + osc_encode("/Head", [("i", 1)])
-    assert osc_address(frame) == "/Head"
 
 
 def test_boolean_tags_carry_no_payload_and_round_trip():

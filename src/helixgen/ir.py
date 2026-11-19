@@ -108,11 +108,8 @@ class IrMapping:
         written — never before, and only once (so a re-run never re-bridges).
         A rename failure
         is swallowed (advisory)."""
-        self.irs_dir.mkdir(parents=True, exist_ok=True)
         target = self.irs_dir / "mapping.json"
-        tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(self.entries, indent=2, sort_keys=True))
-        os.replace(tmp, target)
+        home.atomic_write_text(target, json.dumps(self.entries, indent=2, sort_keys=True))
         legacy = self._legacy_source
         if legacy is not None and Path(legacy).resolve() != target.resolve():
             try:

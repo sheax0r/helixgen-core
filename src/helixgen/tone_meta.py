@@ -535,17 +535,7 @@ def save_tone_meta(meta: ToneMeta) -> ToneMeta:
     meta.created = created
     meta.updated = today
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        tmp.write_text(json.dumps(_meta_to_dict(meta), indent=2))
-        os.replace(tmp, path)
-    except BaseException:  # KeyboardInterrupt/SIGTERM must also clean up
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+    home.atomic_write_text(path, json.dumps(_meta_to_dict(meta), indent=2))
 
     home_dir = home.helixgen_home()
     try:

@@ -1,6 +1,8 @@
 """Tests for helixgen.home: canonical path resolution for ~/.helixgen."""
 from pathlib import Path
 
+import pytest
+
 import helixgen.home as home
 
 
@@ -53,3 +55,30 @@ def test_env_vars_expanduser(monkeypatch):
     assert home.library_dir() == real_home / "elsewhere-library"
     assert home.manifest_path() == real_home / "elsewhere-setlists.json"
     assert home.library_irs_dir() == real_home / "elsewhere-irs"
+
+
+def test_atomic_write_text_creates_parent_and_writes(tmp_path):
+    target = tmp_path / "sub" / "dir" / "out.json"
+    ret = home.atomic_write_text(target, '{"a": 1}')
+    assert ret == target
+    assert target.read_text() == '{"a": 1}'
+    # no temp file left behind
+    assert list(target.parent.glob("*.tmp")) == []
+
+
+def test_atomic_write_text_overwrites(tmp_path):
+    target = tmp_path / "out.txt"
+    target.write_text("old")
+    home.atomic_write_text(target, "new")
+    assert target.read_text() == "new"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_atomic_write_text_failure_leaves_existing_untouched(tmp_path):
+    target = tmp_path / "out.txt"
+    target.write_text("original")
+    # a non-str body raises during the temp write, before the atomic replace
+    with pytest.raises(TypeError):
+        home.atomic_write_text(target, 123)  # type: ignore[arg-type]
+    assert target.read_text() == "original"
+    assert list(tmp_path.glob("*.tmp")) == []

@@ -325,8 +325,8 @@ pedal fully forward to click it).
 (add `--json` for the machine-readable table) lists every assignable
 controller with its English name + physical position, e.g.
 `Footswitch 5 (top row, 5th from left)`. When reporting a tone to a human,
-render controllers in this English form (via `helixgen controllers` /
-`controllers.english_for_controller`), never a bare `FS#`. When a human *describes* a control in plain language
+render controllers in this English form (via `helixgen controllers`, whose
+`--json` rows carry a ready-rendered `english` field), never a bare `FS#`. When a human *describes* a control in plain language
 ("the top-left switch", "second from right on the bottom", "the wah toe"),
 translate it to a canonical identifier with a dedicated small-model
 translation sub-agent fed the `helixgen controllers --json` table — it returns
