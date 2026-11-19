@@ -188,7 +188,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
 - `helixgen generate <spec.json> [-o <out.hsp>]` — generate a preset. `-o` is now **optional**. Default (no `-o`): writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON — name the tone with `--artist`/`--song` (paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (resolved to a guitar **profile** — see "Guitar profiles / resolution" under Library commands — and its `short_name` appended to the display name + slug); with no naming flag, the recipe's bare `name` becomes the descriptor. A slug collision (target `.hsp` already exists) errors with a rename suggestion — never overwrites. Explicit `-o <out.hsp>` preserves the legacy behavior exactly: writes there, auto-registers, naming flags ignored, **no metadata JSON written**. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix.
   - **Two identity guards (hgc-2ja).** An explicit `--descriptor` must be the tone name **alone**: one carrying a smuggled identity — a `" - "` / `" -- "` / en/em-dash separator (the display schema's own), or a slug ending in a known guitar's slug or `short_name` — is **refused** (exit 1) naming the flags to use instead, because it yields a display name with a doubled separator and a logical slug that will not group with the tone it belongs to. The same guard runs on `library import --descriptor` and `library fork --descriptor`. The *implicit* fallbacks are deliberately **not** guarded (a recipe's own `name`, an `.hsp`'s `meta.name`): those are existing artifacts' names, not a naming choice made at the CLI, and dashes in them are legitimate.
   - Combining `-o` with `--artist`/`--song`/`--descriptor`/`--guitar` now **warns on stderr** (still exit 0) naming the flags being discarded, instead of dropping them silently — passing both means the caller wanted an identity that is about to be thrown away with the metadata JSON.
-  - **`--venue headphones|direct|amp-in` [`--room-ir HASH_OR_WAV`] [`--room auto|tile`]** (library flow only). Converts the generated tone to a *venue* — what it is played through — and records `venue`/`venue_detail` on the variant. No `--venue` falls back to the `default_venue` preference (or `$HELIXGEN_DEFAULT_VENUE`); with neither, output is byte-for-byte what it was and `venue` stays unset. `--venue direct` records direct with no transform (the opt-out when a default is set). If the guitar's bare variant already holds a *different* venue, the new one gets key `<guitar>@<venue>`, file `<slug>-<venue>.hsp` and a display suffix such as ` (Amp In)`; the same venue as the bare variant is a slug collision (refused). **`--venue` with `-o` is a usage error**, and `default_venue` is ignored with `-o`. `--room-ir`/`--room tile` steer the headphones treatment (see `library venue`). `apply_venue` warnings print on stderr plus a one-line `venue: headphones (room-ir, <ir> @ -30.0 dB, FS4)` summary.
+  - **`--venue headphones|direct|amp-in` [`--room-ir HASH_OR_WAV`] [`--room auto|tile`] [`--room-highcut HZ|off`]** (library flow only). Converts the generated tone to a *venue* — what it is played through — and records `venue`/`venue_detail` on the variant. No `--venue` falls back to the `default_venue` preference (or `$HELIXGEN_DEFAULT_VENUE`); with neither, output is byte-for-byte what it was and `venue` stays unset. `--venue direct` records direct with no transform (the opt-out when a default is set). If the guitar's bare variant already holds a *different* venue, the new one gets key `<guitar>@<venue>`, file `<slug>-<venue>.hsp` and a display suffix such as ` (Amp In)`; the same venue as the bare variant is a slug collision (refused). **`--venue` with `-o` is a usage error**, and `default_venue` is ignored with `-o`. `--room-ir`/`--room tile`/`--room-highcut` steer the headphones treatment (see `library venue`); `--room-highcut` defaults to the `headphones_highcut_hz` preference (8000 Hz; `off` disables). `apply_venue` warnings print on stderr plus a one-line `venue: headphones (room-ir, <ir> @ -30.0 dB, FS4)` summary.
   - To make a **second variant** of a tone that already exists — another guitar, or the same rig on another song — use `library fork`, not a re-author: it copies the source `.hsp` verbatim so nothing is rebuilt from a write-up. **Every param the recipe does not mention is written at the model's own device default** (`show-block`'s `default`) — leaving a knob out means "factory position", so name only the params you want moved. Before hgc-x7i it inherited the block library's `sighted` value instead, which put settings Line 6 never ships onto knobs nobody touched.
 - `helixgen patch <preset.hsp> <ops.json|-> [--json]` — apply a JSON **list** of ops (`set_param`, `set_enabled`, `add_block`, `remove_block`, `swap_model`, `set_input`, `set_footswitch`, `set_expression`, `remove_footswitch`, `remove_expression`, `set_snapshot`, `remove_snapshot`) to the `.hsp` in one atomic invocation: all ops are applied in memory and the file is written once at the end, so an invalid op anywhere in the list leaves the file untouched. `-` reads the ops from stdin. `set_input` re-jacks a whole path's input endpoint — `{"op": "set_input", "path": 1, "jack": "mic"}` (`path` 0-based), where `jack` is `inst1`/`inst2`/`both`/`none`/`mic` — dropping params the target jack does not have (the mic has no `Pad`). It writes no `LowCut`; set one afterwards with `set-param <f> input lowcut 80 --path 1`. It does not check that the path is free — re-jacking a path that carries an amp silences that amp. Preferred over repeated single-op verbs for multi-edit sessions.
   - **Controller ops (`set_footswitch` / `set_expression` / `remove_footswitch` / `remove_expression`)** wire the live-control layer the recipe's top-level `footswitches`/`expression` lists build at `generate` time — the **only** way to add or change a footswitch or expression assignment on an **existing** `.hsp`, since there is no decompile→regenerate round-trip. They call the same `mutate.wire_footswitch` / `wire_expression` verbs `generate` uses, so the controller dict shape is identical. `set_footswitch` takes `switch` (`FS1`–`FS5` / `FS7`–`FS11`, or `EXP1Toe` for the wah toe-switch; `FS6`=MODE / `FS12`=TAP reserved → error) and `block`, plus optional `behavior` (`latching`/`momentary`), `param`+`min`+`max` (a param toggle in raw units instead of a bypass), `curve`, `threshold`, `label`/`color` (scribble strip), and `path`/`lane`/`pos` to disambiguate. `set_expression` takes `pedal` (`EXP1`/`EXP2`) and `targets` (each `{"block","param"[,"min","max","curve","path"/"lane"/"pos"]}`; default sweep `0.0`→`1.0`, inverted `min>max` allowed). Both are **last-wins** — re-issuing one edits the existing assignment, and assignment is permissive (a merge switch may drive several blocks), matching `generate` and the hardware; the one-`(block,param)`-controller rule is enforced only at recipe parse, not here. `remove_footswitch` (`switch`, optional `block` to unwire just one target of a merge switch) and `remove_expression` (`pedal`) delete the controller(s) and prune the now-orphaned `preset.sources` entry; a removal that matches nothing **errors** (the name is almost certainly wrong), leaving the file untouched. Example: `{"op":"set_expression","pedal":"EXP1","targets":[{"block":"Pitch Wham Mono","param":"Pedal"}]}`.
@@ -360,24 +360,28 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   is always saved, and the command exits nonzero if any file failed; a
   failure after a file was placed (manifest registration) names the exact
   recovery command (copy the `.hsp` into the library directory).
-- `helixgen library venue <variant> headphones|direct|amp-in [--room-ir HASH_OR_WAV] [--room auto|tile] [--force] [--dry-run] [--json]` —
+- `helixgen library venue <variant> headphones|direct|amp-in [--room-ir HASH_OR_WAV] [--room auto|tile] [--room-highcut HZ|off] [--force] [--dry-run] [--json]` —
   convert a variant **in place** to another venue. `<variant>` resolves like
   `library fork`'s source (an ambiguous multi-variant slug errors listing the
   `preset_name`s). The `.hsp` is rewritten and the variant's `venue` /
   `venue_detail` set; its key, filename, `preset_name` and `forked_from` are
   left alone. `headphones` adds a parallel room IR (pack-matched to the close
-  IR, level energy-matched, on a footswitch) or a Tile ambience block;
-  `direct` removes exactly the room stage `venue_detail` recorded; `amp-in`
-  removes the cabs and adds a post-amp EQ (one-way). The venue the variant
-  already has errors (`already <venue>`); a variant with no recorded venue
-  counts as direct. **Venue-drop guard (hgc-es5):** a conversion that would drop
-  a recorded **room-IR** treatment (its parallel room-mic lane) — e.g. an
-  in-place `direct`/`amp-in` of a room-ir headphones variant — is **refused**
-  unless `--force`, with a message naming the dropped lane and pointing at
+  IR, level energy-matched, on a footswitch) or a Tile ambience block, and
+  applies a close-mic High Cut ceiling mirrored onto the room IR (see
+  `--room-highcut`); `direct` removes exactly the room stage `venue_detail`
+  recorded and restores the close mic's cut; `amp-in` removes the cabs and adds
+  a post-amp EQ (one-way). The venue the variant already has errors
+  (`already <venue>`); a variant with no recorded venue counts as direct.
+  **Venue-drop guard (hgc-es5):** a conversion that would drop a recorded
+  **room-IR** treatment (its parallel room-mic lane) — e.g. an in-place
+  `direct`/`amp-in` of a room-ir headphones variant — is **refused** unless
+  `--force`, with a message naming the dropped lane and pointing at
   `library room-level`. It is a requested-vs-recorded `treatment` compare (no
   structural parsing); `--force` proceeds, `--dry-run` previews without tripping
   it, and a variant whose recorded treatment is not room-ir is never guarded.
-  Warnings on stderr + a one-line `venue:` summary;
+  `--room-highcut <Hz>` sets the headphones close-mic High Cut ceiling (mirrored
+  onto the room IR); `off` disables it; default is the `headphones_highcut_hz`
+  preference (8000). Warnings on stderr + a one-line `venue:` summary;
   `--dry-run` runs the transform in memory and writes nothing. `--library` /
   `--irs-dir` (or `$HELIXGEN_LIBRARY` / `$HELIXGEN_IRS`) choose the block
   library and IRs used.
@@ -392,6 +396,13 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   controller `max`) moves with it, so toggling the room on lands at the new
   blend. `venue_detail.room_level_db` is updated and the variant's loudness
   stamp cleared. Refuses a variant whose recorded treatment is not room-ir.
+- `helixgen library venue-retrofit [--room-highcut HZ|off] [--apply] [--json] [--library DIR] [--irs-dir DIR]` —
+  sweep every room-IR `headphones` variant and bring its room mic in line with
+  the current High Cut behaviour (mirror the close mic's cut, re-match the room
+  Level). **Dry run by default** — reports per variant what would change and
+  what it skips; a room IR whose `HighCut` was set by hand is left untouched.
+  `--apply` rewrites each `.hsp`, updates `venue_detail`, clears `normalized`,
+  and commits. `--room-highcut` as above.
 - `helixgen library fork <source> [--guitar G] [--artist --song | --descriptor]
   [--venue V [--room-ir X] [--room tile]] [--dry-run] [--json]` — fork a tone onto another guitar (or another song).
   **The `.hsp` is the source**: the forked preset is a copy of the source
