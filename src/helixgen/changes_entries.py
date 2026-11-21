@@ -63,6 +63,40 @@ def _fs_bypass_apply(ctx: Any) -> Finding:
                    f"{len(coords)} bypass block(s)")
 
 
+# ---------------------------------------------------------------------------
+# factory-info-clear (core #117/#132, engine 0.65.0)
+# ---------------------------------------------------------------------------
+def _factory_info_detect(ctx: Any) -> Finding:
+    donors = ctx.resources.get("factory_donor_infos") or set()
+    info = (ctx.body.get("meta") or {}).get("info")
+    if isinstance(info, str) and info and info in donors:
+        return Finding(True, [], "would-clear", "factory meta.info leakage")
+    return Finding(False, [], "unchanged")
+
+
+def _factory_info_apply(ctx: Any) -> Finding:
+    if not _factory_info_detect(ctx).affected:
+        return Finding(False, [], "unchanged")
+    ctx.body["meta"]["info"] = ""
+    return Finding(True, [], "cleared", "factory meta.info leakage")
+
+
+register(ChangeEntry(
+    id="factory-info-clear",
+    landed_in="0.65.0",
+    kind="cosmetic",
+    summary="clear leaked factory rig notes from meta.info",
+    research=(
+        "Tones generated before hgc-a8p copied the donor chassis wholesale and "
+        "kept its factory rig notes in meta.info. The donor string is recorded "
+        "verbatim in the library's chassis.json; a tone whose meta.info matches "
+        "it exactly is factory leakage and is cleared. A note the user set "
+        "themselves never matches, so it is left alone."),
+    detect=_factory_info_detect,
+    apply=_factory_info_apply,
+))
+
+
 register(ChangeEntry(
     id="fs-bypass-snapshot-assign",
     landed_in="0.84.0",

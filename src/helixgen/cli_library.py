@@ -1544,11 +1544,15 @@ def venue_retrofit_cmd(room_highcut: str | None, apply_changes: bool, as_json: b
 
 
 def _upgrade_resources(entries, library_path, irs_dir) -> Dict[str, Any]:
-    """Per-run inputs some entries need, computed once. fs-bypass needs none;
-    later entries (factory-info donor set, headphones block library + IRs + the
-    high-cut preference) add their keys here keyed on which entry ids are
-    selected, so the library/IRs load at most once per run."""
-    return {}
+    """Per-run inputs some entries need, computed once (loaded at most once per
+    run, and only when the entry that needs them is selected). fs-bypass needs
+    none; factory-info needs the donor-info set; headphones needs the block
+    library, IRs, and the high-cut preference."""
+    ids = {e.id for e in entries}
+    res: Dict[str, Any] = {}
+    if "factory-info-clear" in ids:
+        res["factory_donor_infos"] = _factory_donor_infos(home.library_dir())
+    return res
 
 
 @library.command(name="upgrade")
