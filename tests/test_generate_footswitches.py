@@ -70,6 +70,45 @@ def test_fs11_wires_targetbypass_on_correct_source(tmp_path, sample_serial_prese
     assert ctrl["type"] == "targetbypass"
 
 
+def test_fs_bypass_block_is_snapshot_assigned(tmp_path, sample_serial_preset_hsp):
+    """End to end: a footswitch-bypassed block with no snapshot variation now
+    carries a dense base-filled @enabled.snapshots, so a snapshot recall re-pins
+    its on/off after a stomp instead of leaving it global (path-dependent)."""
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "footswitches": [{"switch": "FS11", "block": "IR"}]})
+    preset = compose_preset(spec, lib, source="t")
+    enabled = preset["preset"]["flow"][0]["b01"]["@enabled"]
+    assert enabled["snapshots"] == [True] * 8
+    assert "controller" in enabled
+
+
+def test_fs_bypass_disabled_base_pins_false(tmp_path, sample_serial_preset_hsp):
+    """A base-disabled footswitch-bypassed block pins False in every snapshot
+    (base-fill), so each recall restores it off; the switch is the live edit."""
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1, "enabled": False}]}],
+        "footswitches": [{"switch": "FS11", "block": "IR"}]})
+    preset = compose_preset(spec, lib, source="t")
+    assert preset["preset"]["flow"][0]["b01"]["@enabled"]["snapshots"] == [False] * 8
+
+
+def test_fs_bypass_keeps_authored_varying_array(tmp_path, sample_serial_preset_hsp):
+    """A block disabled in one snapshot AND footswitched keeps its authored
+    varying bypass array — the footswitch wiring must not clobber it to a
+    constant array."""
+    lib = _dup_ir_lib(tmp_path, sample_serial_preset_hsp)
+    spec = parse_spec({"name": "n", "paths": [{"blocks": [
+        {"block": "IR", "ir": "a"*32, "lane": 0, "pos": 1}]}],
+        "snapshots": [{"name": "A"}, {"name": "B", "disable": ["IR"]}],
+        "footswitches": [{"switch": "FS11", "block": "IR"}]})
+    preset = compose_preset(spec, lib, source="t")
+    snaps = preset["preset"]["flow"][0]["b01"]["@enabled"]["snapshots"]
+    assert snaps[1] is False and snaps != [True] * 8
+
+
 def test_fs6_authoring_raises_mode_error(tmp_path, sample_serial_preset_hsp):
     """Authoring a block onto FS6 (the reserved MODE switch) raises the tailored
     'not assignable' error rather than silently addressing the MODE switch."""

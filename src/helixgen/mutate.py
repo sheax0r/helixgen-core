@@ -1866,6 +1866,19 @@ def wire_footswitch(
     prev = wrapped.get("controller")
     prev_source = prev.get("source") if isinstance(prev, dict) else None
     wrapped["controller"] = controller
+    if param is None and "snapshots" not in wrapped:
+        # Snapshot-assign the bypass. A footswitch (or EXP toe) is a live,
+        # non-snapshot actor on on/off: without a per-snapshot array the bypass
+        # is global, so a stomp survives snapshot switches and snapshot recall is
+        # path-dependent. A dense base-filled array pins the block in every
+        # snapshot (factory presets snapshot-assign block bypass for the same
+        # reason). The device treats a constant dense array as a real
+        # assignment, so no transcoder change is needed. An authored VARYING
+        # array (the block is disabled in some snapshot) is already present and
+        # left untouched. A missing/null base is ENABLED, matching every other
+        # layer (bridge._snap_bypass, generate, set_enabled) — not bool(None).
+        base = wrapped.get("value")
+        wrapped["snapshots"] = [True if base is None else bool(base)] * HSP_SNAPSHOT_SLOTS
     if prev_source is not None and prev_source != source_id:
         _prune_source_if_orphaned(body, prev_source)
     entry = sources.setdefault(str(source_id), {"bypass": False})

@@ -770,6 +770,30 @@ def test_valid_snapshot_deltas_do_not_warn(capsys):
     assert "valid:false" not in err
 
 
+def test_constant_bypass_array_registers_a_device_assignment():
+    """A footswitch-bypassed block given a CONSTANT dense ``@enabled.snapshots``
+    (what ``mutate.wire_footswitch`` now emits so the bypass is snapshot-
+    ASSIGNED rather than global) must register a bypass target present in ALL 8
+    snapshots. The device treats a constant dense array as a real assignment —
+    this is the load-bearing claim of the snapshot path-dependence fix. A
+    constant-vs-base "optimization" anywhere on the forward path would silently
+    un-assign the block (the bug), and this guards against it.
+
+    b03 (the DL4 delay) in ``_snapshot_hsp_body`` is the pre-fix shape: FS-only
+    bypass, no bypass ``snapshots`` array. Adding the dense ``[True]*8`` is
+    exactly what the fix does on that block."""
+    body = _snapshot_hsp_body()
+    body["preset"]["flow"][0]["b03"]["@enabled"]["snapshots"] = [True] * 8
+    doc = content.decode_any(transcode.hsp_to_sbepgsm(body))
+    entt = doc["cg__"]["entt"]
+    dl4_eid = _blocks_by_mid(doc)[defs.model_id_for("HD2_DL4TapeEchoStereo")]["id__"]
+    trg = _trg_by(entt, type=1, eID_=dl4_eid)
+    snps = sorted(entt["snps"], key=lambda s: s["si__"])
+    # [True]*8 enabled (.hsp polarity) -> [False]*8 bypassed (device polarity),
+    # and present in EVERY snapshot's tamv — not just where it differs.
+    assert [_tamv_map(s)[trg["id__"]] for s in snps] == [False] * 8
+
+
 def _input_bypass_hsp_body(*, base_bypassed=True, snapshots=True):
     """A minimal authored ``.hsp`` whose DSP input is base-bypassed and/or
     snapshot-muted (backlog #23)."""
