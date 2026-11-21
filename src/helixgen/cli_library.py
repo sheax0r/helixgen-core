@@ -35,7 +35,7 @@ from typing import Any, Dict, List
 
 import click
 
-from helixgen import gitops, guitars, home, ir_meta, migrate, naming, tone_meta
+from helixgen import changes, gitops, guitars, home, ir_meta, migrate, naming, tone_meta
 from helixgen.ir import IrMapping
 from helixgen.hsp import read_hsp
 
@@ -1541,6 +1541,117 @@ def venue_retrofit_cmd(room_highcut: str | None, apply_changes: bool, as_json: b
                f"{len(rows) - len(changed)} unchanged.")
     if not apply_changes and changed:
         click.echo("Dry run -- nothing written. Re-run with --apply to write.")
+
+
+def _upgrade_resources(entries, library_path, irs_dir) -> Dict[str, Any]:
+    """Per-run inputs some entries need, computed once. fs-bypass needs none;
+    later entries (factory-info donor set, headphones block library + IRs + the
+    high-cut preference) add their keys here keyed on which entry ids are
+    selected, so the library/IRs load at most once per run."""
+    return {}
+
+
+@library.command(name="upgrade")
+@click.option("--apply", "apply_changes", is_flag=True, default=False,
+              help="Apply the migrations in place. Without it this is a "
+                   "read-only report (dry run).")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit the sweep result as JSON.")
+@click.option("--only", "only_ids", multiple=True, metavar="ID",
+              help="Limit to these change id(s) (repeatable). `helixgen changes` "
+                   "lists them.")
+@click.option("--since", default=None, metavar="VERSION",
+              help="Only changes that landed after this engine version.")
+@click.option("--library", "library_path", envvar="HELIXGEN_LIBRARY",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="Block library for migrations that need one. Defaults to the "
+                   "tone library.")
+@click.option("--irs-dir", "irs_dir", envvar="HELIXGEN_IRS",
+              type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="IRs directory for migrations that resolve IRs.")
+def upgrade_cmd(apply_changes: bool, as_json: bool, only_ids: tuple,
+                since: str | None, library_path: Path | None,
+                irs_dir: Path | None) -> None:
+    """Find and repair tones made stale by engine fixes — consent-gated.
+
+    Scans the managed tone library, reports exactly which tones/variants/blocks
+    each registered change affects, and ONLY with --apply repairs them in place
+    (oldest fix first), clearing any now-stale normalized stamp and committing.
+    DRY RUN by default — it only applies with --apply. `helixgen changes` lists
+    the fixes.
+    """
+    from helixgen.hsp import dumps_hsp
+
+    entries = changes.entries_since(since)
+    if only_ids:
+        unknown = sorted(set(only_ids) - {e.id for e in changes.REGISTRY})
+        if unknown:
+            raise click.ClickException(
+                "unknown change id(s): " + ", ".join(unknown)
+                + " (see `helixgen changes`)")
+        wanted = set(only_ids)
+        entries = [e for e in entries if e.id in wanted]
+
+    resources = _upgrade_resources(entries, library_path, irs_dir)
+    rows: List[dict] = []
+    tones: set = set()
+    variants: set = set()
+    blocks = 0
+
+    for meta in tone_meta.load_all_tone_metas():
+        for key, v in meta.variants.items():
+            hsp = tone_meta._resolve_variant_hsp(v.hsp, home.library_dir())
+            if hsp is None or not hsp.is_file():
+                rows.append({"tone": meta.logical_slug, "variant": key,
+                             "change": None, "status": "missing"})
+                continue
+            ctx = changes.UpgradeCtx(
+                hsp_path=hsp, body=read_hsp(hsp), meta=meta, variant_key=key,
+                variant=v, library_dir=home.library_dir(), resources=resources)
+            changed_here = False
+            for e in entries:
+                f = e.detect(ctx)
+                if not f.affected:
+                    continue
+                tones.add(meta.logical_slug)
+                variants.add((meta.logical_slug, key))
+                blocks += len(f.blocks)
+                status = f.status
+                if apply_changes:
+                    af = e.apply(ctx)
+                    changed_here = changed_here or af.affected
+                    status = af.status
+                rows.append({"tone": meta.logical_slug, "variant": key,
+                             "change": e.id, "status": status, "blocks": f.blocks})
+            if apply_changes and changed_here:
+                original = hsp.read_bytes()
+                _atomic_write(hsp, dumps_hsp(ctx.body, apply_prefs=False))
+                v.normalized = None  # a migration touched the preset; re-verify
+                try:
+                    tone_meta.save_tone_meta(meta)
+                except BaseException:
+                    _atomic_write(hsp, original)  # keep .hsp + metadata in step
+                    raise
+                gitops.auto_commit(
+                    home.helixgen_home(),
+                    f"helixgen: upgrade {key} ({meta.logical_slug})")
+
+    affected = {"tones": len(tones), "variants": len(variants), "blocks": blocks}
+    if as_json:
+        click.echo(json.dumps(
+            {"apply": apply_changes, "affected": affected, "rows": rows}, indent=2))
+        return
+    for r in rows:
+        blk = f" [{', '.join(r['blocks'])}]" if r.get("blocks") else ""
+        click.echo(f"  {r['tone']}/{r['variant']}: {r.get('change') or '-'} "
+                   f"-> {r['status']}{blk}")
+    n_changes = len({r["change"] for r in rows if r.get("change")})
+    verb = "Repaired" if apply_changes else "Affected"
+    click.echo(f"{verb}: {affected['tones']} tone(s) / {affected['variants']} "
+               f"variant(s) / {affected['blocks']} block(s) across "
+               f"{n_changes} change(s).")
+    if not apply_changes and affected["variants"]:
+        click.echo("Dry run -- nothing written. Re-run with --apply to repair.")
 
 
 @library.command(name="fork")

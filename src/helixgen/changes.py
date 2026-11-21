@@ -29,6 +29,25 @@ class Finding:
     detail: str = ""
 
 
+@dataclass
+class UpgradeCtx:
+    """A variant-scoped view handed to an entry's detect/apply.
+
+    ``body`` is the loaded ``.hsp`` (mutated in place by ``apply``); ``variant``
+    is the live tone-meta Variant (an entry may set e.g. ``venue_detail`` on it).
+    ``resources`` is a per-run cache the driver fills once with entry-specific
+    inputs (donor-info set, block library, IRs, pref values) so entries stay
+    stateless and the library is loaded once, not once per variant.
+    """
+    hsp_path: Any
+    body: dict
+    meta: Any
+    variant_key: str
+    variant: Any
+    library_dir: Any
+    resources: dict
+
+
 @dataclass(frozen=True)
 class ChangeEntry:
     id: str
