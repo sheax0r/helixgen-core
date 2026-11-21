@@ -135,23 +135,6 @@ def test_slot_label():
     assert slot_label(None) == ""
 
 
-def test_container_for_setlist_keyword():
-    from helixgen.device.client import (
-        container_for_setlist_keyword, Container,
-    )
-
-    assert container_for_setlist_keyword("user") == Container.POOL
-    assert container_for_setlist_keyword("factory") == Container.FACTORY
-    assert container_for_setlist_keyword("throwaway") == Container.SETLISTS_ROOT
-    # case/whitespace-insensitive
-    assert container_for_setlist_keyword("  User ") == Container.POOL
-    # unknown -> ValueError naming the valid keywords
-    with pytest.raises(ValueError):
-        container_for_setlist_keyword("bogus")
-    with pytest.raises(ValueError):
-        container_for_setlist_keyword("")
-
-
 def test_create_content_reads_new_cid_from_status_second_field():
     # /CreateContent replies /status [reqid, newCid, code] (cid in 2nd field!)
     h = HelixClient("10.0.0.99")
@@ -317,21 +300,6 @@ def test_container_and_cctp_enum_values():
             int(Container.SETLISTS_ROOT), int(Container.USER_IRS)) == (-1, -2, -5, -11)
     assert (int(Cctp.PRESET), int(Cctp.SETLIST),
             int(Cctp.TEMPLATE), int(Cctp.REFERENCE)) == (1000, 1001, 1002, 1003)
-
-
-def test_backward_compat_aliases():
-    from helixgen.device.client import (
-        FACTORY, USER, THROWAWAY, SETLISTS_ROOT, USER_IRS,
-        CT_PRESET, CT_SETLIST, CT_TEMPLATE, Container,
-    )
-
-    assert FACTORY == -1
-    assert USER == Container.POOL == -2
-    assert USER_IRS == -11
-    assert SETLISTS_ROOT == -5
-    # DEPRECATED: -5 is the setlists root, kept as the throwaway alias value.
-    assert THROWAWAY == SETLISTS_ROOT == -5
-    assert (CT_PRESET, CT_SETLIST, CT_TEMPLATE) == (1000, 1001, 1002)
 
 
 # -- setlist enumeration under -5 -------------------------------------------

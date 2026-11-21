@@ -56,24 +56,24 @@ def client():
 
 
 def test_full_crud_cycle_on_empty_slot(client):
-    from helixgen.device import USER
+    from helixgen.device import Container
 
-    presets = client.list_presets(USER)
+    presets = client.list_presets(Container.POOL)
     assert presets, "device returned no USER presets — is it connected?"
 
     # pick a real source preset and confirm the target slot is empty
     src = presets[0]
     src_cid = src["cid_"]
-    assert client.find_by_pos(USER, POS) is None, (
+    assert client.find_by_pos(Container.POOL, POS) is None, (
         f"USER slot posi={POS} is not empty; refusing to clobber it"
     )
 
     new_cid = None
     try:
         # CREATE (copy src into the empty slot)
-        new_cid = client.create_from(src_cid, USER, POS)
+        new_cid = client.create_from(src_cid, Container.POOL, POS)
         assert new_cid is not None
-        created = client.find_by_pos(USER, POS)
+        created = client.find_by_pos(Container.POOL, POS)
         assert created is not None and created["cid_"] == new_cid
 
         # READ
@@ -82,14 +82,14 @@ def test_full_crud_cycle_on_empty_slot(client):
 
         # UPDATE (rename)
         assert client.rename(new_cid, "helixgen live test")
-        renamed = client.find_by_pos(USER, POS)
+        renamed = client.find_by_pos(Container.POOL, POS)
         assert renamed and renamed.get("name") == "helixgen live test"
     finally:
         # DELETE (cleanup) — always restore the empty slot
         if new_cid is not None:
-            client.delete(USER, [new_cid])
+            client.delete(Container.POOL, [new_cid])
 
-    assert client.find_by_pos(USER, POS) is None, "cleanup failed: slot still occupied"
+    assert client.find_by_pos(Container.POOL, POS) is None, "cleanup failed: slot still occupied"
 
 
 def test_edit_buffer_roundtrips(client):
@@ -105,9 +105,9 @@ def test_edit_buffer_roundtrips(client):
 def test_authoring_bridge_installs_a_chain(client):
     """Author a device-native chain onto the current edit buffer as a template
     and install it, then verify + clean up. Requires the target slot empty."""
-    from helixgen.device import USER, bridge, defs
+    from helixgen.device import Container, bridge
 
-    if client.find_by_pos(USER, POS) is not None:
+    if client.find_by_pos(Container.POOL, POS) is not None:
         pytest.skip(f"USER slot {POS} not empty")
     template = client.get_edit_buffer()  # whatever's currently loaded
     # a minimal chain in device ids: distortion + reverb (categories most
@@ -116,7 +116,7 @@ def test_authoring_bridge_installs_a_chain(client):
     cid = None
     try:
         try:
-            cid = bridge.install_chain(client, USER, POS, "live bridge test",
+            cid = bridge.install_chain(client, Container.POOL, POS, "live bridge test",
                                        template, chain)
         except ValueError:
             pytest.skip("current template lacks the needed block categories")
@@ -128,4 +128,4 @@ def test_authoring_bridge_installs_a_chain(client):
         assert 310 in enabled and 63 in enabled
     finally:
         if cid is not None:
-            client.delete(USER, [cid])
+            client.delete(Container.POOL, [cid])

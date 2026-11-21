@@ -49,23 +49,6 @@ class Cctp(IntEnum):
     REFERENCE = 1003   # a setlist entry pointing (rcid) at a pool preset
 
 
-# -- backward-compat module aliases -----------------------------------------
-# Existing call sites import these bare names; keep them pointing at the enum
-# ints so nothing breaks in one commit.
-FACTORY = Container.FACTORY
-USER = Container.POOL
-SETLISTS_ROOT = Container.SETLISTS_ROOT
-# DEPRECATED: ``-5`` is really the setlists ROOT, not the "throwaway" setlist
-# (Throwaway is a child setlist with its own positive cid under -5). Kept as an
-# alias (== SETLISTS_ROOT) only so old imports still resolve.
-THROWAWAY = Container.SETLISTS_ROOT
-USER_IRS = Container.USER_IRS
-
-# Content types (cctp).
-CT_PRESET = Cctp.PRESET
-CT_SETLIST = Cctp.SETLIST
-CT_TEMPLATE = Cctp.TEMPLATE
-
 # ``/CreateContent`` ctype values. A container item's ``type`` field carries
 # the ctype it was created with: presets are ``2`` (long-observed) and setlist
 # items are ``1003`` (live-verified 2026-07-14 — /CreateContent(-5, pos, 1003,
@@ -74,32 +57,6 @@ CTYPE_PRESET = 2
 CTYPE_SETLIST = 1003
 
 _SLOT_LETTERS = "ABCD"
-
-# The named ``--setlist`` keywords the CLI accepts, mapped to their container
-# constant. Canonical keyword->container resolver (resolver pattern, #14) — the
-# CLI callers wrap this for their own exception type instead of cloning the
-# dict.
-_SETLIST_KEYWORDS = {
-    "user": Container.POOL,
-    "factory": Container.FACTORY,
-    "throwaway": Container.SETLISTS_ROOT,
-}
-
-
-def container_for_setlist_keyword(name: str) -> int:
-    """Map a ``--setlist`` keyword (``user``/``factory``/``throwaway``) to its
-    container constant. Case/whitespace-insensitive.
-
-    Raises ``ValueError`` (naming the valid keywords) for anything else, so a
-    typo reports itself rather than silently targeting the wrong container.
-    """
-    key = (name or "").strip().lower()
-    try:
-        return _SETLIST_KEYWORDS[key]
-    except KeyError as e:
-        raise ValueError(
-            f"unknown setlist {name!r}; valid: {sorted(_SETLIST_KEYWORDS)}"
-        ) from e
 
 
 class HelixError(Exception):
@@ -316,7 +273,7 @@ class HelixClient:
             raise HelixError(
                 f"no Helix Stadium reachable at {self.ip}:{self.port} — {why}")
         self._open_socket()
-        if verify and self.get_ref(USER) is None:
+        if verify and self.get_ref(Container.POOL) is None:
             self.close()
             raise HelixError(
                 f"no Helix Stadium answered at {self.ip}:{self.port} "
@@ -474,10 +431,10 @@ class HelixClient:
         items = [m for m in items if "cid_" in m or m.get("name")]
         return items
 
-    def list_presets(self, container: int = USER, *,
+    def list_presets(self, container: int = Container.POOL, *,
                      strict: bool = False) -> List[Dict[str, Any]]:
         presets = [m for m in self.list_container(container, strict=strict)
-                   if m.get("cctp") == CT_PRESET]
+                   if m.get("cctp") == Cctp.PRESET]
         presets.sort(key=lambda m: m.get("posi", 1 << 30))
         return presets
 
@@ -486,7 +443,7 @@ class HelixClient:
 
         A setlist is an item of type ``cctp==1001`` living inside the setlists
         root container ``-5``. (The old implementation swept a hard-coded
-        ``(FACTORY, USER, THROWAWAY)`` list of container ids — but ``-5`` is the
+        ``(FACTORY, POOL, SETLISTS_ROOT)`` list of container ids — but ``-5`` is the
         *root*, not a setlist, so that was wrong.) Each returned dict carries at
         least ``cid_``, ``name``, ``posi``.
         """
@@ -582,7 +539,7 @@ class HelixClient:
         """
         ctx = self.mutating() if settle else contextlib.nullcontext()
         with ctx:
-            listing = self.list_container(USER_IRS, strict=strict)
+            listing = self.list_container(Container.USER_IRS, strict=strict)
         irs = []
         for m in listing:
             hh = self._hex_hash(m.get("hash"))
