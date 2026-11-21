@@ -44,6 +44,30 @@ def _client():
     return HelixClient, HelixError
 
 
+@contextlib.contextmanager
+def _connect(ip, port):
+    """Open a `HelixClient`, translating device/IO errors to `ClickException`.
+
+    The standard entry for a device verb::
+
+        with _connect(ip, port) as h:
+            ...
+
+    A `HelixError` or `OSError` raised while connecting *or* inside the block
+    becomes a clean `click.ClickException` (same message the per-verb
+    `except HelixError / except OSError` arms produced). A verb that must also
+    translate `ValueError` keeps its own `try: ... except ValueError` wrapping
+    this; errors of other types propagate unchanged.
+    """
+    HelixClient, HelixError = _client()
+
+    try:
+        with HelixClient(ip, port) as h:
+            yield h
+    except (HelixError, OSError) as e:
+        raise click.ClickException(str(e)) from e
+
+
 def _serial_of(h, ip: str) -> str:
     """The connected device's serial (`/ProductInfoGet`), for keying its
     `devices/<serial>.json` observation file; falls back to `f"ip-{ip}"` when
@@ -1051,20 +1075,14 @@ def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
     rcid= the pool preset it points at. --json emits the raw records
     (cid_, name, cctp, posi, and rcid for references).
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import slot_label
 
-    try:
-        with HelixClient(ip, port) as h:
-            kind, container, label = _resolve_setlist_dest(h, setlist)
-            if kind == "setlist":
-                items = _setlist_refs(h, container)
-            else:
-                items = h.list_presets(container)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        kind, container, label = _resolve_setlist_dest(h, setlist)
+        if kind == "setlist":
+            items = _setlist_refs(h, container)
+        else:
+            items = h.list_presets(container)
     if as_json:
         click.echo(json.dumps(items, indent=2))
         return
@@ -1086,15 +1104,8 @@ def device_list(setlist: str, as_json: bool, ip: str, port: int) -> None:
 @_reads("library")
 def device_setlists(as_json: bool, ip: str, port: int) -> None:
     """List the device's setlist containers."""
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            setlists = h.list_setlists()
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        setlists = h.list_setlists()
     if as_json:
         click.echo(json.dumps(setlists, indent=2))
         return
@@ -1338,15 +1349,8 @@ def device_info(as_json: bool, ip: str, port: int) -> None:
     Read-only (`/ProductInfoGet` — part of the editor's own connect
     handshake); never touches presets or the edit buffer.
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            info = h.product_info()
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        info = h.product_info()
     if as_json:
         click.echo(json.dumps(info, indent=2))
         return
@@ -1470,15 +1474,12 @@ def device_settings_list(page, values, as_json, ip, port):
 def device_settings_get(key, as_json, ip, port):
     """Read one Global-Settings value (with its name, range, and enum labels)."""
     from helixgen.device import settings as S
-    HelixClient, HelixError = _client()
 
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             d = h.get_property_def(key)
             v = h.get_property(key)
-    except (HelixError, ValueError) as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     if as_json:
         click.echo(json.dumps({
@@ -1503,19 +1504,14 @@ def device_settings_set(key, value, ip, port):
     """Write one Global-Settings value. VALUE may be a number or an enum label
     (e.g. `helixgen device settings set global.tuner.type Strobe`)."""
     from helixgen.device import settings as S
-    HelixClient, HelixError = _client()
 
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             d = h.get_property_def(key)
             coerced = S.coerce_value(d, value)
             ok = h.set_property(key, d.type, coerced)
             readback = h.get_property(key)
     except ValueError as e:
-        raise click.ClickException(str(e)) from e
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
         raise click.ClickException(str(e)) from e
     if not ok:
         raise click.ClickException(f"device did not confirm the write to {key}")
@@ -1581,18 +1577,13 @@ def device_globaleq_set(output, band, param, value, ip, port):
       helixgen device globaleq set pho - level -2.0
     """
     from helixgen.device import globaleq as G
-    HelixClient, HelixError = _client()
 
     band_arg = "" if band.strip() in ("-", "") else band
     try:
         key = G.key_for(output, band_arg, param)  # validates before connecting
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             ok = h.set_globaleq(output, band_arg, param, value)
     except ValueError as e:
-        raise click.ClickException(str(e)) from e
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
         raise click.ClickException(str(e)) from e
     if not ok:
         raise click.ClickException(f"device did not confirm the Global EQ write ({key})")
@@ -1607,16 +1598,10 @@ def device_globaleq_set(output, band, param, value, ip, port):
 @_reads("library")
 def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
     """Read the content ref for a CID (name/slot/parent)."""
-    HelixClient, HelixError = _client()
     from helixgen.device import slot_label
 
-    try:
-        with HelixClient(ip, port) as h:
-            ref = h.get_ref(cid)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        ref = h.get_ref(cid)
     if ref is None:
         raise click.ClickException(f"no content ref for cid {cid}")
     if as_json:
@@ -1634,15 +1619,8 @@ def device_read(cid: int, as_json: bool, ip: str, port: int) -> None:
 @_locked("editbuffer", verb="load")
 def device_load(cid: int, ip: str, port: int) -> None:
     """Load a preset into the edit buffer by CID."""
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            ok = h.load_preset(cid)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        ok = h.load_preset(cid)
     if not ok:
         raise click.ClickException(f"failed to load preset cid {cid}")
     click.echo(f"loaded cid {cid}")
@@ -1669,24 +1647,17 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
     to the setlist at --pos (references are pointers; the pool preset is
     shared), and the printed new CID is the reference's own cid.
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            kind, container, label = _resolve_setlist_dest(h, setlist)
-            if kind == "factory":
-                raise click.ClickException("the factory container is read-only")
-            if kind == "setlist":
-                if h.find_by_pos(container, pos, strict=True) is not None:
-                    raise click.ClickException(
-                        f"setlist {label!r} position {pos} is not empty")
-                new_cid = h.reference_into_setlist(container, src_cid, pos)
-            else:
-                new_cid = h._raw.create_from(src_cid, container, pos)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        kind, container, label = _resolve_setlist_dest(h, setlist)
+        if kind == "factory":
+            raise click.ClickException("the factory container is read-only")
+        if kind == "setlist":
+            if h.find_by_pos(container, pos, strict=True) is not None:
+                raise click.ClickException(
+                    f"setlist {label!r} position {pos} is not empty")
+            new_cid = h.reference_into_setlist(container, src_cid, pos)
+        else:
+            new_cid = h._raw.create_from(src_cid, container, pos)
     if new_cid is None:
         raise click.ClickException(
             f"failed to copy cid {src_cid} into {setlist} slot {pos}")
@@ -1704,15 +1675,8 @@ def device_create(src_cid: int, setlist: str, pos: int, ip: str, port: int) -> N
 @_locked("library", verb="rename")
 def device_rename(cid: int, new_name: str, ip: str, port: int) -> None:
     """Rename the preset at CID."""
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            ok = h.rename(cid, new_name)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        ok = h.rename(cid, new_name)
     if not ok:
         raise click.ClickException(f"failed to rename cid {cid}")
     click.echo(f"renamed cid {cid} -> {new_name!r}")
@@ -1733,28 +1697,21 @@ def device_delete(cid: int, setlist: str, yes: bool, ip: str, port: int) -> None
     reference's own cid or the referenced pool preset's cid (rcid); the pool
     preset is never touched.
     """
-    HelixClient, HelixError = _client()
-
     if not yes:
         click.confirm(f"Delete cid {cid} from {setlist!r}?", abort=True)
-    try:
-        with HelixClient(ip, port) as h:
-            kind, container, label = _resolve_setlist_dest(h, setlist)
-            if kind == "setlist":
-                refs = _setlist_refs(h, container, strict=True)
-                match = (next((m for m in refs if m.get("cid_") == cid), None)
-                         or next((m for m in refs if m.get("rcid") == cid), None))
-                if match is None:
-                    raise click.ClickException(
-                        f"setlist {label!r} has no reference with cid or "
-                        f"rcid {cid} (see `device list --setlist {label!r}`)")
-                ok = h.remove_reference(container, match.get("cid_"))
-            else:
-                ok = h._raw.delete(container, [cid])
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        kind, container, label = _resolve_setlist_dest(h, setlist)
+        if kind == "setlist":
+            refs = _setlist_refs(h, container, strict=True)
+            match = (next((m for m in refs if m.get("cid_") == cid), None)
+                     or next((m for m in refs if m.get("rcid") == cid), None))
+            if match is None:
+                raise click.ClickException(
+                    f"setlist {label!r} has no reference with cid or "
+                    f"rcid {cid} (see `device list --setlist {label!r}`)")
+            ok = h.remove_reference(container, match.get("cid_"))
+        else:
+            ok = h._raw.delete(container, [cid])
     if not ok:
         raise click.ClickException(f"failed to delete cid {cid}")
     if kind == "setlist":
@@ -1803,15 +1760,8 @@ def device_set_param(path: int, block: int, param_id: int, value: float,
     knob in a browser page), use `helixgen device live` instead of a
     series of these.
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            ok = h.set_param(path, block, param_id, value, force=force)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        ok = h.set_param(path, block, param_id, value, force=force)
     if not ok:
         raise click.ClickException(
             f"failed to set param {param_id} on path {path} block {block}")
@@ -1828,14 +1778,10 @@ def device_snapshot(index: int, ip: str, port: int) -> None:
     Changes the ACTIVE tone's current snapshot immediately (like stepping the
     snapshot footswitch). `/activateSnapshot`.
     """
-    HelixClient, HelixError = _client()
-
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             h.activate_snapshot(index)
-    except (HelixError, ValueError) as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     click.echo(f"recalled snapshot {index}")
 
@@ -1855,16 +1801,10 @@ def device_blocks(as_json: bool, ip: str, port: int) -> None:
     toggle shows here at once (HW 2026-11-13); on fw 1.3 and earlier it was
     the preset's saved base bypass until the preset was saved.
     """
-    HelixClient, HelixError = _client()
     from helixgen.ingest import humanize_model_id
 
-    try:
-        with HelixClient(ip, port) as h:
-            blocks = h.edit_buffer_blocks()
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        blocks = h.edit_buffer_blocks()
     if as_json:
         click.echo(json.dumps(blocks, indent=2))
         return
@@ -1893,15 +1833,8 @@ def device_params(path: int, block: int, as_json: bool, ip: str, port: int) -> N
     enum-int, bool as 0/1) — the same units `device set-param` writes; they
     are NOT normalized 0..1. Read-only (does not change the tone).
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            info = h.edit_buffer_params(path, block)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        info = h.edit_buffer_params(path, block)
     if as_json:
         click.echo(json.dumps(info, indent=2))
         return
@@ -1993,16 +1926,9 @@ def device_bypass(path: int, block: int, state: str, ip: str, port: int) -> None
     blocks`, which reads the saved base state, won't reflect it) until you
     save the preset.
     """
-    HelixClient, HelixError = _client()
-
     enable = state == "on"
-    try:
-        with HelixClient(ip, port) as h:
-            h.set_block_enable(path, block, enable)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        h.set_block_enable(path, block, enable)
     click.echo(f"path {path} block {block} -> {'on' if enable else 'bypassed'}")
 
 
@@ -2020,7 +1946,6 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
     `HD2_AmpBritPlexiNrm` (see `list-blocks`). The device rejects a
     cross-category swap. Changes the ACTIVE tone. `/ModelSet`.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import defs as _defs
 
     if model.lstrip("-").isdigit():
@@ -2031,13 +1956,8 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
             raise click.ClickException(
                 f"unknown model {model!r}; pass a numeric model id or an exact "
                 "model-id string (see `helixgen list-blocks`)")
-    try:
-        with HelixClient(ip, port) as h:
-            h.set_block_model(path, block, model_id)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        h.set_block_model(path, block, model_id)
     click.echo(f"path {path} block {block} -> model {model} ({model_id})")
 
 
@@ -2078,15 +1998,12 @@ def device_reorder(setlist: str, target: str, to_index: int,
     hatch (reordering the setlist list itself, or an item whose display name
     is ambiguous).
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import reorder as R
 
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             res = R.reorder_setlist_item(h, setlist, target, to_index)
-    except (HelixError, ValueError) as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     for w in res.get("warnings", []):
         click.echo(f"warning: {w}", err=True)
@@ -2105,15 +2022,8 @@ def device_pull(cid: int, outfile: Path, ip: str, port: int) -> None:
     Reads via the non-activating ``/GetContentData`` — the device's live tone is
     never disturbed.
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            blob = h.get_content(cid)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        blob = h.get_content(cid)
     outfile.write_bytes(blob)
     click.echo(f"wrote {len(blob)} bytes to {outfile}")
 
@@ -2247,17 +2157,11 @@ def device_to_hsp(source: str, outfile: Path, preset_name, author,
             raise click.ClickException(
                 f"{source!r} is both a device CID and a local file; refusing to "
                 f"guess. Write './{source}' for the file, or move it.")
-        HelixClient, HelixError = _client()
         cid = int(source)
-        try:
-            with HelixClient(ip, port) as h:
-                blob = h.get_content(cid)
-                if preset_name is None:
-                    preset_name = _preset_name_for_cid(h, cid)
-        except HelixError as e:
-            raise click.ClickException(str(e)) from e
-        except OSError as e:
-            raise click.ClickException(str(e)) from e
+        with _connect(ip, port) as h:
+            blob = h.get_content(cid)
+            if preset_name is None:
+                preset_name = _preset_name_for_cid(h, cid)
         origin = f"cid {cid}"
     else:
         path = Path(source)
@@ -2351,33 +2255,26 @@ def device_save(name: str, setlist: str, pos: int, ip: str, port: int) -> None:
     POOL (lowest empty slot) and a REFERENCE is added to the setlist at
     --pos.
     """
-    HelixClient, HelixError = _client()
+    with _connect(ip, port) as h, h.mutating():
+        # One subscription for the whole save — the strict emptiness check
+        # below decides where to write AND authorizes the failed-write
+        # cleanup to delete by (name, pos), so it must read a settled
+        # container index rather than a lagging one (#38).
+        kind, container, label = _resolve_setlist_dest(h, setlist)
 
-    try:
-        with HelixClient(ip, port) as h, h.mutating():
-            # One subscription for the whole save — the strict emptiness check
-            # below decides where to write AND authorizes the failed-write
-            # cleanup to delete by (name, pos), so it must read a settled
-            # container index rather than a lagging one (#38).
-            kind, container, label = _resolve_setlist_dest(h, setlist)
+        def _writer(cont, cpos):
+            if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
+                raise click.ClickException(
+                    f"{label} slot {cpos} is not empty; refusing to overwrite")
+            # both paths reach here with a known-empty posi (the pool
+            # branch just checked strictly; the setlist branch saves into
+            # a freshly computed lowest-empty pool posi), so a same-named
+            # stub after a failed save is ours to clean up (#95)
+            return h._raw.save_edit_buffer_to(cont, cpos, name,
+                                              prechecked_empty=True)
 
-            def _writer(cont, cpos):
-                if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
-                    raise click.ClickException(
-                        f"{label} slot {cpos} is not empty; refusing to overwrite")
-                # both paths reach here with a known-empty posi (the pool
-                # branch just checked strictly; the setlist branch saves into
-                # a freshly computed lowest-empty pool posi), so a same-named
-                # stub after a failed save is ours to clean up (#95)
-                return h._raw.save_edit_buffer_to(cont, cpos, name,
-                                                  prechecked_empty=True)
-
-            new_cid, pool_pos, ref_cid = _install_via_dest(
-                h, kind, container, label, pos, _writer)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+        new_cid, pool_pos, ref_cid = _install_via_dest(
+            h, kind, container, label, pos, _writer)
     if new_cid is None:
         raise click.ClickException(f"failed to save edit buffer to {setlist} slot {pos}")
     where = (f"pool slot {pool_pos}, referenced into setlist {label!r} at {pos}"
@@ -2461,7 +2358,6 @@ def device_delete_ir(name_or_hash: str, yes: bool, force: bool,
     presets still reference the IR — those would show a silent cab. See
     ``ir-prune`` to clean up ALL unreferenced IRs at once.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import maintenance as mt
     from helixgen.libraryui.session import _default_ir_usage
 
@@ -2469,7 +2365,7 @@ def device_delete_ir(name_or_hash: str, yes: bool, force: bool,
         click.confirm(
             f"Delete IR {name_or_hash!r} from the device?", abort=True)
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             if not force:
                 u = _default_ir_usage(h, name_or_hash, [])
                 tones, indet = u.get("tones") or [], u.get("indeterminate") or []
@@ -2490,9 +2386,7 @@ def device_delete_ir(name_or_hash: str, yes: bool, force: bool,
                         + ". Remove those tones first, or pass --force.")
             res = mt.delete_device_ir(h, name_or_hash, ip=ip,
                                       force_wedge=force_wedge)
-    except (HelixError, ValueError) as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     if not res["ok"]:
         raise click.ClickException(f"failed to delete IR {name_or_hash!r}")
@@ -2516,16 +2410,13 @@ def device_rename_ir(name_or_hash: str, new_name: str, ip: str, port: int) -> No
     Renaming changes only the display name — the IR's hash (which presets
     reference) is untouched, so nothing breaks.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import maintenance as mt
 
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             target = mt.resolve_device_ir_live(h, name_or_hash)
             ok = h.rename(target["cid_"], new_name)
-    except (HelixError, ValueError) as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     if not ok:
         raise click.ClickException(f"failed to rename IR {name_or_hash!r}")
@@ -2749,14 +2640,13 @@ def device_copy(hsp_file: Path, setlist, pos, no_irs, cid, as_json, ip, port):
     MUTATES the device. EXPERIMENTAL.
     """
     from helixgen.device import copy as _copy
-    HelixClient, HelixError = _client()
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             res = _copy.copy_tone(h, hsp_file, setlist=setlist, pos=pos,
                                   with_irs=not no_irs, cid=cid)
     except _copy.AmbiguousName as e:
         raise click.ClickException(str(e)) from e
-    except (HelixError, OSError, ValueError) as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     if as_json:
         click.echo(json.dumps(res, indent=2))
@@ -2790,16 +2680,15 @@ def device_rm(name, setlist, also_pool, cid, yes, as_json, ip, port):
     MUTATES the device. EXPERIMENTAL.
     """
     from helixgen.device import copy as _copy
-    HelixClient, HelixError = _client()
     if also_pool and not yes:
         click.confirm(f"delete pool preset {name!r} outright?", abort=True)
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             res = _copy.remove_tone(h, name, setlist=setlist,
                                     also_pool=also_pool, cid=cid)
     except _copy.AmbiguousName as e:
         raise click.ClickException(str(e)) from e
-    except (HelixError, OSError, ValueError) as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     if as_json:
         click.echo(json.dumps(res, indent=2))
@@ -2830,13 +2719,12 @@ def device_move(name, setlist, to, cid, as_json, ip, port):
     local to update afterwards. MUTATES the device. EXPERIMENTAL.
     """
     from helixgen.device import copy as _copy
-    HelixClient, HelixError = _client()
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             res = _copy.move_tone(h, name, setlist=setlist, to=to, cid=cid)
     except _copy.AmbiguousName as e:
         raise click.ClickException(str(e)) from e
-    except (HelixError, OSError, ValueError) as e:
+    except ValueError as e:
         raise click.ClickException(str(e)) from e
     if as_json:
         click.echo(json.dumps(res, indent=2))
@@ -2920,27 +2808,21 @@ def device_setlist_list(setlist, as_json: bool, ip: str, port: int) -> None:
     design) — there is no local manifest to consult and nothing to keep in
     agreement. Read-only. With SETLIST, lists just that one.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import Container
     from helixgen.device.client import Cctp
-    try:
-        with HelixClient(ip, port) as h:
-            pool = {e.get("cid_"): e.get("name", "")
-                    for e in h.list_presets(Container.POOL, strict=True)}
-            out = {}
-            for sl in h.list_setlists(strict=True):
-                nm = str(sl.get("name") or "")
-                if setlist and nm.casefold() != setlist.casefold():
-                    continue
-                refs = sorted(
-                    (m for m in h.list_container(sl.get("cid_"), strict=True)
-                     if m.get("cctp") == Cctp.REFERENCE),
-                    key=lambda m: m.get("posi", 1 << 30))
-                out[nm] = [pool.get(m.get("rcid")) for m in refs]
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        pool = {e.get("cid_"): e.get("name", "")
+                for e in h.list_presets(Container.POOL, strict=True)}
+        out = {}
+        for sl in h.list_setlists(strict=True):
+            nm = str(sl.get("name") or "")
+            if setlist and nm.casefold() != setlist.casefold():
+                continue
+            refs = sorted(
+                (m for m in h.list_container(sl.get("cid_"), strict=True)
+                 if m.get("cctp") == Cctp.REFERENCE),
+                key=lambda m: m.get("posi", 1 << 30))
+            out[nm] = [pool.get(m.get("rcid")) for m in refs]
     if setlist and not out:
         raise click.ClickException(f"setlist {setlist!r} not found on the device")
     if as_json:
@@ -2966,20 +2848,13 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
     root) — no Stadium app needed. Errors if a setlist with that name already
     exists on the device.
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            existing = h.resolve_setlist_cid(setlist)
-            if existing is not None:
-                raise click.ClickException(
-                    f"setlist {setlist!r} already exists on the device "
-                    f"(cid {existing})")
-            cid = h.create_setlist(setlist)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        existing = h.resolve_setlist_cid(setlist)
+        if existing is not None:
+            raise click.ClickException(
+                f"setlist {setlist!r} already exists on the device "
+                f"(cid {existing})")
+        cid = h.create_setlist(setlist)
     if cid is None:
         raise click.ClickException(f"device refused to create setlist {setlist!r}")
     click.echo(f"created setlist {setlist!r} on the device (cid {cid})")
@@ -2992,22 +2867,15 @@ def device_setlist_create_cmd(setlist: str, ip: str, port: int) -> None:
 @_locked("library", verb="setlist rename")
 def device_setlist_rename_cmd(setlist: str, new_name: str, ip: str, port: int) -> None:
     """Rename a setlist ON THE DEVICE."""
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            cid = h.resolve_setlist_cid(setlist)
-            if cid is None:
-                raise click.ClickException(
-                    f"setlist {setlist!r} not found on the device")
-            if h.resolve_setlist_cid(new_name) is not None:
-                raise click.ClickException(
-                    f"a setlist named {new_name!r} already exists on the device")
-            ok = h.rename(cid, new_name)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        cid = h.resolve_setlist_cid(setlist)
+        if cid is None:
+            raise click.ClickException(
+                f"setlist {setlist!r} not found on the device")
+        if h.resolve_setlist_cid(new_name) is not None:
+            raise click.ClickException(
+                f"a setlist named {new_name!r} already exists on the device")
+        ok = h.rename(cid, new_name)
     if not ok:
         raise click.ClickException(f"failed to rename setlist {setlist!r}")
     click.echo(f"renamed setlist {setlist!r} -> {new_name!r} (cid {cid})")
@@ -3023,23 +2891,16 @@ def device_setlist_delete_cmd(setlist: str, yes: bool, ip: str, port: int) -> No
     presets they pointed at are NEVER deleted (never-orphan).
 
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            cid = h.resolve_setlist_cid(setlist)
-            if cid is None:
-                raise click.ClickException(
-                    f"setlist {setlist!r} not found on the device")
-            if not yes:
-                click.confirm(
-                    f"Delete setlist {setlist!r} (cid {cid}) from the device? "
-                    f"(its presets stay in the pool)", abort=True)
-            ok = h.delete_setlist(cid)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        cid = h.resolve_setlist_cid(setlist)
+        if cid is None:
+            raise click.ClickException(
+                f"setlist {setlist!r} not found on the device")
+        if not yes:
+            click.confirm(
+                f"Delete setlist {setlist!r} (cid {cid}) from the device? "
+                f"(its presets stay in the pool)", abort=True)
+        ok = h.delete_setlist(cid)
     if not ok:
         raise click.ClickException(f"failed to delete setlist {setlist!r}")
     click.echo(f"deleted setlist {setlist!r} from the device — its pool "
@@ -3057,26 +2918,19 @@ def device_setlist_duplicate_cmd(src: str, dst: str, ip: str, port: int) -> None
     DST is created on the device if absent; if it exists it must be empty.
     References are pointers — the pool presets are shared, not copied.
     """
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            src_cid = h.resolve_setlist_cid(src)
-            if src_cid is None:
-                raise click.ClickException(f"setlist {src!r} not found on the device")
-            dst_cid = h.resolve_setlist_cid(dst)
-            created = False
+    with _connect(ip, port) as h:
+        src_cid = h.resolve_setlist_cid(src)
+        if src_cid is None:
+            raise click.ClickException(f"setlist {src!r} not found on the device")
+        dst_cid = h.resolve_setlist_cid(dst)
+        created = False
+        if dst_cid is None:
+            dst_cid = h.create_setlist(dst)
+            created = True
             if dst_cid is None:
-                dst_cid = h.create_setlist(dst)
-                created = True
-                if dst_cid is None:
-                    raise click.ClickException(
-                        f"device refused to create setlist {dst!r}")
-            copied = h.duplicate_setlist_refs(src_cid, dst_cid)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+                raise click.ClickException(
+                    f"device refused to create setlist {dst!r}")
+        copied = h.duplicate_setlist_refs(src_cid, dst_cid)
     click.echo(f"duplicated setlist {src!r} -> {dst!r} "
                f"({'created, ' if created else ''}{copied} reference(s) copied)")
 
@@ -3150,15 +3004,9 @@ def device_setlist_import_hss(hss_file: Path, list_only: bool, setlist_name: str
         _hss_print_dry_run(hss_file, target_setlist, filled, hss_mod)
         return
 
-    HelixClient, HelixError = _client()
-
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             result = hss_mod.import_bundle(h, bundle, setlist=setlist_name)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
     except ValueError as e:
         raise click.ClickException(str(e)) from e
 
@@ -3198,15 +3046,8 @@ def device_setlist_export_hss(setlist: str, out_file: Path, ip: str, port: int) 
     residual). The `.hss` is still written with the presets that did resolve.
     """
     from helixgen.device import hss as hss_mod
-    HelixClient, HelixError = _client()
-
-    try:
-        with HelixClient(ip, port) as h:
-            result = hss_mod.export_setlist_to_hss(h, setlist)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        result = hss_mod.export_setlist_to_hss(h, setlist)
 
     out_file.write_bytes(result["bytes"])
     click.echo(f"wrote {out_file} ({len(result['bytes'])} bytes) — "
@@ -3240,34 +3081,27 @@ def device_push(infile: Path, name: str, setlist: str, pos: int, ip: str, port: 
     is not scanned, so its IRs are protected only while a device preset
     references them.
     """
-    HelixClient, HelixError = _client()
-
     blob = infile.read_bytes()
-    try:
-        with HelixClient(ip, port) as h, h.mutating():
-            # One subscription for the whole push — the strict emptiness check
-            # below decides where to write AND is what passes
-            # prechecked_empty=True, authorizing the failed-write cleanup to
-            # delete by (name, pos); it must not be answered from a lagging
-            # container index (#38).
-            kind, container, label = _resolve_setlist_dest(h, setlist)
+    with _connect(ip, port) as h, h.mutating():
+        # One subscription for the whole push — the strict emptiness check
+        # below decides where to write AND is what passes
+        # prechecked_empty=True, authorizing the failed-write cleanup to
+        # delete by (name, pos); it must not be answered from a lagging
+        # container index (#38).
+        kind, container, label = _resolve_setlist_dest(h, setlist)
 
-            def _writer(cont, cpos):
-                if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
-                    raise click.ClickException(f"{label} slot {cpos} is not empty")
-                # both paths reach here with a known-empty posi (the pool
-                # branch just checked strictly; the setlist branch pushes into
-                # a freshly computed lowest-empty pool posi), so a same-named
-                # stub after a failed write is ours to clean up (#38).
-                return h._raw.push_to_slot(cont, cpos, name, blob,
-                                           prechecked_empty=True)
+        def _writer(cont, cpos):
+            if kind == "pool" and h.find_by_pos(cont, cpos, strict=True) is not None:
+                raise click.ClickException(f"{label} slot {cpos} is not empty")
+            # both paths reach here with a known-empty posi (the pool
+            # branch just checked strictly; the setlist branch pushes into
+            # a freshly computed lowest-empty pool posi), so a same-named
+            # stub after a failed write is ours to clean up (#38).
+            return h._raw.push_to_slot(cont, cpos, name, blob,
+                                       prechecked_empty=True)
 
-            new_cid, pool_pos, _ref = _install_via_dest(
-                h, kind, container, label, pos, _writer)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+        new_cid, pool_pos, _ref = _install_via_dest(
+            h, kind, container, label, pos, _writer)
     if new_cid is None:
         raise click.ClickException(f"failed to push {infile} into {setlist} slot {pos}")
     where = (f"pool slot {pool_pos}, referenced into setlist {label!r} at {pos}"
@@ -3319,7 +3153,6 @@ def device_restore(root, serial, git_ref, setlist, prune, dry_run, yes,
     Restores from the device's own bytes, so nothing passes through a
     transcoder. MUTATES the device (except --dry-run). EXPERIMENTAL.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import snapshot as _snap
 
     root = Path(root) if root else _snapshot_root()
@@ -3327,7 +3160,7 @@ def device_restore(root, serial, git_ref, setlist, prune, dry_run, yes,
     if git_ref:
         root, tmp = _snapshot_at_ref(root, git_ref)
     try:
-        with HelixClient(ip, port) as h:
+        with _connect(ip, port) as h:
             plan = _snap.plan_restore(h, root, serial=serial, setlist=setlist,
                                       prune=prune)
             if as_json and dry_run:
@@ -3347,10 +3180,6 @@ def device_restore(root, serial, git_ref, setlist, prune, dry_run, yes,
                 click.confirm(f"{len(deletes)} preset(s) will be DELETED from "
                               f"the device. Proceed?", abort=True)
             res = _snap.apply_restore(h, plan)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
     finally:
         if tmp is not None:
             import shutil
@@ -3398,19 +3227,13 @@ def device_backup(root, dry_run: bool, as_json: bool, ip: str, port: int) -> Non
     (#38) and would silently under-collect; each pulled file's MD5 is verified
     against its hash. Read-only and NON-ACTIVATING. EXPERIMENTAL.
     """
-    HelixClient, HelixError = _client()
     from helixgen.device import snapshot as _snap
     from datetime import datetime, timezone
 
     root = Path(root) if root else _snapshot_root()
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    try:
-        with HelixClient(ip, port) as h:
-            res = _snap.take(h, root, dry_run=dry_run, now=now)
-    except HelixError as e:
-        raise click.ClickException(str(e)) from e
-    except OSError as e:
-        raise click.ClickException(str(e)) from e
+    with _connect(ip, port) as h:
+        res = _snap.take(h, root, dry_run=dry_run, now=now)
     if as_json:
         click.echo(json.dumps(res, indent=2))
     else:
