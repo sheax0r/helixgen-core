@@ -185,7 +185,7 @@ Default: `~/.helixgen/library/`. Override with `--library DIR` or the
   - `default` is the **device** default; `sighted` is the single value the ingested preset happened to carry — one sample, not a range, and not a recommendation. Printed only when it differs from the default. **A param your recipe leaves out is generated at `default`, never at `sighted`** (hgc-x7i) — `sighted` is trivia about how the library was seeded, not a value anything writes.
   - `[internal]` marks a param the editor exposes no control for (`IrData`, `AmpCabPeak*`, `AmpCabZFir`): plumbing, not a knob — leave it alone. A tempo-syncable param's companions (`TempoSync1`/`SyncSelect1`) are NOT internal — the editor attaches them to the host knob, and presets set them.
   - `--json` carries the same facts per param — `{type, sighted, min, max, default, unit, scale, display_min, display_max, display_name, enum_labels, sighted_label, default_label, internal}`, each key present only when known. **Two `--json` contract changes:** `observed_range` is gone (it was always `[v, v]` from a single preset — a range it never was), and `default` now means the DEVICE default; the library's sighted value moved to `sighted`.
-- `helixgen generate <spec.json> [-o <out.hsp>]` — generate a preset. `-o` is now **optional**. Default (no `-o`): writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON — name the tone with `--artist`/`--song` (paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (resolved to a guitar **profile** — see "Guitar profiles / resolution" under Library commands — and its `short_name` appended to the display name + slug); with no naming flag, the recipe's bare `name` becomes the descriptor. A slug collision (target `.hsp` already exists) errors with a rename suggestion — never overwrites. Explicit `-o <out.hsp>` preserves the legacy behavior exactly: writes there, auto-registers, naming flags ignored, **no metadata JSON written**. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix.
+- `helixgen generate <spec.json> [-o <out.hsp>]` — generate a preset. `-o` is now **optional**. Default (no `-o`): writes into the tone library at `library/tones/<variant-slug>.hsp` and authors per-tone metadata JSON — name the tone with `--artist`/`--song` (paired) or `--descriptor` (mutually exclusive with artist/song), plus an optional `--guitar` (resolved to a guitar **profile** — see "Guitar profiles / resolution" under Library commands — and its `short_name` appended to the display name + slug); with no naming flag, the recipe's bare `name` becomes the descriptor. A slug collision (target `.hsp` already exists) errors with a rename suggestion — never overwrites. Explicit `-o <out.hsp>` preserves the legacy behavior exactly: writes there, auto-registers, naming flags ignored, **no metadata JSON written**. Output extension `.hsp` writes a Stadium-format file; `.hlx` writes pretty JSON for the original Helix. The default (library) path also stamps per-variant **provenance** on the tone-meta JSON — the embedded recipe, the engine version, and `authored_at`, plus optional `--prompt-summary` / `--research-summary` / `--plugin-version` the authoring skill supplies. The recipe embed is what makes later deterministic regeneration possible; the summaries are human-readable intent. (Omitted on the legacy `-o` path, which writes no metadata.)
   - **Two identity guards (hgc-2ja).** An explicit `--descriptor` must be the tone name **alone**: one carrying a smuggled identity — a `" - "` / `" -- "` / en/em-dash separator (the display schema's own), or a slug ending in a known guitar's slug or `short_name` — is **refused** (exit 1) naming the flags to use instead, because it yields a display name with a doubled separator and a logical slug that will not group with the tone it belongs to. The same guard runs on `library import --descriptor` and `library fork --descriptor`. The *implicit* fallbacks are deliberately **not** guarded (a recipe's own `name`, an `.hsp`'s `meta.name`): those are existing artifacts' names, not a naming choice made at the CLI, and dashes in them are legitimate.
   - Combining `-o` with `--artist`/`--song`/`--descriptor`/`--guitar` now **warns on stderr** (still exit 0) naming the flags being discarded, instead of dropping them silently — passing both means the caller wanted an identity that is about to be thrown away with the metadata JSON.
   - **`--venue headphones|direct|amp-in` [`--room-ir HASH_OR_WAV`] [`--room auto|tile`] [`--room-highcut HZ|off`]** (library flow only). Converts the generated tone to a *venue* — what it is played through — and records `venue`/`venue_detail` on the variant. No `--venue` falls back to the `default_venue` preference (or `$HELIXGEN_DEFAULT_VENUE`); with neither, output is byte-for-byte what it was and `venue` stays unset. `--venue direct` records direct with no transform (the opt-out when a default is set). If the guitar's bare variant already holds a *different* venue, the new one gets key `<guitar>@<venue>`, file `<slug>-<venue>.hsp` and a display suffix such as ` (Amp In)`; the same venue as the bare variant is a slug collision (refused). **`--venue` with `-o` is a usage error**, and `default_venue` is ignored with `-o`. `--room-ir`/`--room tile`/`--room-highcut` steer the headphones treatment (see `library venue`); `--room-highcut` defaults to the `headphones_highcut_hz` preference (8000 Hz; `off` disables). `apply_venue` warnings print on stderr plus a one-line `venue: headphones (room-ir, <ir> @ -30.0 dB, FS4)` summary.
@@ -483,6 +483,30 @@ or ambiguous name exits 1. This resolution order is shared by `library show`,
   "errors": [...]}`. Use once after adopting the library layout so
   already-registered (or `--no-copy`) IRs get metadata; the skill then enriches
   each sidecar's provenance and character tags.
+
+- `helixgen library upgrade [--apply] [--json] [--only ID ...] [--since VERSION] [--library DIR] [--irs-dir DIR]`
+  — **find and repair tones made stale by engine fixes, consent-gated.** Scans
+  every variant in the managed tone library and runs the **change registry**
+  (see `helixgen changes`): each registered fix is a content detector + an
+  idempotent in-place migration. **DRY RUN by default** — it reports exactly
+  which tones/variants/blocks each change affects and writes nothing; it only
+  mutates with `--apply`. Detection is content-based (never a version stamp),
+  so tones authored before provenance existed are still covered. On `--apply`
+  each affected variant's `.hsp` is rewritten once (oldest fix first,
+  `apply_prefs` off so a fix never injects usb-tap blocks), its `normalized`
+  stamp cleared (re-verify loudness), and an advisory commit made — a missing
+  `.hsp` is reported `missing` and skipped, never fatal. `--only` limits to
+  named change id(s) (errors on an unknown id); `--since` to changes that
+  landed after a version. The registry currently folds `fs-bypass-snapshot-assign`
+  (0.84), `headphones-highcut` (0.65) and `factory-info-clear` (0.65);
+  `venue-retrofit` / `info-backfill` remain as standalone aliases. The device
+  is **not** touched — re-push authored tones with `device copy` afterward.
+
+- `helixgen changes [--since VERSION] [--json]` — list the **change registry**:
+  every tone-affecting engine fix (`id`, the version it `landed_in`, `kind`,
+  a summary, and a research note), oldest first. This is the "what changed
+  between versions" record; `library upgrade` is how you detect and repair the
+  tones a change made stale. `--since` shows only changes after a version.
 
 
 ## Device commands (`helixgen device …`)

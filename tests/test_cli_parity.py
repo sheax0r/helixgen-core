@@ -249,6 +249,13 @@ NEW_SURFACES: list[tuple[list[str], list[str]]] = [
     (["ir-scan"],
      ["COPIED", "--no-copy", "content-addressed", "one-time bridged"]),
     (["library", "ir-backfill"], ["IDEMPOTENT", "sidecar", "gitignored"]),
+    # --- change-migration registry (tone-change-migration-registry) ---
+    (["library", "upgrade"],
+     ["consent-gated", "in place", "DRY RUN", "oldest fix first",
+      "change id(s)", "landed after this engine version"]),
+    (["changes"],
+     ["tone-affecting", "migration registry",
+      "landed after this engine version"]),
     # --- add-guitar (#79j) ---
     (["library", "add-guitar"],
      ["Scaffold", "auto-commits", "enrich", "refused"]),
