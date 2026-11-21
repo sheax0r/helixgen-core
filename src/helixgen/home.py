@@ -126,3 +126,14 @@ def legacy_irs_dir() -> Path:
 def devices_dir() -> Path:
     """Per-device observed state: ``helixgen_home()/"devices"``."""
     return helixgen_home() / "devices"
+
+
+def is_under(path: Path, parent: Path) -> bool:
+    """True if ``path`` resolves to a location at or below ``parent``.
+
+    Unresolvable paths (``OSError``) or cross-drive comparisons (``ValueError``
+    on Windows) are treated as "not under"."""
+    try:
+        return path.resolve().is_relative_to(parent.resolve())
+    except (OSError, ValueError):
+        return False

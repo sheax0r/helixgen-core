@@ -43,14 +43,6 @@ from helixgen.library import Block, Library
 from helixgen.spec import StructuralEntry
 
 
-def _lane_pos(key: str) -> tuple[int, int]:
-    """Decode a `bNN` key into (lane, pos): num >= 14 is lane 1 (pos = num - 14),
-    num < 14 is lane 0. Mirrors `mutate._lane_pos`."""
-    num = int(key[1:])
-    lane = 1 if num >= 14 else 0
-    return lane, num - 14 * lane
-
-
 def _try_load_block(library: Library, model_id: str) -> Block | None:
     """Load a block by (already-translated) model id, or return None if the
     library can't resolve it.
@@ -339,7 +331,7 @@ def _name_index(flow: list, library: Library) -> dict:
             bnn = path[key]
             if not isinstance(bnn, dict) or bnn.get("type") in ("split", "join", "input", "output") or not bnn.get("slot"):
                 continue
-            lane, pos = _lane_pos(key)
+            lane, pos = flowparams.lane_pos(key)
             block = _try_load_block(library, _translate_model_id(bnn["slot"][0].get("model", "")))
             if block is None:
                 continue
@@ -453,7 +445,7 @@ def _recover_snapshots(body: dict, library: Library, idx: dict) -> list[dict[str
         if block is None:
             continue
         name = _ref_name(block)
-        lane, pos = _lane_pos(key)
+        lane, pos = flowparams.lane_pos(key)
         coord = (pi, lane, pos, name)
         # @enabled snapshot overrides (False => disable in that snapshot). The
         # bNN base @enabled.value may now be False (base-bypassed block), but
@@ -668,7 +660,7 @@ def _recover_footswitches(
         block = _try_load_block(library, _translate_model_id(slot.get("model", "")))
         if block is None:
             continue
-        lane, pos = _lane_pos(key)
+        lane, pos = flowparams.lane_pos(key)
         name = controllers.controller_name_for_source(device_id, ctrl.get("source"))
         behavior = ctrl.get("behavior", "latching")
         if name is None or behavior not in ("latching", "momentary"):
@@ -707,7 +699,7 @@ def _recover_expression(
         block = _try_load_block(library, _translate_model_id(slot.get("model", "")))
         if block is None:
             continue
-        lane, pos = _lane_pos(key)
+        lane, pos = flowparams.lane_pos(key)
         for pname, wrapped in (slot.get("params") or {}).items():
             ctrl = wrapped.get("controller") if isinstance(wrapped, dict) else None
             if not (isinstance(ctrl, dict) and ctrl.get("type") == "param"):
@@ -1002,7 +994,7 @@ def _recover_one_command(rec: dict, switch: str, scrib: dict,
 
 def _entry_for(key, bnn, library, irs):
     """Build a spec entry dict (block/split/join) with explicit lane/pos."""
-    lane, pos = _lane_pos(key)
+    lane, pos = flowparams.lane_pos(key)
     typ = bnn.get("type")
     slot = bnn["slot"][0]
     if typ == "split":
@@ -1042,7 +1034,7 @@ def _reconstruct_path_blocks(path_dict, library, irs):
 
     def structural_entry(k):
         bnn = path_dict[k]
-        lane, pos = _lane_pos(k)
+        lane, pos = flowparams.lane_pos(k)
         return StructuralEntry(raw=copy.deepcopy(bnn), lane=lane, pos=pos)
 
     keys = all_bnn()

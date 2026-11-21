@@ -12,7 +12,7 @@ specific piece of ``transcode``/``bridge``:
 device                       ``.hsp``
 ===========================  =============================================
 ``sfg_.flow[i]``             ``preset.flow[i]``
-grid position ``gp``         the ``bNN`` key (``bridge._lane_pos``: lane 1
+grid position ``gp``         the ``bNN`` key (``flowparams.lane_pos``: lane 1
                              lives at ``14 + pos``)
 ``mdls[i].id__``             ``slot[i].model`` (``modelmap`` reversed; ``i``
                              > 0 is a dual-cab's B model)

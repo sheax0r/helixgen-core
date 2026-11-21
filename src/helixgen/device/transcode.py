@@ -843,7 +843,7 @@ def _recorded_grid_slots(modeled, structural=()) -> Optional[List[int]]:
     """The grid slot each modeled block RECORDS in the ``.hsp``, or ``None``
     when the recorded coordinates cannot be honoured as written.
 
-    A block's ``.hsp`` ``bNN`` key IS its grid coordinate (``bridge._lane_pos``:
+    A block's ``.hsp`` ``bNN`` key IS its grid coordinate (``flowparams.lane_pos``:
     lane 1 = ``14 + pos``), so the forward path places from it instead of
     re-packing: real device content leaves GAPS in a row (61 of Line 6's 66
     factory presets trip the gap check), and compacting them moves the user's
