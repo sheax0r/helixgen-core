@@ -93,6 +93,36 @@ def test_round_trip_preserves_all_fields(tmp_home):
     assert v.notes_md == "bridge pickup, tone rolled off"
 
 
+def test_round_trip_preserves_provenance(tmp_home):
+    prov = {
+        "prompt_summary": "warm cleanish SRV strat lead",
+        "research_summary": "Agoura clean + parallel mild drive lane",
+        "recipe": {"name": "srv", "blocks": [{"model": "x"}]},
+        "engine_version": "0.86.0",
+        "plugin_version": "5.30.0",
+        "authored_at": "2026-11-21T00:00:00+00:00",
+    }
+    meta = tone_meta.ToneMeta(
+        artist=None, song=None, descriptor="SRV Lead", tags=[],
+        description_md=None,
+        variants={
+            "generic": tone_meta.Variant(
+                hsp="tones/srv-lead.hsp",
+                preset_name="SRV Lead",
+                provenance=prov,
+            )
+        },
+        created="2026-01-01", updated="2026-01-01", schema=1,
+    )
+
+    tone_meta.save_tone_meta(meta)
+    loaded = tone_meta.load_tone_meta(meta.logical_slug)
+
+    v = loaded.variants["generic"]
+    assert v.provenance == prov
+    assert "provenance" not in v.extra  # first-class, not swept into extra
+
+
 def test_save_tone_meta_writes_under_tones_dir(tmp_home):
     meta = tone_meta.ToneMeta(
         artist="A", song="B", descriptor=None, tags=[], description_md=None,

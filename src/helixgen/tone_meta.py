@@ -144,6 +144,7 @@ class Variant:
     forked_from: Optional[Dict[str, Any]] = None
     venue: Optional[str] = None
     venue_detail: Optional[Dict[str, Any]] = None
+    provenance: Optional[Dict[str, Any]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -283,7 +284,7 @@ def apply_tag_edits(
 # never strips a hand-edit (backlog #83b).
 _VARIANT_KEYS = frozenset({
     "hsp", "preset_name", "guitar_settings", "notes_md", "normalized",
-    "forked_from", "venue", "venue_detail",
+    "forked_from", "venue", "venue_detail", "provenance",
 })
 _META_KEYS = frozenset({
     "schema", "artist", "song", "descriptor", "tags", "description_md",
@@ -303,6 +304,7 @@ def _variant_to_dict(v: Variant) -> Dict[str, Any]:
         "forked_from": copy.deepcopy(v.forked_from) if v.forked_from else None,
         "venue": v.venue,
         "venue_detail": copy.deepcopy(v.venue_detail) if v.venue_detail else None,
+        "provenance": copy.deepcopy(v.provenance) if v.provenance else None,
     }
     for k, val in v.extra.items():
         d.setdefault(k, copy.deepcopy(val))
@@ -313,6 +315,7 @@ def _variant_from_dict(d: Dict[str, Any]) -> Variant:
     normalized = d.get("normalized")
     forked_from = d.get("forked_from")
     venue_detail = d.get("venue_detail")
+    provenance = d.get("provenance")
     return Variant(
         hsp=d["hsp"],
         preset_name=d["preset_name"],
@@ -325,6 +328,8 @@ def _variant_from_dict(d: Dict[str, Any]) -> Variant:
         venue=d.get("venue"),
         venue_detail=(copy.deepcopy(venue_detail)
                       if isinstance(venue_detail, dict) else None),
+        provenance=(copy.deepcopy(provenance)
+                    if isinstance(provenance, dict) else None),
         extra={k: copy.deepcopy(v) for k, v in d.items()
                if k not in _VARIANT_KEYS},
     )
@@ -565,6 +570,7 @@ def upsert_variant(
     tags: Optional[Iterable[str]] = None,
     venue: Optional[str] = None,
     venue_detail: Optional[Dict[str, Any]] = None,
+    provenance: Optional[Dict[str, Any]] = None,
 ) -> ToneMeta:
     """Create ``meta`` if absent, then add/replace one variant in place.
 
@@ -624,7 +630,8 @@ def upsert_variant(
         venue_suffix=naming.VENUE_SUFFIX[venue] if suffixed else None,
     )
     variant = Variant(hsp=_to_library_relative(hsp_path), preset_name=preset_name,
-                      venue=venue, venue_detail=venue_detail)
+                      venue=venue, venue_detail=venue_detail,
+                      provenance=provenance)
 
     tag_list = list(tags or [])
 
