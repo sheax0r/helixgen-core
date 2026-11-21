@@ -2114,9 +2114,15 @@ from helixgen.cli_device import device, _auto_upload_irs  # noqa: E402,F401
 # `cli_device` above.
 from helixgen.cli_library import library as library_group, describe as describe_cmd  # noqa: E402
 
+# The change registry (tone-affecting fixes) and its `changes` changelog verb.
+# Importing changes_entries registers every entry onto changes.REGISTRY.
+from helixgen.changes import changes_cmd  # noqa: E402
+from helixgen import changes_entries  # noqa: E402,F401  (side effect: registers entries)
+
 cli.add_command(device)
 cli.add_command(library_group)
 cli.add_command(describe_cmd)
+cli.add_command(changes_cmd)
 
 
 if __name__ == "__main__":  # allow `python -m helixgen.cli ...`
