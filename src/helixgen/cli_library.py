@@ -1614,36 +1614,60 @@ def upgrade_cmd(apply_changes: bool, as_json: bool, only_ids: tuple,
                 rows.append({"tone": meta.logical_slug, "variant": key,
                              "change": None, "status": "missing"})
                 continue
-            ctx = changes.UpgradeCtx(
-                hsp_path=hsp, body=read_hsp(hsp), meta=meta, variant_key=key,
-                variant=v, library_dir=home.library_dir(), resources=resources)
+            # A single bad tone (corrupt .hsp, or a detector/migration raising --
+            # e.g. the headphones retrofit's load_block KeyError when run against a
+            # smaller block library than the tone was authored with) must not abort
+            # the whole sweep: degrade it to a skipped row and move on. Counts/rows
+            # are staged and only merged once the whole variant succeeds, so a
+            # partial failure leaves no half-counted variant (and, in --apply, no
+            # write happens until after every entry ran).
+            v_rows: List[dict] = []
+            v_blocks = 0
+            v_affected = False
             changed_here = False
-            for e in entries:
-                f = e.detect(ctx)
-                if not f.affected:
-                    continue
+            try:
+                ctx = changes.UpgradeCtx(
+                    hsp_path=hsp, body=read_hsp(hsp), meta=meta, variant_key=key,
+                    variant=v, library_dir=home.library_dir(), resources=resources)
+                for e in entries:
+                    # In --apply, each entry's detect sees the body as mutated by
+                    # earlier entries (ascending landed_in); in dry-run it sees the
+                    # pristine body. Today's entries don't read a region another
+                    # rewrites, so counts match; keep that in mind adding entries.
+                    f = e.detect(ctx)
+                    if not f.affected:
+                        continue
+                    v_affected = True
+                    v_blocks += len(f.blocks)
+                    status = f.status
+                    if apply_changes:
+                        af = e.apply(ctx)
+                        changed_here = changed_here or af.affected
+                        status = af.status
+                    v_rows.append({"tone": meta.logical_slug, "variant": key,
+                                   "change": e.id, "status": status,
+                                   "blocks": f.blocks})
+                if apply_changes and changed_here:
+                    original = hsp.read_bytes()
+                    _atomic_write(hsp, dumps_hsp(ctx.body, apply_prefs=False))
+                    v.normalized = None  # a migration touched the preset; re-verify
+                    try:
+                        tone_meta.save_tone_meta(meta)
+                    except BaseException:
+                        _atomic_write(hsp, original)  # keep .hsp + metadata in step
+                        raise
+                    gitops.auto_commit(
+                        home.helixgen_home(),
+                        f"helixgen: upgrade {key} ({meta.logical_slug})")
+            except Exception as err:  # noqa: BLE001 -- one tone must not kill the run
+                rows.append({"tone": meta.logical_slug, "variant": key,
+                             "change": None, "status": "skipped", "detail": str(err)})
+                continue
+            rows.extend(v_rows)
+            if v_affected:
                 tones.add(meta.logical_slug)
                 variants.add((meta.logical_slug, key))
-                blocks += len(f.blocks)
-                status = f.status
-                if apply_changes:
-                    af = e.apply(ctx)
-                    changed_here = changed_here or af.affected
-                    status = af.status
-                rows.append({"tone": meta.logical_slug, "variant": key,
-                             "change": e.id, "status": status, "blocks": f.blocks})
-            if apply_changes and changed_here:
-                original = hsp.read_bytes()
-                _atomic_write(hsp, dumps_hsp(ctx.body, apply_prefs=False))
-                v.normalized = None  # a migration touched the preset; re-verify
-                try:
-                    tone_meta.save_tone_meta(meta)
-                except BaseException:
-                    _atomic_write(hsp, original)  # keep .hsp + metadata in step
-                    raise
-                gitops.auto_commit(
-                    home.helixgen_home(),
-                    f"helixgen: upgrade {key} ({meta.logical_slug})")
+                blocks += v_blocks
 
     affected = {"tones": len(tones), "variants": len(variants), "blocks": blocks}
     if as_json:
@@ -1651,9 +1675,14 @@ def upgrade_cmd(apply_changes: bool, as_json: bool, only_ids: tuple,
             {"apply": apply_changes, "affected": affected, "rows": rows}, indent=2))
         return
     for r in rows:
-        blk = f" [{', '.join(r['blocks'])}]" if r.get("blocks") else ""
+        if r.get("blocks"):
+            extra = f" [{', '.join(r['blocks'])}]"
+        elif r.get("detail"):
+            extra = f" ({r['detail']})"
+        else:
+            extra = ""
         click.echo(f"  {r['tone']}/{r['variant']}: {r.get('change') or '-'} "
-                   f"-> {r['status']}{blk}")
+                   f"-> {r['status']}{extra}")
     n_changes = len({r["change"] for r in rows if r.get("change")})
     verb = "Repaired" if apply_changes else "Affected"
     click.echo(f"{verb}: {affected['tones']} tone(s) / {affected['variants']} "

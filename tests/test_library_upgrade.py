@@ -89,6 +89,41 @@ def test_empty_library_is_clean(tmp_home):
     assert "0 tone" in res.output
 
 
+def test_corrupt_hsp_is_skipped_and_other_tones_still_repaired(tmp_home):
+    stale = _seed_stale_and_clean()  # valid stale (b-slug) + clean
+    # a tone whose .hsp is unreadable (valid magic, junk JSON)
+    bad = home.tones_dir() / "broken.hsp"
+    bad.write_bytes(b"rpshnosj{not json")
+    tone_meta.save_tone_meta(tone_meta.ToneMeta(
+        artist=None, song=None, descriptor="broken", tags=[], description_md=None,
+        variants={"generic": tone_meta.Variant(hsp="tones/broken.hsp",
+                                                preset_name="broken")},
+        created="2026-01-01", updated="2026-01-01", schema=1))
+
+    res = _run("--apply")
+    assert res.exit_code == 0, res.output              # one bad tone must not abort
+    assert "broken" in res.output and "skipped" in res.output.lower()
+    # the healthy stale tone was still repaired
+    assert read_hsp(stale)["preset"]["flow"][0]["b01"]["@enabled"]["snapshots"] == \
+        [False] * HSP_SNAPSHOT_SLOTS
+
+
+def test_entry_exception_during_apply_degrades_to_skipped(tmp_home, monkeypatch):
+    _seed_stale_and_clean()
+    from helixgen import changes
+
+    def _boom(ctx):
+        raise KeyError("room block not in this library")
+
+    boom = changes.ChangeEntry(id="boom", landed_in="0.99.0", kind="bugfix",
+                               summary="x", research="y",
+                               detect=_boom, apply=_boom)
+    monkeypatch.setattr(changes, "REGISTRY", changes.REGISTRY + [boom])
+    res = _run("--apply")
+    assert res.exit_code == 0, res.output
+    assert "skipped" in res.output.lower()
+
+
 def test_missing_hsp_is_skipped_not_crashed(tmp_home):
     _write_tone("stale", {"value": False, "controller": {"source": 5}})
     (home.tones_dir() / "stale.hsp").unlink()  # meta points at a now-missing .hsp
