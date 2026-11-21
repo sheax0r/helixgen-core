@@ -64,6 +64,59 @@ def _fs_bypass_apply(ctx: Any) -> Finding:
 
 
 # ---------------------------------------------------------------------------
+# headphones-highcut (core #116, engine 0.65.0)
+# ---------------------------------------------------------------------------
+def _retrofit(ctx: Any):
+    """Run the headphones room-mic High Cut retrofit on ctx.body (read-only:
+    returns a result carrying .changed / .body / .venue_detail / .skip_reason).
+    None when the entry's resources were not loaded."""
+    from helixgen import venue as _venue
+    r = ctx.resources
+    if "block_library" not in r:
+        return None
+    return _venue.retrofit_headphones(
+        ctx.body, ctx.variant.venue_detail, r["block_library"], r["irs"],
+        close_highcut_hz=r["close_highcut_hz"])
+
+
+def _headphones_detect(ctx: Any) -> Finding:
+    if getattr(ctx.variant, "venue", None) != "headphones":
+        return Finding(False, [], "unchanged")
+    res = _retrofit(ctx)
+    if res is None or not res.changed:
+        return Finding(False, [], "unchanged")
+    return Finding(True, [], "would-retrofit", "room-mic High Cut")
+
+
+def _headphones_apply(ctx: Any) -> Finding:
+    if getattr(ctx.variant, "venue", None) != "headphones":
+        return Finding(False, [], "unchanged")
+    res = _retrofit(ctx)
+    if res is None or not res.changed:
+        return Finding(False, [], "unchanged")
+    # ponytail: detect+apply each recompute the retrofit (~2x per headphones
+    # variant); headphones variants are few, so no result cache yet.
+    ctx.body = res.body
+    ctx.variant.venue_detail = res.venue_detail
+    return Finding(True, [], "retrofitted", "room-mic High Cut")
+
+
+register(ChangeEntry(
+    id="headphones-highcut",
+    landed_in="0.65.0",
+    kind="bugfix",
+    summary="clamp a wide-open room mic to the headphones High Cut ceiling",
+    research=(
+        "Older headphones variants were built with the room IR wide open. The "
+        "venue retrofit mirrors the close mic's High Cut onto the room IR "
+        "(applying the ceiling to a wide-open close) and re-matches the room "
+        "Level. A room IR whose High Cut was set by hand is left alone."),
+    detect=_headphones_detect,
+    apply=_headphones_apply,
+))
+
+
+# ---------------------------------------------------------------------------
 # factory-info-clear (core #117/#132, engine 0.65.0)
 # ---------------------------------------------------------------------------
 def _factory_info_detect(ctx: Any) -> Finding:

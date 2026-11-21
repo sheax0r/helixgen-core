@@ -1552,6 +1552,11 @@ def _upgrade_resources(entries, library_path, irs_dir) -> Dict[str, Any]:
     res: Dict[str, Any] = {}
     if "factory-info-clear" in ids:
         res["factory_donor_infos"] = _factory_donor_infos(home.library_dir())
+    if "headphones-highcut" in ids:
+        from helixgen.cli import _resolved_irs, _resolved_library
+        res["block_library"] = _resolved_library(library_path)
+        res["irs"] = _resolved_irs(irs_dir)
+        res["close_highcut_hz"] = _resolve_close_highcut(None)
     return res
 
 
