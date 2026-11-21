@@ -24,7 +24,6 @@ import copy
 import sys
 from typing import Any
 
-from helixgen import __version__  # noqa: F401  (re-exported provenance version lives in generate)
 from helixgen import flowparams, mutate
 from helixgen.chassis import CHASSIS_SHAPE_KEY
 from helixgen.generate import (

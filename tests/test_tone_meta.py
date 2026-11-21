@@ -637,21 +637,23 @@ def test_save_tone_meta_cleans_tmp_file_on_write_failure(tmp_home, monkeypatch):
 
 
 def test_save_tone_meta_tmp_name_is_process_unique(tmp_home, monkeypatch):
-    # 83c: the temp name carries the pid so two processes writing the same
-    # meta path can never race on one fixed ".tmp" name.
+    # 83c: the temp name carries the pid (+ thread id) so two concurrent
+    # writers of the same meta path never race on one fixed ".tmp" name.
     import os as _os
+    from helixgen import home
 
     seen = {}
-    real_replace = tone_meta.os.replace
+    real_replace = home.os.replace
 
     def _spy(src, dst):
         seen["src"] = str(src)
         return real_replace(src, dst)
 
-    monkeypatch.setattr(tone_meta.os, "replace", _spy)
+    monkeypatch.setattr(home.os, "replace", _spy)
     meta, _ = _valid_meta_and_manifest(tmp_home)
     tone_meta.save_tone_meta(meta)
-    assert f".{_os.getpid()}.tmp" in seen["src"]
+    assert f".{_os.getpid()}." in seen["src"]
+    assert seen["src"].endswith(".tmp")
 
 
 def test_find_variant_by_hsp_matches_differently_cased_path(tmp_home):

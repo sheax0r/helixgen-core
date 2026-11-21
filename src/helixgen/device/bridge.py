@@ -85,89 +85,6 @@ class UnresolvedModel(Exception):
         self.model_id = model_id
 
 
-def hsp_to_chain(hsp_body: dict, *, dsp: int = 0,
-                 resolve_model=_default_resolve_model,
-                 strict: bool = True) -> List[Tuple[int, Dict[str, Any]]]:
-    """Extract an ordered device chain from a helixgen ``.hsp`` body.
-
-    Input/output endpoints are skipped; each user block's helixgen model is
-    resolved to a device id and its params flattened to ``{name: value}``.
-    ``strict`` raises :class:`UnresolvedModel` on a model that can't be resolved;
-    otherwise the block is skipped.
-    """
-    flow = hsp_body["preset"]["flow"][dsp]
-    chain: List[Tuple[int, Dict[str, Any]]] = []
-    for key in sorted(k for k in flow if isinstance(k, str) and k.startswith("b")):
-        b = flow[key]
-        if not isinstance(b, dict):
-            continue
-        slot = b.get("slot")
-        if not (isinstance(slot, list) and slot and isinstance(slot[0], dict)):
-            continue
-        model = slot[0].get("model")
-        if not model:
-            continue
-        dev_id = resolve_model(model)
-        if dev_id is None:
-            if strict:
-                raise UnresolvedModel(model)
-            continue
-        cat = device_category(dev_id)
-        if cat in (None, "input", "output"):
-            continue
-        raw = {}
-        for name, wrapped in (slot[0].get("params") or {}).items():
-            val = wrapped.get("value") if isinstance(wrapped, dict) else wrapped
-            if isinstance(val, (int, float)):
-                raw[name] = val
-        params = map_params(dev_id, raw)   # helixgen param names -> device names
-        chain.append((dev_id, params))
-    return chain
-
-
-def hsp_to_chain_with_irs(
-    hsp_body: dict, *, dsp: int = 0,
-    resolve_model=_default_resolve_model,
-    strict: bool = True,
-) -> List[Tuple[int, Dict[str, Any], Optional[str]]]:
-    """Like :func:`hsp_to_chain`, but also carry each user block's IR hash.
-
-    Returns ``(device_model_id, {param_name: value}, irhash_or_None)`` in signal
-    order. ``irhash`` is the block's ``.hsp`` slot ``irhash`` string (32-hex) when
-    present (IR cab blocks), else ``None``. Additive sibling of
-    :func:`hsp_to_chain` — the latter's signature/behaviour is unchanged.
-    """
-    flow = hsp_body["preset"]["flow"][dsp]
-    chain: List[Tuple[int, Dict[str, Any], Optional[str]]] = []
-    for key in sorted(k for k in flow if isinstance(k, str) and k.startswith("b")):
-        b = flow[key]
-        if not isinstance(b, dict):
-            continue
-        slot = b.get("slot")
-        if not (isinstance(slot, list) and slot and isinstance(slot[0], dict)):
-            continue
-        model = slot[0].get("model")
-        if not model:
-            continue
-        dev_id = resolve_model(model)
-        if dev_id is None:
-            if strict:
-                raise UnresolvedModel(model)
-            continue
-        cat = device_category(dev_id)
-        if cat in (None, "input", "output"):
-            continue
-        raw = {}
-        for name, wrapped in (slot[0].get("params") or {}).items():
-            val = wrapped.get("value") if isinstance(wrapped, dict) else wrapped
-            if isinstance(val, (int, float)):
-                raw[name] = val
-        params = map_params(dev_id, raw)
-        irhash = slot[0].get("irhash") or None
-        chain.append((dev_id, params, irhash))
-    return chain
-
-
 def _lane_pos(key: str) -> Tuple[int, int]:
     """``.hsp`` ``bNN`` key -> ``(lane, pos)`` (lane-1 blocks live at 14+pos)."""
     num = int(key[1:])
@@ -393,7 +310,7 @@ def _hsp_trails(bnn: dict) -> Any:
 def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                  strict: bool = True) -> List[Dict[str, Any]]:
     """Read EVERY DSP flow of a ``.hsp`` body into per-path recipe entries
-    (dual-amp spec §3.1) — the multi-path successor to :func:`hsp_to_chain`.
+    (dual-amp spec §3.1) — the multi-path reader for a ``.hsp`` body.
 
     Each returned path dict is ``{"blocks": [...], "input": <mode|None>,
     "structural": [...]}`` where every block carries its device model-name

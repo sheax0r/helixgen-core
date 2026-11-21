@@ -69,7 +69,6 @@ __all__ = [
     "set_input",
     "wire_footswitch",
     "wire_expression",
-    "wire_wah_toe",
     "unwire_footswitch",
     "unwire_expression",
 ]
@@ -1717,7 +1716,7 @@ def set_input(body: dict[str, Any], path: int, jack: str) -> None:
         raise MutateError(str(exc)) from exc
 
 
-# --- controller wiring: wire_footswitch / wire_expression / wire_wah_toe ----
+# --- controller wiring: wire_footswitch / wire_expression ----
 
 def _validate_fs_args(behavior, curve, color, param, min, max, block) -> None:
     """Validate footswitch-assignment arguments; raise ``MutateError`` on any
@@ -1811,7 +1810,7 @@ def wire_footswitch(
     `switch` is a logical name — one of the assignable footswitches
     "FS1".."FS5" / "FS7".."FS11" (FS6 = MODE and FS12 = TAP/Tuner are reserved
     and rejected), or "EXP1Toe" for the expression-pedal toe/position switch
-    (see `wire_wah_toe`) — resolved via `controllers.resolve_controller_source`
+    (wah auto-engage) — resolved via `controllers.resolve_controller_source`
     against the chassis device_id. `curve` is a `controllers.CURVES` name;
     `threshold` sets the switch's flip point (both optional).
 
@@ -2167,30 +2166,6 @@ def wire_command(
             f"warning: {switch} has no scribble strip; label/color ignored.",
             file=sys.stderr,
         )
-
-
-def wire_wah_toe(
-    body: dict[str, Any],
-    block: str,
-    library: Library,
-    *,
-    path: int | None = None,
-    lane: int | None = None,
-    pos: int | None = None,
-) -> None:
-    """Wire a wah block's bypass to the onboard expression pedal's toe/
-    position switch (`EXP1Toe`), in place -- the standard Helix wah
-    auto-engage: pushing the pedal fully forward toggles the wah on/off
-    while `EXP1` sweeps its `Pedal` param (see `wire_expression` for that
-    half of the setup; this verb only wires the bypass side).
-
-    `EXP1Toe`'s source id is `0x01010500` (hardware-validated in 0.5.1 --
-    ~all real wah exports carry it). Thin wrapper over `wire_footswitch`
-    with `switch="EXP1Toe"`, `behavior="latching"`: `is_position_switch`
-    recognizes the "Toe" suffix and attaches the explicit min/max/threshold
-    bounds a position switch needs (a digital FS's null bounds don't bind).
-    """
-    wire_footswitch(body, "EXP1Toe", block, "latching", library, path=path, lane=lane, pos=pos)
 
 
 def _iter_controller_wrappers(body: dict[str, Any], *, only: dict | None = None):

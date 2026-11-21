@@ -295,22 +295,6 @@ def resolve_controller_source(device_id: str, logical_name: str) -> int:
     return table[logical_name]
 
 
-def english_for_controller(device_id, identifier: str) -> str:
-    """Render a controller identifier as English name + physical position.
-
-    E.g. ``english_for_controller("stadium_xl", "FS5")`` →
-    ``"Footswitch 5 (top row, 5th from left)"``. Raises ControllerError (with
-    the tailored reserved / valid-set message) for a non-canonical identifier.
-    """
-    device = _resolve_device(device_id)
-    meta = CONTROLLER_META[device]
-    if identifier not in meta:
-        # Reuse resolve_controller_source's tailored / generic error message.
-        resolve_controller_source(device_id, identifier)
-    rec = meta[identifier]
-    return f"{rec['canonical_name']} ({rec['position_phrase']})"
-
-
 def controller_mapping(device_id) -> list[dict]:
     """Return the full canonical controller table as a JSON-serialisable list.
 

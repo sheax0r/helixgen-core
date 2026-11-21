@@ -38,32 +38,6 @@ def test_map_params_name_then_positional():
     assert out.get("Tone") == pytest.approx(0.4)
 
 
-def test_hsp_to_chain_resolves_and_skips_endpoints():
-    body = {
-        "preset": {"flow": [{
-            "b00": {"slot": [{"model": "P35_InputInst1_2", "params": {}}]},
-            "b01": {"slot": [{"model": "HD2_DistScream808Mono",
-                              "params": {"Drive": {"value": 0.6}}}]},
-            "b02": {"slot": [{"model": "HD2_ReverbPlateStereo",
-                              "params": {"Mix": {"value": 0.2}}}]},
-            "b13": {"slot": [{"model": "P35_OutputMatrix", "params": {}}]},
-        }]}
-    }
-    # direct resolver (these device strings resolve via defs)
-    chain = bridge.hsp_to_chain(body, resolve_model=lambda m: __import__(
-        "helixgen.device.defs", fromlist=["model_id_for"]).model_id_for(m))
-    ids = [mid for mid, _ in chain]
-    assert DIST in ids and REVERB in ids       # user blocks kept
-    assert INPUT not in ids and OUTPUT not in ids  # endpoints skipped
-
-
-def test_hsp_to_chain_strict_raises_on_unresolved():
-    body = {"preset": {"flow": [{"b01": {"slot": [{"model": "NOPE_notamodel",
-                                                   "params": {}}]}}]}}
-    with pytest.raises(bridge.UnresolvedModel):
-        bridge.hsp_to_chain(body, resolve_model=lambda m: None, strict=True)
-
-
 def test_hsp_ir_hashes_extracts_irhashes():
     body = {"preset": {"flow": [
         {"b01": {"slot": [{"model": "HX2_ImpulseResponseWithPan", "irhash": "aa11"}]},

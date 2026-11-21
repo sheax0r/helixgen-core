@@ -1104,7 +1104,7 @@ def test_set_input_invalid_path_raises(goldfinger_body):
         mutate.set_input(goldfinger_body, 5, "inst1")
 
 
-# --- wire_footswitch / wire_expression / wire_wah_toe (Task 1g) ------------
+# --- wire_footswitch / wire_expression (Task 1g) ------------
 
 def test_wire_footswitch_writes_targetbypass_controller(goldfinger_body, library):
     mutate.wire_footswitch(goldfinger_body, "FS3", "Scream 808", "latching", library)
@@ -1300,8 +1300,8 @@ def test_wire_expression_empty_targets_raises(goldfinger_body, library):
         mutate.wire_expression(goldfinger_body, "EXP1", [], library)
 
 
-def test_wire_wah_toe_uses_exp1toe_source(goldfinger_body, library):
-    mutate.wire_wah_toe(goldfinger_body, "Digital", library)
+def test_wire_exp1toe_uses_exp1toe_source(goldfinger_body, library):
+    mutate.wire_footswitch(goldfinger_body, "EXP1Toe", "Digital", "latching", library)
 
     bnn = goldfinger_body["preset"]["flow"][0]["b04"]
     controller = bnn["@enabled"]["controller"]
@@ -1319,12 +1319,12 @@ def test_wire_wah_toe_uses_exp1toe_source(goldfinger_body, library):
     assert sources[str(source_id)] == {"bypass": False}
 
 
-def test_wire_wah_toe_multiple_blocks_allowed(goldfinger_body, library):
+def test_wire_exp1toe_multiple_blocks_allowed(goldfinger_body, library):
     # `EXP1Toe` may drive multiple blocks (e.g. a wah and a volume both
     # auto-engage on the toe switch) -- a real, device-validated configuration
     # (e.g. "A7X"). Wiring a second block to the toe switch must not raise.
-    mutate.wire_wah_toe(goldfinger_body, "Digital", library)
-    mutate.wire_wah_toe(goldfinger_body, "Plate", library)
+    mutate.wire_footswitch(goldfinger_body, "EXP1Toe", "Digital", "latching", library)
+    mutate.wire_footswitch(goldfinger_body, "EXP1Toe", "Plate", "latching", library)
 
     exp1toe = CONTROLLER_SOURCE_IDS["stadium_xl"]["EXP1Toe"]
     b04 = goldfinger_body["preset"]["flow"][0]["b04"]

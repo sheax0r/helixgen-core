@@ -222,11 +222,7 @@ def scaffold(wav_in_library: Path, irhash: str, *,
 def _write_meta_atomic(m: IrMeta, path: Path) -> None:
     """Write ``m`` to ``path`` atomically (temp file + ``os.replace``). No
     git commit — bulk callers commit once at the end."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(_meta_to_dict(m), indent=2))
-    os.replace(tmp, path)
+    home.atomic_write_text(path, json.dumps(_meta_to_dict(m), indent=2))
 
 
 def save_ir_meta(m: IrMeta, path: Path) -> IrMeta:

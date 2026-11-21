@@ -41,7 +41,6 @@ Instruments are RECORDED in the plan and seeded into guitar profiles by
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sys
@@ -668,9 +667,7 @@ def _strip_deprecated_prefs_keys(*, dry_run: bool) -> List[str]:
 
     for k in removed:
         data.pop(k, None)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
-    os.replace(tmp, path)
+    home.atomic_write_text(path, json.dumps(data, indent=2) + "\n")
     return removed
 
 
