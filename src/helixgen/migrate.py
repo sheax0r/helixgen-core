@@ -231,13 +231,6 @@ class ToneCollision(Exception):
     """The destination ``.hsp`` for a tone already exists (would overwrite)."""
 
 
-def _is_under(path: Path, parent: Path) -> bool:
-    try:
-        return path.resolve().is_relative_to(parent.resolve())
-    except (OSError, ValueError):
-        return False
-
-
 def _data_safe_place(src: Path, dest: Path, *, move: bool) -> None:
     """Copy ``src`` to ``dest``, byte-verify, then (if ``move``) remove ``src``.
 
@@ -600,7 +593,7 @@ def _migrate_one_ir(ir: Dict[str, Any], mapping: IrMapping,
     h = ir["hash"]
     src = Path(ir["wav"]).resolve()
 
-    if _is_under(src, lib_irs):
+    if home.is_under(src, lib_irs):
         summary["irs"]["skipped"].append({"hash": h, "reason": "already in library"})
         return False
     if not src.exists():

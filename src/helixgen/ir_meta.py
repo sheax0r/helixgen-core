@@ -136,13 +136,6 @@ def meta_path_for(wav_in_library: Path) -> Path:
     return Path(wav_in_library).with_suffix(".json")
 
 
-def _is_under(path: Path, parent: Path) -> bool:
-    try:
-        return path.resolve().is_relative_to(parent.resolve())
-    except (OSError, ValueError):
-        return False
-
-
 def _to_library_relative(wav_path: Path | str) -> str:
     """Normalize ``wav_path`` to a library-root-relative POSIX string.
 
@@ -239,7 +232,7 @@ def save_ir_meta(m: IrMeta, path: Path) -> IrMeta:
     path = Path(path)
     _write_meta_atomic(m, path)
     home_dir = home.helixgen_home()
-    if _is_under(path, home_dir):
+    if home.is_under(path, home_dir):
         gitops.auto_commit(home_dir, f"helixgen: update IR metadata ({m.irhash})")
     return m
 
@@ -323,7 +316,7 @@ def import_wav(src: Path, irhash: str, *,
     src = Path(src)
     lib = home.library_irs_dir()
 
-    if _is_under(src, lib):
+    if home.is_under(src, lib):
         dest = src
         imported_from = None
     else:
@@ -363,7 +356,7 @@ def backfill(mapping: IrMapping) -> Dict[str, List[Any]]:
         except IrMappingError as exc:
             result["errors"].append({"hash": h, "error": str(exc)})
             continue
-        in_lib = _is_under(wav_abs, lib)
+        in_lib = home.is_under(wav_abs, lib)
         if in_lib and meta_path_for(wav_abs).exists():
             result["skipped"].append(h)
             continue

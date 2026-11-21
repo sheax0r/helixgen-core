@@ -97,17 +97,6 @@ def _bnn_keys(path_dict: dict[str, Any]) -> list[str]:
     )
 
 
-def _lane_pos(key: str) -> tuple[int, int]:
-    """Decode a `bNN` key into (lane, pos): num >= 14 decodes as lane 1 (pos =
-    num - 14), num < 14 as lane 0. Note `generate._assign_positions` numbers
-    lane 1 starting at pos=1 (i.e. the first lane-1 key is `b15`) -- `b14`
-    itself is never assigned by the generator, though it decodes as lane 1
-    pos 0 here if ever encountered on read."""
-    num = int(key[1:])
-    lane = 1 if num >= 14 else 0
-    return lane, num - 14 * lane
-
-
 def _iter_slots(
     body: dict[str, Any], library: Library
 ) -> list[tuple[int, str, int, Block, int, int]]:
@@ -144,7 +133,7 @@ def _iter_slots(
                 block = library.load_block(_translate_model_id(model))
             except KeyError:
                 continue
-            lane, pos = _lane_pos(key)
+            lane, pos = flowparams.lane_pos(key)
             out.append((fi, key, 0, block, lane, pos))
     return out
 
@@ -422,7 +411,7 @@ def _set_split_join_param(path_dict: dict[str, Any], kind: str, param: str,
         if isinstance(bnn, dict) and bnn.get("type") == kind and bnn.get("slot"):
             candidates.append((key, bnn))
     if pos is not None:
-        candidates = [(k, b) for (k, b) in candidates if _lane_pos(k)[1] == pos]
+        candidates = [(k, b) for (k, b) in candidates if flowparams.lane_pos(k)[1] == pos]
     if not candidates:
         raise MutateError(
             f"Path has no {kind} block"
@@ -430,7 +419,7 @@ def _set_split_join_param(path_dict: dict[str, Any], kind: str, param: str,
     if len(candidates) > 1:
         raise MutateError(
             f"Path has {len(candidates)} {kind} blocks; disambiguate with pos= "
-            f"(positions: {[_lane_pos(k)[1] for k, _ in candidates]}).")
+            f"(positions: {[flowparams.lane_pos(k)[1] for k, _ in candidates]}).")
     slot = candidates[0][1]["slot"][0]
     model = slot.get("model", "")
     try:
@@ -977,15 +966,15 @@ def _is_parallel_routed(path_dict: dict[str, Any]) -> bool:
     return any(
         isinstance(path_dict.get(k), dict) and path_dict[k].get("type") in ("split", "join")
         for k in _bnn_keys(path_dict)
-        if _lane_pos(k)[0] == 0
+        if flowparams.lane_pos(k)[0] == 0
     )
 
 
 def _lane0_chain(path_dict: dict[str, Any]) -> list[str]:
     """Lane-0 keys (blocks AND splits/joins) in chain order."""
     return sorted(
-        (k for k in _bnn_keys(path_dict) if _lane_pos(k)[0] == 0),
-        key=lambda k: path_dict[k].get("position", _lane_pos(k)[1]),
+        (k for k in _bnn_keys(path_dict) if flowparams.lane_pos(k)[0] == 0),
+        key=lambda k: path_dict[k].get("position", flowparams.lane_pos(k)[1]),
     )
 
 
@@ -1073,7 +1062,7 @@ def _renumber_lane(path_dict: dict[str, Any], lane: int, ordered: list[dict[str,
             f"(b{14 * lane + 1:02d}..b{14 * lane + _MAX_LANE_SLOTS:02d}) available."
         )
     for k in _bnn_keys(path_dict):
-        if _lane_pos(k)[0] == lane:
+        if flowparams.lane_pos(k)[0] == lane:
             del path_dict[k]
 
     new_keys: dict[int, str] = {}
@@ -1266,7 +1255,7 @@ def _insert_lane0(body: dict[str, Any], path: int, insert_at: int, new_bnn: dict
     ordered = [path_dict[k] for k in existing_keys]
     ordered.insert(insert_at, new_bnn)
 
-    old_positions = [_lane_pos(k)[1] for k in existing_keys]
+    old_positions = [flowparams.lane_pos(k)[1] for k in existing_keys]
     positions = _insert_positions(old_positions, insert_at)
     if positions is None:
         new_keys = _renumber_lane(path_dict, 0, ordered)   # raises if lane full
@@ -1313,7 +1302,7 @@ def remove_block(
     """
     fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     path_dict = body["preset"]["flow"][fi]
-    del_lane, del_pos = _lane_pos(key)
+    del_lane, del_pos = flowparams.lane_pos(key)
     if del_lane == 1:
         refused = _is_parallel_routed(path_dict)
     else:
@@ -1385,7 +1374,7 @@ def wrap_in_split(
     """
     fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     path_dict = body["preset"]["flow"][fi]
-    if _lane_pos(key)[0] != 0:
+    if flowparams.lane_pos(key)[0] != 0:
         raise MutateError(f"Block {block!r} is on lane 1; only a lane-0 block can be wrapped.")
     chain = _lane0_chain(path_dict)
     i = chain.index(key)
@@ -1396,7 +1385,7 @@ def wrap_in_split(
         raise LaneFullError(
             f"Lane 0 of path {fi} has {len(chain)} entries; a split and join need "
             f"2 more of its {_MAX_LANE_SLOTS} user slots.")
-    lane1 = [p for ln, p in map(_lane_pos, _bnn_keys(path_dict))
+    lane1 = [p for ln, p in map(flowparams.lane_pos, _bnn_keys(path_dict))
              if ln == 1 and 1 <= p <= _MAX_LANE_SLOTS]
     sib_pos = max(lane1, default=0) + 1
     if sib_pos > _MAX_LANE_SLOTS:
@@ -1467,7 +1456,7 @@ def unwrap_split(
     """
     fi, key, _si = resolve_slot(body, block, library, path=path, lane=lane, pos=pos)
     path_dict = body["preset"]["flow"][fi]
-    chain = _lane0_chain(path_dict) if _lane_pos(key)[0] == 0 else []
+    chain = _lane0_chain(path_dict) if flowparams.lane_pos(key)[0] == 0 else []
     i = chain.index(key) if key in chain else -1
     region = next(((s, e) for s, e in _split_spans(path_dict, chain) or []
                    if s < i < e < len(chain)), None)
@@ -1478,17 +1467,17 @@ def unwrap_split(
     if e - s != 2:
         raise MutateError(f"The split around {block!r} holds other lane-0 blocks too.")
     sib = path_dict[split_key].get("branch")
-    if not (isinstance(sib, str) and sib in path_dict and _lane_pos(sib)[0] == 1
+    if not (isinstance(sib, str) and sib in path_dict and flowparams.lane_pos(sib)[0] == 1
             and path_dict[join_key].get("branch") == sib):
         raise MutateError(
             f"The split around {block!r} must hold exactly one lane-1 block to unwrap.")
 
     for k in (split_key, join_key, sib):
         del path_dict[k]
-    _remap_midi_positions(body, fi, 1, {}, removed_pos=_lane_pos(sib)[1])
+    _remap_midi_positions(body, fi, 1, {}, removed_pos=flowparams.lane_pos(sib)[1])
     keys = [k for k in chain if k not in (split_key, join_key)]
-    old = [_lane_pos(k)[1] for k in keys]
-    new = _close_up(_close_up(old, _lane_pos(join_key)[1]), _lane_pos(split_key)[1])
+    old = [flowparams.lane_pos(k)[1] for k in keys]
+    new = _close_up(_close_up(old, flowparams.lane_pos(join_key)[1]), flowparams.lane_pos(split_key)[1])
     new_keys = _renumber_lane(path_dict, 0, [path_dict[k] for k in keys], new)
     _repoint_splits(path_dict, {k: new_keys[j] for j, k in enumerate(keys)})
     _remap_midi_positions(body, fi, 0, dict(zip(old, new)))
@@ -1567,7 +1556,7 @@ def swap_model(
     # lacks is dropped with a warning (same style as the dropped-param warning);
     # survivors get their stored block name refreshed so the record stays
     # self-consistent with what now sits at the coordinate.
-    swap_lane, swap_pos = _lane_pos(key)
+    swap_lane, swap_pos = flowparams.lane_pos(key)
     recs = _midi_records(body)
     if recs:
         kept: list = []

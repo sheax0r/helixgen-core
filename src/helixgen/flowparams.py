@@ -18,6 +18,20 @@ from __future__ import annotations
 
 from typing import Any
 
+
+def lane_pos(key: str) -> tuple[int, int]:
+    """Decode a ``.hsp`` ``bNN`` key into ``(lane, pos)``.
+
+    ``num >= 14`` decodes as lane 1 (``pos = num - 14``); ``num < 14`` as lane 0
+    (lane-1 blocks live at 14+pos). Note ``generate._assign_positions`` numbers
+    lane 1 starting at pos=1 (first lane-1 key is ``b15``) -- ``b14`` is never
+    assigned by the generator, though it decodes here as lane 1 pos 0.
+    """
+    num = int(key[1:])
+    lane = 1 if num >= 14 else 0
+    return lane, num - 14 * lane
+
+
 # --- impedance (preset-level `preset.params.inst1Z` / `inst2Z`) --------------
 
 # .hsp string per device enum index 0..9. Indices 0/1/8/9 are corpus-observed

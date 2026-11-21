@@ -85,13 +85,6 @@ class UnresolvedModel(Exception):
         self.model_id = model_id
 
 
-def _lane_pos(key: str) -> Tuple[int, int]:
-    """``.hsp`` ``bNN`` key -> ``(lane, pos)`` (lane-1 blocks live at 14+pos)."""
-    num = int(key[1:])
-    lane = 1 if num >= 14 else 0
-    return lane, num - 14 * lane
-
-
 def is_snapshot_assignment(arr: List[Any], base: Any) -> bool:
     """Is this ``.hsp`` per-snapshot array a real snapshot ASSIGNMENT?
 
@@ -376,7 +369,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
             if typ in ("split", "join"):
                 sp = {n: (w.get("value") if isinstance(w, dict) else w)
                       for n, w in (slot.get("params") or {}).items()}
-                slane, spos = _lane_pos(key)
+                slane, spos = flowparams.lane_pos(key)
                 entry: Dict[str, Any] = {"kind": typ, "model": model,
                                          "params": sp,
                                          "lane": slane, "pos": spos}
@@ -480,7 +473,7 @@ def hsp_to_paths(hsp_body: dict, *, resolve_model=_default_resolve_model,
                 val = wrapped.get("value") if isinstance(wrapped, dict) else wrapped
                 if isinstance(val, (int, float)):
                     raw[name] = val
-            lane, pos = _lane_pos(key)
+            lane, pos = flowparams.lane_pos(key)
             name_map = param_name_map(dev_id, list((slot.get("params") or {}).keys()))
             spec: Dict[str, Any] = {
                 "block": defs.model_name_for(dev_id),
