@@ -73,6 +73,33 @@ def test_activate_snapshot_range(bad):
         h.activate_snapshot(bad)
 
 
+def test_set_snapshot_name_wire():
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    assert h.set_snapshot_name(3, "Chorus") is True
+    addr, args = _last_sent(h)
+    assert addr == "/SetSnapshotName"
+    # [reqid, snapshotIndex, name]
+    assert args[1:] == [3, "Chorus"]
+
+
+@pytest.mark.parametrize("bad", [-1, 8, 99])
+def test_set_snapshot_name_range(bad):
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    with pytest.raises(ValueError):
+        h.set_snapshot_name(bad, "x")
+
+
+@pytest.mark.parametrize("bad", ["", "   ", None])
+def test_set_snapshot_name_rejects_empty(bad):
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    with pytest.raises(ValueError):
+        h.set_snapshot_name(0, bad)
+    assert h.sock.sent == []       # nothing reached the wire
+
+
 def test_set_block_enable_wire():
     # The grid slot goes on the wire unchanged — including the output
     # block's non-contiguous slot 13 (HW-proven 2026-07-15).

@@ -300,6 +300,24 @@ body.down main{opacity:.55}
 .luses{margin:2px 0 10px 10px;padding-left:10px;border-left:2px solid var(--edge2);font-size:12px}
 .luses .lrow{margin-bottom:3px}
 .lblocked{color:var(--warn);font-size:12px;margin:2px 0 6px 10px}
+/* ---------- snapshot management panel (81v.2) ---------- */
+#snap{cursor:pointer}
+#snappanel{position:fixed;top:0;right:0;bottom:0;width:min(380px,92vw);background:var(--panel);border-left:1px solid var(--edge2);
+  overflow-y:auto;z-index:21;padding:14px;box-shadow:-10px 0 30px rgba(0,0,0,.5)}
+#snappanel[hidden]{display:none}
+#snappanel .sphead{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+#snappanel h3{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint)}
+.sp-row{display:flex;gap:8px;align-items:center;border:1px solid var(--edge);border-radius:10px;
+  padding:7px 10px;margin-bottom:7px;background:var(--panel2)}
+.sp-row.active{border-color:#2c66d6;background:#14203d}
+.sp-dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;border:1px solid var(--edge2);background:#34508f}
+.sp-num{font-size:11px;font-weight:800;color:var(--dim);flex:0 0 auto;min-width:14px}
+.sp-name{flex:1 1 auto;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sp-row .btn{padding:2px 8px;font-size:11px}
+.sp-name-in{flex:1 1 auto;font:inherit;font-size:13px;background:var(--panel);border:1px solid var(--edge2);
+  color:var(--ink);border-radius:6px;padding:2px 6px}
+.sp-note{font-size:12px;color:var(--dim);margin:6px 2px}
+.sp-defer{font-size:11px;color:var(--faint);margin-top:14px;border-top:1px solid var(--edge);padding-top:10px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -338,6 +356,10 @@ body.down main{opacity:.55}
   <div id="devbody"></div>
 </section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
+<aside id="snappanel" hidden aria-label="Snapshots">
+  <div class="sphead"><h3>Snapshots</h3><button class="btn" id="snapclose" type="button" title="Close">&times;</button></div>
+  <div id="snapbody"></div>
+</aside>
 <div id="toasts"></div>
 <script>
 "use strict";
@@ -1239,6 +1261,59 @@ function meta(m) {
   if (m.snapshot == null) sn.hidden = true;
   else { sn.hidden = false; sn.textContent = "Snapshot " + (m.snapshot + 1) + (m.snapshot_name ? " · " + m.snapshot_name : ""); }
   document.title = ((m.preset && m.preset.name) ? m.preset.name + " — " : "") + "Helix Live";
+  if (snapOpen && !$("snappanel").hidden) snapRender();   // keep the panel following the device
+}
+
+/* ---------- snapshot management panel (81v.2) -----------------------------
+ * A follow-on overlay (modelled on the library drawer) opened from the header
+ * Snapshot chip. Shows the preset's snapshots, selects one (granular recall,
+ * reuses /snapshot) and renames one (granular /SetSnapshotName via
+ * /snapshot/rename). Colour / copy / swap / per-param Snapshot-Ctrl /
+ * Snapshots-Set-Bypass are DEFERRED — no live opcode yet (device has no
+ * whole-buffer SET verb; see docs/helix-protocol.md), so they need a HW capture
+ * spike or a batch-write orchestration. Tracked as follow-up beads. */
+let snapOpen = false;
+let snapEditing = null;            // index being renamed, or null
+function snapToggle() { snapOpen ? snapClose() : snapShow(); }
+function snapShow() { if (!S || S.snapshot == null) return; snapOpen = true;
+  $("snappanel").hidden = false; snapRender(); }
+function snapClose() { snapOpen = false; snapEditing = null; $("snappanel").hidden = true; }
+function snapRender() {
+  const body = $("snapbody"); body.textContent = "";
+  const names = (S && S.snapshots) || [];
+  if (!names.length) {
+    body.append(el("p", "sp-note", "This preset reports no configured snapshots.")); return;
+  }
+  names.forEach((nm, i) => {
+    const row = el("div", "sp-row" + (i === S.snapshot ? " active" : ""));
+    row.append(el("span", "sp-dot"));
+    row.append(el("span", "sp-num", String(i + 1)));
+    if (snapEditing === i) {
+      const inp = el("input", "sp-name-in"); inp.value = nm; inp.setAttribute("aria-label", "Snapshot name");
+      const commit = () => { const v = inp.value.trim(); snapEditing = null;
+        if (v && v !== nm) send("/snapshot/rename", { index: i, name: v },
+          () => toast("Renamed snapshot " + (i + 1), true), () => {});
+        else snapRender(); };
+      inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); }
+        else if (e.key === "Escape") { snapEditing = null; snapRender(); } };
+      inp.onblur = commit;
+      row.append(inp); body.append(row); inp.focus(); inp.select(); return;
+    }
+    const name = el("span", "sp-name", nm); row.append(name);
+    if (i !== S.snapshot) {
+      const sel = el("button", "btn", "Select"); sel.type = "button";
+      sel.onclick = () => { if (down) return; send("/snapshot", { index: i }, () => {}, () => {}); };
+      row.append(sel);
+    }
+    const ren = el("button", "btn", "Rename"); ren.type = "button";
+    ren.onclick = () => { if (down) return; snapEditing = i; snapRender(); };
+    row.append(ren);
+    body.append(row);
+  });
+  const defer = el("div", "sp-defer",
+    "Colour, copy/paste, swap, Discard-Edits and the per-param “Snapshot Ctrl” "
+    + "toggle are coming in a follow-up — the device has no live opcode for them yet.");
+  body.append(defer);
 }
 
 /* ---------- the event stream ---------- */
@@ -1554,6 +1629,8 @@ async function openAddPicker(path) {
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
 $("load").onclick = openPicker;
 $("undo").onclick = undo; $("redo").onclick = redo;
+$("snap").onclick = snapToggle; $("snap").title = "Manage snapshots";
+$("snapclose").onclick = snapClose; $("snappanel").hidden = true;
 $("reread").onclick = () => send("/reread", {}, () => toast("Re-read from the device", true), () => {});
 $("save").onclick = async () => {
   await drained();                // the last tweak must be on the device before it is saved

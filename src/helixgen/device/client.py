@@ -900,6 +900,21 @@ class HelixClient:
         self._rpc("/activateSnapshot", [("i", i)])
         return True
 
+    def set_snapshot_name(self, index: int, name: str) -> bool:
+        """Rename snapshot ``index`` (0..7) on the live device.
+
+        ``/SetSnapshotName [reqid, snapshotIndex, name]`` → ``/status``
+        (opcode decoded 2026-11-22, helix-protocol.md §SNAPSHOT NAME). The
+        device applies it in place and echoes the new name on 2001.
+        """
+        i = int(index)
+        if not 0 <= i <= 7:
+            raise ValueError(f"snapshot index {index} out of range 0..7")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("snapshot name must be a non-empty string")
+        self._rpc("/SetSnapshotName", [("i", i), ("s", name)])
+        return True
+
     def set_block_enable(self, path: int, block: int, enable: bool, *,
                          fast: bool = False) -> bool:
         """Bypass/enable a block in the live edit buffer.

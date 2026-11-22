@@ -93,6 +93,11 @@ def _route(session: LiveSession, path: str, b: dict):
         return session.move_block(_int(b, "path"), _int(b, "src"), _int(b, "dst"))
     if path == "/snapshot":
         return session.activate_snapshot(_int(b, "index"))
+    if path == "/snapshot/rename":
+        name = b.get("name")
+        if not isinstance(name, str):
+            raise LiveError("field 'name' must be a string")
+        return session.rename_snapshot(_int(b, "index"), name)
     if path == "/preset":
         return session.load_preset(_int(b, "cid"))
     if path == "/save":

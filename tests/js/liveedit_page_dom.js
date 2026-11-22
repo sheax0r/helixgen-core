@@ -20,7 +20,7 @@ class El {
   removeEventListener(t, f) { this.L[t] = (this.L[t] || []).filter((x) => x !== f); }
   fire(t, ev = {}) { ev.preventDefault = ev.preventDefault || (() => {}); ev.type = t; (this.L[t] || []).slice().forEach((f) => f(ev)); return ev; }
   remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }
-  focus() { El.active = this; } setPointerCapture() {} get offsetWidth() { return 0; }
+  focus() { El.active = this; } select() {} setPointerCapture() {} get offsetWidth() { return 0; }
   get connected() { let n = this; while (n.parent) n = n.parent; return n === El.body; }
   get value() { return this._value; }
   set value(v) { if (this.tagName === "select") { const o = this.children.find((c) => String(c._value) === String(v)); this._value = o ? String(v) : ""; } else this._value = v; }
@@ -30,7 +30,8 @@ function boot() {
   const ids = {}; El.body = new El("body");
   ["led", "preset", "snap", "undo", "redo", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
    "adjsearch", "adjlist", "adjhint", "libtoggle", "drawer", "drawerbody", "tabs",
-   "devicepane", "devtabs", "devnote", "devbody", "devrefresh"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
+   "devicepane", "devtabs", "devnote", "devbody", "devrefresh",
+   "snappanel", "snapbody", "snapclose"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
   const document = { get body2(){return El.body}, getElementById: (i) => ids[i], createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };
   const win = {}; const posts = []; const toasts = ids.toasts; let es = null;
