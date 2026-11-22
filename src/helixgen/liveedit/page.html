@@ -300,6 +300,11 @@ let S = null;                     // last full state from the server
 const P = new Map();              // "path/block/pid" -> control {p, b, tag, dev, set, fail}
 const B = new Map();              // "path/block"     -> control {b, tag, dev, set, fail}
 let dragging = null;              // key of the knob under the user's hand
+let lensLock = null;             // {x,y}: the two param keys an amp-lens drag holds
+// a param is "held" by the hand if its knob is being dragged OR the lens is
+// driving it — so an echo / remote update of that param isn't applied mid-drag
+const paramLocked = (key) => dragging === key
+  || (lensLock != null && (lensLock.x === key || lensLock.y === key));
 let down = true;                  // device (or server) unreachable: nothing is writable
 let undoS = [], redoS = [];
 const openInternal = new Set();   // blocks whose "internal" row the user expanded
@@ -371,7 +376,7 @@ async function pump() {
           const v = job.kind === "param" ? j.value : j.enabled;
           if (v == null) return;
           n.dev = v;
-          if (dragging !== job.key && !pending.has(qk)) n.set(v); },
+          if (!paramLocked(job.key) && !pending.has(qk)) n.set(v); },
         (j) => { const n = map.get(job.key);
           dropHist(job.kind, job.key);            // the change never happened
           if (n) n.fail(j ? j.value : undefined); });
@@ -555,9 +560,10 @@ function lensEl(b, px, py) {
   const keyX = b.path + "/" + b.block + "/" + px.pid;
   const keyY = b.path + "/" + b.block + "/" + py.pid;
   const wrap = el("div", "lens");
-  const pad = el("div", "lenspad"); pad.tabIndex = 0;
-  pad.setAttribute("role", "application");
-  pad.setAttribute("aria-label", "Amp lens — " + px.label + " horizontal, " + py.label + " vertical");
+  // a pointer convenience over the two knobs — NOT focusable; keyboard users
+  // drive the same params via the knobs (which keep arrow/Home/End handling)
+  const pad = el("div", "lenspad");
+  pad.title = "Amp lens — " + px.label + " (horizontal) × " + py.label + " (vertical)";
   const dot = el("div", "lensdot"), rd = el("div", "lensrd");
   pad.append(dot);
   wrap.append(el("div", "lenslab", "⊹ " + px.label + " × " + py.label), pad, rd);
@@ -566,8 +572,12 @@ function lensEl(b, px, py) {
     dot.style.top = ((1 - Math.max(0, Math.min(1, padFrac(py, py.value)))) * 100) + "%";  // up = more
     rd.textContent = px.label + " " + fmt(px, px.value) + "   ·   " + py.label + " " + fmt(py, py.value);
   };
-  // follow the registered controls so knob drags + remote updates repaint the dot
-  [keyX, keyY].forEach((k) => { const c = P.get(k); if (c) { const prev = c.set; c.set = (v, how) => { prev(v, how); paint(); }; } });
+  // follow the registered controls so knob drags, remote updates AND a rejected
+  // write (fail) repaint the dot
+  [keyX, keyY].forEach((k) => { const c = P.get(k); if (!c) return;
+    const ps = c.set, pf = c.fail;
+    c.set = (v, how) => { ps(v, how); paint(); };
+    c.fail = (v) => { pf(v); paint(); }; });
   const writeFrac = (fx, fy) => {
     const cX = P.get(keyX), cY = P.get(keyY); if (!cX || !cY) return;
     const vx = padVal(px, fx), vy = padVal(py, fy);
@@ -577,18 +587,20 @@ function lensEl(b, px, py) {
   };
   pad.addEventListener("pointerdown", (e) => {
     if (e.button || dragging || down) return;      // one control at a time, inert when down
-    e.preventDefault(); pad.focus();
+    e.preventDefault();
     try { pad.setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
     const id = e.pointerId, vx0 = px.value, vy0 = py.value;
-    dragging = "lens:" + keyX;
+    dragging = "lens:" + keyX; lensLock = { x: keyX, y: keyY };  // hold BOTH params vs echoes
     const at = (m) => { const r = pad.getBoundingClientRect();
       writeFrac((m.clientX - r.left) / (r.width || 1), 1 - (m.clientY - r.top) / (r.height || 1)); };
-    at(e);
+    // no write on a bare pointerdown — a click that doesn't drag leaves the
+    // sound untouched (matches the knob); the first move grabs the position
     const move = (m) => { if (m.pointerId === id) at(m); };
     const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
       pad.removeEventListener("pointermove", move);
       ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => pad.removeEventListener(n, up));
       if (dragging === "lens:" + keyX) dragging = null;
+      lensLock = null;
       if (px.value !== vx0) record("param", keyX, vx0, px.value);   // one undo step per axis
       if (py.value !== vy0) record("param", keyY, vy0, py.value); };
     pad.addEventListener("pointermove", move);
@@ -662,7 +674,7 @@ function blockEl(b) {
   if (main.length) { const row = el("div", "ctl"); main.forEach((p) => row.append(control(p, b))); root.append(row); }
   if (roleOf(b) === "amp") {                 // amp lens: Drive × Level on one pad (controls already in P)
     const px = pickAxis(main, /\b(drive|gain)\b/i, /master/i);
-    const py = pickAxis(main, /master|volume|ch.*vol|level/i);
+    const py = pickAxis(main, /\b(master|volume|level)\b|ch.*vol/i);
     if (px && py && px.pid !== py.pid) root.append(lensEl(b, px, py));
   }
   if (extra.length) {
@@ -786,7 +798,7 @@ function render() {
   renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
   const fkey = focused && focused.dataset.k;
-  P.clear(); B.clear(); dragging = null;
+  P.clear(); B.clear(); dragging = null; lensLock = null;
   const rig = $("rig"); rig.textContent = "";
   if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
   SPLIT_PATHS = new Set(S.paths
@@ -930,7 +942,7 @@ function onMsg(m) {
     const v = isP ? m.value : m.enabled;
     c.dev = v;                    // what the device holds, whoever wrote it
     // never yank a control the user is holding or has a newer change queued for
-    if (dragging === key || pending.has(m.t + ":" + key)) return;
+    if (paramLocked(key) || pending.has(m.t + ":" + key)) return;
     const cur = isP ? c.p.value : c.b.enabled;
     if (cur !== v) c.set(v, m.client === ME ? undefined : "remote");
   }
