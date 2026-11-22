@@ -38,3 +38,11 @@ def test_page_has_library_drawer_and_endpoints():
     html = PAGE.read_text()
     for marker in ('id="libtoggle"', 'id="drawer"', "/library/state", '"/library/" + action', '"/preset"'):
         assert marker in html, marker
+
+
+def test_page_registers_the_device_pane_and_endpoints():
+    # 81v.5: the Device pane mounts via addPane and drives /device/*.
+    html = PAGE.read_text()
+    for marker in ('id="devicepane"', 'addPane({ id: "device"',
+                   "/device/state", "/device/values", "/device/set"):
+        assert marker in html, marker
