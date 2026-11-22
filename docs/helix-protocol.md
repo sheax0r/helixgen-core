@@ -449,11 +449,13 @@ grid. This **corrects the 2026-11-21 passive spike**, which read the device's
   extra arg on a *known* verb, so it is not an arity complaint.
 - **Topology changes are one transaction:**
   `/doAgenda [agenda_id:int, ops:<msgpack list of op maps>]`. The device applies
-  it and echoes `/setEditBuffer` (the whole new buffer) on 2001, plus a
-  `/setPropertyValue` footswitch-reindex batch — with **no `/loadContentRef` and
-  no CID change**. That is the discriminator from a real preset load, which does
-  emit `/loadContentRef`. No reload, heard at once.
-- **`/clearBlock` is not a command** — it is only the 2001 echo of a `clrb` op.
+  it and echoes `/setEditBuffer` (the whole new buffer) on 2001 with **no
+  `/loadContentRef` and no CID change**. That is the discriminator from a real
+  preset load, which does emit `/loadContentRef`. (The split agenda below was
+  also followed by a `/setPropertyValue` footswitch-reindex batch.)
+- **`/clearBlock` is not a command.** The spike saw it on 2001 after a clear; the
+  command behind it is a `clrb` op. Whether a `clrb` agenda also echoes
+  `/setEditBuffer` was not recorded.
 
 Op-map keys (4-char-code strings; `cmnd` is the 4CC packed as a big-endian int):
 
@@ -467,7 +469,7 @@ Op-map keys (4-char-code strings; `cmnd` is the 4CC packed as a big-endian int):
 | `bblk` | branch-target slot — the split/merge wiring pointer |
 | `modl` | numeric model id (§8) |
 | `slot` | subpos (0 in every capture) |
-| `type` | block category id: split = 3, merge = 4 (8 seen on a remove-split `setm`) |
+| `type` | an op-level type id — **not** the §8 block-category number (there Split = 19, Merge = 20). Seen: 3 on the split `setm`, 4 on the merge `setm`, 8 on the remove-split `setm` that re-places the input model |
 
 | `cmnd` | Op | Keys |
 |---|---|---|
@@ -482,7 +484,8 @@ Captured agendas:
 
 - **Plain reorder:** `[{swap, flow 0, blk0 7, blk1 6}]`.
 - **Clear:** `[{clrb, flow, bloc}]`.
-- **Remove a split:** `[{setm, bloc 14, modl 770, type 8}, {clrb, bloc 3}]`.
+- **Remove a split:** `[{setm, bloc 14, modl 770, type 8}, {clrb, bloc 3}]` —
+  model 770 is `P35_InputInst1`, re-placed at lane B's hidden input slot (14).
 - **Drag a block down to create a split** — one agenda, 7 ops. Lane A is grid
   slots 0–13, lane B is 14–27:
 
@@ -490,14 +493,14 @@ Captured agendas:
   movb bl_s 6 -> bl_d 20  (fl 0 -> 0)       # reindex to open lane B
   movb bl_s 8 -> bl_d 9
   movb bl_s 7 -> bl_d 8
-  setm flow 0 bloc 6 modl 475 type 3 slot 0  # place the SPLIT model
+  setm flow 0 bloc 6 modl 475 type 3 slot 0  # place the Split-Y model
   spld flow 0 bloc 6 bblk 20                 # split at 6 -> branch block 20
   setm flow 0 bloc 7 modl 478 type 4 slot 0  # place the MERGE model
   jono flow 0 bloc 7 bblk 21                 # join at 7 <- branch block 21
   ```
 
 **What is NOT an agenda.** Placing or swapping a single model stays the granular
-`/ModelSet [reqid, dsp, grid_slot, subpos, modelId]` above. **A dual cab's second
+`/ModelSet [cmd, dsp, grid_slot, subpos, modelId]` above. **A dual cab's second
 cab is the same grid slot with `subpos = 1`** (captured
 `/ModelSet [_, 0, 9, 1, 464]`; the first cab is `subpos = 0`) — it addresses
 `mdls[1]`, a simple write, not a synthesis problem.
@@ -505,11 +508,15 @@ cab is the same grid slot with `subpos = 1`** (captured
 The split node's editor offers types SPLIT / Y / A/B / Crossover / Dynamic, plus
 Balance A / Balance B params.
 
-**Still open:** mono↔stereo widen was not captured (inferred: a `/ModelSet` swap
+**Still open:** the capture log does not record `/doAgenda`'s reply/ack or
+whether `agenda_id` doubles as the request id (115 in the split capture; the
+verb is sent on 2002 like every other command); mono↔stereo widen was not captured (inferred: a `/ModelSet` swap
 to the model's stereo variant — the mono/stereo icons above the app's model list
 are filters); the full `type` and `slot` semantics; the `movb` lane-B grid math
 beyond the one capture; and the `hrns` harness decode (§9), which the `.hsp`
-round-trip side still needs. helixgen does not emit `/doAgenda` yet.
+round-trip side still needs. helixgen does not emit `/doAgenda` yet, and the
+committed `tools/hook_sockets.js` cannot reproduce this capture until it gains
+the `AF_INET6` handling noted in §2.
 
 ### Live device control (2026-07-14 parity capture)
 
@@ -525,7 +532,8 @@ Live-control commands pinned by the 2026-07-14 capture (full writeup:
 
 `/LoadPresetWithCID` (above) is **load-by-CID** — the app's "make active" click
 is this same command; there is no separate active-index (backlog #1 resolved).
-`/ParamValueSet` and `/ModelSet` (above) are the other two live edit verbs.
+`/ParamValueSet` and `/ModelSet` (above) are the other granular live edit verbs;
+structural edits go through `/doAgenda` (*Structural edits*, above).
 
 ### The 2001 change stream — edit-buffer events, acks and echoes
 
@@ -540,7 +548,7 @@ is the stream to follow for live tracking — polling `/EditBufferStateGet` is
 | `/setParamValue` | `[origin, seq, path, grid_slot, snap, pid, value]` | One param changed. `value` is in raw units and typed like the param: `f`, `i`, or — for a bool — the OSC `T`/`F` tag in the last position (`,iiiiiiT`), which carries no payload (`HelixSubscriber` hands it over as `True`/`False`). Captured 2026-10-28, re-confirmed 2026-11-12/13: `[78129, 1005, 0, 2, 0, 2, 0.55]`. A write to a snapshot-assigned param is additionally announced with `/setSnapshotValue`. |
 | `/setBlockEnable` | `[origin, seq, path, grid_slot, enable]` | A block was bypassed/enabled. Confirmed 2026-11-12: `[12593, 1004, 0, 2, 1]`. |
 | `/activateSnapshot` | `[origin, seq, index]` | The active snapshot changed (followed by `/setBatchedParamVals`, the batch of values the recall applied). |
-| `/setEditBuffer` | `[origin, seq, <_sbepgsm blob>]` | A preset was loaded: the WHOLE new live buffer, decodable exactly like the `/EditBufferStateGet` reply — a preset switch needs no read. |
+| `/setEditBuffer` | `[origin, seq, <_sbepgsm blob>]` | The WHOLE new live buffer — sent when a preset is loaded (then `/loadContentRef` follows) **and** as the echo of a `/doAgenda` structural edit (no `/loadContentRef`; see *Structural edits*). The blob is decodable exactly like the `/EditBufferStateGet` reply — a preset switch needs no read. |
 | `/loadContentRef` | `[origin, seq, {cid_, name, posi, cctp, type, …}]` | The loaded preset's identity; trails its `/setEditBuffer` by ~70 ms. Also sent alone for a rename/recolor of the loaded preset. |
 | `/setPropertyValue` | `[origin, seq, <lavppgsm value blob>]` | Dotted-key properties, as the same value blob `/PropertyValueGet` answers with (`settings.decode_value_blob`). `volatile.preset.edited` is the **unsaved-edits flag** (1 after the first edit, 0 after a save or a load) — also readable with `/PropertyValueGet`. The edit buffer's own `hist` field is NOT that flag: it is still 1 right after a save. |
 | `/saveContentRef` | `[origin, seq, cid]` | Follows an in-place save (`/SavePresetWithCID`). A preset's `cid_` is **stable across an in-place save** (the same row is updated, not re-created), so a library row keyed by `cid` survives a device Save. |
@@ -548,7 +556,7 @@ is the stream to follow for live tracking — polling `/EditBufferStateGet` is
 | `/updateContent` | `[origin, seq, {cid_, ccid, name, …}]` | A content row changed in place (rename, recolor, save). |
 | `/removeContent` | `[origin, seq, container_cid, [cids…]]` | Rows removed from a container (`-2` = the pool). |
 | `/updateContainerContent` | `[origin, seq, container_cid, [member cids…]]` | A container's WHOLE new member list (setlist add / remove / reorder). |
-| `/setSnapshotBypassState` | `[origin, seq, block, state]` | A block's snapshot-bypass state changed (decoded 2026-10-28; arg layout not re-verified since). |
+| `/setSnapshotBypassState` | — | A block's snapshot-bypass state changed. **UNVERIFIED** arg layout (helixgen does not decode it; it re-reads). |
 | `/setSelectedBlock`, `/setSourceEnable` | — | UI selection / controller-source chatter around loads and snapshot switches; no edit-buffer content. |
 
 **Acks (2002).** `/ParamValueSet` and `/BlockEnableSet` are both answered
