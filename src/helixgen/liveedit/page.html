@@ -956,16 +956,18 @@ async function openModelPicker(b) {
   });
 }
 /* ---------- add-block picker (append any-category model to a path) ---------- */
+const ADD_SKIP = new Set(["input", "output", "split", "join", "none", "harness"]);
 async function openAddPicker(path) {
   if (down) return;
   if (!MODELS) {
-    const r = await fetch("/models").then((x) => x.json()).catch(() => null);
-    if (!r) { const { body } = modal("Add block"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
+    // don't cache a FAILED or error response — keep MODELS null so a later open retries
+    const r = await fetch("/models").then((x) => (x.ok ? x.json() : null)).catch(() => null);
+    if (!r || r.error || typeof r !== "object") { const { body } = modal("Add block"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
     MODELS = r;
   }
   const { body } = modal("Add a block to Path " + (path + 1));
-  body.append(el("p", "hint", "Appended after the last block. The device applies the model's defaults — confirm on the rig. Volatile until Save."));
-  const cats = Object.keys(MODELS).sort();
+  body.append(el("p", "hint", "Appended to this path. The device applies the model's defaults — confirm on the rig. Volatile until Save."));
+  const cats = Object.keys(MODELS).filter((c) => !ADD_SKIP.has(c)).sort();
   let any = false;
   cats.forEach((cat) => {
     const list = MODELS[cat] || [];

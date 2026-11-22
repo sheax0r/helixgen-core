@@ -39,6 +39,10 @@ DEAD_AFTER = 6.0      # s of total silence on the PUB streams = disconnected
 RETRY_EVERY = 3.0     # s between reconnect attempts while disconnected
 _OWN_MAX = 256        # own write echoes remembered
 _SEQ_MOD = 1 << 32    # the 2001 header sequence is a uint32; wraps at 2**32
+# Endpoint / routing / harness categories that are NOT user-addable as chain
+# blocks — adding one on row 0 corrupts the grid or routing (swap_model refuses
+# the same set for in-place swaps).
+_NOT_ADDABLE = frozenset({"input", "output", "split", "join", "none", "harness"})
 
 
 class LiveError(Exception):
@@ -455,32 +459,54 @@ class LiveSession:
         return self.public_state()
 
     def add_block(self, path: int, model_id: int) -> dict:
-        """Append a new block to DSP ``path``'s main row (row 0).
+        """Append a new processing block to DSP ``path``'s main row (row 0).
 
         Places ``model_id`` at the next free row-0 grid slot — right after the
-        last block, before the output at slot ``ROW1_INPUT - 1`` — with
-        ``/ModelSet``, which the device honours as an ADD at an empty slot (not
-        a swap), so ANY category is allowed (unlike :meth:`swap_model`). Then it
-        re-reads the whole edit buffer and returns the fresh state. The device
-        applies the new model's defaults; confirm the sound on the rig. The edit
-        is volatile until Save.
+        last block, or the lowest free slot if the tail is full — before the
+        output, with ``/ModelSet``, which the device honours as an ADD at an
+        empty slot (not a swap). Only a real processing model is allowed (not an
+        input/output/split/join/none/harness node). The free slot is read from
+        the LIVE buffer under the device lock (atomic read-compute-write), so
+        concurrent adds cannot collide. Then it re-reads and returns fresh
+        state; the device applies the model's defaults — confirm on the rig. The
+        edit is volatile until Save.
         """
         pth, mid = int(path), int(model_id)
         if defs.model_name_for(mid) is None:
             raise LiveError(f"unknown model id {mid}", status=400)
-        out_slot = _chain.ROW1_INPUT - 1          # row-0 output lives here (13)
-        with self.cond:
-            self._require_up()
-            occupied = {s for (p, s) in self._blocks if p == pth}
-        content = sorted(s for s in occupied if 0 < s < out_slot)
-        slot = (content[-1] + 1) if content else 1
-        if slot >= out_slot or slot in occupied:
+        cat = defs.category_for(mid)
+        if cat in _NOT_ADDABLE:
             raise LiveError(
-                "no room to append a block on this path's main row — it is full "
-                "up to the output.", status=400)
+                f"a {cat!r} node cannot be added to the chain — add an effect, "
+                "amp, cab, or other processing block.", status=400)
+        out_slot = _chain.ROW1_INPUT - 1          # row-0 output lives here (13)
         self._ensure_lease(None)
         try:
             with self.devlock:
+                with self.cond:
+                    self._require_up()
+                # Read the live buffer under the lock so the slot reflects the
+                # CURRENT chain (not possibly-stale self._blocks), closing the
+                # add/add race.
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+                if not (isinstance(flow, list) and 0 <= pth < len(flow)):
+                    raise LiveError(f"no DSP path {path} to add a block to.",
+                                    status=404)
+                occupied = {s for s, _ in _chain._blks_pairs(flow[pth])}
+                free = [s for s in range(1, out_slot) if s not in occupied]
+                if not free:
+                    raise LiveError(
+                        "no room to add a block on this path's main row — it is "
+                        "full up to the output.", status=400)
+                content = sorted(s for s in occupied if 0 < s < out_slot)
+                # append after the last block, else fall back to the lowest gap
+                slot = (content[-1] + 1 if content and content[-1] + 1 < out_slot
+                        else free[0])
                 try:
                     self.client.set_block_model(pth, slot, mid)
                 except (HelixError, OSError) as e:
