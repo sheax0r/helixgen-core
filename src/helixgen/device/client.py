@@ -997,38 +997,60 @@ class HelixClient:
         Mirrors the app: the block moves to lane B (slot ``block+14``), a split
         node is inserted at ``block`` and a join at ``block+1``, and the lane-A
         blocks after it shift right by one to make room (``/doAgenda`` of
-        ``movb``/``setm``/``spld``/``jono`` ops; HW-validated 2026-11-23). The
+        ``movb``/``setm``/``spld``/``jono`` ops; HW-validated 2026-11-22). The
         device applies it in place and echoes ``/setEditBuffer`` — no reload.
 
-        Reads the live buffer to find the blocks that must shift and to check
-        there is room. Raises :class:`HelixError` if ``block`` is an input/
-        output or not a lane-A block (1..12), if lane B slot ``block+14`` is
-        already occupied, or if the chain is too full to insert the two nodes.
+        ``block`` must be a lane-A block in **1..11** (the join lands at
+        ``block+1``, which must stay off the output at slot 13). add_split reads
+        the live buffer and **refuses** (raising :class:`HelixError`) unless the
+        split is unambiguously safe — no DSP flow ``path``; ``block`` out of
+        1..11; no block at ``block``; a later block would be shifted onto the
+        output; or **lane B already carries content** (any of slots 15..26
+        occupied). The lane-B rule keeps this to the FIRST parallel section on a
+        series chain: an existing split already occupies lane B and breaks the
+        ``col``→``col+14`` mapping and the shift invariant. After sending, it
+        re-reads and confirms the block reached lane B — the 2002 reply code is
+        not a success gate — raising if the device did not apply it.
         """
         col = _grid_slot(block)
-        if col in (0, _agenda.LANE_A_LAST):
-            raise HelixError(f"block {block} is an input/output and cannot be split")
-        if col >= _agenda.LANE_B_OFFSET:
+        # Valid lane-A columns: 1..11. 0/13 are I/O; 12 would put the join on the
+        # output (slot 13); 14+ is lane B.
+        if not 1 <= col <= _agenda.LANE_A_LAST - 2:
             raise HelixError(
-                f"block {block} is on lane B; add_split operates on a lane-A "
-                "block (grid slots 1..12)")
+                f"add_split needs a lane-A block in 1..{_agenda.LANE_A_LAST - 2} "
+                f"(got slot {block}): 0/13 are I/O, 12 would collide with the "
+                "output, 14+ is lane B")
+        p = int(path)
         flow = self.read_edit_buffer().get("sfg_", {}).get("flow", [])
-        if not (isinstance(flow, list) and int(path) < len(flow)):
+        if not (isinstance(flow, list) and 0 <= p < len(flow)):
             raise HelixError(f"no DSP flow {path} in the edit buffer")
-        occupied = {p for p, _ in self._blks_pairs(flow[int(path)])}
+        occupied = {s for s, _ in self._blks_pairs(flow[p])}
         if col not in occupied:
             raise HelixError(f"no block at path {path} slot {block} to split")
-        lane_b = col + _agenda.LANE_B_OFFSET
-        if lane_b in occupied:
+        # Lane B content (slots 15..26) must be empty: this op builds the FIRST
+        # parallel section on a series chain. An existing split occupies lane B,
+        # and its presence breaks the col->col+14 mapping this op relies on.
+        if any(_agenda.LANE_B_OFFSET < s < 27 for s in occupied):
             raise HelixError(
-                f"lane B slot {lane_b} is occupied — add_split needs it free "
-                "(this column already carries a parallel branch)")
-        later = [p for p in occupied if col < p < _agenda.LANE_A_LAST]
+                "lane B already carries a parallel section — add_split builds "
+                "the first split on a series chain only (slots 15..26 must be "
+                "free)")
+        later = sorted(s for s in occupied if col < s < _agenda.LANE_A_LAST)
+        # Later blocks shift +1 (to make room for the join); the highest must not
+        # land on the output at slot 13.
         if later and max(later) >= _agenda.LANE_A_LAST - 1:
             raise HelixError(
-                "not enough room on lane A to insert the split + join nodes "
-                "(the chain reaches the output block)")
-        return self.do_agenda(_agenda.split_out(col, later, flow=int(path)))
+                "not enough room on lane A: shifting the later blocks would "
+                "reach the output block (slot 13)")
+        lane_b = col + _agenda.LANE_B_OFFSET
+        self.do_agenda(_agenda.split_out(col, later, flow=p))
+        after = {s for s, _ in self._blks_pairs(
+            self.read_edit_buffer()["sfg_"]["flow"][p])}
+        if lane_b not in after:
+            raise HelixError(
+                f"add_split: the device did not apply the split (lane B slot "
+                f"{lane_b} is still empty after the transaction)")
+        return True
 
     def do_agenda(self, ops: Sequence[Dict[str, int]]) -> bool:
         """Apply a topology-edit transaction to the LIVE edit buffer.

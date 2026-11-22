@@ -154,29 +154,89 @@ def test_split_out_builder():
     ]
 
 
-@pytest.mark.parametrize("block", [0, 13, 14, 20, 27])
+def _flow(*slots):
+    """A stubbed edit buffer whose flow 0 occupies the given grid slots."""
+    blks = []
+    for s in slots:
+        blks += [s, {}]
+    return {"sfg_": {"flow": [{"blks": blks}]}}
+
+
+# col 12 would land the join on the output (slot 13); 0/13 are I/O; 14+ is lane B.
+@pytest.mark.parametrize("block", [0, 12, 13, 14, 20, 27])
 def test_add_split_rejects_non_lane_a(block):
     h = HelixClient("10.0.0.99")
     with pytest.raises(HelixError):
-        h.add_split(0, block)  # I/O or lane-B slot — guarded before any buffer read
+        h.add_split(0, block)  # guarded before any buffer read
+
+
+def test_split_out_builder_rejects_bad_col():
+    import pytest as _p
+    with _p.raises(ValueError):
+        agenda.split_out(12, [])        # join would hit the output
+    with _p.raises(ValueError):
+        agenda.split_out(3, [2])        # later col <= split col
 
 
 def test_add_split_wire_shift_case():
     h = HelixClient("10.0.0.99")
-    # stub the live buffer: blocks at lane-A slots 1,2,3 (+ I/O 0,13) on flow 0
-    h.read_edit_buffer = lambda **k: {
-        "sfg_": {"flow": [{"blks": [0, {}, 1, {}, 2, {}, 3, {}, 13, {}]}]}}
+    # 1st read = before (series 1,2,3); 2nd read = after (lane B 16 now holds it)
+    reads = iter([_flow(0, 1, 2, 3, 13), _flow(0, 2, 3, 4, 13, 16)])
+    h.read_edit_buffer = lambda **k: next(reads)
     _wire(h)
     assert h.add_split(0, 2) is True  # splits col 2, shifts col 3
     _, vals = _sent_doagenda(h)
     assert msgpack.unpackb(vals[1], raw=False) == agenda.split_out(2, [3], flow=0)
 
 
+def test_add_split_wire_no_shift_case():
+    h = HelixClient("10.0.0.99")
+    reads = iter([_flow(0, 1, 2, 13), _flow(0, 1, 2, 3, 13, 16)])
+    h.read_edit_buffer = lambda **k: next(reads)
+    _wire(h)
+    assert h.add_split(0, 2) is True  # last block, no shift
+    _, vals = _sent_doagenda(h)
+    assert msgpack.unpackb(vals[1], raw=False) == agenda.split_out(2, [], flow=0)
+
+
 def test_add_split_rejects_occupied_lane_b():
     h = HelixClient("10.0.0.99")
-    # col 2's lane B slot (16) already occupied
-    h.read_edit_buffer = lambda **k: {
-        "sfg_": {"flow": [{"blks": [2, {}, 16, {}]}]}}
+    h.read_edit_buffer = lambda **k: _flow(2, 16)  # lane B 16 already used
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 2)
+
+
+def test_add_split_rejects_no_block_there():
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow(0, 1, 13)  # nothing at slot 2
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 2)
+
+
+def test_add_split_rejects_capacity():
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow(1, 2, 12, 13)  # a block at 12 -> shift to 13
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 1)
+
+
+@pytest.mark.parametrize("path", [-1, 3])
+def test_add_split_rejects_bad_path(path):
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow(0, 1, 2, 13)  # only flow 0
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(path, 1)
+
+
+def test_add_split_raises_if_not_applied():
+    h = HelixClient("10.0.0.99")
+    # before OK, but after the send lane B 16 is still empty -> device didn't apply
+    reads = iter([_flow(0, 1, 2, 13), _flow(0, 1, 2, 13)])
+    h.read_edit_buffer = lambda **k: next(reads)
     _wire(h)
     with pytest.raises(HelixError):
         h.add_split(0, 2)

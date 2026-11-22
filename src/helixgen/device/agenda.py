@@ -78,6 +78,11 @@ def split_out(col: int, later_cols, flow: int = 0):
     right by one to make room for the join. Returns the op list for
     :meth:`HelixClient.do_agenda`; the caller owns slot-freedom/capacity checks
     (see :meth:`HelixClient.add_split`)."""
+    if not 1 <= col <= LANE_A_LAST - 2:
+        raise ValueError(f"split column must be a lane-A block in 1..{LANE_A_LAST-2}, got {col}")
+    later_cols = list(later_cols)
+    if any(c <= col for c in later_cols):
+        raise ValueError(f"later_cols must all be > {col}, got {sorted(later_cols)}")
     ops = [move(col, col + LANE_B_OFFSET, flow, flow)]
     for c in sorted(later_cols, reverse=True):   # highest first, avoid collisions
         ops.append(move(c, c + 1, flow, flow))
