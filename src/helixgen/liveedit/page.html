@@ -177,6 +177,19 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .foot.on{color:#bff5da;border-color:#256b4b}
 .foot:not(.on){color:var(--dim)}
 .ctl{display:flex;flex-wrap:wrap;gap:14px 16px;align-items:flex-start}
+/* amp lens — XY pad (81v.1 Focus View) */
+.lens{margin-top:12px;display:inline-flex;flex-direction:column;gap:5px}
+.lenslab{font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.lenspad{position:relative;width:120px;height:120px;border:1px solid var(--edge2);border-radius:10px;
+  background:linear-gradient(0deg,rgba(44,102,214,.10),transparent),var(--panel2);cursor:crosshair;touch-action:none;outline:none}
+.lenspad:focus{border-color:#5f84d6}
+.lenspad::before,.lenspad::after{content:"";position:absolute;background:var(--edge2);opacity:.6}
+.lenspad::before{left:50%;top:0;bottom:0;width:1px}
+.lenspad::after{top:50%;left:0;right:0;height:1px}
+.lensdot{position:absolute;width:13px;height:13px;margin:-7px 0 0 -7px;border-radius:50%;
+  background:#2c66d6;border:2px solid #cfe0ff;box-shadow:0 0 7px rgba(44,102,214,.7);pointer-events:none}
+.lensrd{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+body.down .lenspad{opacity:.5;pointer-events:none}
 .secondmodel{margin-top:12px;padding-top:10px;border-top:1px dashed var(--faint);opacity:.72}
 .sm-head{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--faint);margin-bottom:6px}
 .sm-head.swap2{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
@@ -527,6 +540,64 @@ function control(p, b) {
   return p.ctl === "toggle" ? toggle(p, b, key) : p.ctl === "select" ? select(p, b, key) : knob(p, b, key);
 }
 
+/* ---------- amp lens: a 2D pad over the amp's Drive × Level (81v.1) ---------
+ * A Focus-View deep editor: drive both defining amp knobs from one gesture.
+ * Pure UI over the existing /param write path — it reuses the two params'
+ * controls already registered in P, so the knobs and the dot stay in sync and
+ * remote/SSE updates repaint the dot through the same controls. */
+function pickAxis(params, rx, denyRx) {           // first continuous param whose name matches
+  return (params || []).find((p) => !p.internal && p.ctl !== "toggle" && p.ctl !== "select"
+    && rx.test(p.name || "") && !(denyRx && denyRx.test(p.name || ""))) || null;
+}
+const padFrac = (p, v) => (v - p.min) / (span(p) || 1);                 // value -> 0..1
+const padVal = (p, f) => clampV(p, p.min + Math.max(0, Math.min(1, f)) * span(p)); // 0..1 -> value
+function lensEl(b, px, py) {
+  const keyX = b.path + "/" + b.block + "/" + px.pid;
+  const keyY = b.path + "/" + b.block + "/" + py.pid;
+  const wrap = el("div", "lens");
+  const pad = el("div", "lenspad"); pad.tabIndex = 0;
+  pad.setAttribute("role", "application");
+  pad.setAttribute("aria-label", "Amp lens — " + px.label + " horizontal, " + py.label + " vertical");
+  const dot = el("div", "lensdot"), rd = el("div", "lensrd");
+  pad.append(dot);
+  wrap.append(el("div", "lenslab", "⊹ " + px.label + " × " + py.label), pad, rd);
+  const paint = () => {
+    dot.style.left = (Math.max(0, Math.min(1, padFrac(px, px.value))) * 100) + "%";
+    dot.style.top = ((1 - Math.max(0, Math.min(1, padFrac(py, py.value)))) * 100) + "%";  // up = more
+    rd.textContent = px.label + " " + fmt(px, px.value) + "   ·   " + py.label + " " + fmt(py, py.value);
+  };
+  // follow the registered controls so knob drags + remote updates repaint the dot
+  [keyX, keyY].forEach((k) => { const c = P.get(k); if (c) { const prev = c.set; c.set = (v, how) => { prev(v, how); paint(); }; } });
+  const writeFrac = (fx, fy) => {
+    const cX = P.get(keyX), cY = P.get(keyY); if (!cX || !cY) return;
+    const vx = padVal(px, fx), vy = padVal(py, fy);
+    if (vx !== px.value) { cX.set(vx); queue("param", keyX); }
+    if (vy !== py.value) { cY.set(vy); queue("param", keyY); }
+    paint();
+  };
+  pad.addEventListener("pointerdown", (e) => {
+    if (e.button || dragging || down) return;      // one control at a time, inert when down
+    e.preventDefault(); pad.focus();
+    try { pad.setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
+    const id = e.pointerId, vx0 = px.value, vy0 = py.value;
+    dragging = "lens:" + keyX;
+    const at = (m) => { const r = pad.getBoundingClientRect();
+      writeFrac((m.clientX - r.left) / (r.width || 1), 1 - (m.clientY - r.top) / (r.height || 1)); };
+    at(e);
+    const move = (m) => { if (m.pointerId === id) at(m); };
+    const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
+      pad.removeEventListener("pointermove", move);
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => pad.removeEventListener(n, up));
+      if (dragging === "lens:" + keyX) dragging = null;
+      if (px.value !== vx0) record("param", keyX, vx0, px.value);   // one undo step per axis
+      if (py.value !== vy0) record("param", keyY, vy0, py.value); };
+    pad.addEventListener("pointermove", move);
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => pad.addEventListener(n, up));
+  });
+  paint();
+  return wrap;
+}
+
 /* ---------- blocks + chain ---------- */
 const STRUCT = new Set(["split", "join"]);
 const NO_BYPASS = new Set(["split", "join", "input", "output"]);
@@ -589,6 +660,11 @@ function blockEl(b) {
   root.append(hd);
   const main = b.params.filter((p) => !p.internal), extra = b.params.filter((p) => p.internal);
   if (main.length) { const row = el("div", "ctl"); main.forEach((p) => row.append(control(p, b))); root.append(row); }
+  if (roleOf(b) === "amp") {                 // amp lens: Drive × Level on one pad (controls already in P)
+    const px = pickAxis(main, /\b(drive|gain)\b/i, /master/i);
+    const py = pickAxis(main, /master|volume|ch.*vol|level/i);
+    if (px && py && px.pid !== py.pid) root.append(lensEl(b, px, py));
+  }
   if (extra.length) {
     const more = el("button", "more"), row = el("div", "ctl internal");
     const paint = () => { row.hidden = !openInternal.has(key);
