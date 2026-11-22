@@ -530,6 +530,21 @@ function blockEl(b) {
         () => toast("Splitting onto a parallel lane…", true), () => {}); };
     hd.append(sp);
   }
+  // reorder a lane-A block by swapping with its neighbour (81v.1 move-block)
+  const order = MOVE_SLOTS.get(b.path);
+  if (order && b.row === 0 && order.includes(b.block)) {
+    const i = order.indexOf(b.block);
+    const nav = (label, dst, title) => {
+      const m = el("button", "splitbtn", label);
+      m.type = "button"; m.title = title;
+      m.onclick = () => { if (down) return;
+        send("/move-block", { path: b.path, src: b.block, dst },
+          () => toast("Reordering…", true), () => {}); };
+      hd.append(m);
+    };
+    if (i > 0) nav("◀", order[i - 1], "Move earlier in the chain");
+    if (i < order.length - 1) nav("▶", order[i + 1], "Move later in the chain");
+  }
   if (!NO_BYPASS.has(b.category)) {
     const f = el("button", "foot"); const dot = el("span", "dot"); const tx = el("span");
     f.append(dot, tx);
@@ -610,6 +625,7 @@ function renderSnaps() {
   });
 }
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
+let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
 function render() {
   renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
@@ -620,6 +636,19 @@ function render() {
   SPLIT_PATHS = new Set(S.paths
     .filter((p) => p.extra.length || (p.segments || []).some((s) => s.split))
     .map((p) => p.path));
+  MOVE_SLOTS = new Map();        // reorder only on a simple linear chain (no split)
+  S.paths.forEach((p) => {
+    if (SPLIT_PATHS.has(p.path)) return;
+    const slots = (p.segments || [])
+      .filter((s) => s.kind === "block")
+      .map((s) => s.block)
+      .filter((b) => b.row === 0 && !STRUCT.has(b.category)
+        && b.category !== "input" && b.category !== "output"
+        && b.block >= 1 && b.block <= 12)
+      .map((b) => b.block)
+      .sort((x, y) => x - y);
+    MOVE_SLOTS.set(p.path, slots);
+  });
   S.paths.forEach((pt) => {
     const sec = el("div", "path"), hd = el("div", "path-hd");
     hd.append(el("b", null, "Path " + (pt.path + 1)), el("i"));

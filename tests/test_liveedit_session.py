@@ -36,6 +36,8 @@ class FakeClient:
         self.swaps = []          # (path, block, model_id) from set_block_model
         self.splits_added = []   # (path, block) from add_split
         self.split_fail = None   # set to an exception to make add_split raise
+        self.moves = []          # (path, src, dst) from move_block
+        self.move_fail = None    # set to an exception to make move_block raise
         self.ack = True
         self.fail: Exception | None = None
         self.last_request_id = None
@@ -110,6 +112,13 @@ class FakeClient:
         if self.split_fail is not None:
             raise self.split_fail
         self.splits_added.append((int(path), int(block)))
+        return self.ack
+
+    def move_block(self, path, src, dst):
+        self._next()
+        if self.move_fail is not None:
+            raise self.move_fail
+        self.moves.append((int(path), int(src), int(dst)))
         return self.ack
 
     def get_property(self, key):
@@ -1287,6 +1296,49 @@ def test_split_block_maps_transport_failure_to_502_and_disconnects():
     sess.load()
     with pytest.raises(LiveError) as e:
         sess.split_block(0, 2)
+    assert e.value.status == 502
+    assert sess.public_state()["connected"] is False
+
+
+def test_move_block_delegates_to_move_block_and_rereads():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    reads0 = c.reads
+    st = sess.move_block(0, 2, 1)
+    assert c.moves == [(0, 2, 1)]                 # delegated to the engine move
+    assert c.reads > reads0                        # re-read happened
+    assert "paths" in st
+
+
+def test_move_block_rejects_a_no_op_same_slot_move():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 2, 2)
+    assert e.value.status == 400
+    assert c.moves == []                           # never reached the device
+
+
+def test_move_block_surfaces_engine_guard_error_as_400():
+    c = FakeClient()
+    c.move_fail = HelixError("move_block: slots [0, 13, 14, 27] are fixed")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 0, 2)
+    assert e.value.status == 400
+    assert "cannot move here" in str(e.value)
+
+
+def test_move_block_maps_transport_failure_to_502_and_disconnects():
+    c = FakeClient()
+    c.move_fail = OSError("socket dead")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 2, 1)
     assert e.value.status == 502
     assert sess.public_state()["connected"] is False
 
