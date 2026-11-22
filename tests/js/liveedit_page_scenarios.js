@@ -265,14 +265,39 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ren.onclick();
     const inp = x.ids.snapbody.find((e) => e.tagName === "input")[0];
     ok("S22 Rename reveals an input seeded with the name", inp && inp.value === "Rhythm", inp && inp.value);
-    inp.value = "Intro";
-    inp.fire ? null : null; inp.onkeydown({ key: "Enter", preventDefault() {} });
+    inp.value = "Intro"; inp.onkeydown({ key: "Enter", preventDefault() {} });
     const renPost = x.posts.filter((p) => p.url === "/snapshot/rename").pop();
     ok("S22 Enter posts the rename with index + trimmed name",
       renPost && renPost.body.index === 0 && renPost.body.name === "Intro", JSON.stringify(renPost && renPost.body));
     // Close
     x.ids.snapclose.onclick();
     ok("S22 the close button hides the panel", x.ids.snappanel.hidden === true, x.ids.snappanel.hidden);
+  }
+  { // S23: rename edge cases — a torn-down focused input must NOT auto-commit
+    const start = (x) => { x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus"] }));
+      x.ids.snap.onclick();
+      const rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+      rows[0].find((e) => e.tagName === "button" && e.textContent === "Rename")[0].onclick();
+      return x.ids.snapbody.find((e) => e.tagName === "input")[0]; };
+    const renames = (x) => x.posts.filter((p) => p.url === "/snapshot/rename");
+    { // Escape cancels — no write, even though removing the input fires blur
+      const x = boot(); const inp = start(x); inp.value = "Half";
+      inp.onkeydown({ key: "Escape", preventDefault() {} });
+      ok("S23 Escape writes nothing", renames(x).length === 0, JSON.stringify(renames(x).map((p) => p.body)));
+    }
+    { // a background snapshot switch mid-typing keeps the edit and writes nothing
+      const x = boot(); const inp = start(x); inp.value = "Still typin";
+      x.sse({ t: "meta", snapshot: 1, snapshot_name: "Chorus", connected: true, dirty: false });
+      ok("S23 a meta mid-edit does not commit", renames(x).length === 0, JSON.stringify(renames(x).map((p) => p.body)));
+      const live = x.ids.snapbody.find((e) => e.tagName === "input")[0];
+      ok("S23 the in-progress rename survives the meta", live && live.value === "Still typin", live && live.value);
+    }
+    { // Enter commits exactly once, even though the server state re-render tears the input down
+      const x = boot(); const inp = start(x); inp.value = "Intro";
+      inp.onkeydown({ key: "Enter", preventDefault() {} });
+      x.sse(State([Blk({}, [P_({ value: 0.5 })])], { rev: 2, version: 2, snapshot: 0, snapshots: ["Intro", "Chorus"] }));
+      ok("S23 Enter + the re-render commit exactly once", renames(x).length === 1, renames(x).length);
+    }
   }
 
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");

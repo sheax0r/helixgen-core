@@ -13,13 +13,16 @@ class El {
     toggle: (c, f) => { if (f === undefined) f = !s.has(c); f ? s.add(c) : s.delete(c); return f; } }; }
   append(...ns) { for (let n of ns) { if (typeof n === "string") { const t = new El("#text"); t._text = n; n = t; } n.parent = this; this.children.push(n); } }
   get lastChild() { return this.children[this.children.length - 1]; }
-  set textContent(v) { this.children.forEach((c) => c.parent = null); this.children = []; this._text = String(v); }
+  // Real browsers fire blur when the focused element is removed from the DOM.
+  _blurOnTeardown() { const a = El.active; if (!a) return;
+    for (let n = a; n; n = n.parent) if (n === this) { El.active = null; if (a.onblur) a.onblur({ preventDefault() {} }); return; } }
+  set textContent(v) { this.children.forEach((c) => { c._blurOnTeardown(); c.parent = null; }); this.children = []; this._text = String(v); }
   get textContent() { return this._text + this.children.map((c) => c.textContent).join(""); }
   setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k]; }
   addEventListener(t, f) { (this.L[t] = this.L[t] || []).push(f); }
   removeEventListener(t, f) { this.L[t] = (this.L[t] || []).filter((x) => x !== f); }
   fire(t, ev = {}) { ev.preventDefault = ev.preventDefault || (() => {}); ev.type = t; (this.L[t] || []).slice().forEach((f) => f(ev)); return ev; }
-  remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }
+  remove() { this._blurOnTeardown(); if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }
   focus() { El.active = this; } select() {} setPointerCapture() {} get offsetWidth() { return 0; }
   get connected() { let n = this; while (n.parent) n = n.parent; return n === El.body; }
   get value() { return this._value; }

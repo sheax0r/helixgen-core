@@ -904,8 +904,10 @@ class HelixClient:
         """Rename snapshot ``index`` (0..7) on the live device.
 
         ``/SetSnapshotName [reqid, snapshotIndex, name]`` → ``/status``
-        (opcode decoded 2026-11-22, helix-protocol.md §SNAPSHOT NAME). The
-        device applies it in place and echoes the new name on 2001.
+        (opcode decoded 2026-11-22, helix-protocol.md §SNAPSHOT NAME). The reply
+        is ``/status`` only — no 2001 name echo is documented — so a caller that
+        needs the new name reflected re-reads the buffer (``rename_snapshot``
+        does via ``load()``).
         """
         i = int(index)
         if not 0 <= i <= 7:

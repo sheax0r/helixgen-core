@@ -1261,7 +1261,10 @@ function meta(m) {
   if (m.snapshot == null) sn.hidden = true;
   else { sn.hidden = false; sn.textContent = "Snapshot " + (m.snapshot + 1) + (m.snapshot_name ? " · " + m.snapshot_name : ""); }
   document.title = ((m.preset && m.preset.name) ? m.preset.name + " — " : "") + "Helix Live";
-  if (snapOpen && !$("snappanel").hidden) snapRender();   // keep the panel following the device
+  // keep the panel following the device — but NOT while a rename input is
+  // focused, or a background snapshot switch would tear it down and discard
+  // the user's half-typed name.
+  if (snapOpen && !$("snappanel").hidden && snapEditing === null) snapRender();
 }
 
 /* ---------- snapshot management panel (81v.2) -----------------------------
@@ -1274,11 +1277,15 @@ function meta(m) {
  * spike or a batch-write orchestration. Tracked as follow-up beads. */
 let snapOpen = false;
 let snapEditing = null;            // index being renamed, or null
+let snapInput = null;              // the live rename input, so a teardown can drop its blur handler
 function snapToggle() { snapOpen ? snapClose() : snapShow(); }
 function snapShow() { if (!S || S.snapshot == null) return; snapOpen = true;
   $("snappanel").hidden = false; snapRender(); }
 function snapClose() { snapOpen = false; snapEditing = null; $("snappanel").hidden = true; }
 function snapRender() {
+  // Removing a focused input fires blur in a real browser; drop the torn-down
+  // input's blur handler first so a programmatic re-render never commits.
+  if (snapInput) { snapInput.onblur = null; snapInput = null; }
   const body = $("snapbody"); body.textContent = "";
   const names = (S && S.snapshots) || [];
   if (!names.length) {
@@ -1290,13 +1297,18 @@ function snapRender() {
     row.append(el("span", "sp-num", String(i + 1)));
     if (snapEditing === i) {
       const inp = el("input", "sp-name-in"); inp.value = nm; inp.setAttribute("aria-label", "Snapshot name");
-      const commit = () => { const v = inp.value.trim(); snapEditing = null;
+      const commit = () => {
+        inp.onblur = null;                   // never re-commit from a later teardown/blur
+        if (snapEditing !== i) return;       // already handled (double blur / re-render)
+        const v = inp.value.trim(); snapEditing = null;
         if (v && v !== nm) send("/snapshot/rename", { index: i, name: v },
           () => toast("Renamed snapshot " + (i + 1), true), () => {});
         else snapRender(); };
+      const cancel = () => { inp.onblur = null; snapEditing = null; snapRender(); };
       inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); }
-        else if (e.key === "Escape") { snapEditing = null; snapRender(); } };
+        else if (e.key === "Escape") { e.preventDefault(); cancel(); } };
       inp.onblur = commit;
+      snapInput = inp;
       row.append(inp); body.append(row); inp.focus(); inp.select(); return;
     }
     const name = el("span", "sp-name", nm); row.append(name);
