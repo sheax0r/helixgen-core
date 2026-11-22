@@ -650,6 +650,58 @@ empty blob for `dsp.globaleq.*` (the app reads EQ state from the connect-time
 sync). Shipped as `device globaleq list|set`; codec
 `src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
 
+### Matrix Mixer (per-output monitor mix) — RE spike, per-channel plane capture-pending
+
+The **Matrix Mixer** is the Stadium's **device-global, per-physical-output
+monitor mix** (one layer each for 1/4"/XLR/Phones), mixing **non-preset** sources
+(the 4 Home paths, 8 Song tracks, Click, Count-In, USB In 1/2, Bluetooth, Aux).
+Per channel: Level / Pan / Mute / Solo (pre-fader metering; no phase). It is
+**not** the preset "Output block" (`P35_OutputMatrix` model 783 in `transcode.py`
+— that is per-preset gain/pan in `.hsp`); same word, unrelated surface, separate
+write path. Full RE findings + the `device matrix` verb design:
+`docs/superpowers/specs/2026-11-22-matrix-mixer-re-spike.md`.
+
+**Decoded — the adjacent output/routing plane** (bundled catalog
+`_settings_pages.json`, shipping via `device settings`):
+
+| Key | Meaning |
+|---|---|
+| `global.out.level.{qtr,xlr,spdif}` | per-output **master** level (Volume-knob targets; no `.phones` key — Phones rides the Volume knob / Phones Global-EQ level) |
+| `global.out.usb.12`, `global.out.spdif`, `global.out.spdif.type`, `global.out.samplerate.spdif` | USB/SPDIF out routing + format (USB options incl. *Direct Out / Matrix 1/4" / Matrix XLR / Matrix Phones*) |
+| `global.out.groundlift.xlr`, `global.out.src.reamp.u7`/`.u8` | XLR ground lift; reamp send sources |
+| `global.midi.matrix.ch.{qtr,xlr,phones}` | the MIDI **channel** each output's Matrix layer listens on for CC remote control |
+
+**NOT a property — HW-confirmed (Stadium XL fw 1.4.1, 2026-11-22).** A live
+`/MatchingPropertyDefinitionsGet` glob of the **device's own** catalog (457 defs
+total) returned **zero** matrix per-channel keys — `dsp.matrix*` → 0, `dsp.out*`
+→ 0, `*.pan`/`*.solo`/`*.fader` → 0, `*.mute` → only global `hal.audio.mute`,
+`*matrix*` → only the three `global.midi.matrix.ch.*`. So the per-strip
+Level/Pan/Mute/Solo is **not a device property** (ruling out a Global-EQ-style
+`/PropertyValueSet` codec). Two hypotheses remain (see the spec §3):
+
+- **H2 (leading)** — a dedicated opcode family (like `/doAgenda` for topology).
+- **H3** — not echoed on the 2001 PUB stream → decode needs a Frida outbound
+  capture (`tools/hook_sockets.js`, as for `/doAgenda`).
+
+**No editor-protocol surface — CONFIRMED with Frida 2026-11-22.** The desktop
+editor (retail **and** the re-signed Debug build) has **no global Matrix-Mixer
+screen** — all five nav views (Home / Librarian / Command Center / Global EQ /
+Song) + the output endpoint + the Window/Devices menus were checked; the only
+"Matrix" is the **per-preset Output block's destination** (route a path into the
+matrix; `/setParamValue`), not the monitor-mix faders. A **Frida** hook on the
+Debug app (`tools/frida_run.py` + `hook_sockets.js`, over USB/IPv6) was validated
+working — toggling a block bypass captured `SEND 2002 /BlockEnableSet` (+ the 2001
+`/setBlockEnable` echo and 2002 `/status` ack), and param edits `/ParamValueSet` —
+so the no-matrix-traffic result is a genuine **absence**, not a missed capture.
+Separately, a LAN `device watch` sees **none** of the app's writes at all: the
+app↔device link is USB, not mirrored on the LAN 2001 PUB (5 min of driving → 0 LAN
+2001 frames; qualifies the §6 "the desktop editor echoes on 2001" note, which
+holds only for a LAN or hardware change). **Net: the Matrix Mixer is a
+hardware-front-panel feature; `device matrix` is a won't-do via the editor
+protocol** (only a future app build that adds the screen, or hardware-panel RE,
+could change that). `helixgen` emits no matrix write; full findings + the deferred
+verb design in the spec.
+
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
 
 `/dspEvent` blobs are msgpack `{id__:{eid_,mid_}, vals:[…]}`. A **continuous
@@ -950,6 +1002,13 @@ footswitch/controller assignment commands are parameterised on the device.
   `/PropertyValueGet` with an **empty blob** — writes work (`device globaleq`),
   reads don't. The app sources EQ state from the connect-time sync; whether a
   bulk read exposes it is unexplored.
+- **Matrix Mixer per-channel plane.** The per-output monitor mix's per-strip
+  Level/Pan/Mute/Solo is **not in the property defs** and **not yet wire-decoded**
+  — see the "Matrix Mixer" subsection in §6 and
+  `docs/superpowers/specs/2026-11-22-matrix-mixer-re-spike.md` (H1/H2/H3 + the
+  read-only capture method + the `device matrix` verb design). The adjacent
+  output/routing/MIDI-channel keys (`global.out.*`, `global.midi.matrix.ch.*`) are
+  decoded and ship via `device settings`.
 - **`.hss` filled-slot payload — RESOLVED 2026-07-15** (real non-empty export
   captured; `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`).
   A *filled* slot's manifest entry is `{"path":".N","type":"application/stadium-preset"}`
