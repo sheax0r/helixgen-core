@@ -134,14 +134,16 @@ def test_verify_distinguishes_a_fixed_point_from_a_real_divergence(tmp_path):
     assert "NOT a fixed point" not in res.output
 
 
-def test_help_documents_the_lock_behaviour_and_the_drops():
-    """Per-verb help is the agent-facing contract (tests/test_cli_parity.py)."""
+def test_help_documents_the_lock_behaviour_and_the_fidelity():
+    """Per-verb help is the agent-facing contract (tests/test_cli_parity.py).
+    Command Center commands + MIDI CC bindings now round-trip (bead hgc-7ug),
+    so they belong in the fidelity list, not a drops list."""
     res = CliRunner().invoke(cli, ["device", "to-hsp", "--help"])
     assert res.exit_code == 0
     help_text = " ".join(res.output.split())
     for phrase in ("offline when SOURCE is a .sbe path",
                    "HELIXGEN_LOCK_TOKEN",
-                   "Command Center commands and MIDI CC controller bindings",
+                   "Command Center commands, MIDI CC controller bindings",
                    "reported on stderr",
                    "./42"):
         assert phrase in help_text, phrase

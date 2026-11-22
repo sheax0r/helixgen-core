@@ -674,30 +674,6 @@ def test_param_plan_falls_back_without_a_library():
     assert {n for _, n in plan} == set(defs.model_params_for(mid))
 
 
-# --- warnings for what is NOT yet reversed ------------------------------------
-
-def test_midi_controllers_are_dropped_with_a_warning(capsys):
-    doc = transcode.recipe_to_sbepgsm({"name": "midi", "paths": [{"blocks": [
-        {"block": DRIVE, "params": {}, "midi_bypass": {"cc": 20}},
-    ]}]})
-    assert any(c.get("trig") == 0 for c in doc["cg__"]["entt"]["ctrl"])
-    body = untranscode.sbepgsm_to_hsp(doc, name="x")
-    assert "MIDI" in capsys.readouterr().err
-    assert "controller" not in body["preset"]["flow"][0]["b01"]["@enabled"]
-
-
-def test_commands_are_dropped_with_a_warning(capsys):
-    doc = transcode.recipe_to_sbepgsm({
-        "name": "cmd",
-        "commands": [{"source": 0x01010100, "type": "PresetSnapshot",
-                      "func": 0, "params": {"Snapshot": 1}}],
-        "paths": [{"blocks": [{"block": AMP, "params": {}}]}],
-    })
-    assert doc["cg__"]["entt"]["cmnd"]
-    untranscode.sbepgsm_to_hsp(doc, name="x")
-    assert "Command Center" in capsys.readouterr().err
-
-
 def _one_amp_doc() -> dict:
     return transcode.recipe_to_sbepgsm(
         {"name": "x", "paths": [{"blocks": [{"block": AMP, "params": {}}]}]})
@@ -1176,6 +1152,206 @@ def test_semantics_catches_the_corruption(name, mutate):
 
     assert _semantics(_corrupt(doc, mutate)) != _semantics(doc), (
         f"_semantics did not notice: {name}")
+
+
+# --- Command Center commands + MIDI CC controllers (bead hgc-7ug) ------------
+#
+# The forward path WRITES both (transcode._synth_commands / _new_midi_ctrl) but
+# untranscode USED to drop them, so `device to-hsp` lost every Command Center
+# command and every MIDI-CC binding. These invert that. The .sbe->.hsp->.sbe
+# oracle is byte-exact for everything that does not touch a library param name
+# (commands + midi bypass); midi PARAM sweeps need the corpus library to map
+# the param name, so they ride apply_recipe end-to-end below.
+
+FS1 = 0x01010100
+INSTANT2 = 0x04040101
+
+
+def test_snapshot_command_round_trips():
+    body = _assert_roundtrip({"name": "cc", "paths": [{"blocks": [
+        {"block": AMP, "params": {}}]}],
+        "commands": [{"source": FS1, "type": "PresetSnapshot", "func": 0,
+                      "params": {"Snapshot": 3}}]})
+    recs = body["preset"]["commands"][str(FS1)]
+    assert len(recs) == 1
+    assert recs[0]["type"] == "PresetSnapshot"
+    assert recs[0]["params"]["Snapshot"]["value"] == 3
+
+
+def test_footswitch_midi_cc_command_round_trips():
+    body = _assert_roundtrip({"name": "cc", "paths": [{"blocks": [
+        {"block": AMP, "params": {}}]}],
+        "commands": [{"source": FS1, "type": "MIDI", "func": 1,
+                      "params": {"MIDI Ch": 5, "CC#": 45, "Value": 7}}]})
+    rec = body["preset"]["commands"][str(FS1)][0]
+    assert rec["type"] == "MIDI"
+    p = rec["params"]
+    assert p["Command"]["value"] == 1  # .hsp CC subtype
+    assert (p["MIDI Ch"]["value"], p["CC#"]["value"], p["Value"]["value"]) == (5, 45, 7)
+
+
+def test_instant_midi_pc_command_round_trips():
+    body = _assert_roundtrip({"name": "cc", "paths": [{"blocks": [
+        {"block": AMP, "params": {}}]}],
+        "commands": [{"source": INSTANT2, "type": "MIDI", "func": 0,
+                      "params": {"MIDI Ch": 4, "PC": 12, "MSB": 1, "LSB": 2}}]})
+    p = body["preset"]["commands"][str(INSTANT2)][0]["params"]
+    assert p["Command"]["value"] == 0  # PC subtype
+    assert (p["MIDI Ch"]["value"], p["PC"]["value"]) == (4, 12)
+    assert (p["MSB"]["value"], p["LSB"]["value"]) == (1, 2)
+
+
+@pytest.mark.parametrize("func,ctype_params", [
+    (3, {"MIDI Ch": 7, "Note": 60, "Velocity": 100}),      # Note
+    (2, {"MIDI Ch": 9, "Message": 5}),                     # MMC
+])
+def test_footswitch_midi_note_and_mmc_round_trip(func, ctype_params):
+    body = _assert_roundtrip({"name": "cc", "paths": [{"blocks": [
+        {"block": AMP, "params": {}}]}],
+        "commands": [{"source": FS1, "type": "MIDI", "func": func,
+                      "params": ctype_params}]})
+    p = body["preset"]["commands"][str(FS1)][0]["params"]
+    assert p["Command"]["value"] == func
+    for name, want in ctype_params.items():
+        assert p[name]["value"] == want
+
+
+def test_merged_switch_commands_preserve_order():
+    body = _assert_roundtrip({"name": "cc", "paths": [{"blocks": [
+        {"block": AMP, "params": {}}]}],
+        "commands": [
+            {"source": INSTANT2, "type": "PresetSnapshot", "func": 0,
+             "params": {"Snapshot": 1}},
+            {"source": INSTANT2, "type": "MIDI", "func": 1,
+             "params": {"MIDI Ch": 1, "CC#": 10, "Value": 20}}]})
+    recs = body["preset"]["commands"][str(INSTANT2)]
+    assert [r["ordinal"] for r in recs] == [0, 1]
+    assert recs[0]["type"] == "PresetSnapshot"
+    assert recs[1]["type"] == "MIDI"
+
+
+def test_command_behavior_and_toggle_survive():
+    body = _assert_roundtrip({"name": "cc", "paths": [{"blocks": [
+        {"block": AMP, "params": {}}]}],
+        "commands": [{"source": FS1, "type": "PresetSnapshot", "func": 0,
+                      "behavior": "momentary", "toggle": True,
+                      "params": {"Snapshot": 0}}]})
+    rec = body["preset"]["commands"][str(FS1)][0]
+    assert rec["behavior"] == "momentary"
+    assert rec["toggle"] is True
+
+
+def test_midi_cc_bypass_binding_round_trips():
+    body = _assert_roundtrip({"name": "m", "paths": [{"blocks": [
+        {"block": DRIVE, "params": {}, "midi_bypass": {"cc": 50}}]}]})
+    recs = body["preset"]["_helixgen_midi"]
+    assert len(recs) == 1
+    r = recs[0]
+    assert r["cc"] == 50 and r["param"] is None
+    assert (r["path"], r["lane"], r["pos"]) == (0, 0, 1)
+    assert r["block"] == DRIVE
+
+
+def _device_library(tmp_path):
+    """A library of REAL, device-resolvable models (the corpus harness models
+    are synthetic and don't resolve in the device modelmap, so a MIDI binding
+    on one is dropped on the forward path before it ever reaches the device).
+    Param names match the device defs so the bridge name map is identity."""
+    from helixgen.chassis import extract_chassis_from_hsp
+    from helixgen.library import Block, Library
+    from tests.golden import harness
+    lib = Library(root=tmp_path / "devlib")
+    lib.save_chassis(extract_chassis_from_hsp(
+        copy.deepcopy(harness._CHASSIS_PAYLOAD)))
+    src = {"preset": "midi", "firmware": "t", "date": "2026-11-22"}
+    for mid, cat, name, params in [
+        (AMP, "amp", "Brit Plexi Nrm", ["Bass", "Drive", "Mid", "Treble"]),
+        ("HD2_DL4DigDelay", "delay", "Digital", ["Feedback", "Level", "Mix"]),
+    ]:
+        lib.save_block(Block(
+            model_id=mid, category=cat, display_name=name,
+            params={k: {"type": "float"} for k in params},
+            exemplar={"@model": mid, "@type": "fx", "@enabled": True,
+                      **{k: 0.5 for k in params}}, first_seen=src))
+    lib.rebuild_index()
+    return lib
+
+
+def test_midi_cc_param_binding_round_trips(tmp_path):
+    """A MIDI CC param sweep. The param name needs the block library, so this
+    goes through apply_recipe end-to-end rather than the library-free oracle."""
+    from helixgen.recipe import apply_recipe
+    from helixgen.chassis import extract_chassis_from_hsp
+    from tests.golden import harness
+
+    library = _device_library(tmp_path)
+    chassis = extract_chassis_from_hsp(copy.deepcopy(harness._CHASSIS_PAYLOAD))
+    body = apply_recipe({"name": "m", "paths": [{"blocks": [
+        {"block": "Brit Plexi Nrm", "params": {"Drive": 0.6}},
+        {"block": "Digital", "params": {"Mix": 0.3}}]}],
+        "midi": [
+            {"cc": 61, "targets": [{"block": "Brit Plexi Nrm", "param": "Drive",
+                                    "min": 0.2, "max": 0.9}]},
+            {"cc": 79, "targets": [{"block": "Digital", "bypass": True}]}]},
+        library, chassis=chassis)
+    sbe1 = transcode.hsp_to_sbepgsm(body)
+    recovered = untranscode.sbe_bytes_to_hsp(sbe1, name="RT", library=library)
+    # Byte-exact device round trip: the recovered .hsp re-transcodes identically.
+    assert transcode.hsp_to_sbepgsm(recovered) == sbe1
+    # And the recovered .hsp carries a usable _helixgen_midi for view/edit.
+    by_cc = {r["cc"]: r for r in recovered["preset"]["_helixgen_midi"]}
+    assert by_cc[61]["param"] == "Drive"
+    assert (by_cc[61]["min"], by_cc[61]["max"]) == (pytest.approx(0.2), pytest.approx(0.9))
+    assert by_cc[79]["param"] is None
+
+
+def test_to_hsp_output_is_viewable(tmp_path):
+    """The real agent-facing contract: a preset carrying both Command Center
+    commands and MIDI-CC bindings survives device -> to-hsp -> view, so the
+    recovered .hsp is editable/re-installable rather than a dead end."""
+    from helixgen.recipe import apply_recipe
+    from helixgen.chassis import extract_chassis_from_hsp
+    from helixgen.view import view
+    from tests.golden import harness
+
+    library = _device_library(tmp_path)
+    chassis = extract_chassis_from_hsp(copy.deepcopy(harness._CHASSIS_PAYLOAD))
+    body = apply_recipe({"name": "m", "paths": [{"blocks": [
+        {"block": "Brit Plexi Nrm", "params": {"Drive": 0.6}},
+        {"block": "Digital", "params": {"Mix": 0.3}}]}],
+        "midi": [{"cc": 61, "targets": [{"block": "Brit Plexi Nrm",
+                                         "param": "Drive", "min": 0.2, "max": 0.9}]},
+                 {"cc": 79, "targets": [{"block": "Digital", "bypass": True}]}],
+        "commands": [{"switch": "FS1", "command": "snapshot", "snapshot": 2},
+                     {"switch": "Instant2", "command": "midi_cc", "cc": 45,
+                      "value": 10, "channel": 3}]},
+        library, chassis=chassis)
+    recovered = untranscode.sbe_bytes_to_hsp(
+        transcode.hsp_to_sbepgsm(body), name="RT", library=library)
+    proj = view(recovered, library)
+    assert proj["commands"] == [
+        {"switch": "FS1", "command": "snapshot", "snapshot": 2},
+        {"switch": "Instant2", "command": "midi_cc", "cc": 45, "value": 10,
+         "channel": 3}]
+    by_cc = {m["cc"]: m["targets"][0] for m in proj["midi"]}
+    assert by_cc[61] == {"block": "Brit Plexi Nrm", "param": "Drive",
+                         "min": 0.2, "max": 0.9}
+    assert by_cc[79] == {"block": "Digital", "bypass": True}
+
+
+def test_command_and_midi_no_longer_warn(capsys):
+    """The old stderr "dropped — not yet reversed" warnings are gone once the
+    reverse decode lands."""
+    sbe = content.encode_content_data(transcode.recipe_to_sbepgsm(
+        {"name": "cc", "paths": [{"blocks": [{"block": AMP, "params": {}},
+                                             {"block": DRIVE, "params": {},
+                                              "midi_bypass": {"cc": 50}}]}],
+         "commands": [{"source": FS1, "type": "PresetSnapshot", "func": 0,
+                       "params": {"Snapshot": 0}}]}))
+    untranscode.sbe_bytes_to_hsp(sbe, name="RT")
+    err = capsys.readouterr().err
+    assert "Command Center commands dropped" not in err
+    assert "MIDI CC controller(s) dropped" not in err
 
 
 @pytest.mark.parametrize("path", _corpus() or [None])
