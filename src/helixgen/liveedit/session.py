@@ -573,30 +573,96 @@ class LiveSession:
         Delegates to :meth:`HelixClient.move_block`, which relocates the block,
         EXCHANGING it with whatever occupies ``dst`` (an empty ``dst`` is a
         plain move) — so moving onto a neighbour swaps the two, which is
-        reorder. Its guard rejects the fixed input/output slots (0, 13, 14, 27)
-        as a 400. Then re-reads and returns fresh state. Volatile until Save;
-        confirm order on the rig.
+        reorder. Both slots must be lane-A processing slots (1..12); the LIVE
+        buffer is read under the lock so a stale page or a direct HTTP caller
+        cannot move a non-existent block, move onto a routing node (split/join),
+        or push a block onto lane B and orphan it. The 2002 reply is
+        meaningless, so success is verified from the buffer: if the block did
+        not land on ``dst`` a 502 is raised. Then re-reads and returns fresh
+        state. Volatile until Save; confirm order on the rig.
+
+        ponytail: path-1 (DSP 1) movb is not yet HW-validated (only DSP 0 is);
+        the applied-verify turns a silent path-1 failure into a 502 rather than
+        chain corruption. Validate DSP 1 on hardware when next at the rig.
         """
         pth, s, d = int(path), int(src), int(dst)
+        last = _chain.ROW1_INPUT - 1              # 13 = lane-A output slot
         if s == d:
             raise LiveError("source and destination slots are the same",
                             status=400)
+        if not (1 <= s < last) or not (1 <= d < last):
+            raise LiveError("reorder operates on lane-A processing slots 1..12",
+                            status=400)
         err: Optional[Exception] = None
+        applied = True
         self._ensure_lease(None)
         try:
             with self.devlock:
                 with self.cond:
                     self._require_up()
+                # Validate against the CURRENT buffer under the lock (closes the
+                # stale-page / direct-caller hole; matches add_block/add_split).
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                real = self._lane_a_models(eb, pth)   # slot -> model_id (processing only)
+                occupied = self._lane_a_occupied(eb, pth)
+                if real is None:
+                    raise LiveError(f"no DSP path {path} to reorder.", status=404)
+                if s not in real:
+                    raise LiveError("no movable block at the source slot "
+                                    "(did the chain change?)", status=400)
+                if d in occupied and d not in real:
+                    raise LiveError("cannot reorder across a routing block",
+                                    status=400)
+                captured = real[s]
                 try:
                     self.client.move_block(pth, s, d)
                 except (HelixError, OSError) as e:
                     err = e
+                else:
+                    try:
+                        after = self._lane_a_models(
+                            self.client.read_edit_buffer(fast=True), pth) or {}
+                    except (HelixError, OSError) as e:
+                        err = e
+                    else:
+                        applied = after.get(d) == captured
         finally:
             self.lease.done()
         if err is not None:
             self._raise_structural(err, "move")
+        if not applied:
+            self._reread_quiet()
+            raise LiveError("the device did not apply the move (chain unchanged)",
+                            status=502)
         self.load()                              # re-read: the reordered chain
         return self.public_state()
+
+    @staticmethod
+    def _lane_a_occupied(eb: Any, path: int) -> set:
+        """Grid slots occupied by ANY block on ``path``'s lane A (row 0)."""
+        flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+        if not (isinstance(flow, list) and 0 <= path < len(flow)):
+            return set()
+        return {s for s, _ in _chain._blks_pairs(flow[path]) if s < _chain.ROW1_INPUT}
+
+    @staticmethod
+    def _lane_a_models(eb: Any, path: int):
+        """Map ``slot -> model_id`` for real PROCESSING blocks on ``path``'s
+        lane A — routing/endpoint nodes (split/join/input/output/none/harness)
+        excluded. ``None`` if the path is absent."""
+        flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+        if not (isinstance(flow, list) and 0 <= path < len(flow)):
+            return None
+        out: dict = {}
+        for slot, raw in _chain._blks_pairs(flow[path]):
+            b = _chain._block(path, slot, raw)
+            if b and b["row"] == 0 and b["category"] not in _NOT_ADDABLE:
+                out[slot] = b["model_id"]
+        return out
 
     def set_bypass(self, path: int, block: int, enabled: Any, *,
                    client: Optional[str] = None,

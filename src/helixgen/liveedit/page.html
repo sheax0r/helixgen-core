@@ -363,6 +363,17 @@ async function send(url, body, ok, bad) {
   } catch (e) { bad(null); toast("the editor server did not answer"); }
   finally { clearTimeout(timer); }
 }
+// Structural edits (add/split/move) change grid slots, so a block's cached
+// src/dst goes stale the instant one lands. Allow only ONE in flight — a
+// double-click or a burst can't fire a second, now-stale swap before the
+// re-render rebuilds the buttons.
+let structBusy = false;
+function structSend(url, body, okMsg) {
+  if (down || structBusy) return;
+  structBusy = true;
+  send(url, body, () => { structBusy = false; toast(okMsg, true); },
+       () => { structBusy = false; });
+}
 
 /* ---------- undo / redo (one entry per committed change) ---------- */
 function record(kind, key, before, after, how) {
@@ -525,9 +536,8 @@ function blockEl(b) {
       && b.row === 0 && b.block >= 1 && b.block <= 11 && !SPLIT_PATHS.has(b.path)) {
     const sp = el("button", "splitbtn", "⑃ Split");
     sp.type = "button"; sp.title = "Split this block onto a new parallel lane";
-    sp.onclick = () => { if (down) return;
-      send("/add-split", { path: b.path, block: b.block },
-        () => toast("Splitting onto a parallel lane…", true), () => {}); };
+    sp.onclick = () => structSend("/add-split", { path: b.path, block: b.block },
+      "Splitting onto a parallel lane…");
     hd.append(sp);
   }
   // reorder a lane-A block by swapping with its neighbour (81v.1 move-block)
@@ -537,9 +547,8 @@ function blockEl(b) {
     const nav = (label, dst, title) => {
       const m = el("button", "splitbtn", label);
       m.type = "button"; m.title = title;
-      m.onclick = () => { if (down) return;
-        send("/move-block", { path: b.path, src: b.block, dst },
-          () => toast("Reordering…", true), () => {}); };
+      m.onclick = () => structSend("/move-block",
+        { path: b.path, src: b.block, dst }, "Reordering…");
       hd.append(m);
     };
     if (i > 0) nav("◀", order[i - 1], "Move earlier in the chain");
@@ -639,11 +648,14 @@ function render() {
   MOVE_SLOTS = new Map();        // reorder only on a simple linear chain (no split)
   S.paths.forEach((p) => {
     if (SPLIT_PATHS.has(p.path)) return;
-    const slots = (p.segments || [])
-      .filter((s) => s.kind === "block")
-      .map((s) => s.block)
-      .filter((b) => b.row === 0 && !STRUCT.has(b.category)
-        && b.category !== "input" && b.category !== "output"
+    const row0 = (p.segments || [])
+      .filter((s) => s.kind === "block").map((s) => s.block)
+      .filter((b) => b.row === 0);
+    // a routing node (split/join, or a cross-DSP tap with an xlink) in row 0
+    // means swapping neighbours could jump across it — refuse reorder here.
+    if (row0.some((b) => STRUCT.has(b.category) || b.xlink)) return;
+    const slots = row0
+      .filter((b) => b.category !== "input" && b.category !== "output"
         && b.block >= 1 && b.block <= 12)
       .map((b) => b.block)
       .sort((x, y) => x - y);
