@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .osc import osc_encode, parse_osc_message
 from . import content as _content
+from . import agenda as _agenda
 from . import settings as _settings
 from . import globaleq as _globaleq
 from . import defs as _defs
@@ -944,19 +945,84 @@ class HelixClient:
         """
         return self._save_preset_with_cid(int(cid))
 
-    def set_block_model(self, path: int, block: int, model_id: int) -> bool:
+    def set_block_model(self, path: int, block: int, model_id: int,
+                        sub: int = 0) -> bool:
         """Set a block's model in the live edit buffer.
 
-        ``/ModelSet [reqid, dsp, grid_slot, sub=0, modelId]``. ``block`` is
+        ``/ModelSet [reqid, dsp, grid_slot, sub, modelId]``. ``block`` is
         the grid slot printed by ``device blocks`` (sent unchanged; see
         :func:`_grid_slot`). ``model_id`` is the numeric model id (see
-        :mod:`helixgen.device.defs`). The device rejects a cross-category swap;
-        the app also re-attaches controllers + pushes the new model's param
-        defaults (not replayed here).
+        :mod:`helixgen.device.defs`). ``sub`` is the model's sub-position
+        within the block: ``0`` is the primary model; ``1`` addresses a
+        **dual-cab 2nd cab** (HW-confirmed 2026-11-22 — placing a cab with
+        ``sub=1`` at an existing cab block's slot makes it a dual cab). The
+        device rejects a cross-category swap; the app also re-attaches
+        controllers + pushes the new model's param defaults (not replayed here).
         """
         self._rpc("/ModelSet",
-                  [("i", int(path)), ("i", _grid_slot(block)), ("i", 0),
+                  [("i", int(path)), ("i", _grid_slot(block)), ("i", int(sub)),
                    ("i", int(model_id))])
+        return True
+
+    def move_block(self, path: int, src: int, dst: int) -> bool:
+        """Move the block at grid slot ``src`` to slot ``dst`` on DSP ``path``
+        in the live edit buffer (``/doAgenda [{movb}]``). Grid slots are
+        ``device blocks`` coordinates (lane A = 0..13, lane B = 14..27).
+
+        HW-validated for a within-lane move on DSP 0, where ``movb`` relocates
+        the block, **exchanging** it with whatever occupies ``dst`` (an empty
+        ``dst`` is a plain move). ``path`` is sent as the agenda ``flow`` on both
+        ends (``flow`` == DSP index is confirmed for flow 0 only). Moving across
+        to lane B (14..27) without the matching ``spld``/``jono`` wiring leaves
+        an orphan block, so for parallel routing build the full split agenda via
+        :meth:`do_agenda`; and to exchange two blocks the ``swap`` op is more
+        direct. The device echoes ``/setEditBuffer`` (no reload).
+
+        Raises :class:`HelixError` if ``src`` or ``dst`` is an input/output slot
+        (0, 13, 14, 27) — those are fixed and not movable.
+        """
+        src_s, dst_s = _grid_slot(src), _grid_slot(dst)
+        io = {0, 13, 14, 27}
+        if src_s in io or dst_s in io:
+            raise HelixError(
+                f"move_block: slots {sorted(io)} are fixed input/output blocks "
+                f"and cannot be moved (got src={src}, dst={dst})")
+        return self.do_agenda([_agenda.move(
+            bl_s=src_s, bl_d=dst_s, fl_s=int(path), fl_d=int(path))])
+
+    def do_agenda(self, ops: Sequence[Dict[str, int]]) -> bool:
+        """Apply a topology-edit transaction to the LIVE edit buffer.
+
+        ``/doAgenda [reqid, msgpack(op-list)]`` — the device applies the ops in
+        place and echoes ``/setEditBuffer`` on network 2001 (no
+        ``/loadContentRef``, no CID change, no reload), exactly as the Helix
+        Stadium app's move/split does. Build ``ops`` with the helpers in
+        :mod:`helixgen.device.agenda` (``move``/``swap``/``set_model``/
+        ``split``/``merge``/``clear``). Single-model placement/swap is NOT an
+        agenda op — use :meth:`set_block_model` (``/ModelSet``), whose ``sub``
+        arg addresses a dual-cab 2nd model.
+
+        Decoded 2026-11-22 (frida MITM of the app's 2002 socket). Raises
+        :class:`HelixError` on an empty op list, a transport failure (from
+        :meth:`_rpc`), or a non-zero ``/status`` code. The ``/error`` reply is
+        NOT a failure gate: HW saw both ``/error [reqid, 0, ""]`` and
+        ``/error [reqid, 1, 1]`` accompany an *applied* agenda, so its code does
+        not distinguish success. Like the other live-ops (``/ModelSet``), the
+        authoritative confirmation is the 2001 ``/setEditBuffer`` echo; a True
+        return means the device accepted the transaction, not that a re-read
+        has confirmed it — callers that need that re-read
+        :meth:`edit_buffer_blocks` or watch the 2001 subscriber.
+        """
+        ops = list(ops)
+        if not ops:
+            raise HelixError("do_agenda: empty op list")
+        msgpack = self._load_msgpack()
+        replies = self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
+        # /error is ambiguous (see above) so it is not gated; a /status with a
+        # non-zero code, if the device ever sends one, is an honest failure.
+        for addr, args in replies:
+            if addr == "/status" and len(args) >= 2 and args[1] != 0:
+                raise HelixError(f"/doAgenda failed, status {args[1]}")
         return True
 
     @staticmethod

@@ -3,7 +3,9 @@
 // Parses the OSC address, filters the chatty /dspEvent + /heartbeat streams,
 // and forwards full payloads (as raw data) for offline decoding.
 
-const DEVICE_IP = '192.168.4.84';
+// Device OSC ports (2001 PUB, 2002 RPC, 2003 telemetry). peerForFd filters on
+// these, not on a peer IP — the USB transport is IPv6 and the old IPv4 filter
+// caught nothing. 2001-2003 on localhost would also match; fine for a debug tool.
 const NOISE = ['/dspEvent', '/heartbeat', '/meter', '/vu'];  // suppressed unless SEND
 
 const getpeername = new NativeFunction(
@@ -14,9 +16,11 @@ function peerForFd(fd) {
     const addr = Memory.alloc(128);
     const len = Memory.alloc(4); len.writeU32(128);
     if (getpeername(fd, addr, len) !== 0) return null;
-    if (addr.add(1).readU8() !== 2) return null; // AF_INET
-    const port = (addr.add(2).readU8() << 8) | addr.add(3).readU8();
-    const ip = [4, 5, 6, 7].map(o => addr.add(o).readU8()).join('.');
+    const fam = addr.add(1).readU8();
+    if (fam !== 2 && fam !== 30) return null;          // AF_INET or AF_INET6 (USB is IPv6)
+    const port = (addr.add(2).readU8() << 8) | addr.add(3).readU8();  // same offset for sin/sin6
+    if (port < 2001 || port > 2003) return null;       // device OSC ports only (transport-agnostic)
+    const ip = fam === 2 ? [4, 5, 6, 7].map(o => addr.add(o).readU8()).join('.') : 'v6';
     return { ip, port, s: ip + ':' + port };
   } catch (e) { return null; }
 }
@@ -52,7 +56,7 @@ function hookBufSend(name, bufIdx, lenIdx) {
   Interceptor.attach(p, {
     onEnter(args) {
       const peer = peerForFd(args[0].toInt32());
-      if (!peer || peer.ip !== DEVICE_IP) return;
+      if (!peer) return;
       forward('SEND[' + name + ']', peer, args[bufIdx], args[lenIdx].toInt32());
     }
   });
@@ -65,7 +69,7 @@ function hookBufRecv(name, bufIdx) {
     onLeave(ret) {
       const n = ret.toInt32(); if (n <= 0) return;
       const peer = peerForFd(this.fd);
-      if (!peer || peer.ip !== DEVICE_IP) return;
+      if (!peer) return;
       forward('RECV[' + name + ']', peer, this.buf, n);
     }
   });
@@ -77,7 +81,7 @@ function hookIovSend(name, iovArg, cntArg, viaMsghdr) {
   Interceptor.attach(p, {
     onEnter(args) {
       const peer = peerForFd(args[0].toInt32());
-      if (!peer || peer.ip !== DEVICE_IP) return;
+      if (!peer) return;
       let iov, cnt;
       if (viaMsghdr) { const m = args[1]; iov = m.add(16).readPointer(); cnt = m.add(24).readInt(); }
       else { iov = args[iovArg]; cnt = args[cntArg].toInt32(); }
@@ -155,4 +159,4 @@ function hookIovSend(name, iovArg, cntArg, viaMsghdr) {
         + ' close=' + !!scl + ' fsync=' + !!sfs + ' fstat=' + !!sst + ' exec=' + !!cps });
 }
 
-send({ dir: 'INFO', msg: 'OSC hooks installed for ' + DEVICE_IP + '; symbols=' + installed.join(',') });
+send({ dir: 'INFO', msg: 'OSC hooks installed (device ports 2001-2003, any peer — IP filter dropped for USB/IPv6); symbols=' + installed.join(',') });
