@@ -606,7 +606,12 @@ function render() {
   if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
   S.paths.forEach((pt) => {
     const sec = el("div", "path"), hd = el("div", "path-hd");
-    hd.append(el("b", null, "Path " + (pt.path + 1)), el("i")); sec.append(hd, column(pt.segments));
+    hd.append(el("b", null, "Path " + (pt.path + 1)), el("i"));
+    const addBtn = el("button", "btn addblk", "+ Add block");
+    addBtn.type = "button"; addBtn.title = "Append a block to this path";
+    addBtn.onclick = () => openAddPicker(pt.path);
+    hd.append(addBtn);
+    sec.append(hd, column(pt.segments));
     if (pt.extra.length) {
       const h2 = el("div", "path-hd"); h2.style.marginTop = "26px";
       h2.append(el("b", null, "Path " + (pt.path + 1) + " · second row"), el("i"));
@@ -949,6 +954,38 @@ async function openModelPicker(b) {
     };
     body.append(btn);
   });
+}
+/* ---------- add-block picker (append any-category model to a path) ---------- */
+const ADD_SKIP = new Set(["input", "output", "split", "join", "none", "harness"]);
+async function openAddPicker(path) {
+  if (down) return;
+  if (!MODELS) {
+    // don't cache a FAILED or error response — keep MODELS null so a later open retries
+    const r = await fetch("/models").then((x) => (x.ok ? x.json() : null)).catch(() => null);
+    if (!r || r.error || typeof r !== "object") { const { body } = modal("Add block"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
+    MODELS = r;
+  }
+  const { body } = modal("Add a block to Path " + (path + 1));
+  body.append(el("p", "hint", "Appended to this path. The device applies the model's defaults — confirm on the rig. Volatile until Save."));
+  const cats = Object.keys(MODELS).filter((c) => !ADD_SKIP.has(c)).sort();
+  let any = false;
+  cats.forEach((cat) => {
+    const list = MODELS[cat] || [];
+    if (!list.length) return;
+    any = true;
+    body.append(el("div", "grp", cat));
+    list.forEach((m) => {
+      const btn = el("button", "pz", m.name);
+      btn.type = "button";
+      btn.onclick = () => {
+        closeOverlay();
+        send("/add-block", { path: path, model_id: m.id },
+          () => toast("Adding block on the device…", true), () => {});
+      };
+      body.append(btn);
+    });
+  });
+  if (!any) body.append(el("p", null, "No models available to add."));
 }
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
 $("load").onclick = openPicker;
