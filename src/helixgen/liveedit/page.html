@@ -65,9 +65,11 @@ body.down .snaprow{opacity:.5;pointer-events:none}
 .tabs[hidden]{display:none}
 .tab{background:transparent;border:1px solid transparent;border-bottom:none;color:var(--dim);
   border-radius:9px 9px 0 0;padding:7px 15px;cursor:pointer;font-size:13px;font-weight:600}
-.tab:hover{color:var(--fg)}
-.tab.active{background:var(--panel2);border-color:var(--edge2);color:var(--fg)}
+.tab:hover{color:var(--ink)}
+.tab.active{background:var(--panel2);border-color:var(--edge2);color:var(--ink)}
 .pane[hidden]{display:none}
+/* signal-flow chrome belongs to the flow pane — hide it on another pane */
+body.pane-other .snaprow,body.pane-other .adjrow{display:none}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -164,7 +166,7 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .cat{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--acc)}
 .nm.swappable{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
 .splitbtn{font-size:11px;padding:2px 7px;margin-right:6px;border-radius:5px;border:1px solid var(--faint);background:transparent;color:var(--faint);cursor:pointer;white-space:nowrap}
-.splitbtn:hover{color:var(--fg);border-color:var(--fg)}
+.splitbtn:hover{color:var(--ink);border-color:var(--ink)}
 .nm{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xl{font-size:10px;font-weight:700;letter-spacing:.08em;color:#ffd58a;border:1px solid #6d5522;
   background:#2a2110;border-radius:999px;padding:2px 8px;white-space:nowrap}
@@ -406,10 +408,10 @@ function applyHist(e, val) {      // false = the entry no longer names the same 
   if (!c || c.tag !== e.tag) return false;
   c.set(val); queue(e.kind, e.key); return true;
 }
-function undo() { if (down) return; let e;
+function undo() { if (down || activePane !== "flow") return; let e;
   while ((e = undoS.pop())) if (applyHist(e, e.before)) { redoS.push(e); break; }
   syncHist(); }
-function redo() { if (down) return; let e;
+function redo() { if (down || activePane !== "flow") return; let e;
   while ((e = redoS.pop())) if (applyHist(e, e.after)) { undoS.push(e); break; }
   syncHist(); }
 function syncHist() { $("undo").disabled = down || !undoS.length; $("redo").disabled = down || !redoS.length; }
@@ -653,6 +655,7 @@ function renderSnaps() {
 const PANES = [{ id: "flow", label: "Signal flow", el: () => $("rig") }];
 let activePane = "flow";
 function addPane(p) {                      // { id, label, el:()=>Element, onShow?(active) }
+  if (!p || !p.id || !p.label || typeof p.el !== "function") return;  // half-registration guard
   if (PANES.some((x) => x.id === p.id)) return;
   PANES.push(p);
   showPane(activePane);                    // enforce single-pane visibility (hide the newcomer)
@@ -660,8 +663,19 @@ function addPane(p) {                      // { id, label, el:()=>Element, onSho
 function showPane(id) {
   if (!PANES.some((p) => p.id === id)) return;
   activePane = id;
-  PANES.forEach((p) => { const e = p.el(); if (e) e.hidden = p.id !== id;
-    if (p.onShow) p.onShow(p.id === id); });
+  const flow = id === "flow";
+  PANES.forEach((p) => {                    // fire onShow only on a real change (idempotent-safe)
+    const e = p.el(); if (!e) return;
+    const was = e.hidden, now = p.id !== id;
+    e.hidden = now;
+    if (p.onShow && was !== now) p.onShow(!now);
+  });
+  // The signal-flow chrome (snapshots, adjective search, Undo/Redo) belongs to
+  // the flow pane: hide it and neuter undo/redo on another pane so a shortcut
+  // can't revert a hidden edit. A pane with no edit history of its own.
+  document.body.classList.toggle("pane-other", !flow);
+  $("undo").disabled = !flow || down || !undoS.length;
+  $("redo").disabled = !flow || down || !redoS.length;
   renderTabs();
 }
 function renderTabs() {
@@ -669,9 +683,13 @@ function renderTabs() {
   strip.hidden = PANES.length < 2;         // single pane → no chrome
   strip.textContent = "";
   if (strip.hidden) return;
+  strip.setAttribute("role", "tablist");
   PANES.forEach((p) => {
-    const t = el("button", "tab" + (p.id === activePane ? " active" : ""), p.label);
-    t.type = "button"; t.onclick = () => showPane(p.id);
+    const active = p.id === activePane;
+    const t = el("button", "tab" + (active ? " active" : ""), p.label);
+    t.type = "button"; t.setAttribute("role", "tab");
+    t.setAttribute("aria-selected", active ? "true" : "false");
+    t.onclick = () => showPane(p.id);
     strip.append(t);
   });
 }
