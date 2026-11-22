@@ -179,6 +179,8 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .ctl{display:flex;flex-wrap:wrap;gap:14px 16px;align-items:flex-start}
 .secondmodel{margin-top:12px;padding-top:10px;border-top:1px dashed var(--faint);opacity:.72}
 .sm-head{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--faint);margin-bottom:6px}
+.sm-head.swap2{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
+.sm-head.swap2:hover{color:var(--ink)}
 .sm-vals{display:flex;flex-wrap:wrap;gap:6px 14px}
 .sm-v{font-size:11px;color:var(--faint)}
 .more{margin-top:10px;background:none;border:0;padding:0;color:var(--faint);cursor:pointer;font-size:11px;letter-spacing:.06em}
@@ -565,6 +567,13 @@ function blockEl(b) {
     if (i > 0) nav("◀", order[i - 1], "Move earlier in the chain");
     if (i < order.length - 1) nav("▶", order[i + 1], "Move later in the chain");
   }
+  // add a 2nd cab (dual cab) to a cab block that has none yet (ModelSet sub=1)
+  if (b.category === "cab_ir_interp" && !b.second_model) {
+    const dc = el("button", "splitbtn", "⊕ 2nd cab");
+    dc.type = "button"; dc.title = "Add a parallel 2nd cab (dual cab)";
+    dc.onclick = () => openSecondCabPicker(b, null);
+    hd.append(dc);
+  }
   if (!NO_BYPASS.has(b.category)) {
     const f = el("button", "foot"); const dot = el("span", "dot"); const tx = el("span");
     f.append(dot, tx);
@@ -594,8 +603,9 @@ function blockEl(b) {
   if (b.second_model) {
     const sm = b.second_model;
     const box = el("div", "secondmodel");
-    const h = el("div", "sm-head", sm.name + " · 2nd model (read-only)");
-    h.title = sm.model + " — no live-write address yet (hgc-5gh)";
+    const h = el("div", "sm-head swap2", sm.name + " · 2nd cab");
+    h.title = sm.model + " · click to replace the 2nd cab (its params stay read-only — hgc-5gh)";
+    h.onclick = () => openSecondCabPicker(b, sm.model_id);
     box.append(h);
     const vals = el("div", "sm-vals");
     (sm.params || []).filter((p) => !p.internal).forEach((p) =>
@@ -1070,6 +1080,26 @@ async function openModelPicker(b) {
       send("/swap", { path: b.path, block: b.block, model_id: m.id },
         () => toast("Swapping model on the device…", true), () => {});
     };
+    body.append(btn);
+  });
+}
+/* ---------- dual-cab: pick the 2nd cab's model (ModelSet sub=1) ------------- */
+async function openSecondCabPicker(b, currentId) {
+  if (down) return;
+  if (!MODELS) {
+    const r = await fetch("/models").then((x) => x.ok ? x.json() : null).catch(() => null);
+    if (!r) { const { body } = modal("2nd cab"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
+    MODELS = r;
+  }
+  const list = MODELS[b.category] || [];
+  const { body } = modal((currentId ? "Replace the 2nd cab on “" : "Add a 2nd cab to “") + b.name + "”…");
+  if (!list.length) { body.append(el("p", null, "No cab models available.")); return; }
+  body.append(el("p", "hint", "Dual cab — the 2nd cab's model is set on the live tone; its params stay read-only for now."));
+  list.forEach((m) => {
+    const btn = el("button", "pz" + (m.id === currentId ? " on" : ""), m.name);
+    btn.type = "button";
+    btn.onclick = () => { closeOverlay(); if (m.id === currentId) return;
+      structSend("/second-cab", { path: b.path, block: b.block, model_id: m.id }, "Setting the 2nd cab…"); };
     body.append(btn);
   });
 }
