@@ -204,6 +204,45 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     cp.onclick();
     ok("S20 Copy posts /library/copy", x.posts.some((p) => p.url === "/library/copy" && p.body.hsp === "a.hsp" && p.body.to === "SL"), JSON.stringify(x.posts.map((p) => p.url)));
   }
+  { // S21: Device pane — global settings read, write, and read-only page
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const devTab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Device")[0];
+    ok("S21 a Device tab appears once the pane registers", !!devTab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    devTab.onclick();                                   // showPane("device") -> onShow(true)
+    const cat = x.posts.find((p) => p.url === "/device/state");
+    ok("S21 opening the pane fetches the catalog", !!cat, JSON.stringify(x.posts.map((p) => p.url)));
+    cat.reply(200, { pages: [
+      { page: "ins-outs", label: "Ins / Outs", readonly: false, note: null, keys: [] },
+      { page: "date-time", label: "Date / Time", readonly: true, note: "set on the device", keys: [] }] });
+    await x.tick(); await x.tick();
+    const vals = x.posts.find((p) => p.url === "/device/values");
+    ok("S21 the first page's live values are requested", vals && vals.body.page === "ins-outs",
+      JSON.stringify(vals && vals.body));
+    vals.reply(200, { page: "ins-outs", keys: [
+      { key: "global.out.level.qtr", name: "Qtr Out", type: "f", min: -30, max: 0, default: 0, enum: [], value: -3, display: "-3.0 dB" },
+      { key: "global.tuner.type", name: "Tuner Type", type: "i", min: 0, max: 2, default: 0, enum: ["Fluid", "Strobe", "Needle"], value: 1, display: "Strobe (1)" }] });
+    await x.tick(); await x.tick();
+    ok("S21 settings rows render with name + display",
+      x.ids.devbody.textContent.includes("Qtr Out") && x.ids.devbody.textContent.includes("Strobe"), x.ids.devbody.textContent);
+    const sel = x.ids.devbody.find((e) => e.tagName === "select")[0];
+    sel.value = 2; sel.onchange();
+    const setp = x.posts.find((p) => p.url === "/device/set");
+    ok("S21 a change posts /device/set with key + value",
+      setp && setp.body.key === "global.tuner.type" && setp.body.value === 2, JSON.stringify(setp && setp.body));
+    setp.reply(200, { ok: true, key: "global.tuner.type", value: 2, display: "Needle (2)" });
+    await x.tick();
+    ok("S21 the display updates to the device readback", x.ids.devbody.textContent.includes("Needle (2)"), x.ids.devbody.textContent);
+    const dtTab = x.ids.devtabs.find((e) => e.tagName === "button" && e.textContent === "Date / Time")[0];
+    dtTab.onclick();
+    const dt = x.posts.filter((p) => p.url === "/device/values").pop();
+    dt.reply(200, { page: "date-time", keys: [
+      { key: "global.clock.year", name: "Year", type: "i", min: 2000, max: 2099, default: 2026, enum: [], value: 2026, display: "2026" }] });
+    await x.tick(); await x.tick();
+    ok("S21 the read-only page shows its note", !x.ids.devnote.hidden && x.ids.devnote.textContent.includes("set on the device"), x.ids.devnote.textContent);
+    const yearCtl = x.ids.devbody.find((e) => e.tagName === "input")[0];
+    ok("S21 a read-only page's control is disabled", yearCtl && yearCtl.disabled === true, yearCtl && yearCtl.disabled);
+  }
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();
