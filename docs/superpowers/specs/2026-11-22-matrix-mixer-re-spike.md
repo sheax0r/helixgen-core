@@ -1,11 +1,13 @@
 # Matrix Mixer protocol — RE spike + `device matrix` verb design (`helixgen-81v.8`)
 
-**Status:** RE spike — read-only. Decode grounded on the shipped protocol + the
-Helix Stadium v1.4 manual; the per-channel wire opcode is **capture-pending**
-(coordinated hardware window, see §6). **No device-write code ships from this
-spike** — the deliverable is this findings + design doc plus the protocol
-section in `docs/helix-protocol.md`.
-**Date:** 2026-11-22. **Firmware target:** Stadium XL, app v1.4 / fw 1.4.x.
+**Status:** RE spike — read-only. **H1 ruled out on hardware** (live catalog
+glob, Stadium XL fw 1.4.1, 2026-11-22): the matrix per-channel plane is **not a
+device property**. The remaining H2-vs-H3 split needs an app-drive capture, which
+was **blocked** this session (computer-use grant for the Stadium app denied) — so
+the per-channel wire opcode stays **capture-pending**. **No device-write code
+ships from this spike** — the deliverable is this findings + design doc plus the
+protocol section in `docs/helix-protocol.md`.
+**Date:** 2026-11-22. **Firmware target:** Stadium XL, app v1.4 / fw 1.4.1.
 
 Companion to the UI design (`sheax0r/helixgen` PR #94,
 `2026-11-22-device-global-io-eq-mixer-ui-design.md`), whose Matrix tab (§7.3) is
@@ -85,23 +87,31 @@ the three `global.midi.matrix.ch.*` above). So the mixer plane is **not** a
 modeled `global.*` / `dsp.*` property today, and HX Edit sources matrix state
 from the connect-time sync, not a per-key read (same as Global EQ).
 
-**Three hypotheses for the wire form** (to be resolved by capture, §6), in order
-of prior probability given the protocol's shape:
+**Three hypotheses for the wire form** — **H1 ruled out on hardware**, H2/H3 open:
 
-- **(H1) Undocumented property keys.** The device exposes `dsp.matrix.<out>.<ch>.<param>`
-  (or similar) properties that are simply **not in the bundled `_defs_data.json`**
-  (which is a curated subset). The live catalog glob (`/MatchingPropertyDefinitionsGet`,
-  §6.1) settles this directly — it enumerates the *device's* defs, not the bundle.
-  If true, the write is the **Global EQ variant blob** verbatim: `/PropertyValueSet
-  [reqid, 0, "lavppgsm"+{key_, type:"v", val_:{parm, valu}}]`, and a `matrix.py`
-  codec is a near-clone of `globaleq.py`.
+- **(H1) Undocumented property keys. — RULED OUT (HW, Stadium XL fw 1.4.1,
+  2026-11-22).** A live `/MatchingPropertyDefinitionsGet` glob of the **device's
+  own** catalog (not the bundle) returned **457 defs total** and **zero** matrix
+  per-channel keys: `dsp.matrix*` → 0, `dsp.out*` → 0, `*.pan` → 0, `*.solo` → 0,
+  `*.fader` → 0, `*.mute` → only a global `hal.audio.mute`, `*matrix*` → only the
+  three `global.midi.matrix.ch.*`. So the per-channel Level/Pan/Mute/Solo is **not
+  a device property** at all, and a Global-EQ-style `/PropertyValueSet` codec is
+  **not** the path. (The only matrix-adjacent reads are routing/monitor selectors,
+  §2.)
 - **(H2) A dedicated opcode family.** Like `/doAgenda` is dedicated for topology,
   the matrix has its own verb (e.g. `/setMatrix…` / `/MatrixChannelSet`) with a
-  `(layer, channel, param, value)` tuple or a msgpack op. Plausible precisely
-  because it is not in the property defs.
+  `(layer, channel, param, value)` tuple or a msgpack op. Now the **leading**
+  hypothesis, precisely because it is not a property.
 - **(H3) Not LAN-observable.** The matrix is driven only over the app's own
   transport and the device does **not** echo it on the 2001 PUB stream. Then the
   only decode path is a **Frida outbound capture** on the app socket (§6.3).
+
+**To split H2 vs H3:** drive one matrix control in the app while running
+`device watch` (2001). An echoed frame (any address) ⇒ **H2** and reads the
+opcode; silence on 2001 ⇒ **H3**. This step was **blocked this session** — the
+computer-use grant to control the Helix Stadium app was denied, so the app could
+not be driven. `device watch` itself was verified working (idle device → only
+`/dspEvent` telemetry, no property/edit-buffer frames).
 
 ## 4. `device matrix` verb design (proposed — gated on §3 resolving)
 

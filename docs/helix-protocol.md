@@ -671,26 +671,24 @@ write path. Full RE findings + the `device matrix` verb design:
 | `global.out.groundlift.xlr`, `global.out.src.reamp.u7`/`.u8` | XLR ground lift; reamp send sources |
 | `global.midi.matrix.ch.{qtr,xlr,phones}` | the MIDI **channel** each output's Matrix layer listens on for CC remote control |
 
-**NOT decoded — the per-channel plane.** The per-strip Level/Pan/Mute/Solo is
-**absent from the bundled property defs** (`_defs_data.json` carries zero
-`matrix` audio props beyond the three MIDI-channel keys above), so the mixer
-itself is not a modeled property today. Three live hypotheses, resolved by one
-read-only capture window (see the spec §6):
+**NOT a property — HW-confirmed (Stadium XL fw 1.4.1, 2026-11-22).** A live
+`/MatchingPropertyDefinitionsGet` glob of the **device's own** catalog (457 defs
+total) returned **zero** matrix per-channel keys — `dsp.matrix*` → 0, `dsp.out*`
+→ 0, `*.pan`/`*.solo`/`*.fader` → 0, `*.mute` → only global `hal.audio.mute`,
+`*matrix*` → only the three `global.midi.matrix.ch.*`. So the per-strip
+Level/Pan/Mute/Solo is **not a device property** (ruling out a Global-EQ-style
+`/PropertyValueSet` codec). Two hypotheses remain (see the spec §3):
 
-- **H1** — undocumented `dsp.matrix.*`-style property keys present on the device
-  but trimmed from the bundle → write is the Global-EQ **variant blob** verbatim
-  (`/PropertyValueSet [reqid, 0, "lavppgsm"+{key_, type:"v", val_:{parm,valu}}]`),
-  codec a near-clone of `globaleq.py`. Settle with `/MatchingPropertyDefinitionsGet`
-  (live catalog glob — app-independent; probe in the spec).
-- **H2** — a dedicated opcode family (like `/doAgenda` for topology).
+- **H2 (leading)** — a dedicated opcode family (like `/doAgenda` for topology).
 - **H3** — not echoed on the 2001 PUB stream → decode needs a Frida outbound
   capture (`tools/hook_sockets.js`, as for `/doAgenda`).
 
-Capture is **read-only** (catalog glob + `device watch --filter /setPropertyValue`
-while driving the app's Matrix page). Not yet run: the Stadium XL was in active
-use by the concurrent 81v.1 topology session during this spike (shared-HW
-coordination). `helixgen` emits no matrix write yet; this is the follow-on
-`device matrix` epic's first step.
+Splitting H2/H3 needs an **app-drive capture** (drive one matrix control in the
+Stadium app while `device watch` reads 2001). That step was **blocked this
+session** — the computer-use grant to control the Stadium app was denied — so the
+opcode stays capture-pending. (`device watch` itself was verified: an idle device
+emits only `/dspEvent` telemetry.) `helixgen` emits no matrix write; this is the
+follow-on `device matrix` epic's first step.
 
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
 
