@@ -99,6 +99,30 @@ def test_parallel_split_roundtrips():
     assert flow["b15"]["path"] == 1 and flow["b15"]["position"] == 1
 
 
+def test_app_style_split_empty_lane_a_roundtrips():
+    """The shape ``device add-split`` synthesizes (the Stadium app's
+    drag-down-to-parallel): the split and join are ADJACENT on lane 0 with an
+    EMPTY lane-A path, and the block lives only on lane B. It round-trips like
+    any other split — the device's lane-B back-ref is a derived field neither a
+    factory nor a synthesized split carries in the ``.hsp`` (HW-confirmed
+    2026-11-22: a factory split drops it on round-trip too, and the device
+    re-adds it on load), so semantic/byte fidelity holds."""
+    recipe = {"name": "appsplit", "paths": [{
+        "blocks": [
+            {"block": AMP, "params": {}, "lane": 0, "pos": 4},   # before the split
+            {"block": CAB, "params": {}, "lane": 1, "pos": 5},   # the parallel block, lane B only
+        ],
+        "structural": [
+            {**copy.deepcopy(transcode._SPLIT_SCAFFOLD), "_pos": 5, "_lane": 0},
+            {**copy.deepcopy(transcode._JOIN_SCAFFOLD), "_pos": 6, "_lane": 0},
+        ],
+    }]}
+    body = _assert_roundtrip(recipe)   # byte-exact
+    flow = _flow0(body)
+    assert flow["b05"]["type"] == "split" and flow["b06"]["type"] == "join"
+    assert flow["b05"]["endpoint"] == "b06" and flow["b06"]["endpoint"] == "b05"
+
+
 def test_split_join_snapshot_and_controller_state_roundtrips():
     """A split/join is a snapshot and controller target like any other block
     (bead hgc-rq3).

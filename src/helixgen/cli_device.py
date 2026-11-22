@@ -2009,10 +2009,8 @@ def device_add_split(path: int, block: int, ip: str, port: int) -> None:
     a lane-A block in 1..11, if there is no block there, if lane B already
     carries a parallel section (slots 15..26 occupied), or if shifting the later
     blocks would reach the output. Re-reads to confirm the device applied it.
-    Volatile until you save. NOTE:
-    saving a synthesized split to `.hsp` (`device to-hsp`/`copy`) does not yet
-    round-trip the new branch — that is the open save-side work; the live edit
-    itself is sound.
+    Volatile until you save; `device to-hsp`/`copy` round-trip the synthesized
+    split (verified byte-exact and semantically, just like a factory split).
     """
     with _connect(ip, port) as h:
         h.add_split(path, block)
