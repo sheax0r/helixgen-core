@@ -100,6 +100,21 @@ def _route(session: LiveSession, path: str, b: dict):
     if path == "/reread":
         session.reread()
         return {}
+    # Device pane (81v.5): device-global settings over /device/*. Reads live
+    # values for one catalog page, or writes one key. The offline catalog
+    # (page structure) is GET /device/state in do_GET.
+    if path == "/device/values":
+        page = b.get("page")
+        if not isinstance(page, str):
+            raise LiveError("field 'page' must be a string")
+        return session.device_values(page)
+    if path == "/device/set":
+        key = b.get("key")
+        if not isinstance(key, str):
+            raise LiveError("field 'key' must be a string")
+        if "value" not in b:
+            raise LiveError("missing field 'value'")
+        return session.device_write(key, b["value"])
     return None
 
 
@@ -161,8 +176,11 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 except Exception as e:  # noqa: BLE001
                     logger.exception("live editor: library state failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
-            # A follow-on pane serves its GETs under its own /<pane>/… namespace
-            # (like /library/* above); 81v.5 Device settings reserves /device/*.
+            # Device pane (81v.5): the offline Global-Settings catalog (page
+            # structure) — live values are POST /device/values, writes POST
+            # /device/set (see _route). No device I/O, so no connection needed.
+            elif path == "/device/state":
+                self._json(200, session.device_pages())
             else:
                 self._json(404, {"error": "not found"})
 

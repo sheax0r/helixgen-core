@@ -950,6 +950,151 @@ class LiveSession:
                     e["cid"], e.get("pool_cid"))
         return {"active": active, "groups": groups}
 
+    # --- device-global settings (81v.5 Device pane) ---------------------------------
+    #
+    # A read/write surface over the device-property channel (the same one
+    # `device settings list/get/set` drives), for the Device pane. Device
+    # globals live OUTSIDE the preset: they do not ride the edit buffer, do not
+    # round-trip through .hsp, and do not reload on preset change — so this is a
+    # read-on-demand surface, not part of the live chain stream.
+    #
+    # Page order follows the app's Global Settings menu (spec 81v.5 §7.1). A few
+    # pages are shown but not editable, or carry a "takes effect on the device"
+    # note (spec §8 won't-dos). The DANGEROUS_KEYS (wifi/remote access) are not
+    # in the catalog at all, and `set_property` guards them regardless.
+    _PAGE_META = {       # catalog id -> (label, readonly, note)
+        "ins-outs": ("Ins / Outs", False, None),
+        "switches-pedals": ("Switches / Pedals", False,
+            "These configure the hardware's own footswitches and pedals — "
+            "changes take effect on the device."),
+        "displays": ("Displays", False,
+            "These affect the device's own screens — changes take effect on "
+            "the device."),
+        "preferences": ("Preferences", False, None),
+        "songs": ("Songs", False, None),
+        "tempo-click": ("Tempo / Click", False, None),
+        "midi": ("MIDI", False, None),
+        "tuner": ("Tuner", False, None),
+        "date-time": ("Date / Time", True,
+            "The clock is set on the device's own screen; shown here read-only."),
+    }
+
+    def device_pages(self) -> dict:
+        """The Device pane's offline catalog: every Global-Settings page in the
+        app's menu order, each with its label, read-only flag, note, and keys.
+        No device I/O — the page renders its tabs instantly, then reads each
+        page's live values on demand via :meth:`device_values`."""
+        from helixgen.device import settings as _settings
+        catalog = _settings.pages()
+        order = [p for p in self._PAGE_META if p in catalog]
+        order += [p for p in sorted(catalog) if p not in self._PAGE_META]
+        out = []
+        for page in order:
+            label, readonly, note = self._PAGE_META.get(
+                page, (page.replace("-", " ").title(), False, None))
+            out.append({"page": page, "label": label, "readonly": readonly,
+                        "note": note, "keys": list(catalog[page])})
+        return {"pages": out}
+
+    def _read_keys(self, keys):
+        """Read def + value for each key (serialized by the caller on
+        ``devlock``). A key the firmware doesn't answer is returned with an
+        ``error`` instead of a value, so one missing key never blanks a page.
+        Stops and reports ``aborted_at`` if the socket dies mid-read — every
+        later key would fast-fail (mirrors ``device settings list --values``)."""
+        from helixgen.device import settings as _settings
+        rows, aborted = [], None
+        for key in keys:
+            try:
+                d = self.client.get_property_def(key)
+                v = self.client.get_property(key)
+                rows.append({"key": key, "name": d.name, "type": d.type,
+                             "min": d.vmin, "max": d.vmax, "default": d.default,
+                             "enum": list(d.enum), "value": v.value,
+                             "display": _settings.render_value(d, v.value)})
+            except (HelixError, OSError, ValueError) as e:
+                rows.append({"key": key, "error": str(e)})
+            if getattr(self.client, "sock", object()) is None:
+                aborted = key
+                break
+        return rows, aborted
+
+    def device_values(self, page: str) -> dict:
+        """Live def + value for one Global-Settings page's keys, for the Device
+        pane. Read-only, serialized on ``devlock`` (the socket is not
+        thread-safe) — it does NOT take the write lease: browsing globals must
+        not lock other verbs out of the device."""
+        from helixgen.device import settings as _settings
+        try:
+            keys = _settings.keys_for_page(page)
+        except KeyError:
+            raise LiveError(f"unknown settings page {page!r}", status=404)
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            rows, aborted = self._read_keys(keys)
+        out = {"page": page, "keys": rows}
+        if aborted is not None:
+            out["aborted_at"] = aborted
+        return out
+
+    def device_write(self, key: str, value: Any) -> dict:
+        """Write one Global-Settings value live, then read it back. ``value`` is
+        a number, or an enum index — coerced and range-checked against the
+        device's own definition before the write. Refuses an off-catalog key and
+        a read-only page; ``set_property`` guards the DANGEROUS_KEYS regardless.
+        Takes the ``globals`` scope transiently (mirrors `device settings set`)."""
+        from helixgen.device import settings as _settings
+        if not isinstance(key, str) or not key:
+            raise LiveError("setting key must be a string")
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise LiveError("setting value must be a number")
+        page = _settings.page_for_key(key)
+        if page is None:
+            raise LiveError(f"{key!r} is not a settable Global Setting",
+                            status=404)
+        meta = self._PAGE_META.get(page)
+        if meta and meta[1]:
+            raise LiveError(f"the {meta[0]} page is read-only — change it on "
+                            "the device's own screen", status=403)
+        try:
+            _settings.guard_key(key)
+        except ValueError as e:
+            raise LiveError(str(e), status=403) from e
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            with self.lease.transient(("globals",)):
+                try:
+                    d = self.client.get_property_def(key)
+                    coerced = _settings.coerce_value(d, str(value))
+                    ok = self.client.set_property(key, d.type, coerced)
+                except ValueError as e:        # coerce / guard / bad def
+                    raise LiveError(str(e), status=400) from e
+                except HelixError as e:
+                    # a device NAK or a key this firmware doesn't carry — the
+                    # device said no, the connection is fine. Do NOT tear the
+                    # editor down (matches _read_keys; a transport loss is the
+                    # OSError below, which really did drop the connection).
+                    raise LiveError(f"the device would not set {key}: {e}",
+                                    status=502) from e
+                except OSError as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device write failed: {e}", status=502) from e
+                if not ok:
+                    raise LiveError(f"the device did not confirm the write to "
+                                    f"{key}", status=502)
+                # Readback is best-effort: the write already landed (ok=True), so
+                # a failed readback reflects the value we wrote rather than
+                # reverting the control or marking the device down.
+                try:
+                    rb = self.client.get_property(key)
+                except (HelixError, OSError):
+                    return {"key": key, "value": coerced,
+                            "display": _settings.render_value(d, coerced)}
+        return {"key": key, "value": rb.value,
+                "display": _settings.render_value(d, rb.value)}
+
     # --- 2001 events ----------------------------------------------------------------
     def _own_echo(self, seq: int, key: tuple, value: Any) -> Optional[str]:
         """Is this event the echo of one of OUR writes?
