@@ -34,6 +34,8 @@ class FakeClient:
         self.reads = 0
         self.params, self.enables, self.saves = [], [], []
         self.swaps = []          # (path, block, model_id) from set_block_model
+        self.splits_added = []   # (path, block) from add_split
+        self.split_fail = None   # set to an exception to make add_split raise
         self.ack = True
         self.fail: Exception | None = None
         self.last_request_id = None
@@ -101,6 +103,13 @@ class FakeClient:
     def set_block_model(self, path, block, model_id):
         self._next()
         self.swaps.append((int(path), int(block), int(model_id)))
+        return self.ack
+
+    def add_split(self, path, block):
+        self._next()
+        if self.split_fail is not None:
+            raise self.split_fail
+        self.splits_added.append((int(path), int(block)))
         return self.ack
 
     def get_property(self, key):
@@ -1245,6 +1254,28 @@ def test_add_block_refuses_a_full_row():
         sess.add_block(0, 628)
     assert e.value.status == 400
     assert c.swaps == []
+
+
+def test_split_block_delegates_to_add_split_and_rereads():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    reads0 = c.reads
+    st = sess.split_block(0, 2)
+    assert c.splits_added == [(0, 2)]        # delegated to the engine add_split
+    assert c.reads > reads0                   # re-read happened
+    assert "paths" in st
+
+
+def test_split_block_surfaces_add_split_guard_error_as_400():
+    c = FakeClient()
+    c.split_fail = HelixError("block 20 is on lane B; add_split operates on 1..11")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.split_block(0, 20)
+    assert e.value.status == 400
+    assert "cannot split here" in str(e.value)
 
 
 def test_swap_model_rejects_an_endpoint_or_routing_block():

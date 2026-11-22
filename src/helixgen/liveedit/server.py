@@ -78,6 +78,8 @@ def _route(session: LiveSession, path: str, b: dict):
                                   _int(b, "model_id"))
     if path == "/add-block":
         return session.add_block(_int(b, "path"), _int(b, "model_id"))
+    if path == "/add-split":
+        return session.split_block(_int(b, "path"), _int(b, "block"))
     if path == "/snapshot":
         return session.activate_snapshot(_int(b, "index"))
     if path == "/preset":
