@@ -959,6 +959,40 @@ class HelixClient:
                    ("i", int(model_id))])
         return True
 
+    def do_agenda(self, ops: Sequence[Dict[str, int]]) -> bool:
+        """Apply a topology-edit transaction to the LIVE edit buffer.
+
+        ``/doAgenda [reqid, msgpack(op-list)]`` — the device applies the ops in
+        place and echoes ``/setEditBuffer`` on network 2001 (no
+        ``/loadContentRef``, no CID change, no reload), exactly as the Helix
+        Stadium app's move/split does. Build ``ops`` with the helpers in
+        :mod:`helixgen.device.agenda` (``move``/``swap``/``set_model``/
+        ``split``/``merge``/``clear``). Single-model placement/swap is NOT an
+        agenda op — use :meth:`set_block_model` (``/ModelSet``), whose ``sub``
+        arg addresses a dual-cab 2nd model.
+
+        Decoded 2026-11-22 (frida MITM of the app's 2002 socket). Raises
+        :class:`HelixError` on an empty op list, an explicit ``/error`` reply,
+        or a non-zero ``/status`` code; returns True once the device accepts
+        the transaction.
+        """
+        ops = list(ops)
+        if not ops:
+            raise HelixError("do_agenda: empty op list")
+        msgpack = self._load_msgpack()
+        # Fire the transaction. Like the other live-ops (``/ModelSet``,
+        # ``/BlockEnableSet``) the authoritative confirmation is the 2001 echo
+        # (here ``/setEditBuffer``), NOT the 2002 reply: the device acks
+        # ``/doAgenda`` on the ``/error`` address with a code that does not
+        # distinguish success — HW 2026-11-22 saw BOTH ``/error [reqid, 0, ""]``
+        # and ``/error [reqid, 1, 1]`` accompany an APPLIED agenda — so there is
+        # nothing reliable to gate on here. A genuine transport failure still
+        # raises from :meth:`_rpc`. Callers that need confirmation re-read the
+        # buffer (:meth:`edit_buffer_blocks`) or watch the ``/setEditBuffer``
+        # echo on the 2001 subscriber.
+        self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
+        return True
+
     @staticmethod
     def _blks_pairs(dsp: Any):
         """Yield ``(grid_slot, block_dict)`` pairs from a flow entry's
