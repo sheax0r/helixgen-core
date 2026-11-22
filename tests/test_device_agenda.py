@@ -151,6 +151,34 @@ def test_cli_topology_verbs_help_contract():
     assert "--sub" in model and "dual-cab" in model
 
 
+def test_do_agenda_status_nonzero_raises():
+    from helixgen.device.osc import osc_encode
+    h = HelixClient("10.0.0.99")
+    h._rid = iter([91])
+    bad = osc_encode("/status", [("i", 91), ("i", 5)])
+    _wire(h, frames=[bad])
+    with pytest.raises(HelixError):
+        h.do_agenda([agenda.clear(bloc=1)])
+
+
+def test_do_agenda_error_code_zero_ack_ok():
+    # The other observed ack variant: /error [rid, 0, ""] on an applied agenda.
+    from helixgen.device.osc import osc_encode
+    h = HelixClient("10.0.0.99")
+    h._rid = iter([92])
+    ok = osc_encode("/error", [("i", 92), ("i", 0), ("s", "")])
+    _wire(h, frames=[ok])
+    assert h.do_agenda([agenda.clear(bloc=1)]) is True
+
+
+@pytest.mark.parametrize("src,dst", [(0, 5), (5, 13), (14, 5), (5, 27)])
+def test_move_block_rejects_io_slots(src, dst):
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.move_block(0, src, dst)
+
+
 def test_do_agenda_tolerates_error_address_ack():
     # HW fact (2026-11-22): the device acks an APPLIED agenda on the /error
     # address with a code that does NOT indicate failure (both 0 and 1 seen on

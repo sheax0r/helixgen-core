@@ -3,7 +3,9 @@
 // Parses the OSC address, filters the chatty /dspEvent + /heartbeat streams,
 // and forwards full payloads (as raw data) for offline decoding.
 
-const DEVICE_IP = '192.168.4.84';
+// Device OSC ports (2001 PUB, 2002 RPC, 2003 telemetry). peerForFd filters on
+// these, not on a peer IP — the USB transport is IPv6 and the old IPv4 filter
+// caught nothing. 2001-2003 on localhost would also match; fine for a debug tool.
 const NOISE = ['/dspEvent', '/heartbeat', '/meter', '/vu'];  // suppressed unless SEND
 
 const getpeername = new NativeFunction(
@@ -157,4 +159,4 @@ function hookIovSend(name, iovArg, cntArg, viaMsghdr) {
         + ' close=' + !!scl + ' fsync=' + !!sfs + ' fstat=' + !!sst + ' exec=' + !!cps });
 }
 
-send({ dir: 'INFO', msg: 'OSC hooks installed for ' + DEVICE_IP + '; symbols=' + installed.join(',') });
+send({ dir: 'INFO', msg: 'OSC hooks installed (device ports 2001-2003, any peer — IP filter dropped for USB/IPv6); symbols=' + installed.join(',') });

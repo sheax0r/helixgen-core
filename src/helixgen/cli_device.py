@@ -1936,10 +1936,10 @@ def device_bypass(path: int, block: int, state: str, ip: str, port: int) -> None
 @click.argument("path", type=int)
 @click.argument("block", type=int)
 @click.argument("model")
-@click.option("--sub", type=int, default=0,
+@click.option("--sub", type=click.IntRange(0, 1), default=0,
               help="Sub-position within the block: 0 = primary model (default), "
                    "1 = a dual-cab 2nd cab (place a cab model with --sub 1 at an "
-                   "existing cab block's slot).")
+                   "existing cab block's slot). Only 0 and 1 are known.")
 @_device_option
 @_locked("editbuffer", verb="model")
 def device_model(path: int, block: int, model: str, sub: int,
@@ -1978,9 +1978,12 @@ def device_move_block(path: int, src: int, dst: int, ip: str, port: int) -> None
     """Move a block to a new grid slot in the live signal chain (PATH SRC DST).
 
     SRC/DST are `device blocks` grid slots on DSP PATH (lane A = 0..13, lane B
-    = 14..27). The device applies it in place and echoes `/setEditBuffer` — no
-    reload. A topology edit (`/doAgenda [{movb}]`); not written to the preset
-    until you save.
+    = 14..27). `movb` relocates the block, EXCHANGING it with whatever is at DST
+    (an empty DST is a plain move); I/O slots (0/13/14/27) are rejected. Moving
+    into lane B without the matching split/merge wiring orphans the block — for
+    parallel routing use the full split agenda. HW-validated on DSP 0. The
+    device applies it in place and echoes `/setEditBuffer` — no reload. A
+    topology edit (`/doAgenda [{movb}]`); not written to the preset until save.
     """
     with _connect(ip, port) as h:
         h.move_block(path, src, dst)

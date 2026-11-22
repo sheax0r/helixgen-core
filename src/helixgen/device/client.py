@@ -967,13 +967,28 @@ class HelixClient:
     def move_block(self, path: int, src: int, dst: int) -> bool:
         """Move the block at grid slot ``src`` to slot ``dst`` on DSP ``path``
         in the live edit buffer (``/doAgenda [{movb}]``). Grid slots are
-        ``device blocks`` coordinates (lane A = 0..13, lane B = 14..27). The
-        device applies it in place and echoes ``/setEditBuffer`` (no reload).
-        To exchange two adjacent blocks use the ``swap`` op directly via
-        :meth:`do_agenda`; see :mod:`helixgen.device.agenda`."""
+        ``device blocks`` coordinates (lane A = 0..13, lane B = 14..27).
+
+        HW-validated for a within-lane move on DSP 0, where ``movb`` relocates
+        the block, **exchanging** it with whatever occupies ``dst`` (an empty
+        ``dst`` is a plain move). ``path`` is sent as the agenda ``flow`` on both
+        ends (``flow`` == DSP index is confirmed for flow 0 only). Moving across
+        to lane B (14..27) without the matching ``spld``/``jono`` wiring leaves
+        an orphan block, so for parallel routing build the full split agenda via
+        :meth:`do_agenda`; and to exchange two blocks the ``swap`` op is more
+        direct. The device echoes ``/setEditBuffer`` (no reload).
+
+        Raises :class:`HelixError` if ``src`` or ``dst`` is an input/output slot
+        (0, 13, 14, 27) — those are fixed and not movable.
+        """
+        src_s, dst_s = _grid_slot(src), _grid_slot(dst)
+        io = {0, 13, 14, 27}
+        if src_s in io or dst_s in io:
+            raise HelixError(
+                f"move_block: slots {sorted(io)} are fixed input/output blocks "
+                f"and cannot be moved (got src={src}, dst={dst})")
         return self.do_agenda([_agenda.move(
-            bl_s=_grid_slot(src), bl_d=_grid_slot(dst),
-            fl_s=int(path), fl_d=int(path))])
+            bl_s=src_s, bl_d=dst_s, fl_s=int(path), fl_d=int(path))])
 
     def do_agenda(self, ops: Sequence[Dict[str, int]]) -> bool:
         """Apply a topology-edit transaction to the LIVE edit buffer.
@@ -988,25 +1003,26 @@ class HelixClient:
         arg addresses a dual-cab 2nd model.
 
         Decoded 2026-11-22 (frida MITM of the app's 2002 socket). Raises
-        :class:`HelixError` on an empty op list, an explicit ``/error`` reply,
-        or a non-zero ``/status`` code; returns True once the device accepts
-        the transaction.
+        :class:`HelixError` on an empty op list, a transport failure (from
+        :meth:`_rpc`), or a non-zero ``/status`` code. The ``/error`` reply is
+        NOT a failure gate: HW saw both ``/error [reqid, 0, ""]`` and
+        ``/error [reqid, 1, 1]`` accompany an *applied* agenda, so its code does
+        not distinguish success. Like the other live-ops (``/ModelSet``), the
+        authoritative confirmation is the 2001 ``/setEditBuffer`` echo; a True
+        return means the device accepted the transaction, not that a re-read
+        has confirmed it — callers that need that re-read
+        :meth:`edit_buffer_blocks` or watch the 2001 subscriber.
         """
         ops = list(ops)
         if not ops:
             raise HelixError("do_agenda: empty op list")
         msgpack = self._load_msgpack()
-        # Fire the transaction. Like the other live-ops (``/ModelSet``,
-        # ``/BlockEnableSet``) the authoritative confirmation is the 2001 echo
-        # (here ``/setEditBuffer``), NOT the 2002 reply: the device acks
-        # ``/doAgenda`` on the ``/error`` address with a code that does not
-        # distinguish success — HW 2026-11-22 saw BOTH ``/error [reqid, 0, ""]``
-        # and ``/error [reqid, 1, 1]`` accompany an APPLIED agenda — so there is
-        # nothing reliable to gate on here. A genuine transport failure still
-        # raises from :meth:`_rpc`. Callers that need confirmation re-read the
-        # buffer (:meth:`edit_buffer_blocks`) or watch the ``/setEditBuffer``
-        # echo on the 2001 subscriber.
-        self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
+        replies = self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
+        # /error is ambiguous (see above) so it is not gated; a /status with a
+        # non-zero code, if the device ever sends one, is an honest failure.
+        for addr, args in replies:
+            if addr == "/status" and len(args) >= 2 and args[1] != 0:
+                raise HelixError(f"/doAgenda failed, status {args[1]}")
         return True
 
     @staticmethod
