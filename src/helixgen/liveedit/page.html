@@ -1087,7 +1087,7 @@ async function openModelPicker(b) {
 async function openSecondCabPicker(b, currentId) {
   if (down) return;
   if (!MODELS) {
-    const r = await fetch("/models").then((x) => x.json()).catch(() => null);
+    const r = await fetch("/models").then((x) => x.ok ? x.json() : null).catch(() => null);
     if (!r) { const { body } = modal("2nd cab"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
     MODELS = r;
   }

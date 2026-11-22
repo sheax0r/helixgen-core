@@ -473,33 +473,75 @@ class LiveSession:
         confirm the result on the rig. Volatile until Save.
         """
         pth, blk, mid = int(path), int(block), int(model_id)
-        with self.cond:
-            self._require_up()
-            cur = self._blocks.get((pth, blk)) if self._blocks else None
-        if cur is None:
-            raise LiveError("no such block on the loaded tone "
-                            "(did the preset change?)", status=404)
-        if cur.get("category") not in _CAB_CATEGORIES:
-            raise LiveError("only a cab block can carry a 2nd cab.", status=400)
         if defs.model_name_for(mid) is None:
             raise LiveError(f"unknown model id {mid}", status=400)
         if defs.category_for(mid) not in _CAB_CATEGORIES:
             raise LiveError("the 2nd cab must be a cab model.", status=400)
-        if mid == (cur.get("second_model") or {}).get("model_id"):
-            return self.public_state()           # already that 2nd cab: no-op
+        err: Optional[Exception] = None
+        applied = True
+        skip = False
         self._ensure_lease(None)
         try:
             with self.devlock:
+                with self.cond:
+                    self._require_up()
+                # Validate against the CURRENT buffer under the lock — the block
+                # may have moved / the preset changed since the page rendered, and
+                # sub=1 on a non-cab slot is unverified device behaviour. Mirrors
+                # move_block / add_block (closes the TOCTOU swap_model still has).
                 try:
-                    self.client.set_block_model(pth, blk, mid, sub=1)
+                    eb = self.client.read_edit_buffer(fast=True)
                 except (HelixError, OSError) as e:
                     self._set_connected(False)
-                    raise LiveError(f"device 2nd-cab set failed: {e}",
-                                    status=502) from e
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                cur = self._block_at(eb, pth, blk)
+                if cur is None:
+                    raise LiveError("no such block on the loaded tone "
+                                    "(did the preset change?)", status=404)
+                if cur.get("category") not in _CAB_CATEGORIES:
+                    raise LiveError("only a cab block can carry a 2nd cab.",
+                                    status=400)
+                if mid == (cur.get("second_model") or {}).get("model_id"):
+                    skip = True                  # already that 2nd cab: no-op
+                else:
+                    try:
+                        self.client.set_block_model(pth, blk, mid, sub=1)
+                    except (HelixError, OSError) as e:
+                        err = e
+                    else:                        # verify the 2nd cab actually landed
+                        try:
+                            after = self._block_at(
+                                self.client.read_edit_buffer(fast=True), pth, blk)
+                        except (HelixError, OSError) as e:
+                            err = e
+                        else:
+                            applied = bool(after and (after.get("second_model")
+                                           or {}).get("model_id") == mid)
         finally:
             self.lease.done()
+        if err is not None:
+            self._set_connected(False)
+            raise LiveError(f"device 2nd-cab set failed: {err}",
+                            status=502) from err
+        if skip:
+            return self.public_state()
+        if not applied:
+            self._reread_quiet()
+            raise LiveError("the device did not apply the 2nd cab", status=502)
         self.load()                              # re-read: the dual cab
         return self.public_state()
+
+    @staticmethod
+    def _block_at(eb: Any, path: int, slot: int):
+        """The editor block dict at grid ``slot`` on ``path`` from a live buffer,
+        or ``None`` — carries ``category`` and ``second_model`` (see chain._block)."""
+        flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+        if not (isinstance(flow, list) and 0 <= path < len(flow)):
+            return None
+        for s, raw in _chain._blks_pairs(flow[path]):
+            if s == slot:
+                return _chain._block(path, slot, raw)
+        return None
 
     def add_block(self, path: int, model_id: int) -> dict:
         """Append a new processing block to DSP ``path``'s main row (row 0).
