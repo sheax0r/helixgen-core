@@ -654,7 +654,8 @@ const PANES = [{ id: "flow", label: "Signal flow", el: () => $("rig") }];
 let activePane = "flow";
 function addPane(p) {                      // { id, label, el:()=>Element, onShow?(active) }
   if (PANES.some((x) => x.id === p.id)) return;
-  PANES.push(p); renderTabs();
+  PANES.push(p);
+  showPane(activePane);                    // enforce single-pane visibility (hide the newcomer)
 }
 function showPane(id) {
   if (!PANES.some((p) => p.id === id)) return;
