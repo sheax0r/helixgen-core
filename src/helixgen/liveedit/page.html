@@ -215,6 +215,10 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
   background:#2c66d6;border:2px solid #cfe0ff;box-shadow:0 0 7px rgba(44,102,214,.7);pointer-events:none}
 .lensrd{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
 body.down .lenspad{opacity:.5;pointer-events:none}
+/* cab mic-placement pad: concentric speaker cone (X=distance, Y=position) */
+.lenspad.cab{background:
+  radial-gradient(circle at 50% 50%,transparent 0 14px,rgba(95,132,214,.14) 14px 15px,transparent 15px 28px,rgba(95,132,214,.12) 28px 29px,transparent 29px 44px,rgba(95,132,214,.10) 44px 45px,transparent 45px),
+  var(--panel2)}
 /* EQ graphic lens — frequency-response curve */
 .eqlens{margin-top:12px;display:inline-flex;flex-direction:column;gap:5px}
 .eqsvg{border:1px solid var(--edge2);border-radius:10px;background:var(--panel2);touch-action:none;display:block}
@@ -599,17 +603,18 @@ function pickAxis(params, rx, denyRx) {           // first continuous param whos
 }
 const padFrac = (p, v) => (v - p.min) / (span(p) || 1);                 // value -> 0..1
 const padVal = (p, f) => clampV(p, p.min + Math.max(0, Math.min(1, f)) * span(p)); // 0..1 -> value
-function lensEl(b, px, py) {
+function lensEl(b, px, py, opts) {            // opts: {cls, lab} — a generic 2-param XY pad
+  opts = opts || {};
   const keyX = b.path + "/" + b.block + "/" + px.pid;
   const keyY = b.path + "/" + b.block + "/" + py.pid;
   const wrap = el("div", "lens");
   // a pointer convenience over the two knobs — NOT focusable; keyboard users
   // drive the same params via the knobs (which keep arrow/Home/End handling)
-  const pad = el("div", "lenspad");
-  pad.title = "Amp lens — " + px.label + " (horizontal) × " + py.label + " (vertical)";
+  const pad = el("div", "lenspad" + (opts.cls ? " " + opts.cls : ""));
+  pad.title = (opts.lab || "Lens") + " — " + px.label + " (horizontal) × " + py.label + " (vertical)";
   const dot = el("div", "lensdot"), rd = el("div", "lensrd");
   pad.append(dot);
-  wrap.append(el("div", "lenslab", "⊹ " + px.label + " × " + py.label), pad, rd);
+  wrap.append(el("div", "lenslab", "⊹ " + (opts.lab || px.label + " × " + py.label)), pad, rd);
   const paint = () => {
     dot.style.left = (Math.max(0, Math.min(1, padFrac(px, px.value))) * 100) + "%";
     dot.style.top = ((1 - Math.max(0, Math.min(1, padFrac(py, py.value)))) * 100) + "%";  // up = more
@@ -798,6 +803,11 @@ function blockEl(b) {
   if (b.category === "eq") {                  // graphic-EQ curve (freq-named gain bands)
     const bands = eqBands(main);
     if (bands.length >= 3) root.append(eqLensEl(b, bands));
+  }
+  if (b.category === "cab_ir_interp") {       // cab mic placement: Distance × Position on a cone pad
+    const dist = pickAxis(main, /^\s*distance\s*$/i), pos = pickAxis(main, /^\s*position\s*$/i);
+    if (dist && pos && dist.pid !== pos.pid)
+      root.append(lensEl(b, dist, pos, { cls: "cab", lab: "Mic placement" }));
   }
   if (extra.length) {
     const more = el("button", "more"), row = el("div", "ctl internal");
