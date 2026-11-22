@@ -683,12 +683,22 @@ Level/Pan/Mute/Solo is **not a device property** (ruling out a Global-EQ-style
 - **H3** — not echoed on the 2001 PUB stream → decode needs a Frida outbound
   capture (`tools/hook_sockets.js`, as for `/doAgenda`).
 
-Splitting H2/H3 needs an **app-drive capture** (drive one matrix control in the
-Stadium app while `device watch` reads 2001). That step was **blocked this
-session** — the computer-use grant to control the Stadium app was denied — so the
-opcode stays capture-pending. (`device watch` itself was verified: an idle device
-emits only `/dspEvent` telemetry.) `helixgen` emits no matrix write; this is the
-follow-on `device matrix` epic's first step.
+**The LAN-watch capture path is a dead end — HW-shown 2026-11-22.** Driving the
+desktop Stadium app for ~5 min (every view + output endpoint) while `device
+watch` ran produced **11,680 frames, all port-2003 telemetry; zero on 2001**. The
+desktop app ↔ device link is **USB and is not mirrored on the LAN 2001 PUB**, so a
+LAN subscriber (`device watch`) never sees the app's writes — this is why the
+`/doAgenda` capture used **Frida on the app socket**, not `device watch`. (Qualifies
+the §6 note that 2001 echoes "the desktop editor": true for a LAN or hardware
+change, not a USB-app one.) Moreover, no global Matrix-Mixer screen was found in
+the desktop app (Home / Librarian / Command Center / Global EQ / Song + the output
+endpoint all checked) — only the **per-preset output-block "Matrix" destination**
+(route a path into the matrix; `/setParamValue` on the edit buffer). The manual's
+touchscreen gestures ("swipe", "tap-hold the Matrix title") suggest it is a
+**hardware-panel** screen. So decoding the opcode needs **Frida on a build that
+exposes the matrix** (unconfirmed any does) or **hardware-panel capture**; if
+neither surfaces an opcode it is a won't-do. `helixgen` emits no matrix write; see
+the spec for the follow-on `device matrix` scope.
 
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
 
