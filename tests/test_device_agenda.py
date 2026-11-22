@@ -120,6 +120,37 @@ def test_do_agenda_empty_raises():
         h.do_agenda([])
 
 
+def test_move_block_sends_movb():
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    assert h.move_block(1, 6, 8) is True
+    _, vals = _sent_doagenda(h)
+    assert msgpack.unpackb(vals[1], raw=False) == [
+        agenda.move(bl_s=6, bl_d=8, fl_s=1, fl_d=1)]
+
+
+def test_set_block_model_sub_wire():
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    assert h.set_block_model(0, 9, 464, sub=1) is True
+    raw = h.sock.sent[-1]
+    addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    vals = [v for _t, v in args]
+    assert addr == "/ModelSet"
+    assert vals[1:] == [0, 9, 1, 464]  # [reqid, path, slot, sub, modelId]
+
+
+def test_cli_topology_verbs_help_contract():
+    # The new live-ops verbs' behavioral contract lives in their --help.
+    from click.testing import CliRunner
+    from helixgen.cli import cli
+    r = CliRunner()
+    move = r.invoke(cli, ["device", "move-block", "--help"]).output
+    assert "movb" in move and "lane B" in move
+    model = r.invoke(cli, ["device", "model", "--help"]).output
+    assert "--sub" in model and "dual-cab" in model
+
+
 def test_do_agenda_tolerates_error_address_ack():
     # HW fact (2026-11-22): the device acks an APPLIED agenda on the /error
     # address with a code that does NOT indicate failure (both 0 and 1 seen on

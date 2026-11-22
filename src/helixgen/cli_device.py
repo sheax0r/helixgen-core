@@ -1936,15 +1936,21 @@ def device_bypass(path: int, block: int, state: str, ip: str, port: int) -> None
 @click.argument("path", type=int)
 @click.argument("block", type=int)
 @click.argument("model")
+@click.option("--sub", type=int, default=0,
+              help="Sub-position within the block: 0 = primary model (default), "
+                   "1 = a dual-cab 2nd cab (place a cab model with --sub 1 at an "
+                   "existing cab block's slot).")
 @_device_option
 @_locked("editbuffer", verb="model")
-def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
+def device_model(path: int, block: int, model: str, sub: int,
+                 ip: str, port: int) -> None:
     """Set a block's model in the live edit buffer (PATH BLOCK MODEL).
 
     PATH/BLOCK are `device blocks` coordinates (BLOCK = the grid slot, sent
     unchanged). MODEL is a numeric model id or a model-id string like
     `HD2_AmpBritPlexiNrm` (see `list-blocks`). The device rejects a
-    cross-category swap. Changes the ACTIVE tone. `/ModelSet`.
+    cross-category swap. `--sub 1` addresses a dual-cab 2nd cab. Changes the
+    ACTIVE tone. `/ModelSet`.
     """
     from helixgen.device import defs as _defs
 
@@ -1957,8 +1963,28 @@ def device_model(path: int, block: int, model: str, ip: str, port: int) -> None:
                 f"unknown model {model!r}; pass a numeric model id or an exact "
                 "model-id string (see `helixgen list-blocks`)")
     with _connect(ip, port) as h:
-        h.set_block_model(path, block, model_id)
-    click.echo(f"path {path} block {block} -> model {model} ({model_id})")
+        h.set_block_model(path, block, model_id, sub=sub)
+    tail = f" sub {sub}" if sub else ""
+    click.echo(f"path {path} block {block}{tail} -> model {model} ({model_id})")
+
+
+@device.command(name="move-block")
+@click.argument("path", type=int)
+@click.argument("src", type=int)
+@click.argument("dst", type=int)
+@_device_option
+@_locked("editbuffer", verb="move-block")
+def device_move_block(path: int, src: int, dst: int, ip: str, port: int) -> None:
+    """Move a block to a new grid slot in the live signal chain (PATH SRC DST).
+
+    SRC/DST are `device blocks` grid slots on DSP PATH (lane A = 0..13, lane B
+    = 14..27). The device applies it in place and echoes `/setEditBuffer` — no
+    reload. A topology edit (`/doAgenda [{movb}]`); not written to the preset
+    until you save.
+    """
+    with _connect(ip, port) as h:
+        h.move_block(path, src, dst)
+    click.echo(f"path {path} block {src} -> slot {dst}")
 
 
 @device.command(name="reorder")

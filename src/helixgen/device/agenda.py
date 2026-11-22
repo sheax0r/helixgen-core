@@ -62,7 +62,14 @@ def merge(bloc: int, bblk: int, flow: int = 0) -> Dict[str, int]:
 
 
 def clear(bloc: int, flow: int = 0) -> Dict[str, int]:
-    """``clrb`` — clear/remove the block at grid slot ``bloc``."""
+    """``clrb`` — clear/remove the block at grid slot ``bloc``.
+
+    Wire shape pinned to the app's capture, but a STANDALONE ``clrb`` agenda had
+    no effect on a Stadium XL (2026-11-22) — the app's Edit>Clear selects the
+    block first, so ``clrb`` likely needs a ``/setSelectedBlock`` prerequisite
+    or only applies inside a compound agenda (it appears in the remove-split
+    sequence alongside ``setm``). Not yet exposed as a client method; resolve
+    the prerequisite before wiring one."""
     return {"cmnd": _cc("clrb"), "flow": int(flow), "bloc": int(bloc)}
 
 

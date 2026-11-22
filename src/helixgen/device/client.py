@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .osc import osc_encode, parse_osc_message
 from . import content as _content
+from . import agenda as _agenda
 from . import settings as _settings
 from . import globaleq as _globaleq
 from . import defs as _defs
@@ -944,20 +945,35 @@ class HelixClient:
         """
         return self._save_preset_with_cid(int(cid))
 
-    def set_block_model(self, path: int, block: int, model_id: int) -> bool:
+    def set_block_model(self, path: int, block: int, model_id: int,
+                        sub: int = 0) -> bool:
         """Set a block's model in the live edit buffer.
 
-        ``/ModelSet [reqid, dsp, grid_slot, sub=0, modelId]``. ``block`` is
+        ``/ModelSet [reqid, dsp, grid_slot, sub, modelId]``. ``block`` is
         the grid slot printed by ``device blocks`` (sent unchanged; see
         :func:`_grid_slot`). ``model_id`` is the numeric model id (see
-        :mod:`helixgen.device.defs`). The device rejects a cross-category swap;
-        the app also re-attaches controllers + pushes the new model's param
-        defaults (not replayed here).
+        :mod:`helixgen.device.defs`). ``sub`` is the model's sub-position
+        within the block: ``0`` is the primary model; ``1`` addresses a
+        **dual-cab 2nd cab** (HW-confirmed 2026-11-22 — placing a cab with
+        ``sub=1`` at an existing cab block's slot makes it a dual cab). The
+        device rejects a cross-category swap; the app also re-attaches
+        controllers + pushes the new model's param defaults (not replayed here).
         """
         self._rpc("/ModelSet",
-                  [("i", int(path)), ("i", _grid_slot(block)), ("i", 0),
+                  [("i", int(path)), ("i", _grid_slot(block)), ("i", int(sub)),
                    ("i", int(model_id))])
         return True
+
+    def move_block(self, path: int, src: int, dst: int) -> bool:
+        """Move the block at grid slot ``src`` to slot ``dst`` on DSP ``path``
+        in the live edit buffer (``/doAgenda [{movb}]``). Grid slots are
+        ``device blocks`` coordinates (lane A = 0..13, lane B = 14..27). The
+        device applies it in place and echoes ``/setEditBuffer`` (no reload).
+        To exchange two adjacent blocks use the ``swap`` op directly via
+        :meth:`do_agenda`; see :mod:`helixgen.device.agenda`."""
+        return self.do_agenda([_agenda.move(
+            bl_s=_grid_slot(src), bl_d=_grid_slot(dst),
+            fl_s=int(path), fl_d=int(path))])
 
     def do_agenda(self, ops: Sequence[Dict[str, int]]) -> bool:
         """Apply a topology-edit transaction to the LIVE edit buffer.
