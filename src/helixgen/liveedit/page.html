@@ -60,6 +60,16 @@ body.down .banner{display:block}
 .snap-btn:hover{border-color:#5f84d6}
 .snap-btn.on{background:#2c66d6;border-color:#2c66d6;color:#fff;font-weight:700}
 body.down .snaprow{opacity:.5;pointer-events:none}
+/* pane-host tab strip (81v.1): hidden until a second pane registers */
+.tabs{display:flex;gap:6px;padding:8px 20px 0;border-bottom:1px solid var(--edge)}
+.tabs[hidden]{display:none}
+.tab{background:transparent;border:1px solid transparent;border-bottom:none;color:var(--dim);
+  border-radius:9px 9px 0 0;padding:7px 15px;cursor:pointer;font-size:13px;font-weight:600}
+.tab:hover{color:var(--ink)}
+.tab.active{background:var(--panel2);border-color:var(--edge2);color:var(--ink)}
+.pane[hidden]{display:none}
+/* signal-flow chrome belongs to the flow pane — hide it on another pane */
+body.pane-other .snaprow,body.pane-other .adjrow{display:none}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -156,7 +166,7 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .cat{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--acc)}
 .nm.swappable{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
 .splitbtn{font-size:11px;padding:2px 7px;margin-right:6px;border-radius:5px;border:1px solid var(--faint);background:transparent;color:var(--faint);cursor:pointer;white-space:nowrap}
-.splitbtn:hover{color:var(--fg);border-color:var(--fg)}
+.splitbtn:hover{color:var(--ink);border-color:var(--ink)}
 .nm{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xl{font-size:10px;font-weight:700;letter-spacing:.08em;color:#ffd58a;border:1px solid #6d5522;
   background:#2a2110;border-radius:999px;padding:2px 8px;white-space:nowrap}
@@ -262,7 +272,8 @@ body.down main{opacity:.55}
   <span class="adjhint" id="adjhint"></span>
   <span class="adjlegend"><b class="lg-up">↑ turn up for more</b><b class="lg-down">↓ turn down for more</b></span>
 </div>
-<main id="rig"></main>
+<nav class="tabs" id="tabs" hidden aria-label="Editor panes"></nav>
+<main id="rig" class="pane"></main>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <div id="toasts"></div>
 <script>
@@ -397,10 +408,10 @@ function applyHist(e, val) {      // false = the entry no longer names the same 
   if (!c || c.tag !== e.tag) return false;
   c.set(val); queue(e.kind, e.key); return true;
 }
-function undo() { if (down) return; let e;
+function undo() { if (down || activePane !== "flow") return; let e;
   while ((e = undoS.pop())) if (applyHist(e, e.before)) { redoS.push(e); break; }
   syncHist(); }
-function redo() { if (down) return; let e;
+function redo() { if (down || activePane !== "flow") return; let e;
   while ((e = redoS.pop())) if (applyHist(e, e.after)) { undoS.push(e); break; }
   syncHist(); }
 function syncHist() { $("undo").disabled = down || !undoS.length; $("redo").disabled = down || !redoS.length; }
@@ -633,6 +644,56 @@ function renderSnaps() {
     row.append(b);
   });
 }
+/* ---------- pane host (81v.1 shell) ----------------------------------------
+ * The editor hosts named panes; "Signal flow" (#rig) is built in. A follow-on
+ * panel (e.g. 81v.5 Device settings) calls addPane() once, appends its own
+ * <section class="pane"> to the body, and namespaces its server routes under
+ * /<id>/… (see server.py). The host is VISIBILITY ONLY — a pane owns its data
+ * and refresh, so the signal-flow state loop is never touched. The tab strip
+ * shows only once a 2nd pane exists, so nothing dead ships before then.
+ * Contract: docs/superpowers/specs/2026-11-22-live-editor-pane-host-design.md */
+const PANES = [{ id: "flow", label: "Signal flow", el: () => $("rig") }];
+let activePane = "flow";
+function addPane(p) {                      // { id, label, el:()=>Element, onShow?(active) }
+  if (!p || !p.id || !p.label || typeof p.el !== "function") return;  // half-registration guard
+  if (PANES.some((x) => x.id === p.id)) return;
+  PANES.push(p);
+  showPane(activePane);                    // enforce single-pane visibility (hide the newcomer)
+}
+function showPane(id) {
+  if (!PANES.some((p) => p.id === id)) return;
+  activePane = id;
+  const flow = id === "flow";
+  PANES.forEach((p) => {                    // fire onShow only on a real change (idempotent-safe)
+    const e = p.el(); if (!e) return;
+    const was = e.hidden, now = p.id !== id;
+    e.hidden = now;
+    if (p.onShow && was !== now) p.onShow(!now);
+  });
+  // The signal-flow chrome (snapshots, adjective search, Undo/Redo) belongs to
+  // the flow pane: hide it and neuter undo/redo on another pane so a shortcut
+  // can't revert a hidden edit. A pane with no edit history of its own.
+  document.body.classList.toggle("pane-other", !flow);
+  $("undo").disabled = !flow || down || !undoS.length;
+  $("redo").disabled = !flow || down || !redoS.length;
+  renderTabs();
+}
+function renderTabs() {
+  const strip = $("tabs"); if (!strip) return;
+  strip.hidden = PANES.length < 2;         // single pane → no chrome
+  strip.textContent = "";
+  if (strip.hidden) return;
+  strip.setAttribute("role", "tablist");
+  PANES.forEach((p) => {
+    const active = p.id === activePane;
+    const t = el("button", "tab" + (active ? " active" : ""), p.label);
+    t.type = "button"; t.setAttribute("role", "tab");
+    t.setAttribute("aria-selected", active ? "true" : "false");
+    t.onclick = () => showPane(p.id);
+    strip.append(t);
+  });
+}
+
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
 function render() {
