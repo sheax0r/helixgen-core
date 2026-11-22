@@ -659,6 +659,10 @@ function eqLensEl(b, bands) {
   bands.forEach((bnd) => { const key = b.path + "/" + b.block + "/" + bnd.p.pid, c = P.get(key);
     if (!c) return; const ps = c.set, pf = c.fail;   // keep the curve in sync (set/remote/fail)
     c.set = (v, how) => { ps(v, how); paint(); }; c.fail = (v) => { pf(v); paint(); }; });
+  // client Y -> viewBox units, using the CONTENT box (so the 1px border under
+  // box-sizing:border-box and any CSS scale don't bias the gain)
+  const vbY = (clientY) => { const r = svg.getBoundingClientRect();
+    const ch = svg.clientHeight || H; return (clientY - r.top - svg.clientTop) * H / ch; };
   bands.forEach((bnd, i) => {
     const key = b.path + "/" + b.block + "/" + bnd.p.pid, p = bnd.p, h = handles[i];
     h.addEventListener("pointerdown", (e) => {
@@ -667,9 +671,9 @@ function eqLensEl(b, bands) {
       try { h.setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
       const id = e.pointerId, v0 = p.value, c = P.get(key); if (!c) return;
       dragging = key;                            // single param — knob-identical lock
-      const at = (m) => { const r = svg.getBoundingClientRect();
-        const yy = (m.clientY - r.top) * H / (r.height || H);   // client px -> viewBox units
-        const v = padVal(p, yToFrac(yy));
+      const grab = vbY(e.clientY) - yAt(gFrac(p));   // keep the grab point: no jump on first move
+      const at = (m) => {
+        const v = padVal(p, yToFrac(vbY(m.clientY) - grab));
         if (v !== p.value) { c.set(v); queue("param", key); }
         rd.textContent = (p.name || p.label) + "   " + fmt(p, p.value); };
       // no write on a bare click; the first move sets the gain
@@ -678,6 +682,7 @@ function eqLensEl(b, bands) {
         h.removeEventListener("pointermove", move);
         ["pointerup", "pointercancel", "lostpointercapture"].forEach((nm) => h.removeEventListener(nm, up));
         if (dragging === key) dragging = null;
+        rd.textContent = "";                     // readout shows only during a drag — never stale
         if (p.value !== v0) record("param", key, v0, p.value); };
       h.addEventListener("pointermove", move);
       ["pointerup", "pointercancel", "lostpointercapture"].forEach((nm) => h.addEventListener(nm, up));
