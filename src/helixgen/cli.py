@@ -221,6 +221,15 @@ def _warn_superseded(spec: Any, library: Library) -> None:
               help="Headphones close-mic High Cut ceiling (Hz), mirrored onto the "
                    "room IR; `off` disables it. Default: the `headphones_highcut_hz` "
                    "preference (8000).")
+@click.option("--prompt-summary", "prompt_summary", default=None,
+              help="One-line summary of the tone request; stored as per-variant "
+                   "provenance (library flow only).")
+@click.option("--research-summary", "research_summary", default=None,
+              help="One-line summary of the authoring research/rationale; stored "
+                   "as per-variant provenance (library flow only).")
+@click.option("--plugin-version", "plugin_version", default=None,
+              help="Plugin/skill version authoring this tone; stored as per-variant "
+                   "provenance (the engine version is recorded automatically).")
 @_library_option
 @_irs_option
 def generate_cmd(
@@ -234,6 +243,9 @@ def generate_cmd(
     room_ir: str | None,
     room_mode: str,
     room_highcut: str | None,
+    prompt_summary: str | None,
+    research_summary: str | None,
+    plugin_version: str | None,
     library_path: Path | None,
     irs_dir: Path | None,
 ) -> None:
@@ -493,6 +505,20 @@ def generate_cmd(
         # metadata/manifest bookkeeping hits an unexpected error, surface it as
         # a clean ClickException rather than a raw traceback.
         try:
+            from datetime import datetime, timezone
+
+            from helixgen import __version__ as _engine_version
+            provenance: dict = {
+                "recipe": json.loads(Path(spec_path).read_text()),
+                "engine_version": _engine_version,
+                "authored_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if prompt_summary:
+                provenance["prompt_summary"] = prompt_summary
+            if research_summary:
+                provenance["research_summary"] = research_summary
+            if plugin_version:
+                provenance["plugin_version"] = plugin_version
             meta = tone_meta.upsert_variant(
                 existing,
                 artist=r_artist, song=r_song, descriptor=r_descriptor,
@@ -500,6 +526,7 @@ def generate_cmd(
                 hsp_path=out,
                 venue=venue_target,
                 venue_detail=venue_res.venue_detail if venue_res else None,
+                provenance=provenance,
             )
             tone_meta.save_tone_meta(meta)  # atomic write + advisory commit
             _auto_register_tone(out)
@@ -2087,9 +2114,15 @@ from helixgen.cli_device import device, _auto_upload_irs  # noqa: E402,F401
 # `cli_device` above.
 from helixgen.cli_library import library as library_group, describe as describe_cmd  # noqa: E402
 
+# The change registry (tone-affecting fixes) and its `changes` changelog verb.
+# Importing changes_entries registers every entry onto changes.REGISTRY.
+from helixgen.changes import changes_cmd  # noqa: E402
+from helixgen import changes_entries  # noqa: E402,F401  (side effect: registers entries)
+
 cli.add_command(device)
 cli.add_command(library_group)
 cli.add_command(describe_cmd)
+cli.add_command(changes_cmd)
 
 
 if __name__ == "__main__":  # allow `python -m helixgen.cli ...`
