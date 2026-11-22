@@ -598,9 +598,12 @@ function control(p, b) {
  * Pure UI over the existing /param write path — it reuses the two params'
  * controls already registered in P, so the knobs and the dot stay in sync and
  * remote/SSE updates repaint the dot through the same controls. */
-function pickAxis(params, rx, denyRx) {           // first continuous param whose name matches
-  return (params || []).find((p) => !p.internal && p.ctl !== "toggle" && p.ctl !== "select"
-    && rx.test(p.name || "") && !(denyRx && denyRx.test(p.name || ""))) || null;
+function pickAxis(params, rx, denyRx) {           // first continuous param whose DISPLAY name matches
+  // match p.label (display: "High Gain", "125 Hz") — p.name is the raw wire key
+  // ("HighGain", "125Hz"), which the role/freq regexes don't parse (hgc review)
+  return (params || []).find((p) => { const nm = p.label || p.name || "";
+    return !p.internal && p.ctl !== "toggle" && p.ctl !== "select"
+      && rx.test(nm) && !(denyRx && denyRx.test(nm)); }) || null;
 }
 const padFrac = (p, v) => (v - p.min) / (span(p) || 1);                 // value -> 0..1
 const padVal = (p, f) => clampV(p, p.min + Math.max(0, Math.min(1, f)) * span(p)); // 0..1 -> value
@@ -672,9 +675,11 @@ function parseHz(s) {
   return (isFinite(f) && f > 0) ? (m[2] ? f * 1000 : f) : null;
 }
 function eqBands(params) {
+  // parse the DISPLAY label ("31.25 Hz", "16 kHz") — the raw name ("31p25Hz")
+  // doesn't parse, which silently dropped bands before (hgc review)
   return (params || [])
     .filter((p) => !p.internal && p.ctl !== "toggle" && p.ctl !== "select")
-    .map((p) => ({ p, hz: parseHz(p.name || p.label) }))
+    .map((p) => ({ p, hz: parseHz(p.label || p.name) }))
     .filter((x) => x.hz != null)
     .sort((a, b) => a.hz - b.hz);
 }
@@ -685,7 +690,7 @@ function eqLensEl(b, bands) {
   const yAt = (f) => PAD + (1 - f) * (H - 2 * PAD);
   const yToFrac = (y) => 1 - (y - PAD) / (H - 2 * PAD);
   const wrap = el("div", "eqlens");
-  const svg = sv("svg", { class: "eqsvg", width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  const svg = sv("svg", { class: "eqsvg", width: W, height: H, viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "none" });
   const p0 = bands[0].p;                       // zero-dB guide from the first band's range
   if (p0.min < 0 && p0.max > 0) svg.append(sv("line", { class: "eqzero",
     x1: PAD, y1: yAt((0 - p0.min) / (span(p0) || 1)), x2: W - PAD, y2: yAt((0 - p0.min) / (span(p0) || 1)) }));
@@ -744,14 +749,18 @@ const freqFrac = (p) => Math.max(0, Math.min(1, (_lg(p.value) - _lg(p.min)) / ((
 const freqOfFrac = (p, f) => { f = Math.max(0, Math.min(1, f));   // snap endpoints exactly (no exp/log epsilon)
   return f <= 0 ? p.min : f >= 1 ? p.max : clampV(p, Math.exp(_lg(p.min) + f * (_lg(p.max) - _lg(p.min)))); };
 function eqBandsParam(params) {
-  const by = {}; (params || []).forEach((p) => { if (p.name) by[p.name.toLowerCase()] = p; });
+  // key on the DISPLAY label ("High Gain"/"High Freq"); the raw name is
+  // unspaced ("HighGain") so " freq"/" enable" lookups would miss (hgc review)
+  const nm = (p) => (p.label || p.name || "");
+  const by = {}; (params || []).forEach((p) => { by[nm(p).toLowerCase()] = p; });
+  const cont = (p) => p && !p.internal && p.ctl !== "toggle" && p.ctl !== "select";
   const out = [];
   (params || []).forEach((g) => {
-    if (g.internal || g.ctl === "toggle" || g.ctl === "select") return;
-    const m = /^(.*?)\s*gain\s*$/i.exec(g.name || ""); if (!m) return;
+    if (!cont(g)) return;
+    const m = /^(.*?)\s*gain\s*$/i.exec(nm(g)); if (!m) return;
     const pre = m[1].trim(); if (!pre) return;
     const f = by[(pre + " freq").toLowerCase()];
-    if (!f || f.internal || f.pid === g.pid) return;
+    if (!cont(f) || f.pid === g.pid || !(f.min > 0)) return;   // need a positive-min freq to log-scale
     out.push({ fp: f, gp: g, en: by[(pre + " enable").toLowerCase()] || null, label: pre });
   });
   return out.sort((a, b) => a.fp.value - b.fp.value);
@@ -762,7 +771,7 @@ function eqParamLensEl(b, bands) {
   const xAt = (fp) => PAD + freqFrac(fp) * (W - 2 * PAD);
   const yAt = (gp) => PAD + (1 - gFrac(gp)) * (H - 2 * PAD);
   const wrap = el("div", "eqlens");
-  const svg = sv("svg", { class: "eqsvg", width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  const svg = sv("svg", { class: "eqsvg", width: W, height: H, viewBox: "0 0 " + W + " " + H, preserveAspectRatio: "none" });
   const g0 = bands[0].gp;                       // 0 dB guide from the first band's gain range
   if (g0.min < 0 && g0.max > 0) { const zy = PAD + (1 - (0 - g0.min) / (span(g0) || 1)) * (H - 2 * PAD);
     svg.append(sv("line", { class: "eqzero", x1: PAD, y1: zy, x2: W - PAD, y2: zy })); }
@@ -772,8 +781,9 @@ function eqParamLensEl(b, bands) {
   const paint = () => bands.forEach((bnd, i) => {
     pts[i].setAttribute("cx", xAt(bnd.fp).toFixed(1));
     pts[i].setAttribute("cy", yAt(bnd.gp).toFixed(1));
-    const off = bnd.en && bnd.en.value < 0.5;   // disabled band -> dim, still draggable
+    const off = bnd.en && bnd.en.value < 0.5;   // disabled band -> dim + no hit (enable via its knob first)
     pts[i].setAttribute("opacity", off ? "0.3" : "1");
+    pts[i].setAttribute("pointer-events", off ? "none" : "auto");
   });
   // keep points synced with knob/remote/fail on either the freq OR gain param
   bands.forEach((bnd) => [bnd.fp, bnd.gp, bnd.en].forEach((p) => { if (!p) return;
@@ -878,21 +888,6 @@ function blockEl(b) {
   root.append(hd);
   const main = b.params.filter((p) => !p.internal), extra = b.params.filter((p) => p.internal);
   if (main.length) { const row = el("div", "ctl"); main.forEach((p) => row.append(control(p, b))); root.append(row); }
-  if (roleOf(b) === "amp") {                 // amp lens: Drive × Level on one pad (controls already in P)
-    const px = pickAxis(main, /\b(drive|gain)\b/i, /master/i);
-    const py = pickAxis(main, /\b(master|volume|level)\b|ch.*vol/i);
-    if (px && py && px.pid !== py.pid) root.append(lensEl(b, px, py));
-  }
-  if (b.category === "eq") {                  // graphic-EQ curve, else parametric Freq×Gain points
-    const g = eqBands(main);
-    if (g.length >= 3) root.append(eqLensEl(b, g));
-    else { const pb = eqBandsParam(main); if (pb.length >= 2) root.append(eqParamLensEl(b, pb)); }
-  }
-  if (b.category === "cab_ir_interp") {       // cab mic placement: Distance × Position on a cone pad
-    const dist = pickAxis(main, /^\s*distance\s*$/i), pos = pickAxis(main, /^\s*position\s*$/i);
-    if (dist && pos && dist.pid !== pos.pid)
-      root.append(lensEl(b, dist, pos, { cls: "cab", lab: "Mic placement" }));
-  }
   if (extra.length) {
     const more = el("button", "more"), row = el("div", "ctl internal");
     const paint = () => { row.hidden = !openInternal.has(key);
@@ -901,6 +896,23 @@ function blockEl(b) {
     extra.forEach((p) => row.append(control(p, b)));
     more.onclick = () => { openInternal.has(key) ? openInternal.delete(key) : openInternal.add(key); paint(); };
     paint(); root.append(more, row);
+  }
+  // Lenses come AFTER both control rows so EVERY control (incl. internal, e.g. a
+  // parametric EQ band's Enable) is registered in P before a lens wraps it.
+  if (roleOf(b) === "amp") {                 // amp lens: Drive × Level on one pad
+    const px = pickAxis(main, /\b(drive|gain)\b/i, /master/i);
+    const py = pickAxis(main, /\b(master|volume|level)\b|ch.*vol/i);
+    if (px && py && px.pid !== py.pid) root.append(lensEl(b, px, py));
+  }
+  if (b.category === "eq") {                  // graphic-EQ curve, else parametric Freq×Gain points
+    const g = eqBands(main);
+    if (g.length >= 3) root.append(eqLensEl(b, g));
+    else { const pb = eqBandsParam(b.params); if (pb.length >= 2) root.append(eqParamLensEl(b, pb)); }
+  }
+  if (b.category === "cab_ir_interp") {       // cab mic placement: Distance × Position on a cone pad
+    const dist = pickAxis(main, /^\s*distance\s*$/i), pos = pickAxis(main, /^\s*position\s*$/i);
+    if (dist && pos && dist.pid !== pos.pid)
+      root.append(lensEl(b, dist, pos, { cls: "cab", lab: "Mic placement" }));
   }
   // Dual-cab SECOND model (hgc-5gh): shown READ-ONLY — its values are in the
   // edit buffer, but it has no known live-write address yet, so no knobs.
