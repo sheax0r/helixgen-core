@@ -990,6 +990,68 @@ class HelixClient:
         return self.do_agenda([_agenda.move(
             bl_s=src_s, bl_d=dst_s, fl_s=int(path), fl_d=int(path))])
 
+    def add_split(self, path: int, block: int) -> bool:
+        """Split the block at lane-A grid slot ``block`` onto a NEW parallel
+        lane B — synthesized topology (the app's drag-down-to-parallel).
+
+        Mirrors the app: the block moves to lane B (slot ``block+14``), a split
+        node is inserted at ``block`` and a join at ``block+1``, and the lane-A
+        blocks after it shift right by one to make room (``/doAgenda`` of
+        ``movb``/``setm``/``spld``/``jono`` ops; HW-validated 2026-11-22). The
+        device applies it in place and echoes ``/setEditBuffer`` — no reload.
+
+        ``block`` must be a lane-A block in **1..11** (the join lands at
+        ``block+1``, which must stay off the output at slot 13). add_split reads
+        the live buffer and **refuses** (raising :class:`HelixError`) unless the
+        split is unambiguously safe — no DSP flow ``path``; ``block`` out of
+        1..11; no block at ``block``; a later block would be shifted onto the
+        output; or **lane B already carries content** (any of slots 15..26
+        occupied). The lane-B rule keeps this to the FIRST parallel section on a
+        series chain: an existing split already occupies lane B and breaks the
+        ``col``→``col+14`` mapping and the shift invariant. After sending, it
+        re-reads and confirms the block reached lane B — the 2002 reply code is
+        not a success gate — raising if the device did not apply it.
+        """
+        col = _grid_slot(block)
+        # Valid lane-A columns: 1..11. 0/13 are I/O; 12 would put the join on the
+        # output (slot 13); 14+ is lane B.
+        if not 1 <= col <= _agenda.LANE_A_LAST - 2:
+            raise HelixError(
+                f"add_split needs a lane-A block in 1..{_agenda.LANE_A_LAST - 2} "
+                f"(got slot {block}): 0/13 are I/O, 12 would collide with the "
+                "output, 14+ is lane B")
+        p = int(path)
+        flow = self.read_edit_buffer().get("sfg_", {}).get("flow", [])
+        if not (isinstance(flow, list) and 0 <= p < len(flow)):
+            raise HelixError(f"no DSP flow {path} in the edit buffer")
+        occupied = {s for s, _ in self._blks_pairs(flow[p])}
+        if col not in occupied:
+            raise HelixError(f"no block at path {path} slot {block} to split")
+        # Lane B content (slots 15..26) must be empty: this op builds the FIRST
+        # parallel section on a series chain. An existing split occupies lane B,
+        # and its presence breaks the col->col+14 mapping this op relies on.
+        if any(_agenda.LANE_B_OFFSET < s < 27 for s in occupied):
+            raise HelixError(
+                "lane B already carries a parallel section — add_split builds "
+                "the first split on a series chain only (slots 15..26 must be "
+                "free)")
+        later = sorted(s for s in occupied if col < s < _agenda.LANE_A_LAST)
+        # Later blocks shift +1 (to make room for the join); the highest must not
+        # land on the output at slot 13.
+        if later and max(later) >= _agenda.LANE_A_LAST - 1:
+            raise HelixError(
+                "not enough room on lane A: shifting the later blocks would "
+                "reach the output block (slot 13)")
+        lane_b = col + _agenda.LANE_B_OFFSET
+        self.do_agenda(_agenda.split_out(col, later, flow=p))
+        after = {s for s, _ in self._blks_pairs(
+            self.read_edit_buffer()["sfg_"]["flow"][p])}
+        if lane_b not in after:
+            raise HelixError(
+                f"add_split: the device did not apply the split (lane B slot "
+                f"{lane_b} is still empty after the transaction)")
+        return True
+
     def do_agenda(self, ops: Sequence[Dict[str, int]]) -> bool:
         """Apply a topology-edit transaction to the LIVE edit buffer.
 
@@ -1003,26 +1065,22 @@ class HelixClient:
         arg addresses a dual-cab 2nd model.
 
         Decoded 2026-11-22 (frida MITM of the app's 2002 socket). Raises
-        :class:`HelixError` on an empty op list, a transport failure (from
-        :meth:`_rpc`), or a non-zero ``/status`` code. The ``/error`` reply is
-        NOT a failure gate: HW saw both ``/error [reqid, 0, ""]`` and
-        ``/error [reqid, 1, 1]`` accompany an *applied* agenda, so its code does
-        not distinguish success. Like the other live-ops (``/ModelSet``), the
-        authoritative confirmation is the 2001 ``/setEditBuffer`` echo; a True
-        return means the device accepted the transaction, not that a re-read
-        has confirmed it — callers that need that re-read
-        :meth:`edit_buffer_blocks` or watch the 2001 subscriber.
+        :class:`HelixError` only on an empty op list or a transport failure
+        (from :meth:`_rpc`). The 2002 **reply code does NOT distinguish
+        success** and is not gated on: HW saw ``/error [reqid, 0, ""]``,
+        ``/error [reqid, 1, 1]`` AND ``/status [reqid, 1]`` all accompany an
+        *applied* agenda (a synthesized split landed under ``/status 1``,
+        2026-11-23). Like the other live-ops (``/ModelSet``), the authoritative
+        confirmation is the 2001 ``/setEditBuffer`` echo; a True return means
+        the device accepted the transaction, not that a re-read has confirmed
+        it — callers that need that re-read :meth:`edit_buffer_blocks` or watch
+        the 2001 subscriber.
         """
         ops = list(ops)
         if not ops:
             raise HelixError("do_agenda: empty op list")
         msgpack = self._load_msgpack()
-        replies = self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
-        # /error is ambiguous (see above) so it is not gated; a /status with a
-        # non-zero code, if the device ever sends one, is an honest failure.
-        for addr, args in replies:
-            if addr == "/status" and len(args) >= 2 and args[1] != 0:
-                raise HelixError(f"/doAgenda failed, status {args[1]}")
+        self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
         return True
 
     @staticmethod

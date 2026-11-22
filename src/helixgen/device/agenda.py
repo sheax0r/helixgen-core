@@ -61,6 +61,40 @@ def merge(bloc: int, bblk: int, flow: int = 0) -> Dict[str, int]:
             "bloc": int(bloc), "bblk": int(bblk)}
 
 
+# Routing-node models + the lane geometry, decoded from captured splits + the
+# device's own `sfg_` wiring (2026-11-22/23). A split at lane-A column C puts
+# its parallel block on lane B at slot C + LANE_B_OFFSET.
+SPLIT_MODEL, SPLIT_TYPE = 475, 3   # "App DSP Split Y"
+JOIN_MODEL, JOIN_TYPE = 478, 4     # "App DSP Join"
+LANE_B_OFFSET = 14                 # lane A col C -> lane B slot C+14 (slots 14..27)
+LANE_A_LAST = 13                   # output slot on lane A
+
+
+def split_out(col: int, later_cols, flow: int = 0):
+    """Agenda that splits the block at lane-A ``col`` onto a NEW parallel lane B
+    (the app's drag-down-to-parallel, synthesized). Moves that block to lane B
+    (slot ``col+14``), inserts a split node at ``col`` and a join at ``col+1``,
+    and shifts the lane-A blocks in ``later_cols`` (those at columns > ``col``)
+    right by one to make room for the join. Returns the op list for
+    :meth:`HelixClient.do_agenda`; the caller owns slot-freedom/capacity checks
+    (see :meth:`HelixClient.add_split`)."""
+    if not 1 <= col <= LANE_A_LAST - 2:
+        raise ValueError(f"split column must be a lane-A block in 1..{LANE_A_LAST-2}, got {col}")
+    later_cols = list(later_cols)
+    if any(c <= col for c in later_cols):
+        raise ValueError(f"later_cols must all be > {col}, got {sorted(later_cols)}")
+    ops = [move(col, col + LANE_B_OFFSET, flow, flow)]
+    for c in sorted(later_cols, reverse=True):   # highest first, avoid collisions
+        ops.append(move(c, c + 1, flow, flow))
+    ops += [
+        set_model(col, SPLIT_MODEL, SPLIT_TYPE, flow=flow),
+        split(col, col + LANE_B_OFFSET, flow),
+        set_model(col + 1, JOIN_MODEL, JOIN_TYPE, flow=flow),
+        merge(col + 1, col + 1 + LANE_B_OFFSET, flow),
+    ]
+    return ops
+
+
 def clear(bloc: int, flow: int = 0) -> Dict[str, int]:
     """``clrb`` — clear/remove the block at grid slot ``bloc``.
 

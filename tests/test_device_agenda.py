@@ -140,6 +140,108 @@ def test_set_block_model_sub_wire():
     assert vals[1:] == [0, 9, 1, 464]  # [reqid, path, slot, sub, modelId]
 
 
+def test_split_out_builder():
+    # split out lane-A col 3 with a later block at col 4 (shift case). Pinned to
+    # the HW-validated structure: block->laneB, split@col, join@col+1, shift.
+    ops = agenda.split_out(3, [4], flow=0)
+    assert ops == [
+        agenda.move(3, 17),          # block col3 -> lane B slot 17
+        agenda.move(4, 5),           # shift the later block right
+        agenda.set_model(3, 475, 3), # split node
+        agenda.split(3, 17),         # spld: split@3 -> lane B 17
+        agenda.set_model(4, 478, 4), # join node
+        agenda.merge(4, 18),         # jono: join@4 <- lane B 18
+    ]
+
+
+def _flow(*slots):
+    """A stubbed edit buffer whose flow 0 occupies the given grid slots."""
+    blks = []
+    for s in slots:
+        blks += [s, {}]
+    return {"sfg_": {"flow": [{"blks": blks}]}}
+
+
+# col 12 would land the join on the output (slot 13); 0/13 are I/O; 14+ is lane B.
+@pytest.mark.parametrize("block", [0, 12, 13, 14, 20, 27])
+def test_add_split_rejects_non_lane_a(block):
+    h = HelixClient("10.0.0.99")
+    with pytest.raises(HelixError):
+        h.add_split(0, block)  # guarded before any buffer read
+
+
+def test_split_out_builder_rejects_bad_col():
+    import pytest as _p
+    with _p.raises(ValueError):
+        agenda.split_out(12, [])        # join would hit the output
+    with _p.raises(ValueError):
+        agenda.split_out(3, [2])        # later col <= split col
+
+
+def test_add_split_wire_shift_case():
+    h = HelixClient("10.0.0.99")
+    # 1st read = before (series 1,2,3); 2nd read = after (lane B 16 now holds it)
+    reads = iter([_flow(0, 1, 2, 3, 13), _flow(0, 2, 3, 4, 13, 16)])
+    h.read_edit_buffer = lambda **k: next(reads)
+    _wire(h)
+    assert h.add_split(0, 2) is True  # splits col 2, shifts col 3
+    _, vals = _sent_doagenda(h)
+    assert msgpack.unpackb(vals[1], raw=False) == agenda.split_out(2, [3], flow=0)
+
+
+def test_add_split_wire_no_shift_case():
+    h = HelixClient("10.0.0.99")
+    reads = iter([_flow(0, 1, 2, 13), _flow(0, 1, 2, 3, 13, 16)])
+    h.read_edit_buffer = lambda **k: next(reads)
+    _wire(h)
+    assert h.add_split(0, 2) is True  # last block, no shift
+    _, vals = _sent_doagenda(h)
+    assert msgpack.unpackb(vals[1], raw=False) == agenda.split_out(2, [], flow=0)
+
+
+def test_add_split_rejects_occupied_lane_b():
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow(2, 16)  # lane B 16 already used
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 2)
+
+
+def test_add_split_rejects_no_block_there():
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow(0, 1, 13)  # nothing at slot 2
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 2)
+
+
+def test_add_split_rejects_capacity():
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow(1, 2, 12, 13)  # a block at 12 -> shift to 13
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 1)
+
+
+@pytest.mark.parametrize("path", [-1, 3])
+def test_add_split_rejects_bad_path(path):
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow(0, 1, 2, 13)  # only flow 0
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(path, 1)
+
+
+def test_add_split_raises_if_not_applied():
+    h = HelixClient("10.0.0.99")
+    # before OK, but after the send lane B 16 is still empty -> device didn't apply
+    reads = iter([_flow(0, 1, 2, 13), _flow(0, 1, 2, 13)])
+    h.read_edit_buffer = lambda **k: next(reads)
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 2)
+
+
 def test_cli_topology_verbs_help_contract():
     # The new live-ops verbs' behavioral contract lives in their --help.
     from click.testing import CliRunner
@@ -149,16 +251,20 @@ def test_cli_topology_verbs_help_contract():
     assert "movb" in move and "lane B" in move
     model = r.invoke(cli, ["device", "model", "--help"]).output
     assert "--sub" in model and "dual-cab" in model
+    split = r.invoke(cli, ["device", "add-split", "--help"]).output
+    assert "parallel" in split and "lane B" in split
 
 
-def test_do_agenda_status_nonzero_raises():
+def test_do_agenda_status_nonzero_is_tolerated():
+    # HW fact (2026-11-23): a synthesized split APPLIED while the device replied
+    # /status 1, so the reply code is NOT a failure gate — do_agenda must not
+    # mistake it for a rejection (the 2001 echo is the real confirmation).
     from helixgen.device.osc import osc_encode
     h = HelixClient("10.0.0.99")
     h._rid = iter([91])
-    bad = osc_encode("/status", [("i", 91), ("i", 5)])
-    _wire(h, frames=[bad])
-    with pytest.raises(HelixError):
-        h.do_agenda([agenda.clear(bloc=1)])
+    status1 = osc_encode("/status", [("i", 91), ("i", 1)])
+    _wire(h, frames=[status1])
+    assert h.do_agenda([agenda.clear(bloc=1)]) is True
 
 
 def test_do_agenda_error_code_zero_ack_ok():
