@@ -36,6 +36,9 @@ class FakeClient:
         self.swaps = []          # (path, block, model_id) from set_block_model
         self.splits_added = []   # (path, block) from add_split
         self.split_fail = None   # set to an exception to make add_split raise
+        self.moves = []          # (path, src, dst) from move_block
+        self.move_fail = None    # set to an exception to make move_block raise
+        self.move_noop = False   # record the move but do NOT mutate (device ignored it)
         self.ack = True
         self.fail: Exception | None = None
         self.last_request_id = None
@@ -110,6 +113,27 @@ class FakeClient:
         if self.split_fail is not None:
             raise self.split_fail
         self.splits_added.append((int(path), int(block)))
+        return self.ack
+
+    def move_block(self, path, src, dst):
+        self._next()
+        if self.move_fail is not None:
+            raise self.move_fail
+        self.moves.append((int(path), int(src), int(dst)))
+        if self.move_noop:
+            return self.ack
+        # reflect the movb EXCHANGE in the buffer so a verify re-read sees it
+        flow = (self.eb.get("sfg_") or {}).get("flow") or []
+        if 0 <= int(path) < len(flow):
+            blks = flow[int(path)].get("blks")
+            if isinstance(blks, list):
+                pos = {blks[i]: i + 1 for i in range(0, len(blks) - 1, 2)
+                       if isinstance(blks[i], int) and not isinstance(blks[i], bool)}
+                si, di = pos.get(int(src)), pos.get(int(dst))
+                if si is not None and di is not None:
+                    blks[si], blks[di] = blks[di], blks[si]       # exchange
+                elif si is not None:
+                    blks[si - 1] = int(dst)                        # plain move to empty dst
         return self.ack
 
     def get_property(self, key):
@@ -1287,6 +1311,85 @@ def test_split_block_maps_transport_failure_to_502_and_disconnects():
     sess.load()
     with pytest.raises(LiveError) as e:
         sess.split_block(0, 2)
+    assert e.value.status == 502
+    assert sess.public_state()["connected"] is False
+
+
+def test_move_block_delegates_to_move_block_and_rereads():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    reads0 = c.reads
+    st = sess.move_block(0, 2, 1)
+    assert c.moves == [(0, 2, 1)]                 # delegated to the engine move
+    assert c.reads > reads0                        # re-read happened
+    assert "paths" in st
+
+
+def test_move_block_rejects_a_no_op_same_slot_move():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 2, 2)
+    assert e.value.status == 400
+    assert c.moves == []                           # never reached the device
+
+
+def test_move_block_rejects_an_out_of_range_slot():
+    # a stale page / direct caller sending an I/O or lane-B slot is refused
+    # BEFORE any device write — no orphaned block.
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    for s, d in [(0, 2), (2, 13), (2, 16)]:        # input, output, lane B
+        with pytest.raises(LiveError) as e:
+            sess.move_block(0, s, d)
+        assert e.value.status == 400
+    assert c.moves == []
+
+
+def test_move_block_rejects_a_missing_source_block():
+    # src must be an occupied processing slot in the LIVE buffer
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 5, 1)                    # slot 5 is empty in _rig()
+    assert e.value.status == 400
+    assert c.moves == []
+
+
+def test_move_block_surfaces_engine_guard_error_as_400():
+    c = FakeClient()
+    c.move_fail = HelixError("move_block: slots [0, 13, 14, 27] are fixed")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 2, 1)                    # valid slots; engine refuses
+    assert e.value.status == 400
+    assert "cannot move here" in str(e.value)
+
+
+def test_move_block_raises_502_when_the_device_ignores_the_agenda():
+    # the 2002 reply is meaningless, so a silent no-op must surface as an error
+    c = FakeClient()
+    c.move_noop = True
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 2, 1)
+    assert e.value.status == 502
+    assert c.moves == [(0, 2, 1)]                   # it DID fire; just didn't land
+
+
+def test_move_block_maps_transport_failure_to_502_and_disconnects():
+    c = FakeClient()
+    c.move_fail = OSError("socket dead")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block(0, 2, 1)
     assert e.value.status == 502
     assert sess.public_state()["connected"] is False
 
