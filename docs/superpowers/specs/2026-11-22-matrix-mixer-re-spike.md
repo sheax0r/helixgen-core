@@ -1,16 +1,20 @@
 # Matrix Mixer protocol — RE spike + `device matrix` verb design (`helixgen-81v.8`)
 
-**Status:** RE spike — read-only, driven on hardware (Stadium XL fw 1.4.1,
-2026-11-22). Two findings close most of the question: **(1) H1 ruled out** — the
-matrix per-channel plane is **not a device property** (live catalog glob, 457
-defs, zero matrix keys). **(2) The app-capture-over-LAN path is a dead end** —
-driving the desktop Stadium app for ~5 min produced **zero** LAN 2001 frames (all
-11,680 were port-2003 telemetry): app↔device is USB and not mirrored on the LAN
-PUB, and the desktop app does not appear to expose the global Matrix Mixer at all
-(only the per-preset output-block "Matrix" destination). So the per-channel wire
-opcode stays **undecoded**, and the realistic follow-on is Frida-on-app (iff a
-build exposes it) or hardware-panel capture — or a won't-do. **No device-write
-code ships from this spike.**
+**Status:** RE spike — driven on hardware (Stadium XL fw 1.4.1, 2026-11-22),
+incl. a validated **Frida** capture of the Helix Stadium **Debug** app. Three
+findings now **close the question**: **(1) H1 ruled out** — the matrix
+per-channel plane is **not a device property** (live catalog glob, 457 defs, zero
+matrix keys). **(2) The desktop editor has no global Matrix Mixer screen** —
+retail *and* the re-signed Debug build expose only Home / Librarian / Command
+Center / Global EQ / Song (+ the per-preset output-block "Matrix" *destination*);
+no monitor-mix faders anywhere (nav views + output endpoint + Window/Devices
+menus all checked). **(3) The capture pipeline works** — Frida on the Debug app
+cleanly captured `/BlockEnableSet` + `/ParamValueSet` (SEND on 2002) with 2001
+echoes + 2002 acks, so (2) is a genuine *absence*, not a missed capture.
+**Conclusion: the Matrix Mixer is a hardware-front-panel feature with no
+editor-protocol surface — `device matrix` is a WON'T-DO via the desktop protocol**
+(only a future app build that adds the screen, or hardware-panel RE, could change
+that). **No device-write code ships from this spike.**
 **Date:** 2026-11-22. **Firmware target:** Stadium XL, app v1.4 / fw 1.4.1.
 
 Companion to the UI design (`sheax0r/helixgen` PR #94,
@@ -91,7 +95,8 @@ the three `global.midi.matrix.ch.*` above). So the mixer plane is **not** a
 modeled `global.*` / `dsp.*` property today, and HX Edit sources matrix state
 from the connect-time sync, not a per-key read (same as Global EQ).
 
-**Three hypotheses for the wire form** — **H1 ruled out on hardware**, H2/H3 open:
+**Three hypotheses for the wire form** — **H1 ruled out; H2/H3 moot** once the app
+was found to have no matrix screen (below). Kept for the record:
 
 - **(H1) Undocumented property keys. — RULED OUT (HW, Stadium XL fw 1.4.1,
   2026-11-22).** A live `/MatchingPropertyDefinitionsGet` glob of the **device's
@@ -122,25 +127,33 @@ hooking USB/IPv6 `send`/`recv`), not `device watch`. The 2001-echo note in
 `helix-protocol.md §6` ("the desktop editor" echoes on 2001) holds for a
 LAN-connected or hardware change, **not** a USB-app one.
 
-**And the desktop app may not even expose the global matrix.** Walking all five
-top-nav views (Home, Librarian, Command Center, Global EQ, Song) plus the output
-endpoint found **no** global Matrix-Mixer screen. The only "Matrix" in the
-desktop editor is the **per-preset Output block's destination selector** ("Matrix
-1/4", XLR, Phones" — route this path into the matrix; Pan/Level are the preset's,
-written via `/setParamValue` on the edit buffer) — **not** the device-global
-monitor-mix faders. The manual describes the Matrix Mixer with touchscreen
-gestures ("swipe", "tap-hold the Matrix title", "Knob 1~8"), i.e. the **hardware
-front-panel** screen. So it is plausible the Matrix Mixer has **no desktop-editor
-surface at all**, only the hardware panel.
+**And the desktop app does not expose the global matrix — CONFIRMED with Frida.**
+Walking all five top-nav views (Home, Librarian, Command Center, Global EQ, Song)
+plus the output endpoint and the Window/Devices menus found **no** global
+Matrix-Mixer screen, in **both** the retail app and the Frida-hookable **Debug**
+build. The only "Matrix" in the desktop editor is the **per-preset Output block's
+destination selector** ("Matrix 1/4", XLR, Phones" — route this path into the
+matrix; Pan/Level are the preset's, written via `/setParamValue`) — **not** the
+device-global monitor-mix faders. The manual describes the Matrix Mixer with
+touchscreen gestures ("swipe", "tap-hold the Matrix title", "Knob 1~8"): it is the
+**hardware front-panel** screen.
 
-**Consequence:** H2 (dedicated opcode) can't be confirmed from the desktop app —
-there may be nothing to drive, and even if there were, its writes wouldn't reach
-a LAN subscriber. Two real paths remain for the follow-on epic (§7): Frida on the
-app **iff** a build exposes the matrix, or capturing the **hardware panel**'s own
-traffic. If neither surfaces an opcode, the matrix is **not reachable via the
-editor protocol** — a won't-do, not a codec.
+**This is a real absence, not a missed capture.** A Frida hook on the Debug app
+(§6.3) cleanly captured a known app write — toggling a block bypass produced
+`SEND 2002 /BlockEnableSet`, a `/ParamValueSet` for a param edit, plus the 2001
+echo and 2002 ack — so the pipeline works; there simply is no matrix UI to drive.
 
-## 4. `device matrix` verb design (proposed — gated on §3 resolving)
+**Conclusion:** the Matrix Mixer has **no editor-protocol surface**. H2 cannot be
+confirmed because the app never emits a matrix opcode (there is no screen for it),
+and H3's only capture tool (Frida) has nothing to hook. `device matrix` is a
+**won't-do via the desktop protocol** — see §7 for the (narrow, deferred) escape
+hatches.
+
+## 4. `device matrix` verb design (reference only — blocked; see §3/§7)
+
+> This design is **not actionable today** — §3 found no editor-protocol surface to
+> drive the matrix, so there is no opcode to implement against. It is kept as the
+> target shape **if** a future app build exposes the Matrix Mixer (§7 hatch 1).
 
 Grounded in the manual's control set and the Global EQ verb shape. The exact
 argument encoding follows from which hypothesis holds; the **surface** is the
@@ -218,49 +231,50 @@ writes — this method cannot capture app traffic (see §3). Separately, no glob
 Matrix-Mixer screen was found in the desktop app (§3), so there may be nothing to
 drive here regardless.
 
-### 6.3 Frida outbound capture — the real remaining path (NOT run)
-The only way to see app→device writes is a Frida hook on the app's socket:
-`tools/hook_sockets.js` + `tools/re_capture.py` against the **re-signed Helix
-Stadium Debug** app (`~/Helix Stadium Debug.app` is present) over USB/IPv6 — the
-method that pinned `/doAgenda`. **Frida is not installed this session**
-(`pip install frida`, re-sign per `tools/resign-debug-app.sh`, spawn via
-`frida_spawn.py`, hook, drive). **But this only helps if a Stadium build exposes
-the global Matrix Mixer as a drivable screen** — unconfirmed; the v1.4 desktop
-app did not (§3). If no app build drives it, the remaining source is the
-**hardware front panel** itself (not scriptable here), or the matrix has no
-editor-protocol opcode at all.
+### 6.3 Frida outbound capture — RUN on the Debug app; **validated, no matrix UI**
+Attached Frida (`tools/frida_run.py` + `hook_sockets.js`) to the re-signed
+**Helix Stadium Debug** app (`~/Helix Stadium Debug.app`, pid-visible, Frida
+17.15.4) over USB/IPv6. **The hook works**: toggling a block's bypass in the app
+captured `SEND 2002 /BlockEnableSet` (+ the 2001 `/setBlockEnable` echo and the
+2002 `/status` ack); param edits captured `/ParamValueSet`. This is the same
+method that pinned `/doAgenda`, now re-verified end to end. **But the Debug build
+has the same five views as retail and no Matrix Mixer screen** — so there is
+nothing to drive, and no matrix opcode exists to capture. (Confirmed the device
+link is IPv6/USB — `Devices` menu shows `Helix Stadium XL (fd0a:…::1)` — which is
+why a LAN `device watch` subscriber, §6.2, saw none of this app traffic.) The
+preset edit buffer was left as found (bypass toggled off→on, nothing saved;
+verified via a LAN `device blocks` read).
 
 ---
 
 ## 7. Recommended scope for the follow-on epic (`device matrix`)
 
-This spike **narrowed the epic sharply**: the easy paths (property codec, LAN
-watch) are closed. Do these in order, and **stop early if a step fails** — each
-is a go/no-go gate:
+This spike **resolved the question**: every path to a `device matrix` over the
+editor protocol is closed. The feasibility gate (does any Stadium build drive the
+matrix?) was **run and failed** — retail and the Frida-hookable Debug build both
+lack the screen, and the Frida capture is proven working (`/BlockEnableSet` +
+`/ParamValueSet` captured), so this is a real absence, not a tooling gap.
 
-1. **Feasibility gate first (cheap).** Confirm whether *any* Stadium build (retail
-   or Debug) exposes the global Matrix Mixer as a drivable screen. The v1.4
-   desktop app did **not** (only the per-preset output block). If no build drives
-   it, the only source is the hardware front panel, and `device matrix` is likely
-   a **won't-do** (no editor-protocol opcode) — document and stop.
-2. **If a build drives it:** `pip install frida`, re-sign the Debug app
-   (`tools/resign-debug-app.sh`), spawn + hook (`tools/frida_spawn.py` +
-   `hook_sockets.js`), and drive one matrix control at a time (fader/pan/mute/
-   solo/reset per output). Decode the outbound opcode from the capture. (This is
-   H2; there is no property path — H1 is out.)
-3. **Then build** `matrix.py` (offline codec, golden-blob tests) +
-   `client.set_matrix` + `device matrix list/get/set/reset`, byte-exact to the
-   captured opcode. Read-back is likely write-only (like Global EQ) → fold into a
-   shared connect-time `globals.*` snapshot decode.
-4. **Priority:** the UI parity doc marks the Matrix Mixer the **largest, newest,
-   lowest-priority** of the device-global trio ("unless the owner uses multi-out
-   routing"). With the easy paths now ruled out, the cost is a Frida capture
-   session **plus** the feasibility risk that it isn't editor-driveable at all —
-   so this is the right one to defer until multi-output monitor mixing is needed.
+**Recommendation: mark `device matrix` WON'T-DO via the desktop-editor protocol**,
+and record the escape hatches so a future session doesn't re-run this spike:
+
+1. **A future app build** that adds a Matrix Mixer screen → re-run the Frida
+   capture (`tools/frida_run.py` + `hook_sockets.js` on the Debug app) to decode
+   the opcode, then build `matrix.py` + `device matrix`. Nothing to do until then.
+2. **Hardware-panel RE** — capture the device's own front-panel Matrix operation.
+   Not host-scriptable (no app in the loop), needs on-device instrumentation;
+   likely not worth it, and the matrix may not use an OSC opcode internally at all.
+3. **Do NOT** re-attempt a property codec (H1 is out) or a LAN `device watch`
+   capture (app traffic is USB, invisible to a LAN subscriber).
+
+The UI parity doc already marks the Matrix Mixer the lowest-priority of the
+device-global trio; this spike turns "lowest-priority, larger lift" into
+"no viable editor-protocol capture path — defer indefinitely." The Device pane's
+Matrix tab should ship as **"not supported — set it on the hardware"** rather than
+gating on an engine epic that cannot be built today.
 
 **Honest status line:** the matrix's *adjacent* output/routing/MIDI-channel plane
 is **decoded and shipping** (`device settings`). The per-channel mixer plane is
-**not a device property** (H1 ruled out on HW) and is **not capturable via the
-desktop app over LAN** (USB transport + no global-matrix screen found). Finishing
-it needs a Frida capture of a build that exposes the matrix — or, if none does,
-it is unreachable via the editor protocol (a won't-do).
+**not a device property** (H1 ruled out) and **has no desktop-editor surface**
+(retail + Debug both checked, Frida capture validated) — so it is **unreachable
+via the editor protocol** (won't-do), barring a future app build.

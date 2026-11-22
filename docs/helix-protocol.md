@@ -683,22 +683,24 @@ Level/Pan/Mute/Solo is **not a device property** (ruling out a Global-EQ-style
 - **H3** — not echoed on the 2001 PUB stream → decode needs a Frida outbound
   capture (`tools/hook_sockets.js`, as for `/doAgenda`).
 
-**The LAN-watch capture path is a dead end — HW-shown 2026-11-22.** Driving the
-desktop Stadium app for ~5 min (every view + output endpoint) while `device
-watch` ran produced **11,680 frames, all port-2003 telemetry; zero on 2001**. The
-desktop app ↔ device link is **USB and is not mirrored on the LAN 2001 PUB**, so a
-LAN subscriber (`device watch`) never sees the app's writes — this is why the
-`/doAgenda` capture used **Frida on the app socket**, not `device watch`. (Qualifies
-the §6 note that 2001 echoes "the desktop editor": true for a LAN or hardware
-change, not a USB-app one.) Moreover, no global Matrix-Mixer screen was found in
-the desktop app (Home / Librarian / Command Center / Global EQ / Song + the output
-endpoint all checked) — only the **per-preset output-block "Matrix" destination**
-(route a path into the matrix; `/setParamValue` on the edit buffer). The manual's
-touchscreen gestures ("swipe", "tap-hold the Matrix title") suggest it is a
-**hardware-panel** screen. So decoding the opcode needs **Frida on a build that
-exposes the matrix** (unconfirmed any does) or **hardware-panel capture**; if
-neither surfaces an opcode it is a won't-do. `helixgen` emits no matrix write; see
-the spec for the follow-on `device matrix` scope.
+**No editor-protocol surface — CONFIRMED with Frida 2026-11-22.** The desktop
+editor (retail **and** the re-signed Debug build) has **no global Matrix-Mixer
+screen** — all five nav views (Home / Librarian / Command Center / Global EQ /
+Song) + the output endpoint + the Window/Devices menus were checked; the only
+"Matrix" is the **per-preset Output block's destination** (route a path into the
+matrix; `/setParamValue`), not the monitor-mix faders. A **Frida** hook on the
+Debug app (`tools/frida_run.py` + `hook_sockets.js`, over USB/IPv6) was validated
+working — toggling a block bypass captured `SEND 2002 /BlockEnableSet` (+ the 2001
+`/setBlockEnable` echo and 2002 `/status` ack), and param edits `/ParamValueSet` —
+so the no-matrix-traffic result is a genuine **absence**, not a missed capture.
+Separately, a LAN `device watch` sees **none** of the app's writes at all: the
+app↔device link is USB, not mirrored on the LAN 2001 PUB (5 min of driving → 0 LAN
+2001 frames; qualifies the §6 "the desktop editor echoes on 2001" note, which
+holds only for a LAN or hardware change). **Net: the Matrix Mixer is a
+hardware-front-panel feature; `device matrix` is a won't-do via the editor
+protocol** (only a future app build that adds the screen, or hardware-panel RE,
+could change that). `helixgen` emits no matrix write; full findings + the deferred
+verb design in the spec.
 
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
 
