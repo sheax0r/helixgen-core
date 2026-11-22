@@ -155,6 +155,8 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .bh{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .cat{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--acc)}
 .nm.swappable{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
+.splitbtn{font-size:11px;padding:2px 7px;margin-right:6px;border-radius:5px;border:1px solid var(--faint);background:transparent;color:var(--faint);cursor:pointer;white-space:nowrap}
+.splitbtn:hover{color:var(--fg);border-color:var(--fg)}
 .nm{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xl{font-size:10px;font-weight:700;letter-spacing:.08em;color:#ffd58a;border:1px solid #6d5522;
   background:#2a2110;border-radius:999px;padding:2px 8px;white-space:nowrap}
@@ -518,6 +520,16 @@ function blockEl(b) {
   }
   if (b.xlink) hd.append(el("span", "xl", "⇄ path " + (b.xlink.path + 1)));
   hd.append(el("span", "grow"));
+  // split a lane-A processing block onto a new parallel lane (81v.1 add-split)
+  if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output"
+      && b.row === 0 && b.block >= 1 && b.block <= 11 && !SPLIT_PATHS.has(b.path)) {
+    const sp = el("button", "splitbtn", "⑃ Split");
+    sp.type = "button"; sp.title = "Split this block onto a new parallel lane";
+    sp.onclick = () => { if (down) return;
+      send("/add-split", { path: b.path, block: b.block },
+        () => toast("Splitting onto a parallel lane…", true), () => {}); };
+    hd.append(sp);
+  }
   if (!NO_BYPASS.has(b.category)) {
     const f = el("button", "foot"); const dot = el("span", "dot"); const tx = el("span");
     f.append(dot, tx);
@@ -597,6 +609,7 @@ function renderSnaps() {
     row.append(b);
   });
 }
+let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 function render() {
   renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
@@ -604,6 +617,9 @@ function render() {
   P.clear(); B.clear(); dragging = null;
   const rig = $("rig"); rig.textContent = "";
   if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
+  SPLIT_PATHS = new Set(S.paths
+    .filter((p) => p.extra.length || (p.segments || []).some((s) => s.split))
+    .map((p) => p.path));
   S.paths.forEach((pt) => {
     const sec = el("div", "path"), hd = el("div", "path-hd");
     hd.append(el("b", null, "Path " + (pt.path + 1)), el("i"));

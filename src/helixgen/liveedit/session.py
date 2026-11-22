@@ -518,6 +518,48 @@ class LiveSession:
         self.load()                              # re-read: the appended block
         return self.public_state()
 
+    def split_block(self, path: int, block: int) -> dict:
+        """Split the block at grid slot ``block`` onto a NEW parallel lane B —
+        synthesized topology (the app's drag-down-to-parallel).
+
+        Delegates to :meth:`HelixClient.add_split`, which moves the block to
+        lane B, inserts a split + join, and confirms the device applied it. Its
+        guards (a lane-A block in 1..11, lane B free, room for the nodes) surface
+        as a 400 with the reason. Then re-reads and returns fresh state. Volatile
+        until Save; confirm the routing on the rig.
+        """
+        pth, blk = int(path), int(block)
+        err: Optional[Exception] = None
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                try:
+                    self.client.add_split(pth, blk)
+                except (HelixError, OSError) as e:
+                    err = e
+        finally:
+            self.lease.done()
+        if err is not None:
+            # add_split raises for GUARD violations (not a lane-A block, lane B
+            # already in use, chain full) AND for device/transport failures. A
+            # transport failure can land after the agenda write, so re-sync the
+            # chain best-effort, and mark the session disconnected (like the
+            # sibling writes) rather than blaming the block.
+            msg = str(err).lower()
+            transport = isinstance(err, OSError) or any(
+                k in msg for k in ("connection", "timed out", "read failed",
+                                   "did not apply", "device read"))
+            self._reread_quiet()                 # the write may have mutated
+            if transport:
+                self._set_connected(False)
+                raise LiveError(f"device error during split: {err}",
+                                status=502) from err
+            raise LiveError(f"cannot split here: {err}", status=400) from err
+        self.load()                              # re-read: the new parallel lane
+        return self.public_state()
+
     def set_bypass(self, path: int, block: int, enabled: Any, *,
                    client: Optional[str] = None,
                    rev: Optional[int] = None) -> dict:
