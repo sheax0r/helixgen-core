@@ -650,6 +650,48 @@ empty blob for `dsp.globaleq.*` (the app reads EQ state from the connect-time
 sync). Shipped as `device globaleq list|set`; codec
 `src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
 
+### Matrix Mixer (per-output monitor mix) — RE spike, per-channel plane capture-pending
+
+The **Matrix Mixer** is the Stadium's **device-global, per-physical-output
+monitor mix** (one layer each for 1/4"/XLR/Phones), mixing **non-preset** sources
+(the 4 Home paths, 8 Song tracks, Click, Count-In, USB In 1/2, Bluetooth, Aux).
+Per channel: Level / Pan / Mute / Solo (pre-fader metering; no phase). It is
+**not** the preset "Output block" (`P35_OutputMatrix` model 783 in `transcode.py`
+— that is per-preset gain/pan in `.hsp`); same word, unrelated surface, separate
+write path. Full RE findings + the `device matrix` verb design:
+`docs/superpowers/specs/2026-11-22-matrix-mixer-re-spike.md`.
+
+**Decoded — the adjacent output/routing plane** (bundled catalog
+`_settings_pages.json`, shipping via `device settings`):
+
+| Key | Meaning |
+|---|---|
+| `global.out.level.{qtr,xlr,spdif}` | per-output **master** level (Volume-knob targets; no `.phones` key — Phones rides the Volume knob / Phones Global-EQ level) |
+| `global.out.usb.12`, `global.out.spdif`, `global.out.spdif.type`, `global.out.samplerate.spdif` | USB/SPDIF out routing + format (USB options incl. *Direct Out / Matrix 1/4" / Matrix XLR / Matrix Phones*) |
+| `global.out.groundlift.xlr`, `global.out.src.reamp.u7`/`.u8` | XLR ground lift; reamp send sources |
+| `global.midi.matrix.ch.{qtr,xlr,phones}` | the MIDI **channel** each output's Matrix layer listens on for CC remote control |
+
+**NOT decoded — the per-channel plane.** The per-strip Level/Pan/Mute/Solo is
+**absent from the bundled property defs** (`_defs_data.json` carries zero
+`matrix` audio props beyond the three MIDI-channel keys above), so the mixer
+itself is not a modeled property today. Three live hypotheses, resolved by one
+read-only capture window (see the spec §6):
+
+- **H1** — undocumented `dsp.matrix.*`-style property keys present on the device
+  but trimmed from the bundle → write is the Global-EQ **variant blob** verbatim
+  (`/PropertyValueSet [reqid, 0, "lavppgsm"+{key_, type:"v", val_:{parm,valu}}]`),
+  codec a near-clone of `globaleq.py`. Settle with `/MatchingPropertyDefinitionsGet`
+  (live catalog glob — app-independent; probe in the spec).
+- **H2** — a dedicated opcode family (like `/doAgenda` for topology).
+- **H3** — not echoed on the 2001 PUB stream → decode needs a Frida outbound
+  capture (`tools/hook_sockets.js`, as for `/doAgenda`).
+
+Capture is **read-only** (catalog glob + `device watch --filter /setPropertyValue`
+while driving the app's Matrix page). Not yet run: the Stadium XL was in active
+use by the concurrent 81v.1 topology session during this spike (shared-HW
+coordination). `helixgen` emits no matrix write yet; this is the follow-on
+`device matrix` epic's first step.
+
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
 
 `/dspEvent` blobs are msgpack `{id__:{eid_,mid_}, vals:[…]}`. A **continuous
@@ -950,6 +992,13 @@ footswitch/controller assignment commands are parameterised on the device.
   `/PropertyValueGet` with an **empty blob** — writes work (`device globaleq`),
   reads don't. The app sources EQ state from the connect-time sync; whether a
   bulk read exposes it is unexplored.
+- **Matrix Mixer per-channel plane.** The per-output monitor mix's per-strip
+  Level/Pan/Mute/Solo is **not in the property defs** and **not yet wire-decoded**
+  — see the "Matrix Mixer" subsection in §6 and
+  `docs/superpowers/specs/2026-11-22-matrix-mixer-re-spike.md` (H1/H2/H3 + the
+  read-only capture method + the `device matrix` verb design). The adjacent
+  output/routing/MIDI-channel keys (`global.out.*`, `global.midi.matrix.ch.*`) are
+  decoded and ship via `device settings`.
 - **`.hss` filled-slot payload — RESOLVED 2026-07-15** (real non-empty export
   captured; `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`).
   A *filled* slot's manifest entry is `{"path":".N","type":"application/stadium-preset"}`
