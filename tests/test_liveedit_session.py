@@ -33,7 +33,9 @@ class FakeClient:
         self.preset = {"cid": 1863, "name": "Venom", "posi": 41, "slot": "11B", "ccid": -2}
         self.reads = 0
         self.params, self.enables, self.saves = [], [], []
-        self.swaps = []          # (path, block, model_id) from set_block_model
+        self.swaps = []          # (path, block, model_id) from set_block_model (sub=0)
+        self.second_cabs = []    # (path, block, model_id) from set_block_model(sub=1)
+        self.model_fail = None   # set to an exception to make set_block_model raise
         self.splits_added = []   # (path, block) from add_split
         self.split_fail = None   # set to an exception to make add_split raise
         self.moves = []          # (path, src, dst) from move_block
@@ -103,9 +105,14 @@ class FakeClient:
             hook()
         return self.ack
 
-    def set_block_model(self, path, block, model_id):
+    def set_block_model(self, path, block, model_id, sub=0):
         self._next()
-        self.swaps.append((int(path), int(block), int(model_id)))
+        if self.model_fail is not None:
+            raise self.model_fail
+        if int(sub) == 1:
+            self.second_cabs.append((int(path), int(block), int(model_id)))
+        else:
+            self.swaps.append((int(path), int(block), int(model_id)))
         return self.ack
 
     def add_split(self, path, block):
@@ -1390,6 +1397,67 @@ def test_move_block_maps_transport_failure_to_502_and_disconnects():
     sess.load()
     with pytest.raises(LiveError) as e:
         sess.move_block(0, 2, 1)
+    assert e.value.status == 502
+    assert sess.public_state()["connected"] is False
+
+
+def _cab_rig():
+    # input, a cab (dual-cab capable), an amp, output
+    return _eb({0: _blk(IN_INST1, {}), 1: _blk(434, {}),
+                2: _blk(AMP, {}), 13: _blk(OUT_MATRIX, {})}, asnp=1)
+
+
+def test_set_second_cab_places_the_2nd_cab_at_sub1_and_rereads():
+    c = FakeClient(eb=_cab_rig())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    reads0 = c.reads
+    st = sess.set_second_cab(0, 1, 453)
+    assert c.second_cabs == [(0, 1, 453)]        # ModelSet sub=1
+    assert c.swaps == []                          # NOT a primary-model swap
+    assert c.reads > reads0
+    assert "paths" in st
+
+
+def test_set_second_cab_rejects_a_non_cab_block():
+    c = FakeClient(eb=_cab_rig())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.set_second_cab(0, 2, 453)            # slot 2 is the amp
+    assert e.value.status == 400
+    assert "cab block" in str(e.value)
+    assert c.second_cabs == []
+
+
+def test_set_second_cab_rejects_a_non_cab_model():
+    c = FakeClient(eb=_cab_rig())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.set_second_cab(0, 1, AMP)            # an amp is not a cab
+    assert e.value.status == 400
+    assert "must be a cab" in str(e.value)
+    assert c.second_cabs == []
+
+
+def test_set_second_cab_rejects_an_unknown_model():
+    c = FakeClient(eb=_cab_rig())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.set_second_cab(0, 1, 999999)
+    assert e.value.status == 400
+    assert c.second_cabs == []
+
+
+def test_set_second_cab_maps_device_failure_to_502_and_disconnects():
+    c = FakeClient(eb=_cab_rig())
+    c.model_fail = OSError("socket dead")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.set_second_cab(0, 1, 453)
     assert e.value.status == 502
     assert sess.public_state()["connected"] is False
 

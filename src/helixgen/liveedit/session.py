@@ -43,6 +43,9 @@ _SEQ_MOD = 1 << 32    # the 2001 header sequence is a uint32; wraps at 2**32
 # blocks — adding one on row 0 corrupts the grid or routing (swap_model refuses
 # the same set for in-place swaps).
 _NOT_ADDABLE = frozenset({"input", "output", "split", "join", "none", "harness"})
+# Dual-cab (a 2nd cab at sub=1) applies to a cab block only — an IR loader
+# ("ir") is a different thing. Keep in step with defs.category_for.
+_CAB_CATEGORIES = frozenset({"cab_ir_interp"})
 
 
 class LiveError(Exception):
@@ -456,6 +459,46 @@ class LiveSession:
         finally:
             self.lease.done()
         self.load()                              # re-read: new model + its params
+        return self.public_state()
+
+    def set_second_cab(self, path: int, block: int, model_id: int) -> dict:
+        """Place or replace the dual-cab SECOND cab at a cab block's slot — the
+        app's "Dual" cab — via ``/ModelSet`` with ``sub=1`` (HW-confirmed
+        2026-11-22).
+
+        Only a cab block takes a 2nd cab, and the 2nd model must itself be a cab
+        of the same category (the device rejects a cross-category swap). This
+        sets only the model; the 2nd cab's params stay read-only (no known
+        live-write address yet — hgc-5gh). Re-reads and returns fresh state;
+        confirm the result on the rig. Volatile until Save.
+        """
+        pth, blk, mid = int(path), int(block), int(model_id)
+        with self.cond:
+            self._require_up()
+            cur = self._blocks.get((pth, blk)) if self._blocks else None
+        if cur is None:
+            raise LiveError("no such block on the loaded tone "
+                            "(did the preset change?)", status=404)
+        if cur.get("category") not in _CAB_CATEGORIES:
+            raise LiveError("only a cab block can carry a 2nd cab.", status=400)
+        if defs.model_name_for(mid) is None:
+            raise LiveError(f"unknown model id {mid}", status=400)
+        if defs.category_for(mid) not in _CAB_CATEGORIES:
+            raise LiveError("the 2nd cab must be a cab model.", status=400)
+        if mid == (cur.get("second_model") or {}).get("model_id"):
+            return self.public_state()           # already that 2nd cab: no-op
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                try:
+                    self.client.set_block_model(pth, blk, mid, sub=1)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device 2nd-cab set failed: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        self.load()                              # re-read: the dual cab
         return self.public_state()
 
     def add_block(self, path: int, model_id: int) -> dict:
