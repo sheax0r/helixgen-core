@@ -60,6 +60,16 @@ body.down .banner{display:block}
 .snap-btn:hover{border-color:#5f84d6}
 .snap-btn.on{background:#2c66d6;border-color:#2c66d6;color:#fff;font-weight:700}
 body.down .snaprow{opacity:.5;pointer-events:none}
+/* pane-host tab strip (81v.1): hidden until a second pane registers */
+.tabs{display:flex;gap:6px;padding:8px 20px 0;border-bottom:1px solid var(--edge)}
+.tabs[hidden]{display:none}
+.tab{background:transparent;border:1px solid transparent;border-bottom:none;color:var(--dim);
+  border-radius:9px 9px 0 0;padding:7px 15px;cursor:pointer;font-size:13px;font-weight:600}
+.tab:hover{color:var(--ink)}
+.tab.active{background:var(--panel2);border-color:var(--edge2);color:var(--ink)}
+.pane[hidden]{display:none}
+/* signal-flow chrome belongs to the flow pane — hide it on another pane */
+body.pane-other .snaprow,body.pane-other .adjrow{display:none}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -156,7 +166,7 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .cat{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--acc)}
 .nm.swappable{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
 .splitbtn{font-size:11px;padding:2px 7px;margin-right:6px;border-radius:5px;border:1px solid var(--faint);background:transparent;color:var(--faint);cursor:pointer;white-space:nowrap}
-.splitbtn:hover{color:var(--fg);border-color:var(--fg)}
+.splitbtn:hover{color:var(--ink);border-color:var(--ink)}
 .nm{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xl{font-size:10px;font-weight:700;letter-spacing:.08em;color:#ffd58a;border:1px solid #6d5522;
   background:#2a2110;border-radius:999px;padding:2px 8px;white-space:nowrap}
@@ -167,8 +177,23 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .foot.on{color:#bff5da;border-color:#256b4b}
 .foot:not(.on){color:var(--dim)}
 .ctl{display:flex;flex-wrap:wrap;gap:14px 16px;align-items:flex-start}
+/* amp lens — XY pad (81v.1 Focus View) */
+.lens{margin-top:12px;display:inline-flex;flex-direction:column;gap:5px}
+.lenslab{font-size:10px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.lenspad{position:relative;width:120px;height:120px;border:1px solid var(--edge2);border-radius:10px;
+  background:linear-gradient(0deg,rgba(44,102,214,.10),transparent),var(--panel2);cursor:crosshair;touch-action:none;outline:none}
+.lenspad:focus{border-color:#5f84d6}
+.lenspad::before,.lenspad::after{content:"";position:absolute;background:var(--edge2);opacity:.6}
+.lenspad::before{left:50%;top:0;bottom:0;width:1px}
+.lenspad::after{top:50%;left:0;right:0;height:1px}
+.lensdot{position:absolute;width:13px;height:13px;margin:-7px 0 0 -7px;border-radius:50%;
+  background:#2c66d6;border:2px solid #cfe0ff;box-shadow:0 0 7px rgba(44,102,214,.7);pointer-events:none}
+.lensrd{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+body.down .lenspad{opacity:.5;pointer-events:none}
 .secondmodel{margin-top:12px;padding-top:10px;border-top:1px dashed var(--faint);opacity:.72}
 .sm-head{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--faint);margin-bottom:6px}
+.sm-head.swap2{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
+.sm-head.swap2:hover{color:var(--ink)}
 .sm-vals{display:flex;flex-wrap:wrap;gap:6px 14px}
 .sm-v{font-size:11px;color:var(--faint)}
 .more{margin-top:10px;background:none;border:0;padding:0;color:var(--faint);cursor:pointer;font-size:11px;letter-spacing:.06em}
@@ -262,7 +287,8 @@ body.down main{opacity:.55}
   <span class="adjhint" id="adjhint"></span>
   <span class="adjlegend"><b class="lg-up">↑ turn up for more</b><b class="lg-down">↓ turn down for more</b></span>
 </div>
-<main id="rig"></main>
+<nav class="tabs" id="tabs" hidden aria-label="Editor panes"></nav>
+<main id="rig" class="pane"></main>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <div id="toasts"></div>
 <script>
@@ -274,6 +300,11 @@ let S = null;                     // last full state from the server
 const P = new Map();              // "path/block/pid" -> control {p, b, tag, dev, set, fail}
 const B = new Map();              // "path/block"     -> control {b, tag, dev, set, fail}
 let dragging = null;              // key of the knob under the user's hand
+let lensLock = null;             // {x,y}: the two param keys an amp-lens drag holds
+// a param is "held" by the hand if its knob is being dragged OR the lens is
+// driving it — so an echo / remote update of that param isn't applied mid-drag
+const paramLocked = (key) => dragging === key
+  || (lensLock != null && (lensLock.x === key || lensLock.y === key));
 let down = true;                  // device (or server) unreachable: nothing is writable
 let undoS = [], redoS = [];
 const openInternal = new Set();   // blocks whose "internal" row the user expanded
@@ -345,7 +376,7 @@ async function pump() {
           const v = job.kind === "param" ? j.value : j.enabled;
           if (v == null) return;
           n.dev = v;
-          if (dragging !== job.key && !pending.has(qk)) n.set(v); },
+          if (!paramLocked(job.key) && !pending.has(qk)) n.set(v); },
         (j) => { const n = map.get(job.key);
           dropHist(job.kind, job.key);            // the change never happened
           if (n) n.fail(j ? j.value : undefined); });
@@ -362,6 +393,17 @@ async function send(url, body, ok, bad) {
     if (r.ok) ok(j); else { bad(j); toast(j.error || ("request failed (" + r.status + ")")); }
   } catch (e) { bad(null); toast("the editor server did not answer"); }
   finally { clearTimeout(timer); }
+}
+// Structural edits (add/split/move) change grid slots, so a block's cached
+// src/dst goes stale the instant one lands. Allow only ONE in flight — a
+// double-click or a burst can't fire a second, now-stale swap before the
+// re-render rebuilds the buttons.
+let structBusy = false;
+function structSend(url, body, okMsg) {
+  if (down || structBusy) return;
+  structBusy = true;
+  send(url, body, () => { structBusy = false; toast(okMsg, true); },
+       () => { structBusy = false; });
 }
 
 /* ---------- undo / redo (one entry per committed change) ---------- */
@@ -386,10 +428,10 @@ function applyHist(e, val) {      // false = the entry no longer names the same 
   if (!c || c.tag !== e.tag) return false;
   c.set(val); queue(e.kind, e.key); return true;
 }
-function undo() { if (down) return; let e;
+function undo() { if (down || activePane !== "flow") return; let e;
   while ((e = undoS.pop())) if (applyHist(e, e.before)) { redoS.push(e); break; }
   syncHist(); }
-function redo() { if (down) return; let e;
+function redo() { if (down || activePane !== "flow") return; let e;
   while ((e = redoS.pop())) if (applyHist(e, e.after)) { undoS.push(e); break; }
   syncHist(); }
 function syncHist() { $("undo").disabled = down || !undoS.length; $("redo").disabled = down || !redoS.length; }
@@ -503,6 +545,71 @@ function control(p, b) {
   return p.ctl === "toggle" ? toggle(p, b, key) : p.ctl === "select" ? select(p, b, key) : knob(p, b, key);
 }
 
+/* ---------- amp lens: a 2D pad over the amp's Drive × Level (81v.1) ---------
+ * A Focus-View deep editor: drive both defining amp knobs from one gesture.
+ * Pure UI over the existing /param write path — it reuses the two params'
+ * controls already registered in P, so the knobs and the dot stay in sync and
+ * remote/SSE updates repaint the dot through the same controls. */
+function pickAxis(params, rx, denyRx) {           // first continuous param whose name matches
+  return (params || []).find((p) => !p.internal && p.ctl !== "toggle" && p.ctl !== "select"
+    && rx.test(p.name || "") && !(denyRx && denyRx.test(p.name || ""))) || null;
+}
+const padFrac = (p, v) => (v - p.min) / (span(p) || 1);                 // value -> 0..1
+const padVal = (p, f) => clampV(p, p.min + Math.max(0, Math.min(1, f)) * span(p)); // 0..1 -> value
+function lensEl(b, px, py) {
+  const keyX = b.path + "/" + b.block + "/" + px.pid;
+  const keyY = b.path + "/" + b.block + "/" + py.pid;
+  const wrap = el("div", "lens");
+  // a pointer convenience over the two knobs — NOT focusable; keyboard users
+  // drive the same params via the knobs (which keep arrow/Home/End handling)
+  const pad = el("div", "lenspad");
+  pad.title = "Amp lens — " + px.label + " (horizontal) × " + py.label + " (vertical)";
+  const dot = el("div", "lensdot"), rd = el("div", "lensrd");
+  pad.append(dot);
+  wrap.append(el("div", "lenslab", "⊹ " + px.label + " × " + py.label), pad, rd);
+  const paint = () => {
+    dot.style.left = (Math.max(0, Math.min(1, padFrac(px, px.value))) * 100) + "%";
+    dot.style.top = ((1 - Math.max(0, Math.min(1, padFrac(py, py.value)))) * 100) + "%";  // up = more
+    rd.textContent = px.label + " " + fmt(px, px.value) + "   ·   " + py.label + " " + fmt(py, py.value);
+  };
+  // follow the registered controls so knob drags, remote updates AND a rejected
+  // write (fail) repaint the dot
+  [keyX, keyY].forEach((k) => { const c = P.get(k); if (!c) return;
+    const ps = c.set, pf = c.fail;
+    c.set = (v, how) => { ps(v, how); paint(); };
+    c.fail = (v) => { pf(v); paint(); }; });
+  const writeFrac = (fx, fy) => {
+    const cX = P.get(keyX), cY = P.get(keyY); if (!cX || !cY) return;
+    const vx = padVal(px, fx), vy = padVal(py, fy);
+    if (vx !== px.value) { cX.set(vx); queue("param", keyX); }
+    if (vy !== py.value) { cY.set(vy); queue("param", keyY); }
+    paint();
+  };
+  pad.addEventListener("pointerdown", (e) => {
+    if (e.button || dragging || down) return;      // one control at a time, inert when down
+    e.preventDefault();
+    try { pad.setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
+    const id = e.pointerId, vx0 = px.value, vy0 = py.value;
+    dragging = "lens:" + keyX; lensLock = { x: keyX, y: keyY };  // hold BOTH params vs echoes
+    const at = (m) => { const r = pad.getBoundingClientRect();
+      writeFrac((m.clientX - r.left) / (r.width || 1), 1 - (m.clientY - r.top) / (r.height || 1)); };
+    // no write on a bare pointerdown — a click that doesn't drag leaves the
+    // sound untouched (matches the knob); the first move grabs the position
+    const move = (m) => { if (m.pointerId === id) at(m); };
+    const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
+      pad.removeEventListener("pointermove", move);
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => pad.removeEventListener(n, up));
+      if (dragging === "lens:" + keyX) dragging = null;
+      lensLock = null;
+      if (px.value !== vx0) record("param", keyX, vx0, px.value);   // one undo step per axis
+      if (py.value !== vy0) record("param", keyY, vy0, py.value); };
+    pad.addEventListener("pointermove", move);
+    ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => pad.addEventListener(n, up));
+  });
+  paint();
+  return wrap;
+}
+
 /* ---------- blocks + chain ---------- */
 const STRUCT = new Set(["split", "join"]);
 const NO_BYPASS = new Set(["split", "join", "input", "output"]);
@@ -525,10 +632,30 @@ function blockEl(b) {
       && b.row === 0 && b.block >= 1 && b.block <= 11 && !SPLIT_PATHS.has(b.path)) {
     const sp = el("button", "splitbtn", "⑃ Split");
     sp.type = "button"; sp.title = "Split this block onto a new parallel lane";
-    sp.onclick = () => { if (down) return;
-      send("/add-split", { path: b.path, block: b.block },
-        () => toast("Splitting onto a parallel lane…", true), () => {}); };
+    sp.onclick = () => structSend("/add-split", { path: b.path, block: b.block },
+      "Splitting onto a parallel lane…");
     hd.append(sp);
+  }
+  // reorder a lane-A block by swapping with its neighbour (81v.1 move-block)
+  const order = MOVE_SLOTS.get(b.path);
+  if (order && b.row === 0 && order.includes(b.block)) {
+    const i = order.indexOf(b.block);
+    const nav = (label, dst, title) => {
+      const m = el("button", "splitbtn", label);
+      m.type = "button"; m.title = title;
+      m.onclick = () => structSend("/move-block",
+        { path: b.path, src: b.block, dst }, "Reordering…");
+      hd.append(m);
+    };
+    if (i > 0) nav("◀", order[i - 1], "Move earlier in the chain");
+    if (i < order.length - 1) nav("▶", order[i + 1], "Move later in the chain");
+  }
+  // add a 2nd cab (dual cab) to a cab block that has none yet (ModelSet sub=1)
+  if (b.category === "cab_ir_interp" && !b.second_model) {
+    const dc = el("button", "splitbtn", "⊕ 2nd cab");
+    dc.type = "button"; dc.title = "Add a parallel 2nd cab (dual cab)";
+    dc.onclick = () => openSecondCabPicker(b, null);
+    hd.append(dc);
   }
   if (!NO_BYPASS.has(b.category)) {
     const f = el("button", "foot"); const dot = el("span", "dot"); const tx = el("span");
@@ -545,6 +672,11 @@ function blockEl(b) {
   root.append(hd);
   const main = b.params.filter((p) => !p.internal), extra = b.params.filter((p) => p.internal);
   if (main.length) { const row = el("div", "ctl"); main.forEach((p) => row.append(control(p, b))); root.append(row); }
+  if (roleOf(b) === "amp") {                 // amp lens: Drive × Level on one pad (controls already in P)
+    const px = pickAxis(main, /\b(drive|gain)\b/i, /master/i);
+    const py = pickAxis(main, /\b(master|volume|level)\b|ch.*vol/i);
+    if (px && py && px.pid !== py.pid) root.append(lensEl(b, px, py));
+  }
   if (extra.length) {
     const more = el("button", "more"), row = el("div", "ctl internal");
     const paint = () => { row.hidden = !openInternal.has(key);
@@ -559,8 +691,9 @@ function blockEl(b) {
   if (b.second_model) {
     const sm = b.second_model;
     const box = el("div", "secondmodel");
-    const h = el("div", "sm-head", sm.name + " · 2nd model (read-only)");
-    h.title = sm.model + " — no live-write address yet (hgc-5gh)";
+    const h = el("div", "sm-head swap2", sm.name + " · 2nd cab");
+    h.title = sm.model + " · click to replace the 2nd cab (its params stay read-only — hgc-5gh)";
+    h.onclick = () => openSecondCabPicker(b, sm.model_id);
     box.append(h);
     const vals = el("div", "sm-vals");
     (sm.params || []).filter((p) => !p.internal).forEach((p) =>
@@ -609,17 +742,84 @@ function renderSnaps() {
     row.append(b);
   });
 }
+/* ---------- pane host (81v.1 shell) ----------------------------------------
+ * The editor hosts named panes; "Signal flow" (#rig) is built in. A follow-on
+ * panel (e.g. 81v.5 Device settings) calls addPane() once, appends its own
+ * <section class="pane"> to the body, and namespaces its server routes under
+ * /<id>/… (see server.py). The host is VISIBILITY ONLY — a pane owns its data
+ * and refresh, so the signal-flow state loop is never touched. The tab strip
+ * shows only once a 2nd pane exists, so nothing dead ships before then.
+ * Contract: docs/superpowers/specs/2026-11-22-live-editor-pane-host-design.md */
+const PANES = [{ id: "flow", label: "Signal flow", el: () => $("rig") }];
+let activePane = "flow";
+function addPane(p) {                      // { id, label, el:()=>Element, onShow?(active) }
+  if (!p || !p.id || !p.label || typeof p.el !== "function") return;  // half-registration guard
+  if (PANES.some((x) => x.id === p.id)) return;
+  PANES.push(p);
+  showPane(activePane);                    // enforce single-pane visibility (hide the newcomer)
+}
+function showPane(id) {
+  if (!PANES.some((p) => p.id === id)) return;
+  activePane = id;
+  const flow = id === "flow";
+  PANES.forEach((p) => {                    // fire onShow only on a real change (idempotent-safe)
+    const e = p.el(); if (!e) return;
+    const was = e.hidden, now = p.id !== id;
+    e.hidden = now;
+    if (p.onShow && was !== now) p.onShow(!now);
+  });
+  // The signal-flow chrome (snapshots, adjective search, Undo/Redo) belongs to
+  // the flow pane: hide it and neuter undo/redo on another pane so a shortcut
+  // can't revert a hidden edit. A pane with no edit history of its own.
+  document.body.classList.toggle("pane-other", !flow);
+  $("undo").disabled = !flow || down || !undoS.length;
+  $("redo").disabled = !flow || down || !redoS.length;
+  renderTabs();
+}
+function renderTabs() {
+  const strip = $("tabs"); if (!strip) return;
+  strip.hidden = PANES.length < 2;         // single pane → no chrome
+  strip.textContent = "";
+  if (strip.hidden) return;
+  strip.setAttribute("role", "tablist");
+  PANES.forEach((p) => {
+    const active = p.id === activePane;
+    const t = el("button", "tab" + (active ? " active" : ""), p.label);
+    t.type = "button"; t.setAttribute("role", "tab");
+    t.setAttribute("aria-selected", active ? "true" : "false");
+    t.onclick = () => showPane(p.id);
+    strip.append(t);
+  });
+}
+
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
+let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
 function render() {
   renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
   const fkey = focused && focused.dataset.k;
-  P.clear(); B.clear(); dragging = null;
+  P.clear(); B.clear(); dragging = null; lensLock = null;
   const rig = $("rig"); rig.textContent = "";
   if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
   SPLIT_PATHS = new Set(S.paths
     .filter((p) => p.extra.length || (p.segments || []).some((s) => s.split))
     .map((p) => p.path));
+  MOVE_SLOTS = new Map();        // reorder only on a simple linear chain (no split)
+  S.paths.forEach((p) => {
+    if (SPLIT_PATHS.has(p.path)) return;
+    const row0 = (p.segments || [])
+      .filter((s) => s.kind === "block").map((s) => s.block)
+      .filter((b) => b.row === 0);
+    // a routing node (split/join, or a cross-DSP tap with an xlink) in row 0
+    // means swapping neighbours could jump across it — refuse reorder here.
+    if (row0.some((b) => STRUCT.has(b.category) || b.xlink)) return;
+    const slots = row0
+      .filter((b) => b.category !== "input" && b.category !== "output"
+        && b.block >= 1 && b.block <= 12)
+      .map((b) => b.block)
+      .sort((x, y) => x - y);
+    MOVE_SLOTS.set(p.path, slots);
+  });
   S.paths.forEach((pt) => {
     const sec = el("div", "path"), hd = el("div", "path-hd");
     hd.append(el("b", null, "Path " + (pt.path + 1)), el("i"));
@@ -742,7 +942,7 @@ function onMsg(m) {
     const v = isP ? m.value : m.enabled;
     c.dev = v;                    // what the device holds, whoever wrote it
     // never yank a control the user is holding or has a newer change queued for
-    if (dragging === key || pending.has(m.t + ":" + key)) return;
+    if (paramLocked(key) || pending.has(m.t + ":" + key)) return;
     const cur = isP ? c.p.value : c.b.enabled;
     if (cur !== v) c.set(v, m.client === ME ? undefined : "remote");
   }
@@ -968,6 +1168,26 @@ async function openModelPicker(b) {
       send("/swap", { path: b.path, block: b.block, model_id: m.id },
         () => toast("Swapping model on the device…", true), () => {});
     };
+    body.append(btn);
+  });
+}
+/* ---------- dual-cab: pick the 2nd cab's model (ModelSet sub=1) ------------- */
+async function openSecondCabPicker(b, currentId) {
+  if (down) return;
+  if (!MODELS) {
+    const r = await fetch("/models").then((x) => x.ok ? x.json() : null).catch(() => null);
+    if (!r) { const { body } = modal("2nd cab"); body.append(el("p", null, "Could not load the model list — try again.")); return; }
+    MODELS = r;
+  }
+  const list = MODELS[b.category] || [];
+  const { body } = modal((currentId ? "Replace the 2nd cab on “" : "Add a 2nd cab to “") + b.name + "”…");
+  if (!list.length) { body.append(el("p", null, "No cab models available.")); return; }
+  body.append(el("p", "hint", "Dual cab — the 2nd cab's model is set on the live tone; its params stay read-only for now."));
+  list.forEach((m) => {
+    const btn = el("button", "pz" + (m.id === currentId ? " on" : ""), m.name);
+    btn.type = "button";
+    btn.onclick = () => { closeOverlay(); if (m.id === currentId) return;
+      structSend("/second-cab", { path: b.path, block: b.block, model_id: m.id }, "Setting the 2nd cab…"); };
     body.append(btn);
   });
 }
