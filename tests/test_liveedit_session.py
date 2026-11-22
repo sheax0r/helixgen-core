@@ -1278,6 +1278,19 @@ def test_split_block_surfaces_add_split_guard_error_as_400():
     assert "cannot split here" in str(e.value)
 
 
+def test_split_block_maps_transport_failure_to_502_and_disconnects():
+    # a dropped socket mid-agenda is not a guard violation: 502, mark the
+    # device offline, and re-read quietly since the write may have landed.
+    c = FakeClient()
+    c.split_fail = OSError("socket dead")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.split_block(0, 2)
+    assert e.value.status == 502
+    assert sess.public_state()["connected"] is False
+
+
 def test_swap_model_rejects_an_endpoint_or_routing_block():
     # input/output/split/join are not model-swappable; no /ModelSet on an
     # endpoint grid slot (hgc-cc4 review).

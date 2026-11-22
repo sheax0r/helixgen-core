@@ -529,6 +529,7 @@ class LiveSession:
         until Save; confirm the routing on the rig.
         """
         pth, blk = int(path), int(block)
+        err: Optional[Exception] = None
         self._ensure_lease(None)
         try:
             with self.devlock:
@@ -537,12 +538,25 @@ class LiveSession:
                 try:
                     self.client.add_split(pth, blk)
                 except (HelixError, OSError) as e:
-                    # add_split raises for guard violations (not a lane-A block,
-                    # lane B already in use, chain full) and device issues alike
-                    # — surface the reason; the liveness tick catches a true drop.
-                    raise LiveError(f"cannot split here: {e}", status=400) from e
+                    err = e
         finally:
             self.lease.done()
+        if err is not None:
+            # add_split raises for GUARD violations (not a lane-A block, lane B
+            # already in use, chain full) AND for device/transport failures. A
+            # transport failure can land after the agenda write, so re-sync the
+            # chain best-effort, and mark the session disconnected (like the
+            # sibling writes) rather than blaming the block.
+            msg = str(err).lower()
+            transport = isinstance(err, OSError) or any(
+                k in msg for k in ("connection", "timed out", "read failed",
+                                   "did not apply", "device read"))
+            self._reread_quiet()                 # the write may have mutated
+            if transport:
+                self._set_connected(False)
+                raise LiveError(f"device error during split: {err}",
+                                status=502) from err
+            raise LiveError(f"cannot split here: {err}", status=400) from err
         self.load()                              # re-read: the new parallel lane
         return self.public_state()
 

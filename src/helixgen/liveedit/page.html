@@ -522,7 +522,7 @@ function blockEl(b) {
   hd.append(el("span", "grow"));
   // split a lane-A processing block onto a new parallel lane (81v.1 add-split)
   if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output"
-      && b.row === 0 && b.block >= 1 && b.block <= 11) {
+      && b.row === 0 && b.block >= 1 && b.block <= 11 && !SPLIT_PATHS.has(b.path)) {
     const sp = el("button", "splitbtn", "⑃ Split");
     sp.type = "button"; sp.title = "Split this block onto a new parallel lane";
     sp.onclick = () => { if (down) return;
@@ -609,6 +609,7 @@ function renderSnaps() {
     row.append(b);
   });
 }
+let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 function render() {
   renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
@@ -616,6 +617,9 @@ function render() {
   P.clear(); B.clear(); dragging = null;
   const rig = $("rig"); rig.textContent = "";
   if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
+  SPLIT_PATHS = new Set(S.paths
+    .filter((p) => p.extra.length || (p.segments || []).some((s) => s.split))
+    .map((p) => p.path));
   S.paths.forEach((pt) => {
     const sec = el("div", "path"), hd = el("div", "path-hd");
     hd.append(el("b", null, "Path " + (pt.path + 1)), el("i"));
