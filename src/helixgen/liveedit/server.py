@@ -57,7 +57,13 @@ def _rev(body: dict):
 
 
 def _route(session: LiveSession, path: str, b: dict):
-    """Mutating endpoints -> response dict, or ``None`` for an unknown route."""
+    """Mutating endpoints -> response dict, or ``None`` for an unknown route.
+
+    Signal-flow routes are flat (unprefixed). A follow-on editor pane namespaces
+    its POSTs under ``/<pane>/…`` to avoid clashing — the library drawer already
+    does (``/library/*``), and 81v.5 Device settings reserves ``/device/*``. Add
+    those handlers in the pane's own PR; see the pane-host design spec.
+    """
     if path == "/param":
         if "value" not in b:
             raise LiveError("missing field 'value'")
@@ -152,6 +158,8 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 except Exception as e:  # noqa: BLE001
                     logger.exception("live editor: library state failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # A follow-on pane serves its GETs under its own /<pane>/… namespace
+            # (like /library/* above); 81v.5 Device settings reserves /device/*.
             else:
                 self._json(404, {"error": "not found"})
 

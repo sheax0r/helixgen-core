@@ -60,6 +60,14 @@ body.down .banner{display:block}
 .snap-btn:hover{border-color:#5f84d6}
 .snap-btn.on{background:#2c66d6;border-color:#2c66d6;color:#fff;font-weight:700}
 body.down .snaprow{opacity:.5;pointer-events:none}
+/* pane-host tab strip (81v.1): hidden until a second pane registers */
+.tabs{display:flex;gap:6px;padding:8px 20px 0;border-bottom:1px solid var(--edge)}
+.tabs[hidden]{display:none}
+.tab{background:transparent;border:1px solid transparent;border-bottom:none;color:var(--dim);
+  border-radius:9px 9px 0 0;padding:7px 15px;cursor:pointer;font-size:13px;font-weight:600}
+.tab:hover{color:var(--fg)}
+.tab.active{background:var(--panel2);border-color:var(--edge2);color:var(--fg)}
+.pane[hidden]{display:none}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -262,7 +270,8 @@ body.down main{opacity:.55}
   <span class="adjhint" id="adjhint"></span>
   <span class="adjlegend"><b class="lg-up">↑ turn up for more</b><b class="lg-down">↓ turn down for more</b></span>
 </div>
-<main id="rig"></main>
+<nav class="tabs" id="tabs" hidden aria-label="Editor panes"></nav>
+<main id="rig" class="pane"></main>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <div id="toasts"></div>
 <script>
@@ -633,6 +642,39 @@ function renderSnaps() {
     row.append(b);
   });
 }
+/* ---------- pane host (81v.1 shell) ----------------------------------------
+ * The editor hosts named panes; "Signal flow" (#rig) is built in. A follow-on
+ * panel (e.g. 81v.5 Device settings) calls addPane() once, appends its own
+ * <section class="pane"> to the body, and namespaces its server routes under
+ * /<id>/… (see server.py). The host is VISIBILITY ONLY — a pane owns its data
+ * and refresh, so the signal-flow state loop is never touched. The tab strip
+ * shows only once a 2nd pane exists, so nothing dead ships before then.
+ * Contract: docs/superpowers/specs/2026-11-22-live-editor-pane-host-design.md */
+const PANES = [{ id: "flow", label: "Signal flow", el: () => $("rig") }];
+let activePane = "flow";
+function addPane(p) {                      // { id, label, el:()=>Element, onShow?(active) }
+  if (PANES.some((x) => x.id === p.id)) return;
+  PANES.push(p); renderTabs();
+}
+function showPane(id) {
+  if (!PANES.some((p) => p.id === id)) return;
+  activePane = id;
+  PANES.forEach((p) => { const e = p.el(); if (e) e.hidden = p.id !== id;
+    if (p.onShow) p.onShow(p.id === id); });
+  renderTabs();
+}
+function renderTabs() {
+  const strip = $("tabs"); if (!strip) return;
+  strip.hidden = PANES.length < 2;         // single pane → no chrome
+  strip.textContent = "";
+  if (strip.hidden) return;
+  PANES.forEach((p) => {
+    const t = el("button", "tab" + (p.id === activePane ? " active" : ""), p.label);
+    t.type = "button"; t.onclick = () => showPane(p.id);
+    strip.append(t);
+  });
+}
+
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
 function render() {
