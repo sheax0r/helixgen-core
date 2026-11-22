@@ -201,6 +201,8 @@ echo '[{"op": "set_param", "block": "Tape Echo", "param": "Mix", "value": 0.3},
 
 This repo releases **`helixgen` PyPI package** (version in `pyproject.toml` + `src/helixgen/__init__.py` — bump both together; version feeds generated presets' `meta`). Publishing via OIDC trusted-publisher workflow (`.github/workflows/publish.yml`) on `vX.Y.Z` tags pushed to `main` (first publish 0.19.1).
 
+**Pushing the `vX.Y.Z` release tag is authorized — agents developing here do it autonomously, no sign-off, as the last step of landing a release.** Standing owner authorization: don't ask and don't wait for the owner to push it. This overrides the conservative "don't push unless asked" default (Agent Context Profiles, below) for release tags only — ordinary branch/commit pushes still follow the active profile.
+
 Plugin releases (`stable` branch + `helixgen--vX.Y.Z` tags) live in **plugin repo** (`sheax0r/helixgen`), owned by its release workflow — nothing in this repo moves those refs. Core release changes behavior skill depends on: cut core release first, then bump plugin's pinned `helixgen` version in its own PR.
 
 ## ralphex
