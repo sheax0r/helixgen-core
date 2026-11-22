@@ -225,6 +225,7 @@ body.down .lenspad{opacity:.5;pointer-events:none}
 .eqzero{stroke:var(--edge2);stroke-width:1;stroke-dasharray:3 3}
 .eqcurve{fill:none;stroke:#2c66d6;stroke-width:2;stroke-linejoin:round;pointer-events:none}
 .eqh{fill:#2c66d6;stroke:#cfe0ff;stroke-width:2;cursor:ns-resize}
+.eqh.xy{cursor:move}
 .eqh:hover{fill:#5f84d6}
 body.down .eqsvg{opacity:.5;pointer-events:none}
 .secondmodel{margin-top:12px;padding-top:10px;border-top:1px dashed var(--faint);opacity:.72}
@@ -733,6 +734,88 @@ function eqLensEl(b, bands) {
   return wrap;
 }
 
+/* ---------- parametric-EQ lens: Freq × Gain points on a log-f curve (81v.1) -
+ * Each band is a "<prefix> Gain" param paired with its "<prefix> Freq"; drag a
+ * point to set both (X = log frequency, Y = gain). A disabled band (its
+ * "<prefix> Enable" off) is dimmed. Q, cuts and slopes stay as knobs. Each
+ * point is a 2-param drag, held via lensLock like the amp pad. */
+const _lg = (x) => Math.log(Math.max(1e-6, x));
+const freqFrac = (p) => Math.max(0, Math.min(1, (_lg(p.value) - _lg(p.min)) / ((_lg(p.max) - _lg(p.min)) || 1)));
+const freqOfFrac = (p, f) => { f = Math.max(0, Math.min(1, f));   // snap endpoints exactly (no exp/log epsilon)
+  return f <= 0 ? p.min : f >= 1 ? p.max : clampV(p, Math.exp(_lg(p.min) + f * (_lg(p.max) - _lg(p.min)))); };
+function eqBandsParam(params) {
+  const by = {}; (params || []).forEach((p) => { if (p.name) by[p.name.toLowerCase()] = p; });
+  const out = [];
+  (params || []).forEach((g) => {
+    if (g.internal || g.ctl === "toggle" || g.ctl === "select") return;
+    const m = /^(.*?)\s*gain\s*$/i.exec(g.name || ""); if (!m) return;
+    const pre = m[1].trim(); if (!pre) return;
+    const f = by[(pre + " freq").toLowerCase()];
+    if (!f || f.internal || f.pid === g.pid) return;
+    out.push({ fp: f, gp: g, en: by[(pre + " enable").toLowerCase()] || null, label: pre });
+  });
+  return out.sort((a, b) => a.fp.value - b.fp.value);
+}
+function eqParamLensEl(b, bands) {
+  const W = 268, H = 112, PAD = 13;
+  const gFrac = (p) => Math.max(0, Math.min(1, (p.value - p.min) / (span(p) || 1)));
+  const xAt = (fp) => PAD + freqFrac(fp) * (W - 2 * PAD);
+  const yAt = (gp) => PAD + (1 - gFrac(gp)) * (H - 2 * PAD);
+  const wrap = el("div", "eqlens");
+  const svg = sv("svg", { class: "eqsvg", width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  const g0 = bands[0].gp;                       // 0 dB guide from the first band's gain range
+  if (g0.min < 0 && g0.max > 0) { const zy = PAD + (1 - (0 - g0.min) / (span(g0) || 1)) * (H - 2 * PAD);
+    svg.append(sv("line", { class: "eqzero", x1: PAD, y1: zy, x2: W - PAD, y2: zy })); }
+  const rd = el("div", "lensrd");
+  const pts = bands.map(() => sv("circle", { class: "eqh xy", r: 6 }));
+  pts.forEach((pt) => svg.append(pt));
+  const paint = () => bands.forEach((bnd, i) => {
+    pts[i].setAttribute("cx", xAt(bnd.fp).toFixed(1));
+    pts[i].setAttribute("cy", yAt(bnd.gp).toFixed(1));
+    const off = bnd.en && bnd.en.value < 0.5;   // disabled band -> dim, still draggable
+    pts[i].setAttribute("opacity", off ? "0.3" : "1");
+  });
+  // keep points synced with knob/remote/fail on either the freq OR gain param
+  bands.forEach((bnd) => [bnd.fp, bnd.gp, bnd.en].forEach((p) => { if (!p) return;
+    const key = b.path + "/" + b.block + "/" + p.pid, c = P.get(key); if (!c) return;
+    const ps = c.set, pf = c.fail; c.set = (v, how) => { ps(v, how); paint(); }; c.fail = (v) => { pf(v); paint(); }; }));
+  const vb = (clientX, clientY) => { const r = svg.getBoundingClientRect();
+    const cw = svg.clientWidth || W, ch = svg.clientHeight || H;
+    return [(clientX - r.left - svg.clientLeft) * W / cw, (clientY - r.top - svg.clientTop) * H / ch]; };
+  bands.forEach((bnd, i) => {
+    const fKey = b.path + "/" + b.block + "/" + bnd.fp.pid, gKey = b.path + "/" + b.block + "/" + bnd.gp.pid;
+    pts[i].addEventListener("pointerdown", (e) => {
+      if (e.button || dragging || down) return;
+      e.preventDefault();
+      try { pts[i].setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
+      const id = e.pointerId, fv0 = bnd.fp.value, gv0 = bnd.gp.value;
+      const cF = P.get(fKey), cG = P.get(gKey); if (!cF || !cG) return;
+      dragging = "lens:" + fKey; lensLock = { x: fKey, y: gKey };
+      const [dx0, dy0] = vb(e.clientX, e.clientY);
+      const gx = dx0 - xAt(bnd.fp), gy = dy0 - yAt(bnd.gp);   // grab offsets: no jump
+      const at = (m) => { const [mx, my] = vb(m.clientX, m.clientY);
+        const fv = freqOfFrac(bnd.fp, ((mx - gx) - PAD) / (W - 2 * PAD));
+        const gv = padVal(bnd.gp, 1 - ((my - gy) - PAD) / (H - 2 * PAD));
+        if (fv !== bnd.fp.value) { cF.set(fv); queue("param", fKey); }
+        if (gv !== bnd.gp.value) { cG.set(gv); queue("param", gKey); }
+        rd.textContent = bnd.label + "   " + fmt(bnd.fp, bnd.fp.value) + "  ·  " + fmt(bnd.gp, bnd.gp.value); };
+      const move = (m) => { if (m.pointerId === id) at(m); };
+      const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
+        pts[i].removeEventListener("pointermove", move);
+        ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => pts[i].removeEventListener(n, up));
+        if (dragging === "lens:" + fKey) dragging = null;
+        lensLock = null; rd.textContent = "";
+        if (bnd.fp.value !== fv0) record("param", fKey, fv0, bnd.fp.value);
+        if (bnd.gp.value !== gv0) record("param", gKey, gv0, bnd.gp.value); };
+      pts[i].addEventListener("pointermove", move);
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => pts[i].addEventListener(n, up));
+    });
+  });
+  wrap.append(el("div", "lenslab", "⊹ EQ curve — drag a band (freq × gain)"), svg, rd);
+  paint();
+  return wrap;
+}
+
 /* ---------- blocks + chain ---------- */
 const STRUCT = new Set(["split", "join"]);
 const NO_BYPASS = new Set(["split", "join", "input", "output"]);
@@ -800,9 +883,10 @@ function blockEl(b) {
     const py = pickAxis(main, /\b(master|volume|level)\b|ch.*vol/i);
     if (px && py && px.pid !== py.pid) root.append(lensEl(b, px, py));
   }
-  if (b.category === "eq") {                  // graphic-EQ curve (freq-named gain bands)
-    const bands = eqBands(main);
-    if (bands.length >= 3) root.append(eqLensEl(b, bands));
+  if (b.category === "eq") {                  // graphic-EQ curve, else parametric Freq×Gain points
+    const g = eqBands(main);
+    if (g.length >= 3) root.append(eqLensEl(b, g));
+    else { const pb = eqBandsParam(main); if (pb.length >= 2) root.append(eqParamLensEl(b, pb)); }
   }
   if (b.category === "cab_ir_interp") {       // cab mic placement: Distance × Position on a cone pad
     const dist = pickAxis(main, /^\s*distance\s*$/i), pos = pickAxis(main, /^\s*position\s*$/i);
