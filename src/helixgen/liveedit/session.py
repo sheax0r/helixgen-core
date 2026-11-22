@@ -454,6 +454,44 @@ class LiveSession:
         self.load()                              # re-read: new model + its params
         return self.public_state()
 
+    def add_block(self, path: int, model_id: int) -> dict:
+        """Append a new block to DSP ``path``'s main row (row 0).
+
+        Places ``model_id`` at the next free row-0 grid slot — right after the
+        last block, before the output at slot ``ROW1_INPUT - 1`` — with
+        ``/ModelSet``, which the device honours as an ADD at an empty slot (not
+        a swap), so ANY category is allowed (unlike :meth:`swap_model`). Then it
+        re-reads the whole edit buffer and returns the fresh state. The device
+        applies the new model's defaults; confirm the sound on the rig. The edit
+        is volatile until Save.
+        """
+        pth, mid = int(path), int(model_id)
+        if defs.model_name_for(mid) is None:
+            raise LiveError(f"unknown model id {mid}", status=400)
+        out_slot = _chain.ROW1_INPUT - 1          # row-0 output lives here (13)
+        with self.cond:
+            self._require_up()
+            occupied = {s for (p, s) in self._blocks if p == pth}
+        content = sorted(s for s in occupied if 0 < s < out_slot)
+        slot = (content[-1] + 1) if content else 1
+        if slot >= out_slot or slot in occupied:
+            raise LiveError(
+                "no room to append a block on this path's main row — it is full "
+                "up to the output.", status=400)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                try:
+                    self.client.set_block_model(pth, slot, mid)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device add-block failed: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        self.load()                              # re-read: the appended block
+        return self.public_state()
+
     def set_bypass(self, path: int, block: int, enabled: Any, *,
                    client: Optional[str] = None,
                    rev: Optional[int] = None) -> dict:

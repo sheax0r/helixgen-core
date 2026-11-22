@@ -1171,6 +1171,37 @@ def test_swap_model_rejects_unknown_model_and_missing_block():
     assert c.swaps == []
 
 
+def test_add_block_appends_at_next_free_row0_slot_and_rereads():
+    # _rig() has row-0 blocks at slots 1 and 2 (input 0, output 13) -> the
+    # append lands at slot 3, the next free row-0 slot before the output.
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    reads0 = c.reads
+    st = sess.add_block(0, 628)
+    assert c.swaps == [(0, 3, 628)]          # ADD issued at the next free slot
+    assert c.reads > reads0                   # re-read happened
+    assert "paths" in st
+
+
+def test_add_block_appends_at_slot_1_on_an_empty_path():
+    c = FakeClient(eb=_eb({0: _blk(IN_INST1, {}), 13: _blk(OUT_MATRIX, {})}, asnp=1))
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    sess.add_block(0, 628)
+    assert c.swaps == [(0, 1, 628)]          # first content block goes to slot 1
+
+
+def test_add_block_rejects_unknown_model():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.add_block(0, 99999999)
+    assert e.value.status == 400
+    assert c.swaps == []
+
+
 def test_swap_model_rejects_an_endpoint_or_routing_block():
     # input/output/split/join are not model-swappable; no /ModelSet on an
     # endpoint grid slot (hgc-cc4 review).
