@@ -1990,6 +1990,33 @@ def device_move_block(path: int, src: int, dst: int, ip: str, port: int) -> None
     click.echo(f"path {path} block {src} -> slot {dst}")
 
 
+@device.command(name="add-split")
+@click.argument("path", type=int)
+@click.argument("block", type=int)
+@_device_option
+@_locked("editbuffer", verb="add-split")
+def device_add_split(path: int, block: int, ip: str, port: int) -> None:
+    """Split a block onto a NEW parallel lane in the live chain (PATH BLOCK).
+
+    Synthesized topology (the Stadium app's drag-down-to-parallel): BLOCK (a
+    `device blocks` lane-A grid slot, 1..12 on DSP PATH) moves to lane B (slot
+    BLOCK+14), a split node is inserted at BLOCK and a join at BLOCK+1, and the
+    lane-A blocks after it shift right to make room. A `/doAgenda` transaction
+    (`movb`+`setm`+`spld`+`jono`); the device applies it in place and echoes
+    `/setEditBuffer` — no reload. HW-validated 2026-11-23.
+
+    Refused if BLOCK is an input/output or not on lane A, if lane B slot
+    BLOCK+14 is already occupied (the column already has a parallel branch), or
+    if the chain is too full for the two nodes. Volatile until you save. NOTE:
+    saving a synthesized split to `.hsp` (`device to-hsp`/`copy`) does not yet
+    round-trip the new branch — that is the open save-side work; the live edit
+    itself is sound.
+    """
+    with _connect(ip, port) as h:
+        h.add_split(path, block)
+    click.echo(f"path {path} block {block} -> split onto a parallel lane")
+
+
 @device.command(name="reorder")
 @click.argument("setlist")
 @click.argument("target")

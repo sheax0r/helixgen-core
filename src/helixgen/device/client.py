@@ -990,6 +990,46 @@ class HelixClient:
         return self.do_agenda([_agenda.move(
             bl_s=src_s, bl_d=dst_s, fl_s=int(path), fl_d=int(path))])
 
+    def add_split(self, path: int, block: int) -> bool:
+        """Split the block at lane-A grid slot ``block`` onto a NEW parallel
+        lane B — synthesized topology (the app's drag-down-to-parallel).
+
+        Mirrors the app: the block moves to lane B (slot ``block+14``), a split
+        node is inserted at ``block`` and a join at ``block+1``, and the lane-A
+        blocks after it shift right by one to make room (``/doAgenda`` of
+        ``movb``/``setm``/``spld``/``jono`` ops; HW-validated 2026-11-23). The
+        device applies it in place and echoes ``/setEditBuffer`` — no reload.
+
+        Reads the live buffer to find the blocks that must shift and to check
+        there is room. Raises :class:`HelixError` if ``block`` is an input/
+        output or not a lane-A block (1..12), if lane B slot ``block+14`` is
+        already occupied, or if the chain is too full to insert the two nodes.
+        """
+        col = _grid_slot(block)
+        if col in (0, _agenda.LANE_A_LAST):
+            raise HelixError(f"block {block} is an input/output and cannot be split")
+        if col >= _agenda.LANE_B_OFFSET:
+            raise HelixError(
+                f"block {block} is on lane B; add_split operates on a lane-A "
+                "block (grid slots 1..12)")
+        flow = self.read_edit_buffer().get("sfg_", {}).get("flow", [])
+        if not (isinstance(flow, list) and int(path) < len(flow)):
+            raise HelixError(f"no DSP flow {path} in the edit buffer")
+        occupied = {p for p, _ in self._blks_pairs(flow[int(path)])}
+        if col not in occupied:
+            raise HelixError(f"no block at path {path} slot {block} to split")
+        lane_b = col + _agenda.LANE_B_OFFSET
+        if lane_b in occupied:
+            raise HelixError(
+                f"lane B slot {lane_b} is occupied — add_split needs it free "
+                "(this column already carries a parallel branch)")
+        later = [p for p in occupied if col < p < _agenda.LANE_A_LAST]
+        if later and max(later) >= _agenda.LANE_A_LAST - 1:
+            raise HelixError(
+                "not enough room on lane A to insert the split + join nodes "
+                "(the chain reaches the output block)")
+        return self.do_agenda(_agenda.split_out(col, later, flow=int(path)))
+
     def do_agenda(self, ops: Sequence[Dict[str, int]]) -> bool:
         """Apply a topology-edit transaction to the LIVE edit buffer.
 
@@ -1003,26 +1043,22 @@ class HelixClient:
         arg addresses a dual-cab 2nd model.
 
         Decoded 2026-11-22 (frida MITM of the app's 2002 socket). Raises
-        :class:`HelixError` on an empty op list, a transport failure (from
-        :meth:`_rpc`), or a non-zero ``/status`` code. The ``/error`` reply is
-        NOT a failure gate: HW saw both ``/error [reqid, 0, ""]`` and
-        ``/error [reqid, 1, 1]`` accompany an *applied* agenda, so its code does
-        not distinguish success. Like the other live-ops (``/ModelSet``), the
-        authoritative confirmation is the 2001 ``/setEditBuffer`` echo; a True
-        return means the device accepted the transaction, not that a re-read
-        has confirmed it — callers that need that re-read
-        :meth:`edit_buffer_blocks` or watch the 2001 subscriber.
+        :class:`HelixError` only on an empty op list or a transport failure
+        (from :meth:`_rpc`). The 2002 **reply code does NOT distinguish
+        success** and is not gated on: HW saw ``/error [reqid, 0, ""]``,
+        ``/error [reqid, 1, 1]`` AND ``/status [reqid, 1]`` all accompany an
+        *applied* agenda (a synthesized split landed under ``/status 1``,
+        2026-11-23). Like the other live-ops (``/ModelSet``), the authoritative
+        confirmation is the 2001 ``/setEditBuffer`` echo; a True return means
+        the device accepted the transaction, not that a re-read has confirmed
+        it — callers that need that re-read :meth:`edit_buffer_blocks` or watch
+        the 2001 subscriber.
         """
         ops = list(ops)
         if not ops:
             raise HelixError("do_agenda: empty op list")
         msgpack = self._load_msgpack()
-        replies = self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
-        # /error is ambiguous (see above) so it is not gated; a /status with a
-        # non-zero code, if the device ever sends one, is an honest failure.
-        for addr, args in replies:
-            if addr == "/status" and len(args) >= 2 and args[1] != 0:
-                raise HelixError(f"/doAgenda failed, status {args[1]}")
+        self._rpc("/doAgenda", [("b", msgpack.packb(ops))])
         return True
 
     @staticmethod
