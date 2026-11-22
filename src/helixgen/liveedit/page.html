@@ -866,11 +866,18 @@ function devRow(container, row, readonly) {
     ctl.step = row.type === "f" ? "any" : "1";
     ctl.value = row.value;
   }
-  ctl.disabled = readonly || down;
+  // `down` freezes controls via CSS (body.down #devbody .dctl), which clears
+  // live on reconnect — so only a read-only page sets the disabled attribute.
+  ctl.disabled = readonly;
   const val = el("span", "dval", row.display);
   ctl._val = val;
   ctl.setAttribute("aria-label", row.name || row.key);
-  if (!readonly) ctl.onchange = () => devSet(row, ctl, Number(ctl.value));
+  if (!readonly) ctl.onchange = () => {
+    // an emptied number field reads as "" -> Number("") is 0; don't write a
+    // phantom 0 (it's in range for e.g. an output level). Put the value back.
+    if (ctl.value === "" || Number.isNaN(Number(ctl.value))) { ctl.value = row.value; return; }
+    devSet(row, ctl, Number(ctl.value));
+  };
   r.append(ctl, val);
   container.append(r);
 }

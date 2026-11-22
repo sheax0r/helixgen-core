@@ -27,6 +27,8 @@ class FakeSettingsClient:
         self.sets = []            # (key, typ, value) written
         self.die_after = None     # key after which the socket "dies" (sock=None)
         self.read_fail = set()    # keys whose read raises
+        self.set_fail = None      # exception set_property raises (NAK or OSError)
+        self.def_fail = set()     # keys whose get_property_def raises
         self.values = {
             "global.out.level.qtr": 0.0,
             "global.tuner.type": 1,
@@ -47,7 +49,7 @@ class FakeSettingsClient:
         }
 
     def get_property_def(self, key):
-        if key not in self.defs:
+        if key in self.def_fail or key not in self.defs:
             raise HelixError(f"no def for {key}")
         return self.defs[key]
 
@@ -62,6 +64,8 @@ class FakeSettingsClient:
 
     def set_property(self, key, typ, value):
         S.guard_key(key)          # the real client refuses DANGEROUS_KEYS here
+        if self.set_fail is not None:
+            raise self.set_fail
         self.sets.append((key, typ, value))
         self.values[key] = value
         return True
@@ -187,6 +191,47 @@ def test_device_write_refuses_readonly_page():
         s.device_write("global.clock.year", 2030)     # date-time is read-only
     assert e.value.status == 403
     assert s.client.sets == []
+
+
+def test_device_write_nak_does_not_disconnect():
+    # the device refusing a write (NAK) is not a transport loss: the editor must
+    # stay connected (a HelixError wrongly flipping _connected froze the pane).
+    s = _sess()
+    s.client.set_fail = HelixError("device rejected /PropertyValueSet")
+    with pytest.raises(LiveError) as e:
+        s.device_write("global.tuner.type", 2)
+    assert e.value.status == 502
+    assert s._connected is True
+
+
+def test_device_write_missing_firmware_key_does_not_disconnect():
+    s = _sess()
+    s.client.def_fail = {"global.tuner.type"}
+    with pytest.raises(LiveError) as e:
+        s.device_write("global.tuner.type", 2)
+    assert e.value.status == 502
+    assert s._connected is True
+
+
+def test_device_write_transport_loss_disconnects():
+    s = _sess()
+    s.client.set_fail = OSError("connection reset")
+    with pytest.raises(LiveError) as e:
+        s.device_write("global.tuner.type", 2)
+    assert e.value.status == 502
+    assert s._connected is False
+
+
+def test_device_write_readback_failure_returns_coerced():
+    # the write landed (ok=True); a failing readback must not revert the control
+    # or mark the device down — reflect the value we wrote.
+    s = _sess()
+    s.client.read_fail = {"global.tuner.type"}
+    out = s.device_write("global.tuner.type", 2)
+    assert out == {"key": "global.tuner.type", "value": 2,
+                   "display": "Needle (2)"}
+    assert s._connected is True
+    assert s.client.sets == [("global.tuner.type", "i", 2)]
 
 
 # --- /device/* routes --------------------------------------------------------

@@ -1069,15 +1069,29 @@ class LiveSession:
                     d = self.client.get_property_def(key)
                     coerced = _settings.coerce_value(d, str(value))
                     ok = self.client.set_property(key, d.type, coerced)
-                    rb = self.client.get_property(key)
                 except ValueError as e:        # coerce / guard / bad def
                     raise LiveError(str(e), status=400) from e
-                except (HelixError, OSError) as e:
+                except HelixError as e:
+                    # a device NAK or a key this firmware doesn't carry — the
+                    # device said no, the connection is fine. Do NOT tear the
+                    # editor down (matches _read_keys; a transport loss is the
+                    # OSError below, which really did drop the connection).
+                    raise LiveError(f"the device would not set {key}: {e}",
+                                    status=502) from e
+                except OSError as e:
                     self._set_connected(False)
                     raise LiveError(f"device write failed: {e}", status=502) from e
-        if not ok:
-            raise LiveError(f"the device did not confirm the write to {key}",
-                            status=502)
+                if not ok:
+                    raise LiveError(f"the device did not confirm the write to "
+                                    f"{key}", status=502)
+                # Readback is best-effort: the write already landed (ok=True), so
+                # a failed readback reflects the value we wrote rather than
+                # reverting the control or marking the device down.
+                try:
+                    rb = self.client.get_property(key)
+                except (HelixError, OSError):
+                    return {"key": key, "value": coerced,
+                            "display": _settings.render_value(d, coerced)}
         return {"key": key, "value": rb.value,
                 "display": _settings.render_value(d, rb.value)}
 
