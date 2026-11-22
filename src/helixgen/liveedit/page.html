@@ -215,6 +215,14 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
   background:#2c66d6;border:2px solid #cfe0ff;box-shadow:0 0 7px rgba(44,102,214,.7);pointer-events:none}
 .lensrd{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
 body.down .lenspad{opacity:.5;pointer-events:none}
+/* EQ graphic lens — frequency-response curve */
+.eqlens{margin-top:12px;display:inline-flex;flex-direction:column;gap:5px}
+.eqsvg{border:1px solid var(--edge2);border-radius:10px;background:var(--panel2);touch-action:none;display:block}
+.eqzero{stroke:var(--edge2);stroke-width:1;stroke-dasharray:3 3}
+.eqcurve{fill:none;stroke:#2c66d6;stroke-width:2;stroke-linejoin:round;pointer-events:none}
+.eqh{fill:#2c66d6;stroke:#cfe0ff;stroke-width:2;cursor:ns-resize}
+.eqh:hover{fill:#5f84d6}
+body.down .eqsvg{opacity:.5;pointer-events:none}
 .secondmodel{margin-top:12px;padding-top:10px;border-top:1px dashed var(--faint);opacity:.72}
 .sm-head{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--faint);margin-bottom:6px}
 .sm-head.swap2{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
@@ -645,6 +653,81 @@ function lensEl(b, px, py) {
   return wrap;
 }
 
+/* ---------- EQ graphic lens: a frequency-response curve (81v.1) -------------
+ * Graphic-EQ bands are params NAMED by frequency ("125 Hz", "16 kHz") whose
+ * value is that band's gain, so the curve is derivable from the names — no
+ * model table. Each handle is a single-param vertical drag that reuses the
+ * band's P control (so knob/remote/fail stay in sync); dragging=key, so the
+ * existing paramLocked echo guard already covers it. */
+function parseHz(s) {
+  const m = /^\s*([\d.]+)\s*(k?)hz\s*$/i.exec(s || "");
+  if (!m) return null;
+  const f = parseFloat(m[1]);
+  return (isFinite(f) && f > 0) ? (m[2] ? f * 1000 : f) : null;
+}
+function eqBands(params) {
+  return (params || [])
+    .filter((p) => !p.internal && p.ctl !== "toggle" && p.ctl !== "select")
+    .map((p) => ({ p, hz: parseHz(p.name || p.label) }))
+    .filter((x) => x.hz != null)
+    .sort((a, b) => a.hz - b.hz);
+}
+function eqLensEl(b, bands) {
+  const W = 248, H = 96, PAD = 11, n = bands.length;
+  const xAt = (i) => PAD + i * (W - 2 * PAD) / (n - 1);
+  const gFrac = (p) => Math.max(0, Math.min(1, (p.value - p.min) / (span(p) || 1)));
+  const yAt = (f) => PAD + (1 - f) * (H - 2 * PAD);
+  const yToFrac = (y) => 1 - (y - PAD) / (H - 2 * PAD);
+  const wrap = el("div", "eqlens");
+  const svg = sv("svg", { class: "eqsvg", width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  const p0 = bands[0].p;                       // zero-dB guide from the first band's range
+  if (p0.min < 0 && p0.max > 0) svg.append(sv("line", { class: "eqzero",
+    x1: PAD, y1: yAt((0 - p0.min) / (span(p0) || 1)), x2: W - PAD, y2: yAt((0 - p0.min) / (span(p0) || 1)) }));
+  const poly = sv("polyline", { class: "eqcurve" }); svg.append(poly);
+  const rd = el("div", "lensrd");
+  const handles = bands.map((bnd, i) => { const h = sv("circle", { class: "eqh", r: 5, cx: xAt(i) });
+    svg.append(h); return h; });
+  const paint = () => {
+    poly.setAttribute("points", bands.map((bnd, i) => xAt(i) + "," + yAt(gFrac(bnd.p)).toFixed(1)).join(" "));
+    bands.forEach((bnd, i) => handles[i].setAttribute("cy", yAt(gFrac(bnd.p)).toFixed(1)));
+  };
+  bands.forEach((bnd) => { const key = b.path + "/" + b.block + "/" + bnd.p.pid, c = P.get(key);
+    if (!c) return; const ps = c.set, pf = c.fail;   // keep the curve in sync (set/remote/fail)
+    c.set = (v, how) => { ps(v, how); paint(); }; c.fail = (v) => { pf(v); paint(); }; });
+  // client Y -> viewBox units, using the CONTENT box (so the 1px border under
+  // box-sizing:border-box and any CSS scale don't bias the gain)
+  const vbY = (clientY) => { const r = svg.getBoundingClientRect();
+    const ch = svg.clientHeight || H; return (clientY - r.top - svg.clientTop) * H / ch; };
+  bands.forEach((bnd, i) => {
+    const key = b.path + "/" + b.block + "/" + bnd.p.pid, p = bnd.p, h = handles[i];
+    h.addEventListener("pointerdown", (e) => {
+      if (e.button || dragging || down) return;
+      e.preventDefault();
+      try { h.setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
+      const id = e.pointerId, v0 = p.value, c = P.get(key); if (!c) return;
+      dragging = key;                            // single param — knob-identical lock
+      const grab = vbY(e.clientY) - yAt(gFrac(p));   // keep the grab point: no jump on first move
+      const at = (m) => {
+        const v = padVal(p, yToFrac(vbY(m.clientY) - grab));
+        if (v !== p.value) { c.set(v); queue("param", key); }
+        rd.textContent = (p.name || p.label) + "   " + fmt(p, p.value); };
+      // no write on a bare click; the first move sets the gain
+      const move = (m) => { if (m.pointerId === id) at(m); };
+      const up = (m) => { if (m && m.pointerId !== undefined && m.pointerId !== id) return;
+        h.removeEventListener("pointermove", move);
+        ["pointerup", "pointercancel", "lostpointercapture"].forEach((nm) => h.removeEventListener(nm, up));
+        if (dragging === key) dragging = null;
+        rd.textContent = "";                     // readout shows only during a drag — never stale
+        if (p.value !== v0) record("param", key, v0, p.value); };
+      h.addEventListener("pointermove", move);
+      ["pointerup", "pointercancel", "lostpointercapture"].forEach((nm) => h.addEventListener(nm, up));
+    });
+  });
+  wrap.append(el("div", "lenslab", "⊹ EQ curve"), svg, rd);
+  paint();
+  return wrap;
+}
+
 /* ---------- blocks + chain ---------- */
 const STRUCT = new Set(["split", "join"]);
 const NO_BYPASS = new Set(["split", "join", "input", "output"]);
@@ -711,6 +794,10 @@ function blockEl(b) {
     const px = pickAxis(main, /\b(drive|gain)\b/i, /master/i);
     const py = pickAxis(main, /\b(master|volume|level)\b|ch.*vol/i);
     if (px && py && px.pid !== py.pid) root.append(lensEl(b, px, py));
+  }
+  if (b.category === "eq") {                  // graphic-EQ curve (freq-named gain bands)
+    const bands = eqBands(main);
+    if (bands.length >= 3) root.append(eqLensEl(b, bands));
   }
   if (extra.length) {
     const more = el("button", "more"), row = el("div", "ctl internal");
