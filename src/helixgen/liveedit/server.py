@@ -100,6 +100,10 @@ def _route(session: LiveSession, path: str, b: dict):
         if not isinstance(name, str):
             raise LiveError("field 'name' must be a string")
         return session.rename_snapshot(_int(b, "index"), name)
+    if path == "/snapshot/copy":
+        return session.copy_snapshot(_int(b, "src"), _int(b, "dst"))
+    if path == "/snapshot/swap":
+        return session.swap_snapshot(_int(b, "a"), _int(b, "b"))
     if path == "/preset":
         return session.load_preset(_int(b, "cid"))
     if path == "/save":
@@ -122,6 +126,17 @@ def _route(session: LiveSession, path: str, b: dict):
         if "value" not in b:
             raise LiveError("missing field 'value'")
         return session.device_write(key, b["value"])
+    # Controllers pane (81v.3): assign / clear a MIDI-CC controller on a param.
+    # Read of the current assignments is GET /controllers/state (do_GET).
+    if path == "/controllers/assign":
+        cc = b.get("cc")
+        if isinstance(cc, bool) or not isinstance(cc, int):
+            raise LiveError("field 'cc' must be an integer")
+        return session.assign_midi_cc(_int(b, "path"), _int(b, "block"),
+                                      _int(b, "pid"), cc, rev=_rev(b))
+    if path == "/controllers/clear":
+        return session.clear_param_controllers(_int(b, "path"), _int(b, "block"),
+                                               _int(b, "pid"), rev=_rev(b))
     return None
 
 

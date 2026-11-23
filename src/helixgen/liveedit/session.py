@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import logging
 import math
 import threading
 import time
@@ -29,6 +30,8 @@ from helixgen.device import content as _content, defs
 from helixgen.device.client import HelixError
 from helixgen.liveedit import chain as _chain
 from helixgen.liveedit.events import DIRTY_KEY, decode_event
+
+logger = logging.getLogger("helixgen.liveedit")
 
 # A snapshot recall is announced as /activateSnapshot followed by the batch of
 # values it applied. When our re-read for the first is slow, the second is
@@ -81,6 +84,35 @@ class _NoLease:
 
 def _close(a: float, b: float) -> bool:
     return abs(a - b) <= 1e-4 * max(1.0, abs(a), abs(b))
+
+
+def _controller_cids_for(eb: Any, path: int, grid_slot: int, pid: int) -> List[int]:
+    """Device controller ids (``cg__.entt.ctrl.cid_``) whose target is param
+    ``pid`` on the block at grid ``grid_slot`` of DSP ``path``.
+
+    The target block's entity id is its ``blks`` ``id__``; a ``trgs`` leaf links
+    ``tid_`` -> ``(eID_=id__, pid_, slot=dsp)``, and ``ctrl.tid_ == trgs.id__``.
+    Returns every matching controller (a param may carry more than one)."""
+    if not isinstance(eb, dict):
+        return []
+    flow = (eb.get("sfg_") or {}).get("flow")
+    if not (isinstance(flow, list) and 0 <= path < len(flow)):
+        return []
+    eid = None
+    for s, raw in _chain._blks_pairs(flow[path]):
+        if s == grid_slot:
+            eid = raw.get("id__")
+            break
+    if not isinstance(eid, int) or isinstance(eid, bool):
+        return []
+    entt = (eb.get("cg__") or {}).get("entt") or {}
+    tids = {t.get("id__") for t in (entt.get("trgs") or [])
+            if isinstance(t, dict) and t.get("eID_") == eid
+            and t.get("pid_") == pid and t.get("slot") == path
+            and t.get("type") == 2}
+    return [c["cid_"] for c in (entt.get("ctrl") or [])
+            if isinstance(c, dict) and c.get("tid_") in tids
+            and isinstance(c.get("cid_"), int) and not isinstance(c.get("cid_"), bool)]
 
 
 def _group_controllers(recipe: dict, labels: Dict[str, str]) -> dict:
@@ -975,6 +1007,154 @@ class LiveSession:
         self.load()                              # re-read: the new snapshot name
         return self.public_state()
 
+    @staticmethod
+    def _is_snapshot_named(nm: Any, idx: int) -> bool:
+        """Is ``nm`` a real, user-set snapshot name — not a default placeholder?
+        The device labels an unconfigured slot ``"Snap N"``; a gap or empty
+        entry decodes as ``"Snapshot N"`` (``chain._snapshot_names``). Both are
+        placeholders (spec 81v.2 §8.1: configured iff ``name != "Snap N"``)."""
+        return bool(nm) and nm not in (f"Snap {idx + 1}", f"Snapshot {idx + 1}")
+
+    @staticmethod
+    def _snap_index(index: Any, what: str) -> int:
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            raise LiveError(f"{what} must be an integer") from None
+        if not 0 <= i <= 7:
+            raise LiveError(f"{what} out of range 0..7")
+        return i
+
+    def _snapshot_scan(self, eb: Any):
+        """Active param values + types and block-enable states from a decoded
+        edit buffer, as flat maps keyed by ``(path, block[, pid])``, plus the
+        slot-indexed snapshot names. What a copy/swap reads off each recalled
+        snapshot."""
+        built = _chain.build_chain(eb)
+        pidx = _chain.param_index(built)
+        vals = {k: v["value"] for k, v in pidx.items()}
+        types = {k: v.get("type") for k, v in pidx.items()}
+        enables = {k: v["enabled"] for k, v in _chain.block_index(built).items()}
+        names = list(built.get("snapshots") or [])
+        return vals, types, enables, names
+
+    @staticmethod
+    def _snapshot_writes(src_vals: dict, dst_vals: dict,
+                         src_en: dict, dst_en: dict):
+        """The param + bypass writes that make the DST snapshot equal SRC.
+
+        ONLY targets whose value differs are written — and a value that differs
+        between two snapshots is necessarily snapshot-assigned, so a param or
+        bypass that is NOT snapshot-controlled (identical across every snapshot)
+        is skipped automatically. This is exactly how the Stadium app batches a
+        snapshot copy: there is no atomic copy opcode."""
+        pw = [(k, src_vals[k]) for k in src_vals
+              if k in dst_vals
+              and not _close(float(src_vals[k]), float(dst_vals[k]))]
+        bw = [(k, src_en[k]) for k in src_en
+              if k in dst_en and bool(src_en[k]) != bool(dst_en[k])]
+        return pw, bw
+
+    def _replay(self, pw, bw, ptypes) -> None:
+        """Apply a copy/swap's param + bypass writes into the ACTIVE snapshot.
+        Caller holds ``devlock``; a snapshot-assigned write lands in the active
+        snapshot only (HW-verified 2026-11-13)."""
+        for (p, b, pid), val in pw:
+            self.client.set_param(p, b, pid, val, force=True, fast=True,
+                                  ptype=ptypes.get((p, b, pid)))
+        for (p, b), en in bw:
+            self.client.set_block_enable(p, b, bool(en), fast=True)
+
+    def copy_snapshot(self, src: Any, dst: Any) -> dict:
+        """Copy snapshot ``src``'s contents onto snapshot ``dst`` on the live
+        device — the per-snapshot param values and block-bypass states, STATE
+        ONLY (``dst`` keeps its own name and colour, like the app's
+        Copy→Paste). No atomic copy opcode exists, so this recalls each
+        snapshot and replays the differing values as granular writes, the same
+        batch the Stadium app sends. Holds the edit-buffer lease across the
+        whole op so no other helixgen process writes the wrong scene meanwhile
+        (§8.6); a concurrent HARDWARE snapshot switch is the residual live-edit
+        risk, as for every live write. Volatile until Save."""
+        i = self._snap_index(src, "source snapshot")
+        j = self._snap_index(dst, "target snapshot")
+        if i == j:
+            return self.public_state()               # copy onto itself: no-op
+        with self.cond:
+            self._require_up()
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                try:
+                    self.client.activate_snapshot(i)
+                    sv, st, se, _ = self._snapshot_scan(self.client.read_edit_buffer())
+                    self.client.activate_snapshot(j)
+                    dv, _dt, de, _ = self._snapshot_scan(self.client.read_edit_buffer())
+                    pw, bw = self._snapshot_writes(sv, dv, se, de)
+                    self._replay(pw, bw, st)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"could not copy the snapshot: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        self.load(identity=False)        # re-read: dst holds src's state, active=dst
+        with self.cond:
+            self._set_dirty(True)        # the replayed writes dirtied the buffer
+        return self.public_state()
+
+    def swap_snapshot(self, a: Any, b: Any) -> dict:
+        """Swap snapshots ``a`` and ``b`` on the live device — their
+        per-snapshot state (params + bypass) AND their names. No atomic swap
+        opcode exists, so each is recalled and the differing values replayed,
+        then the two names are swapped via ``/SetSnapshotName``.
+
+        NOTE: snapshot COLOUR is NOT swapped — the live colour opcode is not
+        decoded yet (hgc-0g0.1) — so a swapped pair keeps its original slot
+        colours until that lands. Same lease/active-index posture as
+        :meth:`copy_snapshot`. Volatile until Save."""
+        i = self._snap_index(a, "first snapshot")
+        j = self._snap_index(b, "second snapshot")
+        if i == j:
+            return self.public_state()
+        with self.cond:
+            self._require_up()
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                try:
+                    self.client.activate_snapshot(i)
+                    av, at, ae, names = self._snapshot_scan(self.client.read_edit_buffer())
+                    self.client.activate_snapshot(j)
+                    bv, bt, be, _ = self._snapshot_scan(self.client.read_edit_buffer())
+                    name_i = names[i] if i < len(names) else None
+                    name_j = names[j] if j < len(names) else None
+                    # j is active (holding B): write A into it, so j becomes A
+                    self._replay(*self._snapshot_writes(av, bv, ae, be), at)
+                    # recall a (still holding A) and write B into it, so a becomes B
+                    self.client.activate_snapshot(i)
+                    self._replay(*self._snapshot_writes(bv, av, be, ae), bt)
+                    # swap the names only when BOTH slots carry a real user name;
+                    # if either is an unconfigured placeholder its state still
+                    # swaps, but the placeholder label stays (renaming a
+                    # configured slot to the other's placeholder literal would
+                    # corrupt its identity, and /SetSnapshotName can't un-name a
+                    # slot — it rejects an empty name).
+                    if (self._is_snapshot_named(name_i, i)
+                            and self._is_snapshot_named(name_j, j)
+                            and name_i != name_j):
+                        self.client.set_snapshot_name(i, name_j)
+                        self.client.set_snapshot_name(j, name_i)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"could not swap the snapshots: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        self.load(identity=False)
+        with self.cond:
+            self._set_dirty(True)
+        return self.public_state()
+
     def load_preset(self, cid: Any) -> dict:
         """Load a preset on the device by cid — a user-pool preset, or a setlist
         REFERENCE cid (what :meth:`list_presets` hands the page for a setlist
@@ -1273,6 +1453,124 @@ class LiveSession:
         except Exception:  # noqa: BLE001 — labels are a nicety, never a hard dep
             labels = {}
         return _group_controllers(recipe, labels)
+
+    def _param_exists(self, eb: Any, path: int, block: int, pid: int) -> bool:
+        cur = self._block_at(eb, path, block)
+        if cur is None:
+            raise LiveError("no such block on the loaded tone "
+                            "(did the preset change?)", status=404)
+        return any(p.get("pid") == pid for p in cur.get("params", []))
+
+    def _rollback_controller(self, cid_: int) -> None:
+        """Best-effort removal of a just-attached controller whose source bind
+        failed. Never raises (the caller is already surfacing the real error);
+        a failure here is logged, not masked over."""
+        try:
+            self.client.remove_controller(cid_)
+        except Exception:  # noqa: BLE001 — the real error is the bind failure
+            logger.warning("could not roll back sourceless controller %s after "
+                           "a failed MIDI assign; it is harmless until Save", cid_)
+
+    def assign_midi_cc(self, path: int, block: int, pid: int, cc: int, *,
+                       rev: Optional[int] = None) -> dict:
+        """Assign MIDI CC ``cc`` (0..127) as a live controller of param ``pid``
+        on the block at grid slot ``block`` (DSP ``path``) — the device-native
+        two-step (attach the param controller, then bind the CC source), heard
+        at once, no reload (81v.3).
+
+        ``rev`` is the structure revision the page was showing; the write is
+        refused (409) if the tone changed since, so a controller never lands on
+        a block that moved into the slot (mirrors :meth:`set_param`). The two
+        granular writes are atomic from the page's view: if the source bind
+        fails, the dangling sourceless controller is rolled back. Re-reads and
+        returns fresh state. Volatile until Save."""
+        pth, blk, p, c = int(path), int(block), int(pid), int(cc)
+        if not 0 <= c <= 127:
+            raise LiveError("a MIDI CC must be 0..127", status=400)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                    self._require_rev(rev, None)
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                cur = self._block_at(eb, pth, blk)
+                if cur is None:
+                    raise LiveError("no such block on the loaded tone "
+                                    "(did the preset change?)", status=404)
+                if cur.get("category") in ("input", "output", "split", "join"):
+                    raise LiveError("a controller attaches to a processing "
+                                    "block's param, not an endpoint / routing "
+                                    "node.", status=400)
+                prm = next((pr for pr in cur.get("params", [])
+                            if pr.get("pid") == p), None)
+                if prm is None:
+                    raise LiveError(f"block has no param {p}", status=400)
+                if prm.get("internal"):
+                    raise LiveError("that param has no editor control — it is "
+                                    "plumbing, not a controllable knob.",
+                                    status=400)
+                try:
+                    cid_ = self.client.attach_param_controller(pth, blk, p)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device controller attach failed: {e}",
+                                    status=502) from e
+                try:
+                    ok = self.client.add_midi_cc_source(cid_, c)
+                except (HelixError, OSError) as e:
+                    self._rollback_controller(cid_)
+                    self._set_connected(False)
+                    raise LiveError(f"device MIDI source bind failed: {e}",
+                                    status=502) from e
+                if not ok:
+                    self._rollback_controller(cid_)
+                    raise LiveError("the device did not confirm the MIDI "
+                                    "assignment", status=502)
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
+
+    def clear_param_controllers(self, path: int, block: int, pid: int, *,
+                                rev: Optional[int] = None) -> dict:
+        """Remove every controller assigned to param ``pid`` on the block at
+        grid slot ``block`` (DSP ``path``), live — the per-param Clear
+        Controllers (81v.3). A no-op (no error) when the param carries none.
+        ``rev`` refuses a stale request (409), as :meth:`assign_midi_cc` does.
+        Re-reads and returns fresh state. Volatile until Save."""
+        pth, blk, p = int(path), int(block), int(pid)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                    self._require_rev(rev, None)
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                if not self._param_exists(eb, pth, blk, p):
+                    raise LiveError(f"block has no param {p}", status=400)
+                for cid_ in _controller_cids_for(eb, pth, blk, p):
+                    try:
+                        ok = self.client.remove_controller(cid_)
+                    except (HelixError, OSError) as e:
+                        self._set_connected(False)
+                        raise LiveError(f"device controller remove failed: {e}",
+                                        status=502) from e
+                    if not ok:
+                        raise LiveError("the device did not confirm clearing "
+                                        "the controller", status=502)
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
 
     # --- 2001 events ----------------------------------------------------------------
     def _own_echo(self, seq: int, key: tuple, value: Any) -> Optional[str]:
