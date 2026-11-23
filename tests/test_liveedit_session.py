@@ -56,6 +56,7 @@ class FakeClient:
         self.on_read = None      # hooks: run in the middle of a device call
         self.on_write = None
         self.snapshots_activated = []
+        self.renames = []
         self.loaded = []
         # what the preset picker lists: the user pool + one setlist of refs
         self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
@@ -182,6 +183,20 @@ class FakeClient:
     def activate_snapshot(self, index):
         self._next()
         self.snapshots_activated.append(int(index))
+        return True
+
+    def set_snapshot_name(self, index, name):
+        self._next()
+        self.renames.append((int(index), name))
+        # reflect the new name on the eb so a re-read sees it
+        snps = (self.eb.setdefault("cg__", {}).setdefault("entt", {})
+                .setdefault("snps", []))
+        for s in snps:
+            if isinstance(s, dict) and s.get("si__") == int(index):
+                s["name"] = name
+                break
+        else:
+            snps.append({"si__": int(index), "name": name})
         return True
 
     def load_preset(self, cid):
@@ -470,6 +485,43 @@ def test_preset_load_device_failure_marks_disconnected(s):
     s.client.fail = HelixError("connection lost")
     with pytest.raises(LiveError) as e:
         s.load_preset(1950)
+    assert e.value.status == 502
+    assert s.public_state()["connected"] is False
+
+
+def test_rename_snapshot_writes_and_rereads(s):
+    s.client.eb["cg__"]["entt"] = {"snps": [{"si__": 1, "name": "Snapshot 2"}]}
+    st = s.rename_snapshot(1, "Chorus")
+    assert s.client.renames == [(1, "Chorus")]
+    assert st["snapshots"][1] == "Chorus"
+
+
+@pytest.mark.parametrize("bad", [-1, 8, 99, "x", None])
+def test_rename_snapshot_rejects_a_bad_index(s, bad):
+    with pytest.raises(LiveError):
+        s.rename_snapshot(bad, "Chorus")
+    assert s.client.renames == []
+
+
+@pytest.mark.parametrize("bad", ["", "   ", None, 5])
+def test_rename_snapshot_rejects_an_empty_name(s, bad):
+    with pytest.raises(LiveError):
+        s.rename_snapshot(0, bad)
+    assert s.client.renames == []
+
+
+def test_rename_snapshot_is_refused_while_another_process_holds_the_device(s):
+    s.lease.busy = "locked by agent-x"
+    with pytest.raises(LiveError) as e:
+        s.rename_snapshot(1, "Chorus")
+    assert e.value.status == 409 and "agent-x" in str(e.value)
+    assert s.client.renames == []
+
+
+def test_rename_snapshot_device_failure_marks_disconnected(s):
+    s.client.fail = HelixError("connection lost")
+    with pytest.raises(LiveError) as e:
+        s.rename_snapshot(1, "Chorus")
     assert e.value.status == 502
     assert s.public_state()["connected"] is False
 

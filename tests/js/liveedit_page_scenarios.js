@@ -243,6 +243,63 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     const yearCtl = x.ids.devbody.find((e) => e.tagName === "input")[0];
     ok("S21 a read-only page's control is disabled", yearCtl && yearCtl.disabled === true, yearCtl && yearCtl.disabled);
   }
+  { // S22: the snapshot management panel — open, select, rename (81v.2)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus", "Lead"] }));
+    ok("S22 the panel starts hidden", x.ids.snappanel.hidden === true, x.ids.snappanel.hidden);
+    x.ids.snap.onclick();                                  // open from the header chip
+    ok("S22 clicking the chip opens the panel", x.ids.snappanel.hidden === false, x.ids.snappanel.hidden);
+    const rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    ok("S22 a row per snapshot", rows.length === 3, rows.length);
+    ok("S22 the active snapshot is marked", rows[0]._cls.has("active") && !rows[1]._cls.has("active"),
+      [...rows[0]._cls].join(","));
+    // Select snapshot 2 (index 1): a non-active row has a Select button
+    const sel = rows[1].find((e) => e.tagName === "button" && e.textContent === "Select")[0];
+    sel.onclick();
+    const selPost = x.posts.filter((p) => p.url === "/snapshot").pop();
+    ok("S22 Select recalls the snapshot by index", selPost && selPost.body.index === 1, JSON.stringify(selPost && selPost.body));
+    ok("S22 the active snapshot has no Select button",
+      rows[0].find((e) => e.tagName === "button" && e.textContent === "Select").length === 0, "active had Select");
+    // Rename snapshot 1 (index 0): Rename -> input -> Enter
+    const ren = rows[0].find((e) => e.tagName === "button" && e.textContent === "Rename")[0];
+    ren.onclick();
+    const inp = x.ids.snapbody.find((e) => e.tagName === "input")[0];
+    ok("S22 Rename reveals an input seeded with the name", inp && inp.value === "Rhythm", inp && inp.value);
+    inp.value = "Intro"; inp.onkeydown({ key: "Enter", preventDefault() {} });
+    const renPost = x.posts.filter((p) => p.url === "/snapshot/rename").pop();
+    ok("S22 Enter posts the rename with index + trimmed name",
+      renPost && renPost.body.index === 0 && renPost.body.name === "Intro", JSON.stringify(renPost && renPost.body));
+    // Close
+    x.ids.snapclose.onclick();
+    ok("S22 the close button hides the panel", x.ids.snappanel.hidden === true, x.ids.snappanel.hidden);
+  }
+  { // S23: rename edge cases — a torn-down focused input must NOT auto-commit
+    const start = (x) => { x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus"] }));
+      x.ids.snap.onclick();
+      const rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+      rows[0].find((e) => e.tagName === "button" && e.textContent === "Rename")[0].onclick();
+      return x.ids.snapbody.find((e) => e.tagName === "input")[0]; };
+    const renames = (x) => x.posts.filter((p) => p.url === "/snapshot/rename");
+    { // Escape cancels — no write, even though removing the input fires blur
+      const x = boot(); const inp = start(x); inp.value = "Half";
+      inp.onkeydown({ key: "Escape", preventDefault() {} });
+      ok("S23 Escape writes nothing", renames(x).length === 0, JSON.stringify(renames(x).map((p) => p.body)));
+    }
+    { // a background snapshot switch mid-typing keeps the edit and writes nothing
+      const x = boot(); const inp = start(x); inp.value = "Still typin";
+      x.sse({ t: "meta", snapshot: 1, snapshot_name: "Chorus", connected: true, dirty: false });
+      ok("S23 a meta mid-edit does not commit", renames(x).length === 0, JSON.stringify(renames(x).map((p) => p.body)));
+      const live = x.ids.snapbody.find((e) => e.tagName === "input")[0];
+      ok("S23 the in-progress rename survives the meta", live && live.value === "Still typin", live && live.value);
+    }
+    { // Enter commits exactly once, even though the server state re-render tears the input down
+      const x = boot(); const inp = start(x); inp.value = "Intro";
+      inp.onkeydown({ key: "Enter", preventDefault() {} });
+      x.sse(State([Blk({}, [P_({ value: 0.5 })])], { rev: 2, version: 2, snapshot: 0, snapshots: ["Intro", "Chorus"] }));
+      ok("S23 Enter + the re-render commit exactly once", renames(x).length === 1, renames(x).length);
+    }
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

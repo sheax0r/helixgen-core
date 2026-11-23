@@ -867,6 +867,33 @@ class LiveSession:
                 self.lease.done()
         return {"snapshot": i}
 
+    def rename_snapshot(self, index: Any, name: Any) -> dict:
+        """Rename snapshot ``index`` (0..7) on the live device via the granular
+        ``/SetSnapshotName`` opcode, then re-read so the panel shows the new
+        name. Volatile until Save, like every live edit."""
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            raise LiveError("snapshot index must be an integer") from None
+        if not 0 <= i <= 7:
+            raise LiveError("snapshot index out of range 0..7")
+        if not isinstance(name, str) or not name.strip():
+            raise LiveError("snapshot name must be a non-empty string")
+        with self.devlock:
+            with self.cond:
+                self._require_up()
+            self.lease.ensure()
+            try:
+                self.client.set_snapshot_name(i, name)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not rename the snapshot: {e}",
+                                status=502) from e
+            finally:
+                self.lease.done()
+        self.load()                              # re-read: the new snapshot name
+        return self.public_state()
+
     def load_preset(self, cid: Any) -> dict:
         """Load a preset on the device by cid — a user-pool preset, or a setlist
         REFERENCE cid (what :meth:`list_presets` hands the page for a setlist

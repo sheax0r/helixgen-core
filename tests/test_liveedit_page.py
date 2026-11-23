@@ -40,6 +40,12 @@ def test_page_has_library_drawer_and_endpoints():
         assert marker in html, marker
 
 
+def test_page_has_snapshot_panel_and_endpoints():
+    html = PAGE.read_text()
+    for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"'):
+        assert marker in html, marker
+
+
 def test_page_registers_the_device_pane_and_endpoints():
     # 81v.5: the Device pane mounts via addPane and drives /device/*.
     html = PAGE.read_text()
