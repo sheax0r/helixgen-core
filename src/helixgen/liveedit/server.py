@@ -148,6 +148,16 @@ def _route(session: LiveSession, path: str, b: dict):
         if not isinstance(v, (int, float, bool, str)):
             raise LiveError("field 'value' must be a number, bool or string")
         return session.globaleq_write(b["output"], b["band"], b["param"], v)
+    if path == "/globaleq/reset":
+        if not isinstance(b.get("output"), str):
+            raise LiveError("field 'output' must be a string")
+        return session.globaleq_reset(b["output"])
+    if path == "/globaleq/apply":          # the write half of Copy/Paste
+        if not isinstance(b.get("output"), str):
+            raise LiveError("field 'output' must be a string")
+        if not isinstance(b.get("bands"), dict):
+            raise LiveError("field 'bands' must be an object")
+        return session.globaleq_apply(b["output"], b["bands"], b.get("level"))
     # Controllers pane (81v.3): assign / clear a MIDI-CC controller on a param.
     # Read of the current assignments is GET /controllers/state (do_GET).
     if path == "/controllers/assign":

@@ -1666,6 +1666,94 @@ class LiveSession:
                                     "write", status=502)
         return {"output": output, "band": band, "param": param, "value": sent}
 
+    def _globaleq_band_send(self, o: str, b: str, p: str, v: Any) -> None:
+        """Write one band/level param (caller already holds devlock + the
+        ``globals`` lease). ``set_globaleq`` coerces; this only maps failures to
+        the same LiveErrors as :meth:`globaleq_write`."""
+        try:
+            ok = self.client.set_globaleq(o, b, p, v)
+        except HelixError as e:
+            raise LiveError(f"the device would not set the Global EQ: {e}",
+                            status=502) from e
+        except OSError as e:
+            self._set_connected(False)
+            raise LiveError(f"device write failed: {e}", status=502) from e
+        if not ok:
+            raise LiveError("the device did not confirm the Global EQ write",
+                            status=502)
+
+    def globaleq_reset(self, output: str) -> dict:
+        """Reset one output's Global EQ to factory defaults — the app's
+        **Reset EQ**: every band flat, the cut filters back to their default
+        corners, all bands enabled (does NOT touch the output level). Writes each
+        band param sequentially under ONE ``globals`` lease (the device socket is
+        single-threaded and the net is flaky — never fan writes out). Returns the
+        values written so the UI shadow reflects them."""
+        from helixgen.device import globaleq as _globaleq
+        try:
+            o = _globaleq.normalize_output(output)
+        except ValueError as e:
+            raise LiveError(str(e), status=400) from e
+        out_bands: Dict[str, Any] = {}
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            with self.lease.transient(("globals",)):
+                for band in _globaleq.band_names():
+                    params = _globaleq.default_band_params(band)
+                    for p, v in params.items():
+                        self._globaleq_band_send(o, band, p, v)
+                    out_bands[band] = params
+        return {"output": o, "bands": out_bands}
+
+    def globaleq_apply(self, output: str, bands: Any,
+                       level: Any = None) -> dict:
+        """Write a full EQ to one output — the write half of **Copy/Paste**, with
+        the source's values supplied by the caller (the pane's effective
+        snapshot+shadow, which the static ``global.eq.sync`` read cannot know).
+        ``bands`` is ``{band: {param: value}}``; ``level`` an optional output
+        level. The whole payload is validated (codec normalize + coerce) BEFORE
+        any write, so a bad field is refused 400 without half-applying; the writes
+        then go out sequentially under one ``globals`` lease."""
+        from helixgen.device import globaleq as _globaleq
+        try:
+            o = _globaleq.normalize_output(output)
+        except ValueError as e:
+            raise LiveError(str(e), status=400) from e
+        if not isinstance(bands, dict):
+            raise LiveError("field 'bands' must be an object")
+        plan = []                       # (band, param, coerced) — validated upfront
+        for band, params in bands.items():
+            if not isinstance(params, dict):
+                raise LiveError(f"band {band!r} must map params to values",
+                                status=400)
+            for p, v in params.items():
+                try:
+                    _o, b, pp = _globaleq.normalize(o, band, p)
+                    plan.append((b, pp, _globaleq.coerce_value(pp, v)))
+                except ValueError as e:
+                    raise LiveError(str(e), status=400) from e
+        lvl = None
+        if level is not None:
+            try:
+                lvl = _globaleq.coerce_value("level", level)
+            except ValueError as e:
+                raise LiveError(str(e), status=400) from e
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            with self.lease.transient(("globals",)):
+                for b, p, v in plan:
+                    self._globaleq_band_send(o, b, p, v)
+                if lvl is not None:
+                    self._globaleq_band_send(o, "", "level", lvl)
+        out: Dict[str, Any] = {"output": o, "bands": {}}
+        for b, p, v in plan:
+            out["bands"].setdefault(b, {})[p] = v
+        if lvl is not None:
+            out["level"] = lvl
+        return out
+
     # --- Controllers pane (81v.3) ---------------------------------------------------
     def _library(self):
         """The block library, loaded once. Supplies the param-name vocabulary

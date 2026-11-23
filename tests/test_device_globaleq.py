@@ -183,3 +183,20 @@ def test_decode_sync_tolerates_junk():
     assert globaleq.decode_sync({})["outputs"] == {}
     with pytest.raises(ValueError):
         globaleq.decode_sync("not a map")
+
+
+def test_default_band_params():
+    lc = globaleq.default_band_params("lowcut")
+    assert lc == {"enable": True, "freq": 20.0, "slope": 1}
+    low = globaleq.default_band_params("low")
+    assert low == {"enable": True, "freq": 150.0, "gain": 0.0, "q": 0.707}
+    hs = globaleq.default_band_params("highshelf")
+    assert hs == {"enable": True, "freq": 8000.0, "gain": 0.0}
+    with pytest.raises(ValueError):
+        globaleq.default_band_params("nope")
+
+
+def test_normalize_output():
+    assert globaleq.normalize_output(" QTR ") == "qtr"
+    with pytest.raises(ValueError):
+        globaleq.normalize_output("spdif")
