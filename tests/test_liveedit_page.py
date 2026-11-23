@@ -40,6 +40,23 @@ def test_page_has_library_drawer_and_endpoints():
         assert marker in html, marker
 
 
+def test_page_never_iterates_htmlcollection_with_foreach():
+    # Element.children is an HTMLCollection in a real browser — it has no
+    # .forEach (only NodeList does). The test DOM backs .children with a plain
+    # Array, so a raw `.children.forEach` passes the Node scenarios but throws
+    # in every browser. Require Array.from(...) (the convention elsewhere here).
+    js = PAGE.read_text().split("<script>")[1].split("</script>")[0]
+    assert ".children.forEach" not in js, "iterate Array.from(x.children), not x.children.forEach"
+
+
+def test_page_has_library_browse_filter():
+    # 81v.9: the Tones tab has a client-side filter (no device I/O / re-fetch).
+    html = PAGE.read_text()
+    for marker in ("function applyLibFilter", '"lsearch"', "libQuery",
+                   "dataset.q", '"lempty"'):
+        assert marker in html, marker
+
+
 def test_page_has_snapshot_panel_and_endpoints():
     html = PAGE.read_text()
     for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"',
