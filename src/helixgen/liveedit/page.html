@@ -329,6 +329,11 @@ body.down main{opacity:.55}
   padding:7px 10px;margin-bottom:7px;background:var(--panel2)}
 .sp-row.active{border-color:#2c66d6;background:#14203d}
 .sp-dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;border:1px solid var(--edge2);background:#34508f}
+.sp-dot[role=button]{cursor:pointer}
+.sp-dot[role=button]:hover{box-shadow:0 0 0 2px var(--edge2)}
+.sp-swatches{display:flex;flex-wrap:wrap;gap:5px;flex:1 1 auto;padding:1px 0}
+.sp-swatch{width:18px;height:18px;border-radius:50%;border:1px solid var(--edge2);padding:0;cursor:pointer}
+.sp-swatch.on{box-shadow:0 0 0 2px var(--ink);border-color:var(--ink)}
 .sp-num{font-size:11px;font-weight:800;color:var(--dim);flex:0 0 auto;min-width:14px}
 .sp-name{flex:1 1 auto;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sp-row .btn{padding:2px 8px;font-size:11px}
@@ -1444,13 +1449,21 @@ function meta(m) {
 let snapOpen = false;
 let snapEditing = null;            // index being renamed, or null
 let snapClip = null;               // {mode:'copy'|'swap', src:i} while a copy/swap target is being picked
+let snapColoring = null;           // index whose colour picker is open, or null
+// the device's shared preset/snapshot colour palette (maintenance.PRESET_COLORS),
+// index = the `colr` enum. 0 'auto' and 11 'off' render as neutral chips.
+const SNAP_COLORS = ["#6b7a99", "#e8e8e8", "#e23c3c", "#c8641e", "#ff9e3d", "#e8d93c",
+  "#3faa52", "#3fb6c6", "#3c66d6", "#8a5cd6", "#e26ab6", "#3a3f4a"];
+const SNAP_COLOR_NAMES = ["Auto", "White", "Red", "Dark Orange", "Light Orange", "Yellow",
+  "Green", "Turquoise", "Blue", "Violet", "Pink", "Off"];
+const snapColorCss = (c) => SNAP_COLORS[c] || SNAP_COLORS[0];
 let snapInput = null;              // the live rename input, so a teardown can drop its blur handler
 let snapGlobals = null;            // cached /snapshot/globals rows (Discard-Edits + tempo/MIDI context)
 let snapGlobalsBusy = false;
 function snapToggle() { snapOpen ? snapClose() : snapShow(); }
 function snapShow() { if (!S || S.snapshot == null) return; snapOpen = true;
   $("snappanel").hidden = false; snapRender(); fetchSnapGlobals(); }
-function snapClose() { snapOpen = false; snapEditing = null; snapClip = null; $("snappanel").hidden = true; }
+function snapClose() { snapOpen = false; snapEditing = null; snapClip = null; snapColoring = null; $("snappanel").hidden = true; }
 // The snapshot-relevant Global Settings (Discard-Edits toggle + read-only tempo
 // and MIDI-Recall context). Read on open and after a toggle; cached so a plain
 // re-render (meta tick) never re-hits the device.
@@ -1489,8 +1502,31 @@ function snapRender() {
   }
   names.forEach((nm, i) => {
     const row = el("div", "sp-row" + (i === S.snapshot ? " active" : ""));
-    row.append(el("span", "sp-dot"));
+    const colr = (S.snapshot_colors && S.snapshot_colors[i]) || 0;
+    const dot = el("span", "sp-dot"); dot.style.background = snapColorCss(colr);
+    if (!snapClip && snapEditing === null) {          // the dot opens the colour picker
+      dot.setAttribute("role", "button"); dot.setAttribute("tabindex", "0"); dot.title = "Set colour";
+      dot.onclick = () => { if (down) return; snapColoring = (snapColoring === i ? null : i); snapRender(); };
+    }
+    row.append(dot);
     row.append(el("span", "sp-num", String(i + 1)));
+    if (snapColoring === i) {
+      const sw = el("div", "sp-swatches");
+      SNAP_COLORS.forEach((css, ci) => {
+        const b = el("button", "sp-swatch" + (ci === colr ? " on" : "")); b.type = "button";
+        b.style.background = css; b.title = SNAP_COLOR_NAMES[ci];
+        b.setAttribute("aria-label", SNAP_COLOR_NAMES[ci]);
+        b.onclick = () => {
+          if (down) return;
+          snapColoring = null;
+          send("/snapshot/color", { index: i, color: ci },
+            () => toast("Coloured snapshot " + (i + 1), true), () => {});
+          snapRender();
+        };
+        sw.append(b);
+      });
+      row.append(sw); body.append(row); return;
+    }
     if (snapEditing === i) {
       const inp = el("input", "sp-name-in"); inp.value = nm; inp.setAttribute("aria-label", "Snapshot name");
       const commit = () => {
@@ -1536,7 +1572,7 @@ function snapRender() {
       row.append(sel);
     }
     const ren = el("button", "btn", "Rename"); ren.type = "button";
-    ren.onclick = () => { if (down) return; snapEditing = i; snapRender(); };
+    ren.onclick = () => { if (down) return; snapColoring = null; snapEditing = i; snapRender(); };
     row.append(ren);
     const cp = el("button", "btn", "Copy"); cp.type = "button";
     cp.onclick = () => { if (down) return; snapClip = { mode: "copy", src: i }; snapRender(); };

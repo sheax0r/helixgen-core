@@ -294,20 +294,41 @@ def build_chain(eb: Any) -> dict:
     return {
         "snapshot": asnp if isinstance(asnp, int) and not isinstance(asnp, bool) else None,
         "snapshots": _snapshot_names(cg),
+        "snapshot_colors": _snapshot_colors(cg),
         "paths": paths,
     }
 
 
-def _snapshot_names(cg: dict) -> List[str]:
-    """Snapshot names by index (``cg__.entt.snps[]``, each keyed by ``si__``)."""
+def _snps_by_index(cg: dict) -> dict:
+    """``cg__.entt.snps[]`` keyed by ``si__`` (0..MAX_SNAPSHOTS-1)."""
     entt = cg.get("entt") if isinstance(cg.get("entt"), dict) else {}
     snps = entt.get("snps")
-    named = {}
+    out = {}
     for s in (snps if isinstance(snps, list) else []):
         i = s.get("si__") if isinstance(s, dict) else None
         if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < MAX_SNAPSHOTS:
-            named[i] = str(s.get("name") or f"Snapshot {i + 1}")
+            out[i] = s
+    return out
+
+
+def _snapshot_names(cg: dict) -> List[str]:
+    """Snapshot names by index (``cg__.entt.snps[]``, each keyed by ``si__``)."""
+    named = {i: str(s.get("name") or f"Snapshot {i + 1}")
+             for i, s in _snps_by_index(cg).items()}
     return [named.get(i, f"Snapshot {i + 1}") for i in range(max(named) + 1)] if named else []
+
+
+def _snapshot_colors(cg: dict) -> List[int]:
+    """Snapshot ``colr`` indices by slot, aligned with :func:`_snapshot_names`
+    (an int into the shared preset-colour palette). A slot with no stored colr
+    reads 0 ('auto'). Empty when no snapshots are configured."""
+    by = _snps_by_index(cg)
+    if not by:
+        return []
+    def _c(s):
+        v = s.get("colr")
+        return v if isinstance(v, int) and not isinstance(v, bool) else 0
+    return [_c(by[i]) if i in by else 0 for i in range(max(by) + 1)]
 
 
 def _iter_segments(segs: List[dict]) -> Iterator[dict]:

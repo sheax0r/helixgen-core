@@ -265,6 +265,7 @@ class LiveSession:
         with self.cond:
             return {"rev": self.rev, "version": self.version, **self._meta(),
                     "snapshots": list(self._chain.get("snapshots") or []),
+                    "snapshot_colors": list(self._chain.get("snapshot_colors") or []),
                     "paths": self._chain["paths"]}
 
     def param(self, path: int, block: int, pid: int) -> dict:
@@ -288,6 +289,7 @@ class LiveSession:
                 state = {"t": "state", "rev": self.rev, "version": self.version,
                          **self._meta(),
                          "snapshots": list(self._chain.get("snapshots") or []),
+                         "snapshot_colors": list(self._chain.get("snapshot_colors") or []),
                          "paths": self._chain["paths"]}
                 return self.version, self.rev, [state]
             return self.version, self.rev, [m for v, m in self._log if v > version]
@@ -1011,6 +1013,34 @@ class LiveSession:
             finally:
                 self.lease.done()
         self.load()                              # re-read: the new snapshot name
+        return self.public_state()
+
+    def set_snapshot_color(self, index: Any, color: Any) -> dict:
+        """Set snapshot ``index``'s colour on the live device via the granular
+        ``/SnapshotColorSet`` opcode, then re-read so the panel shows it.
+        ``color`` is a palette token/label or an int index (coerced through
+        ``maintenance.color_index``). Volatile until Save."""
+        from helixgen.device import maintenance
+        i = self._snap_index(index, "snapshot index")
+        try:
+            c = maintenance.color_index(color)
+        except ValueError as e:
+            raise LiveError(str(e)) from None
+        with self.devlock:
+            with self.cond:
+                self._require_up()
+            self.lease.ensure()
+            try:
+                self.client.set_snapshot_color(i, c)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"could not set the snapshot colour: {e}",
+                                status=502) from e
+            finally:
+                self.lease.done()
+        self.load(identity=False)                # re-read: the new colour
+        with self.cond:
+            self._set_dirty(True)                # a colour change is an unsaved edit
         return self.public_state()
 
     @staticmethod

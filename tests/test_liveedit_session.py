@@ -59,6 +59,7 @@ class FakeClient:
         self.on_write = None
         self.snapshots_activated = []
         self.renames = []
+        self.colors = []         # (index, colr) from set_snapshot_color
         self.loaded = []
         self._active = None      # last activated snapshot index
         self.snapshot_ebs = None  # {index: eb} -> read_edit_buffer follows _active
@@ -246,6 +247,19 @@ class FakeClient:
                 break
         else:
             snps.append({"si__": int(index), "name": name})
+        return True
+
+    def set_snapshot_color(self, index, color):
+        self._next()
+        self.colors.append((int(index), int(color)))
+        snps = (self.eb.setdefault("cg__", {}).setdefault("entt", {})
+                .setdefault("snps", []))
+        for s in snps:
+            if isinstance(s, dict) and s.get("si__") == int(index):
+                s["colr"] = int(color)
+                break
+        else:
+            snps.append({"si__": int(index), "colr": int(color), "name": f"Snap {int(index)+1}"})
         return True
 
     def load_preset(self, cid):
@@ -1867,3 +1881,53 @@ def test_is_snapshot_named_rejects_both_placeholder_forms():
     assert LiveSession._is_snapshot_named("Snapshot 2", 1) is False  # synthesized gap
     assert LiveSession._is_snapshot_named("", 0) is False
     assert LiveSession._is_snapshot_named(None, 0) is False
+
+
+# --- snapshot colour (hgc-0g0.1): /SnapshotColorSet, decoded 2026-11-23 ---
+
+def test_set_snapshot_color_writes_and_rereads(s):
+    st = s.set_snapshot_color(0, 4)
+    assert s.client.colors == [(0, 4)]
+    assert st["snapshot_colors"][0] == 4          # re-read reflects the new colr
+
+
+def test_set_snapshot_color_coerces_a_palette_name(s):
+    s.set_snapshot_color(1, "red")                # 'red' -> index 2 (maintenance palette)
+    assert s.client.colors == [(1, 2)]
+
+
+def test_set_snapshot_color_marks_the_buffer_dirty(s):
+    # a colour lives in the edit buffer (cg__.entt.snps[].colr) — it is an
+    # unsaved edit, so it must light the dirty flag like rename/copy/swap do,
+    # or the page shows "saved" and the colour is silently lost on preset switch.
+    assert s.public_state()["dirty"] is False
+    st = s.set_snapshot_color(0, 4)
+    assert st["dirty"] is True
+
+
+@pytest.mark.parametrize("bad", [-1, 8, 99])
+def test_set_snapshot_color_rejects_a_bad_index(s, bad):
+    with pytest.raises(LiveError):
+        s.set_snapshot_color(bad, 2)
+    assert s.client.colors == []
+
+
+def test_set_snapshot_color_rejects_an_unknown_colour(s):
+    with pytest.raises(LiveError):
+        s.set_snapshot_color(0, "chartreuse")
+    assert s.client.colors == []
+
+
+def test_set_snapshot_color_is_refused_while_another_process_holds_the_device(s):
+    s.lease.busy = "another helixgen process holds the editbuffer"
+    with pytest.raises(LiveError) as e:
+        s.set_snapshot_color(0, 2)
+    assert e.value.status == 409
+    assert s.client.colors == []
+
+
+def test_set_snapshot_color_device_failure_marks_disconnected(s):
+    s.client.fail = HelixError("socket died")
+    with pytest.raises(LiveError) as e:
+        s.set_snapshot_color(0, 2)
+    assert e.value.status == 502 and s.connected is False

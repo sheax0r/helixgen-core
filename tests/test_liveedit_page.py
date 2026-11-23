@@ -44,8 +44,26 @@ def test_page_has_snapshot_panel_and_endpoints():
     html = PAGE.read_text()
     for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"',
                    '"/snapshot/globals"', "Snapshot settings", "global.snapshot.edits",
-                   '"/snapshot/copy"', '"/snapshot/swap"', "Paste here", "Swap here"):
+                   '"/snapshot/copy"', '"/snapshot/swap"', "Paste here", "Swap here",
+                   '"/snapshot/color"', "sp-swatch", "SNAP_COLORS"):
         assert marker in html, marker
+
+
+def test_snapshot_colour_palette_stays_aligned_with_the_device_palette():
+    # the page hand-copies the colr palette; the swatch's array index IS the
+    # colr it posts, so a drift from maintenance.PRESET_COLORS would store one
+    # colour while showing another. Pin the names + length to the source.
+    import re
+    from helixgen.device.maintenance import COLOR_LABELS, PRESET_COLORS
+    html = PAGE.read_text()
+    names_src = re.search(r"const SNAP_COLOR_NAMES = \[([^\]]*)\]", html)
+    hexes_src = re.search(r"const SNAP_COLORS = \[([^\]]*)\]", html)
+    assert names_src and hexes_src
+    names = [s.strip().strip('"') for s in names_src.group(1).split(",") if s.strip()]
+    hexes = [s for s in hexes_src.group(1).split(",") if s.strip()]
+    expected = [COLOR_LABELS.get(t, t.title()) for t in PRESET_COLORS]
+    assert names == expected, (names, expected)
+    assert len(hexes) == len(PRESET_COLORS)
 
 
 def test_page_registers_the_device_pane_and_endpoints():
