@@ -1813,12 +1813,33 @@ def test_swap_snapshot_same_index_is_a_noop():
     assert s.client.snapshots_activated == [] and s.client.renames == []
 
 
-def test_swap_snapshot_leaves_placeholder_names_unswapped():
-    # a slot with no configured name (empty) must not be renamed to "" — the
-    # device rejects an empty name; swap state only, skip the rename.
-    a = _snap_eb(0.74, names={0: "Lead"}, asnp=0)     # slot 1 has no name
-    b = _snap_eb(0.30, names={0: "Lead"}, asnp=1)
+def test_swap_snapshot_does_not_rename_an_interior_placeholder():
+    # a GAP between configured slots decodes as the "Snapshot N" placeholder
+    # literal (chain._snapshot_names). Swapping a configured slot with it must
+    # NOT stamp that literal onto the configured slot — that would corrupt its
+    # identity (and hit the device, since the literal is a non-empty name).
+    a = _snap_eb(0.74, names={0: "Lead", 2: "Crunch"}, asnp=0)   # slot 1 is a gap
+    b = _snap_eb(0.30, names={0: "Lead", 2: "Crunch"}, asnp=1)
     s = _copy_sess({0: a, 1: b})
     s.swap_snapshot(0, 1)
-    assert s.client.renames == []                      # name_j absent -> no rename
+    assert s.client.renames == []                        # neither slot renamed
+    assert sorted(round(p[3], 3) for p in s.client.params) == [0.30, 0.74]  # state swapped
+
+
+def test_swap_snapshot_does_not_rename_a_device_placeholder():
+    # the DEVICE's own default label is "Snap N" (not "Snapshot N") — also a
+    # placeholder, so an unrenamed slot's state swaps but its label stays.
+    a = _snap_eb(0.74, names={0: "Lead", 1: "Snap 2"}, asnp=0)
+    b = _snap_eb(0.30, names={0: "Lead", 1: "Snap 2"}, asnp=1)
+    s = _copy_sess({0: a, 1: b})
+    s.swap_snapshot(0, 1)
+    assert s.client.renames == []
     assert sorted(round(p[3], 3) for p in s.client.params) == [0.30, 0.74]
+
+
+def test_is_snapshot_named_rejects_both_placeholder_forms():
+    assert LiveSession._is_snapshot_named("Lead", 0) is True
+    assert LiveSession._is_snapshot_named("Snap 2", 1) is False     # device default
+    assert LiveSession._is_snapshot_named("Snapshot 2", 1) is False  # synthesized gap
+    assert LiveSession._is_snapshot_named("", 0) is False
+    assert LiveSession._is_snapshot_named(None, 0) is False

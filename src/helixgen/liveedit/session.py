@@ -982,6 +982,14 @@ class LiveSession:
         return self.public_state()
 
     @staticmethod
+    def _is_snapshot_named(nm: Any, idx: int) -> bool:
+        """Is ``nm`` a real, user-set snapshot name — not a default placeholder?
+        The device labels an unconfigured slot ``"Snap N"``; a gap or empty
+        entry decodes as ``"Snapshot N"`` (``chain._snapshot_names``). Both are
+        placeholders (spec 81v.2 §8.1: configured iff ``name != "Snap N"``)."""
+        return bool(nm) and nm not in (f"Snap {idx + 1}", f"Snapshot {idx + 1}")
+
+    @staticmethod
     def _snap_index(index: Any, what: str) -> int:
         try:
             i = int(index)
@@ -1099,8 +1107,15 @@ class LiveSession:
                     # recall a (still holding A) and write B into it, so a becomes B
                     self.client.activate_snapshot(i)
                     self._replay(*self._snapshot_writes(bv, av, be, ae), bt)
-                    # swap the names (a configured slot only; placeholders are left)
-                    if (name_i and name_j and name_i != name_j):
+                    # swap the names only when BOTH slots carry a real user name;
+                    # if either is an unconfigured placeholder its state still
+                    # swaps, but the placeholder label stays (renaming a
+                    # configured slot to the other's placeholder literal would
+                    # corrupt its identity, and /SetSnapshotName can't un-name a
+                    # slot — it rejects an empty name).
+                    if (self._is_snapshot_named(name_i, i)
+                            and self._is_snapshot_named(name_j, j)
+                            and name_i != name_j):
                         self.client.set_snapshot_name(i, name_j)
                         self.client.set_snapshot_name(j, name_i)
                 except (HelixError, OSError) as e:
