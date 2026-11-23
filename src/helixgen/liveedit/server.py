@@ -283,6 +283,14 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 except Exception as e:  # noqa: BLE001 — a bad buffer must not 500 raw
                     logger.exception("live editor: command center state failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # Tuner pane (81v.10): the latest live pitch reading off the always-on
+            # 2003 telemetry stream. Read-only; polled while the pane is open.
+            elif path == "/tuner/reading":
+                try:
+                    self._json(200, session.tuner_reading())
+                except Exception as e:  # noqa: BLE001 — telemetry hiccup must not 500 raw
+                    logger.exception("live editor: tuner reading failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
             else:
                 self._json(404, {"error": "not found"})
 
