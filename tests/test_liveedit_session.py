@@ -70,6 +70,12 @@ class FakeClient:
         self.removed_ctrls = []     # controller_cid
         self.next_ctrl_cid = 50
         self.midi_source_fail = False   # make add_midi_cc_source return False
+        # per-param snapshot control (81v.2)
+        self.snap_assigns = []          # (path, block, pid, value)
+        self.snap_removes = []          # target_id
+        self.snap_targets = {}          # (path, block, pid) -> current target_id
+        self.next_snap_tid = 60
+        self.snap_remove_ack = True
         # what the preset picker lists: the user pool + one setlist of refs
         self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
         self.setlists = [{"cid_": 100, "name": "Rock", "cctp": 1001, "posi": 0}]
@@ -225,6 +231,26 @@ class FakeClient:
         self._next()
         self.removed_ctrls.append(int(controller_cid))
         return True
+
+    # --- per-param snapshot control (81v.2) ---
+    def assign_snap_param(self, path, block, pid, value, sub=0):
+        self._next()
+        self.snap_assigns.append((int(path), int(block), int(pid), float(value)))
+        tid = self.next_snap_tid
+        self.next_snap_tid += 1
+        self.snap_targets[(int(path), int(block), int(pid))] = tid
+        return tid
+
+    def remove_snapshot_target(self, target_id):
+        self._next()
+        self.snap_removes.append(int(target_id))
+        for k, v in list(self.snap_targets.items()):
+            if v == int(target_id):
+                del self.snap_targets[k]
+        return self.snap_remove_ack
+
+    def snapshot_param_target(self, path, block, pid, sub=0, *, doc=None):
+        return self.snap_targets.get((int(path), int(block), int(pid)))
 
     def save_edit_buffer(self, cid):
         self._next()

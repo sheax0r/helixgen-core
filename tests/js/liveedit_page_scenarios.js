@@ -465,6 +465,33 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch")).length === 0, "picker lingered");
   }
 
+  { // S29: per-param Snapshot Control toggle, OFF -> ON (81v.2)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5, snap: false })])]));
+    const tog = x.knobOf(K).root.find((e) => e._cls && e._cls.has("tog"))[0];
+    ok("S29 an uncontrolled param shows a hollow snapshot toggle",
+      tog && tog._cls.has("off"), tog && [...(tog._cls || [])]);
+    tog.onclick({ preventDefault() {}, stopPropagation() {} }); await x.tick();
+    ok("S29 clicking it posts snapshot-control ON for that exact param",
+      x.posts.length === 1 && x.posts[0].url === "/snapshot/param-control" &&
+      x.posts[0].body.on === true && x.posts[0].body.path === 0 &&
+      x.posts[0].body.block === 2 && x.posts[0].body.pid === 1 &&
+      x.posts[0].body.rev === 1,
+      JSON.stringify(x.posts[0] && x.posts[0].body));
+  }
+
+  { // S29b: a snapshot-controlled param's toggle turns it OFF
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5, snap: true })])]));
+    const tog = x.knobOf(K).root.find((e) => e._cls && e._cls.has("tog"))[0];
+    ok("S29b a controlled param shows a filled (not hollow) toggle",
+      tog && !tog._cls.has("off"), tog && [...(tog._cls || [])]);
+    tog.onclick({ preventDefault() {}, stopPropagation() {} }); await x.tick();
+    ok("S29b clicking it posts snapshot-control OFF",
+      x.posts.length === 1 && x.posts[0].body.on === false,
+      JSON.stringify(x.posts[0] && x.posts[0].body));
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

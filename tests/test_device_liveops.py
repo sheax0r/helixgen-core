@@ -608,3 +608,49 @@ def test_preset_edited_reads_the_unsaved_flag(monkeypatch):
         return type("PV", (), {"value": 1})()
     monkeypatch.setattr(h, "get_property", prop)
     assert h.preset_edited() is True and seen == ["volatile.preset.edited"]
+
+
+# --- per-param Snapshot Control (81v.2, opcode captured 2026-11-23) -----------
+
+def test_assign_snap_param_wire_and_returns_target_id():
+    h = HelixClient("10.0.0.99")
+    # reply /status [reqid, allocatedTargetId, ok]; field 2 is the NEW id (12),
+    # NOT a status code — the method must return it, not treat it as failure.
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 12), ("i", 0)])])
+    assert h.assign_snap_param(0, 1, 1, 0.12) == 12
+    addr, args = _last_sent(h)
+    assert addr == "/assignSnapParam"
+    # [reqid, dsp, grid_slot, sub, paramId, value]
+    assert args[1:5] == [0, 1, 0, 1]
+    assert abs(args[5] - 0.12) < 1e-6
+
+
+def test_assign_snap_param_raises_without_a_target_id():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/error", [("i", 1000), ("s", "nope")])])
+    with pytest.raises(Exception):
+        h.assign_snap_param(0, 1, 1, 0.5)
+
+
+def test_remove_snapshot_target_wire():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])])
+    assert h.remove_snapshot_target(12) is True
+    addr, args = _last_sent(h)
+    assert addr == "/removeSnapshotTarget"
+    assert args[1:] == [12]
+
+
+def test_snapshot_param_target_resolves_from_buffer():
+    # trgs maps id__ -> {eID_ == 28*dsp+slot, pid_, slot(sub), type 2}; the
+    # target counts only when it is snapshot-tracked (ctm_.stid).
+    doc = {"cg__": {"entt": {
+        "trgs": [{"id__": 12, "eID_": 1, "pid_": 1, "slot": 0, "type": 2},
+                 {"id__": 7,  "eID_": 1, "pid_": 2, "slot": 0, "type": 2}],
+        "ctm_": {"stid": [12]}}}}   # only 12 is snapshot-tracked
+    h = HelixClient("10.0.0.99")
+    # path 0, grid slot 1 -> eID 1; pid 1 is tracked, pid 2 is not
+    assert h.snapshot_param_target(0, 1, 1, doc=doc) == 12
+    assert h.snapshot_param_target(0, 1, 2, doc=doc) is None
+    # path 1, grid slot 1 -> eID 29: no such target
+    assert h.snapshot_param_target(1, 1, 1, doc=doc) is None
