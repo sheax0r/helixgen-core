@@ -1860,6 +1860,30 @@ class LiveSession:
                 "octave": reading.octave, "cents": reading.cents,
                 "hz": round(reading.hz, 2), "connected": up}
 
+    # --- Device Info pane (81v.11): read-only device identity -----------------
+    # device_id is deliberately omitted: the pane shows helixgen_model (derived
+    # from it), never the raw numeric id, so forwarding it is dead payload.
+    _INFO_FIELDS = ("model", "helixgen_model", "serial", "firmware",
+                    "firmware_build", "firmware_date", "sd_total_bytes",
+                    "sd_available_bytes")
+
+    def device_info(self) -> dict:
+        """The device's identity / firmware / storage (``/ProductInfoGet``), for
+        the read-only Device Info strip (81v.11). Read-only and lease-free over
+        2002, exactly like :meth:`mixer_state` — identity lives outside the
+        preset, so this does NOT touch the signal-flow state. The large ``raw``
+        map is dropped; only the curated fields the strip shows are returned.
+        Raises :class:`LiveError` (502) if the read fails."""
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            try:
+                info = self.client.product_info()
+            except (HelixError, OSError, ValueError) as e:
+                raise LiveError(f"could not read device info: {e}",
+                                status=502) from e
+        return {k: info.get(k) for k in self._INFO_FIELDS}
+
     def _param_exists(self, eb: Any, path: int, block: int, pid: int) -> bool:
         cur = self._block_at(eb, path, block)
         if cur is None:
