@@ -450,6 +450,21 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch")).length === 0, "picker still open");
   }
 
+  { // S28b: starting a rename dismisses an open colour picker (no dual-state)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])],
+      { snapshot: 0, snapshots: ["Rhythm", "Chorus"], snapshot_colors: [2, 0] }));
+    x.ids.snap.onclick();
+    let rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    rows[0].find((e) => e._cls && e._cls.has("sp-dot"))[0].onclick();   // open picker on row 0
+    ok("S28b the picker is open", x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch")).length === 12,
+      x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch")).length);
+    rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    rows[1].find((e) => e.tagName === "button" && e.textContent === "Rename")[0].onclick();
+    ok("S28b starting a rename closes the colour picker",
+      x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch")).length === 0, "picker lingered");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

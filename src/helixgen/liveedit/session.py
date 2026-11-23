@@ -1007,6 +1007,8 @@ class LiveSession:
             finally:
                 self.lease.done()
         self.load(identity=False)                # re-read: the new colour
+        with self.cond:
+            self._set_dirty(True)                # a colour change is an unsaved edit
         return self.public_state()
 
     @staticmethod

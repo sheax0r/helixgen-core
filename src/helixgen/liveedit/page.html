@@ -1503,7 +1503,7 @@ function snapRender() {
       row.append(sel);
     }
     const ren = el("button", "btn", "Rename"); ren.type = "button";
-    ren.onclick = () => { if (down) return; snapEditing = i; snapRender(); };
+    ren.onclick = () => { if (down) return; snapColoring = null; snapEditing = i; snapRender(); };
     row.append(ren);
     const cp = el("button", "btn", "Copy"); cp.type = "button";
     cp.onclick = () => { if (down) return; snapClip = { mode: "copy", src: i }; snapRender(); };

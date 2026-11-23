@@ -1872,6 +1872,15 @@ def test_set_snapshot_color_coerces_a_palette_name(s):
     assert s.client.colors == [(1, 2)]
 
 
+def test_set_snapshot_color_marks_the_buffer_dirty(s):
+    # a colour lives in the edit buffer (cg__.entt.snps[].colr) — it is an
+    # unsaved edit, so it must light the dirty flag like rename/copy/swap do,
+    # or the page shows "saved" and the colour is silently lost on preset switch.
+    assert s.public_state()["dirty"] is False
+    st = s.set_snapshot_color(0, 4)
+    assert st["dirty"] is True
+
+
 @pytest.mark.parametrize("bad", [-1, 8, 99])
 def test_set_snapshot_color_rejects_a_bad_index(s, bad):
     with pytest.raises(LiveError):
