@@ -37,6 +37,7 @@ function boot() {
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
    "mixerpane", "mxtabs", "mxbody", "mxrefresh",
    "eqpane", "eqtabs", "eqnote", "eqbody", "eqrefresh",
+   "cmdpane", "cmdbody", "cmdrefresh",
    "snappanel", "snapbody", "snapclose"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
   const document = { get body2(){return El.body}, getElementById: (i) => ids[i], createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };

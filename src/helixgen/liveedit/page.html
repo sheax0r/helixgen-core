@@ -103,6 +103,15 @@ body.down #devbody .dctl{opacity:.5;pointer-events:none}
 .ctl-src{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ctl-det{color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ctl-empty{margin:0;color:var(--faint);font-size:12px}
+.cmd-mark{color:#3fd0b0;margin-right:7px;font-size:11px}
+.ctl-h .cmd-unknown{color:var(--faint);text-transform:none;letter-spacing:0;font-weight:400}
+.cmd-fam{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+  color:#bff5da;background:#14332a;border:1px solid #256b4b;border-radius:999px;padding:1px 7px;margin-right:8px;vertical-align:middle}
+.cmd-head{font-weight:600}
+.cmd-act{color:var(--dim);margin-left:8px;font-weight:400;font-size:12px}
+.cmd-fk{color:var(--faint)}
+.cmd-fv{color:var(--ink)}
+.cmd-beh{color:var(--faint);font-style:italic}
 .ctl-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px;
   padding:10px 12px;background:var(--panel2);border:1px solid var(--edge);border-radius:9px}
 .ctl-flabel{font-size:12px;color:var(--dim)}
@@ -454,6 +463,14 @@ body.down main{opacity:.55}
   <nav class="dtabs" id="eqtabs" aria-label="Output"></nav>
   <p class="dnote" id="eqnote">Band values are the device's <b>connect-time snapshot</b> — the firmware can't read them back live, so a change made on the hardware since won't show until you reconnect. Controls you move here are marked <span class="eq-dot"></span> set; the master switch is live.</p>
   <div id="eqbody"></div>
+</section>
+<section class="pane" id="cmdpane" hidden aria-label="Command Center">
+  <div class="dhead">
+    <div><h2 class="dtitle">Command Center</h2>
+      <p class="dsub">What each footswitch and Instant slot sends on the loaded tone — MIDI, preset &amp; snapshot recall. Read-only for now.</p></div>
+    <button class="btn" id="cmdrefresh" type="button" title="Refresh the commands shown here from the current tone">Refresh</button>
+  </div>
+  <div id="cmdbody"></div>
 </section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <aside id="snappanel" hidden aria-label="Snapshots">
@@ -1631,6 +1648,59 @@ async function geqLoad() {
 function geqOnShow(active) { if (active) geqLoad(); }
 $("eqrefresh").onclick = geqLoad;
 addPane({ id: "globaleq", label: "Global EQ", el: () => $("eqpane"), onShow: geqOnShow });
+/* ---------- Command Center pane (81v.4): read-only commands view ------------
+ * The commands (MIDI / preset / snapshot recall) each footswitch or Instant
+ * slot sends on the loaded tone, projected off the live buffer via the shipped
+ * reverse-transcode read model (GET /commands/state). Read-only this increment
+ * — author/edit/clear land on this surface next. Every string is device/user
+ * data: textContent only (XSS discipline, like the other panes). */
+function cmdCommandRow(c) {
+  const r = el("div", "ctl-row");
+  const head = el("span", "ctl-src");
+  head.append(el("span", "cmd-fam", c.family || ""));
+  head.append(el("span", "cmd-head", c.headline || ""));
+  if (c.action) head.append(el("span", "cmd-act", c.action));
+  r.append(head);
+  const det = el("span", "ctl-det");
+  (c.fields || []).forEach((f, i) => {
+    if (i) det.append(el("span", "cmd-sep", " · "));
+    det.append(el("span", "cmd-fk", (f[0] || "") + " "));
+    det.append(el("span", "cmd-fv", f[1] != null ? String(f[1]) : ""));
+  });
+  if (c.behavior) det.append(el("span", "cmd-beh", (c.fields && c.fields.length ? " · " : "") + c.behavior));
+  r.append(det);
+  return r;
+}
+function cmdRender(d) {
+  const body = $("cmdbody"); body.textContent = "";
+  const sources = (d && d.sources) || [];
+  if (!sources.length) {
+    body.append(el("p", "dhint", "No commands assigned on the loaded tone.")); return;
+  }
+  sources.forEach((s) => {
+    const sec = el("section", "ctl-group");
+    const h = el("h3", "ctl-h");
+    h.append(el("span", "cmd-mark", "▶"));   // turquoise has-commands marker
+    h.append(el("span", null, s.label || s.id || ""));
+    if (!s.named) h.append(el("span", "cmd-unknown", " (source helixgen can't name)"));
+    sec.append(h);
+    (s.commands || []).forEach((c) => sec.append(cmdCommandRow(c)));
+    body.append(sec);
+  });
+}
+async function cmdLoad() {
+  const body = $("cmdbody"); body.textContent = "";
+  body.append(el("p", "dhint", "Reading the device…"));
+  try {
+    const r = await fetch("/commands/state");
+    const j = await r.json();
+    if (!r.ok) { body.textContent = ""; body.append(el("p", "dhint", (j && j.error) || "could not read the commands")); return; }
+    cmdRender(j);
+  } catch (e) { body.textContent = ""; body.append(el("p", "dhint", "could not read the commands")); }
+}
+function cmdOnShow(active) { if (active) cmdLoad(); }
+$("cmdrefresh").onclick = cmdLoad;
+addPane({ id: "commands", label: "Command Center", el: () => $("cmdpane"), onShow: cmdOnShow });
 
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
