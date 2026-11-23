@@ -536,7 +536,10 @@ class LibrarySession:
 
     def _ir_view(self, device: Optional[dict]) -> List[dict]:
         """One flat IR list, computer ∪ device, matched by hash. Each row:
-        ``{hash, name, wav, presence}`` (presence computer|device|both)."""
+        ``{hash, name, wav, presence, folder}`` (presence computer|device|both;
+        folder is the library-first folder label, or ``None`` when unfiled)."""
+        from helixgen import ir_folders
+        folders = ir_folders.load(self._root())
         computer = self._ir_local_loader() or []
         device_irs = device["irs"] if device else []
         dev_by_hash = {m.get("hash"): m for m in device_irs if m.get("hash")}
@@ -547,13 +550,14 @@ class LibrarySession:
             seen.add(h)
             on_dev = h in dev_by_hash
             rows.append({"hash": h, "name": c.get("name"), "wav": c.get("wav"),
-                         "presence": "both" if on_dev else "computer"})
+                         "presence": "both" if on_dev else "computer",
+                         "folder": folders.get(h)})
         for m in device_irs:
             h = m.get("hash")
             if h in seen:
                 continue
             rows.append({"hash": h, "name": m.get("name"), "wav": None,
-                         "presence": "device"})
+                         "presence": "device", "folder": folders.get(h)})
         rows.sort(key=lambda r: (r.get("name") or "").lower())
         return rows
 
@@ -909,6 +913,26 @@ class LibrarySession:
                                    status=502)
             return res
         return self._run(go)
+
+    def set_ir_folder(self, hash_: Any, folder: Any = None) -> dict:
+        """Assign an IR (by 32-hex hash) to a library folder, or unfile it with
+        an empty/``None`` folder. Library-first, disk-only (the folder sidecar);
+        the device never learns about folders, so this takes no device and no
+        lease — it works offline. ``folder`` must be a string or ``None``."""
+        from helixgen import ir_folders
+
+        h = self._require_str(hash_, "an IR hash")
+        if folder is not None and not isinstance(folder, str):
+            raise LibraryError("folder must be a string", status=400)
+        with self._mutate_lock:          # serialise the sidecar write
+            try:
+                ir_folders.set_folder(h, folder, library_dir=self._root())
+            except ValueError as e:
+                raise LibraryError(str(e), status=400) from e
+        # ponytail: no per-assignment auto-commit — the sidecar is atomic on
+        # disk and the next library-mutating op's commit captures it; a commit
+        # per drag would be git noise.
+        return {"hash": h, "folder": ir_folders.load(self._root()).get(h)}
 
 
 def _ordered_variants(variants: List[dict]) -> List[dict]:

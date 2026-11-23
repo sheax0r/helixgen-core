@@ -57,6 +57,14 @@ def test_page_has_library_browse_filter():
         assert marker in html, marker
 
 
+def test_page_has_ir_folder_controls():
+    # 81v.7: IR rows group by library folder and can be (re)assigned a folder.
+    html = PAGE.read_text()
+    for marker in ('"/library/set_ir_folder"', '"lfolderhd"', '"Unfiled"',
+                   "i.folder"):
+        assert marker in html, marker
+
+
 def test_page_has_library_import_control():
     # 81v.9: the Tones tab imports a .hsp FILE into the library via base64 POST.
     html = PAGE.read_text()

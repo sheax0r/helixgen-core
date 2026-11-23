@@ -385,6 +385,12 @@ body.down main{opacity:.55}
 .lempty{color:var(--dim);font-size:13px;padding:6px 0}
 .limportrow{display:flex;gap:8px;align-items:center;margin:0 0 12px;font-size:12px;color:var(--dim)}
 .limport{font:inherit;font-size:12px;color:var(--dim);min-width:0}
+.lfolderhd{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;
+  color:#9fb4ff;margin:12px 0 4px;padding-bottom:3px;border-bottom:1px solid var(--edge)}
+.lfolder{display:flex;gap:6px;align-items:center;margin:2px 0 8px 10px}
+.lfolderin{background:#0f1218;color:var(--ink);border:1px solid var(--edge2);border-radius:6px;
+  padding:5px 8px;font:inherit;font-size:12px}
+.lfolderin:focus{outline:none;border-color:#5f84d6;box-shadow:0 0 0 2px rgba(61,107,255,.25)}
 /* ---------- snapshot management panel (81v.2) ---------- */
 #snap{cursor:pointer}
 #snappanel{position:fixed;top:0;right:0;bottom:0;width:min(380px,92vw);background:var(--panel);border-left:1px solid var(--edge2);
@@ -2372,14 +2378,29 @@ function libIr(i) {
   const wrap = el("div"), r = el("div", "lrow");
   r.append(el("span", null, i.name || i.hash || String(i)));
   const uses = el("div", "luses"); uses.hidden = true;
+  const fedit = el("div", "lfolder"); fedit.hidden = true;
   const mk = (txt, fn) => { const b = el("button", "btn", txt); b.type = "button"; b.onclick = fn; return b; };
   r.append(mk("Used by…", () => {
     uses.hidden = false; uses.textContent = "checking…";
     send("/library/ir_usage", { name_or_hash: i.name || i.hash },
       (u) => renderUses(uses, i, u), () => { uses.textContent = "could not check"; });
   }));
+  // library-first folder assignment (disk-only; the device never sees folders)
+  r.append(mk("Folder…", () => {
+    fedit.hidden = !fedit.hidden;
+    if (fedit.hidden) return;
+    fedit.textContent = "";
+    const inp = el("input", "lfolderin"); inp.type = "text";
+    inp.placeholder = "folder name (blank = none)"; inp.value = i.folder || "";
+    const commit = () => send("/library/set_ir_folder", { hash: i.hash, folder: inp.value },
+      () => openDrawer(), () => {});   // re-render regroups; send() toasts errors
+    inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } };
+    const save = el("button", "btn", "Save"); save.type = "button"; save.onclick = commit;
+    fedit.append(inp, save);
+    if (inp.focus) inp.focus();
+  }));
   r.append(mk("Delete", () => deleteIr(i, wrap, false)));
-  wrap.append(r, uses);
+  wrap.append(r, fedit, uses);
   return wrap;
 }
 let LIB = null, activeTab = "Tones", libQuery = "", libEmptyNode = null, libListNode = null;
@@ -2442,7 +2463,18 @@ function renderLib(st) {
     panels.IRs.append(el("div", "lcap" + (full ? " full" : ""),
       hr.used + " / " + hr.cap + " IR slots used" + (full ? " — device full, free space before importing" : "")));
   }
-  (st.irs || []).forEach((i) => panels.IRs.append(libIr(i)));
+  // group IRs by library folder — folders (sorted) at the top, Unfiled last.
+  const groups = {};
+  (st.irs || []).forEach((i) => { const k = i.folder || ""; (groups[k] = groups[k] || []).push(i); });
+  const folderNames = Object.keys(groups).filter((k) => k).sort((a, b) => a.localeCompare(b));
+  folderNames.forEach((f) => {
+    panels.IRs.append(el("div", "lfolderhd", f));
+    groups[f].forEach((i) => panels.IRs.append(libIr(i)));
+  });
+  if (groups[""]) {
+    if (folderNames.length) panels.IRs.append(el("div", "lfolderhd", "Unfiled"));
+    groups[""].forEach((i) => panels.IRs.append(libIr(i)));
+  }
 
   names.forEach((n) => body.append(panels[n]));
   showTab(names.includes(activeTab) ? activeTab : "Tones");

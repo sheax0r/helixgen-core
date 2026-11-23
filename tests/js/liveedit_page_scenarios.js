@@ -232,6 +232,27 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       boxes()[0].hidden === false && boxes()[1].hidden === false && empty.hidden === true,
       JSON.stringify([boxes().map((b) => b.hidden), empty.hidden]));
   }
+  { // S20c: IR folders — grouping + (re)assignment (library-first, disk-only)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    x.ids.libtoggle.onclick();
+    const st = x.posts.find((p) => p.url === "/library/state");
+    st.reply(200, { connected: true, setlists: [], tones: [],
+      ir_headroom: { used: 2, cap: 2048 },
+      irs: [{ hash: "aaa", name: "A cab", presence: "both", folder: "Marshall" },
+            { hash: "bbb", name: "B cab", presence: "computer", folder: null }] });
+    await x.tick(); await x.tick();
+    const hds = x.ids.drawerbody.find((e) => e._cls && e._cls.has("lfolderhd")).map((e) => e.textContent);
+    ok("S20c IRs render a folder header + an Unfiled group",
+      hds.indexOf("Marshall") !== -1 && hds.indexOf("Unfiled") !== -1, JSON.stringify(hds));
+    const fbtns = x.ids.drawerbody.find((e) => e.tagName === "button" && e.textContent === "Folder…");
+    fbtns[0].onclick();                                 // the filed IR (aaa) is rendered first
+    const inp = x.ids.drawerbody.find((e) => e.tagName === "input" && e._cls && e._cls.has("lfolderin"))[0];
+    ok("S20c Folder… reveals an input seeded with the IR's current folder", inp && inp.value === "Marshall", inp && inp.value);
+    inp.value = "Vox"; inp.onkeydown({ key: "Enter", preventDefault() {} });
+    const post = x.posts.find((p) => p.url === "/library/set_ir_folder");
+    ok("S20c committing posts set_ir_folder with the hash + new folder",
+      post && post.body.hash === "aaa" && post.body.folder === "Vox", JSON.stringify(post && post.body));
+  }
   { // S21: Device pane — global settings read, write, and read-only page
     const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
     const devTab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Device")[0];
