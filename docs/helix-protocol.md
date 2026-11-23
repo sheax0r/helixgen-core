@@ -446,8 +446,18 @@ grid. This **corrects the 2026-11-21 passive spike**, which read the device's
 
 - **There is no live whole-buffer SET verb.** The app never sends a whole
   `_sbepgsm`; every name/arity probe for a write-twin of `/EditBufferStateGet`
-  answers `/error`. `/error` means *unknown verb* — the device tolerates a bogus
-  extra arg on a *known* verb, so it is not an arity complaint.
+  answers `/error`. But dispatch is keyed on **(address + argument signature)**,
+  not address alone: an *extra* arg on a known verb is tolerated, yet a *wrong*
+  (especially shorter) signature is rejected with the **identical** `Msg dispatch
+  failed: /<addr> is NOT known!!!` as a genuinely unknown address. Proven live
+  (Stadium XL fw 1.4.1, 2026-11-23): `/GetContentRef`, `/PropertyValueGet` and
+  `/GetContainerContents` each **answer** under their correct signature but return
+  "NOT known" when sent reqid-only (one int). Consequence: the "`/error` = unknown
+  verb" error-probe is valid **only when the correct signature is sent**, so it
+  **cannot** discover undocumented verbs by blind name probing — Frida capture
+  (which observes address + signature + payload together) stays the only reliable
+  command-discovery path. Full evidence: `sheax0r/helixgen` PR #101
+  `docs/superpowers/specs/2026-11-23-undocumented-ops-discovery-findings.md`.
 - **Topology changes are one transaction:**
   `/doAgenda [agenda_id:int, ops:<msgpack list of op maps>]`. The device applies
   it and echoes `/setEditBuffer` (the whole new buffer) on 2001 with **no
@@ -669,7 +679,7 @@ empty blob for `dsp.globaleq.*` (the app reads EQ state from the connect-time
 sync). Shipped as `device globaleq list|set`; codec
 `src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
 
-### Matrix Mixer (per-output monitor mix) — RE spike, per-channel plane capture-pending
+### Matrix Mixer (per-output monitor mix) — read-ready via `server.mixer.state`; write path unproven
 
 The **Matrix Mixer** is the Stadium's **device-global, per-physical-output
 monitor mix** (one layer each for 1/4"/XLR/Phones), mixing **non-preset** sources
@@ -690,36 +700,45 @@ write path. Full RE findings + the `device matrix` verb design:
 | `global.out.groundlift.xlr`, `global.out.src.reamp.u7`/`.u8` | XLR ground lift; reamp send sources |
 | `global.midi.matrix.ch.{qtr,xlr,phones}` | the MIDI **channel** each output's Matrix layer listens on for CC remote control |
 
-**NOT a property — HW-confirmed (Stadium XL fw 1.4.1, 2026-11-22).** A live
-`/MatchingPropertyDefinitionsGet` glob of the **device's own** catalog (457 defs
-total) returned **zero** matrix per-channel keys — `dsp.matrix*` → 0, `dsp.out*`
-→ 0, `*.pan`/`*.solo`/`*.fader` → 0, `*.mute` → only global `hal.audio.mute`,
-`*matrix*` → only the three `global.midi.matrix.ch.*`. So the per-strip
-Level/Pan/Mute/Solo is **not a device property** (ruling out a Global-EQ-style
-`/PropertyValueSet` codec). Two hypotheses remain (see the spec §3):
+**READABLE as `server.mixer.state` — HW-confirmed (Stadium XL fw 1.4.1,
+2026-11-23).** The whole monitor mix is **one structured device property**, read
+over the LAN via `/PropertyValueGet server.mixer.state`. It decodes to a 4CC-keyed
+msgpack map: top-level `atto` (int) and `lmix`, plus per-source channels `auxn`
+(AUX In), `bt__` (Bluetooth), `clik` (Click), `cntn` (Count-In), and
+`home.chan[]` = the four Home paths (named "Path 1A/1B/2A/2B"), each channel
+carrying `name`, `src_`, `vol_`, `pan_`, `mute`, `solo`, `enbl`. **The READ side
+is available now — no Frida, no new opcode.**
 
-- **H2 (leading)** — a dedicated opcode family (like `/doAgenda` for topology).
-- **H3** — not echoed on the 2001 PUB stream → decode needs a Frida outbound
-  capture (`tools/hook_sockets.js`, as for `/doAgenda`).
+This **supersedes the earlier "not a property" conclusion.** A 2026-11-22 live
+`/MatchingPropertyDefinitionsGet` glob (`dsp.matrix*`, `dsp.out*`, `*.pan`,
+`*.solo`, `*.fader`, `*.mute`, `*matrix*`) returned zero per-channel keys — but
+only because the mix is a single `server.*` blob, **not** per-strip dotted keys
+(and `*matrix*` ≠ `mixer`). The glob never covered `server.*`, so it missed the
+property entirely.
 
-**No editor-protocol surface — CONFIRMED with Frida 2026-11-22.** The desktop
-editor (retail **and** the re-signed Debug build) has **no global Matrix-Mixer
-screen** — all five nav views (Home / Librarian / Command Center / Global EQ /
-Song) + the output endpoint + the Window/Devices menus were checked; the only
-"Matrix" is the **per-preset Output block's destination** (route a path into the
-matrix; `/setParamValue`), not the monitor-mix faders. A **Frida** hook on the
-Debug app (`tools/frida_run.py` + `hook_sockets.js`, over USB/IPv6) was validated
-working — toggling a block bypass captured `SEND 2002 /BlockEnableSet` (+ the 2001
-`/setBlockEnable` echo and 2002 `/status` ack), and param edits `/ParamValueSet` —
-so the no-matrix-traffic result is a genuine **absence**, not a missed capture.
-Separately, a LAN `device watch` sees **none** of the app's writes at all: the
-app↔device link is USB, not mirrored on the LAN 2001 PUB (5 min of driving → 0 LAN
-2001 frames; qualifies the §6 "the desktop editor echoes on 2001" note, which
-holds only for a LAN or hardware change). **Net: the Matrix Mixer is a
-hardware-front-panel feature; `device matrix` is a won't-do via the editor
-protocol** (only a future app build that adds the screen, or hardware-panel RE,
-could change that). `helixgen` emits no matrix write; full findings + the deferred
-verb design in the spec.
+**WRITE path still unproven.** The likely shape is `/PropertyValueSet
+server.mixer.state` with a variant/structured codec (cf. the `dsp.globaleq.*`
+variant write), untested — `server.*` may be read-only. The desktop editor has no
+global Matrix-Mixer screen (retail **and** the re-signed Debug build; all five nav
+views — Home / Librarian / Command Center / Global EQ / Song — + the output
+endpoint + the Window/Devices menus were checked; the only "Matrix" is the
+per-preset Output block's *destination*, `/setParamValue`, not the monitor-mix
+faders). A Frida hook on the Debug app (`tools/frida_run.py` + `hook_sockets.js`,
+over USB/IPv6) was validated working — toggling a block bypass captured `SEND 2002
+/BlockEnableSet` (+ the 2001 `/setBlockEnable` echo and 2002 `/status` ack), param
+edits `/ParamValueSet` — so the absence of any matrix UI write is genuine, not a
+missed capture. There is therefore **no app write to replay**: the write path must
+be proven by a careful scratch write + read-back (or a future app build), not by a
+hook. Separately, a LAN `device watch` sees **none** of the app's writes at all:
+the app↔device link is USB, not mirrored on the LAN 2001 PUB (5 min of driving →
+0 LAN 2001 frames; qualifies the §6 "the desktop editor echoes on 2001" note,
+which holds only for a LAN or hardware change).
+
+**Net: the monitor mix is READ-READY over the LAN today (`server.mixer.state`);
+only the write path remains, gated on one HW write-capture (or a careful scratch
+write + read-back).** `helixgen` emits no matrix write yet. Full read finding:
+`sheax0r/helixgen` (merged PR #101),
+`docs/superpowers/specs/2026-11-23-undocumented-ops-discovery-findings.md`.
 
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
 
@@ -782,6 +801,15 @@ is **not** a usable command. Confirmed: `/ProductInfoGet` and
 `/getEditBufferState` returns `Msg dispatch failed: … is NOT known!!!`.
 **`/getCloneLockState` is the exception and is correct as written** — it is
 the *command* spelling; `/GetCloneLockState` is rejected.
+
+**`NOT known` has two causes.** The same `Msg dispatch failed: … is NOT known!!!`
+is returned both for a genuinely unknown address **and** for a *known* address
+sent with the wrong argument signature — dispatch is keyed on (address +
+signature); see the `/doAgenda` note in §6. The reply-vs-command findings above
+were each confirmed against the verb's correct signature, so they stand, but the
+error alone cannot distinguish an unknown verb from a signature mismatch — which
+is why blind name-probing cannot enumerate verbs and Frida capture does
+(2026-11-23).
 
 **UNVERIFIED / naming:** reply address names marked "-style" are inferred from
 the same convention and may differ in exact casing (the IR-path reply
@@ -1021,13 +1049,18 @@ footswitch/controller assignment commands are parameterised on the device.
   `/PropertyValueGet` with an **empty blob** — writes work (`device globaleq`),
   reads don't. The app sources EQ state from the connect-time sync; whether a
   bulk read exposes it is unexplored.
-- **Matrix Mixer per-channel plane.** The per-output monitor mix's per-strip
-  Level/Pan/Mute/Solo is **not in the property defs** and **not yet wire-decoded**
-  — see the "Matrix Mixer" subsection in §6 and
-  `docs/superpowers/specs/2026-11-22-matrix-mixer-re-spike.md` (H1/H2/H3 + the
-  read-only capture method + the `device matrix` verb design). The adjacent
-  output/routing/MIDI-channel keys (`global.out.*`, `global.midi.matrix.ch.*`) are
-  decoded and ship via `device settings`.
+- **Matrix Mixer per-channel plane — READ decoded, WRITE open.** The per-output
+  monitor mix reads over the LAN as the single structured property
+  `server.mixer.state` (`/PropertyValueGet`; 4CC msgpack map — `home.chan[]` plus
+  `auxn`/`bt__`/`clik`/`cntn`, each with `vol_`/`pan_`/`mute`/`solo`/`enbl`;
+  HW-confirmed Stadium XL fw 1.4.1, 2026-11-23). Only the **write** path is still
+  unproven (likely `/PropertyValueSet server.mixer.state`; one HW write-capture or
+  a scratch write + read-back gates it). See the "Matrix Mixer" subsection in §6,
+  `sheax0r/helixgen` PR #101
+  `docs/superpowers/specs/2026-11-23-undocumented-ops-discovery-findings.md`, and
+  the earlier `docs/superpowers/specs/2026-11-22-matrix-mixer-re-spike.md`. The
+  adjacent output/routing/MIDI-channel keys (`global.out.*`,
+  `global.midi.matrix.ch.*`) are decoded and ship via `device settings`.
 - **`.hss` filled-slot payload — RESOLVED 2026-07-15** (real non-empty export
   captured; `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`).
   A *filled* slot's manifest entry is `{"path":".N","type":"application/stadium-preset"}`

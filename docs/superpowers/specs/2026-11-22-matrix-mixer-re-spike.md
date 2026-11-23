@@ -1,5 +1,18 @@
 # Matrix Mixer protocol — RE spike + `device matrix` verb design (`helixgen-81v.8`)
 
+> **⚠️ SUPERSEDED IN PART — UPDATED 2026-11-23.** This spike's headline finding
+> ("H1 ruled out — not a device property — won't-do") is **wrong for the READ
+> side**. The whole monitor mix reads over the LAN as the single structured
+> property **`server.mixer.state`** (`/PropertyValueGet`; 4CC msgpack map —
+> `home.chan[]` plus `auxn`/`bt__`/`clik`/`cntn`, each with
+> `vol_`/`pan_`/`mute`/`solo`/`enbl`; HW-confirmed Stadium XL fw 1.4.1). The
+> 2026-11-22 glob missed it only because it never covered `server.*`. **Net:
+> read-ready now; only the write path (`/PropertyValueSet server.mixer.state`,
+> variant codec) remains unproven.** The historical findings below are kept for
+> the record; the inline "H1 ruled out / won't-do" verdicts apply only to the
+> write path now. Source: `sheax0r/helixgen` (merged PR #101)
+> `docs/superpowers/specs/2026-11-23-undocumented-ops-discovery-findings.md`.
+
 **Status:** RE spike — driven on hardware (Stadium XL fw 1.4.1, 2026-11-22),
 incl. a validated **Frida** capture of the Helix Stadium **Debug** app. Three
 findings now **close the question**: **(1) H1 ruled out** — the matrix
@@ -11,10 +24,19 @@ no monitor-mix faders anywhere (nav views + output endpoint + Window/Devices
 menus all checked). **(3) The capture pipeline works** — Frida on the Debug app
 cleanly captured `/BlockEnableSet` + `/ParamValueSet` (SEND on 2002) with 2001
 echoes + 2002 acks, so (2) is a genuine *absence*, not a missed capture.
-**Conclusion: the Matrix Mixer is a hardware-front-panel feature with no
-editor-protocol surface — `device matrix` is a WON'T-DO via the desktop protocol**
-(only a future app build that adds the screen, or hardware-panel RE, could change
-that). **No device-write code ships from this spike.**
+**Conclusion — UPDATED 2026-11-23 (supersedes the original "won't-do" stated
+throughout below):** the monitor mix **reads over the LAN as the single
+structured property `server.mixer.state`** (`/PropertyValueGet`; 4CC msgpack map —
+`home.chan[]` for the four Home paths plus `auxn`/`bt__`/`clik`/`cntn`, each with
+`vol_`/`pan_`/`mute`/`solo`/`enbl`; HW-confirmed Stadium XL fw 1.4.1). The glob
+below (§3/§6.1) missed it only because it never covered `server.*` — the mix is
+one `server.*` blob, not per-strip dotted keys. So the **READ side is available
+now**; only the **write** path remains unproven (likely `/PropertyValueSet
+server.mixer.state` with a variant codec — one HW write-capture, or a careful
+scratch write + read-back, gates it). `device matrix` is therefore **read-ready,
+write-pending**, not a won't-do. Full read finding: `sheax0r/helixgen` (merged PR
+#101) `docs/superpowers/specs/2026-11-23-undocumented-ops-discovery-findings.md`.
+**No device-write code ships from this spike.**
 **Date:** 2026-11-22. **Firmware target:** Stadium XL, app v1.4 / fw 1.4.1.
 
 Companion to the UI design (`sheax0r/helixgen` PR #94,
@@ -107,6 +129,13 @@ was found to have no matrix screen (below). Kept for the record:
   a device property** at all, and a Global-EQ-style `/PropertyValueSet` codec is
   **not** the path. (The only matrix-adjacent reads are routing/monitor selectors,
   §2.)
+  **— CORRECTED 2026-11-23:** H1 is in fact **not** ruled out. The glob above
+  never covered `server.*`; the whole mix reads as the single structured property
+  **`server.mixer.state`** (`/PropertyValueGet`, 4CC msgpack map). It *is* a
+  property — just one `server.*` blob, not per-strip dotted keys, so the
+  per-strip/`*matrix*` globs could not surface it. The READ side is decoded; only
+  the write codec is open. See the top-of-file conclusion and `sheax0r/helixgen`
+  PR #101.
 - **(H2) A dedicated opcode family.** Like `/doAgenda` is dedicated for topology,
   the matrix has its own verb (e.g. `/setMatrix…` / `/MatrixChannelSet`) with a
   `(layer, channel, param, value)` tuple or a msgpack op. Now the **leading**
@@ -148,6 +177,11 @@ confirmed because the app never emits a matrix opcode (there is no screen for it
 and H3's only capture tool (Frida) has nothing to hook. `device matrix` is a
 **won't-do via the desktop protocol** — see §7 for the (narrow, deferred) escape
 hatches.
+
+> **UPDATED 2026-11-23 — superseded for the READ side.** The mix reads as the
+> property `server.mixer.state` (`/PropertyValueGet`); this paragraph's "no
+> surface / won't-do" verdict holds only for the *write* path now. See the
+> top-of-file conclusion and `sheax0r/helixgen` PR #101.
 
 ## 4. `device matrix` verb design (reference only — blocked; see §3/§7)
 
@@ -255,8 +289,14 @@ matrix?) was **run and failed** — retail and the Frida-hookable Debug build bo
 lack the screen, and the Frida capture is proven working (`/BlockEnableSet` +
 `/ParamValueSet` captured), so this is a real absence, not a tooling gap.
 
-**Recommendation: mark `device matrix` WON'T-DO via the desktop-editor protocol**,
-and record the escape hatches so a future session doesn't re-run this spike:
+**Recommendation — UPDATED 2026-11-23:** the READ side is unblocked —
+`server.mixer.state` reads the whole mix over `/PropertyValueGet` (see top-of-file
+conclusion, `sheax0r/helixgen` PR #101). A `device matrix get` / read-only lens is
+buildable **now**. Only the **write** path is pending: likely `/PropertyValueSet
+server.mixer.state` with a variant codec, to be confirmed by one HW write-capture
+(or a careful scratch write + read-back). The original "mark it WON'T-DO" verdict
+below applied to the write path and the stale "not a property" finding; keep the
+escape hatches only for the write codec:
 
 1. **A future app build** that adds a Matrix Mixer screen → re-run the Frida
    capture (`tools/frida_run.py` + `hook_sockets.js` on the Debug app) to decode
@@ -264,8 +304,10 @@ and record the escape hatches so a future session doesn't re-run this spike:
 2. **Hardware-panel RE** — capture the device's own front-panel Matrix operation.
    Not host-scriptable (no app in the loop), needs on-device instrumentation;
    likely not worth it, and the matrix may not use an OSC opcode internally at all.
-3. **Do NOT** re-attempt a property codec (H1 is out) or a LAN `device watch`
-   capture (app traffic is USB, invisible to a LAN subscriber).
+3. **The read codec is the property codec after all** (H1, corrected 2026-11-23):
+   `server.mixer.state` via `/PropertyValueGet`. For the *write* half, a LAN
+   `device watch` capture is still useless (app traffic is USB, invisible to a LAN
+   subscriber) — prove it by a scratch `/PropertyValueSet` + read-back instead.
 
 The UI parity doc already marks the Matrix Mixer the lowest-priority of the
 device-global trio; this spike turns "lowest-priority, larger lift" into
@@ -273,8 +315,14 @@ device-global trio; this spike turns "lowest-priority, larger lift" into
 Matrix tab should ship as **"not supported — set it on the hardware"** rather than
 gating on an engine epic that cannot be built today.
 
-**Honest status line:** the matrix's *adjacent* output/routing/MIDI-channel plane
-is **decoded and shipping** (`device settings`). The per-channel mixer plane is
-**not a device property** (H1 ruled out) and **has no desktop-editor surface**
-(retail + Debug both checked, Frida capture validated) — so it is **unreachable
-via the editor protocol** (won't-do), barring a future app build.
+**Honest status line (UPDATED 2026-11-23):** the matrix's *adjacent*
+output/routing/MIDI-channel plane is **decoded and shipping** (`device settings`).
+The per-channel mixer plane **reads** over the LAN as the structured property
+`server.mixer.state` (`/PropertyValueGet`; H1 confirmed, not ruled out — the
+earlier glob simply never covered `server.*`). Only the **write** path is still
+open — likely `/PropertyValueSet server.mixer.state`, to be confirmed by one HW
+write-capture (or a scratch write + read-back). So the matrix is **read-ready,
+write-pending**, not a won't-do. (The original "no desktop-editor surface / Frida
+has nothing to hook" finding still explains why the *write* opcode can't be
+captured from the app — there is no matrix screen — but it no longer blocks the
+read side.)
