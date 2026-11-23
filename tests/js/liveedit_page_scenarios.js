@@ -300,6 +300,58 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     }
   }
 
+  { // S24: snapshot settings — Discard-Edits toggle + read-only context (81v.2)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus"] }));
+    x.ids.snap.onclick();                                 // open -> reads /snapshot/globals
+    const g = x.posts.filter((p) => p.url === "/snapshot/globals").pop();
+    ok("S24 opening the panel reads the snapshot globals", !!g, JSON.stringify(x.posts.map((p) => p.url)));
+    g.reply(200, { keys: [
+      { key: "global.snapshot.edits", value: 0, enum: ["Save", "Discard"], display: "Save (0)" },
+      { key: "global.snapshot.reselect", value: 0, display: "Reload (0)" },
+      { key: "global.tempo.select", value: 1, display: "Per Preset (1)" },
+      { key: "global.tempo.bpm", value: 120, display: "120.0" },
+      { key: "global.send.snapshot.cc", value: 0, display: "Off (0)" },
+      { key: "global.midi.channel", value: 1 },
+      { key: "global.midi.pc.send", value: 3, display: "MIDI+USB (3)" },
+    ] });
+    await x.tick();
+    const sect = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-sect"))[0];
+    ok("S24 a Snapshot settings section appears", sect && sect.textContent === "Snapshot settings", sect && sect.textContent);
+    const setRows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-set"));
+    const editRow = setRows.find((r) => r.textContent.indexOf("Discard edits") === 0);
+    const btn = editRow && editRow.find((e) => e.tagName === "button")[0];
+    ok("S24 Discard-Edits reads Off from the device value", btn && btn.textContent === "Off", btn && btn.textContent);
+    // a non-Snapshot tempo mode warns that per-snapshot tempo is gated
+    ok("S24 read-only tempo context shows BPM + mode",
+      setRows.some((r) => r.textContent.indexOf("Tempo") === 0 && r.textContent.indexOf("120") >= 0
+        && r.textContent.indexOf("Per Preset") >= 0),
+      setRows.map((r) => r.textContent).join(" | "));
+    ok("S24 MIDI Recall context is shown read-only",
+      setRows.some((r) => r.textContent.indexOf("MIDI Recall") === 0 && r.textContent.indexOf("ch 1") >= 0),
+      setRows.map((r) => r.textContent).join(" | "));
+    // toggling writes the opposite enum index via the shared /device/set route
+    btn.onclick();
+    const setPost = x.posts.filter((p) => p.url === "/device/set").pop();
+    ok("S24 toggling posts /device/set snapshot.edits = 1 (Discard)",
+      setPost && setPost.body.key === "global.snapshot.edits" && setPost.body.value === 1,
+      JSON.stringify(setPost && setPost.body));
+  }
+  { // S24b: Discard-Edits ON surfaces the "Save twice to keep edits" hint
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus"] }));
+    x.ids.snap.onclick();
+    x.posts.filter((p) => p.url === "/snapshot/globals").pop().reply(200, { keys: [
+      { key: "global.snapshot.edits", value: 1, enum: ["Save", "Discard"], display: "Discard (1)" },
+    ] });
+    await x.tick();
+    const hint = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-hint"))
+      .some((h) => h.textContent.indexOf("discarded") >= 0);
+    ok("S24b Discard-Edits ON shows the keep-edits hint", hint, "no hint");
+    const btn = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-toggle"))[0];
+    ok("S24b the toggle reads On when editing is discarded", btn && btn.textContent === "On", btn && btn.textContent);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

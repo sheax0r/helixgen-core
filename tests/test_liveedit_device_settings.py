@@ -33,6 +33,14 @@ class FakeSettingsClient:
             "global.out.level.qtr": 0.0,
             "global.tuner.type": 1,
             "global.clock.year": 2026,
+            # snapshot-panel context keys (81v.2 snapshot_globals)
+            "global.snapshot.edits": 0,
+            "global.snapshot.reselect": 0,
+            "global.tempo.select": 1,
+            "global.tempo.bpm": 120.0,
+            "global.send.snapshot.cc": 0,
+            "global.midi.channel": 1,
+            "global.midi.pc.send": 3,
         }
         self.defs = {
             "global.out.level.qtr": S.PropertyDef(
@@ -46,6 +54,32 @@ class FakeSettingsClient:
             "global.clock.year": S.PropertyDef(
                 key="global.clock.year", name="Year", short="", type="i",
                 vmin=2000, vmax=2099, default=2026, enum=[], units=0, id=None),
+            "global.snapshot.edits": S.PropertyDef(
+                key="global.snapshot.edits", name="Snapshot Edits", short="",
+                type="i", vmin=0, vmax=1, default=0, enum=["Save", "Discard"],
+                units=0, id=None),
+            "global.snapshot.reselect": S.PropertyDef(
+                key="global.snapshot.reselect", name="Snapshot Reselect",
+                short="", type="i", vmin=0, vmax=1, default=0,
+                enum=["Reload", "Toggle Prev"], units=0, id=None),
+            "global.tempo.select": S.PropertyDef(
+                key="global.tempo.select", name="Tempo Select", short="",
+                type="i", vmin=0, vmax=2, default=1,
+                enum=["Snapshot", "Per Preset", "Global"], units=0, id=None),
+            "global.tempo.bpm": S.PropertyDef(
+                key="global.tempo.bpm", name="Global Tempo", short="", type="f",
+                vmin=20.0, vmax=240.0, default=120.0, enum=[], units=0, id=None),
+            "global.send.snapshot.cc": S.PropertyDef(
+                key="global.send.snapshot.cc", name="Send Snapshot CC", short="",
+                type="i", vmin=0, vmax=1, default=0, enum=["Off", "On"],
+                units=0, id=None),
+            "global.midi.channel": S.PropertyDef(
+                key="global.midi.channel", name="Global MIDI Channel", short="",
+                type="i", vmin=1, vmax=16, default=1, enum=[], units=0, id=None),
+            "global.midi.pc.send": S.PropertyDef(
+                key="global.midi.pc.send", name="Send PC w/ Preset", short="",
+                type="i", vmin=0, vmax=3, default=3,
+                enum=["Off", "MIDI", "USB", "MIDI+USB"], units=0, id=None),
         }
 
     def get_property_def(self, key):
@@ -234,6 +268,52 @@ def test_device_write_readback_failure_returns_coerced():
     assert s.client.sets == [("global.tuner.type", "i", 2)]
 
 
+# --- snapshot_globals: the snapshot panel's slice of Global Settings ---------
+
+def test_snapshot_globals_reads_the_panel_keys_in_order():
+    s = _sess()
+    out = s.snapshot_globals()
+    keys = [r["key"] for r in out["keys"]]
+    assert keys == list(LiveSession._SNAPSHOT_GLOBAL_KEYS)
+    edits = next(r for r in out["keys"] if r["key"] == "global.snapshot.edits")
+    assert edits["enum"] == ["Save", "Discard"] and edits["value"] == 0
+    assert edits["display"] == "Save (0)"
+
+
+def test_snapshot_globals_tolerates_a_missing_key():
+    s = _sess()
+    s.client.read_fail = {"global.send.snapshot.cc"}
+    out = s.snapshot_globals()
+    bad = next(r for r in out["keys"] if r["key"] == "global.send.snapshot.cc")
+    assert "error" in bad and "value" not in bad
+    # one missing key never blanks the rest
+    good = [r for r in out["keys"] if r["key"] != "global.send.snapshot.cc"]
+    assert good and all("value" in r for r in good)
+
+
+def test_snapshot_globals_requires_connection():
+    s = _sess()
+    s._connected = False
+    with pytest.raises(LiveError) as e:
+        s.snapshot_globals()
+    assert e.value.status == 503
+
+
+def test_snapshot_globals_is_read_only_takes_no_lease():
+    s = _sess()
+    s.snapshot_globals()
+    assert s.lease.transients == []          # browsing globals locks nothing out
+
+
+def test_discard_edits_is_writable_through_device_set():
+    # the panel's one interactive control toggles global.snapshot.edits; it must
+    # be on a writable page (switches-pedals), not refused as read-only.
+    s = _sess()
+    out = s.device_write("global.snapshot.edits", 1)       # Discard
+    assert s.client.sets == [("global.snapshot.edits", "i", 1)]
+    assert out["value"] == 1 and out["display"] == "Discard (1)"
+
+
 # --- /device/* routes --------------------------------------------------------
 
 @pytest.fixture
@@ -283,3 +363,11 @@ def test_device_set_route_rejects_readonly(srv):
 def test_unknown_device_route_404(srv):
     assert req(srv, "POST", "/device/bogus", {})[0] == 404
     assert req(srv, "GET", "/device/bogus")[0] == 404
+
+
+def test_snapshot_globals_route(srv):
+    code, _, data = req(srv, "GET", "/snapshot/globals")
+    assert code == 200
+    rows = _j(data)["keys"]
+    assert any(r["key"] == "global.snapshot.edits" for r in rows)
+    assert any(r["key"] == "global.tempo.bpm" for r in rows)

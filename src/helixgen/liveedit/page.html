@@ -318,6 +318,14 @@ body.down main{opacity:.55}
   color:var(--ink);border-radius:6px;padding:2px 6px}
 .sp-note{font-size:12px;color:var(--dim);margin:6px 2px}
 .sp-defer{font-size:11px;color:var(--faint);margin-top:14px;border-top:1px solid var(--edge);padding-top:10px;line-height:1.5}
+.sp-sect{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);margin:16px 2px 7px}
+.sp-set{display:flex;gap:8px;align-items:center;justify-content:space-between;font-size:12px;color:var(--dim);
+  padding:5px 2px;border-bottom:1px solid var(--edge)}
+.sp-set .k{color:var(--faint)}
+.sp-set .v{color:var(--ink);text-align:right}
+.sp-set .btn{padding:2px 9px;font-size:11px}
+.sp-toggle.on{background:#5a1d1d;border-color:#b64b4b;color:#ffd9d9}
+.sp-hint{font-size:11px;color:var(--faint);margin:7px 2px 0;line-height:1.5}
 </style>
 </head>
 <body>
@@ -1278,10 +1286,26 @@ function meta(m) {
 let snapOpen = false;
 let snapEditing = null;            // index being renamed, or null
 let snapInput = null;              // the live rename input, so a teardown can drop its blur handler
+let snapGlobals = null;            // cached /snapshot/globals rows (Discard-Edits + tempo/MIDI context)
+let snapGlobalsBusy = false;
 function snapToggle() { snapOpen ? snapClose() : snapShow(); }
 function snapShow() { if (!S || S.snapshot == null) return; snapOpen = true;
-  $("snappanel").hidden = false; snapRender(); }
+  $("snappanel").hidden = false; snapRender(); fetchSnapGlobals(); }
 function snapClose() { snapOpen = false; snapEditing = null; $("snappanel").hidden = true; }
+// The snapshot-relevant Global Settings (Discard-Edits toggle + read-only tempo
+// and MIDI-Recall context). Read on open and after a toggle; cached so a plain
+// re-render (meta tick) never re-hits the device.
+async function fetchSnapGlobals() {
+  if (snapGlobalsBusy) return;
+  snapGlobalsBusy = true;
+  try {
+    const r = await fetch("/snapshot/globals");
+    if (r.ok) { snapGlobals = await r.json(); if (snapOpen) snapRender(); }
+  } catch (e) { /* leave the last-known values; the panel still works */ }
+  finally { snapGlobalsBusy = false; }
+}
+const snapGlobal = (key) => ((snapGlobals && snapGlobals.keys) || [])
+  .find((r) => r.key === key) || null;
 function snapRender() {
   // Removing a focused input fires blur in a real browser; drop the torn-down
   // input's blur handler first so a programmatic re-render never commits.
@@ -1322,10 +1346,68 @@ function snapRender() {
     row.append(ren);
     body.append(row);
   });
+  snapSettings(body);
   const defer = el("div", "sp-defer",
-    "Colour, copy/paste, swap, Discard-Edits and the per-param “Snapshot Ctrl” "
-    + "toggle are coming in a follow-up — the device has no live opcode for them yet.");
+    "Colour, copy/paste, swap and the per-param “Snapshot Ctrl” toggle are "
+    + "coming in a follow-up — the device has no live opcode for them yet.");
   body.append(defer);
+}
+
+// The snapshot-relevant Global Settings section: Discard-Edits (the one live
+// toggle), plus read-only tempo and MIDI-Recall context. All strings come from
+// the device via textContent only — never markup.
+function snapSettings(body) {
+  if (!snapGlobals) return;                       // not read yet
+  body.append(el("div", "sp-sect", "Snapshot settings"));
+
+  // Discard-Edits — the one interactive control. value 1 = Discard (on).
+  const edits = snapGlobal("global.snapshot.edits");
+  if (edits && edits.error == null) {
+    const on = edits.value === 1;
+    const row = el("div", "sp-set");
+    row.append(el("span", "k", "Discard edits"));
+    const btn = el("button", "btn sp-toggle" + (on ? " on" : ""), on ? "On" : "Off");
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.onclick = () => {
+      if (down) return;
+      send("/device/set", { key: "global.snapshot.edits", value: on ? 0 : 1 },
+        () => { toast(on ? "Edits kept across snapshots" : "Discard-Edits on", true);
+                fetchSnapGlobals(); }, () => {}); };
+    row.append(btn);
+    body.append(row);
+    if (on) body.append(el("div", "sp-hint",
+      "Edits are discarded when you leave a snapshot. Press the device’s SAVE "
+      + "twice — or Save here — to keep them."));
+  }
+
+  // Tempo context (read-only). Per-snapshot tempo is gated by Tempo Select.
+  const sel = snapGlobal("global.tempo.select"), bpm = snapGlobal("global.tempo.bpm");
+  if (bpm && bpm.error == null) {
+    const row = el("div", "sp-set");
+    row.append(el("span", "k", "Tempo"));
+    const perSnap = sel && sel.error == null && sel.value === 0;   // Snapshot
+    const mode = sel && sel.display ? " · " + sel.display : "";
+    row.append(el("span", "v", (bpm.display || String(bpm.value)) + " BPM" + mode));
+    body.append(row);
+    if (!perSnap) body.append(el("div", "sp-hint",
+      "Per-snapshot tempo needs Tempo Select = Snapshot (Device ▸ Tempo / Click)."));
+  }
+
+  // MIDI Recall (read-only): the channel + how presets/snapshots are recalled.
+  const ch = snapGlobal("global.midi.channel"),
+        pc = snapGlobal("global.midi.pc.send"),
+        scc = snapGlobal("global.send.snapshot.cc");
+  const bits = [];
+  if (ch && ch.error == null) bits.push("ch " + ch.value);
+  if (pc && pc.error == null) bits.push("preset PC " + (pc.display || pc.value));
+  if (scc && scc.error == null) bits.push("snapshot CC " + (scc.display || scc.value));
+  if (bits.length) {
+    const row = el("div", "sp-set");
+    row.append(el("span", "k", "MIDI Recall"));
+    row.append(el("span", "v", bits.join(" · ")));
+    body.append(row);
+  }
 }
 
 /* ---------- the event stream ---------- */
