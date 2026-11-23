@@ -1535,6 +1535,7 @@ let GEQ = null;        // last snapshot {outputs:{qtr,xlr,pho:{enable,level,band
 let geqActive = null;  // current output key
 const GEQSET = {};     // UI shadow: GEQSET[out][band][param] = value written this session
 let EQCLIP = null;     // Copy/Paste clipboard: {output, bands:{band:{param:val}}, level}
+let geqBusy = false;   // one Reset/Paste batch in flight — don't fan a second at the device
 
 function geqShadow(out, band, param) {
   return !!(GEQSET[out] && GEQSET[out][band] &&
@@ -1631,9 +1632,10 @@ function geqToolbar(out) {
   const bar = el("div", "eq-bar");
   const reset = el("button", "btn", "Reset EQ"); reset.type = "button";
   reset.title = "Flatten every band to factory defaults (keeps the cut filters active)";
-  reset.onclick = () => { if (down) return;
+  reset.onclick = () => { if (down || geqBusy) return; geqBusy = true;
     send("/globaleq/reset", { output: out },
-      (j) => { geqAbsorb(out, j.bands, j.level); geqRenderOutput(out); }, () => {}); };
+      (j) => { geqBusy = false; geqAbsorb(out, j.bands, j.level); geqRenderOutput(out); },
+      () => { geqBusy = false; }); };
   const copy = el("button", "btn", "Copy"); copy.type = "button";
   copy.title = "Copy this output's EQ, to paste onto another output";
   copy.onclick = () => { if (down) return; EQCLIP = geqSnapshotOf(out); geqRenderOutput(out); };
@@ -1642,9 +1644,10 @@ function geqToolbar(out) {
   paste.title = EQCLIP
     ? ("Paste the EQ copied from " + (EQ_OUT_LABEL[EQCLIP.output] || EQCLIP.output))
     : "Copy an output's EQ first";
-  paste.onclick = () => { if (down || !EQCLIP) return;
+  paste.onclick = () => { if (down || geqBusy || !EQCLIP) return; geqBusy = true;
     send("/globaleq/apply", { output: out, bands: EQCLIP.bands, level: EQCLIP.level },
-      (j) => { geqAbsorb(out, j.bands, j.level); geqRenderOutput(out); }, () => {}); };
+      (j) => { geqBusy = false; geqAbsorb(out, j.bands, j.level); geqRenderOutput(out); },
+      () => { geqBusy = false; }); };
   bar.append(reset, copy, paste);
   return bar;
 }

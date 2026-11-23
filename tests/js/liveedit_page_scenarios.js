@@ -630,6 +630,10 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     const resetBtn = x.ids.eqbody.find((e) => e.tagName === "button" && e.textContent === "Reset EQ")[0];
     ok("S32 a Reset EQ button is present", !!resetBtn, "no reset button");
     resetBtn.onclick();
+    resetBtn.onclick();   // a double-click must not fan a 2nd batch at the flaky device
+    ok("S32 Reset is debounced while one batch is in flight",
+      x.posts.filter((p) => p.url === "/globaleq/reset").length === 1,
+      String(x.posts.filter((p) => p.url === "/globaleq/reset").length));
     const rr = x.posts.filter((p) => p.url === "/globaleq/reset").slice(-1)[0];
     ok("S32 Reset posts the output", rr && rr.body.output === "qtr", JSON.stringify(rr && rr.body));
     rr.reply(200, { output: "qtr", bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } }); await x.tick();
