@@ -61,6 +61,21 @@ def test_ir_view_empty_offline():
     assert [r["presence"] for r in irs] == ["computer"]
 
 
+def test_ir_headroom_counts_device_irs():
+    from helixgen.device.ir_upload import IR_LIST_CAP
+    dev = [{"hash": "aaa", "name": "A"}, {"hash": "bbb", "name": "B"}]
+    st = _session(client=_FakeClient(irs=dev), computer_irs=[])
+    assert st.public_state()["ir_headroom"] == {"used": 2, "cap": IR_LIST_CAP}
+
+
+def test_ir_headroom_none_when_offline():
+    # Offline we don't know the device's IR count, so headroom is omitted
+    # rather than guessed (the drawer hides the N/cap line).
+    st = _session(offline=True, computer_irs=[{"hash": "x", "name": "n",
+                                               "wav": "irs/x.wav"}])
+    assert st.public_state()["ir_headroom"] is None
+
+
 def test_push_ir_calls_through(tmp_path):
     wav = tmp_path / "irs" / "cab.wav"
     wav.parent.mkdir(parents=True)
