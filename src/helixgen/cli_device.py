@@ -2028,9 +2028,11 @@ def device_remove_block(path: int, block: int, ip: str, port: int) -> None:
     BLOCK is a `device blocks` grid slot on DSP PATH. The device has no working
     `clrb` op (HW-disproven on fw 1.4.1); removal is a `/ModelSet` of the slot
     to the Null model, which DROPS the block, leaving a HOLE — nothing else
-    shifts (matching the offline `remove-block` verb and the hardware). I/O
-    slots (0/13/14/27) are rejected. Re-reads to confirm the slot cleared.
-    Volatile until you save; `device to-hsp`/`copy` round-trip the result.
+    shifts (matching the offline `remove-block` verb and the hardware). Reads
+    the live buffer and refuses the fixed I/O slots (0/13/14/27), an empty slot,
+    and a routing/endpoint node (split/join/…) — nulling a split node would
+    orphan its parallel lane. Volatile until you save; `device to-hsp`/`copy`
+    round-trip the result.
     """
     with _connect(ip, port) as h:
         h.remove_block(path, block)
