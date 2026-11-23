@@ -83,6 +83,23 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) <= 1e-4 * max(1.0, abs(a), abs(b))
 
 
+def _group_controllers(recipe: dict, labels: Dict[str, str]) -> dict:
+    """Shape a ``view`` recipe into the Controllers pane's read-only groups,
+    riding each footswitch/pedal with its English ``*_label`` (spec / CLAUDE.md:
+    never a bare ``FS#``). ``labels`` maps a logical id (``FS3``, ``EXP1``) to
+    its English string; a missing one falls back to the raw id."""
+    fs = [{**e, "switch_label": labels.get(e.get("switch"), e.get("switch"))}
+          for e in recipe.get("footswitches", [])]
+    exp = [{**p, "pedal_label": labels.get(p.get("pedal"), p.get("pedal"))}
+           for p in recipe.get("expression", [])]
+    return {
+        "footswitches": fs,
+        "expression": exp,
+        "midi": recipe.get("midi", []),
+        "unknown": recipe.get("unknown_controllers", []),
+    }
+
+
 class LiveSession:
     LOG_MAX = 512
 
@@ -100,6 +117,11 @@ class LiveSession:
         self._chain: dict = {"snapshot": None, "snapshots": [], "dirty": False, "paths": []}
         self._params: Dict[Tuple[int, int, int], dict] = {}
         self._blocks: Dict[Tuple[int, int], dict] = {}
+        # The raw decoded edit buffer behind _chain, kept so the Controllers
+        # pane (81v.3) can project controller assignments off it without a
+        # second device read. None until the first install.
+        self._eb: Optional[dict] = None
+        self._lib = None          # lazily-loaded block library for that projection
         self._preset: dict = {"cid": None, "name": None}
         self._dirty = False
         # Offline cold-start: with no client the page shows a disconnected,
@@ -190,6 +212,7 @@ class LiveSession:
             if expect_gen is not None and self._gen != expect_gen:
                 return False
             self._chain, self._params, self._blocks = built, params, blocks
+            self._eb = eb if isinstance(eb, dict) else None
             if preset is not None:
                 self._preset = {"cid": preset.get("cid"), "name": preset.get("name")}
             if dirty is not None:
@@ -1110,6 +1133,35 @@ class LiveSession:
                 break
         return rows, aborted
 
+    # The snapshot panel surfaces a fixed slice of Global Settings (spec 81v.2
+    # §8.5): the one writable toggle (Discard-Edits) plus read-only context for
+    # per-snapshot tempo and MIDI Recall. Order is the panel's display order.
+    _SNAPSHOT_GLOBAL_KEYS = (
+        "global.snapshot.edits",      # Discard-Edits: Save(0) / Discard(1)
+        "global.snapshot.reselect",   # Snapshot Reselect (context)
+        "global.tempo.select",        # Snapshot / Per Preset / Global
+        "global.tempo.bpm",           # active tempo (the active snapshot's, in Snapshot mode)
+        "global.send.snapshot.cc",    # MIDI CC recalls a snapshot: Off/On
+        "global.midi.channel",        # base MIDI channel (snapshot/preset recall)
+        "global.midi.pc.send",        # PC recalls a preset: Off/MIDI/USB/MIDI+USB
+    )
+
+    def snapshot_globals(self) -> dict:
+        """The snapshot-relevant Global Settings the snapshot panel surfaces:
+        Discard-Edits (the one writable toggle — written through
+        :meth:`device_write`), plus read-only context (tempo mode/bpm, MIDI
+        Recall channel/CC/PC). Read-only and lease-free, exactly like
+        :meth:`device_values`; a key this firmware doesn't carry comes back with
+        an ``error`` rather than blanking the set."""
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            rows, aborted = self._read_keys(self._SNAPSHOT_GLOBAL_KEYS)
+        out = {"keys": rows}
+        if aborted is not None:
+            out["aborted_at"] = aborted
+        return out
+
     def device_values(self, page: str) -> dict:
         """Live def + value for one Global-Settings page's keys, for the Device
         pane. Read-only, serialized on ``devlock`` (the socket is not
@@ -1185,6 +1237,48 @@ class LiveSession:
                             "display": _settings.render_value(d, coerced)}
         return {"key": key, "value": rb.value,
                 "display": _settings.render_value(d, rb.value)}
+
+    # --- Controllers pane (81v.3) ---------------------------------------------------
+    def _library(self):
+        """The block library, loaded once. Supplies the param-name vocabulary
+        the untranscode + view read model needs; tests inject a fixture one."""
+        if self._lib is None:
+            from helixgen.library import Library, default_library_path
+            self._lib = Library(default_library_path())
+        return self._lib
+
+    def controllers(self) -> dict:
+        """Current controller assignments on the live buffer, in a read-only
+        shape the Controllers pane renders.
+
+        Pure projection over the cached edit buffer — NO device I/O and NO new
+        wire behaviour: it reuses the shipped read model (``untranscode`` ->
+        ``.hsp`` -> ``view`` recipe), then rides each footswitch/pedal with its
+        English label (spec / CLAUDE.md: never show a bare ``FS#``). Grouped as
+        ``footswitches`` (bypass + param-toggle), ``expression`` (EXP sweeps),
+        ``midi`` (CC bindings), and ``unknown`` (controls v1 can't re-author,
+        kept visible rather than silently dropped)."""
+        empty = {"footswitches": [], "expression": [], "midi": [], "unknown": []}
+        with self.cond:
+            eb = self._eb
+        if not isinstance(eb, dict):
+            return empty
+        from helixgen import controllers as _controllers
+        from helixgen import view as _view
+        from helixgen.device import untranscode as _untranscode
+        lib = self._library()
+        body = _untranscode.sbepgsm_to_hsp(eb, library=lib)
+        recipe = _view.view(body, lib)
+        # English labels keyed by logical id (FS3, EXP1, …). Best-effort: an
+        # unresolved device keeps the raw switch id rather than failing the pane.
+        labels: Dict[str, str] = {}
+        try:
+            device_id = _view._device_id(body)
+            labels = {r["id"]: r["english"]
+                      for r in _controllers.controller_mapping(device_id)}
+        except Exception:  # noqa: BLE001 — labels are a nicety, never a hard dep
+            labels = {}
+        return _group_controllers(recipe, labels)
 
     # --- 2001 events ----------------------------------------------------------------
     def _own_echo(self, seq: int, key: tuple, value: Any) -> Optional[str]:

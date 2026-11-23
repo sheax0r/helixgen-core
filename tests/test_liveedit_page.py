@@ -42,7 +42,8 @@ def test_page_has_library_drawer_and_endpoints():
 
 def test_page_has_snapshot_panel_and_endpoints():
     html = PAGE.read_text()
-    for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"'):
+    for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"',
+                   '"/snapshot/globals"', "Snapshot settings", "global.snapshot.edits"):
         assert marker in html, marker
 
 
@@ -51,4 +52,12 @@ def test_page_registers_the_device_pane_and_endpoints():
     html = PAGE.read_text()
     for marker in ('id="devicepane"', 'addPane({ id: "device"',
                    "/device/state", "/device/values", "/device/set"):
+        assert marker in html, marker
+
+
+def test_page_registers_the_controllers_pane_and_endpoint():
+    # 81v.3: the Controllers pane mounts via addPane and reads /controllers/state.
+    html = PAGE.read_text()
+    for marker in ('id="ctlpane"', 'id="ctlbody"', 'addPane({ id: "controllers"',
+                   "/controllers/state"):
         assert marker in html, marker

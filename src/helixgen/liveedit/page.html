@@ -95,6 +95,14 @@ body.pane-other .snaprow,body.pane-other .adjrow{display:none}
 .dhint{color:var(--dim);font-size:12px;padding:10px 0}
 /* a disconnected device freezes every control, same as the flow pane */
 body.down #devbody .dctl{opacity:.5;pointer-events:none}
+/* Controllers pane (81v.3): read-only assignment groups */
+.ctl-group{margin-bottom:18px}
+.ctl-h{margin:0 0 8px;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.ctl-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:14px;
+  align-items:baseline;padding:7px 0;border-bottom:1px solid var(--edge)}
+.ctl-src{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ctl-det{color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ctl-empty{margin:0;color:var(--faint);font-size:12px}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -319,6 +327,14 @@ body.down main{opacity:.55}
   color:var(--ink);border-radius:6px;padding:2px 6px}
 .sp-note{font-size:12px;color:var(--dim);margin:6px 2px}
 .sp-defer{font-size:11px;color:var(--faint);margin-top:14px;border-top:1px solid var(--edge);padding-top:10px;line-height:1.5}
+.sp-sect{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);margin:16px 2px 7px}
+.sp-set{display:flex;gap:8px;align-items:center;justify-content:space-between;font-size:12px;color:var(--dim);
+  padding:5px 2px;border-bottom:1px solid var(--edge)}
+.sp-set .k{color:var(--faint)}
+.sp-set .v{color:var(--ink);text-align:right}
+.sp-set .btn{padding:2px 9px;font-size:11px}
+.sp-toggle.on{background:#5a1d1d;border-color:#b64b4b;color:#ffd9d9}
+.sp-hint{font-size:11px;color:var(--faint);margin:7px 2px 0;line-height:1.5}
 </style>
 </head>
 <body>
@@ -355,6 +371,14 @@ body.down main{opacity:.55}
   <nav class="dtabs" id="devtabs" aria-label="Settings pages"></nav>
   <p class="dnote" id="devnote" hidden></p>
   <div id="devbody"></div>
+</section>
+<section class="pane" id="ctlpane" hidden aria-label="Controllers and assignments">
+  <div class="dhead">
+    <div><h2 class="dtitle">Controllers &amp; Assignments</h2>
+      <p class="dsub">What each footswitch, pedal and MIDI control drives on the loaded tone. Read-only for now.</p></div>
+    <button class="btn" id="ctlrefresh" type="button" title="Refresh the assignments shown here from the current tone">Refresh</button>
+  </div>
+  <div id="ctlbody"></div>
 </section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <aside id="snappanel" hidden aria-label="Snapshots">
@@ -1153,6 +1177,63 @@ function devOnShow(active) {
 $("devrefresh").onclick = () => { if (devActive) devRenderPage(devActive); };
 addPane({ id: "device", label: "Device", el: () => $("devicepane"), onShow: devOnShow });
 
+/* ---------- Controllers pane (81v.3): read-only assignments view -----------
+ * The footswitch / expression / MIDI controller assignments the device holds
+ * on the loaded tone, projected off the live buffer (GET /controllers/state).
+ * Read-only in this increment — assignment editing lands on this surface next.
+ * Every string here is device/user data: rendered via textContent only. */
+function ctlRange(t) {
+  return (t && t.min != null && t.max != null) ? " (" + t.min + "–" + t.max + ")" : "";
+}
+function ctlRow(label, detail) {
+  const r = el("div", "ctl-row");
+  r.append(el("span", "ctl-src", label || ""), el("span", "ctl-det", detail || ""));
+  return r;
+}
+function ctlSection(title, rows) {
+  const sec = el("section", "ctl-group");
+  sec.append(el("h3", "ctl-h", title));
+  if (rows.length) rows.forEach((r) => sec.append(r));
+  else sec.append(el("p", "ctl-empty", "None"));
+  return sec;
+}
+function ctlRender(d) {
+  const body = $("ctlbody"); body.textContent = "";
+  const fs = d.footswitches || [], exp = d.expression || [], midi = d.midi || [], unk = d.unknown || [];
+  if (!(fs.length + exp.length + midi.length + unk.length)) {
+    body.append(el("p", "dhint", "No controller assignments on the loaded tone.")); return;
+  }
+  const fsRows = fs.map((f) => ctlRow(f.switch_label || f.switch,
+    (f.param ? f.block + " · " + f.param + ctlRange(f) : f.block + " · bypass")
+    + (f.behavior ? " — " + f.behavior : "")));
+  body.append(ctlSection("Footswitches", fsRows));
+  const expRows = [];
+  exp.forEach((p) => (p.targets || []).forEach((t) =>
+    expRows.push(ctlRow(p.pedal_label || p.pedal, t.block + " · " + t.param + ctlRange(t)))));
+  body.append(ctlSection("Expression pedals", expRows));
+  const midiRows = [];
+  midi.forEach((m) => (m.targets || []).forEach((t) =>
+    midiRows.push(ctlRow("MIDI CC " + m.cc,
+      t.param ? t.block + " · " + t.param + ctlRange(t) : t.block + " · bypass"))));
+  body.append(ctlSection("MIDI", midiRows));
+  if (unk.length) body.append(ctlSection("Other controls (not editable here)",
+    unk.map((u) => ctlRow(u.label || "unknown control",
+      [u.block, u.param].filter(Boolean).join(" · ")))));
+}
+async function ctlLoad() {
+  const body = $("ctlbody"); body.textContent = "";
+  body.append(el("p", "dhint", "Reading the device…"));
+  try {
+    const r = await fetch("/controllers/state");
+    const j = await r.json();
+    if (!r.ok) { body.textContent = ""; body.append(el("p", "dhint", (j && j.error) || "could not read assignments")); return; }
+    ctlRender(j);
+  } catch (e) { body.textContent = ""; body.append(el("p", "dhint", "could not read assignments")); }
+}
+function ctlOnShow(active) { if (active) ctlLoad(); }
+$("ctlrefresh").onclick = ctlLoad;
+addPane({ id: "controllers", label: "Controllers", el: () => $("ctlpane"), onShow: ctlOnShow });
+
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
 function render() {
@@ -1289,10 +1370,29 @@ function meta(m) {
 let snapOpen = false;
 let snapEditing = null;            // index being renamed, or null
 let snapInput = null;              // the live rename input, so a teardown can drop its blur handler
+let snapGlobals = null;            // cached /snapshot/globals rows (Discard-Edits + tempo/MIDI context)
+let snapGlobalsBusy = false;
 function snapToggle() { snapOpen ? snapClose() : snapShow(); }
 function snapShow() { if (!S || S.snapshot == null) return; snapOpen = true;
-  $("snappanel").hidden = false; snapRender(); }
+  $("snappanel").hidden = false; snapRender(); fetchSnapGlobals(); }
 function snapClose() { snapOpen = false; snapEditing = null; $("snappanel").hidden = true; }
+// The snapshot-relevant Global Settings (Discard-Edits toggle + read-only tempo
+// and MIDI-Recall context). Read on open and after a toggle; cached so a plain
+// re-render (meta tick) never re-hits the device.
+async function fetchSnapGlobals() {
+  if (snapGlobalsBusy) return;
+  snapGlobalsBusy = true;
+  try {
+    const r = await fetch("/snapshot/globals");
+    // Don't re-render while a rename input is focused — tearing it down mid-edit
+    // loses the half-typed name (the #166 bug, reachable here via the async
+    // reply). The cached value is picked up by the next commit/cancel/meta tick.
+    if (r.ok) { snapGlobals = await r.json(); if (snapOpen && snapEditing === null) snapRender(); }
+  } catch (e) { /* leave the last-known values; the panel still works */ }
+  finally { snapGlobalsBusy = false; }
+}
+const snapGlobal = (key) => ((snapGlobals && snapGlobals.keys) || [])
+  .find((r) => r.key === key) || null;
 function snapRender() {
   // Removing a focused input fires blur in a real browser; drop the torn-down
   // input's blur handler first so a programmatic re-render never commits.
@@ -1333,10 +1433,74 @@ function snapRender() {
     row.append(ren);
     body.append(row);
   });
+  snapSettings(body);
   const defer = el("div", "sp-defer",
-    "Colour, copy/paste, swap, Discard-Edits and the per-param “Snapshot Ctrl” "
-    + "toggle are coming in a follow-up — the device has no live opcode for them yet.");
+    "Colour, copy/paste, swap and the per-param “Snapshot Ctrl” toggle are "
+    + "coming in a follow-up — the device has no live opcode for them yet.");
   body.append(defer);
+}
+
+// The snapshot-relevant Global Settings section: Discard-Edits (the one live
+// toggle), plus read-only tempo and MIDI-Recall context. All strings come from
+// the device via textContent only — never markup.
+function snapSettings(body) {
+  if (!snapGlobals) return;                       // not read yet
+  const out = [];                                 // built nodes, in order
+
+  // Discard-Edits — the one interactive control. value 1 = Discard (on).
+  const edits = snapGlobal("global.snapshot.edits");
+  if (edits && edits.error == null) {
+    const on = edits.value === 1;
+    const row = el("div", "sp-set");
+    row.append(el("span", "k", "Discard edits"));
+    const btn = el("button", "btn sp-toggle" + (on ? " on" : ""), on ? "On" : "Off");
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.onclick = () => {
+      if (down) return;
+      send("/device/set", { key: "global.snapshot.edits", value: on ? 0 : 1 },
+        () => { toast(on ? "Edits kept across snapshots" : "Discard-Edits on", true);
+                fetchSnapGlobals(); }, () => {}); };
+    row.append(btn);
+    out.push(row);
+    if (on) out.push(el("div", "sp-hint",
+      "Edits are discarded when you leave a snapshot. Press the device’s SAVE "
+      + "twice — or Save here — to keep them."));
+  }
+
+  // Tempo context (read-only). Per-snapshot tempo is gated by Tempo Select.
+  const sel = snapGlobal("global.tempo.select"), bpm = snapGlobal("global.tempo.bpm");
+  if (bpm && bpm.error == null) {
+    const row = el("div", "sp-set");
+    row.append(el("span", "k", "Tempo"));
+    const perSnap = sel && sel.error == null && sel.value === 0;   // Snapshot
+    const mode = sel && sel.display ? " · " + sel.display : "";
+    row.append(el("span", "v", (bpm.display || String(bpm.value)) + " BPM" + mode));
+    out.push(row);
+    if (!perSnap) out.push(el("div", "sp-hint",
+      "Per-snapshot tempo needs Tempo Select = Snapshot (Device ▸ Tempo / Click)."));
+  }
+
+  // MIDI Recall (read-only): the channel + how presets/snapshots are recalled.
+  const ch = snapGlobal("global.midi.channel"),
+        pc = snapGlobal("global.midi.pc.send"),
+        scc = snapGlobal("global.send.snapshot.cc");
+  const bits = [];
+  if (ch && ch.error == null) bits.push("ch " + ch.value);
+  if (pc && pc.error == null) bits.push("preset PC " + (pc.display || pc.value));
+  if (scc && scc.error == null) bits.push("snapshot CC " + (scc.display || scc.value));
+  if (bits.length) {
+    const row = el("div", "sp-set");
+    row.append(el("span", "k", "MIDI Recall"));
+    row.append(el("span", "v", bits.join(" · ")));
+    out.push(row);
+  }
+
+  // Only show the header when at least one row rendered (a 200 with an empty or
+  // all-error body must not leave a bare "Snapshot settings" heading).
+  if (!out.length) return;
+  body.append(el("div", "sp-sect", "Snapshot settings"));
+  out.forEach((n) => body.append(n));
 }
 
 /* ---------- the event stream ---------- */
