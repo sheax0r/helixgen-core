@@ -194,6 +194,14 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
             # /device/set (see _route). No device I/O, so no connection needed.
             elif path == "/device/state":
                 self._json(200, session.device_pages())
+            # Controllers pane (81v.3): current FS/EXP/MIDI assignments projected
+            # off the live buffer. Read-only, no device I/O (cached buffer).
+            elif path == "/controllers/state":
+                try:
+                    self._json(200, session.controllers())
+                except Exception as e:  # noqa: BLE001 — a bad buffer must not 500 raw
+                    logger.exception("live editor: controllers state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
             else:
                 self._json(404, {"error": "not found"})
 

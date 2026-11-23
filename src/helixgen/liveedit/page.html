@@ -95,6 +95,14 @@ body.pane-other .snaprow,body.pane-other .adjrow{display:none}
 .dhint{color:var(--dim);font-size:12px;padding:10px 0}
 /* a disconnected device freezes every control, same as the flow pane */
 body.down #devbody .dctl{opacity:.5;pointer-events:none}
+/* Controllers pane (81v.3): read-only assignment groups */
+.ctl-group{margin-bottom:18px}
+.ctl-h{margin:0 0 8px;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.ctl-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.6fr);gap:14px;
+  align-items:baseline;padding:7px 0;border-bottom:1px solid var(--edge)}
+.ctl-src{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ctl-det{color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis}
+.ctl-empty{margin:0;color:var(--faint);font-size:12px}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -362,6 +370,14 @@ body.down main{opacity:.55}
   <nav class="dtabs" id="devtabs" aria-label="Settings pages"></nav>
   <p class="dnote" id="devnote" hidden></p>
   <div id="devbody"></div>
+</section>
+<section class="pane" id="ctlpane" hidden aria-label="Controllers and assignments">
+  <div class="dhead">
+    <div><h2 class="dtitle">Controllers &amp; Assignments</h2>
+      <p class="dsub">What each footswitch, pedal and MIDI control drives on the loaded tone. Read-only for now.</p></div>
+    <button class="btn" id="ctlrefresh" type="button" title="Refresh the assignments shown here from the current tone">Refresh</button>
+  </div>
+  <div id="ctlbody"></div>
 </section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <aside id="snappanel" hidden aria-label="Snapshots">
@@ -1149,6 +1165,63 @@ function devOnShow(active) {
 }
 $("devrefresh").onclick = () => { if (devActive) devRenderPage(devActive); };
 addPane({ id: "device", label: "Device", el: () => $("devicepane"), onShow: devOnShow });
+
+/* ---------- Controllers pane (81v.3): read-only assignments view -----------
+ * The footswitch / expression / MIDI controller assignments the device holds
+ * on the loaded tone, projected off the live buffer (GET /controllers/state).
+ * Read-only in this increment — assignment editing lands on this surface next.
+ * Every string here is device/user data: rendered via textContent only. */
+function ctlRange(t) {
+  return (t && t.min != null && t.max != null) ? " (" + t.min + "–" + t.max + ")" : "";
+}
+function ctlRow(label, detail) {
+  const r = el("div", "ctl-row");
+  r.append(el("span", "ctl-src", label || ""), el("span", "ctl-det", detail || ""));
+  return r;
+}
+function ctlSection(title, rows) {
+  const sec = el("section", "ctl-group");
+  sec.append(el("h3", "ctl-h", title));
+  if (rows.length) rows.forEach((r) => sec.append(r));
+  else sec.append(el("p", "ctl-empty", "None"));
+  return sec;
+}
+function ctlRender(d) {
+  const body = $("ctlbody"); body.textContent = "";
+  const fs = d.footswitches || [], exp = d.expression || [], midi = d.midi || [], unk = d.unknown || [];
+  if (!(fs.length + exp.length + midi.length + unk.length)) {
+    body.append(el("p", "dhint", "No controller assignments on the loaded tone.")); return;
+  }
+  const fsRows = fs.map((f) => ctlRow(f.switch_label || f.switch,
+    (f.param ? f.block + " · " + f.param + ctlRange(f) : f.block + " · bypass")
+    + (f.behavior ? " — " + f.behavior : "")));
+  body.append(ctlSection("Footswitches", fsRows));
+  const expRows = [];
+  exp.forEach((p) => (p.targets || []).forEach((t) =>
+    expRows.push(ctlRow(p.pedal_label || p.pedal, t.block + " · " + t.param + ctlRange(t)))));
+  body.append(ctlSection("Expression pedals", expRows));
+  const midiRows = [];
+  midi.forEach((m) => (m.targets || []).forEach((t) =>
+    midiRows.push(ctlRow("MIDI CC " + m.cc,
+      t.param ? t.block + " · " + t.param + ctlRange(t) : t.block + " · bypass"))));
+  body.append(ctlSection("MIDI", midiRows));
+  if (unk.length) body.append(ctlSection("Other controls (not editable here)",
+    unk.map((u) => ctlRow(u.label || "unknown control",
+      [u.block, u.param].filter(Boolean).join(" · ")))));
+}
+async function ctlLoad() {
+  const body = $("ctlbody"); body.textContent = "";
+  body.append(el("p", "dhint", "Reading the device…"));
+  try {
+    const r = await fetch("/controllers/state");
+    const j = await r.json();
+    if (!r.ok) { body.textContent = ""; body.append(el("p", "dhint", (j && j.error) || "could not read assignments")); return; }
+    ctlRender(j);
+  } catch (e) { body.textContent = ""; body.append(el("p", "dhint", "could not read assignments")); }
+}
+function ctlOnShow(active) { if (active) ctlLoad(); }
+$("ctlrefresh").onclick = ctlLoad;
+addPane({ id: "controllers", label: "Controllers", el: () => $("ctlpane"), onShow: ctlOnShow });
 
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours

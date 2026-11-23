@@ -67,6 +67,15 @@ def test_state_endpoint(srv):
     assert j["paths"][0]["segments"][1]["block"]["name"] == "Scream 808 Mono"
 
 
+def test_controllers_state_endpoint(srv):
+    # 81v.3: read-only controller assignments projected off the live buffer.
+    code, ctype, data = req(srv[2], "GET", "/controllers/state")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert set(j) == {"footswitches", "expression", "midi", "unknown"}
+    assert all(isinstance(j[k], list) for k in j)
+
+
 def test_intents_endpoint_serves_the_adjective_map(srv):
     code, ctype, data = req(srv[2], "GET", "/intents")
     j = _j(data)

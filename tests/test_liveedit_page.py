@@ -53,3 +53,11 @@ def test_page_registers_the_device_pane_and_endpoints():
     for marker in ('id="devicepane"', 'addPane({ id: "device"',
                    "/device/state", "/device/values", "/device/set"):
         assert marker in html, marker
+
+
+def test_page_registers_the_controllers_pane_and_endpoint():
+    # 81v.3: the Controllers pane mounts via addPane and reads /controllers/state.
+    html = PAGE.read_text()
+    for marker in ('id="ctlpane"', 'id="ctlbody"', 'addPane({ id: "controllers"',
+                   "/controllers/state"):
+        assert marker in html, marker
