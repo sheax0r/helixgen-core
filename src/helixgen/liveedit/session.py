@@ -1599,6 +1599,67 @@ class LiveSession:
         return {"key": key, "value": rb.value,
                 "display": _settings.render_value(d, rb.value)}
 
+    # --- Global EQ pane (81v.6) -----------------------------------------------------
+    def globaleq_state(self) -> dict:
+        """The device's Global EQ connect-time snapshot (``global.eq.sync``),
+        decoded, with each output's live master enable overlaid. Read-only and
+        lease-free (like :meth:`mixer_state` / :meth:`device_values`) — browsing
+        globals must not lock other verbs out of the device.
+
+        The band/level values are the device's **connect-time** state:
+        ``global.eq.sync`` is static and does NOT reflect writes
+        (hardware-confirmed), so the pane shows them as a snapshot, not live
+        truth. The three master enables are read fresh and are truly live."""
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            try:
+                return self.client.get_globaleq_state()
+            except (HelixError, OSError, ValueError) as e:
+                raise LiveError(f"could not read the Global EQ: {e}",
+                                status=502) from e
+
+    def globaleq_write(self, output: str, band: str, param: str,
+                       value: Any) -> dict:
+        """Write one Global EQ control live. ``band==""`` with ``param=="enable"``
+        is the output **master** enable (``global.eq.*.enable``, live-readable);
+        ``band==""`` with ``param=="level"`` is the output level; anything else is
+        a band parameter. Band/level writes go out as the write-only variant blob
+        (no read-back). Takes the ``globals`` scope transiently, exactly like
+        :meth:`device_write`."""
+        from helixgen.device import globaleq as _globaleq
+        if not (isinstance(output, str) and isinstance(band, str)
+                and isinstance(param, str)):
+            raise LiveError("output, band and param must be strings")
+        master = band == "" and param == "enable"
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            with self.lease.transient(("globals",)):
+                try:
+                    if master:
+                        on = bool(_globaleq.coerce_value("enable", value))
+                        ok = self.client.set_globaleq_enable(
+                            output.strip().lower(), on)
+                        sent: Any = on
+                    else:
+                        o, b, p = _globaleq.normalize(output, band, param)
+                        sent = _globaleq.coerce_value(p, value)
+                        ok = self.client.set_globaleq(o, b, p, sent)
+                except ValueError as e:                # bad output/band/param/value
+                    raise LiveError(str(e), status=400) from e
+                except HelixError as e:
+                    raise LiveError(f"the device would not set the Global EQ: "
+                                    f"{e}", status=502) from e
+                except OSError as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device write failed: {e}",
+                                    status=502) from e
+                if not ok:
+                    raise LiveError("the device did not confirm the Global EQ "
+                                    "write", status=502)
+        return {"output": output, "band": band, "param": param, "value": sent}
+
     # --- Controllers pane (81v.3) ---------------------------------------------------
     def _library(self):
         """The block library, loaded once. Supplies the param-name vocabulary

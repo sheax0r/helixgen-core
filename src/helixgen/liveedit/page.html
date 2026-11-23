@@ -137,6 +137,24 @@ body.down #ctlassign .btn,body.down #ctlassign select,body.down #ctlassign input
 .mx-flag.on-m{color:#1b1400;background:var(--warn);border-color:var(--warn)}
 .mx-flag.on-s{color:#04140c;background:var(--ok);border-color:var(--ok)}
 
+/* ---------- Global EQ pane (81v.6) ---------- */
+.eq-master{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin:0 0 14px;
+  padding:9px 12px;background:var(--panel2);border:1px solid var(--edge);border-radius:10px}
+.eq-en{display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.eq-en input{width:16px;height:16px;accent-color:#5f84d6}
+.eq-band{display:grid;grid-template-columns:150px 1fr;gap:14px;align-items:start;
+  padding:9px 0;border-bottom:1px solid var(--edge)}
+.eq-bhead{display:flex;align-items:center;gap:8px}
+.eq-bname{font-weight:600}
+.eq-params{display:flex;flex-wrap:wrap;gap:10px 16px}
+.eq-ctl{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dim)}
+.eq-num{width:84px;text-align:right;font-variant-numeric:tabular-nums}
+.eq-num.eq-set{border-color:#5f84d6;box-shadow:inset 2px 0 0 #5f84d6}
+.eq-unit{color:var(--faint);font-size:11px;min-width:18px}
+.eq-dot{display:inline-block;width:8px;height:8px;border-radius:2px;background:#5f84d6;
+  box-shadow:inset 2px 0 0 #5f84d6;vertical-align:middle}
+body.down #eqbody .dctl,body.down #eqbody input{opacity:.5;pointer-events:none}
+
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
   border-bottom:1px solid var(--edge);background:rgba(16,22,38,.3)}
@@ -435,6 +453,16 @@ body.down main{opacity:.55}
   </div>
   <nav class="dtabs" id="mxtabs" aria-label="Output layers"></nav>
   <div id="mxbody"></div>
+</section>
+<section class="pane" id="eqpane" hidden aria-label="Global EQ">
+  <div class="dhead">
+    <div><h2 class="dtitle">Global EQ</h2>
+      <p class="dsub">A 7-band EQ on each physical output — stored on the device, not in the loaded preset.</p></div>
+    <button class="btn" id="eqrefresh" type="button" title="Re-read the Global EQ snapshot from the device">Refresh</button>
+  </div>
+  <nav class="dtabs" id="eqtabs" aria-label="Output"></nav>
+  <p class="dnote" id="eqnote">Band values are the device's <b>connect-time snapshot</b> — the firmware can't read them back live, so a change made on the hardware since won't show until you reconnect. Controls you move here are marked <span class="eq-dot"></span> set; the master switch is live.</p>
+  <div id="eqbody"></div>
 </section>
 <section class="pane" id="cmdpane" hidden aria-label="Command Center">
   <div class="dhead">
@@ -1477,6 +1505,159 @@ function mxOnShow(active) { if (active) mxLoad(); }
 $("mxrefresh").onclick = mxLoad;
 addPane({ id: "mixer", label: "Mixer", el: () => $("mixerpane"), onShow: mxOnShow });
 
+/* ---------- Global EQ pane (81v.6): write-live, snapshot-read -----------------
+ * The three per-output Global EQs. Outside the preset, so this does NOT consume
+ * the signal-flow state S. Band/level VALUES cannot be read back live — the
+ * firmware answers only a static connect-time snapshot (GET /globaleq/state,
+ * decoded off global.eq.sync). So the pane seeds from that snapshot and keeps a
+ * UI-local shadow (GEQSET) of every write this session made, marked "set"; it
+ * never passes a shadow value off as a fresh device read (design anti-goal §5).
+ * The per-output MASTER enable IS live (global.eq.*.enable) — read fresh by the
+ * server and written straight. Writes POST /globaleq/set. Device data only:
+ * textContent/el() throughout. */
+const EQ_OUT_LABEL = { qtr: '1/4"', xlr: "XLR", pho: "Phones" };
+const EQ_OUT_ORDER = ["qtr", "xlr", "pho"];
+const EQ_BAND_LABEL = { lowcut: "Low Cut", lowshelf: "Low Shelf", low: "Low",
+  mid: "Mid", high: "High", highshelf: "High Shelf", highcut: "High Cut" };
+const EQ_BAND_ORDER = ["lowcut", "lowshelf", "low", "mid", "high", "highshelf", "highcut"];
+// UI hints only — ranges/steps for the number steppers. The device coerces and
+// is the authority; these never clamp a typed value (onchange writes it as-is).
+const EQ_PU = {
+  freq:  { label: "Freq",  unit: "Hz", min: 20,  max: 20000, step: 1 },
+  gain:  { label: "Gain",  unit: "dB", min: -12, max: 12,    step: 0.5 },
+  q:     { label: "Q",     unit: "",   min: 0.1, max: 10,    step: 0.01 },
+  slope: { label: "Slope", unit: "",   min: 0,   max: 48,    step: 1 },
+  level: { label: "Level", unit: "dB", min: -20, max: 20,    step: 0.5 },
+};
+let GEQ = null;        // last snapshot {outputs:{qtr,xlr,pho:{enable,level,bands}}}
+let geqActive = null;  // current output key
+const GEQSET = {};     // UI shadow: GEQSET[out][band][param] = value written this session
+
+function geqShadow(out, band, param) {
+  return !!(GEQSET[out] && GEQSET[out][band] &&
+    Object.prototype.hasOwnProperty.call(GEQSET[out][band], param));
+}
+function geqRecord(out, band, param, value) {
+  if (!GEQSET[out]) GEQSET[out] = {};
+  if (!GEQSET[out][band]) GEQSET[out][band] = {};
+  GEQSET[out][band][param] = value;
+}
+function geqEffective(out, band, param, snap) {       // shadow overrides snapshot
+  return geqShadow(out, band, param) ? GEQSET[out][band][param] : snap;
+}
+function geqNum(out, band, param, snap) {
+  const pu = EQ_PU[param] || {};
+  const set = geqShadow(out, band, param);
+  const value = geqEffective(out, band, param, snap);
+  const wrap = el("label", "eq-ctl");
+  wrap.append(el("span", null, pu.label || param));
+  const inp = el("input", "dctl eq-num" + (set ? " eq-set" : "")); inp.type = "number";
+  if (pu.min != null) inp.min = pu.min;
+  if (pu.max != null) inp.max = pu.max;
+  inp.step = pu.step != null ? pu.step : "any";
+  inp.value = (value == null ? "" : value);
+  inp.title = set ? "Set this session"
+    : "Device connect-time snapshot — may be stale if changed on the hardware since";
+  inp.setAttribute("aria-label",
+    (EQ_BAND_LABEL[band] || EQ_OUT_LABEL[out] || out) + " " + (pu.label || param));
+  let shown = value;
+  inp.onchange = () => {
+    if (down) { inp.value = (shown == null ? "" : shown); return; }
+    if (inp.value === "" || Number.isNaN(Number(inp.value))) {
+      inp.value = (shown == null ? "" : shown); return; }
+    const next = Number(inp.value);
+    send("/globaleq/set", { output: out, band: band, param: param, value: next },
+      (j) => { shown = j.value; inp.value = j.value;
+        inp.classList.add("eq-set"); inp.title = "Set this session";
+        geqRecord(out, band, param, j.value);
+        if (band === "") GEQ.outputs[out].level = j.value;
+        else { if (!GEQ.outputs[out].bands[band]) GEQ.outputs[out].bands[band] = {};
+               GEQ.outputs[out].bands[band][param] = j.value; } },
+      () => { inp.value = (shown == null ? "" : shown); });
+  };
+  wrap.append(inp);
+  if (pu.unit) wrap.append(el("span", "eq-unit", pu.unit));
+  return wrap;
+}
+function geqToggle(out, band, labelText, checked, isMaster) {
+  const wrap = el("label", "eq-en");
+  const cb = el("input"); cb.type = "checkbox"; cb.checked = !!checked;
+  cb.setAttribute("aria-label", labelText || ((EQ_BAND_LABEL[band] || band) + " enabled"));
+  cb.onchange = () => {
+    if (down) { cb.checked = !cb.checked; return; }
+    send("/globaleq/set", { output: out, band: band, param: "enable", value: cb.checked },
+      (j) => { if (isMaster) GEQ.outputs[out].enable = j.value;
+        else { if (!GEQ.outputs[out].bands[band]) GEQ.outputs[out].bands[band] = {};
+               GEQ.outputs[out].bands[band].enable = j.value;
+               geqRecord(out, band, "enable", j.value); geqMarkSet(wrap); } },
+      () => { cb.checked = !cb.checked; });
+  };
+  wrap.append(cb, el("span", null, labelText));
+  // A band enable is write-only like the band's numbers (not the live master), so
+  // it carries the same "set this session" provenance the pane note promises.
+  if (!isMaster && geqShadow(out, band, "enable")) geqMarkSet(wrap);
+  else if (!isMaster) wrap.title =
+    "Device connect-time snapshot — may be stale if changed on the hardware since";
+  return wrap;
+}
+function geqMarkSet(node) {       // flip a band-enable control to "set" provenance
+  node.classList.add("eq-set");
+  node.title = "Set this session";
+  if (!node._eqdot) { node._eqdot = true; node.append(el("span", "eq-dot")); }
+}
+function geqRenderOutput(out) {
+  const body = $("eqbody"); body.textContent = "";
+  const o = GEQ && GEQ.outputs && GEQ.outputs[out];
+  if (!o) { body.append(el("p", "dhint", "No Global EQ data for this output.")); return; }
+  const head = el("div", "eq-master");
+  head.append(geqToggle(out, "", "Global EQ enabled", o.enable, true));
+  head.append(geqNum(out, "", "level", o.level));
+  body.append(head);
+  EQ_BAND_ORDER.forEach((bn) => {
+    const bd = o.bands && o.bands[bn]; if (!bd) return;
+    const row = el("div", "eq-band");
+    const bhead = el("div", "eq-bhead");
+    bhead.append(geqToggle(out, bn, "", geqEffective(out, bn, "enable", bd.enable), false),
+      el("span", "eq-bname", EQ_BAND_LABEL[bn] || bn));
+    row.append(bhead);
+    const params = el("div", "eq-params");
+    ["freq", "gain", "q", "slope"].forEach((p) => {
+      if (Object.prototype.hasOwnProperty.call(bd, p)) params.append(geqNum(out, bn, p, bd[p])); });
+    row.append(params);
+    body.append(row);
+  });
+}
+function geqShow(out) {
+  geqActive = out;
+  const tabs = $("eqtabs");
+  Array.from(tabs.children).forEach((t) => t.classList.toggle("active", t._out === out));
+  geqRenderOutput(out);
+}
+function geqRenderTabs() {
+  const tabs = $("eqtabs"); tabs.textContent = "";
+  EQ_OUT_ORDER.forEach((out) => {
+    if (!(GEQ.outputs && GEQ.outputs[out])) return;
+    const t = el("button", "dtab", EQ_OUT_LABEL[out] || out);
+    t.type = "button"; t._out = out; t.onclick = () => geqShow(out); tabs.append(t);
+  });
+  const first = EQ_OUT_ORDER.find((o) => GEQ.outputs && GEQ.outputs[o]);
+  geqShow(geqActive && GEQ.outputs[geqActive] ? geqActive : first);
+}
+async function geqLoad() {
+  const body = $("eqbody"); body.textContent = "";
+  body.append(el("p", "dhint", "Reading the Global EQ…"));
+  try {
+    const r = await fetch("/globaleq/state");
+    const j = await r.json();
+    if (!r.ok) { body.textContent = ""; body.append(el("p", "dhint", (j && j.error) || "could not read the Global EQ")); return; }
+    GEQ = j; geqRenderTabs();
+    if (!EQ_OUT_ORDER.some((o) => GEQ.outputs && GEQ.outputs[o])) {
+      body.textContent = ""; body.append(el("p", "dhint", "The device reported no Global EQ outputs.")); }
+  } catch (e) { body.textContent = ""; body.append(el("p", "dhint", "could not read the Global EQ")); }
+}
+function geqOnShow(active) { if (active) geqLoad(); }
+$("eqrefresh").onclick = geqLoad;
+addPane({ id: "globaleq", label: "Global EQ", el: () => $("eqpane"), onShow: geqOnShow });
 /* ---------- Command Center pane (81v.4): read-only commands view ------------
  * The commands (MIDI / preset / snapshot recall) each footswitch or Instant
  * slot sends on the loaded tone, projected off the live buffer via the shipped

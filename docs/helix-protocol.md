@@ -675,11 +675,24 @@ value, not a bare scalar:
 
 Bands `lowcut`(0) `lowshelf`(1) `low`(2) `mid`(3) `high`(4) `highshelf`(5)
 `highcut`(6); param→slot `enable`=1 `freq`=2 `gain`=3 `q`=4 `slope`=5; output
-level = key `dsp.globaleq.<out>.level` slot 3. A full-EQ snapshot is key
-`globals.eq`. **Write-only over the network** — `/PropertyValueGet` returns an
-empty blob for `dsp.globaleq.*` (the app reads EQ state from the connect-time
-sync). Shipped as `device globaleq list|set`; codec
-`src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
+level = key `dsp.globaleq.<out>.level` slot 3. **Band writes are write-only over
+the network** — `/PropertyValueGet` returns an empty blob for `dsp.globaleq.*`
+(and `globals.eq` is undefined on fw 1.4.1). Shipped as `device globaleq
+list|set`; codec `src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
+
+**READ-BACK (corrected 2026-11-23, Stadium XL fw 1.4.1):** the full Global EQ
+state *is* readable — not via `dsp.globaleq.*` / `globals.eq`, but via the plain
+**`global.eq.sync`** property (`type:"v"`). Its decoded value is a 4CC-keyed
+nested map, one block per output keyed `_qtr`/`_xlr`/`_pho` (+ `anyl`/`post`
+scalars); each block `{drty, enab(master 0/1), eqbs:[7 bands], olvl:{parm:3,valu},
+out_}`; each band `{band:index, para:[{parm,valu}]}` (same slot ids as the write
+path). Decoder: `globaleq.decode_sync` → `client.get_globaleq_state`. **It is a
+STATIC connect-time snapshot:** `set_globaleq` band/level writes ack `/success 0`
+(land audibly) yet never appear in `global.eq.sync`, same connection or after
+reconnect — so it seeds UI honestly but does not mirror live edits. The one truly
+live Global-EQ read/write is each output's **master enable**,
+`global.eq.{qtr,xlr,phones}.enable` (plain `i` Off/On property) — note the long
+`phones` spelling vs the codec's `pho` output key.
 
 ### Matrix Mixer (per-output monitor mix) — READABLE as `server.mixer.state`
 
