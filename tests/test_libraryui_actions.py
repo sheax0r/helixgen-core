@@ -134,6 +134,27 @@ def test_default_import_file_lands_in_the_library(tmp_home):
     assert "Imported Tone" in landed
 
 
+def test_import_file_rejects_null_byte_name(tmp_path):
+    # a NUL in the name would raise ValueError deep in write_bytes (502); it
+    # must be a clean 400 at the boundary, before any fn runs.
+    called = []
+    st = _session(tmp_path, import_fn=lambda *a, **k: called.append(1))
+    with pytest.raises(LibraryError) as ei:
+        st.import_file("foo\x00.hsp", _b64(_HSP_BYTES))
+    assert ei.value.status == 400 and not called
+
+
+def test_default_import_file_rejects_non_object_body(tmp_home):
+    # valid magic + valid JSON that isn't an object (a list) is "readable" to
+    # read_hsp but is not a preset document -> clean 400, not a 502 leaking an
+    # internal AttributeError from _resolve_import.
+    st = LibrarySession(None, tone_loader=lambda: [], guitar_loader=lambda: [],
+                        ir_local_loader=lambda: [])
+    with pytest.raises(LibraryError) as ei:
+        st.import_file("arr.hsp", _b64(b"rpshnosj[]"))
+    assert ei.value.status == 400
+
+
 def test_default_import_file_rejects_garbage_hsp(tmp_home):
     # bytes with the right magic but an unreadable body -> 400 (not imported).
     from helixgen import home

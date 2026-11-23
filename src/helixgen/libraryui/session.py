@@ -295,10 +295,17 @@ def _default_import_file(filename, data: bytes, *, guitar=None) -> dict:
         tmp = Path(td) / filename
         tmp.write_bytes(data)
         try:
-            read_hsp(tmp)
+            doc = read_hsp(tmp)
         except Exception as e:  # noqa: BLE001 — a malformed upload is a 400
             raise LibraryError(f"that file is not a readable .hsp preset: {e}",
                                status=400) from e
+        # A JSON array/scalar body is "readable" to read_hsp (it json.loads
+        # fine) but is not a preset document; _import_single would then hit an
+        # AttributeError deep in _resolve_import and surface as a 502 leaking an
+        # internal message. Reject a non-object body here as a clean 400.
+        if not isinstance(doc, dict):
+            raise LibraryError("that file is not a readable .hsp preset "
+                               "(not a preset document)", status=400)
         cli_library._import_single(tmp, None, None, None, guitar,
                                    keep_source=False)
     return {"name": filename}
@@ -611,6 +618,8 @@ class LibrarySession:
         import binascii
 
         name = self._require_str(filename, "a file name")
+        if "\x00" in name:              # a NUL would blow up write_bytes -> 502
+            raise LibraryError("the file name is not valid", status=400)
         base = Path(name).name          # strip any path the client sent
         if not base.lower().endswith(".hsp"):
             raise LibraryError("only .hsp preset files can be imported "
