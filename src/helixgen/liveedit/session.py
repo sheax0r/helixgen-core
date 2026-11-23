@@ -42,6 +42,7 @@ DEAD_AFTER = 6.0      # s of total silence on the PUB streams = disconnected
 RETRY_EVERY = 3.0     # s between reconnect attempts while disconnected
 _OWN_MAX = 256        # own write echoes remembered
 _SEQ_MOD = 1 << 32    # the 2001 header sequence is a uint32; wraps at 2**32
+TUNER_STALE = 1.5     # s since the last 2003 pitch event = stale -> no-signal
 # Endpoint / routing / harness categories that are NOT user-addable as chain
 # blocks — adding one on row 0 corrupts the grid or routing (swap_model refuses
 # the same set for in-place swaps).
@@ -316,6 +317,11 @@ class LiveSession:
         self._last_event: Optional[float] = None
         self._last_retry = -math.inf
         self._seq: Dict[int, int] = {}   # port -> last 2001 header sequence seen
+        # Tuner pane (81v.10): the latest pitch reading off the always-on 2003
+        # /dspEvent stream, with the monotonic time it arrived (so a stalled
+        # stream reads as no-signal rather than a frozen note). Read-only.
+        self._tuner: Optional["TunerReading"] = None
+        self._tuner_at = -math.inf
 
     @property
     def connected(self) -> bool:
@@ -1678,6 +1684,33 @@ class LiveSession:
         controls = _paraminfo.load_param_ui().get("controls", {})
         return _format_commands(cmds, device_id, controls, labels)
 
+    # --- Tuner pane (81v.10): read-only live pitch readout --------------------
+    def _note_tuner(self, args: Any) -> None:
+        """Cache the latest pitch reading off a 2003 ``/dspEvent`` (the always-on
+        detector). A non-pitch 2003 event (meter / trigger / heartbeat) decodes
+        to ``None`` and is ignored. No emit — pitch is high-rate telemetry the
+        Tuner pane polls, not a discrete change for the SSE log."""
+        from helixgen.device import tuner as _tuner
+        reading = _tuner.reading_from_event_args(args)
+        if reading is None:
+            return
+        with self.cond:
+            self._tuner = reading
+            self._tuner_at = self._clock()
+
+    def tuner_reading(self) -> dict:
+        """The latest live pitch reading for the Tuner pane. Pure in-memory
+        projection of the cached 2003 reading — NO device I/O, no lease. Reports
+        no-signal when nothing has arrived yet or the stream has stalled (older
+        than ``TUNER_STALE`` s), so a dead stream never shows a frozen note."""
+        with self.cond:
+            reading, at, up = self._tuner, self._tuner_at, self._connected
+        if reading is None or not reading.signal or (self._clock() - at) > TUNER_STALE:
+            return {"signal": False, "name": "—", "connected": up}
+        return {"signal": True, "name": reading.name, "note": reading.note,
+                "octave": reading.octave, "cents": reading.cents,
+                "hz": round(reading.hz, 2), "connected": up}
+
     def _param_exists(self, eb: Any, path: int, block: int, pid: int) -> bool:
         cur = self._block_at(eb, path, block)
         if cur is None:
@@ -2088,6 +2121,8 @@ class LiveSession:
         for ev in events:
             port = getattr(ev, "port", 2001)
             if port != 2001:
+                if port == 2003:
+                    self._note_tuner(getattr(ev, "args", None))
                 continue
             if self._seq_gap(port, getattr(ev, "seq", None)):
                 # frames were dropped (the SUB socket reconnected silently, or a

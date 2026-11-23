@@ -112,6 +112,17 @@ body.down #devbody .dctl{opacity:.5;pointer-events:none}
 .cmd-fk{color:var(--faint)}
 .cmd-fv{color:var(--ink)}
 .cmd-beh{color:var(--faint);font-style:italic}
+#tunerbody{display:flex;flex-direction:column;align-items:center;gap:14px;padding:22px 0}
+#tuner-note{font-size:64px;font-weight:700;line-height:1;color:var(--ink);font-variant-numeric:tabular-nums}
+#tuner-note.tuned{color:#3fd0b0}
+.tn-axis{stroke:var(--edge2);stroke-width:2}
+.tn-center{stroke:var(--dim);stroke-width:2}
+.tn-zone{fill:rgba(63,208,176,.16)}
+.tn-ptr{stroke:#cfe0ff;stroke-width:3;transition:x 90ms linear}
+.tn-ptr.in-tune{stroke:#3fd0b0}
+#tuner-readout{display:flex;gap:16px;font-variant-numeric:tabular-nums}
+#tuner-cents{font-size:18px;font-weight:600;color:var(--ink)}
+#tuner-hz{font-size:18px;color:var(--dim)}
 .ctl-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px;
   padding:10px 12px;background:var(--panel2);border:1px solid var(--edge);border-radius:9px}
 .ctl-flabel{font-size:12px;color:var(--dim)}
@@ -443,6 +454,23 @@ body.down main{opacity:.55}
     <button class="btn" id="cmdrefresh" type="button" title="Refresh the commands shown here from the current tone">Refresh</button>
   </div>
   <div id="cmdbody"></div>
+</section>
+<section class="pane" id="tunerpane" hidden aria-label="Tuner">
+  <div class="dhead">
+    <div><h2 class="dtitle">Tuner</h2>
+      <p class="dsub">Live pitch off the device — just play a string. No need to engage the hardware tuner screen.</p></div>
+  </div>
+  <div id="tunerbody">
+    <div id="tuner-note" aria-live="polite">—</div>
+    <svg id="tuner-needle" viewBox="0 0 300 80" width="300" height="80" role="img" aria-label="Tuning needle">
+      <line class="tn-axis" x1="10" y1="60" x2="290" y2="60"></line>
+      <rect class="tn-zone" x="142" y="14" width="16" height="46"></rect>
+      <line class="tn-center" x1="150" y1="10" x2="150" y2="60"></line>
+      <line id="tuner-pointer" class="tn-ptr" x1="150" y1="14" x2="150" y2="60"></line>
+    </svg>
+    <div id="tuner-readout"><span id="tuner-cents">—</span><span id="tuner-hz"></span></div>
+    <p class="dhint" id="tuner-hint" hidden></p>
+  </div>
 </section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <aside id="snappanel" hidden aria-label="Snapshots">
@@ -1530,6 +1558,50 @@ async function cmdLoad() {
 function cmdOnShow(active) { if (active) cmdLoad(); }
 $("cmdrefresh").onclick = cmdLoad;
 addPane({ id: "commands", label: "Command Center", el: () => $("cmdpane"), onShow: cmdOnShow });
+
+/* ---------- Tuner pane (81v.10): read-only live pitch readout ----------------
+ * The always-on 2003 pitch stream (reuses device/tuner.py's decoder server-side)
+ * as a ±50-cent needle + note name. GET /tuner/reading is a cheap in-memory read
+ * of the latest sample the session cached off the stream; the pane polls it only
+ * while visible. Read-only — tuner SETTINGS belong to the global-settings epic. */
+const TUNER_POLL_MS = 120;
+let tunerTimer = null;
+function tunerRender(j) {
+  const note = $("tuner-note"), ptr = $("tuner-pointer"),
+    cents = $("tuner-cents"), hz = $("tuner-hz"), hint = $("tuner-hint");
+  hint.hidden = true;
+  if (!j || !j.signal) {
+    note.textContent = "—"; note.className = "";
+    cents.textContent = j && j.connected === false ? "no device" : "play a note…";
+    hz.textContent = "";
+    ptr.setAttribute("x1", 150); ptr.setAttribute("x2", 150);
+    ptr.setAttribute("class", "tn-ptr");
+    return;
+  }
+  const c = Math.max(-50, Math.min(50, j.cents));   // clamp to the meter range
+  const x = 150 + c * 2.8;                           // ±50 cents -> ±140 px
+  ptr.setAttribute("x1", x); ptr.setAttribute("x2", x);
+  const inTune = Math.abs(j.cents) <= 3;
+  ptr.setAttribute("class", "tn-ptr" + (inTune ? " in-tune" : ""));
+  note.textContent = j.name; note.className = inTune ? "tuned" : "";
+  cents.textContent = (j.cents > 0 ? "+" : "") + j.cents + "¢";
+  hz.textContent = j.hz ? j.hz.toFixed(1) + " Hz" : "";
+}
+async function tunerPoll() {
+  try {
+    const r = await fetch("/tuner/reading");
+    const j = await r.json();
+    if (!r.ok) { $("tuner-hint").textContent = (j && j.error) || "could not read the tuner"; $("tuner-hint").hidden = false; return; }
+    tunerRender(j);
+  } catch (e) { $("tuner-hint").textContent = "could not read the tuner"; $("tuner-hint").hidden = false; }
+}
+function tunerOnShow(active) {
+  if (tunerTimer) { clearInterval(tunerTimer); tunerTimer = null; }
+  if (!active) return;
+  tunerPoll();                                       // paint immediately
+  tunerTimer = setInterval(tunerPoll, TUNER_POLL_MS);
+}
+addPane({ id: "tuner", label: "Tuner", el: () => $("tunerpane"), onShow: tunerOnShow });
 
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours

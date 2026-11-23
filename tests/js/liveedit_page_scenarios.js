@@ -604,6 +604,45 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       y.ids.cmdbody.textContent.includes("No commands assigned"), y.ids.cmdbody.textContent);
   }
 
+  { // S33: Tuner pane — read-only live pitch needle (81v.10)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Tuner")[0];
+    ok("S33 a Tuner tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();                     // showPane -> onShow(true) -> immediate poll + interval
+    ok("S33 opening the pane starts a poll timer", x.intervals.size === 1, "no interval");
+    const req = x.posts.find((p) => p.url === "/tuner/reading");
+    ok("S33 the pane polls /tuner/reading", !!req, JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { signal: true, name: "E2", note: "E", octave: 2, cents: -8, hz: 81.5, connected: true });
+    await x.tick();
+    ok("S33 a played note shows its name", x.ids["tuner-note"].textContent === "E2", x.ids["tuner-note"].textContent);
+    ok("S33 the cents readout is signed", x.ids["tuner-cents"].textContent.startsWith("-8"), x.ids["tuner-cents"].textContent);
+    const ptrOff = x.ids["tuner-pointer"].getAttribute("x1");
+    ok("S33 the needle moves off-centre when flat", ptrOff && Number(ptrOff) < 150, String(ptrOff));
+    ok("S33 off by 8 cents is not flagged in-tune", !x.ids["tuner-pointer"].getAttribute("class").includes("in-tune"),
+      x.ids["tuner-pointer"].getAttribute("class"));
+    // in tune -> centred + green
+    const fire = [...x.intervals.values()][0]; fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0]
+      .reply(200, { signal: true, name: "A2", note: "A", octave: 2, cents: 1, hz: 110.0, connected: true });
+    await x.tick();
+    ok("S33 near-zero cents flags in-tune", x.ids["tuner-pointer"].getAttribute("class").includes("in-tune")
+      && x.ids["tuner-note"].className === "tuned", x.ids["tuner-pointer"].getAttribute("class"));
+    ok("S33 in tune centres the needle", x.ids["tuner-pointer"].getAttribute("x1") === "152.8",
+      x.ids["tuner-pointer"].getAttribute("x1"));
+    // no signal -> dash + centred, not in-tune
+    fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0].reply(200, { signal: false, name: "—", connected: true });
+    await x.tick();
+    ok("S33 no signal shows a dash and recentres", x.ids["tuner-note"].textContent === "—"
+      && x.ids["tuner-pointer"].getAttribute("x1") === "150"
+      && !x.ids["tuner-pointer"].getAttribute("class").includes("in-tune"), x.ids["tuner-note"].textContent);
+    // leaving the pane stops the poll timer
+    const flowTab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Signal flow")[0];
+    flowTab.onclick();
+    ok("S33 leaving the pane clears the poll timer", x.intervals.size === 0, "timer leaked");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

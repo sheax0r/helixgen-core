@@ -37,6 +37,8 @@ function boot() {
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
    "mixerpane", "mxtabs", "mxbody", "mxrefresh",
    "cmdpane", "cmdbody", "cmdrefresh",
+   "tunerpane", "tunerbody", "tuner-note", "tuner-needle", "tuner-pointer",
+   "tuner-readout", "tuner-cents", "tuner-hz", "tuner-hint",
    "snappanel", "snapbody", "snapclose"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
   const document = { get body2(){return El.body}, getElementById: (i) => ids[i], createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };
@@ -44,14 +46,19 @@ function boot() {
   const fetch = (url, opt) => new Promise((resolve, reject) => { posts.push({ url, body: (opt && opt.body) ? JSON.parse(opt.body) : null, reject,
     reply: (status, j) => resolve({ ok: status >= 200 && status < 300, status, json: async () => j }) }); });
   class EventSource { constructor() { es = this; } }
+  // Fake interval timers (the Tuner pane polls via setInterval): record the
+  // callback so a scenario can fire it deterministically; no real timer.
+  const intervals = new Map(); let ivId = 0;
+  const setInterval_ = (fn) => { const id = ++ivId; intervals.set(id, fn); return id; };
+  const clearInterval_ = (id) => { intervals.delete(id); };
   const src = fs.readFileSync(PAGE, "utf8").split("<script>")[1].split("</script>")[0];
-  const api = new Function("document", "addEventListener", "fetch", "EventSource", "setTimeout", "console",
+  const api = new Function("document", "addEventListener", "fetch", "EventSource", "setTimeout", "setInterval", "clearInterval", "console",
     src + "\n;return {P,B,pending,onMsg,undo,redo,get undoS(){return undoS},get redoS(){return redoS},get dragging(){return dragging},get down(){return down},drained,get inflight(){return inflight}};")(
-    document, (t, f) => (win[t] = f), fetch, EventSource, () => {}, console);
+    document, (t, f) => (win[t] = f), fetch, EventSource, () => {}, setInterval_, clearInterval_, console);
   const tick = () => new Promise((r) => setImmediate(r));
   const sse = (m) => es.onmessage({ data: JSON.stringify(m) });
   const knobOf = (key) => { const root = ids.rig.find((e) => e.dataset && e.dataset.k === key)[0]; return { root, svg: root.children[0], val: root.children[1] }; };
-  return { api, ids, win, posts, sse, tick, knobOf, toasts, document, body: El.body };
+  return { api, ids, win, posts, sse, tick, knobOf, toasts, document, body: El.body, intervals };
 }
 const P_ = (o) => Object.assign({ pid: 1, name: "Drive", label: "Drive", type: "f", ctl: "knob", value: 0.5, min: 0, max: 1, default: 0.5,
   unit: "", scale: 10, display_min: null, display_max: null, labels: null, internal: false, snap: false }, o);
