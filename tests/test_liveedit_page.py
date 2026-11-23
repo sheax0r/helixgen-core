@@ -57,8 +57,10 @@ def test_page_registers_the_device_pane_and_endpoints():
 
 
 def test_page_registers_the_controllers_pane_and_endpoint():
-    # 81v.3: the Controllers pane mounts via addPane and reads /controllers/state.
+    # 81v.3: the Controllers pane mounts via addPane, reads /controllers/state,
+    # and assigns / clears MIDI-CC controllers via /controllers/*.
     html = PAGE.read_text()
-    for marker in ('id="ctlpane"', 'id="ctlbody"', 'addPane({ id: "controllers"',
-                   "/controllers/state"):
+    for marker in ('id="ctlpane"', 'id="ctlbody"', 'id="ctlassign"',
+                   'addPane({ id: "controllers"', "/controllers/state",
+                   "/controllers/assign", "/controllers/clear"):
         assert marker in html, marker
