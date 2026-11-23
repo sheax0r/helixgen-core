@@ -569,6 +569,172 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.ids.mxbody.textContent);
   }
 
+  { // S32: Global EQ pane — snapshot read + live write, shadow tagging (81v.6)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Global EQ")[0];
+    ok("S32 a Global EQ tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();
+    const req = x.posts.find((p) => p.url === "/globaleq/state");
+    ok("S32 opening the pane fetches the state", !!req, JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { outputs: {
+      qtr: { enable: false, level: 0, bands: {
+        lowcut: { enable: true, freq: 20, slope: 1 },
+        low: { enable: true, freq: 150, gain: 0, q: 0.707 },
+        highcut: { enable: true, freq: 20000, slope: 1 } } },
+      xlr: { enable: true, level: -2, bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } },
+      pho: { enable: false, level: 0, bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } } } });
+    await x.tick(); await x.tick();
+    const tabs = x.ids.eqtabs.children.map((c) => c.textContent);
+    ok("S32 a tab per output", tabs.join(",") === '1/4",XLR,Phones', tabs.join(","));
+    ok("S32 band names render", x.ids.eqbody.textContent.includes("Low Cut")
+      && x.ids.eqbody.textContent.includes("High Cut"), x.ids.eqbody.textContent);
+    const gainInp = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Low Gain")[0];
+    ok("S32 a peaking band shows a Gain control", !!gainInp, "no gain input");
+    gainInp.value = "4.5"; gainInp.onchange();
+    const w = x.posts.find((p) => p.url === "/globaleq/set");
+    ok("S32 moving a band control writes /globaleq/set",
+      !!w && w.body.output === "qtr" && w.body.band === "low" && w.body.param === "gain" && w.body.value === 4.5,
+      JSON.stringify(w && w.body));
+    w.reply(200, { ok: true, output: "qtr", band: "low", param: "gain", value: 4.5 }); await x.tick();
+    ok("S32 the written control is marked set", gainInp._cls.has("eq-set"), [...gainInp._cls].join(","));
+    const masterCb = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Global EQ enabled")[0];
+    ok("S32 the master enable reflects the live read (Off)", !!masterCb && masterCb.checked === false, "master cb");
+    masterCb.checked = true; masterCb.onchange();
+    const mw = x.posts.filter((p) => p.url === "/globaleq/set").slice(-1)[0];
+    ok("S32 the master toggle writes band='' param='enable'",
+      mw.body.band === "" && mw.body.param === "enable" && mw.body.value === true, JSON.stringify(mw.body));
+    mw.reply(200, { ok: true, output: "qtr", band: "", param: "enable", value: true }); await x.tick();
+    x.ids.eqrefresh.onclick(); await x.tick();
+    const req2 = x.posts.filter((p) => p.url === "/globaleq/state").slice(-1)[0];
+    req2.reply(200, { outputs: {
+      qtr: { enable: false, level: 0, bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } },
+      xlr: { enable: false, level: 0, bands: {} }, pho: { enable: false, level: 0, bands: {} } } });
+    await x.tick(); await x.tick();
+    const gainInp2 = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Low Gain")[0];
+    ok("S32 a session edit survives Refresh over the static snapshot",
+      gainInp2 && String(gainInp2.value) === "4.5" && gainInp2._cls.has("eq-set"), gainInp2 && gainInp2.value);
+    // a band-enable toggle is write-only too, so it gets the same "set" marker
+    const lowEnWrap = x.ids.eqbody.find((e) => e.tagName === "label"
+      && e.find((c) => c.attrs && c.attrs["aria-label"] === "Low enabled").length)[0];
+    ok("S32 a band enable is a labelled checkbox", !!lowEnWrap, "no low-enable label");
+    const lowEnCb = lowEnWrap.find((c) => c.tagName === "input")[0];
+    lowEnCb.checked = false; lowEnCb.onchange();
+    const ew = x.posts.filter((p) => p.url === "/globaleq/set").slice(-1)[0];
+    ok("S32 toggling a band enable writes band enable",
+      ew.body.band === "low" && ew.body.param === "enable" && ew.body.value === false, JSON.stringify(ew.body));
+    ew.reply(200, { ok: true, output: "qtr", band: "low", param: "enable", value: false }); await x.tick();
+    ok("S32 a written band enable is marked set (provenance parity with numbers)",
+      lowEnWrap._cls.has("eq-set"), [...lowEnWrap._cls].join(","));
+    // Reset EQ: one click flattens the output to factory defaults
+    const resetBtn = x.ids.eqbody.find((e) => e.tagName === "button" && e.textContent === "Reset EQ")[0];
+    ok("S32 a Reset EQ button is present", !!resetBtn, "no reset button");
+    resetBtn.onclick();
+    resetBtn.onclick();   // a double-click must not fan a 2nd batch at the flaky device
+    ok("S32 Reset is debounced while one batch is in flight",
+      x.posts.filter((p) => p.url === "/globaleq/reset").length === 1,
+      String(x.posts.filter((p) => p.url === "/globaleq/reset").length));
+    const rr = x.posts.filter((p) => p.url === "/globaleq/reset").slice(-1)[0];
+    ok("S32 Reset posts the output", rr && rr.body.output === "qtr", JSON.stringify(rr && rr.body));
+    rr.reply(200, { output: "qtr", bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } }); await x.tick();
+    const gainAfterReset = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Low Gain")[0];
+    ok("S32 Reset folds factory values back into the control", gainAfterReset && String(gainAfterReset.value) === "0",
+      gainAfterReset && gainAfterReset.value);
+    // Copy qtr → Paste onto xlr
+    const copyBtn = x.ids.eqbody.find((e) => e.tagName === "button" && e.textContent === "Copy")[0];
+    copyBtn.onclick(); await x.tick();
+    const xlrTab = x.ids.eqtabs.find((e) => e.tagName === "button" && e.textContent === "XLR")[0];
+    xlrTab.onclick(); await x.tick();
+    const pasteBtn = x.ids.eqbody.find((e) => e.tagName === "button" && e.textContent === "Paste")[0];
+    ok("S32 Paste is enabled after a Copy", pasteBtn && !pasteBtn.disabled, "paste disabled");
+    pasteBtn.onclick();
+    const pp = x.posts.filter((p) => p.url === "/globaleq/apply").slice(-1)[0];
+    ok("S32 Paste applies the copied EQ to the current output",
+      pp && pp.body.output === "xlr" && pp.body.bands && pp.body.bands.low, JSON.stringify(pp && pp.body));
+    pp.reply(200, { output: "xlr", bands: { low: { gain: 0, q: 0.707, enable: true, freq: 150 } } }); await x.tick();
+  }
+
+  { // S33: Command Center pane — read-only commands view (81v.4)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Command Center")[0];
+    ok("S33 a Command Center tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();
+    const req = x.posts.find((p) => p.url === "/commands/state");
+    ok("S33 opening the pane fetches the command state", !!req,
+      JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { sources: [
+      { id: "FS3", label: "Footswitch 3 (top row, 3rd from left)", named: true, commands: [
+        { family: "MIDI", headline: "MIDI CC", action: "", behavior: "momentary",
+          toggle: false, fields: [["Channel", "1"], ["CC#", "11"], ["Value", "0"]] }] },
+      { id: "0x09990000", label: "source 0x09990000", named: false, commands: [
+        { family: "Preset/Snapshot", headline: "Snapshot", action: "Press", behavior: "latching",
+          toggle: false, fields: [["Snapshot", "2"]] }] }] });
+    await x.tick(); await x.tick();
+    const txt = x.ids.cmdbody.textContent;
+    ok("S33 a named source shows its English label", txt.includes("Footswitch 3 (top row, 3rd from left)"), txt);
+    ok("S33 the command headline renders", txt.includes("MIDI CC"), txt);
+    ok("S33 a PresetSnapshot Action chip renders", txt.includes("Press"), txt);
+    ok("S33 a legitimate zero value is not hidden", txt.includes("Value") && txt.includes("0"), txt);
+    ok("S33 the has-commands marker is drawn", txt.includes("▶"), txt);
+    ok("S33 an unnameable source is shown, not dropped",
+      txt.includes("Snapshot") && txt.includes("helixgen can't name"), txt);
+    // empty tone -> the empty-state line, no crash
+    const y = boot(); y.sse(State([Blk({}, [P_({})])]));
+    const t2 = y.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Command Center")[0];
+    t2.onclick(); await y.tick();
+    y.posts.find((p) => p.url === "/commands/state").reply(200, { sources: [] });
+    await y.tick(); await y.tick();
+    ok("S33 an empty tone shows the empty-state line",
+      y.ids.cmdbody.textContent.includes("No commands assigned"), y.ids.cmdbody.textContent);
+  }
+
+  { // S34: Tuner pane — read-only live pitch needle (81v.10)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const ptrX = () => x.ids["tuner-pointer"].style.transform;   // translateX(N px)
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Tuner")[0];
+    ok("S34 a Tuner tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();                     // showPane -> onShow(true) -> immediate poll + interval
+    ok("S34 opening the pane starts a poll timer", x.intervals.size === 1, "no interval");
+    const req = x.posts.find((p) => p.url === "/tuner/reading");
+    ok("S34 the pane polls /tuner/reading", !!req, JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { signal: true, name: "E2", note: "E", octave: 2, cents: -8, hz: 81.5, connected: true });
+    await x.tick();
+    ok("S34 a played note shows its name", x.ids["tuner-note"].textContent === "E2", x.ids["tuner-note"].textContent);
+    ok("S34 the cents readout is signed", x.ids["tuner-cents"].textContent.startsWith("-8"), x.ids["tuner-cents"].textContent);
+    ok("S34 the needle slides left (negative translateX) when flat", ptrX() === "translateX(-22.4px)", ptrX());
+    ok("S34 off by 8 cents is not flagged in-tune", !x.ids["tuner-pointer"].getAttribute("class").includes("in-tune"),
+      x.ids["tuner-pointer"].getAttribute("class"));
+    // near-zero cents -> green + very close to centre (the needle tracks real
+    // cents, so +1 cent sits 2.8px off; "in tune" is the ±3-cent colour flag)
+    const fire = [...x.intervals.values()][0]; fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0]
+      .reply(200, { signal: true, name: "A2", note: "A", octave: 2, cents: 1, hz: 110.0, connected: true });
+    await x.tick();
+    ok("S34 near-zero cents flags in-tune", x.ids["tuner-pointer"].getAttribute("class").includes("in-tune")
+      && x.ids["tuner-note"].className === "tuned", x.ids["tuner-pointer"].getAttribute("class"));
+    ok("S34 +1 cent sits just off centre", ptrX() === "translateX(2.8px)", ptrX());
+    // a partial signal:true reading (missing cents) must not paint NaN (D2 guard)
+    fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0]
+      .reply(200, { signal: true, name: "A2", note: "A", octave: 2, connected: true });
+    await x.tick();
+    ok("S34 a partial reading recentres instead of painting NaN",
+      ptrX() === "translateX(0px)" && x.ids["tuner-cents"].textContent === "", ptrX() + "|" + x.ids["tuner-cents"].textContent);
+    // no signal -> dash + centred, not in-tune
+    fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0].reply(200, { signal: false, name: "—", connected: true });
+    await x.tick();
+    ok("S34 no signal shows a dash and recentres", x.ids["tuner-note"].textContent === "—"
+      && ptrX() === "translateX(0px)"
+      && !x.ids["tuner-pointer"].getAttribute("class").includes("in-tune"), x.ids["tuner-note"].textContent);
+    // leaving the pane stops the poll timer
+    const flowTab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Signal flow")[0];
+    flowTab.onclick();
+    ok("S34 leaving the pane clears the poll timer", x.intervals.size === 0, "timer leaked");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

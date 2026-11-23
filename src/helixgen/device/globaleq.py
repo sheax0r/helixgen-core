@@ -116,9 +116,63 @@ K_VAL = _u32("val_")
 K_PARM = _u32("parm")
 K_VALU = _u32("valu")
 
+# ``global.eq.sync`` snapshot 4-char-code keys (hardware-decoded 2026-11-23,
+# Stadium XL fw 1.4.1). The value is a uint32-4CC-keyed nested map: three
+# per-output blocks keyed ``_qtr``/``_xlr``/``_pho`` (plus ``anyl``/``post``
+# scalars), each block ``{enab(master), eqbs:[7 bands], olvl:{parm,valu}}``,
+# each band ``{band:index, para:[{parm,valu}]}``.
+_SYNC_OUTPUT_KEYS = {_u32("_qtr"): "qtr", _u32("_xlr"): "xlr",
+                     _u32("_pho"): "pho"}
+K_ENAB = _u32("enab")   # per-output master enable (0/1)
+K_EQBS = _u32("eqbs")   # the 7-band list
+K_BAND = _u32("band")   # a band's numeric index
+K_PARA = _u32("para")   # a band's [{parm,valu}] list
+K_OLVL = _u32("olvl")   # output level, as {parm:3, valu:<dB>}
+
+_SLOT_TO_PARAM = {p.slot: name for name, p in PARAMS.items()}
+_INDEX_TO_BAND = {b.index: name for name, b in BANDS.items()}
+
+
+# Factory-default band values (the app's "Reset EQ" target). Frequencies are
+# per-band (DEFAULT_FREQ); gain flat, Q 0.707, cut slope 1, every band enabled —
+# matching the device's own factory `global.eq.sync` snapshot (HW 2026-11-23).
+DEFAULT_GAIN = 0.0
+DEFAULT_Q = 0.707
+DEFAULT_SLOPE = 1
+
 
 def outputs() -> List[str]:
     return list(OUTPUTS)
+
+
+def normalize_output(output: str) -> str:
+    """Lower-case + validate an output key on its own. Raises ``ValueError``."""
+    o = output.strip().lower()
+    if o not in OUTPUTS:
+        raise ValueError(f"unknown output {output!r}; want one of {outputs()}")
+    return o
+
+
+def default_band_params(band: str) -> Dict[str, Any]:
+    """The factory-default value for every param valid on ``band`` — what
+    ``Reset EQ`` writes. Only that band's params (cut bands get freq+slope, no
+    gain/Q; shelves freq+gain; peaking freq+gain+Q), each with ``enable=True``."""
+    b = band.strip().lower()
+    if b not in BANDS:
+        raise ValueError(f"unknown band {band!r}; want one of {band_names()}")
+    vals: Dict[str, Any] = {}
+    for p in BANDS[b].params:
+        if p == "enable":
+            vals[p] = True
+        elif p == "freq":
+            vals[p] = DEFAULT_FREQ[b]
+        elif p == "gain":
+            vals[p] = DEFAULT_GAIN
+        elif p == "q":
+            vals[p] = DEFAULT_Q
+        elif p == "slope":
+            vals[p] = DEFAULT_SLOPE
+    return vals
 
 
 def band_names() -> List[str]:
@@ -218,3 +272,54 @@ def catalog() -> List[Dict[str, Any]]:
             "params": ["level"], "default_freq": None,
         })
     return rows
+
+
+def decode_sync(value: Any) -> Dict[str, Any]:
+    """Decode a ``global.eq.sync`` property value (the already-msgpack-decoded
+    nested map from :meth:`HelixClient.get_property`) into the normalized shape::
+
+        {"outputs": {"qtr": {"enable": bool, "level": <dB>|None,
+                             "bands": {"low": {"enable": bool, "freq": …,
+                                               "gain": …, "q": …}, …}}, …}}
+
+    This is the device's **connect-time** Global EQ snapshot — the only Global EQ
+    read-back the firmware offers. **It is static:** ``set_globaleq`` writes
+    (and device-screen edits) do *not* update it (hardware-confirmed 2026-11-23).
+    So it seeds a UI honestly but a value changed since connect reads stale — the
+    caller surfaces that, never passes it off as live truth.
+
+    A malformed or missing output/band/param is skipped, never raised — a partial
+    snapshot still seeds what it can. Raises :class:`ValueError` only if ``value``
+    is not a map at all.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("global.eq.sync value is not a map")
+    outputs: Dict[str, Any] = {}
+    for okey, oname in _SYNC_OUTPUT_KEYS.items():
+        blk = value.get(okey)
+        if not isinstance(blk, dict):
+            continue
+        bands: Dict[str, Any] = {}
+        for b in blk.get(K_EQBS) or []:
+            if not isinstance(b, dict):
+                continue
+            bname = _INDEX_TO_BAND.get(b.get(K_BAND))
+            if bname is None:
+                continue
+            params: Dict[str, Any] = {}
+            for p in b.get(K_PARA) or []:
+                if not isinstance(p, dict):
+                    continue
+                pname = _SLOT_TO_PARAM.get(p.get(K_PARM))
+                if pname is None:
+                    continue
+                v = p.get(K_VALU)
+                params[pname] = bool(v) if pname == "enable" else v
+            bands[bname] = params
+        lvl = blk.get(K_OLVL)
+        outputs[oname] = {
+            "enable": bool(blk.get(K_ENAB)),
+            "level": lvl.get(K_VALU) if isinstance(lvl, dict) else None,
+            "bands": bands,
+        }
+    return {"outputs": outputs}

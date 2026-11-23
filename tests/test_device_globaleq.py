@@ -154,3 +154,49 @@ def test_catalog_shape():
     assert "slope" in lowcut["params"] and "gain" not in lowcut["params"]
     mid = [r for r in cat if r["band"] == "mid" and r["output"] == "qtr"][0]
     assert set(mid["params"]) == {"enable", "freq", "gain", "q"}
+
+
+def test_decode_sync_golden():
+    """Decode the real ``global.eq.sync`` snapshot captured off the Stadium XL
+    (fw 1.4.1, 2026-11-23). Pins the nested-map decode against device bytes."""
+    from helixgen.device import settings
+    value = settings.decode_value_blob(_golden("sync_state.blob")).value
+    st = globaleq.decode_sync(value)
+    outs = st["outputs"]
+    assert set(outs) == {"qtr", "xlr", "pho"}
+    qtr = outs["qtr"]
+    assert qtr["enable"] is False          # master Off at capture
+    assert qtr["level"] == 0.0
+    assert set(qtr["bands"]) == set(globaleq.band_names())
+    # cut band: enable/freq/slope, no gain/q
+    lc = qtr["bands"]["lowcut"]
+    assert lc["enable"] is True and lc["freq"] == 20.0 and lc["slope"] == 1
+    assert "gain" not in lc and "q" not in lc
+    # peaking band: enable/freq/gain/q
+    low = qtr["bands"]["low"]
+    assert set(low) == {"enable", "freq", "gain", "q"}
+    assert low["freq"] == 150.0 and low["gain"] == 0.0
+    assert round(low["q"], 3) == 0.707
+
+
+def test_decode_sync_tolerates_junk():
+    assert globaleq.decode_sync({})["outputs"] == {}
+    with pytest.raises(ValueError):
+        globaleq.decode_sync("not a map")
+
+
+def test_default_band_params():
+    lc = globaleq.default_band_params("lowcut")
+    assert lc == {"enable": True, "freq": 20.0, "slope": 1}
+    low = globaleq.default_band_params("low")
+    assert low == {"enable": True, "freq": 150.0, "gain": 0.0, "q": 0.707}
+    hs = globaleq.default_band_params("highshelf")
+    assert hs == {"enable": True, "freq": 8000.0, "gain": 0.0}
+    with pytest.raises(ValueError):
+        globaleq.default_band_params("nope")
+
+
+def test_normalize_output():
+    assert globaleq.normalize_output(" QTR ") == "qtr"
+    with pytest.raises(ValueError):
+        globaleq.normalize_output("spdif")

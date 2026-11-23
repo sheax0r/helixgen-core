@@ -136,6 +136,28 @@ def _route(session: LiveSession, path: str, b: dict):
         if "value" not in b:
             raise LiveError("missing field 'value'")
         return session.device_write(key, b["value"])
+    # Global EQ pane (81v.6): write one Global EQ control live. The read of the
+    # connect-time snapshot is GET /globaleq/state (do_GET).
+    if path == "/globaleq/set":
+        for f in ("output", "band", "param"):
+            if not isinstance(b.get(f), str):
+                raise LiveError(f"field {f!r} must be a string")
+        if "value" not in b:
+            raise LiveError("missing field 'value'")
+        v = b["value"]
+        if not isinstance(v, (int, float, bool, str)):
+            raise LiveError("field 'value' must be a number, bool or string")
+        return session.globaleq_write(b["output"], b["band"], b["param"], v)
+    if path == "/globaleq/reset":
+        if not isinstance(b.get("output"), str):
+            raise LiveError("field 'output' must be a string")
+        return session.globaleq_reset(b["output"])
+    if path == "/globaleq/apply":          # the write half of Copy/Paste
+        if not isinstance(b.get("output"), str):
+            raise LiveError("field 'output' must be a string")
+        if not isinstance(b.get("bands"), dict):
+            raise LiveError("field 'bands' must be an object")
+        return session.globaleq_apply(b["output"], b["bands"], b.get("level"))
     # Controllers pane (81v.3): assign / clear a MIDI-CC controller on a param.
     # Read of the current assignments is GET /controllers/state (do_GET).
     if path == "/controllers/assign":
@@ -242,6 +264,17 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 except Exception as e:  # noqa: BLE001
                     logger.exception("live editor: controller sources failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # Global EQ pane (81v.6): the device's Global EQ connect-time
+            # snapshot (global.eq.sync) + live master enables, read live over
+            # 2002. Writes are POST /globaleq/set (see _route).
+            elif path == "/globaleq/state":
+                try:
+                    self._json(200, session.globaleq_state())
+                except LiveError as e:
+                    self._json(e.status, {"error": str(e)})
+                except Exception as e:  # noqa: BLE001 — a bad blob must not 500 raw
+                    logger.exception("live editor: globaleq state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
             # Mixer pane (81v.8): the device-global Matrix Mixer (per-output
             # monitor mix), read live over 2002. Read-only — no write route.
             elif path == "/mixer/state":
@@ -251,6 +284,22 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                     self._json(e.status, {"error": str(e)})
                 except Exception as e:  # noqa: BLE001 — a bad blob must not 500 raw
                     logger.exception("live editor: mixer state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # Command Center pane (81v.4): the preset's command assignments
+            # projected off the live buffer. Read-only this increment.
+            elif path == "/commands/state":
+                try:
+                    self._json(200, session.commands())
+                except Exception as e:  # noqa: BLE001 — a bad buffer must not 500 raw
+                    logger.exception("live editor: command center state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # Tuner pane (81v.10): the latest live pitch reading off the always-on
+            # 2003 telemetry stream. Read-only; polled while the pane is open.
+            elif path == "/tuner/reading":
+                try:
+                    self._json(200, session.tuner_reading())
+                except Exception as e:  # noqa: BLE001 — telemetry hiccup must not 500 raw
+                    logger.exception("live editor: tuner reading failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
             else:
                 self._json(404, {"error": "not found"})

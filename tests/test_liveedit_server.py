@@ -76,6 +76,23 @@ def test_controllers_state_endpoint(srv):
     assert all(isinstance(j[k], list) for k in j)
 
 
+def test_commands_state_endpoint(srv):
+    # 81v.4: read-only Command Center assignments projected off the live buffer.
+    code, ctype, data = req(srv[2], "GET", "/commands/state")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert isinstance(j.get("sources"), list)
+
+
+def test_tuner_reading_endpoint(srv):
+    # 81v.10: read-only live pitch reading. No pitch has streamed into the fake
+    # session, so it reports no-signal rather than erroring.
+    code, ctype, data = req(srv[2], "GET", "/tuner/reading")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert j.get("signal") is False
+
+
 def test_controllers_assign_route(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/controllers/assign",
@@ -782,3 +799,68 @@ def test_snapshot_param_control_route_validates_on(srv):
     assert req(server, "POST", "/snapshot/param-control",
                {"path": 0, "block": 2, "pid": DRIVE, "on": "yes"})[0] == 400
     assert c.snap_assigns == [] and c.snap_removes == []
+
+
+# --- Global EQ pane (81v.6) --------------------------------------------------
+
+def test_globaleq_state_endpoint(srv):
+    code, ctype, data = req(srv[2], "GET", "/globaleq/state")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert set(j["outputs"]) == {"qtr", "xlr", "pho"}
+
+
+def test_globaleq_set_band(srv):
+    c = srv[0]
+    code, _, data = req(srv[2], "POST", "/globaleq/set",
+                        {"output": "qtr", "band": "low", "param": "gain",
+                         "value": -3.5})
+    assert code == 200, data
+    assert c.globaleq_sets == [("qtr", "low", "gain", -3.5)]
+
+
+def test_globaleq_set_master_enable(srv):
+    c = srv[0]
+    code, _, data = req(srv[2], "POST", "/globaleq/set",
+                        {"output": "xlr", "band": "", "param": "enable",
+                         "value": True})
+    assert code == 200, data
+    assert c.globaleq_enables == [("xlr", True)]
+
+
+def test_globaleq_set_requires_value(srv):
+    code, _, _ = req(srv[2], "POST", "/globaleq/set",
+                     {"output": "qtr", "band": "low", "param": "gain"})
+    assert code == 400
+
+
+def test_globaleq_set_requires_string_fields(srv):
+    code, _, _ = req(srv[2], "POST", "/globaleq/set",
+                     {"output": 7, "band": "low", "param": "gain", "value": 1})
+    assert code == 400
+
+
+def test_globaleq_reset_route(srv):
+    c = srv[0]
+    code, _, data = req(srv[2], "POST", "/globaleq/reset", {"output": "qtr"})
+    assert code == 200, data
+    assert ("qtr", "low", "gain", 0.0) in c.globaleq_sets
+
+
+def test_globaleq_apply_route(srv):
+    c = srv[0]
+    code, _, data = req(srv[2], "POST", "/globaleq/apply",
+                        {"output": "xlr", "bands": {"low": {"gain": 2.5}}, "level": -1.0})
+    assert code == 200, data
+    assert ("xlr", "low", "gain", 2.5) in c.globaleq_sets
+    assert ("xlr", "", "level", -1.0) in c.globaleq_sets
+
+
+def test_globaleq_apply_requires_bands_object(srv):
+    code, _, _ = req(srv[2], "POST", "/globaleq/apply", {"output": "qtr", "bands": "nope"})
+    assert code == 400
+
+
+def test_globaleq_reset_requires_output(srv):
+    code, _, _ = req(srv[2], "POST", "/globaleq/reset", {})
+    assert code == 400

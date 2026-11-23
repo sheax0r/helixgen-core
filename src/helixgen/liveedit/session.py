@@ -42,6 +42,7 @@ DEAD_AFTER = 6.0      # s of total silence on the PUB streams = disconnected
 RETRY_EVERY = 3.0     # s between reconnect attempts while disconnected
 _OWN_MAX = 256        # own write echoes remembered
 _SEQ_MOD = 1 << 32    # the 2001 header sequence is a uint32; wraps at 2**32
+TUNER_STALE = 1.5     # s since the last 2003 pitch event = stale -> no-signal
 # Endpoint / routing / harness categories that are NOT user-addable as chain
 # blocks — adding one on row 0 corrupts the grid or routing (swap_model refuses
 # the same set for in-place swaps).
@@ -158,6 +159,122 @@ def _group_controllers(recipe: dict, labels: Dict[str, str]) -> dict:
     }
 
 
+# --- Command Center pane (81v.4): read-only projection ------------------------
+# The ``.hsp`` MIDI ``Command`` subtype -> label. Note/MMC are swapped against
+# the editor's ``cc_midi_command`` vocab (untranscode ``_DEVICE_TO_HSP_MIDI_FUNC``
+# documents the swap), so this is an EXPLICIT map, not an index into that enum.
+_MIDI_SUBTYPE_LABEL = {0: "Bank/Program", 1: "CC", 2: "MMC", 3: "Note On"}
+
+
+def _enum_label(controls: dict, name: str, idx: Any) -> Optional[str]:
+    """``controls[name].labels[idx]`` when in range, else ``None`` (the caller
+    falls back to the raw int rather than guessing)."""
+    try:
+        labels = (controls.get(name) or {}).get("labels") or []
+        i = int(idx)
+    except (TypeError, ValueError):
+        return None
+    return labels[i] if 0 <= i < len(labels) else None
+
+
+def _instant_label(switch: Optional[str]) -> Optional[str]:
+    """``Instant7`` -> ``Instant 7`` (controller_mapping has no Instant rows, so
+    the English label map never covers these)."""
+    if isinstance(switch, str) and switch.startswith("Instant"):
+        return "Instant " + switch[len("Instant"):]
+    return None
+
+
+def _command_fields(typ: str, p: dict, controls: dict) -> List[List[str]]:
+    """The meaningful, per-family fields of one command, as ``[name, value]``
+    display pairs. Shows only the slots a family actually uses (the decoder
+    zero-fills the rest), so a legitimate value of 0 is never hidden and an
+    unused slot is never shown. Enum values resolve to labels where the device
+    vocab is known; an out-of-range index falls back to the raw int."""
+    def s(name: str) -> str:
+        return str(p.get(name, 0))
+
+    def off(name: str) -> str:
+        # The forward path writes -1 into an unset Bank/Program slot; the manual
+        # shows that as "Off", not a raw -1 (a real PC/MSB/LSB is 0..127).
+        return "Off" if p.get(name, 0) == -1 else str(p.get(name, 0))
+
+    if typ == "MIDI":
+        cmd = p.get("Command")
+        ch = ["Channel", s("MIDI Ch")]
+        if cmd == 0:        # Bank/Program
+            return [ch, ["PC", off("PC")], ["MSB(CC00)", off("MSB")],
+                    ["LSB(CC32)", off("LSB")]]
+        if cmd == 1:        # CC
+            return [ch, ["CC#", s("CC#")], ["Value", s("Value")]]
+        if cmd == 2:        # MMC
+            msg = _enum_label(controls, "cc_midi_message", p.get("Message"))
+            return [ch, ["Message", msg or s("Message")]]
+        if cmd == 3:        # Note On
+            note = _enum_label(controls, "midi_note", p.get("Note"))
+            return [ch, ["Note", note or s("Note")], ["Velocity", s("Velocity")]]
+        return [ch]
+    if typ == "PresetSnapshot":
+        cmd = p.get("Command")
+        if cmd == 4:        # "Preset" (cc_presetsnapshot_command index)
+            return [["Setlist", s("Setlist")], ["Preset", s("Preset")]]
+        if cmd == 7:        # "Snapshot"
+            return [["Snapshot", s("Snapshot")]]
+        return []
+    return []
+
+
+def _command_display(rec: dict, controls: dict) -> dict:
+    """One flattened ``bridge.hsp_commands`` record -> the inspector row the
+    Command Center pane renders: family, an English headline (the command /
+    MIDI subtype), the Action, per-footswitch behaviour, and the family's
+    fields. Read-only — no device vocab is invented, unknown families pass
+    through under their raw type."""
+    p = rec.get("params") or {}
+    typ = rec.get("type")
+    action = _enum_label(controls, "cc_action", p.get("Action")) or ""
+    if typ == "MIDI":
+        sub = _MIDI_SUBTYPE_LABEL.get(p.get("Command"))
+        family, headline = "MIDI", ("MIDI " + sub if sub else "MIDI")
+    elif typ == "PresetSnapshot":
+        family = "Preset/Snapshot"
+        headline = (_enum_label(controls, "cc_presetsnapshot_command",
+                                p.get("Command")) or family)
+    else:
+        family = headline = typ or "Command"
+    return {"family": family, "headline": headline, "action": action,
+            "behavior": rec.get("behavior", ""), "toggle": bool(rec.get("toggle")),
+            "fields": _command_fields(typ, p, controls)}
+
+
+def _format_commands(cmds: List[dict], device_id: Any, controls: dict,
+                     labels: Dict[str, str]) -> dict:
+    """Flattened commands -> the pane's ``{"sources": [...]}`` shape, grouped by
+    source in first-seen order. Each source rides its English label (CLAUDE.md:
+    never a bare ``FS#``); a source helixgen can't name is still shown (never
+    silently dropped) under its raw id. ``device_id`` None falls back to the XL
+    source table, matching the Controllers pane's source catalogue."""
+    from helixgen import controllers as _ctl
+    dev = device_id or "stadium_xl"
+    by_source: Dict[str, dict] = {}
+    order: List[str] = []
+    for rec in cmds:
+        sid = rec.get("source")
+        try:
+            switch = _ctl.command_switch_for_source(dev, sid)
+        except Exception:  # noqa: BLE001 — an unknown device must not sink the pane
+            switch = None
+        key = switch or (f"{sid:#010x}" if isinstance(sid, int) else str(sid))
+        if key not in by_source:
+            label = (labels.get(switch) or _instant_label(switch) or switch
+                     or ("source " + key))
+            by_source[key] = {"id": switch or key, "label": label,
+                              "named": switch is not None, "commands": []}
+            order.append(key)
+        by_source[key]["commands"].append(_command_display(rec, controls))
+    return {"sources": [by_source[k] for k in order]}
+
+
 class LiveSession:
     LOG_MAX = 512
 
@@ -200,6 +317,11 @@ class LiveSession:
         self._last_event: Optional[float] = None
         self._last_retry = -math.inf
         self._seq: Dict[int, int] = {}   # port -> last 2001 header sequence seen
+        # Tuner pane (81v.10): the latest pitch reading off the always-on 2003
+        # /dspEvent stream, with the monotonic time it arrived (so a stalled
+        # stream reads as no-signal rather than a frozen note). Read-only.
+        self._tuner: Optional["TunerReading"] = None
+        self._tuner_at = -math.inf
 
     @property
     def connected(self) -> bool:
@@ -1483,6 +1605,155 @@ class LiveSession:
         return {"key": key, "value": rb.value,
                 "display": _settings.render_value(d, rb.value)}
 
+    # --- Global EQ pane (81v.6) -----------------------------------------------------
+    def globaleq_state(self) -> dict:
+        """The device's Global EQ connect-time snapshot (``global.eq.sync``),
+        decoded, with each output's live master enable overlaid. Read-only and
+        lease-free (like :meth:`mixer_state` / :meth:`device_values`) — browsing
+        globals must not lock other verbs out of the device.
+
+        The band/level values are the device's **connect-time** state:
+        ``global.eq.sync`` is static and does NOT reflect writes
+        (hardware-confirmed), so the pane shows them as a snapshot, not live
+        truth. The three master enables are read fresh and are truly live."""
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            try:
+                return self.client.get_globaleq_state()
+            except (HelixError, OSError, ValueError) as e:
+                raise LiveError(f"could not read the Global EQ: {e}",
+                                status=502) from e
+
+    def globaleq_write(self, output: str, band: str, param: str,
+                       value: Any) -> dict:
+        """Write one Global EQ control live. ``band==""`` with ``param=="enable"``
+        is the output **master** enable (``global.eq.*.enable``, live-readable);
+        ``band==""`` with ``param=="level"`` is the output level; anything else is
+        a band parameter. Band/level writes go out as the write-only variant blob
+        (no read-back). Takes the ``globals`` scope transiently, exactly like
+        :meth:`device_write`."""
+        from helixgen.device import globaleq as _globaleq
+        if not (isinstance(output, str) and isinstance(band, str)
+                and isinstance(param, str)):
+            raise LiveError("output, band and param must be strings")
+        master = band == "" and param == "enable"
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            with self.lease.transient(("globals",)):
+                try:
+                    if master:
+                        on = bool(_globaleq.coerce_value("enable", value))
+                        ok = self.client.set_globaleq_enable(
+                            output.strip().lower(), on)
+                        sent: Any = on
+                    else:
+                        o, b, p = _globaleq.normalize(output, band, param)
+                        sent = _globaleq.coerce_value(p, value)
+                        ok = self.client.set_globaleq(o, b, p, sent)
+                except ValueError as e:                # bad output/band/param/value
+                    raise LiveError(str(e), status=400) from e
+                except HelixError as e:
+                    raise LiveError(f"the device would not set the Global EQ: "
+                                    f"{e}", status=502) from e
+                except OSError as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device write failed: {e}",
+                                    status=502) from e
+                if not ok:
+                    raise LiveError("the device did not confirm the Global EQ "
+                                    "write", status=502)
+        return {"output": output, "band": band, "param": param, "value": sent}
+
+    def _globaleq_band_send(self, o: str, b: str, p: str, v: Any) -> None:
+        """Write one band/level param (caller already holds devlock + the
+        ``globals`` lease). ``set_globaleq`` coerces; this only maps failures to
+        the same LiveErrors as :meth:`globaleq_write`."""
+        try:
+            ok = self.client.set_globaleq(o, b, p, v)
+        except HelixError as e:
+            raise LiveError(f"the device would not set the Global EQ: {e}",
+                            status=502) from e
+        except OSError as e:
+            self._set_connected(False)
+            raise LiveError(f"device write failed: {e}", status=502) from e
+        if not ok:
+            raise LiveError("the device did not confirm the Global EQ write",
+                            status=502)
+
+    def globaleq_reset(self, output: str) -> dict:
+        """Reset one output's Global EQ to factory defaults — the app's
+        **Reset EQ**: every band flat, the cut filters back to their default
+        corners, all bands enabled (does NOT touch the output level). Writes each
+        band param sequentially under ONE ``globals`` lease (the device socket is
+        single-threaded and the net is flaky — never fan writes out). Returns the
+        values written so the UI shadow reflects them."""
+        from helixgen.device import globaleq as _globaleq
+        try:
+            o = _globaleq.normalize_output(output)
+        except ValueError as e:
+            raise LiveError(str(e), status=400) from e
+        out_bands: Dict[str, Any] = {}
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            with self.lease.transient(("globals",)):
+                for band in _globaleq.band_names():
+                    params = _globaleq.default_band_params(band)
+                    for p, v in params.items():
+                        self._globaleq_band_send(o, band, p, v)
+                    out_bands[band] = params
+        return {"output": o, "bands": out_bands}
+
+    def globaleq_apply(self, output: str, bands: Any,
+                       level: Any = None) -> dict:
+        """Write a full EQ to one output — the write half of **Copy/Paste**, with
+        the source's values supplied by the caller (the pane's effective
+        snapshot+shadow, which the static ``global.eq.sync`` read cannot know).
+        ``bands`` is ``{band: {param: value}}``; ``level`` an optional output
+        level. The whole payload is validated (codec normalize + coerce) BEFORE
+        any write, so a bad field is refused 400 without half-applying; the writes
+        then go out sequentially under one ``globals`` lease."""
+        from helixgen.device import globaleq as _globaleq
+        try:
+            o = _globaleq.normalize_output(output)
+        except ValueError as e:
+            raise LiveError(str(e), status=400) from e
+        if not isinstance(bands, dict):
+            raise LiveError("field 'bands' must be an object")
+        plan = []                       # (band, param, coerced) — validated upfront
+        for band, params in bands.items():
+            if not isinstance(params, dict):
+                raise LiveError(f"band {band!r} must map params to values",
+                                status=400)
+            for p, v in params.items():
+                try:
+                    _o, b, pp = _globaleq.normalize(o, band, p)
+                    plan.append((b, pp, _globaleq.coerce_value(pp, v)))
+                except ValueError as e:
+                    raise LiveError(str(e), status=400) from e
+        lvl = None
+        if level is not None:
+            try:
+                lvl = _globaleq.coerce_value("level", level)
+            except ValueError as e:
+                raise LiveError(str(e), status=400) from e
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            with self.lease.transient(("globals",)):
+                for b, p, v in plan:
+                    self._globaleq_band_send(o, b, p, v)
+                if lvl is not None:
+                    self._globaleq_band_send(o, "", "level", lvl)
+        out: Dict[str, Any] = {"output": o, "bands": {}}
+        for b, p, v in plan:
+            out["bands"].setdefault(b, {})[p] = v
+        if lvl is not None:
+            out["level"] = lvl
+        return out
+
     # --- Controllers pane (81v.3) ---------------------------------------------------
     def _library(self):
         """The block library, loaded once. Supplies the param-name vocabulary
@@ -1524,6 +1795,70 @@ class LiveSession:
         except Exception:  # noqa: BLE001 — labels are a nicety, never a hard dep
             labels = {}
         return _group_controllers(recipe, labels)
+
+    def commands(self) -> dict:
+        """Command Center commands on the live buffer, in a read-only shape the
+        Command Center pane renders (81v.4).
+
+        Pure projection over the cached edit buffer — NO device I/O: it reuses
+        the shipped reverse-transcode read model (``untranscode`` -> ``.hsp``)
+        and flattens ``preset.commands`` (``bridge.hsp_commands``), then groups
+        by source with English switch labels. Each source carries its commands'
+        family, headline, Action and fields. Follows the device: the SSE stream
+        re-installs the buffer on any ``/setEditBuffer`` echo, and the pane
+        re-reads on focus / Refresh."""
+        empty = {"sources": []}
+        with self.cond:
+            eb = self._eb
+        if not isinstance(eb, dict):
+            return empty
+        from helixgen import view as _view
+        from helixgen.device import bridge as _bridge
+        from helixgen.device import paraminfo as _paraminfo
+        from helixgen.device import untranscode as _untranscode
+        lib = self._library()
+        body = _untranscode.sbepgsm_to_hsp(eb, library=lib)
+        cmds = _bridge.hsp_commands(body)
+        if not cmds:
+            return empty
+        device_id = None
+        labels: Dict[str, str] = {}
+        try:
+            from helixgen import controllers as _controllers
+            device_id = _view._device_id(body)
+            labels = {r["id"]: r["english"]
+                      for r in _controllers.controller_mapping(device_id)}
+        except Exception:  # noqa: BLE001 — labels are a nicety, never a hard dep
+            labels = {}
+        controls = _paraminfo.load_param_ui().get("controls", {})
+        return _format_commands(cmds, device_id, controls, labels)
+
+    # --- Tuner pane (81v.10): read-only live pitch readout --------------------
+    def _note_tuner(self, args: Any) -> None:
+        """Cache the latest pitch reading off a 2003 ``/dspEvent`` (the always-on
+        detector). A non-pitch 2003 event (meter / trigger / heartbeat) decodes
+        to ``None`` and is ignored. No emit — pitch is high-rate telemetry the
+        Tuner pane polls, not a discrete change for the SSE log."""
+        from helixgen.device import tuner as _tuner
+        reading = _tuner.reading_from_event_args(args)
+        if reading is None:
+            return
+        with self.cond:
+            self._tuner = reading
+            self._tuner_at = self._clock()
+
+    def tuner_reading(self) -> dict:
+        """The latest live pitch reading for the Tuner pane. Pure in-memory
+        projection of the cached 2003 reading — NO device I/O, no lease. Reports
+        no-signal when nothing has arrived yet or the stream has stalled (older
+        than ``TUNER_STALE`` s), so a dead stream never shows a frozen note."""
+        with self.cond:
+            reading, at, up = self._tuner, self._tuner_at, self._connected
+        if reading is None or not reading.signal or (self._clock() - at) > TUNER_STALE:
+            return {"signal": False, "name": "—", "connected": up}
+        return {"signal": True, "name": reading.name, "note": reading.note,
+                "octave": reading.octave, "cents": reading.cents,
+                "hz": round(reading.hz, 2), "connected": up}
 
     def _param_exists(self, eb: Any, path: int, block: int, pid: int) -> bool:
         cur = self._block_at(eb, path, block)
@@ -1935,6 +2270,8 @@ class LiveSession:
         for ev in events:
             port = getattr(ev, "port", 2001)
             if port != 2001:
+                if port == 2003:
+                    self._note_tuner(getattr(ev, "args", None))
                 continue
             if self._seq_gap(port, getattr(ev, "seq", None)):
                 # frames were dropped (the SUB socket reconnected silently, or a
