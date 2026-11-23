@@ -158,6 +158,122 @@ def _group_controllers(recipe: dict, labels: Dict[str, str]) -> dict:
     }
 
 
+# --- Command Center pane (81v.4): read-only projection ------------------------
+# The ``.hsp`` MIDI ``Command`` subtype -> label. Note/MMC are swapped against
+# the editor's ``cc_midi_command`` vocab (untranscode ``_DEVICE_TO_HSP_MIDI_FUNC``
+# documents the swap), so this is an EXPLICIT map, not an index into that enum.
+_MIDI_SUBTYPE_LABEL = {0: "Bank/Program", 1: "CC", 2: "MMC", 3: "Note On"}
+
+
+def _enum_label(controls: dict, name: str, idx: Any) -> Optional[str]:
+    """``controls[name].labels[idx]`` when in range, else ``None`` (the caller
+    falls back to the raw int rather than guessing)."""
+    try:
+        labels = (controls.get(name) or {}).get("labels") or []
+        i = int(idx)
+    except (TypeError, ValueError):
+        return None
+    return labels[i] if 0 <= i < len(labels) else None
+
+
+def _instant_label(switch: Optional[str]) -> Optional[str]:
+    """``Instant7`` -> ``Instant 7`` (controller_mapping has no Instant rows, so
+    the English label map never covers these)."""
+    if isinstance(switch, str) and switch.startswith("Instant"):
+        return "Instant " + switch[len("Instant"):]
+    return None
+
+
+def _command_fields(typ: str, p: dict, controls: dict) -> List[List[str]]:
+    """The meaningful, per-family fields of one command, as ``[name, value]``
+    display pairs. Shows only the slots a family actually uses (the decoder
+    zero-fills the rest), so a legitimate value of 0 is never hidden and an
+    unused slot is never shown. Enum values resolve to labels where the device
+    vocab is known; an out-of-range index falls back to the raw int."""
+    def s(name: str) -> str:
+        return str(p.get(name, 0))
+
+    def off(name: str) -> str:
+        # The forward path writes -1 into an unset Bank/Program slot; the manual
+        # shows that as "Off", not a raw -1 (a real PC/MSB/LSB is 0..127).
+        return "Off" if p.get(name, 0) == -1 else str(p.get(name, 0))
+
+    if typ == "MIDI":
+        cmd = p.get("Command")
+        ch = ["Channel", s("MIDI Ch")]
+        if cmd == 0:        # Bank/Program
+            return [ch, ["PC", off("PC")], ["MSB(CC00)", off("MSB")],
+                    ["LSB(CC32)", off("LSB")]]
+        if cmd == 1:        # CC
+            return [ch, ["CC#", s("CC#")], ["Value", s("Value")]]
+        if cmd == 2:        # MMC
+            msg = _enum_label(controls, "cc_midi_message", p.get("Message"))
+            return [ch, ["Message", msg or s("Message")]]
+        if cmd == 3:        # Note On
+            note = _enum_label(controls, "midi_note", p.get("Note"))
+            return [ch, ["Note", note or s("Note")], ["Velocity", s("Velocity")]]
+        return [ch]
+    if typ == "PresetSnapshot":
+        cmd = p.get("Command")
+        if cmd == 4:        # "Preset" (cc_presetsnapshot_command index)
+            return [["Setlist", s("Setlist")], ["Preset", s("Preset")]]
+        if cmd == 7:        # "Snapshot"
+            return [["Snapshot", s("Snapshot")]]
+        return []
+    return []
+
+
+def _command_display(rec: dict, controls: dict) -> dict:
+    """One flattened ``bridge.hsp_commands`` record -> the inspector row the
+    Command Center pane renders: family, an English headline (the command /
+    MIDI subtype), the Action, per-footswitch behaviour, and the family's
+    fields. Read-only — no device vocab is invented, unknown families pass
+    through under their raw type."""
+    p = rec.get("params") or {}
+    typ = rec.get("type")
+    action = _enum_label(controls, "cc_action", p.get("Action")) or ""
+    if typ == "MIDI":
+        sub = _MIDI_SUBTYPE_LABEL.get(p.get("Command"))
+        family, headline = "MIDI", ("MIDI " + sub if sub else "MIDI")
+    elif typ == "PresetSnapshot":
+        family = "Preset/Snapshot"
+        headline = (_enum_label(controls, "cc_presetsnapshot_command",
+                                p.get("Command")) or family)
+    else:
+        family = headline = typ or "Command"
+    return {"family": family, "headline": headline, "action": action,
+            "behavior": rec.get("behavior", ""), "toggle": bool(rec.get("toggle")),
+            "fields": _command_fields(typ, p, controls)}
+
+
+def _format_commands(cmds: List[dict], device_id: Any, controls: dict,
+                     labels: Dict[str, str]) -> dict:
+    """Flattened commands -> the pane's ``{"sources": [...]}`` shape, grouped by
+    source in first-seen order. Each source rides its English label (CLAUDE.md:
+    never a bare ``FS#``); a source helixgen can't name is still shown (never
+    silently dropped) under its raw id. ``device_id`` None falls back to the XL
+    source table, matching the Controllers pane's source catalogue."""
+    from helixgen import controllers as _ctl
+    dev = device_id or "stadium_xl"
+    by_source: Dict[str, dict] = {}
+    order: List[str] = []
+    for rec in cmds:
+        sid = rec.get("source")
+        try:
+            switch = _ctl.command_switch_for_source(dev, sid)
+        except Exception:  # noqa: BLE001 — an unknown device must not sink the pane
+            switch = None
+        key = switch or (f"{sid:#010x}" if isinstance(sid, int) else str(sid))
+        if key not in by_source:
+            label = (labels.get(switch) or _instant_label(switch) or switch
+                     or ("source " + key))
+            by_source[key] = {"id": switch or key, "label": label,
+                              "named": switch is not None, "commands": []}
+            order.append(key)
+        by_source[key]["commands"].append(_command_display(rec, controls))
+    return {"sources": [by_source[k] for k in order]}
+
+
 class LiveSession:
     LOG_MAX = 512
 
@@ -1524,6 +1640,43 @@ class LiveSession:
         except Exception:  # noqa: BLE001 — labels are a nicety, never a hard dep
             labels = {}
         return _group_controllers(recipe, labels)
+
+    def commands(self) -> dict:
+        """Command Center commands on the live buffer, in a read-only shape the
+        Command Center pane renders (81v.4).
+
+        Pure projection over the cached edit buffer — NO device I/O: it reuses
+        the shipped reverse-transcode read model (``untranscode`` -> ``.hsp``)
+        and flattens ``preset.commands`` (``bridge.hsp_commands``), then groups
+        by source with English switch labels. Each source carries its commands'
+        family, headline, Action and fields. Follows the device: the SSE stream
+        re-installs the buffer on any ``/setEditBuffer`` echo, and the pane
+        re-reads on focus / Refresh."""
+        empty = {"sources": []}
+        with self.cond:
+            eb = self._eb
+        if not isinstance(eb, dict):
+            return empty
+        from helixgen import view as _view
+        from helixgen.device import bridge as _bridge
+        from helixgen.device import paraminfo as _paraminfo
+        from helixgen.device import untranscode as _untranscode
+        lib = self._library()
+        body = _untranscode.sbepgsm_to_hsp(eb, library=lib)
+        cmds = _bridge.hsp_commands(body)
+        if not cmds:
+            return empty
+        device_id = None
+        labels: Dict[str, str] = {}
+        try:
+            from helixgen import controllers as _controllers
+            device_id = _view._device_id(body)
+            labels = {r["id"]: r["english"]
+                      for r in _controllers.controller_mapping(device_id)}
+        except Exception:  # noqa: BLE001 — labels are a nicety, never a hard dep
+            labels = {}
+        controls = _paraminfo.load_param_ui().get("controls", {})
+        return _format_commands(cmds, device_id, controls, labels)
 
     def _param_exists(self, eb: Any, path: int, block: int, pid: int) -> bool:
         cur = self._block_at(eb, path, block)
