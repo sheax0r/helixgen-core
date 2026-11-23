@@ -48,6 +48,8 @@ _ACTIONS: Dict[str, Callable[[LibrarySession, dict], dict]] = {
                                           force=bool(p.get("force"))),
     "rename_ir": lambda s, p: s.rename_ir(p.get("name_or_hash"),
                                           p.get("new_name")),
+    "set_ir_folder": lambda s, p: s.set_ir_folder(p.get("hash"),
+                                                  p.get("folder")),
     "ir_usage": lambda s, p: s.ir_usage(p.get("name_or_hash")),
     "remove_tone_device": lambda s, p: s.remove_tone_device(p.get("cid")),
     "import_file": lambda s, p: s.import_file(p.get("filename"),

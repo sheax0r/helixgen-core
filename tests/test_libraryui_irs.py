@@ -150,6 +150,58 @@ def test_rename_ir_needs_new_name():
     assert ei.value.status == 400
 
 
+# -- IR folders (library-first sidecar) ------------------------------------
+
+def _folder_session(tmp_path, *, computer_irs=None, device_irs=None, offline=False):
+    factory = None if offline else (lambda: _FakeClient(irs=device_irs or []))
+    return LibrarySession(factory, tone_loader=lambda: [],
+                          guitar_loader=lambda: [],
+                          ir_local_loader=lambda: (computer_irs or []),
+                          library_root=tmp_path)
+
+
+def test_ir_view_carries_folder_from_sidecar(tmp_path):
+    from helixgen import ir_folders
+    ir_folders.set_folder("aaa", "Marshall", library_dir=tmp_path)
+    st = _folder_session(tmp_path, computer_irs=[
+        {"hash": "aaa", "name": "A", "wav": "irs/a.wav"},
+        {"hash": "bbb", "name": "B", "wav": "irs/b.wav"}])
+    rows = {r["hash"]: r for r in st.public_state()["irs"]}
+    assert rows["aaa"]["folder"] == "Marshall"
+    assert rows["bbb"]["folder"] is None
+
+
+def test_set_ir_folder_assigns_and_persists(tmp_path):
+    from helixgen import ir_folders
+    st = _folder_session(tmp_path, offline=True)
+    out = st.set_ir_folder("aaa", "Fender cabs")
+    assert out == {"hash": "aaa", "folder": "Fender cabs"}
+    assert ir_folders.load(library_dir=tmp_path) == {"aaa": "Fender cabs"}
+
+
+def test_set_ir_folder_unfiles_on_blank(tmp_path):
+    from helixgen import ir_folders
+    st = _folder_session(tmp_path, offline=True)
+    st.set_ir_folder("aaa", "X")
+    out = st.set_ir_folder("aaa", "")
+    assert out["folder"] is None
+    assert ir_folders.load(library_dir=tmp_path) == {}
+
+
+def test_set_ir_folder_blank_hash_is_400(tmp_path):
+    st = _folder_session(tmp_path, offline=True)
+    with pytest.raises(LibraryError) as ei:
+        st.set_ir_folder("   ", "X")
+    assert ei.value.status == 400
+
+
+def test_set_ir_folder_non_string_folder_is_400(tmp_path):
+    st = _folder_session(tmp_path, offline=True)
+    with pytest.raises(LibraryError) as ei:
+        st.set_ir_folder("aaa", 3)
+    assert ei.value.status == 400
+
+
 # -- ir_usage + the fail-closed delete guard -------------------------------
 
 def test_ir_usage_wires_through():
