@@ -200,6 +200,7 @@ main{max-width:1040px;margin:0 auto;padding:22px 20px}
 .nm.swappable{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
 .splitbtn{font-size:11px;padding:2px 7px;margin-right:6px;border-radius:5px;border:1px solid var(--faint);background:transparent;color:var(--faint);cursor:pointer;white-space:nowrap}
 .splitbtn:hover{color:var(--ink);border-color:var(--ink)}
+.rmbtn:hover{color:#ff9b9b;border-color:#a44}
 .nm{font-size:15px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .xl{font-size:10px;font-weight:700;letter-spacing:.08em;color:#ffd58a;border:1px solid #6d5522;
   background:#2a2110;border-radius:999px;padding:2px 8px;white-space:nowrap}
@@ -918,6 +919,16 @@ function blockEl(b) {
     dc.type = "button"; dc.title = "Add a parallel 2nd cab (dual cab)";
     dc.onclick = () => openSecondCabPicker(b, null);
     hd.append(dc);
+  }
+  // remove a processing block from the chain (81v.1 remove-block). The device
+  // drops it (ModelSet to the null model), leaving a hole — nothing else moves.
+  // endpoints/routing nodes are excluded (the engine refuses them too).
+  if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output") {
+    const rm = el("button", "splitbtn rmbtn", "✕");
+    rm.type = "button"; rm.title = "Remove this block from the chain";
+    rm.onclick = () => structSend("/remove-block", { path: b.path, block: b.block },
+      "Removing the block…");
+    hd.append(rm);
   }
   if (!NO_BYPASS.has(b.category)) {
     const f = el("button", "foot"); const dot = el("span", "dot"); const tx = el("span");

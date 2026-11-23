@@ -486,6 +486,24 @@ Captured agendas:
 - **Clear:** `[{clrb, flow, bloc}]`.
 - **Remove a split:** `[{setm, bloc 14, modl 770, type 8}, {clrb, bloc 3}]` —
   model 770 is `P35_InputInst1`, re-placed at lane B's hidden input slot (14).
+
+> **⚠️ `clrb` does NOT work (HW-disproven, Stadium XL fw 1.4.1, 2026-11-22).**
+> The two `clrb` agendas above do **not** reproduce: the standalone **Clear**,
+> the **Remove-split** compound, instance-id addressing and added `type` fields
+> were every one a **no-op** (the buffer was byte-for-byte unchanged), while
+> `swap`/`setm`/`movb` in the *same* `/doAgenda` transport applied correctly —
+> so the transport and the other 4CCs are sound and `clrb` specifically is
+> wrong or incomplete here. `/setSelectedBlock` and `/clrb` both answer
+> `/error "… is NOT known!!!"` — neither is a dispatchable command.
+> **Block removal that DOES work:** `/ModelSet [reqid, dsp, grid_slot, 0,
+> modelId]` with `modelId` = the **Null model** (`HD2_AppNullModelMono` 132,
+> or `...Stereo` 96 — identical effect), which makes the device **drop the
+> block** from `blks` entirely, leaving a hole (nothing else shifts — matching
+> the offline `remove-block` verb). This is `HelixClient.remove_block` /
+> `device remove-block` / the live editor's `✕`. A full decode of the app's
+> own block-delete (whether it uses a working `clrb` variant the passive
+> capture mangled, or the same null-model `/ModelSet`) still wants a Frida
+> capture, but the null-model path is HW-validated and sufficient.
 - **Drag a block down to create a split** — one agenda, 7 ops. Lane A is grid
   slots 0–13, lane B is 14–27:
 

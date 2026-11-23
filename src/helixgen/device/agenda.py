@@ -96,14 +96,18 @@ def split_out(col: int, later_cols, flow: int = 0):
 
 
 def clear(bloc: int, flow: int = 0) -> Dict[str, int]:
-    """``clrb`` — clear/remove the block at grid slot ``bloc``.
+    """``clrb`` — the clear-block op as recorded in ``docs/helix-protocol.md``.
 
-    Wire shape pinned to the app's capture, but a STANDALONE ``clrb`` agenda had
-    no effect on a Stadium XL (2026-11-22) — the app's Edit>Clear selects the
-    block first, so ``clrb`` likely needs a ``/setSelectedBlock`` prerequisite
-    or only applies inside a compound agenda (it appears in the remove-split
-    sequence alongside ``setm``). Not yet exposed as a client method; resolve
-    the prerequisite before wiring one."""
+    **Does NOT remove a block on a Stadium XL (fw 1.4.1).** HW-disproven
+    exhaustively 2026-11-22: a standalone ``clrb`` agenda, the captured
+    remove-split compound (``setm`` + ``clrb``), instance-id addressing and
+    added ``type`` fields were ALL no-ops, while ``swap``/``setm``/``movb`` in
+    the same ``/doAgenda`` transport applied; ``/setSelectedBlock`` and
+    ``/clrb`` are not known RPCs. Block removal is instead a ``/ModelSet`` to
+    the Null model (:data:`helixgen.device.client.NULL_MODEL`), which the
+    device honours by dropping the block — see
+    :meth:`helixgen.device.client.HelixClient.remove_block`. This builder is
+    kept only for the op-table self-check below; nothing calls it."""
     return {"cmnd": _cc("clrb"), "flow": int(flow), "bloc": int(bloc)}
 
 

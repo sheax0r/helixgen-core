@@ -2017,6 +2017,26 @@ def device_add_split(path: int, block: int, ip: str, port: int) -> None:
     click.echo(f"path {path} block {block} -> split onto a parallel lane")
 
 
+@device.command(name="remove-block")
+@click.argument("path", type=int)
+@click.argument("block", type=int)
+@_device_option
+@_locked("editbuffer", verb="remove-block")
+def device_remove_block(path: int, block: int, ip: str, port: int) -> None:
+    """Remove a block from the live signal chain (PATH BLOCK).
+
+    BLOCK is a `device blocks` grid slot on DSP PATH. The device has no working
+    `clrb` op (HW-disproven on fw 1.4.1); removal is a `/ModelSet` of the slot
+    to the Null model, which DROPS the block, leaving a HOLE — nothing else
+    shifts (matching the offline `remove-block` verb and the hardware). I/O
+    slots (0/13/14/27) are rejected. Re-reads to confirm the slot cleared.
+    Volatile until you save; `device to-hsp`/`copy` round-trip the result.
+    """
+    with _connect(ip, port) as h:
+        h.remove_block(path, block)
+    click.echo(f"path {path} block {block} -> removed (slot left empty)")
+
+
 @device.command(name="reorder")
 @click.argument("setlist")
 @click.argument("target")

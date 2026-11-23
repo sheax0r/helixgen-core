@@ -772,6 +772,70 @@ class LiveSession:
                 out[slot] = b["model_id"]
         return out
 
+    @staticmethod
+    def _category_at(eb: Any, path: int, slot: int):
+        """``(has_path, category)`` for the block at ``(path, slot)`` in the
+        live buffer. ``category`` is ``None`` when the slot carries no modeled
+        block; ``has_path`` is ``False`` when DSP ``path`` is absent."""
+        flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+        if not (isinstance(flow, list) and 0 <= path < len(flow)):
+            return False, None
+        for s, raw in _chain._blks_pairs(flow[path]):
+            if s == slot:
+                b = _chain._block(path, slot, raw)
+                return True, (b["category"] if b else None)
+        return True, None
+
+    def remove_block(self, path: int, block: int) -> dict:
+        """Remove the block at grid slot ``block`` on DSP ``path`` from the live
+        chain — the inverse of :meth:`add_block` (the app's block-delete).
+
+        Delegates to :meth:`HelixClient.remove_block`, which sets the slot to
+        the Null model (the device has no working ``clrb`` op — HW-disproven on
+        fw 1.4.1) so the device drops the block, leaving a **hole** (nothing
+        else shifts), then confirms the slot cleared. The LIVE buffer is read
+        under the lock so a stale page or a direct HTTP caller cannot remove a
+        non-existent block or a routing/endpoint node (input, output, split,
+        join, none, harness) — those surface as a 400 (404 for an absent path).
+        A device no-op or transport failure surfaces via :meth:`_raise_structural`
+        (502). Then re-reads and returns fresh state. Volatile until Save.
+        """
+        pth, blk = int(path), int(block)
+        if blk in (0, 13, 14, 27):               # fixed input/output slots
+            raise LiveError("the input and output blocks cannot be removed",
+                            status=400)
+        err: Optional[Exception] = None
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                has_path, cat = self._category_at(eb, pth, blk)
+                if not has_path:
+                    raise LiveError(f"no DSP path {path} to remove from.",
+                                    status=404)
+                if cat is None:
+                    raise LiveError("no block at that slot (did the chain "
+                                    "change?)", status=400)
+                if cat in _NOT_ADDABLE:
+                    raise LiveError(f"a {cat!r} node is a routing or endpoint "
+                                    "block and cannot be removed.", status=400)
+                try:
+                    self.client.remove_block(pth, blk)
+                except (HelixError, OSError) as e:
+                    err = e
+        finally:
+            self.lease.done()
+        if err is not None:
+            self._raise_structural(err, "remove")
+        self.load()                              # re-read: the removed block
+        return self.public_state()
+
     def set_bypass(self, path: int, block: int, enabled: Any, *,
                    client: Optional[str] = None,
                    rev: Optional[int] = None) -> dict:
