@@ -614,6 +614,18 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     const gainInp2 = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Low Gain")[0];
     ok("S32 a session edit survives Refresh over the static snapshot",
       gainInp2 && String(gainInp2.value) === "4.5" && gainInp2._cls.has("eq-set"), gainInp2 && gainInp2.value);
+    // a band-enable toggle is write-only too, so it gets the same "set" marker
+    const lowEnWrap = x.ids.eqbody.find((e) => e.tagName === "label"
+      && e.find((c) => c.attrs && c.attrs["aria-label"] === "Low enabled").length)[0];
+    ok("S32 a band enable is a labelled checkbox", !!lowEnWrap, "no low-enable label");
+    const lowEnCb = lowEnWrap.find((c) => c.tagName === "input")[0];
+    lowEnCb.checked = false; lowEnCb.onchange();
+    const ew = x.posts.filter((p) => p.url === "/globaleq/set").slice(-1)[0];
+    ok("S32 toggling a band enable writes band enable",
+      ew.body.band === "low" && ew.body.param === "enable" && ew.body.value === false, JSON.stringify(ew.body));
+    ew.reply(200, { ok: true, output: "qtr", band: "low", param: "enable", value: false }); await x.tick();
+    ok("S32 a written band enable is marked set (provenance parity with numbers)",
+      lowEnWrap._cls.has("eq-set"), [...lowEnWrap._cls].join(","));
   }
 
   { // S33: Command Center pane — read-only commands view (81v.4)

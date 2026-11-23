@@ -1582,18 +1582,28 @@ function geqNum(out, band, param, snap) {
 function geqToggle(out, band, labelText, checked, isMaster) {
   const wrap = el("label", "eq-en");
   const cb = el("input"); cb.type = "checkbox"; cb.checked = !!checked;
-  cb.setAttribute("aria-label", labelText);
+  cb.setAttribute("aria-label", labelText || ((EQ_BAND_LABEL[band] || band) + " enabled"));
   cb.onchange = () => {
     if (down) { cb.checked = !cb.checked; return; }
     send("/globaleq/set", { output: out, band: band, param: "enable", value: cb.checked },
       (j) => { if (isMaster) GEQ.outputs[out].enable = j.value;
         else { if (!GEQ.outputs[out].bands[band]) GEQ.outputs[out].bands[band] = {};
                GEQ.outputs[out].bands[band].enable = j.value;
-               geqRecord(out, band, "enable", j.value); } },
+               geqRecord(out, band, "enable", j.value); geqMarkSet(wrap); } },
       () => { cb.checked = !cb.checked; });
   };
   wrap.append(cb, el("span", null, labelText));
+  // A band enable is write-only like the band's numbers (not the live master), so
+  // it carries the same "set this session" provenance the pane note promises.
+  if (!isMaster && geqShadow(out, band, "enable")) geqMarkSet(wrap);
+  else if (!isMaster) wrap.title =
+    "Device connect-time snapshot — may be stale if changed on the hardware since";
   return wrap;
+}
+function geqMarkSet(node) {       // flip a band-enable control to "set" provenance
+  node.classList.add("eq-set");
+  node.title = "Set this session";
+  if (!node._eqdot) { node._eqdot = true; node.append(el("span", "eq-dot")); }
 }
 function geqRenderOutput(out) {
   const body = $("eqbody"); body.textContent = "";
