@@ -50,6 +50,9 @@ _ACTIONS: Dict[str, Callable[[LibrarySession, dict], dict]] = {
                                           p.get("new_name")),
     "ir_usage": lambda s, p: s.ir_usage(p.get("name_or_hash")),
     "remove_tone_device": lambda s, p: s.remove_tone_device(p.get("cid")),
+    "import_file": lambda s, p: s.import_file(p.get("filename"),
+                                              p.get("content_b64"),
+                                              guitar=p.get("guitar")),
 }
 
 # The advisory device-lock scopes each action needs, matching the CLI verbs'

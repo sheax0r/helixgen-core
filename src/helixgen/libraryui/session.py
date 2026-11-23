@@ -279,6 +279,38 @@ def _default_pull_tone(client, cid, *, tones_dir) -> dict:  # noqa: ARG001
     return {"name": name, "cid": cid}
 
 
+def _default_import_file(filename, data: bytes, *, guitar=None) -> dict:
+    """Import uploaded .hsp bytes into the on-disk tone library — the real
+    ``library import`` (``_import_single``): it names the tone from the file's
+    own ``meta.name`` and refuses a naming collision. Disk-only, no device.
+    ``read_hsp`` validates the structure (a bad file is a 400, not a stray
+    import). Like ``_default_pull_tone`` the real write lands in
+    ``home.tones_dir()``; test fakes replace this seam."""
+    import tempfile
+
+    from helixgen import cli_library
+    from helixgen.hsp import read_hsp
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td) / filename
+        tmp.write_bytes(data)
+        try:
+            doc = read_hsp(tmp)
+        except Exception as e:  # noqa: BLE001 — a malformed upload is a 400
+            raise LibraryError(f"that file is not a readable .hsp preset: {e}",
+                               status=400) from e
+        # A JSON array/scalar body is "readable" to read_hsp (it json.loads
+        # fine) but is not a preset document; _import_single would then hit an
+        # AttributeError deep in _resolve_import and surface as a 502 leaking an
+        # internal message. Reject a non-object body here as a clean 400.
+        if not isinstance(doc, dict):
+            raise LibraryError("that file is not a readable .hsp preset "
+                               "(not a preset document)", status=400)
+        cli_library._import_single(tmp, None, None, None, guitar,
+                                   keep_source=False)
+    return {"name": filename}
+
+
 class LibrarySession:
     """Read model for the library hub.
 
@@ -306,6 +338,7 @@ class LibrarySession:
         rename_ir_fn: Callable[..., dict] = _default_rename_ir,
         usage_fn: Callable[..., dict] = _default_ir_usage,
         remove_everywhere_fn: Callable[..., dict] = _default_remove_tone_everywhere,
+        import_fn: Callable[..., dict] = _default_import_file,
     ):
         self._client_factory = client_factory
         self._tone_loader = tone_loader
@@ -323,6 +356,7 @@ class LibrarySession:
         self._rename_ir_fn = rename_ir_fn
         self._usage_fn = usage_fn
         self._remove_everywhere_fn = remove_everywhere_fn
+        self._import_fn = import_fn
         # One global lock serialises every device-mutating action; the Helix
         # client is not safe to drive from two requests at once.
         # ponytail: single mutate lock, split per-scope only if it ever bottlenecks.
@@ -572,6 +606,54 @@ class LibrarySession:
                     raise LibraryError(str(e) or "a tone with that name "
                                        "already exists", status=409) from e
                 raise LibraryError(f"pull failed: {e}", status=502) from e
+
+    def import_file(self, filename: Any, content_b64: Any,
+                    guitar: Any = None) -> dict:
+        """Import an uploaded .hsp into the on-disk tone library (``library
+        import`` — names it from the file's ``meta.name``, refuses a naming
+        collision). Disk-only: no device, no connection needed. The bytes
+        arrive base64 in the JSON body (the server parses JSON, not multipart),
+        so a very large preset can hit the server's body cap before here."""
+        import base64
+        import binascii
+
+        name = self._require_str(filename, "a file name")
+        if "\x00" in name:              # a NUL would blow up write_bytes -> 502
+            raise LibraryError("the file name is not valid", status=400)
+        base = Path(name).name          # strip any path the client sent
+        if not base.lower().endswith(".hsp"):
+            raise LibraryError("only .hsp preset files can be imported "
+                               "(.hlx is not supported yet)", status=400)
+        if not isinstance(content_b64, str) or not content_b64:
+            raise LibraryError("the file content is required", status=400)
+        try:
+            data = base64.b64decode(content_b64, validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise LibraryError("the file content is not valid base64",
+                               status=400) from e
+        # Cheap boundary check before touching disk: every .hsp opens with the
+        # 8-byte magic. read_hsp (in the import fn) does the full structural
+        # validation; this just rejects obvious non-presets with a clear 400.
+        if data[:8] != b"rpshnosj":
+            raise LibraryError("that is not a Helix Stadium .hsp preset",
+                               status=400)
+        if guitar is not None:
+            guitar = self._require_str(guitar, "a guitar")
+        # Serialise the library write against other mutations (disk + the
+        # auto-commit inside _import_single). No client — a local-only action.
+        with self._mutate_lock:
+            try:
+                return self._import_fn(base, data, guitar=guitar)
+            except LibraryError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                # a naming collision (ClickException from library import) is the
+                # user's to resolve, not a server fault.
+                if type(e).__name__ in ("ClickException", "ToneCollision",
+                                        "UsageError"):
+                    raise LibraryError(str(e) or "a tone with that name "
+                                       "already exists", status=409) from e
+                raise LibraryError(f"import failed: {e}", status=502) from e
 
     # -- content diff (phase 2: the "changed" badge) -----------------------
 
