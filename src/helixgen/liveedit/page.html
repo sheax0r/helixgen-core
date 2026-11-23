@@ -336,6 +336,8 @@ body.down main{opacity:.55}
 .luses{margin:2px 0 10px 10px;padding-left:10px;border-left:2px solid var(--edge2);font-size:12px}
 .luses .lrow{margin-bottom:3px}
 .lblocked{color:var(--warn);font-size:12px;margin:2px 0 6px 10px}
+.lcap{color:var(--dim);font-size:12px;margin:0 0 10px;font-variant-numeric:tabular-nums}
+.lcap.full{color:var(--warn)}
 /* ---------- snapshot management panel (81v.2) ---------- */
 #snap{cursor:pointer}
 #snappanel{position:fixed;top:0;right:0;bottom:0;width:min(380px,92vw);background:var(--panel);border-left:1px solid var(--edge2);
@@ -1942,6 +1944,12 @@ function renderLib(st) {
     r.append(d); panels.Setlists.append(r);
   });
 
+  const hr = st.ir_headroom;
+  if (hr) {
+    const near = (hr.cap - hr.used) <= 0;
+    panels.IRs.append(el("div", "lcap" + (near ? " full" : ""),
+      hr.used + " / " + hr.cap + " IR slots used" + (near ? " — device full, free space before importing" : "")));
+  }
   (st.irs || []).forEach((i) => panels.IRs.append(libIr(i)));
 
   names.forEach((n) => body.append(panels[n]));

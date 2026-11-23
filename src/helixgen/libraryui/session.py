@@ -484,11 +484,19 @@ class LibrarySession:
                     }],
                 })
 
+        # IR slot headroom (N / cap) — only when connected; offline we don't
+        # know the device count, so omit it rather than guess (spec §A.4).
+        ir_headroom = None
+        if device is not None:
+            from helixgen.device.ir_upload import IR_LIST_CAP
+            ir_headroom = {"used": len(device["irs"]), "cap": IR_LIST_CAP}
+
         return {
             "connected": device is not None,
             "tones": tones,
             "setlists": device["setlists"] if device else [],
             "irs": self._ir_view(device),
+            "ir_headroom": ir_headroom,
             "facets": {k: sorted(v) for k, v in facets.items()},
         }
 
