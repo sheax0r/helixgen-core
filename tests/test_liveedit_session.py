@@ -11,7 +11,7 @@ from helixgen.device.subscribe import Event
 from helixgen.liveedit import events
 from helixgen.liveedit.session import LiveError, LiveSession
 from tests.test_liveedit_chain import (AMP, IN_INST1, IN_MIC, OUT_MATRIX,
-                                       SCREAM, _blk, _eb, _split_join)
+                                       SCREAM, SPLIT_Y, _blk, _eb, _split_join)
 
 DRIVE = 2          # Agoura_AmpBrit2203MV "Drive" pid (see defs)
 
@@ -42,6 +42,8 @@ class FakeClient:
         self.moves = []          # (path, src, dst) from move_block
         self.move_fail = None    # set to an exception to make move_block raise
         self.move_noop = False   # record the move but do NOT mutate (device ignored it)
+        self.removes = []        # (path, block) from remove_block
+        self.remove_fail = None  # set to an exception to make remove_block raise
         self.ack = True
         self.fail: Exception | None = None
         self.last_request_id = None
@@ -162,6 +164,23 @@ class FakeClient:
                     blks[si], blks[di] = blks[di], blks[si]       # exchange
                 elif si is not None:
                     blks[si - 1] = int(dst)                        # plain move to empty dst
+        return self.ack
+
+    def remove_block(self, path, block):
+        self._next()
+        if self.remove_fail is not None:
+            raise self.remove_fail
+        self.removes.append((int(path), int(block)))
+        # drop the slot from blks so a verify re-read sees it gone (mirrors the
+        # real client, whose own verify raises if the slot is still occupied)
+        flow = (self.eb.get("sfg_") or {}).get("flow") or []
+        if 0 <= int(path) < len(flow):
+            blks = flow[int(path)].get("blks")
+            if isinstance(blks, list):
+                for i in range(0, len(blks) - 1, 2):
+                    if blks[i] == int(block):
+                        del blks[i:i + 2]
+                        break
         return self.ack
 
     def get_property(self, key):
@@ -1469,6 +1488,77 @@ def test_move_block_maps_transport_failure_to_502_and_disconnects():
     sess.load()
     with pytest.raises(LiveError) as e:
         sess.move_block(0, 2, 1)
+    assert e.value.status == 502
+    assert sess.public_state()["connected"] is False
+
+
+def test_remove_block_delegates_and_rereads():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    reads0 = c.reads
+    st = sess.remove_block(0, 2)                  # slot 2 = AMP (processing)
+    assert c.removes == [(0, 2)]                  # delegated to the engine remove
+    assert c.reads > reads0                        # re-read happened
+    assert "paths" in st
+
+
+@pytest.mark.parametrize("slot", [0, 13, 14, 27])
+def test_remove_block_rejects_io_slots(slot):
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.remove_block(0, slot)
+    assert e.value.status == 400
+    assert c.removes == []                         # never reached the device
+
+
+def test_remove_block_rejects_a_missing_block():
+    c = FakeClient()
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.remove_block(0, 5)                     # slot 5 is empty in _rig()
+    assert e.value.status == 400
+    assert c.removes == []
+
+
+def test_remove_block_rejects_a_routing_node():
+    # a split/join node is routing, not a processing block — refused before any
+    # device write, so the chain's wiring cannot be corrupted.
+    c = FakeClient(eb=_eb({0: _blk(IN_INST1, {}), 1: _blk(SCREAM, {}),
+                           2: _blk(SPLIT_Y, {}, bblk=16),
+                           13: _blk(OUT_MATRIX, {})}, asnp=1))
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.remove_block(0, 2)                     # slot 2 is the split node
+    assert e.value.status == 400
+    assert "routing or endpoint" in str(e.value)
+    assert c.removes == []
+
+
+def test_remove_block_raises_502_when_the_device_ignores_it():
+    # the real client verifies and raises "did not apply" on a silent no-op;
+    # the session maps that to a 502.
+    c = FakeClient()
+    c.remove_fail = HelixError(
+        "remove_block: the device did not apply the removal (slot 2 ...)")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.remove_block(0, 2)
+    assert e.value.status == 502
+
+
+def test_remove_block_maps_transport_failure_to_502_and_disconnects():
+    c = FakeClient()
+    c.remove_fail = OSError("socket dead")
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.remove_block(0, 2)
     assert e.value.status == 502
     assert sess.public_state()["connected"] is False
 

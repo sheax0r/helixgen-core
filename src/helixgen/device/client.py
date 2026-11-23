@@ -81,6 +81,18 @@ def slot_label(posi: Optional[int]) -> str:
 #: outputs at 13/27 on a Stadium XL).
 GRID_SLOTS = 28
 
+#: The "empty block" model. Setting a slot's model to this via ``/ModelSet``
+#: makes the device DROP the block from ``blks`` entirely (leaving a hole,
+#: nothing else shifts) — this is how :meth:`HelixClient.remove_block` deletes
+#: a block. HW-decoded 2026-11-22 on a Stadium XL (fw 1.4.1): the ``clrb``
+#: ``/doAgenda`` op recorded in ``docs/helix-protocol.md`` is a **no-op** in
+#: every shape tried (standalone, the captured remove-split compound, instance-id
+#: addressing), while ``swap``/``setm``/``movb`` in the same transport apply; and
+#: ``/setSelectedBlock`` / ``/clrb`` are not known RPCs. The null model
+#: (``HD2_AppNullModelMono`` 132 and ``...Stereo`` 96 behave identically — the
+#: device drops the block regardless of width) is the working removal mechanism.
+NULL_MODEL = 132  # HD2_AppNullModelMono
+
 #: The device property carrying the ACTIVE preset's cid (discovered via
 #: ``/MatchingPropertyDefinitionsGet``, live-verified 2026-07-15 fw 1.3.2:
 #: it reflected the player's own panel selection before any network load,
@@ -1006,6 +1018,40 @@ class HelixClient:
                 f"and cannot be moved (got src={src}, dst={dst})")
         return self.do_agenda([_agenda.move(
             bl_s=src_s, bl_d=dst_s, fl_s=int(path), fl_d=int(path))])
+
+    def remove_block(self, path: int, block: int) -> bool:
+        """Remove the block at grid slot ``block`` on DSP ``path`` from the live
+        edit buffer (the Stadium app's block-delete). Grid slots are ``device
+        blocks`` coordinates (lane A = 0..13, lane B = 14..27).
+
+        The device has **no working ``clrb`` agenda op** (HW-disproven on a
+        Stadium XL, fw 1.4.1, 2026-11-22 — see :data:`NULL_MODEL`); removal is a
+        ``/ModelSet`` of the slot to the Null model, which drops the block from
+        ``blks`` entirely, leaving a **hole** (nothing else shifts, matching the
+        offline ``remove-block`` verb and the hardware). The ``/ModelSet`` reply
+        is not a success gate, so it re-reads and confirms the slot is now empty,
+        raising :class:`HelixError` if the device did not apply it.
+
+        Raises :class:`HelixError` if ``block`` is a fixed input/output slot
+        (0, 13, 14, 27) — those are not removable.
+        """
+        slot = _grid_slot(block)
+        io = {0, 13, 14, 27}
+        if slot in io:
+            raise HelixError(
+                f"remove_block: slots {sorted(io)} are fixed input/output "
+                f"blocks and cannot be removed (got {block})")
+        p = int(path)
+        self.set_block_model(p, slot, NULL_MODEL)
+        eb = self.read_edit_buffer(fast=True)
+        flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
+        after = {s for s, _ in self._blks_pairs(flow[p])} if (
+            isinstance(flow, list) and 0 <= p < len(flow)) else set()
+        if slot in after:
+            raise HelixError(
+                f"remove_block: the device did not apply the removal (slot "
+                f"{block} is still occupied after the /ModelSet)")
+        return True
 
     def add_split(self, path: int, block: int) -> bool:
         """Split the block at lane-A grid slot ``block`` onto a NEW parallel

@@ -280,6 +280,21 @@ def test_device_exception_does_not_leak_a_traceback(srv, monkeypatch):
     assert "Traceback" not in data.decode()
 
 
+def test_remove_block_route_delegates(srv):
+    c, _s, server = srv
+    code, _ctype, data = req(server, "POST", "/remove-block", {"path": 0, "block": 2})
+    assert code == 200
+    assert c.removes == [(0, 2)]                  # slot 2 = AMP in the rig
+    assert "paths" in _j(data)
+
+
+def test_remove_block_route_guard_maps_to_400(srv):
+    c, _s, server = srv
+    code, _ctype, _data = req(server, "POST", "/remove-block", {"path": 0, "block": 0})
+    assert code == 400                            # input slot — refused
+    assert c.removes == []
+
+
 def test_unknown_routes(srv):
     assert req(srv[2], "GET", "/nope")[0] == 404
     assert req(srv[2], "POST", "/nope", {})[0] == 404

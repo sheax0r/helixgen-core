@@ -91,6 +91,8 @@ def _route(session: LiveSession, path: str, b: dict):
         return session.split_block(_int(b, "path"), _int(b, "block"))
     if path == "/move-block":
         return session.move_block(_int(b, "path"), _int(b, "src"), _int(b, "dst"))
+    if path == "/remove-block":
+        return session.remove_block(_int(b, "path"), _int(b, "block"))
     if path == "/snapshot":
         return session.activate_snapshot(_int(b, "index"))
     if path == "/snapshot/rename":

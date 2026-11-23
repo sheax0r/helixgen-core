@@ -242,6 +242,38 @@ def test_add_split_raises_if_not_applied():
         h.add_split(0, 2)
 
 
+def test_remove_block_sets_null_model_and_verifies():
+    from helixgen.device.client import NULL_MODEL
+    h = HelixClient("10.0.0.99")
+    # after the /ModelSet, the re-read shows slot 2 gone -> removed
+    h.read_edit_buffer = lambda **k: _flow(0, 1, 13)
+    _wire(h)
+    assert h.remove_block(0, 2) is True
+    raw = h.sock.sent[-1]
+    addr, args, _ = parse_osc_message(raw, raw.find(b"/"))
+    vals = [v for _t, v in args]
+    assert addr == "/ModelSet"
+    # [reqid, path, slot, sub, modelId] — removal is a null-model ModelSet
+    assert vals[1:] == [0, 2, 0, NULL_MODEL]
+
+
+@pytest.mark.parametrize("slot", [0, 13, 14, 27])
+def test_remove_block_rejects_io_slots(slot):
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.remove_block(0, slot)  # guarded before any write
+
+
+def test_remove_block_raises_if_not_applied():
+    h = HelixClient("10.0.0.99")
+    # slot 2 is STILL present after the write -> the device didn't apply it
+    h.read_edit_buffer = lambda **k: _flow(0, 1, 2, 13)
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.remove_block(0, 2)
+
+
 def test_cli_topology_verbs_help_contract():
     # The new live-ops verbs' behavioral contract lives in their --help.
     from click.testing import CliRunner
@@ -253,6 +285,8 @@ def test_cli_topology_verbs_help_contract():
     assert "--sub" in model and "dual-cab" in model
     split = r.invoke(cli, ["device", "add-split", "--help"]).output
     assert "parallel" in split and "lane B" in split
+    rm = r.invoke(cli, ["device", "remove-block", "--help"]).output
+    assert "Null model" in rm and "HOLE" in rm and "clrb" in rm
 
 
 def test_do_agenda_status_nonzero_is_tolerated():
