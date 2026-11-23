@@ -69,8 +69,14 @@ does exactly this lookup.
 
 > A param can own ONE `trgs` target that serves BOTH snapshot control and a
 > controller (the controller's `ctrl[].tid_` points at the same id). The
-> snapshot-tracked set `ctm_.stid` is what distinguishes snapshot control, so
-> removing the snapshot target does not disturb a controller on the same param.
+> snapshot-tracked set `ctm_.stid` is what distinguishes snapshot control.
+> **HW-confirmed 2026-11-23 (the shared-target case):** with a MIDI CC on Scream
+> 808 Gain (`ctrl.tid_ == 12`), turning snapshot control ON reused target 12 and
+> added it to `stid`; turning it OFF sent `/removeSnapshotTarget 12` and the
+> device **untracked** it (removed 12 from `stid`) while leaving the `trgs`
+> target AND the MIDI controller intact. So `/removeSnapshotTarget` is
+> untrack-when-shared, delete-when-sole — removing snapshot control never
+> destroys a controller on the same param.
 
 ## Implementation (shipped this PR)
 

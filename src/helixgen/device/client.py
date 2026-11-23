@@ -999,12 +999,17 @@ class HelixClient:
         """Remove a snapshot target (turn "Snapshot Ctrl" OFF for the param or
         block it belongs to) from the live edit buffer.
 
-        ``/removeSnapshotTarget [reqid, targetId]`` → ``/status`` (opcode seen
-        in the ModelSet cascade, byte-framing pinned 2026-11-23). ``target_id``
-        is the ``cg__.entt.trgs[].id__`` of the target — resolve it for a param
-        with :meth:`snapshot_param_target`. Replies ``/status``; returns whether
-        the device confirmed."""
-        return _status0(self._rpc("/removeSnapshotTarget",
+        ``/removeSnapshotTarget [reqid, targetId]`` → ``/status [reqid, code,
+        dirty]`` (opcode seen in the ModelSet cascade, byte-framing pinned
+        2026-11-23). ``target_id`` is the ``cg__.entt.trgs[].id__`` of the target
+        — resolve it for a param with :meth:`snapshot_param_target`. Success is
+        read from field 2 (the status code) via :meth:`_ok`, NOT the trailing
+        field, which is the edit-buffer dirty flag a mutating op can set.
+
+        When a controller (MIDI/EXP/FS) shares the param's target, this
+        **untracks** it from the snapshot set (``ctm_.stid``) and leaves the
+        ``trgs`` target and the controller intact — HW-confirmed 2026-11-23."""
+        return self._ok(self._rpc("/removeSnapshotTarget",
                                   [("i", int(target_id))]))
 
     def snapshot_param_target(self, path: int, block: int, pid: int,

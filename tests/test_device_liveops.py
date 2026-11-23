@@ -654,3 +654,25 @@ def test_snapshot_param_target_resolves_from_buffer():
     assert h.snapshot_param_target(0, 1, 2, doc=doc) is None
     # path 1, grid slot 1 -> eID 29: no such target
     assert h.snapshot_param_target(1, 1, 1, doc=doc) is None
+
+
+def test_snapshot_param_target_excludes_bypass_and_other_model_slot():
+    # a bypass target (type 1) and a dual-cab B-model target (slot 1), both
+    # tracked, must NOT answer a type-2 / sub-0 param lookup for the same block.
+    doc = {"cg__": {"entt": {
+        "trgs": [{"id__": 20, "eID_": 1, "pid_": 3, "slot": 0, "type": 1},   # bypass
+                 {"id__": 21, "eID_": 1, "pid_": 5, "slot": 1, "type": 2},   # B-cab param
+                 {"id__": 22, "eID_": 1, "pid_": 5, "slot": 0, "type": 2}],  # A-cab param
+        "ctm_": {"stid": [20, 21, 22]}}}}
+    h = HelixClient("10.0.0.99")
+    assert h.snapshot_param_target(0, 1, 3, doc=doc) is None       # that pid is bypass, not param
+    assert h.snapshot_param_target(0, 1, 5, doc=doc) == 22         # sub 0 -> A-cab target
+    assert h.snapshot_param_target(0, 1, 5, 1, doc=doc) == 21      # sub 1 -> B-cab target
+
+
+def test_snapshot_param_target_ignores_untracked_target():
+    # a type-2 target NOT in ctm_.stid is a controller-only target, not snapshot
+    doc = {"cg__": {"entt": {
+        "trgs": [{"id__": 30, "eID_": 1, "pid_": 1, "slot": 0, "type": 2}],
+        "ctm_": {"stid": []}}}}
+    assert HelixClient("10.0.0.99").snapshot_param_target(0, 1, 1, doc=doc) is None

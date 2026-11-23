@@ -580,7 +580,12 @@ function label(p, b) {
         { path: b.path, block: b.block, pid: p.pid, on: !p.snap, rev: S ? S.rev : undefined },
         () => {}, () => {}); };
     sn.onclick = hit;
-    sn.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") hit(ev); };
+    sn.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") hit(ev);
+      // the dot sits inside the knob root; don't let an arrow key reach the
+      // knob's own keydown handler and move the param value
+      else if (ev.key && ev.key.indexOf("Arrow") === 0) ev.stopPropagation();
+    };
     l.append(sn);
   } else if (p.snap) {
     l.append(el("span", "sn"));
