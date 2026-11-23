@@ -1773,7 +1773,9 @@ class LiveSession:
                 "hz": round(reading.hz, 2), "connected": up}
 
     # --- Device Info pane (81v.11): read-only device identity -----------------
-    _INFO_FIELDS = ("model", "helixgen_model", "device_id", "serial", "firmware",
+    # device_id is deliberately omitted: the pane shows helixgen_model (derived
+    # from it), never the raw numeric id, so forwarding it is dead payload.
+    _INFO_FIELDS = ("model", "helixgen_model", "serial", "firmware",
                     "firmware_build", "firmware_date", "sd_total_bytes",
                     "sd_available_bytes")
 
