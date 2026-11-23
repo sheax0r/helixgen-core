@@ -84,6 +84,15 @@ def test_commands_state_endpoint(srv):
     assert isinstance(j.get("sources"), list)
 
 
+def test_tuner_reading_endpoint(srv):
+    # 81v.10: read-only live pitch reading. No pitch has streamed into the fake
+    # session, so it reports no-signal rather than erroring.
+    code, ctype, data = req(srv[2], "GET", "/tuner/reading")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert j.get("signal") is False
+
+
 def test_controllers_assign_route(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/controllers/assign",

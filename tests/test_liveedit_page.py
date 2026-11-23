@@ -101,3 +101,11 @@ def test_page_registers_the_command_center_pane_and_endpoint():
     for marker in ('id="cmdpane"', 'id="cmdbody"',
                    'addPane({ id: "commands"', "/commands/state"):
         assert marker in html, marker
+
+
+def test_page_registers_the_tuner_pane_and_endpoint():
+    # 81v.10: the Tuner pane mounts via addPane and polls /tuner/reading.
+    html = PAGE.read_text()
+    for marker in ('id="tunerpane"', 'id="tuner-note"', 'id="tuner-pointer"',
+                   'addPane({ id: "tuner"', "/tuner/reading"):
+        assert marker in html, marker

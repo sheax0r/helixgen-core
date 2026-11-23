@@ -657,11 +657,11 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
   { // S33: Command Center pane — read-only commands view (81v.4)
     const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
     const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Command Center")[0];
-    ok("S32 a Command Center tab appears once the pane registers", !!tab,
+    ok("S33 a Command Center tab appears once the pane registers", !!tab,
       x.ids.tabs.children.map((c) => c.textContent).join(","));
     tab.onclick(); await x.tick();
     const req = x.posts.find((p) => p.url === "/commands/state");
-    ok("S32 opening the pane fetches the command state", !!req,
+    ok("S33 opening the pane fetches the command state", !!req,
       JSON.stringify(x.posts.map((p) => p.url)));
     req.reply(200, { sources: [
       { id: "FS3", label: "Footswitch 3 (top row, 3rd from left)", named: true, commands: [
@@ -672,12 +672,12 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
           toggle: false, fields: [["Snapshot", "2"]] }] }] });
     await x.tick(); await x.tick();
     const txt = x.ids.cmdbody.textContent;
-    ok("S32 a named source shows its English label", txt.includes("Footswitch 3 (top row, 3rd from left)"), txt);
-    ok("S32 the command headline renders", txt.includes("MIDI CC"), txt);
-    ok("S32 a PresetSnapshot Action chip renders", txt.includes("Press"), txt);
-    ok("S32 a legitimate zero value is not hidden", txt.includes("Value") && txt.includes("0"), txt);
-    ok("S32 the has-commands marker is drawn", txt.includes("▶"), txt);
-    ok("S32 an unnameable source is shown, not dropped",
+    ok("S33 a named source shows its English label", txt.includes("Footswitch 3 (top row, 3rd from left)"), txt);
+    ok("S33 the command headline renders", txt.includes("MIDI CC"), txt);
+    ok("S33 a PresetSnapshot Action chip renders", txt.includes("Press"), txt);
+    ok("S33 a legitimate zero value is not hidden", txt.includes("Value") && txt.includes("0"), txt);
+    ok("S33 the has-commands marker is drawn", txt.includes("▶"), txt);
+    ok("S33 an unnameable source is shown, not dropped",
       txt.includes("Snapshot") && txt.includes("helixgen can't name"), txt);
     // empty tone -> the empty-state line, no crash
     const y = boot(); y.sse(State([Blk({}, [P_({})])]));
@@ -685,8 +685,54 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     t2.onclick(); await y.tick();
     y.posts.find((p) => p.url === "/commands/state").reply(200, { sources: [] });
     await y.tick(); await y.tick();
-    ok("S32 an empty tone shows the empty-state line",
+    ok("S33 an empty tone shows the empty-state line",
       y.ids.cmdbody.textContent.includes("No commands assigned"), y.ids.cmdbody.textContent);
+  }
+
+  { // S34: Tuner pane — read-only live pitch needle (81v.10)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const ptrX = () => x.ids["tuner-pointer"].style.transform;   // translateX(N px)
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Tuner")[0];
+    ok("S34 a Tuner tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();                     // showPane -> onShow(true) -> immediate poll + interval
+    ok("S34 opening the pane starts a poll timer", x.intervals.size === 1, "no interval");
+    const req = x.posts.find((p) => p.url === "/tuner/reading");
+    ok("S34 the pane polls /tuner/reading", !!req, JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { signal: true, name: "E2", note: "E", octave: 2, cents: -8, hz: 81.5, connected: true });
+    await x.tick();
+    ok("S34 a played note shows its name", x.ids["tuner-note"].textContent === "E2", x.ids["tuner-note"].textContent);
+    ok("S34 the cents readout is signed", x.ids["tuner-cents"].textContent.startsWith("-8"), x.ids["tuner-cents"].textContent);
+    ok("S34 the needle slides left (negative translateX) when flat", ptrX() === "translateX(-22.4px)", ptrX());
+    ok("S34 off by 8 cents is not flagged in-tune", !x.ids["tuner-pointer"].getAttribute("class").includes("in-tune"),
+      x.ids["tuner-pointer"].getAttribute("class"));
+    // near-zero cents -> green + very close to centre (the needle tracks real
+    // cents, so +1 cent sits 2.8px off; "in tune" is the ±3-cent colour flag)
+    const fire = [...x.intervals.values()][0]; fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0]
+      .reply(200, { signal: true, name: "A2", note: "A", octave: 2, cents: 1, hz: 110.0, connected: true });
+    await x.tick();
+    ok("S34 near-zero cents flags in-tune", x.ids["tuner-pointer"].getAttribute("class").includes("in-tune")
+      && x.ids["tuner-note"].className === "tuned", x.ids["tuner-pointer"].getAttribute("class"));
+    ok("S34 +1 cent sits just off centre", ptrX() === "translateX(2.8px)", ptrX());
+    // a partial signal:true reading (missing cents) must not paint NaN (D2 guard)
+    fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0]
+      .reply(200, { signal: true, name: "A2", note: "A", octave: 2, connected: true });
+    await x.tick();
+    ok("S34 a partial reading recentres instead of painting NaN",
+      ptrX() === "translateX(0px)" && x.ids["tuner-cents"].textContent === "", ptrX() + "|" + x.ids["tuner-cents"].textContent);
+    // no signal -> dash + centred, not in-tune
+    fire(); await x.tick();
+    x.posts.filter((p) => p.url === "/tuner/reading").slice(-1)[0].reply(200, { signal: false, name: "—", connected: true });
+    await x.tick();
+    ok("S34 no signal shows a dash and recentres", x.ids["tuner-note"].textContent === "—"
+      && ptrX() === "translateX(0px)"
+      && !x.ids["tuner-pointer"].getAttribute("class").includes("in-tune"), x.ids["tuner-note"].textContent);
+    // leaving the pane stops the poll timer
+    const flowTab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Signal flow")[0];
+    flowTab.onclick();
+    ok("S34 leaving the pane clears the poll timer", x.intervals.size === 0, "timer leaked");
   }
 
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
