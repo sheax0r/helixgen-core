@@ -448,8 +448,18 @@ grid. This **corrects the 2026-11-21 passive spike**, which read the device's
 
 - **There is no live whole-buffer SET verb.** The app never sends a whole
   `_sbepgsm`; every name/arity probe for a write-twin of `/EditBufferStateGet`
-  answers `/error`. `/error` means *unknown verb* — the device tolerates a bogus
-  extra arg on a *known* verb, so it is not an arity complaint.
+  answers `/error`. But dispatch is keyed on **(address + argument signature)**,
+  not address alone: an *extra* arg on a known verb is tolerated, yet a *wrong*
+  (especially shorter) signature is rejected with the **identical** `Msg dispatch
+  failed: /<addr> is NOT known!!!` as a genuinely unknown address. Proven live
+  (Stadium XL fw 1.4.1, 2026-11-23): `/GetContentRef`, `/PropertyValueGet` and
+  `/GetContainerContents` each **answer** under their correct signature but return
+  "NOT known" when sent reqid-only (one int). Consequence: the "`/error` = unknown
+  verb" error-probe is valid **only when the correct signature is sent**, so it
+  **cannot** discover undocumented verbs by blind name probing — Frida capture
+  (which observes address + signature + payload together) stays the only reliable
+  command-discovery path. Full evidence: `sheax0r/helixgen` PR #101
+  `docs/superpowers/specs/2026-11-23-undocumented-ops-discovery-findings.md`.
 - **Topology changes are one transaction:**
   `/doAgenda [agenda_id:int, ops:<msgpack list of op maps>]`. The device applies
   it and echoes `/setEditBuffer` (the whole new buffer) on 2001 with **no
@@ -813,6 +823,15 @@ is **not** a usable command. Confirmed: `/ProductInfoGet` and
 `/getEditBufferState` returns `Msg dispatch failed: … is NOT known!!!`.
 **`/getCloneLockState` is the exception and is correct as written** — it is
 the *command* spelling; `/GetCloneLockState` is rejected.
+
+**`NOT known` has two causes.** The same `Msg dispatch failed: … is NOT known!!!`
+is returned both for a genuinely unknown address **and** for a *known* address
+sent with the wrong argument signature — dispatch is keyed on (address +
+signature); see the `/doAgenda` note in §6. The reply-vs-command findings above
+were each confirmed against the verb's correct signature, so they stand, but the
+error alone cannot distinguish an unknown verb from a signature mismatch — which
+is why blind name-probing cannot enumerate verbs and Frida capture does
+(2026-11-23).
 
 **UNVERIFIED / naming:** reply address names marked "-style" are inferred from
 the same convention and may differ in exact casing (the IR-path reply
