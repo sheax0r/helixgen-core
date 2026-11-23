@@ -1164,6 +1164,59 @@ class HelixClient:
         return _status0(self._rpc("/removeController",
                                   [("i", int(controller_cid))]))
 
+    def set_controller_source(self, controller_cid: int, locl: int, ctxt: int,
+                              source_type: int = 1) -> bool:
+        """Bind a LOCAL (non-MIDI) source — an expression pedal or footswitch —
+        as the incoming source of controller ``controller_cid`` (from
+        :meth:`attach_param_controller`).
+
+        ``/ControllerSourceSet [reqid, cid, source_type, locl, ctxt]`` — opcode
+        captured 2026-11-23 from the Stadium Debug app (frida app-MITM; see
+        ``docs/.../2026-11-23-controller-source-create-re-findings.md``). This is
+        the command the ModelSet cascade only ever *echoes* as
+        ``/setControllerSource`` — the echo spelling is NOT the command (it
+        answers ``NOT known``). ``source_type`` is 1 for a local controller;
+        ``(locl, ctxt)`` is the device source code — map a ``.hsp`` controller
+        source id to it with ``transcode._controller_locl_ctxt`` (e.g. EXP1 →
+        ``(42, 0)``, FS1 → ``(25, 1)``). The reply on 2002 is NOT ``/status`` but
+        ``/setControllerSource [reqid, cid, srcId]`` (this family answers with the
+        echo spelling); returns whether a reply for our request came back."""
+        replies = self._rpc("/ControllerSourceSet",
+                            [("i", int(controller_cid)), ("i", int(source_type)),
+                             ("i", int(locl)), ("i", int(ctxt))])
+        for addr, args in replies:
+            if addr == "/error":
+                return False
+            if addr == "/setControllerSource" and len(args) >= 2:
+                return True
+        return False
+
+    def set_cid_behavior(self, controller_cid: int, behavior: int) -> bool:
+        """Set controller ``controller_cid``'s behaviour enum (``ctrl.behv``) on
+        the device.
+
+        ``/CidBehaviorSet [reqid, cid, behv]`` (captured 2026-11-23). ``behv`` is
+        the ``transcode._BEHV_INDEX`` value: ``2`` = continuous (an expression
+        pedal), ``0`` = latching (a footswitch), ``1`` = momentary, ``3`` =
+        toedown. The 2002 reply is ``/setCidBehavior [reqid, cid, behv, code]``
+        (echo spelling); returns whether a reply for our request came back."""
+        replies = self._rpc("/CidBehaviorSet",
+                            [("i", int(controller_cid)), ("i", int(behavior))])
+        for addr, args in replies:
+            if addr == "/error":
+                return False
+            if addr == "/setCidBehavior" and len(args) >= 2:
+                return True
+        return False
+
+    def remove_controller_source(self, controller_cid: int) -> bool:
+        """Unbind a controller's source but keep the (now sourceless) controller
+        (``/removeControllerSource [reqid, cid]`` → ``/status``). Captured
+        2026-11-23 as the first step of the app's Controller Assign → "None".
+        A full clear also calls :meth:`remove_controller`."""
+        return _status0(self._rpc("/removeControllerSource",
+                                  [("i", int(controller_cid))]))
+
     def add_split(self, path: int, block: int) -> bool:
         """Split the block at lane-A grid slot ``block`` onto a NEW parallel
         lane B — synthesized topology (the app's drag-down-to-parallel).

@@ -766,6 +766,23 @@ the wire). XY zones activate via `/SetBatchedParamValues` (a 12-tuple
 zone-index — the batch *is* the activation). Preset-side storage lives under
 `cg__.entt` (`srcs`/`cmnd`/`trgs`, `ctrl`/`ctm_`).
 
+**LOCAL (EXP pedal / footswitch) controller source — captured 2026-11-23**
+(frida app-MITM, hgc-r24; see
+`docs/superpowers/specs/2026-11-23-controller-source-create-re-findings.md`).
+Assigning a NON-MIDI source is the same `/attachParamController` (returns the
+`cid`) followed by **`/ControllerSourceSet [reqid, cid, source_type, locl,
+ctxt]`** then **`/CidBehaviorSet [reqid, cid, behv]`**. `source_type` = 1 for a
+local controller; `(locl, ctxt)` is the device source code — the SAME code
+`srcs[].locl/ctxt` carry and `transcode._controller_locl_ctxt` maps a `.hsp`
+source id to (EXP1 → `(42,0)`, FS1 → `(25,1)`, EXP1Toe → `(37,0)`). `behv` is
+`transcode._BEHV_INDEX` (2 = continuous for a pedal, 0 = latching for a
+footswitch). **The command `/ControllerSourceSet` only ever appears as the echo
+`/setControllerSource` in cascades — the echo spelling is NOT the command (it
+answers `NOT known`); and this family's 2002 *reply* also uses the echo
+spelling, not `/status`** (`/setControllerSource [reqid, cid, srcId]`,
+`/setCidBehavior [reqid, cid, behv, 0]`). Clear is `/removeControllerSource
+[reqid, cid]` then `/removeController [reqid, cid]` (both `/status`).
+
 ### Connect-time / info commands
 
 | Op | Address | Args | Reply |

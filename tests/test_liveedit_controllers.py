@@ -237,3 +237,81 @@ def test_clear_param_controllers_refuses_a_stale_rev():
     with _pytest.raises(LiveError) as ei:
         s.clear_param_controllers(0, 2, DRIVE, rev=s.rev + 1)
     assert ei.value.status == 409
+
+
+# --- assign_local_source (81v.3, EXP/FS source-create, captured 2026-11-23) ---
+
+def test_assign_local_source_exp_attaches_sets_source_and_continuous_behv():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.assign_local_source(0, 2, DRIVE, "EXP1")
+    assert c.attaches == [(0, 2, DRIVE, 0)]          # fresh param -> attach
+    assert c.src_sets == [(50, 42, 0, 1)]            # EXP1 -> (locl 42, ctxt 0), type 1
+    assert c.behaviors == [(50, 2)]                  # expression -> continuous (2)
+
+
+def test_assign_local_source_footswitch_uses_latching_behv():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.assign_local_source(0, 2, DRIVE, "FS1")
+    assert c.src_sets == [(50, 25, 1, 1)]            # FS1 -> (locl 25, ctxt 1)
+    assert c.behaviors == [(50, 0)]                  # footswitch -> latching (0)
+
+
+def test_assign_local_source_toe_is_latching():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.assign_local_source(0, 2, DRIVE, "EXP1Toe")
+    assert c.src_sets == [(50, 37, 0, 1)]            # toe -> (locl 37, ctxt 0)
+    assert c.behaviors == [(50, 0)]
+
+
+def test_assign_local_source_rejects_unknown_source():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError):
+        s.assign_local_source(0, 2, DRIVE, "FS99")
+    assert c.attaches == []                          # nothing touched the device
+
+
+def test_assign_local_source_rejects_reserved_source():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError):
+        s.assign_local_source(0, 2, DRIVE, "FS6")    # MODE switch, not assignable
+    assert c.attaches == []
+
+
+def test_assign_local_source_refuses_an_endpoint_block():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.assign_local_source(0, 0, 0, "EXP1")       # input endpoint
+    assert c.attaches == []
+
+
+def test_assign_local_source_rolls_back_a_fresh_attach_on_bind_failure():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    c.src_set_fail = True
+    with _pytest.raises(LiveError):
+        s.assign_local_source(0, 2, DRIVE, "EXP1")
+    assert c.removed_ctrls == [50]                   # the just-attached controller is removed
+
+
+def test_assign_local_source_refuses_a_stale_rev():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError) as ei:
+        s.assign_local_source(0, 2, DRIVE, "EXP1", rev=s.rev + 1)
+    assert ei.value.status == 409
+    assert c.attaches == []
+
+
+def test_source_catalog_lists_assignable_local_sources():
+    _, s = _live_session()
+    cat = s.source_catalog()["sources"]
+    ids = {r["id"] for r in cat}
+    assert {"FS1", "FS5", "FS7", "FS11", "EXP1", "EXP2", "EXP1Toe"} <= ids
+    assert "FS6" not in ids and "FS12" not in ids    # reserved, not assignable
+    exp = next(r for r in cat if r["id"] == "EXP1")
+    assert exp["kind"] == "expression" and exp["name"]

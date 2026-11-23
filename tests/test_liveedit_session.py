@@ -70,6 +70,11 @@ class FakeClient:
         self.removed_ctrls = []     # controller_cid
         self.next_ctrl_cid = 50
         self.midi_source_fail = False   # make add_midi_cc_source return False
+        # local (EXP/FS) controller source (81v.3)
+        self.src_sets = []              # (cid, locl, ctxt, source_type)
+        self.behaviors = []             # (cid, behv)
+        self.removed_srcs = []          # cid
+        self.src_set_fail = False       # make set_controller_source return False
         # what the preset picker lists: the user pool + one setlist of refs
         self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
         self.setlists = [{"cid_": 100, "name": "Rock", "cctp": 1001, "posi": 0}]
@@ -224,6 +229,23 @@ class FakeClient:
     def remove_controller(self, controller_cid):
         self._next()
         self.removed_ctrls.append(int(controller_cid))
+        return True
+
+    # --- local (EXP/FS) controller source (81v.3) ---
+    def set_controller_source(self, controller_cid, locl, ctxt, source_type=1):
+        self._next()
+        self.src_sets.append((int(controller_cid), int(locl), int(ctxt),
+                              int(source_type)))
+        return not self.src_set_fail
+
+    def set_cid_behavior(self, controller_cid, behavior):
+        self._next()
+        self.behaviors.append((int(controller_cid), int(behavior)))
+        return True
+
+    def remove_controller_source(self, controller_cid):
+        self._next()
+        self.removed_srcs.append(int(controller_cid))
         return True
 
     def save_edit_buffer(self, cid):

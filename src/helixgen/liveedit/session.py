@@ -115,6 +115,32 @@ def _controller_cids_for(eb: Any, path: int, grid_slot: int, pid: int) -> List[i
             and isinstance(c.get("cid_"), int) and not isinstance(c.get("cid_"), bool)]
 
 
+def _local_source_wire(source: str, device_id: Any = "stadium_xl"):
+    """Resolve a controller identifier (``FS1``, ``EXP1``, ``EXP1Toe``, …) to the
+    ``(locl, ctxt, behv)`` the live source-create cascade (:meth:`LiveSession.
+    assign_local_source`) sends, or raise ``LiveError(400)`` for an unknown or
+    unmappable source.
+
+    ``(locl, ctxt)`` is the device source code, from ``transcode``'s own
+    ``.hsp``-source → device mapping (the single source of truth for both this
+    and preset install). ``behv`` is ``transcode._BEHV_INDEX``: 2 (continuous)
+    for an expression pedal, 0 (latching) for a footswitch or toe switch."""
+    from helixgen import controllers as _ctl
+    from helixgen.device import transcode as _tx
+    rows = {r["id"]: r for r in _ctl.controller_mapping(device_id)}
+    row = rows.get(source)
+    if row is None:
+        raise LiveError(f"unknown controller source {source!r}; valid: "
+                        f"{sorted(rows)}", status=400)
+    lc = _tx._controller_locl_ctxt(row["source_id"])
+    if lc is None:
+        raise LiveError(f"controller source {source} has no device code",
+                        status=400)
+    locl, ctxt = lc
+    behv = 2 if row["kind"] == "expression" else 0
+    return locl, ctxt, behv
+
+
 def _group_controllers(recipe: dict, labels: Dict[str, str]) -> dict:
     """Shape a ``view`` recipe into the Controllers pane's read-only groups,
     riding each footswitch/pedal with its English ``*_label`` (spec / CLAUDE.md:
@@ -1597,6 +1623,86 @@ class LiveSession:
                     if not ok:
                         raise LiveError("the device did not confirm clearing "
                                         "the controller", status=502)
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
+
+    def source_catalog(self) -> dict:
+        """The assignable local controller sources (footswitches, expression
+        pedals, toe switch) for the Controllers pane's source picker —
+        identifier, canonical name and kind. Static, no device I/O (81v.3)."""
+        from helixgen import controllers as _ctl
+        return {"sources": [{"id": r["id"], "name": r["name"], "kind": r["kind"]}
+                            for r in _ctl.controller_mapping("stadium_xl")]}
+
+    def assign_local_source(self, path: int, block: int, pid: int, source: str,
+                            *, rev: Optional[int] = None) -> dict:
+        """Assign a LOCAL (non-MIDI) controller source — an expression pedal or
+        footswitch — to param ``pid`` on the block at grid slot ``block`` (DSP
+        ``path``), live (81v.3, hgc-r24).
+
+        Mirrors the Stadium app's Controller Assign: if the param already has a
+        controller its cid is REUSED (the app only re-sources, never re-attaches
+        — so no orphan controller piles up); otherwise a controller is attached
+        first. Then the local source is bound (``/ControllerSourceSet``) and the
+        behaviour set (``/CidBehaviorSet``: continuous for an EXP pedal, latching
+        for a footswitch). ``rev`` refuses a stale request (409), as
+        :meth:`assign_midi_cc` does. Re-reads and returns fresh state. Volatile
+        until Save."""
+        pth, blk, p = int(path), int(block), int(pid)
+        locl, ctxt, behv = _local_source_wire(source)   # raises 400 on unknown
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                    self._require_rev(rev, None)
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                cur = self._block_at(eb, pth, blk)
+                if cur is None:
+                    raise LiveError("no such block on the loaded tone "
+                                    "(did the preset change?)", status=404)
+                if cur.get("category") in ("input", "output", "split", "join"):
+                    raise LiveError("a controller attaches to a processing "
+                                    "block's param, not an endpoint / routing "
+                                    "node.", status=400)
+                prm = next((pr for pr in cur.get("params", [])
+                            if pr.get("pid") == p), None)
+                if prm is None:
+                    raise LiveError(f"block has no param {p}", status=400)
+                if prm.get("internal"):
+                    raise LiveError("that param has no editor control — it is "
+                                    "plumbing, not a controllable knob.",
+                                    status=400)
+                existing = _controller_cids_for(eb, pth, blk, p)
+                attached = not existing
+                try:
+                    cid_ = existing[0] if existing \
+                        else self.client.attach_param_controller(pth, blk, p)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device controller attach failed: {e}",
+                                    status=502) from e
+                try:
+                    ok = self.client.set_controller_source(cid_, locl, ctxt)
+                    if ok:
+                        ok = self.client.set_cid_behavior(cid_, behv)
+                except (HelixError, OSError) as e:
+                    if attached:
+                        self._rollback_controller(cid_)
+                    self._set_connected(False)
+                    raise LiveError(f"device source bind failed: {e}",
+                                    status=502) from e
+                if not ok:
+                    if attached:
+                        self._rollback_controller(cid_)
+                    raise LiveError("the device did not confirm the controller "
+                                    "source", status=502)
         finally:
             self.lease.done()
         self.load()
