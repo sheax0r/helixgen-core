@@ -1046,6 +1046,35 @@ class LiveSession:
                 break
         return rows, aborted
 
+    # The snapshot panel surfaces a fixed slice of Global Settings (spec 81v.2
+    # §8.5): the one writable toggle (Discard-Edits) plus read-only context for
+    # per-snapshot tempo and MIDI Recall. Order is the panel's display order.
+    _SNAPSHOT_GLOBAL_KEYS = (
+        "global.snapshot.edits",      # Discard-Edits: Save(0) / Discard(1)
+        "global.snapshot.reselect",   # Snapshot Reselect (context)
+        "global.tempo.select",        # Snapshot / Per Preset / Global
+        "global.tempo.bpm",           # active tempo (the active snapshot's, in Snapshot mode)
+        "global.send.snapshot.cc",    # MIDI CC recalls a snapshot: Off/On
+        "global.midi.channel",        # base MIDI channel (snapshot/preset recall)
+        "global.midi.pc.send",        # PC recalls a preset: Off/MIDI/USB/MIDI+USB
+    )
+
+    def snapshot_globals(self) -> dict:
+        """The snapshot-relevant Global Settings the snapshot panel surfaces:
+        Discard-Edits (the one writable toggle — written through
+        :meth:`device_write`), plus read-only context (tempo mode/bpm, MIDI
+        Recall channel/CC/PC). Read-only and lease-free, exactly like
+        :meth:`device_values`; a key this firmware doesn't carry comes back with
+        an ``error`` rather than blanking the set."""
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            rows, aborted = self._read_keys(self._SNAPSHOT_GLOBAL_KEYS)
+        out = {"keys": rows}
+        if aborted is not None:
+            out["aborted_at"] = aborted
+        return out
+
     def device_values(self, page: str) -> dict:
         """Live def + value for one Global-Settings page's keys, for the Device
         pane. Read-only, serialized on ``devlock`` (the socket is not
