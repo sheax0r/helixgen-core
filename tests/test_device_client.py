@@ -2889,3 +2889,52 @@ def test_get_property_empty_blob_without_status_21_is_plain_error():
     with pytest.raises(HelixError) as exc:
         h.get_property("global.x")
     assert not isinstance(exc.value, PropertyUnavailable)
+
+
+# --- controller assignment (81v.3) --------------------------------------------
+
+def test_attach_param_controller_returns_device_cid():
+    import struct as _struct  # noqa: F401
+    h = HelixClient("10.0.0.99")
+    # /attachParamController replies [reqid, cid_, 0]
+    _wire(h, [osc_encode("/attachParamController", [("i", 1000), ("i", 7), ("i", 0)])])
+    assert h.attach_param_controller(0, 5, 2) == 7
+
+
+def test_attach_param_controller_raises_without_cid():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/error", [("i", 1000), ("i", 0), ("s", "nope")])])
+    with pytest.raises(HelixError):
+        h.attach_param_controller(0, 5, 2)
+
+
+def test_add_midi_cc_source_encodes_cc_be_uint16_at_offset_12():
+    import struct
+    from helixgen.device.osc import parse_osc_message
+    h = HelixClient("10.0.0.99")
+    # /status [reqid, cid_, 0] — the status code is the LAST arg, not args[1]
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 7), ("i", 0)])])
+    assert h.add_midi_cc_source(7, 60) is True
+    addr, args, _ = parse_osc_message(h.sock.sent[0])
+    assert addr == "/ControllerMIDISourceAdd"
+    blob = next(v for t, v in args if t == "b")
+    assert len(blob) == 20
+    assert struct.unpack_from(">H", blob, 12)[0] == 60
+
+
+def test_add_midi_cc_source_rejects_out_of_range():
+    h = HelixClient("10.0.0.99")
+    with pytest.raises(ValueError):
+        h.add_midi_cc_source(7, 200)
+
+
+def test_add_midi_cc_source_false_on_error_reply():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/error", [("i", 1000), ("i", 0), ("s", "no")])])
+    assert h.add_midi_cc_source(7, 60) is False
+
+
+def test_remove_controller_confirms_on_status_zero():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 7), ("i", 0)])])
+    assert h.remove_controller(7) is True

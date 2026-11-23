@@ -63,6 +63,12 @@ class FakeClient:
         self.loaded = []
         self._active = None      # last activated snapshot index
         self.snapshot_ebs = None  # {index: eb} -> read_edit_buffer follows _active
+        # controller assignment (81v.3)
+        self.attaches = []          # (path, block, pid, sub)
+        self.midi_sources = []      # (controller_cid, cc)
+        self.removed_ctrls = []     # controller_cid
+        self.next_ctrl_cid = 50
+        self.midi_source_fail = False   # make add_midi_cc_source return False
         # what the preset picker lists: the user pool + one setlist of refs
         self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
         self.setlists = [{"cid_": 100, "name": "Rock", "cctp": 1001, "posi": 0}]
@@ -199,6 +205,24 @@ class FakeClient:
         self._next()
         self.enables.append((path, block, enable, fast))
         return self.ack
+
+    # --- controller assignment (81v.3) ---
+    def attach_param_controller(self, path, block, pid, sub=0):
+        self._next()
+        self.attaches.append((int(path), int(block), int(pid), int(sub)))
+        cid = self.next_ctrl_cid
+        self.next_ctrl_cid += 1
+        return cid
+
+    def add_midi_cc_source(self, controller_cid, cc):
+        self._next()
+        self.midi_sources.append((int(controller_cid), int(cc)))
+        return not self.midi_source_fail
+
+    def remove_controller(self, controller_cid):
+        self._next()
+        self.removed_ctrls.append(int(controller_cid))
+        return True
 
     def save_edit_buffer(self, cid):
         self._next()

@@ -76,6 +76,30 @@ def test_controllers_state_endpoint(srv):
     assert all(isinstance(j[k], list) for k in j)
 
 
+def test_controllers_assign_route(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/controllers/assign",
+                        {"path": 0, "block": 2, "pid": DRIVE, "cc": 60})
+    assert code == 200, data
+    assert c.attaches == [(0, 2, DRIVE, 0)]
+    assert c.midi_sources == [(50, 60)]
+
+
+def test_controllers_assign_rejects_bad_cc(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/controllers/assign",
+                        {"path": 0, "block": 2, "pid": DRIVE, "cc": "x"})
+    assert code == 400
+    assert c.attaches == []
+
+
+def test_controllers_clear_route(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/controllers/clear",
+                        {"path": 0, "block": 2, "pid": DRIVE})
+    assert code == 200, data            # no controller on the rig -> clean no-op
+
+
 def test_intents_endpoint_serves_the_adjective_map(srv):
     code, ctype, data = req(srv[2], "GET", "/intents")
     j = _j(data)
@@ -695,3 +719,12 @@ def test_disabled_lease_touches_nothing(lockroot):
         pass
     lease.tick()
     assert not lockroot.exists() or not any(lockroot.rglob("*.lock"))
+
+
+def test_controllers_assign_refuses_stale_rev(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/controllers/assign",
+                        {"path": 0, "block": 2, "pid": DRIVE, "cc": 60,
+                         "rev": s.rev + 1})
+    assert code == 409, data
+    assert c.attaches == []

@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import itertools
 import logging
+import struct
 import time
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -105,6 +106,20 @@ ACTIVE_PRESET_KEY = "server.active.preset.id"
 # the device silently dropped does not stall a live control for the full RPC
 # timeout.
 _FAST_ACK_WAIT = 0.5
+
+
+def _status0(replies: "List[tuple]") -> bool:
+    """True when a ``/status`` reply reports success. Unlike :meth:`HelixClient._ok`
+    (which reads ``args[1]``), this reads the LAST arg as the status code, so it
+    also handles replies that carry a device-allocated id before the code —
+    e.g. ``/ControllerMIDISourceAdd`` answers ``/status [reqid, cid, 0]``. An
+    ``/error`` reply is an explicit failure."""
+    for addr, args in replies:
+        if addr == "/error":
+            return False
+        if addr == "/status" and len(args) >= 2 and args[-1] == 0:
+            return True
+    return False
 
 
 def _grid_slot(block: int) -> int:
@@ -1070,6 +1085,60 @@ class HelixClient:
                 f"remove_block: the device did not apply the removal (slot "
                 f"{block} is still occupied after the /ModelSet)")
         return True
+
+    # -- live controller assignment (MIDI CC -> param; HW-pinned 2026-11-22) --
+    # Decoded/validated by send-observe on a Stadium XL (fw 1.4.1); see
+    # docs/superpowers/specs/2026-11-22-live-controller-assign-re-findings.md.
+    def attach_param_controller(self, path: int, block: int, pid: int,
+                                sub: int = 0) -> int:
+        """Create a (sourceless) parameter controller on a block param in the
+        live edit buffer and return the device-allocated controller id (``cid_``).
+
+        ``/attachParamController [reqid, dsp, grid_slot, sub, paramId]`` — the
+        device allocates a ``cg__.entt.ctrl`` (type 3 = param) + ``trgs`` leaf
+        and replies ``[reqid, cid_, 0]``. ``block`` is the grid slot (same
+        coordinate as :meth:`set_block_model` / :meth:`set_param`); the device
+        records the block's own entity id on the target, so a reordered buffer
+        still resolves. A source (:meth:`add_midi_cc_source`) must follow or the
+        controller drives nothing. Raises :class:`HelixError` if the device does
+        not return a controller id."""
+        replies = self._rpc("/attachParamController",
+                            [("i", int(path)), ("i", _grid_slot(block)),
+                             ("i", int(sub)), ("i", int(pid))])
+        for addr, args in replies:
+            if addr == "/error":
+                raise HelixError(f"/attachParamController failed: {args}")
+            # Reply is [reqid, cid_, status]; trust the id only on status 0.
+            if (addr == "/attachParamController" and len(args) >= 2
+                    and (len(args) < 3 or args[-1] == 0)):
+                cid = args[1]
+                if isinstance(cid, int) and not isinstance(cid, bool):
+                    return cid
+        raise HelixError("the device did not return a controller id for "
+                         "/attachParamController")
+
+    def add_midi_cc_source(self, controller_cid: int, cc: int) -> bool:
+        """Bind MIDI CC ``cc`` (0..127) as the incoming source of controller
+        ``controller_cid`` (from :meth:`attach_param_controller`).
+
+        ``/ControllerMIDISourceAdd [reqid, cid, blob]`` — the CC# is a
+        big-endian uint16 at **byte offset 12** of a 20-byte blob (parity
+        findings §6). The channel is the device's global MIDI base channel (not
+        on the wire). Replies ``/status``; returns whether the device confirmed."""
+        c = int(cc)
+        if not 0 <= c <= 127:
+            raise ValueError(f"MIDI CC must be 0..127, got {cc}")
+        blob = bytearray(20)
+        struct.pack_into(">H", blob, 12, c)
+        return _status0(self._rpc("/ControllerMIDISourceAdd",
+                                  [("i", int(controller_cid)), ("b", bytes(blob))]))
+
+    def remove_controller(self, controller_cid: int) -> bool:
+        """Remove a controller binding whole (``/removeController [reqid, cid]``)
+        from the live edit buffer — the ``ctrl`` leaf and its source. Replies
+        ``/status``; returns whether the device confirmed."""
+        return _status0(self._rpc("/removeController",
+                                  [("i", int(controller_cid))]))
 
     def add_split(self, path: int, block: int) -> bool:
         """Split the block at lane-A grid slot ``block`` onto a NEW parallel
