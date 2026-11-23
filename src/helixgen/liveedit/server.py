@@ -242,6 +242,16 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 except Exception as e:  # noqa: BLE001
                     logger.exception("live editor: controller sources failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # Mixer pane (81v.8): the device-global Matrix Mixer (per-output
+            # monitor mix), read live over 2002. Read-only — no write route.
+            elif path == "/mixer/state":
+                try:
+                    self._json(200, session.mixer_state())
+                except LiveError as e:
+                    self._json(e.status, {"error": str(e)})
+                except Exception as e:  # noqa: BLE001 — a bad blob must not 500 raw
+                    logger.exception("live editor: mixer state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
             else:
                 self._json(404, {"error": "not found"})
 

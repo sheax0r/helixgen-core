@@ -526,6 +526,49 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       JSON.stringify(x.posts[0] && x.posts[0].body));
   }
 
+  { // S31: Mixer pane — read-only Matrix Mixer, layer tabs + strips (81v.8)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Mixer")[0];
+    ok("S31 a Mixer tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();
+    const req = x.posts.find((p) => p.url === "/mixer/state");
+    ok("S31 opening the pane fetches the mixer state", !!req,
+      JSON.stringify(x.posts.map((p) => p.url)));
+    const strip = (name, o = {}) => ({ group: "home", name,
+      vol_db: o.vol == null ? 0 : o.vol, pan: o.pan == null ? 0 : o.pan,
+      mute: !!o.mute, solo: !!o.solo, enabled: o.enabled !== false });
+    req.reply(200, {
+      layers: [
+        { output: '1/4"', dst: 1, master_db: -18.5, master_mute: false, mute: false, solo: false,
+          channels: [strip("Path 1A", { vol: -3.2, pan: -0.7, mute: true }), strip("AUX In", { enabled: false })] },
+        { output: "XLR", dst: 2, master_db: -22, master_mute: false, mute: false, solo: false,
+          channels: [strip("Path 1A", { solo: true })] }],
+      link_mix: { output: "Link Mix", dst: 0, master_db: 0, master_mute: false, mute: false, solo: false,
+        channels: [strip("Path 1A")] },
+    });
+    await x.tick(); await x.tick();
+    const tabs = x.ids.mxtabs.children.map((c) => c.textContent);
+    ok("S31 a tab per output layer plus Link Mix", tabs.join(",") === '1/4",XLR,Link Mix', tabs.join(","));
+    ok("S31 the first layer's master level shows", x.ids.mxbody.textContent.includes("-18.5 dB"),
+      x.ids.mxbody.textContent);
+    ok("S31 a strip renders its name and level",
+      x.ids.mxbody.textContent.includes("Path 1A") && x.ids.mxbody.textContent.includes("-3.2 dB"),
+      x.ids.mxbody.textContent);
+    ok("S31 a non-zero pan renders L/R without collapsing to 0",
+      x.ids.mxbody.textContent.includes("L0.7"), x.ids.mxbody.textContent);
+    ok("S31 a muted strip lights its M flag",
+      x.ids.mxbody.find((e) => e._cls && e._cls.has("on-m")).length >= 1, "no muted flag");
+    ok("S31 a disabled (greyed) strip gets .off",
+      x.ids.mxbody.find((e) => e._cls && e._cls.has("off")).length >= 1, "no off row");
+    const linkTab = x.ids.mxtabs.find((e) => e.tagName === "button" && e.textContent === "Link Mix")[0];
+    linkTab.onclick();
+    ok("S31 switching to Link Mix re-renders off cached state (no refetch)",
+      x.ids.mxbody.textContent.includes("Link Mix")
+      && x.posts.filter((p) => p.url === "/mixer/state").length === 1,
+      x.ids.mxbody.textContent);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();
