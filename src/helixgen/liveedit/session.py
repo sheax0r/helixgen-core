@@ -1628,6 +1628,72 @@ class LiveSession:
         self.load()
         return self.public_state()
 
+    def set_snapshot_control(self, path: int, block: int, pid: int, on: Any, *,
+                             rev: Optional[int] = None) -> dict:
+        """Turn per-snapshot control ("Snapshot Ctrl") on/off for param ``pid``
+        on the block at grid slot ``block`` (DSP ``path``), live (81v.2).
+
+        ON seeds the param's CURRENT value into every snapshot and adds the
+        snapshot target (``assign_snap_param``); OFF removes the target
+        (``remove_snapshot_target``). Idempotent — a toggle that already matches
+        the device state is a no-op, never an error. ``rev`` refuses a stale
+        request (409), as :meth:`assign_midi_cc` does. Re-reads and returns
+        fresh state. Volatile until Save."""
+        pth, blk, p, want = int(path), int(block), int(pid), bool(on)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                    self._require_rev(rev, None)
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                cur = self._block_at(eb, pth, blk)
+                if cur is None:
+                    raise LiveError("no such block on the loaded tone "
+                                    "(did the preset change?)", status=404)
+                if cur.get("category") in ("input", "output", "split", "join"):
+                    raise LiveError("snapshot control is per processing-block "
+                                    "param, not an endpoint / routing node.",
+                                    status=400)
+                prm = next((pr for pr in cur.get("params", [])
+                            if pr.get("pid") == p), None)
+                if prm is None:
+                    raise LiveError(f"block has no param {p}", status=400)
+                if prm.get("internal"):
+                    raise LiveError("that param has no editor control — it is "
+                                    "plumbing, not a controllable knob.",
+                                    status=400)
+                tid = self.client.snapshot_param_target(pth, blk, p, doc=eb)
+                if want and tid is None:
+                    val = prm.get("value")
+                    if not isinstance(val, (int, float)) or isinstance(val, bool):
+                        val = 1.0 if val else 0.0
+                    try:
+                        self.client.assign_snap_param(pth, blk, p, float(val))
+                    except (HelixError, OSError) as e:
+                        self._set_connected(False)
+                        raise LiveError(f"device snapshot-control assign failed: "
+                                        f"{e}", status=502) from e
+                elif not want and tid is not None:
+                    try:
+                        ok = self.client.remove_snapshot_target(tid)
+                    except (HelixError, OSError) as e:
+                        self._set_connected(False)
+                        raise LiveError(f"device snapshot-control remove failed: "
+                                        f"{e}", status=502) from e
+                    if not ok:
+                        raise LiveError("the device did not confirm removing "
+                                        "snapshot control", status=502)
+                # want == (tid is not None): already in the desired state → no-op
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
+
     def source_catalog(self) -> dict:
         """The assignable local controller sources (footswitches, expression
         pedals, toe switch) for the Controllers pane's source picker —
@@ -1689,20 +1755,32 @@ class LiveSession:
                     raise LiveError(f"device controller attach failed: {e}",
                                     status=502) from e
                 try:
-                    ok = self.client.set_controller_source(cid_, locl, ctxt)
-                    if ok:
-                        ok = self.client.set_cid_behavior(cid_, behv)
+                    src_ok = self.client.set_controller_source(cid_, locl, ctxt)
+                    behv_ok = (self.client.set_cid_behavior(cid_, behv)
+                               if src_ok else False)
                 except (HelixError, OSError) as e:
                     if attached:
                         self._rollback_controller(cid_)
                     self._set_connected(False)
                     raise LiveError(f"device source bind failed: {e}",
                                     status=502) from e
-                if not ok:
+                if not src_ok:
+                    # nothing bound — a fresh attach is removed whole; a reuse
+                    # left the existing controller untouched.
                     if attached:
                         self._rollback_controller(cid_)
-                    raise LiveError("the device did not confirm the controller "
+                    raise LiveError("the device did not bind the controller "
                                     "source", status=502)
+                if not behv_ok:
+                    # the source IS bound; only the behaviour didn't confirm. A
+                    # fresh attach rolls back whole; a reuse leaves the rebound
+                    # source under its previous behaviour — say so precisely, a
+                    # re-assign heals it (idempotent).
+                    if attached:
+                        self._rollback_controller(cid_)
+                    raise LiveError("the controller source was set but the "
+                                    "device did not confirm its behaviour; "
+                                    "re-assign to finish", status=502)
         finally:
             self.lease.done()
         self.load()

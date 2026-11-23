@@ -645,3 +645,69 @@ def test_remove_controller_source_wire():
     addr, args = _last_sent(h)
     assert addr == "/removeControllerSource"
     assert args[1:] == [7]
+# --- per-param Snapshot Control (81v.2, opcode captured 2026-11-23) -----------
+
+def test_assign_snap_param_wire_and_returns_target_id():
+    h = HelixClient("10.0.0.99")
+    # reply /status [reqid, allocatedTargetId, ok]; field 2 is the NEW id (12),
+    # NOT a status code — the method must return it, not treat it as failure.
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 12), ("i", 0)])])
+    assert h.assign_snap_param(0, 1, 1, 0.12) == 12
+    addr, args = _last_sent(h)
+    assert addr == "/assignSnapParam"
+    # [reqid, dsp, grid_slot, sub, paramId, value]
+    assert args[1:5] == [0, 1, 0, 1]
+    assert abs(args[5] - 0.12) < 1e-6
+
+
+def test_assign_snap_param_raises_without_a_target_id():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/error", [("i", 1000), ("s", "nope")])])
+    with pytest.raises(Exception):
+        h.assign_snap_param(0, 1, 1, 0.5)
+
+
+def test_remove_snapshot_target_wire():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])])
+    assert h.remove_snapshot_target(12) is True
+    addr, args = _last_sent(h)
+    assert addr == "/removeSnapshotTarget"
+    assert args[1:] == [12]
+
+
+def test_snapshot_param_target_resolves_from_buffer():
+    # trgs maps id__ -> {eID_ == 28*dsp+slot, pid_, slot(sub), type 2}; the
+    # target counts only when it is snapshot-tracked (ctm_.stid).
+    doc = {"cg__": {"entt": {
+        "trgs": [{"id__": 12, "eID_": 1, "pid_": 1, "slot": 0, "type": 2},
+                 {"id__": 7,  "eID_": 1, "pid_": 2, "slot": 0, "type": 2}],
+        "ctm_": {"stid": [12]}}}}   # only 12 is snapshot-tracked
+    h = HelixClient("10.0.0.99")
+    # path 0, grid slot 1 -> eID 1; pid 1 is tracked, pid 2 is not
+    assert h.snapshot_param_target(0, 1, 1, doc=doc) == 12
+    assert h.snapshot_param_target(0, 1, 2, doc=doc) is None
+    # path 1, grid slot 1 -> eID 29: no such target
+    assert h.snapshot_param_target(1, 1, 1, doc=doc) is None
+
+
+def test_snapshot_param_target_excludes_bypass_and_other_model_slot():
+    # a bypass target (type 1) and a dual-cab B-model target (slot 1), both
+    # tracked, must NOT answer a type-2 / sub-0 param lookup for the same block.
+    doc = {"cg__": {"entt": {
+        "trgs": [{"id__": 20, "eID_": 1, "pid_": 3, "slot": 0, "type": 1},   # bypass
+                 {"id__": 21, "eID_": 1, "pid_": 5, "slot": 1, "type": 2},   # B-cab param
+                 {"id__": 22, "eID_": 1, "pid_": 5, "slot": 0, "type": 2}],  # A-cab param
+        "ctm_": {"stid": [20, 21, 22]}}}}
+    h = HelixClient("10.0.0.99")
+    assert h.snapshot_param_target(0, 1, 3, doc=doc) is None       # that pid is bypass, not param
+    assert h.snapshot_param_target(0, 1, 5, doc=doc) == 22         # sub 0 -> A-cab target
+    assert h.snapshot_param_target(0, 1, 5, 1, doc=doc) == 21      # sub 1 -> B-cab target
+
+
+def test_snapshot_param_target_ignores_untracked_target():
+    # a type-2 target NOT in ctm_.stid is a controller-only target, not snapshot
+    doc = {"cg__": {"entt": {
+        "trgs": [{"id__": 30, "eID_": 1, "pid_": 1, "slot": 0, "type": 2}],
+        "ctm_": {"stid": []}}}}
+    assert HelixClient("10.0.0.99").snapshot_param_target(0, 1, 1, doc=doc) is None

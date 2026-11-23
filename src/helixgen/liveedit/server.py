@@ -104,6 +104,12 @@ def _route(session: LiveSession, path: str, b: dict):
         if "color" not in b:
             raise LiveError("missing field 'color'")
         return session.set_snapshot_color(_int(b, "index"), b["color"])
+    if path == "/snapshot/param-control":
+        if not isinstance(b.get("on"), bool):
+            raise LiveError("field 'on' must be true or false")
+        return session.set_snapshot_control(_int(b, "path"), _int(b, "block"),
+                                            _int(b, "pid"), b["on"],
+                                            rev=_rev(b))
     if path == "/snapshot/copy":
         return session.copy_snapshot(_int(b, "src"), _int(b, "dst"))
     if path == "/snapshot/swap":

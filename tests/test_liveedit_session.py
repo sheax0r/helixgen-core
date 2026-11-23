@@ -75,6 +75,13 @@ class FakeClient:
         self.behaviors = []             # (cid, behv)
         self.removed_srcs = []          # cid
         self.src_set_fail = False       # make set_controller_source return False
+        self.behv_fail = False          # make set_cid_behavior return False
+        # per-param snapshot control (81v.2)
+        self.snap_assigns = []          # (path, block, pid, value)
+        self.snap_removes = []          # target_id
+        self.snap_targets = {}          # (path, block, pid) -> current target_id
+        self.next_snap_tid = 60
+        self.snap_remove_ack = True
         # what the preset picker lists: the user pool + one setlist of refs
         self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
         self.setlists = [{"cid_": 100, "name": "Rock", "cctp": 1001, "posi": 0}]
@@ -241,12 +248,31 @@ class FakeClient:
     def set_cid_behavior(self, controller_cid, behavior):
         self._next()
         self.behaviors.append((int(controller_cid), int(behavior)))
-        return True
+        return not self.behv_fail
 
     def remove_controller_source(self, controller_cid):
         self._next()
         self.removed_srcs.append(int(controller_cid))
         return True
+    # --- per-param snapshot control (81v.2) ---
+    def assign_snap_param(self, path, block, pid, value, sub=0):
+        self._next()
+        self.snap_assigns.append((int(path), int(block), int(pid), float(value)))
+        tid = self.next_snap_tid
+        self.next_snap_tid += 1
+        self.snap_targets[(int(path), int(block), int(pid))] = tid
+        return tid
+
+    def remove_snapshot_target(self, target_id):
+        self._next()
+        self.snap_removes.append(int(target_id))
+        for k, v in list(self.snap_targets.items()):
+            if v == int(target_id):
+                del self.snap_targets[k]
+        return self.snap_remove_ack
+
+    def snapshot_param_target(self, path, block, pid, sub=0, *, doc=None):
+        return self.snap_targets.get((int(path), int(block), int(pid)))
 
     def save_edit_buffer(self, cid):
         self._next()

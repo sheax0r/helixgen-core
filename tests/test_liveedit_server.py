@@ -756,3 +756,29 @@ def test_controllers_sources_endpoint(srv):
     import json as _json
     ids = {r["id"] for r in _json.loads(data)["sources"]}
     assert "EXP1" in ids and "FS1" in ids and "FS6" not in ids
+def test_snapshot_param_control_route_turns_on(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/snapshot/param-control",
+                        {"path": 0, "block": 2, "pid": DRIVE, "on": True})
+    assert code == 200, data
+    assert len(c.snap_assigns) == 1
+    assert c.snap_assigns[0][:3] == (0, 2, DRIVE)
+
+
+def test_snapshot_param_control_route_turns_off(srv):
+    c, s, server = srv
+    c.snap_targets[(0, 2, DRIVE)] = 42
+    code, _, data = req(server, "POST", "/snapshot/param-control",
+                        {"path": 0, "block": 2, "pid": DRIVE, "on": False})
+    assert code == 200, data
+    assert c.snap_removes == [42]
+
+
+def test_snapshot_param_control_route_validates_on(srv):
+    c, s, server = srv
+    # missing 'on' and non-bool 'on' are both 400; nothing reaches the device
+    assert req(server, "POST", "/snapshot/param-control",
+               {"path": 0, "block": 2, "pid": DRIVE})[0] == 400
+    assert req(server, "POST", "/snapshot/param-control",
+               {"path": 0, "block": 2, "pid": DRIVE, "on": "yes"})[0] == 400
+    assert c.snap_assigns == [] and c.snap_removes == []

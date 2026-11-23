@@ -315,3 +315,98 @@ def test_source_catalog_lists_assignable_local_sources():
     assert "FS6" not in ids and "FS12" not in ids    # reserved, not assignable
     exp = next(r for r in cat if r["id"] == "EXP1")
     assert exp["kind"] == "expression" and exp["name"]
+# --- set_snapshot_control (81v.2, opcode captured 2026-11-23) -----------------
+
+def test_snapshot_control_on_assigns_with_current_value():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.set_snapshot_control(0, 2, DRIVE, True)
+    assert len(c.snap_assigns) == 1
+    path, block, pid, _val = c.snap_assigns[0]
+    assert (path, block, pid) == (0, 2, DRIVE)
+    assert c.snap_removes == []
+
+
+def test_snapshot_control_off_removes_the_target():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    c.snap_targets[(0, 2, DRIVE)] = 77          # already snapshot-controlled
+    s.set_snapshot_control(0, 2, DRIVE, False)
+    assert c.snap_removes == [77]
+    assert c.snap_assigns == []
+
+
+def test_snapshot_control_on_when_already_on_is_a_noop():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    c.snap_targets[(0, 2, DRIVE)] = 77
+    s.set_snapshot_control(0, 2, DRIVE, True)
+    assert c.snap_assigns == [] and c.snap_removes == []
+
+
+def test_snapshot_control_off_when_already_off_is_a_noop():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.set_snapshot_control(0, 2, DRIVE, False)
+    assert c.snap_assigns == [] and c.snap_removes == []
+
+
+def test_snapshot_control_rejects_unknown_param():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.set_snapshot_control(0, 2, 9999, True)
+    assert c.snap_assigns == []
+
+
+def test_snapshot_control_refuses_an_endpoint_block():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.set_snapshot_control(0, 0, 0, True)   # input endpoint
+    assert c.snap_assigns == []
+
+
+def test_snapshot_control_refuses_a_stale_rev():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError) as ei:
+        s.set_snapshot_control(0, 2, DRIVE, True, rev=s.rev + 1)
+    assert ei.value.status == 409
+    assert c.snap_assigns == []
+
+
+def test_assign_local_source_reuses_an_existing_controller(monkeypatch):
+    # a param that already has a controller: the app only re-sources, never
+    # re-attaches (no orphan). _controller_cids_for finds the cid; reuse it.
+    import helixgen.liveedit.session as _sess
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    monkeypatch.setattr(_sess, "_controller_cids_for", lambda *a, **k: [99])
+    s.assign_local_source(0, 2, DRIVE, "EXP1")
+    assert c.attaches == []                 # NO new attach — reused cid 99
+    assert c.src_sets == [(99, 42, 0, 1)] and c.behaviors == [(99, 2)]
+    assert c.removed_ctrls == []
+
+
+def test_assign_local_source_reuse_behv_fail_does_not_remove_the_controller(monkeypatch):
+    # on a REUSED controller, a behaviour-set failure must NOT roll back (remove)
+    # the pre-existing controller; the source is bound, only behv unconfirmed.
+    import helixgen.liveedit.session as _sess
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    monkeypatch.setattr(_sess, "_controller_cids_for", lambda *a, **k: [99])
+    c.behv_fail = True
+    with _pytest.raises(LiveError) as ei:
+        s.assign_local_source(0, 2, DRIVE, "EXP1")
+    assert "behaviour" in str(ei.value)     # the error names the half-apply precisely
+    assert c.src_sets == [(99, 42, 0, 1)]   # source WAS bound
+    assert c.removed_ctrls == []            # pre-existing controller left intact
+
+
+def test_assign_local_source_fresh_behv_fail_rolls_back_the_attach():
+    # on a FRESH attach, a behaviour-set failure rolls the whole controller back.
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    c.behv_fail = True
+    with _pytest.raises(LiveError):
+        s.assign_local_source(0, 2, DRIVE, "EXP1")
+    assert c.removed_ctrls == [50]          # the just-attached controller removed
