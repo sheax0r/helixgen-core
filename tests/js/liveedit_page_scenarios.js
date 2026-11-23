@@ -465,6 +465,40 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch")).length === 0, "picker lingered");
   }
 
+  { // S30: controllers pane — the EXP/FS source picker assigns a local source (81v.3)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Controllers")[0];
+    ok("S30 a Controllers tab appears", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();
+    const srcReq = x.posts.find((p) => p.url === "/controllers/sources");
+    ok("S30 opening the pane fetches the source catalogue", !!srcReq,
+      JSON.stringify(x.posts.map((p) => p.url)));
+    srcReq.reply(200, { sources: [
+      { id: "EXP1", name: "Expression Pedal 1", kind: "expression" },
+      { id: "FS1", name: "Footswitch 1", kind: "footswitch" }] });
+    await x.tick(); await x.tick();
+    const stReq = x.posts.find((p) => p.url === "/controllers/state");
+    if (stReq) { stReq.reply(200, { footswitches: [], expression: [], midi: [], unknown: [] }); await x.tick(); await x.tick(); }
+    const ssel = x.ids.ctlassign.find((e) => e.tagName === "select"
+      && e.getAttribute("aria-label") === "Controller source")[0];
+    const asrc = x.ids.ctlassign.find((e) => e.tagName === "button"
+      && e.textContent === "Assign source")[0];
+    ok("S30 the source picker + Assign source button render", !!ssel && !!asrc,
+      JSON.stringify([!!ssel, !!asrc]));
+    // pick the block/param/source (a real <select> defaults to its first option;
+    // the fake one needs an explicit value)
+    const psel = x.ids.ctlassign.find((e) => e.tagName === "select"
+      && e.getAttribute("aria-label") === "Parameter")[0];
+    psel.value = 1; ssel.value = "EXP1";
+    asrc.onclick(); await x.tick();
+    const post = x.posts.find((p) => p.url === "/controllers/assign-source");
+    ok("S30 Assign source posts the chosen source for that exact param",
+      post && post.body.source === "EXP1" && post.body.path === 0 &&
+      post.body.block === 2 && post.body.pid === 1,
+      JSON.stringify(post && post.body));
+  }
+
   { // S29: per-param Snapshot Control toggle, OFF -> ON (81v.2)
     const x = boot();
     x.sse(State([Blk({}, [P_({ value: 0.5, snap: false })])]));

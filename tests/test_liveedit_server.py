@@ -730,6 +730,32 @@ def test_controllers_assign_refuses_stale_rev(srv):
     assert c.attaches == []
 
 
+def test_controllers_assign_source_route(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/controllers/assign-source",
+                        {"path": 0, "block": 2, "pid": DRIVE, "source": "EXP1"})
+    assert code == 200, data
+    assert c.attaches == [(0, 2, DRIVE, 0)]
+    assert c.src_sets == [(50, 42, 0, 1)] and c.behaviors == [(50, 2)]
+
+
+def test_controllers_assign_source_validates_source(srv):
+    c, s, server = srv
+    assert req(server, "POST", "/controllers/assign-source",
+               {"path": 0, "block": 2, "pid": DRIVE})[0] == 400           # missing
+    assert req(server, "POST", "/controllers/assign-source",
+               {"path": 0, "block": 2, "pid": DRIVE, "source": ""})[0] == 400
+    assert req(server, "POST", "/controllers/assign-source",
+               {"path": 0, "block": 2, "pid": DRIVE, "source": "FS99"})[0] == 400
+    assert c.attaches == []
+
+
+def test_controllers_sources_endpoint(srv):
+    code, ctype, data = req(srv[2], "GET", "/controllers/sources")
+    assert code == 200
+    import json as _json
+    ids = {r["id"] for r in _json.loads(data)["sources"]}
+    assert "EXP1" in ids and "FS1" in ids and "FS6" not in ids
 def test_snapshot_param_control_route_turns_on(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/snapshot/param-control",

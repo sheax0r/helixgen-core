@@ -144,6 +144,12 @@ def _route(session: LiveSession, path: str, b: dict):
             raise LiveError("field 'cc' must be an integer")
         return session.assign_midi_cc(_int(b, "path"), _int(b, "block"),
                                       _int(b, "pid"), cc, rev=_rev(b))
+    if path == "/controllers/assign-source":
+        src = b.get("source")
+        if not isinstance(src, str) or not src:
+            raise LiveError("field 'source' must be a non-empty string")
+        return session.assign_local_source(_int(b, "path"), _int(b, "block"),
+                                           _int(b, "pid"), src, rev=_rev(b))
     if path == "/controllers/clear":
         return session.clear_param_controllers(_int(b, "path"), _int(b, "block"),
                                                _int(b, "pid"), rev=_rev(b))
@@ -228,6 +234,13 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                     self._json(200, session.controllers())
                 except Exception as e:  # noqa: BLE001 — a bad buffer must not 500 raw
                     logger.exception("live editor: controllers state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            elif path == "/controllers/sources":
+                # the static local-source catalogue for the assign picker
+                try:
+                    self._json(200, session.source_catalog())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("live editor: controller sources failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
             else:
                 self._json(404, {"error": "not found"})

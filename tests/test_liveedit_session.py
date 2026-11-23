@@ -70,6 +70,12 @@ class FakeClient:
         self.removed_ctrls = []     # controller_cid
         self.next_ctrl_cid = 50
         self.midi_source_fail = False   # make add_midi_cc_source return False
+        # local (EXP/FS) controller source (81v.3)
+        self.src_sets = []              # (cid, locl, ctxt, source_type)
+        self.behaviors = []             # (cid, behv)
+        self.removed_srcs = []          # cid
+        self.src_set_fail = False       # make set_controller_source return False
+        self.behv_fail = False          # make set_cid_behavior return False
         # per-param snapshot control (81v.2)
         self.snap_assigns = []          # (path, block, pid, value)
         self.snap_removes = []          # target_id
@@ -232,6 +238,22 @@ class FakeClient:
         self.removed_ctrls.append(int(controller_cid))
         return True
 
+    # --- local (EXP/FS) controller source (81v.3) ---
+    def set_controller_source(self, controller_cid, locl, ctxt, source_type=1):
+        self._next()
+        self.src_sets.append((int(controller_cid), int(locl), int(ctxt),
+                              int(source_type)))
+        return not self.src_set_fail
+
+    def set_cid_behavior(self, controller_cid, behavior):
+        self._next()
+        self.behaviors.append((int(controller_cid), int(behavior)))
+        return not self.behv_fail
+
+    def remove_controller_source(self, controller_cid):
+        self._next()
+        self.removed_srcs.append(int(controller_cid))
+        return True
     # --- per-param snapshot control (81v.2) ---
     def assign_snap_param(self, path, block, pid, value, sub=0):
         self._next()

@@ -1288,6 +1288,7 @@ function ctlAssignables() {
   return blocks;
 }
 let ctlBusy = false;
+let CTLSOURCES = null;   // cached local-source catalogue (FS/EXP/toe), fetched once
 function ctlSend(url, sel, extra) {
   if (down || ctlBusy || !sel) return;
   ctlBusy = true;
@@ -1324,9 +1325,26 @@ function ctlRenderForm() {
   clear.onclick = () => ctlSend("/controllers/clear", sel(), { rev: formRev });
   form.append(el("span", "ctl-flabel", "Assign"), bsel, psel,
     el("span", "ctl-flabel", "CC"), cc, assign, clear);
+  // Local-source (expression pedal / footswitch) assign, once the catalogue is
+  // loaded. Separate button so the MIDI-CC path stays exactly as it was.
+  if (CTLSOURCES && CTLSOURCES.length) {
+    const ssel = el("select", "ctl-fsel"); ssel.setAttribute("aria-label", "Controller source");
+    CTLSOURCES.forEach((s) => { const o = el("option", null, s.name); o.value = s.id; ssel.append(o); });
+    const asrc = el("button", "btn", "Assign source"); asrc.type = "button";
+    asrc.title = "Assign the selected pedal / footswitch to drive this parameter";
+    asrc.onclick = () => ctlSend("/controllers/assign-source", sel(),
+      { source: ssel.value, rev: formRev });
+    form.append(el("span", "ctl-flabel", "or"), ssel, asrc);
+  }
   host.append(form);
 }
 async function ctlLoad() {
+  if (!CTLSOURCES) {
+    try { const r = await fetch("/controllers/sources"); const j = await r.json();
+      // cache only a non-empty catalogue; an empty/failed read retries next open
+      if (r.ok && Array.isArray(j.sources) && j.sources.length) CTLSOURCES = j.sources;
+    } catch (e) { /* MIDI path still works */ }
+  }
   ctlRenderForm();
   const body = $("ctlbody"); body.textContent = "";
   body.append(el("p", "dhint", "Reading the device…"));

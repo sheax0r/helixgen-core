@@ -610,6 +610,41 @@ def test_preset_edited_reads_the_unsaved_flag(monkeypatch):
     assert h.preset_edited() is True and seen == ["volatile.preset.edited"]
 
 
+# --- EXP/FS controller source-create (81v.3, opcode captured 2026-11-23) ------
+
+def test_set_controller_source_wire():
+    h = HelixClient("10.0.0.99")
+    # reply uses the echo spelling /setControllerSource [reqid, cid, srcId]
+    _wire(h, [osc_encode("/setControllerSource", [("i", 1000), ("i", 7), ("i", 7)])])
+    assert h.set_controller_source(7, 42, 0) is True
+    addr, args = _last_sent(h)
+    assert addr == "/ControllerSourceSet"
+    # [reqid, cid, source_type, locl, ctxt]; source_type defaults to 1 (local)
+    assert args[1:] == [7, 1, 42, 0]
+
+
+def test_set_controller_source_false_without_a_reply():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [])
+    assert h.set_controller_source(7, 42, 0) is False
+
+
+def test_set_cid_behavior_wire():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/setCidBehavior", [("i", 1000), ("i", 7), ("i", 2), ("i", 0)])])
+    assert h.set_cid_behavior(7, 2) is True
+    addr, args = _last_sent(h)
+    assert addr == "/CidBehaviorSet"
+    assert args[1:] == [7, 2]
+
+
+def test_remove_controller_source_wire():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])])
+    assert h.remove_controller_source(7) is True
+    addr, args = _last_sent(h)
+    assert addr == "/removeControllerSource"
+    assert args[1:] == [7]
 # --- per-param Snapshot Control (81v.2, opcode captured 2026-11-23) -----------
 
 def test_assign_snap_param_wire_and_returns_target_id():
