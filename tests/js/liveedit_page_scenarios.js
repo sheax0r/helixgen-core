@@ -380,6 +380,56 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S25b no bare settings header on an empty globals body", !hasHeader, "bare header present");
   }
 
+  { // S26: copy a snapshot — pick source, paste onto a target (81v.2)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus", "Lead"] }));
+    x.ids.snap.onclick();
+    let rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    rows[0].find((e) => e.tagName === "button" && e.textContent === "Copy")[0].onclick();
+    const banner = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-clip"))[0];
+    ok("S26 arming copy shows the picker banner",
+      banner && banner.textContent.indexOf("Copy snapshot 1") >= 0, banner && banner.textContent);
+    rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    const paste = rows[2].find((e) => e.tagName === "button" && e.textContent === "Paste here")[0];
+    ok("S26 non-source rows offer Paste here", !!paste, "no paste button");
+    ok("S26 the source row offers no Paste",
+      rows[0].find((e) => e.tagName === "button" && e.textContent === "Paste here").length === 0, "source had paste");
+    paste.onclick();
+    const post = x.posts.filter((p) => p.url === "/snapshot/copy").pop();
+    ok("S26 paste posts /snapshot/copy src->dst",
+      post && post.body.src === 0 && post.body.dst === 2, JSON.stringify(post && post.body));
+    ok("S26 the picker is dismissed after paste",
+      x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-clip")).length === 0, "banner still present");
+  }
+  { // S27: swap two snapshots — pick first, swap with second (81v.2)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus"] }));
+    x.ids.snap.onclick();
+    let rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    rows[0].find((e) => e.tagName === "button" && e.textContent === "Swap")[0].onclick();
+    const banner = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-clip"))[0];
+    ok("S27 the swap banner warns colours stay with the slot",
+      banner && banner.textContent.indexOf("colours stay") >= 0, banner && banner.textContent);
+    rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    rows[1].find((e) => e.tagName === "button" && e.textContent === "Swap here")[0].onclick();
+    const post = x.posts.filter((p) => p.url === "/snapshot/swap").pop();
+    ok("S27 swap posts /snapshot/swap a<->b",
+      post && post.body.a === 0 && post.body.b === 1, JSON.stringify(post && post.body));
+  }
+  { // S27b: Cancel abandons a pending copy/swap and restores the row actions
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["A", "B"] }));
+    x.ids.snap.onclick();
+    let rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    rows[0].find((e) => e.tagName === "button" && e.textContent === "Copy")[0].onclick();
+    x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-clip"))[0]
+      .find((e) => e.tagName === "button" && e.textContent === "Cancel")[0].onclick();
+    ok("S27b Cancel clears the picker",
+      x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-clip")).length === 0, "banner remains");
+    ok("S27b Copy buttons return after cancel",
+      x.ids.snapbody.find((e) => e.tagName === "button" && e.textContent === "Copy").length === 2, "copy buttons missing");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

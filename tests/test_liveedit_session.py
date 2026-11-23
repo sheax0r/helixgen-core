@@ -60,6 +60,8 @@ class FakeClient:
         self.snapshots_activated = []
         self.renames = []
         self.loaded = []
+        self._active = None      # last activated snapshot index
+        self.snapshot_ebs = None  # {index: eb} -> read_edit_buffer follows _active
         # what the preset picker lists: the user pool + one setlist of refs
         self.pool_presets = [{"cid_": 1863, "name": "Venom", "cctp": 1000, "posi": 41}]
         self.setlists = [{"cid_": 100, "name": "Rock", "cctp": 1001, "posi": 0}]
@@ -77,7 +79,10 @@ class FakeClient:
             raise self.fail
         self.reads += 1
         self.fast_reads.append(fast)
-        out = copy.deepcopy(self.eb)
+        src = self.eb
+        if self.snapshot_ebs is not None and self._active in self.snapshot_ebs:
+            src = self.snapshot_ebs[self._active]
+        out = copy.deepcopy(src)
         if self.on_read is not None:
             hook, self.on_read = self.on_read, None
             hook()
@@ -202,6 +207,7 @@ class FakeClient:
     def activate_snapshot(self, index):
         self._next()
         self.snapshots_activated.append(int(index))
+        self._active = int(index)
         return True
 
     def set_snapshot_name(self, index, name):
@@ -1694,3 +1700,125 @@ def test_models_in_category_lists_same_category_swaps():
     assert 758 in amps and 628 in amps        # the block's model + a target
     assert 310 not in amps                     # a distortion is not an amp
     assert "amp" in defs.models_by_category()
+
+
+# --- snapshot copy / swap (hgc-0g0.4): orchestrate granular writes, no new opcode ---
+
+def _snap_eb(drive, *, scream_on=1, names=None, asnp=0):
+    """A one-amp rig whose AMP Drive is snapshot-assigned, so two of these with
+    different `drive` model two snapshots that differ in exactly that param (and
+    optionally the SCREAM bypass). `names` -> cg__.entt.snps slot names."""
+    eb = _eb({
+        0: _blk(IN_INST1, {2: 1, 3: 0.0, 4: True, 5: -52.0}),
+        1: _blk(SCREAM, {1: 0.3, 2: 0.8, 3: 0.84}, enbl=scream_on),
+        2: _blk(AMP, {DRIVE: drive}, snap_pids={DRIVE}),
+        13: _blk(OUT_MATRIX, {1: 0.5, 2: -3.0}),
+    }, asnp=asnp)
+    if names:
+        eb["cg__"]["entt"] = {"snps": [{"si__": i, "name": n}
+                                       for i, n in names.items()]}
+    return eb
+
+
+def _copy_sess(ebs):
+    c = FakeClient(eb=ebs[min(ebs)])
+    c.snapshot_ebs = ebs
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    c.params.clear(); c.enables.clear(); c.renames.clear()
+    c.snapshots_activated.clear()
+    return sess
+
+
+def test_snapshot_writes_returns_only_the_differences():
+    # the pure diff: a value identical across snapshots is NOT a write (so a
+    # non-snapshot-controlled param self-skips); only real differences carry.
+    sv = {(0, 2, DRIVE): 0.74, (0, 1, 1): 0.3}      # DRIVE differs, the other same
+    dv = {(0, 2, DRIVE): 0.30, (0, 1, 1): 0.3}
+    se = {(0, 1): True, (0, 2): True}               # SCREAM bypass differs
+    de = {(0, 1): False, (0, 2): True}
+    pw, bw = LiveSession._snapshot_writes(sv, dv, se, de)
+    assert pw == [((0, 2, DRIVE), 0.74)]
+    assert bw == [((0, 1), True)]
+
+
+def test_copy_snapshot_replays_only_the_differing_values_into_the_target():
+    src = _snap_eb(0.74, scream_on=1, asnp=1)
+    dst = _snap_eb(0.30, scream_on=0, asnp=2)
+    s = _copy_sess({1: src, 2: dst})
+    s.copy_snapshot(1, 2)
+    # read src then dst (dst stays active for the writes)
+    assert s.client.snapshots_activated == [1, 2]
+    # exactly one param write — DRIVE -> src's 0.74 — not the identical params
+    assert len(s.client.params) == 1
+    p, b, pid, val, *_ = s.client.params[0]
+    assert (b, pid, val) == (2, DRIVE, 0.74)
+    # exactly one bypass write — SCREAM back to src's enabled state
+    assert len(s.client.enables) == 1
+    ep, eb, en, *_ = s.client.enables[0]
+    assert (eb, en) == (1, True)
+    # copy never renames (state only)
+    assert s.client.renames == []
+
+
+def test_copy_snapshot_onto_itself_is_a_noop():
+    s = _copy_sess({1: _snap_eb(0.74, asnp=1)})
+    s.copy_snapshot(1, 1)
+    assert s.client.snapshots_activated == [] and s.client.params == []
+
+
+@pytest.mark.parametrize("src,dst", [(-1, 2), (2, 8), (0, 99)])
+def test_copy_snapshot_rejects_a_bad_index(src, dst):
+    s = _copy_sess({0: _snap_eb(0.5), 2: _snap_eb(0.5)})
+    with pytest.raises(LiveError):
+        s.copy_snapshot(src, dst)
+    assert s.client.snapshots_activated == []
+
+
+def test_copy_snapshot_is_refused_while_another_process_holds_the_device():
+    s = _copy_sess({1: _snap_eb(0.74, asnp=1), 2: _snap_eb(0.30, asnp=2)})
+    s.lease.busy = "another helixgen process holds the editbuffer"
+    with pytest.raises(LiveError) as e:
+        s.copy_snapshot(1, 2)
+    assert e.value.status == 409
+    assert s.client.params == []          # nothing written
+
+
+def test_copy_snapshot_device_failure_marks_disconnected():
+    s = _copy_sess({1: _snap_eb(0.74, asnp=1), 2: _snap_eb(0.30, asnp=2)})
+    s.client.fail = HelixError("socket died")
+    with pytest.raises(LiveError) as e:
+        s.copy_snapshot(1, 2)
+    assert e.value.status == 502 and s.connected is False
+
+
+def test_swap_snapshot_swaps_state_both_ways_and_names():
+    names = {0: "Lead", 1: "Rhythm"}
+    a = _snap_eb(0.74, names=names, asnp=0)
+    b = _snap_eb(0.30, names=names, asnp=1)
+    s = _copy_sess({0: a, 1: b})
+    s.swap_snapshot(0, 1)
+    # recall a, recall b (write A in), recall a again (write B in)
+    assert s.client.snapshots_activated == [0, 1, 0]
+    # both directions written: 0.74 into the b-slot, 0.30 into the a-slot
+    vals = sorted(round(p[3], 3) for p in s.client.params)
+    assert vals == [0.30, 0.74]
+    # names swapped
+    assert s.client.renames == [(0, "Rhythm"), (1, "Lead")]
+
+
+def test_swap_snapshot_same_index_is_a_noop():
+    s = _copy_sess({0: _snap_eb(0.5, asnp=0)})
+    s.swap_snapshot(0, 0)
+    assert s.client.snapshots_activated == [] and s.client.renames == []
+
+
+def test_swap_snapshot_leaves_placeholder_names_unswapped():
+    # a slot with no configured name (empty) must not be renamed to "" — the
+    # device rejects an empty name; swap state only, skip the rename.
+    a = _snap_eb(0.74, names={0: "Lead"}, asnp=0)     # slot 1 has no name
+    b = _snap_eb(0.30, names={0: "Lead"}, asnp=1)
+    s = _copy_sess({0: a, 1: b})
+    s.swap_snapshot(0, 1)
+    assert s.client.renames == []                      # name_j absent -> no rename
+    assert sorted(round(p[3], 3) for p in s.client.params) == [0.30, 0.74]

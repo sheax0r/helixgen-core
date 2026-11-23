@@ -149,6 +149,34 @@ def test_snapshot_out_of_range_is_refused_and_writes_nothing(srv):
     assert c.snapshots_activated == []
 
 
+def test_snapshot_copy_route_delegates_src_then_dst(srv):
+    c, s, server = srv
+    code, _, _ = req(server, "POST", "/snapshot/copy", {"src": 1, "dst": 2})
+    assert code == 200
+    assert c.snapshots_activated == [1, 2]      # read src, then dst (dst stays active)
+
+
+def test_snapshot_copy_route_validates_indices(srv):
+    c, s, server = srv
+    assert req(server, "POST", "/snapshot/copy", {"src": 1, "dst": 9})[0] == 400
+    assert req(server, "POST", "/snapshot/copy", {"src": "x", "dst": 2})[0] == 400
+    assert c.snapshots_activated == []
+
+
+def test_snapshot_swap_route_delegates_both_directions(srv):
+    c, s, server = srv
+    code, _, _ = req(server, "POST", "/snapshot/swap", {"a": 0, "b": 1})
+    assert code == 200
+    assert c.snapshots_activated == [0, 1, 0]    # recall a, b (write), a (write)
+
+
+def test_snapshot_swap_route_validates_indices(srv):
+    c, s, server = srv
+    assert req(server, "POST", "/snapshot/swap", {"a": -1, "b": 1})[0] == 400
+    assert req(server, "POST", "/snapshot/swap", {"a": 0, "b": "y"})[0] == 400
+    assert c.snapshots_activated == []
+
+
 def test_preset_load_resolves_the_cid_and_loads_under_the_lease(srv):
     c, s, server = srv
     ensured = s.lease.ensured

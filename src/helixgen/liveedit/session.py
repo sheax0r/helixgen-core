@@ -981,6 +981,139 @@ class LiveSession:
         self.load()                              # re-read: the new snapshot name
         return self.public_state()
 
+    @staticmethod
+    def _snap_index(index: Any, what: str) -> int:
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            raise LiveError(f"{what} must be an integer") from None
+        if not 0 <= i <= 7:
+            raise LiveError(f"{what} out of range 0..7")
+        return i
+
+    def _snapshot_scan(self, eb: Any):
+        """Active param values + types and block-enable states from a decoded
+        edit buffer, as flat maps keyed by ``(path, block[, pid])``, plus the
+        slot-indexed snapshot names. What a copy/swap reads off each recalled
+        snapshot."""
+        built = _chain.build_chain(eb)
+        pidx = _chain.param_index(built)
+        vals = {k: v["value"] for k, v in pidx.items()}
+        types = {k: v.get("type") for k, v in pidx.items()}
+        enables = {k: v["enabled"] for k, v in _chain.block_index(built).items()}
+        names = list(built.get("snapshots") or [])
+        return vals, types, enables, names
+
+    @staticmethod
+    def _snapshot_writes(src_vals: dict, dst_vals: dict,
+                         src_en: dict, dst_en: dict):
+        """The param + bypass writes that make the DST snapshot equal SRC.
+
+        ONLY targets whose value differs are written — and a value that differs
+        between two snapshots is necessarily snapshot-assigned, so a param or
+        bypass that is NOT snapshot-controlled (identical across every snapshot)
+        is skipped automatically. This is exactly how the Stadium app batches a
+        snapshot copy: there is no atomic copy opcode."""
+        pw = [(k, src_vals[k]) for k in src_vals
+              if k in dst_vals
+              and not _close(float(src_vals[k]), float(dst_vals[k]))]
+        bw = [(k, src_en[k]) for k in src_en
+              if k in dst_en and bool(src_en[k]) != bool(dst_en[k])]
+        return pw, bw
+
+    def _replay(self, pw, bw, ptypes) -> None:
+        """Apply a copy/swap's param + bypass writes into the ACTIVE snapshot.
+        Caller holds ``devlock``; a snapshot-assigned write lands in the active
+        snapshot only (HW-verified 2026-11-13)."""
+        for (p, b, pid), val in pw:
+            self.client.set_param(p, b, pid, val, force=True, fast=True,
+                                  ptype=ptypes.get((p, b, pid)))
+        for (p, b), en in bw:
+            self.client.set_block_enable(p, b, bool(en), fast=True)
+
+    def copy_snapshot(self, src: Any, dst: Any) -> dict:
+        """Copy snapshot ``src``'s contents onto snapshot ``dst`` on the live
+        device — the per-snapshot param values and block-bypass states, STATE
+        ONLY (``dst`` keeps its own name and colour, like the app's
+        Copy→Paste). No atomic copy opcode exists, so this recalls each
+        snapshot and replays the differing values as granular writes, the same
+        batch the Stadium app sends. Holds the edit-buffer lease across the
+        whole op so no other helixgen process writes the wrong scene meanwhile
+        (§8.6); a concurrent HARDWARE snapshot switch is the residual live-edit
+        risk, as for every live write. Volatile until Save."""
+        i = self._snap_index(src, "source snapshot")
+        j = self._snap_index(dst, "target snapshot")
+        if i == j:
+            return self.public_state()               # copy onto itself: no-op
+        with self.cond:
+            self._require_up()
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                try:
+                    self.client.activate_snapshot(i)
+                    sv, st, se, _ = self._snapshot_scan(self.client.read_edit_buffer())
+                    self.client.activate_snapshot(j)
+                    dv, _dt, de, _ = self._snapshot_scan(self.client.read_edit_buffer())
+                    pw, bw = self._snapshot_writes(sv, dv, se, de)
+                    self._replay(pw, bw, st)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"could not copy the snapshot: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        self.load(identity=False)        # re-read: dst holds src's state, active=dst
+        with self.cond:
+            self._set_dirty(True)        # the replayed writes dirtied the buffer
+        return self.public_state()
+
+    def swap_snapshot(self, a: Any, b: Any) -> dict:
+        """Swap snapshots ``a`` and ``b`` on the live device — their
+        per-snapshot state (params + bypass) AND their names. No atomic swap
+        opcode exists, so each is recalled and the differing values replayed,
+        then the two names are swapped via ``/SetSnapshotName``.
+
+        NOTE: snapshot COLOUR is NOT swapped — the live colour opcode is not
+        decoded yet (hgc-0g0.1) — so a swapped pair keeps its original slot
+        colours until that lands. Same lease/active-index posture as
+        :meth:`copy_snapshot`. Volatile until Save."""
+        i = self._snap_index(a, "first snapshot")
+        j = self._snap_index(b, "second snapshot")
+        if i == j:
+            return self.public_state()
+        with self.cond:
+            self._require_up()
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                try:
+                    self.client.activate_snapshot(i)
+                    av, at, ae, names = self._snapshot_scan(self.client.read_edit_buffer())
+                    self.client.activate_snapshot(j)
+                    bv, bt, be, _ = self._snapshot_scan(self.client.read_edit_buffer())
+                    name_i = names[i] if i < len(names) else None
+                    name_j = names[j] if j < len(names) else None
+                    # j is active (holding B): write A into it, so j becomes A
+                    self._replay(*self._snapshot_writes(av, bv, ae, be), at)
+                    # recall a (still holding A) and write B into it, so a becomes B
+                    self.client.activate_snapshot(i)
+                    self._replay(*self._snapshot_writes(bv, av, be, ae), bt)
+                    # swap the names (a configured slot only; placeholders are left)
+                    if (name_i and name_j and name_i != name_j):
+                        self.client.set_snapshot_name(i, name_j)
+                        self.client.set_snapshot_name(j, name_i)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"could not swap the snapshots: {e}",
+                                    status=502) from e
+        finally:
+            self.lease.done()
+        self.load(identity=False)
+        with self.cond:
+            self._set_dirty(True)
+        return self.public_state()
+
     def load_preset(self, cid: Any) -> dict:
         """Load a preset on the device by cid — a user-pool preset, or a setlist
         REFERENCE cid (what :meth:`list_presets` hands the page for a setlist
