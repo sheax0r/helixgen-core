@@ -2312,7 +2312,7 @@ function applyLibFilter() {
   const list = libListNode; if (!list) return;
   const q = (libQuery || "").trim().toLowerCase();
   let shown = 0;
-  list.children.forEach((b) => {
+  Array.from(list.children).forEach((b) => {               // .children is an HTMLCollection (no forEach)
     if (!b.dataset || b.dataset.q === undefined) return;   // skip non-tone nodes
     const match = !q || b.dataset.q.indexOf(q) !== -1;
     b.hidden = !match; if (match) shown++;
@@ -2375,7 +2375,7 @@ async function openDrawer() {
   try { const r = await fetch("/library/state"); renderLib(await r.json()); }
   catch (e) { toast("could not read the library"); }
 }
-function closeDrawer() { libOpen = false; $("drawer").hidden = true; }
+function closeDrawer() { libOpen = false; libQuery = ""; $("drawer").hidden = true; }  // fresh filter on next open
 $("libtoggle").onclick = () => (libOpen ? closeDrawer() : openDrawer());
 // deltas pushed over SSE: update in place, never re-render (keeps scroll)
 function onDrawerDelta(m) {
