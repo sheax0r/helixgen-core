@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from helixgen.liveedit.session import LiveSession, _group_controllers
+import pytest as _pytest
+
+from helixgen.liveedit.session import (
+    LiveError, LiveSession, _controller_cids_for, _group_controllers)
 
 
 # --- _group_controllers: the projection logic (pure) --------------------------
@@ -124,3 +127,113 @@ def test_controllers_survives_unlabellable_device(monkeypatch):
     sess._eb = {"sfg_": {"flow": []}, "cg__": {}}
     out = sess.controllers()
     assert out["footswitches"][0]["switch_label"] == "FS1"
+
+
+# --- _controller_cids_for: coordinate -> device controller id -----------------
+
+def _eb_with_ctrl(block_id, pid, path=0, slot=2):
+    """A minimal edit buffer carrying one param controller on (path, slot, pid):
+    the block at grid `slot` has entity id `block_id`; a trgs leaf links
+    tid_=9 -> (eID_=block_id, pid_, slot=path); ctrl cid_=3 -> tid_=9."""
+    return {
+        "sfg_": {"flow": [{"blks": [slot, {"id__": block_id,
+                                           "mdls": [{"id__": 758}]}]}]},
+        "cg__": {"entt": {
+            "trgs": [{"id__": 9, "eID_": block_id, "pid_": pid,
+                      "slot": path, "type": 2}],
+            "ctrl": [{"cid_": 3, "tid_": 9, "type": 3}],
+        }},
+    }
+
+
+def test_controller_cids_for_matches_target():
+    eb = _eb_with_ctrl(block_id=5, pid=2)
+    assert _controller_cids_for(eb, 0, 2, 2) == [3]
+
+
+def test_controller_cids_for_ignores_other_params():
+    eb = _eb_with_ctrl(block_id=5, pid=2)
+    assert _controller_cids_for(eb, 0, 2, 7) == []      # different pid
+    assert _controller_cids_for(eb, 0, 9, 2) == []      # no block at slot 9
+
+
+def test_controller_cids_for_safe_on_junk():
+    assert _controller_cids_for(None, 0, 2, 2) == []
+    assert _controller_cids_for({}, 0, 2, 2) == []
+
+
+# --- assign_midi_cc / clear_param_controllers (session verbs) -----------------
+
+def _live_session():
+    from tests.test_liveedit_session import FakeClient, FakeLease
+    c = FakeClient()
+    s = LiveSession(c, lease=FakeLease())
+    s.load()
+    return c, s
+
+
+def test_assign_midi_cc_attaches_then_binds_source():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.assign_midi_cc(0, 2, DRIVE, 60)
+    assert c.attaches == [(0, 2, DRIVE, 0)]
+    assert c.midi_sources == [(50, 60)]       # the attached cid_ bound to CC 60
+    assert c.removed_ctrls == []              # nothing rolled back
+
+
+def test_assign_midi_cc_rolls_back_when_source_bind_fails():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    c.midi_source_fail = True
+    with _pytest.raises(LiveError):
+        s.assign_midi_cc(0, 2, DRIVE, 60)
+    assert c.removed_ctrls == [50]            # the dangling controller is removed
+
+
+def test_assign_midi_cc_rejects_out_of_range_cc():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError):
+        s.assign_midi_cc(0, 2, DRIVE, 200)
+    assert c.attaches == []                    # nothing touched the device
+
+
+def test_assign_midi_cc_rejects_unknown_param():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.assign_midi_cc(0, 2, 9999, 60)       # no such pid on the block
+    assert c.attaches == []
+
+
+def test_clear_param_controllers_is_a_noop_when_none():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.clear_param_controllers(0, 2, DRIVE)     # rig has no controller on it
+    assert c.removed_ctrls == []
+
+
+def test_assign_midi_cc_refuses_an_endpoint_block():
+    c, s = _live_session()
+    # slot 0 on the rig is the input endpoint — not a controllable processing block
+    with _pytest.raises(LiveError):
+        s.assign_midi_cc(0, 0, 0, 60)
+    assert c.attaches == []
+
+
+def test_assign_midi_cc_refuses_a_stale_rev():
+    """A page showing an older structure must not land a controller on a block
+    that may have moved into the slot (mirrors set_param's rev guard)."""
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError) as ei:
+        s.assign_midi_cc(0, 2, DRIVE, 60, rev=s.rev + 1)
+    assert ei.value.status == 409
+    assert c.attaches == []            # refused before touching the device
+
+
+def test_clear_param_controllers_refuses_a_stale_rev():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError) as ei:
+        s.clear_param_controllers(0, 2, DRIVE, rev=s.rev + 1)
+    assert ei.value.status == 409

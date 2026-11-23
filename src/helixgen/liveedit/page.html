@@ -103,6 +103,15 @@ body.down #devbody .dctl{opacity:.5;pointer-events:none}
 .ctl-src{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ctl-det{color:var(--dim);min-width:0;overflow:hidden;text-overflow:ellipsis}
 .ctl-empty{margin:0;color:var(--faint);font-size:12px}
+.ctl-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px;
+  padding:10px 12px;background:var(--panel2);border:1px solid var(--edge);border-radius:9px}
+.ctl-flabel{font-size:12px;color:var(--dim)}
+.ctl-fsel,.ctl-cc{background:#0f1218;color:var(--ink);border:1px solid var(--edge2);
+  border-radius:7px;padding:5px 8px;font:inherit;font-size:13px}
+.ctl-cc{width:68px}
+.ctl-fsel:focus,.ctl-cc:focus{outline:none;border-color:#5f84d6;box-shadow:0 0 0 2px rgba(61,107,255,.25)}
+.ctl-clear{margin-left:auto;font-size:11px;padding:3px 8px}
+body.down #ctlassign .btn,body.down #ctlassign select,body.down #ctlassign input{opacity:.5;pointer-events:none}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -383,6 +392,7 @@ body.down main{opacity:.55}
       <p class="dsub">What each footswitch, pedal and MIDI control drives on the loaded tone. Read-only for now.</p></div>
     <button class="btn" id="ctlrefresh" type="button" title="Refresh the assignments shown here from the current tone">Refresh</button>
   </div>
+  <div id="ctlassign"></div>
   <div id="ctlbody"></div>
 </section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
@@ -1225,7 +1235,66 @@ function ctlRender(d) {
     unk.map((u) => ctlRow(u.label || "unknown control",
       [u.block, u.param].filter(Boolean).join(" · ")))));
 }
+// Assignable (block, param) pairs flattened from the live signal-flow state S.
+// A controller drives a real knob, so internal/structural params are excluded.
+function ctlAssignables() {
+  const out = [];
+  if (!S || !S.paths) return out;
+  const walk = (list) => (list || []).forEach((seg) => {
+    if (seg.kind === "block") out.push(seg.block);
+    else if (seg.kind === "parallel") { out.push(seg.split); walk(seg.a); walk(seg.b); if (seg.join) out.push(seg.join); }
+  });
+  const blocks = [];
+  S.paths.forEach((p) => { walk(p.segments); walk(p.extra); });
+  out.forEach((b) => {
+    const params = (b.params || []).filter((pr) => !pr.internal);
+    if (params.length && b.category !== "split" && b.category !== "join")
+      blocks.push({ path: b.path, slot: b.block, name: b.name,
+        params: params.map((pr) => ({ pid: pr.pid, label: pr.label || pr.name })) });
+  });
+  return blocks;
+}
+let ctlBusy = false;
+function ctlSend(url, sel, extra) {
+  if (down || ctlBusy || !sel) return;
+  ctlBusy = true;
+  send(url, { ...sel, ...(extra || {}) },
+    () => { ctlBusy = false; ctlLoad(); },
+    () => { ctlBusy = false; });
+}
+function ctlRenderForm() {
+  const host = $("ctlassign"); host.textContent = "";
+  const blocks = ctlAssignables();
+  if (!blocks.length) return;
+  // The rev the form was built against: if the structure changes before a
+  // click, the server refuses (409) so a controller never lands on a block
+  // that moved into the slot (mirrors the flow pane's own writes).
+  const formRev = S ? S.rev : undefined;
+  const form = el("div", "ctl-form");
+  const bsel = el("select", "ctl-fsel"); bsel.setAttribute("aria-label", "Block");
+  blocks.forEach((b, i) => { const o = el("option", null, b.name); o.value = i; bsel.append(o); });
+  const psel = el("select", "ctl-fsel"); psel.setAttribute("aria-label", "Parameter");
+  const fill = () => { psel.textContent = "";
+    (blocks[+bsel.value] ? blocks[+bsel.value].params : []).forEach((pr) => {
+      const o = el("option", null, pr.label); o.value = pr.pid; psel.append(o); }); };
+  bsel.onchange = fill; fill();
+  const cc = el("input", "ctl-cc"); cc.type = "number"; cc.min = 0; cc.max = 127; cc.value = 1;
+  cc.setAttribute("aria-label", "MIDI CC number");
+  const sel = () => { const b = blocks[+bsel.value];
+    return b ? { path: b.path, block: b.slot, pid: +psel.value } : null; };
+  const assign = el("button", "btn", "Assign CC"); assign.type = "button";
+  assign.onclick = () => { const v = +cc.value;
+    if (!(v >= 0 && v <= 127)) { toast("MIDI CC must be 0–127"); return; }
+    ctlSend("/controllers/assign", sel(), { cc: v, rev: formRev }); };
+  const clear = el("button", "btn ctl-clear", "Clear param"); clear.type = "button";
+  clear.title = "Remove every controller on the selected parameter";
+  clear.onclick = () => ctlSend("/controllers/clear", sel(), { rev: formRev });
+  form.append(el("span", "ctl-flabel", "Assign"), bsel, psel,
+    el("span", "ctl-flabel", "CC"), cc, assign, clear);
+  host.append(form);
+}
 async function ctlLoad() {
+  ctlRenderForm();
   const body = $("ctlbody"); body.textContent = "";
   body.append(el("p", "dhint", "Reading the device…"));
   try {
