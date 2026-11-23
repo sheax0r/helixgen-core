@@ -93,6 +93,15 @@ def test_tuner_reading_endpoint(srv):
     assert j.get("signal") is False
 
 
+def test_device_info_endpoint(srv):
+    # 81v.11: read-only device identity (/ProductInfoGet). The FakeClient reports
+    # a firmware; the response carries the curated fields and no raw map.
+    code, ctype, data = req(srv[2], "GET", "/device/info")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert "firmware" in j and "serial" in j and "raw" not in j
+
+
 def test_controllers_assign_route(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/controllers/assign",

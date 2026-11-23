@@ -763,6 +763,34 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S34 leaving the pane clears the poll timer", x.intervals.size === 0, "timer leaked");
   }
 
+  { // S35: Device Info pane — read-only identity strip (81v.11)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Device Info")[0];
+    ok("S35 a Device Info tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();
+    const req = x.posts.find((p) => p.url === "/device/info");
+    ok("S35 opening the pane reads /device/info", !!req, JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { model: "stadium", helixgen_model: "stadium_xl", device_id: 2490368,
+      serial: "47292244582131381", firmware: "1.4.1", firmware_build: 1410,
+      firmware_date: "2026-05-01", sd_total_bytes: 32e9, sd_available_bytes: 28.5e9 });
+    await x.tick();
+    const txt = x.ids.dinfobody.textContent;
+    ok("S35 the model reads as Stadium XL", txt.includes("Stadium XL"), txt);
+    ok("S35 the serial shows", txt.includes("47292244582131381"), txt);
+    ok("S35 firmware shows version + build", txt.includes("1.4.1") && txt.includes("build 1410"), txt);
+    ok("S35 storage is formatted free-of-total in GB", txt.includes("28.5 GB free of 32 GB"), txt);
+    // a sparse reply (only firmware) must not crash or print empty rows
+    const y = boot(); y.sse(State([Blk({}, [P_({})])]));
+    y.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Device Info")[0].onclick();
+    await y.tick();
+    y.posts.find((p) => p.url === "/device/info").reply(200, { firmware: "1.4.1" });
+    await y.tick();
+    ok("S35 a sparse reply shows what it has and omits the rest",
+      y.ids.dinfobody.textContent.includes("1.4.1") && !y.ids.dinfobody.textContent.includes("Serial"),
+      y.ids.dinfobody.textContent);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

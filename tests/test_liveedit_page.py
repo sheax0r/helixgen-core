@@ -126,3 +126,11 @@ def test_page_registers_the_tuner_pane_and_endpoint():
     for marker in ('id="tunerpane"', 'id="tuner-note"', 'id="tuner-pointer"',
                    'addPane({ id: "tuner"', "/tuner/reading"):
         assert marker in html, marker
+
+
+def test_page_registers_the_device_info_pane_and_endpoint():
+    # 81v.11: the Device Info pane mounts via addPane and reads /device/info.
+    html = PAGE.read_text()
+    for marker in ('id="deviceinfopane"', 'id="dinfobody"',
+                   'addPane({ id: "deviceinfo"', "/device/info"):
+        assert marker in html, marker

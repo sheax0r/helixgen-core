@@ -40,6 +40,7 @@ function boot() {
    "cmdpane", "cmdbody", "cmdrefresh",
    "tunerpane", "tunerbody", "tuner-note", "tuner-needle", "tuner-pointer",
    "tuner-readout", "tuner-cents", "tuner-hz", "tuner-hint",
+   "deviceinfopane", "dinfobody", "dinforefresh", "dinfonote",
    "snappanel", "snapbody", "snapclose"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
   const document = { get body2(){return El.body}, getElementById: (i) => ids[i], createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };
