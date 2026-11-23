@@ -100,6 +100,25 @@ def test_set_snapshot_name_rejects_empty(bad):
     assert h.sock.sent == []       # nothing reached the wire
 
 
+def test_set_snapshot_color_wire():
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    assert h.set_snapshot_color(3, 4) is True
+    addr, args = _last_sent(h)
+    assert addr == "/SnapshotColorSet"     # the device RPC, not the app's /setSnapshotColor
+    # [reqid, snapshotIndex, colr]
+    assert args[1:] == [3, 4]
+
+
+@pytest.mark.parametrize("bad", [-1, 8, 99])
+def test_set_snapshot_color_range(bad):
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    with pytest.raises(ValueError):
+        h.set_snapshot_color(bad, 2)
+    assert h.sock.sent == []
+
+
 def test_set_block_enable_wire():
     # The grid slot goes on the wire unchanged — including the output
     # block's non-contiguous slot 13 (HW-proven 2026-07-15).

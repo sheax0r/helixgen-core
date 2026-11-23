@@ -372,3 +372,14 @@ def test_snapshot_names_are_ordered_by_index():
     st = chain.build_chain(eb)
     assert st["snapshots"] == ["Rhythm", "Chorus", "Lead"]
     assert chain.build_chain(_split_join())["snapshots"] == []
+
+
+def test_snapshot_colours_align_with_names_by_index():
+    eb = _serial()
+    eb["cg__"]["entt"] = {"snps": [
+        {"si__": 2, "name": "Lead", "colr": 5}, {"si__": 0, "name": "Rhythm", "colr": 2},
+        {"si__": 1, "name": "Chorus"}]}          # slot 1 has no colr -> 0 (auto)
+    st = chain.build_chain(eb)
+    assert st["snapshot_colors"] == [2, 0, 5]    # same index order as snapshots
+    assert len(st["snapshot_colors"]) == len(st["snapshots"])
+    assert chain.build_chain(_split_join())["snapshot_colors"] == []

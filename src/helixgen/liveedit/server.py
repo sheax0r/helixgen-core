@@ -100,6 +100,10 @@ def _route(session: LiveSession, path: str, b: dict):
         if not isinstance(name, str):
             raise LiveError("field 'name' must be a string")
         return session.rename_snapshot(_int(b, "index"), name)
+    if path == "/snapshot/color":
+        if "color" not in b:
+            raise LiveError("missing field 'color'")
+        return session.set_snapshot_color(_int(b, "index"), b["color"])
     if path == "/snapshot/copy":
         return session.copy_snapshot(_int(b, "src"), _int(b, "dst"))
     if path == "/snapshot/swap":
