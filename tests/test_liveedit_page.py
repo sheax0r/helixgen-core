@@ -44,7 +44,8 @@ def test_page_has_snapshot_panel_and_endpoints():
     html = PAGE.read_text()
     for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"',
                    '"/snapshot/globals"', "Snapshot settings", "global.snapshot.edits",
-                   '"/snapshot/copy"', '"/snapshot/swap"', "Paste here", "Swap here"):
+                   '"/snapshot/copy"', '"/snapshot/swap"', "Paste here", "Swap here",
+                   '"/snapshot/color"', "sp-swatch", "SNAP_COLORS"):
         assert marker in html, marker
 
 

@@ -430,6 +430,26 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.ids.snapbody.find((e) => e.tagName === "button" && e.textContent === "Copy").length === 2, "copy buttons missing");
   }
 
+  { // S28: snapshot colour picker — click the dot, choose a swatch (81v.2)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])],
+      { snapshot: 0, snapshots: ["Rhythm", "Chorus"], snapshot_colors: [2, 0] }));
+    x.ids.snap.onclick();
+    let rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    const dot = rows[0].find((e) => e._cls && e._cls.has("sp-dot"))[0];
+    ok("S28 the dot carries the snapshot's colour", dot && dot.style.background === "#e23c3c", dot && dot.style.background);
+    dot.onclick();                                       // open the picker on snapshot 1
+    const swatches = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch"));
+    ok("S28 clicking the dot opens the 12-colour picker", swatches.length === 12, swatches.length);
+    ok("S28 the current colour is marked", swatches[2]._cls.has("on") && !swatches[0]._cls.has("on"), "wrong current swatch");
+    swatches[6].onclick();                               // choose Green (index 6)
+    const post = x.posts.filter((p) => p.url === "/snapshot/color").pop();
+    ok("S28 choosing a swatch posts /snapshot/color index+colour",
+      post && post.body.index === 0 && post.body.color === 6, JSON.stringify(post && post.body));
+    ok("S28 the picker closes after a choice",
+      x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-swatch")).length === 0, "picker still open");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

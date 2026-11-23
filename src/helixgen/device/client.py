@@ -929,6 +929,24 @@ class HelixClient:
         self._rpc("/SetSnapshotName", [("i", i), ("s", name)])
         return True
 
+    def set_snapshot_color(self, index: int, color: int) -> bool:
+        """Set snapshot ``index``'s colour on the live device.
+
+        ``/SnapshotColorSet [reqid, snapshotIndex, colr]`` → ``/status`` (opcode
+        decoded 2026-11-23 by probing the device: the device RPC is the
+        CamelCase ``/SnapshotColorSet``, not the app-internal ``/setSnapshotColor``
+        which answers ``NOT known``). ``colr`` is an int index into the shared
+        preset-colour palette (``maintenance.PRESET_COLORS``) — the same ``colr``
+        attr snapshots carry in ``cg__.entt.snps[]``. HW-verified: the stored
+        ``colr`` reflects the written value; reply is ``/status`` only, so a
+        caller that needs it reflected re-reads the buffer."""
+        i = int(index)
+        if not 0 <= i <= 7:
+            raise ValueError(f"snapshot index {index} out of range 0..7")
+        c = int(color)
+        self._rpc("/SnapshotColorSet", [("i", i), ("i", c)])
+        return True
+
     def set_block_enable(self, path: int, block: int, enable: bool, *,
                          fast: bool = False) -> bool:
         """Bypass/enable a block in the live edit buffer.

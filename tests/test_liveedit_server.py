@@ -149,6 +149,26 @@ def test_snapshot_out_of_range_is_refused_and_writes_nothing(srv):
     assert c.snapshots_activated == []
 
 
+def test_snapshot_color_route_sets_the_colour(srv):
+    c, s, server = srv
+    code, _, _ = req(server, "POST", "/snapshot/color", {"index": 2, "color": 4})
+    assert code == 200
+    assert c.colors == [(2, 4)]
+
+
+def test_snapshot_color_route_accepts_a_palette_name(srv):
+    c, s, server = srv
+    code, _, _ = req(server, "POST", "/snapshot/color", {"index": 0, "color": "red"})
+    assert code == 200 and c.colors == [(0, 2)]
+
+
+def test_snapshot_color_route_validates(srv):
+    c, s, server = srv
+    assert req(server, "POST", "/snapshot/color", {"index": 9, "color": 2})[0] == 400
+    assert req(server, "POST", "/snapshot/color", {"index": 0})[0] == 400   # missing color
+    assert c.colors == []
+
+
 def test_snapshot_copy_route_delegates_src_then_dst(srv):
     c, s, server = srv
     code, _, _ = req(server, "POST", "/snapshot/copy", {"src": 1, "dst": 2})
