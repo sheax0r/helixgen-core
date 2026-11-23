@@ -327,6 +327,11 @@ body.down main{opacity:.55}
   color:var(--ink);border-radius:6px;padding:2px 6px}
 .sp-note{font-size:12px;color:var(--dim);margin:6px 2px}
 .sp-defer{font-size:11px;color:var(--faint);margin-top:14px;border-top:1px solid var(--edge);padding-top:10px;line-height:1.5}
+.sp-clip{display:flex;gap:8px;align-items:center;justify-content:space-between;font-size:12px;
+  background:#14203d;border:1px solid #2c66d6;border-radius:8px;padding:7px 10px;margin-bottom:9px;color:var(--ink)}
+.sp-clip .btn{padding:2px 8px;font-size:11px;flex:0 0 auto}
+.sp-src{font-size:11px;color:var(--faint);font-style:italic;margin-left:auto}
+.sp-go{background:#1f4b2a;border-color:#3f8f52;color:#d9ffe0}
 .sp-sect{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);margin:16px 2px 7px}
 .sp-set{display:flex;gap:8px;align-items:center;justify-content:space-between;font-size:12px;color:var(--dim);
   padding:5px 2px;border-bottom:1px solid var(--edge)}
@@ -1369,13 +1374,14 @@ function meta(m) {
  * spike or a batch-write orchestration. Tracked as follow-up beads. */
 let snapOpen = false;
 let snapEditing = null;            // index being renamed, or null
+let snapClip = null;               // {mode:'copy'|'swap', src:i} while a copy/swap target is being picked
 let snapInput = null;              // the live rename input, so a teardown can drop its blur handler
 let snapGlobals = null;            // cached /snapshot/globals rows (Discard-Edits + tempo/MIDI context)
 let snapGlobalsBusy = false;
 function snapToggle() { snapOpen ? snapClose() : snapShow(); }
 function snapShow() { if (!S || S.snapshot == null) return; snapOpen = true;
   $("snappanel").hidden = false; snapRender(); fetchSnapGlobals(); }
-function snapClose() { snapOpen = false; snapEditing = null; $("snappanel").hidden = true; }
+function snapClose() { snapOpen = false; snapEditing = null; snapClip = null; $("snappanel").hidden = true; }
 // The snapshot-relevant Global Settings (Discard-Edits toggle + read-only tempo
 // and MIDI-Recall context). Read on open and after a toggle; cached so a plain
 // re-render (meta tick) never re-hits the device.
@@ -1402,6 +1408,16 @@ function snapRender() {
   if (!names.length) {
     body.append(el("p", "sp-note", "This preset reports no configured snapshots.")); return;
   }
+  if (snapClip) {                                   // a copy/swap target is being picked
+    const bn = el("div", "sp-clip");
+    bn.append(el("span", null, (snapClip.mode === "copy"
+      ? "Copy snapshot " + (snapClip.src + 1) + " → choose a target"
+      : "Swap snapshot " + (snapClip.src + 1) + " with… (colours stay with the slot)")));
+    const cx = el("button", "btn", "Cancel"); cx.type = "button";
+    cx.onclick = () => { snapClip = null; snapRender(); };
+    bn.append(cx);
+    body.append(bn);
+  }
   names.forEach((nm, i) => {
     const row = el("div", "sp-row" + (i === S.snapshot ? " active" : ""));
     row.append(el("span", "sp-dot"));
@@ -1423,6 +1439,28 @@ function snapRender() {
       row.append(inp); body.append(row); inp.focus(); inp.select(); return;
     }
     const name = el("span", "sp-name", nm); row.append(name);
+    if (snapClip) {
+      // picking a target for a pending copy/swap
+      if (i === snapClip.src) {
+        row.append(el("span", "sp-src", snapClip.mode === "copy" ? "source" : "first"));
+      } else {
+        const go = el("button", "btn sp-go",
+          snapClip.mode === "copy" ? "Paste here" : "Swap here"); go.type = "button";
+        go.onclick = () => {
+          if (down) return;
+          const copy = snapClip.mode === "copy";
+          const url = copy ? "/snapshot/copy" : "/snapshot/swap";
+          const b = copy ? { src: snapClip.src, dst: i } : { a: snapClip.src, b: i };
+          snapClip = null;
+          send(url, b, () => toast((copy ? "Copied" : "Swapped") + " snapshot " + (i + 1), true),
+            () => {});
+          snapRender();                              // drop the picker chrome at once
+        };
+        row.append(go);
+      }
+      body.append(row);
+      return;
+    }
     if (i !== S.snapshot) {
       const sel = el("button", "btn", "Select"); sel.type = "button";
       sel.onclick = () => { if (down) return; send("/snapshot", { index: i }, () => {}, () => {}); };
@@ -1431,12 +1469,18 @@ function snapRender() {
     const ren = el("button", "btn", "Rename"); ren.type = "button";
     ren.onclick = () => { if (down) return; snapEditing = i; snapRender(); };
     row.append(ren);
+    const cp = el("button", "btn", "Copy"); cp.type = "button";
+    cp.onclick = () => { if (down) return; snapClip = { mode: "copy", src: i }; snapRender(); };
+    row.append(cp);
+    const sw = el("button", "btn", "Swap"); sw.type = "button";
+    sw.onclick = () => { if (down) return; snapClip = { mode: "swap", src: i }; snapRender(); };
+    row.append(sw);
     body.append(row);
   });
   snapSettings(body);
   const defer = el("div", "sp-defer",
-    "Colour, copy/paste, swap and the per-param “Snapshot Ctrl” toggle are "
-    + "coming in a follow-up — the device has no live opcode for them yet.");
+    "Colour and the per-param “Snapshot Ctrl” toggle are coming in a follow-up "
+    + "— the device has no live opcode for them yet.");
   body.append(defer);
 }
 
