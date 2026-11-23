@@ -118,7 +118,7 @@ body.down #devbody .dctl{opacity:.5;pointer-events:none}
 .tn-axis{stroke:var(--edge2);stroke-width:2}
 .tn-center{stroke:var(--dim);stroke-width:2}
 .tn-zone{fill:rgba(63,208,176,.16)}
-.tn-ptr{stroke:#cfe0ff;stroke-width:3;transition:x 90ms linear}
+.tn-ptr{stroke:#cfe0ff;stroke-width:3;transition:transform 90ms linear}
 .tn-ptr.in-tune{stroke:#3fd0b0}
 #tuner-readout{display:flex;gap:16px;font-variant-numeric:tabular-nums}
 #tuner-cents{font-size:18px;font-weight:600;color:var(--ink)}
@@ -1747,26 +1747,36 @@ addPane({ id: "commands", label: "Command Center", el: () => $("cmdpane"), onSho
  * while visible. Read-only — tuner SETTINGS belong to the global-settings epic. */
 const TUNER_POLL_MS = 120;
 let tunerTimer = null;
+// Slide the needle to a cents offset. The pointer is an SVG <line> fixed at
+// x=150; we move it with `transform: translateX` (CSS-animatable — unlike a
+// <line>'s x1/x2), so the ±50-cent position glides rather than hard-jumps.
+function tunerSetPointer(ptr, cents) {
+  const c = Number.isFinite(cents) ? Math.max(-50, Math.min(50, cents)) : 0;
+  ptr.style.transform = "translateX(" + (c * 2.8) + "px)";   // ±50 cents -> ±140 px
+}
 function tunerRender(j) {
   const note = $("tuner-note"), ptr = $("tuner-pointer"),
     cents = $("tuner-cents"), hz = $("tuner-hz"), hint = $("tuner-hint");
   hint.hidden = true;
-  if (!j || !j.signal) {
-    note.textContent = "—"; note.className = "";
-    cents.textContent = j && j.connected === false ? "no device" : "play a note…";
+  // A finite cents is required to place the needle / flag in-tune; guard a
+  // partial reading (a contract-breaking server) so it never paints NaN.
+  const c = j && j.signal ? Number(j.cents) : NaN;
+  if (!j || !j.signal || !Number.isFinite(c)) {
+    note.textContent = (j && j.signal && j.name) ? j.name : "—"; note.className = "";
+    cents.textContent = j && j.connected === false ? "no device"
+      : (j && j.signal ? "" : "play a note…");
     hz.textContent = "";
-    ptr.setAttribute("x1", 150); ptr.setAttribute("x2", 150);
+    tunerSetPointer(ptr, 0);
     ptr.setAttribute("class", "tn-ptr");
     return;
   }
-  const c = Math.max(-50, Math.min(50, j.cents));   // clamp to the meter range
-  const x = 150 + c * 2.8;                           // ±50 cents -> ±140 px
-  ptr.setAttribute("x1", x); ptr.setAttribute("x2", x);
-  const inTune = Math.abs(j.cents) <= 3;
+  tunerSetPointer(ptr, c);
+  const inTune = Math.abs(c) <= 3;
   ptr.setAttribute("class", "tn-ptr" + (inTune ? " in-tune" : ""));
-  note.textContent = j.name; note.className = inTune ? "tuned" : "";
-  cents.textContent = (j.cents > 0 ? "+" : "") + j.cents + "¢";
-  hz.textContent = j.hz ? j.hz.toFixed(1) + " Hz" : "";
+  note.textContent = j.name || "—"; note.className = inTune ? "tuned" : "";
+  cents.textContent = (c > 0 ? "+" : "") + c + "¢";
+  const hzNum = Number(j.hz);
+  hz.textContent = Number.isFinite(hzNum) && hzNum ? hzNum.toFixed(1) + " Hz" : "";
 }
 async function tunerPoll() {
   try {
