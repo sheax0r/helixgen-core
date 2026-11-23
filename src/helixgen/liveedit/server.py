@@ -173,6 +173,14 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                     self._json(200, session.list_presets())
                 except LiveError as e:
                     self._json(e.status, {"error": str(e)})
+            elif path == "/snapshot/globals":
+                # the snapshot panel's slice of Global Settings (Discard-Edits +
+                # read-only tempo/MIDI context). Read-only; writes reuse
+                # POST /device/set. (81v.2 §8.5)
+                try:
+                    self._json(200, session.snapshot_globals())
+                except LiveError as e:
+                    self._json(e.status, {"error": str(e)})
             elif path == "/events":
                 self._sse()
             elif path == "/library/state" and drawer is not None:

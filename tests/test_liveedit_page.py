@@ -42,7 +42,8 @@ def test_page_has_library_drawer_and_endpoints():
 
 def test_page_has_snapshot_panel_and_endpoints():
     html = PAGE.read_text()
-    for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"'):
+    for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"',
+                   '"/snapshot/globals"', "Snapshot settings", "global.snapshot.edits"):
         assert marker in html, marker
 
 
