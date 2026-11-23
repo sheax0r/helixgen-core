@@ -242,11 +242,23 @@ def test_add_split_raises_if_not_applied():
         h.add_split(0, 2)
 
 
-def test_remove_block_sets_null_model_and_verifies():
+def _flow_models(models):
+    """A stubbed edit buffer whose flow 0 carries real models at the given
+    slots: ``{grid_slot: model_id}``."""
+    blks = []
+    for s, mid in sorted(models.items()):
+        blks += [s, {"mdls": [{"id__": mid}]}]
+    return {"sfg_": {"flow": [{"blks": blks}]}}
+
+
+# real model ids (vendored defs): a distortion, a Split-Y routing node
+_DIST, _SPLIT = 310, 475
+
+
+def test_remove_block_sends_null_modelset():
     from helixgen.device.client import NULL_MODEL
     h = HelixClient("10.0.0.99")
-    # after the /ModelSet, the re-read shows slot 2 gone -> removed
-    h.read_edit_buffer = lambda **k: _flow(0, 1, 13)
+    h.read_edit_buffer = lambda **k: _flow_models({0: 769, 2: _DIST, 13: 783})
     _wire(h)
     assert h.remove_block(0, 2) is True
     raw = h.sock.sent[-1]
@@ -262,16 +274,37 @@ def test_remove_block_rejects_io_slots(slot):
     h = HelixClient("10.0.0.99")
     _wire(h)
     with pytest.raises(HelixError):
-        h.remove_block(0, slot)  # guarded before any write
+        h.remove_block(0, slot)  # guarded before any read/write
 
 
-def test_remove_block_raises_if_not_applied():
+def test_remove_block_rejects_a_routing_node():
+    # a split/join node is routing — nulling it would orphan the parallel lane,
+    # and the CLI verb reaches this guard with no session in front of it.
     h = HelixClient("10.0.0.99")
-    # slot 2 is STILL present after the write -> the device didn't apply it
-    h.read_edit_buffer = lambda **k: _flow(0, 1, 2, 13)
+    h.read_edit_buffer = lambda **k: _flow_models({0: 769, 2: _SPLIT, 13: 783})
     _wire(h)
     with pytest.raises(HelixError):
         h.remove_block(0, 2)
+    assert h.sock.sent == []                      # refused before any write
+
+
+def test_remove_block_rejects_a_missing_block():
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow_models({0: 769, 13: 783})  # nothing at 2
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.remove_block(0, 2)
+    assert h.sock.sent == []
+
+
+@pytest.mark.parametrize("path", [-1, 3])
+def test_remove_block_rejects_absent_path(path):
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow_models({0: 769, 2: _DIST, 13: 783})
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.remove_block(path, 2)
+    assert h.sock.sent == []
 
 
 def test_cli_topology_verbs_help_contract():

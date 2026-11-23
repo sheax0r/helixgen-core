@@ -1019,6 +1019,13 @@ class HelixClient:
         return self.do_agenda([_agenda.move(
             bl_s=src_s, bl_d=dst_s, fl_s=int(path), fl_d=int(path))])
 
+    #: Node categories that are routing/endpoint, not a removable processing
+    #: block. ``remove_block`` refuses these so a direct caller (the CLI verb,
+    #: a script) cannot null a split/join node and orphan a parallel lane, or a
+    #: flow endpoint. Keep in step with ``liveedit.session._NOT_ADDABLE``.
+    _UNREMOVABLE_CATEGORIES = frozenset(
+        {"input", "output", "split", "join", "none", "harness"})
+
     def remove_block(self, path: int, block: int) -> bool:
         """Remove the block at grid slot ``block`` on DSP ``path`` from the live
         edit buffer (the Stadium app's block-delete). Grid slots are ``device
@@ -1029,11 +1036,20 @@ class HelixClient:
         ``/ModelSet`` of the slot to the Null model, which drops the block from
         ``blks`` entirely, leaving a **hole** (nothing else shifts, matching the
         offline ``remove-block`` verb and the hardware). The ``/ModelSet`` reply
-        is not a success gate, so it re-reads and confirms the slot is now empty,
-        raising :class:`HelixError` if the device did not apply it.
+        is not a success gate; this method does not re-read — like
+        :meth:`move_block`, the caller verifies from the buffer (the live
+        editor's :meth:`~helixgen.liveedit.session.LiveSession.remove_block`
+        does).
 
-        Raises :class:`HelixError` if ``block`` is a fixed input/output slot
-        (0, 13, 14, 27) — those are not removable.
+        Reads the live buffer and **refuses** (raising :class:`HelixError`)
+        unless the removal is unambiguously safe: ``block`` is a fixed
+        input/output slot (0, 13, 14, 27); DSP ``path`` is absent; there is no
+        block at the slot; or the block is a routing/endpoint node (split, join,
+        input, output, none, harness) — nulling one would orphan a parallel
+        lane. This guard lives here (not only in the session) so the ``device
+        remove-block`` CLI verb is safe too — removal nulls a slot from **any**
+        category, so the usual cross-category ``/ModelSet`` rejection does not
+        protect a split node.
         """
         slot = _grid_slot(block)
         io = {0, 13, 14, 27}
@@ -1042,15 +1058,23 @@ class HelixClient:
                 f"remove_block: slots {sorted(io)} are fixed input/output "
                 f"blocks and cannot be removed (got {block})")
         p = int(path)
-        self.set_block_model(p, slot, NULL_MODEL)
         eb = self.read_edit_buffer(fast=True)
         flow = (eb.get("sfg_") or {}).get("flow") if isinstance(eb, dict) else None
-        after = {s for s, _ in self._blks_pairs(flow[p])} if (
-            isinstance(flow, list) and 0 <= p < len(flow)) else set()
-        if slot in after:
+        if not (isinstance(flow, list) and 0 <= p < len(flow)):
+            raise HelixError(f"remove_block: no DSP path {path} in the edit buffer")
+        raw = next((b for s, b in self._blks_pairs(flow[p]) if s == slot), None)
+        mdls = raw.get("mdls") if isinstance(raw, dict) else None
+        m0 = mdls[0] if isinstance(mdls, list) and mdls else None
+        mid = m0.get("id__") if isinstance(m0, dict) else None
+        if not isinstance(mid, int) or isinstance(mid, bool):
             raise HelixError(
-                f"remove_block: the device did not apply the removal (slot "
-                f"{block} is still occupied after the /ModelSet)")
+                f"remove_block: no block at path {path} slot {block} to remove")
+        cat = _defs.category_for(mid)
+        if cat in self._UNREMOVABLE_CATEGORIES:
+            raise HelixError(
+                f"remove_block: a {cat!r} node is a routing or endpoint block "
+                f"and cannot be removed (path {path} slot {block})")
+        self.set_block_model(p, slot, NULL_MODEL)
         return True
 
     def add_split(self, path: int, block: int) -> bool:
