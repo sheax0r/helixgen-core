@@ -838,3 +838,29 @@ def test_globaleq_set_requires_string_fields(srv):
     code, _, _ = req(srv[2], "POST", "/globaleq/set",
                      {"output": 7, "band": "low", "param": "gain", "value": 1})
     assert code == 400
+
+
+def test_globaleq_reset_route(srv):
+    c = srv[0]
+    code, _, data = req(srv[2], "POST", "/globaleq/reset", {"output": "qtr"})
+    assert code == 200, data
+    assert ("qtr", "low", "gain", 0.0) in c.globaleq_sets
+
+
+def test_globaleq_apply_route(srv):
+    c = srv[0]
+    code, _, data = req(srv[2], "POST", "/globaleq/apply",
+                        {"output": "xlr", "bands": {"low": {"gain": 2.5}}, "level": -1.0})
+    assert code == 200, data
+    assert ("xlr", "low", "gain", 2.5) in c.globaleq_sets
+    assert ("xlr", "", "level", -1.0) in c.globaleq_sets
+
+
+def test_globaleq_apply_requires_bands_object(srv):
+    code, _, _ = req(srv[2], "POST", "/globaleq/apply", {"output": "qtr", "bands": "nope"})
+    assert code == 400
+
+
+def test_globaleq_reset_requires_output(srv):
+    code, _, _ = req(srv[2], "POST", "/globaleq/reset", {})
+    assert code == 400
