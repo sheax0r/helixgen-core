@@ -962,6 +962,83 @@ class HelixClient:
         self._rpc("/SnapshotColorSet", [("i", i), ("i", c)])
         return True
 
+    def assign_snap_param(self, path: int, block: int, pid: int,
+                          value: float, sub: int = 0) -> int:
+        """Put a block param under per-snapshot control ("Snapshot Ctrl" ON) in
+        the live edit buffer and return the device-allocated target id.
+
+        ``/assignSnapParam [reqid, dsp, grid_slot, sub, paramId, value:f]`` —
+        opcode captured 2026-11-23 from the Stadium Debug app (frida app-MITM;
+        see ``docs/.../2026-11-23-snapshot-param-control-re-findings.md``). The
+        device seeds ``value`` into every snapshot's ``tamv`` for the param,
+        allocates a ``cg__.entt.trgs`` target (``type 2``) and adds it to the
+        snapshot-tracked set (``ctm_.stid``). The reply is
+        ``/status [reqid, allocatedTargetId, 0]`` — field 2 is the NEW target
+        id, not a status code (contrast :meth:`remove_snapshot_target`), so a
+        plain :func:`_status0` check would misread it; the 2001 echo is
+        ``/assignSnapshotParam`` with the target id appended. ``value`` is in
+        the param's own 0..1-style stored units (the same units
+        :meth:`set_param`/:meth:`edit_buffer_params` use). Raises
+        :class:`HelixError` if the device did not return a target id."""
+        replies = self._rpc(
+            "/assignSnapParam",
+            [("i", int(path)), ("i", _grid_slot(block)), ("i", int(sub)),
+             ("i", int(pid)), ("f", float(value))])
+        for addr, args in replies:
+            if addr == "/error":
+                raise HelixError(f"/assignSnapParam failed: {args}")
+            # Reply is [reqid, allocatedTargetId, ok]; field 2 is the id.
+            if addr == "/status" and len(args) >= 2:
+                tid = args[1]
+                if isinstance(tid, int) and not isinstance(tid, bool):
+                    return tid
+        raise HelixError("the device did not return a target id for "
+                         "/assignSnapParam")
+
+    def remove_snapshot_target(self, target_id: int) -> bool:
+        """Remove a snapshot target (turn "Snapshot Ctrl" OFF for the param or
+        block it belongs to) from the live edit buffer.
+
+        ``/removeSnapshotTarget [reqid, targetId]`` → ``/status [reqid, code,
+        dirty]`` (opcode seen in the ModelSet cascade, byte-framing pinned
+        2026-11-23). ``target_id`` is the ``cg__.entt.trgs[].id__`` of the target
+        — resolve it for a param with :meth:`snapshot_param_target`. Success is
+        read from field 2 (the status code) via :meth:`_ok`, NOT the trailing
+        field, which is the edit-buffer dirty flag a mutating op can set.
+
+        When a controller (MIDI/EXP/FS) shares the param's target, this
+        **untracks** it from the snapshot set (``ctm_.stid``) and leaves the
+        ``trgs`` target and the controller intact — HW-confirmed 2026-11-23."""
+        return self._ok(self._rpc("/removeSnapshotTarget",
+                                  [("i", int(target_id))]))
+
+    def snapshot_param_target(self, path: int, block: int, pid: int,
+                              sub: int = 0, *,
+                              doc: Optional[dict] = None) -> Optional[int]:
+        """The snapshot target id (``trgs[].id__``) a param is under, or ``None``
+        if it is not snapshot-controlled.
+
+        Resolves the param's block device-instance id (``eID_ == 28*dsp +
+        grid_slot``, the device's canonical id; see ``untranscode``) and finds
+        the ``type 2`` target with that entity, ``pid`` and model slot that is
+        in the snapshot-tracked set (``ctm_.stid``). Pass ``doc`` to resolve
+        against an already-read buffer; otherwise this reads it."""
+        d = doc if doc is not None else self.read_edit_buffer()
+        entt = (d.get("cg__") or {}).get("entt") or {}
+        eid = 28 * int(path) + _grid_slot(block)
+        tracked = {t for t in (entt.get("ctm_") or {}).get("stid") or []
+                   if isinstance(t, int) and not isinstance(t, bool)}
+        for t in entt.get("trgs") or []:
+            if not isinstance(t, dict):
+                continue
+            tid = t.get("id__")
+            if (t.get("eID_") == eid and t.get("pid_") == int(pid)
+                    and t.get("type") == 2
+                    and (t.get("slot") or 0) == int(sub)
+                    and tid in tracked):
+                return tid
+        return None
+
     def set_block_enable(self, path: int, block: int, enable: bool, *,
                          fast: bool = False) -> bool:
         """Bypass/enable a block in the live edit buffer.

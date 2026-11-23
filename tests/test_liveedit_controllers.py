@@ -237,3 +237,62 @@ def test_clear_param_controllers_refuses_a_stale_rev():
     with _pytest.raises(LiveError) as ei:
         s.clear_param_controllers(0, 2, DRIVE, rev=s.rev + 1)
     assert ei.value.status == 409
+
+
+# --- set_snapshot_control (81v.2, opcode captured 2026-11-23) -----------------
+
+def test_snapshot_control_on_assigns_with_current_value():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.set_snapshot_control(0, 2, DRIVE, True)
+    assert len(c.snap_assigns) == 1
+    path, block, pid, _val = c.snap_assigns[0]
+    assert (path, block, pid) == (0, 2, DRIVE)
+    assert c.snap_removes == []
+
+
+def test_snapshot_control_off_removes_the_target():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    c.snap_targets[(0, 2, DRIVE)] = 77          # already snapshot-controlled
+    s.set_snapshot_control(0, 2, DRIVE, False)
+    assert c.snap_removes == [77]
+    assert c.snap_assigns == []
+
+
+def test_snapshot_control_on_when_already_on_is_a_noop():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    c.snap_targets[(0, 2, DRIVE)] = 77
+    s.set_snapshot_control(0, 2, DRIVE, True)
+    assert c.snap_assigns == [] and c.snap_removes == []
+
+
+def test_snapshot_control_off_when_already_off_is_a_noop():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    s.set_snapshot_control(0, 2, DRIVE, False)
+    assert c.snap_assigns == [] and c.snap_removes == []
+
+
+def test_snapshot_control_rejects_unknown_param():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.set_snapshot_control(0, 2, 9999, True)
+    assert c.snap_assigns == []
+
+
+def test_snapshot_control_refuses_an_endpoint_block():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.set_snapshot_control(0, 0, 0, True)   # input endpoint
+    assert c.snap_assigns == []
+
+
+def test_snapshot_control_refuses_a_stale_rev():
+    c, s = _live_session()
+    from tests.test_liveedit_session import DRIVE
+    with _pytest.raises(LiveError) as ei:
+        s.set_snapshot_control(0, 2, DRIVE, True, rev=s.rev + 1)
+    assert ei.value.status == 409
+    assert c.snap_assigns == []

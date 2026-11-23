@@ -728,3 +728,31 @@ def test_controllers_assign_refuses_stale_rev(srv):
                          "rev": s.rev + 1})
     assert code == 409, data
     assert c.attaches == []
+
+
+def test_snapshot_param_control_route_turns_on(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/snapshot/param-control",
+                        {"path": 0, "block": 2, "pid": DRIVE, "on": True})
+    assert code == 200, data
+    assert len(c.snap_assigns) == 1
+    assert c.snap_assigns[0][:3] == (0, 2, DRIVE)
+
+
+def test_snapshot_param_control_route_turns_off(srv):
+    c, s, server = srv
+    c.snap_targets[(0, 2, DRIVE)] = 42
+    code, _, data = req(server, "POST", "/snapshot/param-control",
+                        {"path": 0, "block": 2, "pid": DRIVE, "on": False})
+    assert code == 200, data
+    assert c.snap_removes == [42]
+
+
+def test_snapshot_param_control_route_validates_on(srv):
+    c, s, server = srv
+    # missing 'on' and non-bool 'on' are both 400; nothing reaches the device
+    assert req(server, "POST", "/snapshot/param-control",
+               {"path": 0, "block": 2, "pid": DRIVE})[0] == 400
+    assert req(server, "POST", "/snapshot/param-control",
+               {"path": 0, "block": 2, "pid": DRIVE, "on": "yes"})[0] == 400
+    assert c.snap_assigns == [] and c.snap_removes == []
