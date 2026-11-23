@@ -133,8 +133,46 @@ _SLOT_TO_PARAM = {p.slot: name for name, p in PARAMS.items()}
 _INDEX_TO_BAND = {b.index: name for name, b in BANDS.items()}
 
 
+# Factory-default band values (the app's "Reset EQ" target). Frequencies are
+# per-band (DEFAULT_FREQ); gain flat, Q 0.707, cut slope 1, every band enabled —
+# matching the device's own factory `global.eq.sync` snapshot (HW 2026-11-23).
+DEFAULT_GAIN = 0.0
+DEFAULT_Q = 0.707
+DEFAULT_SLOPE = 1
+
+
 def outputs() -> List[str]:
     return list(OUTPUTS)
+
+
+def normalize_output(output: str) -> str:
+    """Lower-case + validate an output key on its own. Raises ``ValueError``."""
+    o = output.strip().lower()
+    if o not in OUTPUTS:
+        raise ValueError(f"unknown output {output!r}; want one of {outputs()}")
+    return o
+
+
+def default_band_params(band: str) -> Dict[str, Any]:
+    """The factory-default value for every param valid on ``band`` — what
+    ``Reset EQ`` writes. Only that band's params (cut bands get freq+slope, no
+    gain/Q; shelves freq+gain; peaking freq+gain+Q), each with ``enable=True``."""
+    b = band.strip().lower()
+    if b not in BANDS:
+        raise ValueError(f"unknown band {band!r}; want one of {band_names()}")
+    vals: Dict[str, Any] = {}
+    for p in BANDS[b].params:
+        if p == "enable":
+            vals[p] = True
+        elif p == "freq":
+            vals[p] = DEFAULT_FREQ[b]
+        elif p == "gain":
+            vals[p] = DEFAULT_GAIN
+        elif p == "q":
+            vals[p] = DEFAULT_Q
+        elif p == "slope":
+            vals[p] = DEFAULT_SLOPE
+    return vals
 
 
 def band_names() -> List[str]:

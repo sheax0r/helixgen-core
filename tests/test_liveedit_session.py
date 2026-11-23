@@ -2042,3 +2042,40 @@ def test_globaleq_write_is_refused_while_another_process_holds_the_device(s):
     with pytest.raises(LiveError) as e:
         s.globaleq_write("qtr", "low", "gain", 1.0)
     assert e.value.status == 409
+
+
+def test_globaleq_reset_writes_factory_defaults_under_one_lease(s):
+    out = s.globaleq_reset("qtr")
+    sets = s.client.globaleq_sets
+    # every band's params written; cut bands have slope not gain/q
+    assert ("qtr", "lowcut", "freq", 20.0) in sets
+    assert ("qtr", "lowcut", "slope", 1) in sets
+    assert ("qtr", "low", "gain", 0.0) in sets and ("qtr", "low", "q", 0.707) in sets
+    assert all(k[0] == "qtr" for k in sets)
+    # no gain/q written to a cut band
+    assert not any(k[1] == "lowcut" and k[2] in ("gain", "q") for k in sets)
+    assert out["bands"]["low"] == {"enable": True, "freq": 150.0, "gain": 0.0, "q": 0.707}
+    assert s.lease.transients == [("globals",)]      # ONE lease for the whole batch
+
+
+def test_globaleq_reset_rejects_a_bad_output(s):
+    with pytest.raises(LiveError) as e:
+        s.globaleq_reset("spdif")
+    assert e.value.status == 400
+    assert getattr(s.client, "globaleq_sets", []) == []
+
+
+def test_globaleq_apply_writes_payload_and_level(s):
+    out = s.globaleq_apply("xlr", {"low": {"gain": 3.0, "q": 1.2}}, level=-2.0)
+    assert ("xlr", "low", "gain", 3.0) in s.client.globaleq_sets
+    assert ("xlr", "low", "q", 1.2) in s.client.globaleq_sets
+    assert ("xlr", "", "level", -2.0) in s.client.globaleq_sets
+    assert out["bands"]["low"]["gain"] == 3.0 and out["level"] == -2.0
+    assert s.lease.transients == [("globals",)]
+
+
+def test_globaleq_apply_rejects_a_bad_param_before_writing_anything(s):
+    with pytest.raises(LiveError) as e:
+        s.globaleq_apply("qtr", {"lowcut": {"gain": 2.0}})   # cut band has no gain
+    assert e.value.status == 400
+    assert getattr(s.client, "globaleq_sets", []) == []       # atomic: nothing written

@@ -626,6 +626,28 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ew.reply(200, { ok: true, output: "qtr", band: "low", param: "enable", value: false }); await x.tick();
     ok("S32 a written band enable is marked set (provenance parity with numbers)",
       lowEnWrap._cls.has("eq-set"), [...lowEnWrap._cls].join(","));
+    // Reset EQ: one click flattens the output to factory defaults
+    const resetBtn = x.ids.eqbody.find((e) => e.tagName === "button" && e.textContent === "Reset EQ")[0];
+    ok("S32 a Reset EQ button is present", !!resetBtn, "no reset button");
+    resetBtn.onclick();
+    const rr = x.posts.filter((p) => p.url === "/globaleq/reset").slice(-1)[0];
+    ok("S32 Reset posts the output", rr && rr.body.output === "qtr", JSON.stringify(rr && rr.body));
+    rr.reply(200, { output: "qtr", bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } }); await x.tick();
+    const gainAfterReset = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Low Gain")[0];
+    ok("S32 Reset folds factory values back into the control", gainAfterReset && String(gainAfterReset.value) === "0",
+      gainAfterReset && gainAfterReset.value);
+    // Copy qtr → Paste onto xlr
+    const copyBtn = x.ids.eqbody.find((e) => e.tagName === "button" && e.textContent === "Copy")[0];
+    copyBtn.onclick(); await x.tick();
+    const xlrTab = x.ids.eqtabs.find((e) => e.tagName === "button" && e.textContent === "XLR")[0];
+    xlrTab.onclick(); await x.tick();
+    const pasteBtn = x.ids.eqbody.find((e) => e.tagName === "button" && e.textContent === "Paste")[0];
+    ok("S32 Paste is enabled after a Copy", pasteBtn && !pasteBtn.disabled, "paste disabled");
+    pasteBtn.onclick();
+    const pp = x.posts.filter((p) => p.url === "/globaleq/apply").slice(-1)[0];
+    ok("S32 Paste applies the copied EQ to the current output",
+      pp && pp.body.output === "xlr" && pp.body.bands && pp.body.bands.low, JSON.stringify(pp && pp.body));
+    pp.reply(200, { output: "xlr", bands: { low: { gain: 0, q: 0.707, enable: true, freq: 150 } } }); await x.tick();
   }
 
   { // S33: Command Center pane — read-only commands view (81v.4)

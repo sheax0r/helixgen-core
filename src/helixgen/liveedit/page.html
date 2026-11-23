@@ -153,7 +153,9 @@ body.down #ctlassign .btn,body.down #ctlassign select,body.down #ctlassign input
 .eq-unit{color:var(--faint);font-size:11px;min-width:18px}
 .eq-dot{display:inline-block;width:8px;height:8px;border-radius:2px;background:#5f84d6;
   box-shadow:inset 2px 0 0 #5f84d6;vertical-align:middle}
-body.down #eqbody .dctl,body.down #eqbody input{opacity:.5;pointer-events:none}
+.eq-bar{display:flex;gap:8px;margin:0 0 12px}
+.eq-bar .btn{padding:4px 10px;font-size:12px}
+body.down #eqbody .dctl,body.down #eqbody input,body.down #eqbody .btn{opacity:.5;pointer-events:none}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -1532,6 +1534,7 @@ const EQ_PU = {
 let GEQ = null;        // last snapshot {outputs:{qtr,xlr,pho:{enable,level,bands}}}
 let geqActive = null;  // current output key
 const GEQSET = {};     // UI shadow: GEQSET[out][band][param] = value written this session
+let EQCLIP = null;     // Copy/Paste clipboard: {output, bands:{band:{param:val}}, level}
 
 function geqShadow(out, band, param) {
   return !!(GEQSET[out] && GEQSET[out][band] &&
@@ -1605,6 +1608,46 @@ function geqMarkSet(node) {       // flip a band-enable control to "set" provena
   node.title = "Set this session";
   if (!node._eqdot) { node._eqdot = true; node.append(el("span", "eq-dot")); }
 }
+function geqSnapshotOf(out) {       // this output's EFFECTIVE EQ (snapshot+shadow)
+  const o = GEQ.outputs[out]; const bands = {};
+  EQ_BAND_ORDER.forEach((bn) => {
+    const bd = o.bands && o.bands[bn]; if (!bd) return;
+    const pr = {};
+    ["enable", "freq", "gain", "q", "slope"].forEach((p) => {
+      if (Object.prototype.hasOwnProperty.call(bd, p)) pr[p] = geqEffective(out, bn, p, bd[p]); });
+    bands[bn] = pr;
+  });
+  return { output: out, bands: bands, level: geqEffective(out, "", "level", o.level) };
+}
+function geqAbsorb(out, bands, level) {   // fold a reset/paste response into state+shadow
+  Object.keys(bands || {}).forEach((bn) => {
+    if (!GEQ.outputs[out].bands[bn]) GEQ.outputs[out].bands[bn] = {};
+    Object.keys(bands[bn]).forEach((p) => {
+      GEQ.outputs[out].bands[bn][p] = bands[bn][p]; geqRecord(out, bn, p, bands[bn][p]); });
+  });
+  if (level != null) { GEQ.outputs[out].level = level; geqRecord(out, "", "level", level); }
+}
+function geqToolbar(out) {
+  const bar = el("div", "eq-bar");
+  const reset = el("button", "btn", "Reset EQ"); reset.type = "button";
+  reset.title = "Flatten every band to factory defaults (keeps the cut filters active)";
+  reset.onclick = () => { if (down) return;
+    send("/globaleq/reset", { output: out },
+      (j) => { geqAbsorb(out, j.bands, j.level); geqRenderOutput(out); }, () => {}); };
+  const copy = el("button", "btn", "Copy"); copy.type = "button";
+  copy.title = "Copy this output's EQ, to paste onto another output";
+  copy.onclick = () => { if (down) return; EQCLIP = geqSnapshotOf(out); geqRenderOutput(out); };
+  const paste = el("button", "btn", "Paste"); paste.type = "button";
+  paste.disabled = down || !EQCLIP;
+  paste.title = EQCLIP
+    ? ("Paste the EQ copied from " + (EQ_OUT_LABEL[EQCLIP.output] || EQCLIP.output))
+    : "Copy an output's EQ first";
+  paste.onclick = () => { if (down || !EQCLIP) return;
+    send("/globaleq/apply", { output: out, bands: EQCLIP.bands, level: EQCLIP.level },
+      (j) => { geqAbsorb(out, j.bands, j.level); geqRenderOutput(out); }, () => {}); };
+  bar.append(reset, copy, paste);
+  return bar;
+}
 function geqRenderOutput(out) {
   const body = $("eqbody"); body.textContent = "";
   const o = GEQ && GEQ.outputs && GEQ.outputs[out];
@@ -1613,6 +1656,7 @@ function geqRenderOutput(out) {
   head.append(geqToggle(out, "", "Global EQ enabled", o.enable, true));
   head.append(geqNum(out, "", "level", o.level));
   body.append(head);
+  body.append(geqToolbar(out));
   EQ_BAND_ORDER.forEach((bn) => {
     const bd = o.bands && o.bands[bn]; if (!bd) return;
     const row = el("div", "eq-band");
