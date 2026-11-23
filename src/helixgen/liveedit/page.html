@@ -500,6 +500,15 @@ body.down main{opacity:.55}
     <p class="dhint" id="tuner-hint" hidden></p>
   </div>
 </section>
+<section class="pane" id="deviceinfopane" hidden aria-label="Device info">
+  <div class="dhead">
+    <div><h2 class="dtitle">Device Info</h2>
+      <p class="dsub">Identity, firmware and storage of the connected device. Read-only.</p></div>
+    <button class="btn" id="dinforefresh" type="button" title="Re-read the device identity">Refresh</button>
+  </div>
+  <div id="dinfobody"></div>
+  <p class="dnote" id="dinfonote">Backup and restore are command-line tools (<code>helixgen device backup</code> / <code>restore</code>) — restore overwrites device content, so it stays off this panel. Firmware updates, Line 6 account, remote-access PIN and licenses live on the device's own screen, by design.</p>
+</section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <aside id="snappanel" hidden aria-label="Snapshots">
   <div class="sphead"><h3>Snapshots</h3><button class="btn" id="snapclose" type="button" title="Close">&times;</button></div>
@@ -1793,6 +1802,49 @@ function tunerOnShow(active) {
   tunerTimer = setInterval(tunerPoll, TUNER_POLL_MS);
 }
 addPane({ id: "tuner", label: "Tuner", el: () => $("tunerpane"), onShow: tunerOnShow });
+
+/* ---------- Device Info pane (81v.11): read-only identity strip --------------
+ * The connected device's identity / firmware / storage (GET /device/info over
+ * /ProductInfoGet). Outside the preset, so it does NOT consume the signal-flow
+ * state S. Read on demand (focus / Refresh), like the Device settings pane.
+ * Every value is device data: textContent only. */
+function diBytes(n) {
+  if (typeof n !== "number" || !isFinite(n) || n < 0) return null;
+  return (n / 1e9).toFixed(1).replace(/\.0$/, "") + " GB";   // 28.5 GB / 32 GB
+}
+function diRow(body, label, value) {
+  if (value === null || value === undefined || value === "") return;
+  const r = el("div", "drow");
+  r.append(el("span", "dk", label), el("span", "dval", String(value)));
+  body.append(r);
+}
+function diRender(j) {
+  const body = $("dinfobody"); body.textContent = "";
+  // "stadium_xl" reads nicer than the device's bare "stadium" when recognised.
+  const model = j.helixgen_model === "stadium_xl" ? "Stadium XL" : (j.model || "—");
+  diRow(body, "Model", model);
+  diRow(body, "Serial", j.serial);
+  let fw = j.firmware || null;
+  if (fw && j.firmware_build) fw += " (build " + j.firmware_build + ")";
+  diRow(body, "Firmware", fw);
+  diRow(body, "Firmware date", j.firmware_date);
+  const total = diBytes(j.sd_total_bytes), free = diBytes(j.sd_available_bytes);
+  if (total) diRow(body, "SD storage", free ? free + " free of " + total : total);
+  if (!body.children.length) body.append(el("p", "dhint", "The device reported no identity fields."));
+}
+async function diLoad() {
+  const body = $("dinfobody"); body.textContent = "";
+  body.append(el("p", "dhint", "Reading the device…"));
+  try {
+    const r = await fetch("/device/info");
+    const j = await r.json();
+    if (!r.ok) { body.textContent = ""; body.append(el("p", "dhint", (j && j.error) || "could not read the device")); return; }
+    diRender(j);
+  } catch (e) { body.textContent = ""; body.append(el("p", "dhint", "could not read the device")); }
+}
+function diOnShow(active) { if (active) diLoad(); }
+$("dinforefresh").onclick = diLoad;
+addPane({ id: "deviceinfo", label: "Device Info", el: () => $("deviceinfopane"), onShow: diOnShow });
 
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours

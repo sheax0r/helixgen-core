@@ -291,6 +291,16 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                 except Exception as e:  # noqa: BLE001 — telemetry hiccup must not 500 raw
                     logger.exception("live editor: tuner reading failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # Device Info pane (81v.11): the device's read-only identity / firmware
+            # / storage (/ProductInfoGet). Read-only; read on demand.
+            elif path == "/device/info":
+                try:
+                    self._json(200, session.device_info())
+                except LiveError as e:
+                    self._json(e.status, {"error": str(e)})
+                except Exception as e:  # noqa: BLE001 — a bad reply must not 500 raw
+                    logger.exception("live editor: device info failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
             else:
                 self._json(404, {"error": "not found"})
 
