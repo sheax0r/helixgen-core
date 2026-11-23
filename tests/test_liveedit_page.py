@@ -90,7 +90,8 @@ def test_page_registers_the_globaleq_pane_and_endpoints():
     # (POST /globaleq/set).
     html = PAGE.read_text()
     for marker in ('id="eqpane"', 'id="eqtabs"', 'id="eqbody"',
-                   'addPane({ id: "globaleq"', "/globaleq/state", "/globaleq/set"):
+                   'addPane({ id: "globaleq"', "/globaleq/state", "/globaleq/set",
+                   "/globaleq/reset", "/globaleq/apply"):
         assert marker in html, marker
 
 
