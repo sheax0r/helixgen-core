@@ -1946,9 +1946,9 @@ function renderLib(st) {
 
   const hr = st.ir_headroom;
   if (hr) {
-    const near = (hr.cap - hr.used) <= 0;
-    panels.IRs.append(el("div", "lcap" + (near ? " full" : ""),
-      hr.used + " / " + hr.cap + " IR slots used" + (near ? " — device full, free space before importing" : "")));
+    const full = (hr.cap - hr.used) <= 0;
+    panels.IRs.append(el("div", "lcap" + (full ? " full" : ""),
+      hr.used + " / " + hr.cap + " IR slots used" + (full ? " — device full, free space before importing" : "")));
   }
   (st.irs || []).forEach((i) => panels.IRs.append(libIr(i)));
 
