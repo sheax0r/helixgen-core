@@ -204,6 +204,34 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     cp.onclick();
     ok("S20 Copy posts /library/copy", x.posts.some((p) => p.url === "/library/copy" && p.body.hsp === "a.hsp" && p.body.to === "SL"), JSON.stringify(x.posts.map((p) => p.url)));
   }
+  { // S20b: library browse filter (client-side, no device I/O)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    x.ids.libtoggle.onclick();
+    const st = x.posts.find((p) => p.url === "/library/state");
+    st.reply(200, { connected: true, setlists: [], irs: [], tones: [
+      { slug: "a", name: "Alpha", tags: [], variants: [{ key: "k", guitar: "Les Paul", preset_name: "Alpha" }] },
+      { slug: "b", name: "Beta", tags: ["metal"], variants: [{ key: "k", guitar: "Tele", preset_name: "Beta" }] }] });
+    await x.tick(); await x.tick();
+    const boxes = () => x.ids.drawerbody.find((e) => e._cls && e._cls.has("ltone"));
+    const search = x.ids.drawerbody.find((e) => e.tagName === "input" && e._cls && e._cls.has("lsearch"))[0];
+    ok("S20b the Tones filter input renders", !!search, String(!!search));
+    ok("S20b both tones show before filtering", boxes()[0].hidden === false && boxes()[1].hidden === false,
+      JSON.stringify(boxes().map((b) => b.hidden)));
+    search.value = "tele"; search.oninput();
+    ok("S20b filtering by a variant's guitar hides non-matches (Alpha hidden, Beta shown)",
+      boxes()[0].hidden === true && boxes()[1].hidden === false, JSON.stringify(boxes().map((b) => b.hidden)));
+    search.value = "metal"; search.oninput();
+    ok("S20b the filter also matches a tag", boxes()[0].hidden === true && boxes()[1].hidden === false,
+      JSON.stringify(boxes().map((b) => b.hidden)));
+    search.value = "zzz"; search.oninput();
+    const empty = x.ids.drawerbody.find((e) => e._cls && e._cls.has("lempty"))[0];
+    ok("S20b a no-match query shows the empty state", empty && empty.hidden === false && empty.textContent.includes("zzz"),
+      empty && JSON.stringify([empty.hidden, empty.textContent]));
+    search.value = ""; search.oninput();
+    ok("S20b clearing the filter shows every tone again and hides the empty state",
+      boxes()[0].hidden === false && boxes()[1].hidden === false && empty.hidden === true,
+      JSON.stringify([boxes().map((b) => b.hidden), empty.hidden]));
+  }
   { // S21: Device pane — global settings read, write, and read-only page
     const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
     const devTab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Device")[0];
