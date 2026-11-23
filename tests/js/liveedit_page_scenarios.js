@@ -352,6 +352,34 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S24b the toggle reads On when editing is discarded", btn && btn.textContent === "On", btn && btn.textContent);
   }
 
+  { // S25: a /snapshot/globals reply landing mid-rename must NOT clobber the input
+    // (#166 bug class via the async re-render path — the asymmetry the review found)
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm", "Chorus"] }));
+    x.ids.snap.onclick();                                  // open -> globals GET pending
+    const g = x.posts.filter((p) => p.url === "/snapshot/globals").pop();
+    // start a rename and type BEFORE the (slow device) globals read returns
+    const rows = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-row"));
+    rows[0].find((e) => e.tagName === "button" && e.textContent === "Rename")[0].onclick();
+    x.ids.snapbody.find((e) => e.tagName === "input")[0].value = "Verse";
+    g.reply(200, { keys: [{ key: "global.snapshot.edits", value: 0, enum: ["Save", "Discard"], display: "Save (0)" }] });
+    await x.tick();
+    const live = x.ids.snapbody.find((e) => e.tagName === "input")[0];
+    ok("S25 the in-progress rename survives a globals reply", live && live.value === "Verse", live && live.value);
+    ok("S25 the globals re-render writes no rename",
+      x.posts.filter((p) => p.url === "/snapshot/rename").length === 0, "unexpected rename POST");
+  }
+
+  { // S25b: an empty / all-error globals body shows no bare "Snapshot settings" header
+    const x = boot();
+    x.sse(State([Blk({}, [P_({ value: 0.5 })])], { snapshot: 0, snapshots: ["Rhythm"] }));
+    x.ids.snap.onclick();
+    x.posts.filter((p) => p.url === "/snapshot/globals").pop().reply(200, { keys: [] });
+    await x.tick();
+    const hasHeader = x.ids.snapbody.find((e) => e._cls && e._cls.has("sp-sect")).length > 0;
+    ok("S25b no bare settings header on an empty globals body", !hasHeader, "bare header present");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

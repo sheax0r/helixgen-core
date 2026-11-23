@@ -1300,7 +1300,10 @@ async function fetchSnapGlobals() {
   snapGlobalsBusy = true;
   try {
     const r = await fetch("/snapshot/globals");
-    if (r.ok) { snapGlobals = await r.json(); if (snapOpen) snapRender(); }
+    // Don't re-render while a rename input is focused — tearing it down mid-edit
+    // loses the half-typed name (the #166 bug, reachable here via the async
+    // reply). The cached value is picked up by the next commit/cancel/meta tick.
+    if (r.ok) { snapGlobals = await r.json(); if (snapOpen && snapEditing === null) snapRender(); }
   } catch (e) { /* leave the last-known values; the panel still works */ }
   finally { snapGlobalsBusy = false; }
 }
@@ -1358,7 +1361,7 @@ function snapRender() {
 // the device via textContent only — never markup.
 function snapSettings(body) {
   if (!snapGlobals) return;                       // not read yet
-  body.append(el("div", "sp-sect", "Snapshot settings"));
+  const out = [];                                 // built nodes, in order
 
   // Discard-Edits — the one interactive control. value 1 = Discard (on).
   const edits = snapGlobal("global.snapshot.edits");
@@ -1375,8 +1378,8 @@ function snapSettings(body) {
         () => { toast(on ? "Edits kept across snapshots" : "Discard-Edits on", true);
                 fetchSnapGlobals(); }, () => {}); };
     row.append(btn);
-    body.append(row);
-    if (on) body.append(el("div", "sp-hint",
+    out.push(row);
+    if (on) out.push(el("div", "sp-hint",
       "Edits are discarded when you leave a snapshot. Press the device’s SAVE "
       + "twice — or Save here — to keep them."));
   }
@@ -1389,8 +1392,8 @@ function snapSettings(body) {
     const perSnap = sel && sel.error == null && sel.value === 0;   // Snapshot
     const mode = sel && sel.display ? " · " + sel.display : "";
     row.append(el("span", "v", (bpm.display || String(bpm.value)) + " BPM" + mode));
-    body.append(row);
-    if (!perSnap) body.append(el("div", "sp-hint",
+    out.push(row);
+    if (!perSnap) out.push(el("div", "sp-hint",
       "Per-snapshot tempo needs Tempo Select = Snapshot (Device ▸ Tempo / Click)."));
   }
 
@@ -1406,8 +1409,14 @@ function snapSettings(body) {
     const row = el("div", "sp-set");
     row.append(el("span", "k", "MIDI Recall"));
     row.append(el("span", "v", bits.join(" · ")));
-    body.append(row);
+    out.push(row);
   }
+
+  // Only show the header when at least one row rendered (a 200 with an empty or
+  // all-error body must not leave a bare "Snapshot settings" heading).
+  if (!out.length) return;
+  body.append(el("div", "sp-sect", "Snapshot settings"));
+  out.forEach((n) => body.append(n));
 }
 
 /* ---------- the event stream ---------- */
