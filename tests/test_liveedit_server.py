@@ -76,6 +76,14 @@ def test_controllers_state_endpoint(srv):
     assert all(isinstance(j[k], list) for k in j)
 
 
+def test_commands_state_endpoint(srv):
+    # 81v.4: read-only Command Center assignments projected off the live buffer.
+    code, ctype, data = req(srv[2], "GET", "/commands/state")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    assert isinstance(j.get("sources"), list)
+
+
 def test_controllers_assign_route(srv):
     c, s, server = srv
     code, _, data = req(server, "POST", "/controllers/assign",

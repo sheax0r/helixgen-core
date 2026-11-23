@@ -569,6 +569,40 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.ids.mxbody.textContent);
   }
 
+  { // S32: Command Center pane — read-only commands view (81v.4)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Command Center")[0];
+    ok("S32 a Command Center tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();
+    const req = x.posts.find((p) => p.url === "/commands/state");
+    ok("S32 opening the pane fetches the command state", !!req,
+      JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { sources: [
+      { id: "FS3", label: "Footswitch 3 (top row, 3rd from left)", named: true, commands: [
+        { family: "MIDI", headline: "MIDI CC", action: "Press", behavior: "momentary",
+          toggle: false, fields: [["Channel", "1"], ["CC#", "11"], ["Value", "0"]] }] },
+      { id: "0x09990000", label: "source 0x09990000", named: false, commands: [
+        { family: "Preset/Snapshot", headline: "Snapshot", action: "Press", behavior: "latching",
+          toggle: false, fields: [["Snapshot", "2"]] }] }] });
+    await x.tick(); await x.tick();
+    const txt = x.ids.cmdbody.textContent;
+    ok("S32 a named source shows its English label", txt.includes("Footswitch 3 (top row, 3rd from left)"), txt);
+    ok("S32 the command headline and action render", txt.includes("MIDI CC") && txt.includes("Press"), txt);
+    ok("S32 a legitimate zero value is not hidden", txt.includes("Value") && txt.includes("0"), txt);
+    ok("S32 the has-commands marker is drawn", txt.includes("▶"), txt);
+    ok("S32 an unnameable source is shown, not dropped",
+      txt.includes("Snapshot") && txt.includes("helixgen can't name"), txt);
+    // empty tone -> the empty-state line, no crash
+    const y = boot(); y.sse(State([Blk({}, [P_({})])]));
+    const t2 = y.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Command Center")[0];
+    t2.onclick(); await y.tick();
+    y.posts.find((p) => p.url === "/commands/state").reply(200, { sources: [] });
+    await y.tick(); await y.tick();
+    ok("S32 an empty tone shows the empty-state line",
+      y.ids.cmdbody.textContent.includes("No commands assigned"), y.ids.cmdbody.textContent);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

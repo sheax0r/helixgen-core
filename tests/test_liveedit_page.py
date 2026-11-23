@@ -82,3 +82,11 @@ def test_page_registers_the_controllers_pane_and_endpoint():
                    'addPane({ id: "controllers"', "/controllers/state",
                    "/controllers/assign", "/controllers/clear"):
         assert marker in html, marker
+
+
+def test_page_registers_the_command_center_pane_and_endpoint():
+    # 81v.4: the Command Center pane mounts via addPane and reads /commands/state.
+    html = PAGE.read_text()
+    for marker in ('id="cmdpane"', 'id="cmdbody"',
+                   'addPane({ id: "commands"', "/commands/state"):
+        assert marker in html, marker
