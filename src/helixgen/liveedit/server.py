@@ -136,6 +136,18 @@ def _route(session: LiveSession, path: str, b: dict):
         if "value" not in b:
             raise LiveError("missing field 'value'")
         return session.device_write(key, b["value"])
+    # Global EQ pane (81v.6): write one Global EQ control live. The read of the
+    # connect-time snapshot is GET /globaleq/state (do_GET).
+    if path == "/globaleq/set":
+        for f in ("output", "band", "param"):
+            if not isinstance(b.get(f), str):
+                raise LiveError(f"field {f!r} must be a string")
+        if "value" not in b:
+            raise LiveError("missing field 'value'")
+        v = b["value"]
+        if not isinstance(v, (int, float, bool, str)):
+            raise LiveError("field 'value' must be a number, bool or string")
+        return session.globaleq_write(b["output"], b["band"], b["param"], v)
     # Controllers pane (81v.3): assign / clear a MIDI-CC controller on a param.
     # Read of the current assignments is GET /controllers/state (do_GET).
     if path == "/controllers/assign":
@@ -241,6 +253,17 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                     self._json(200, session.source_catalog())
                 except Exception as e:  # noqa: BLE001
                     logger.exception("live editor: controller sources failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            # Global EQ pane (81v.6): the device's Global EQ connect-time
+            # snapshot (global.eq.sync) + live master enables, read live over
+            # 2002. Writes are POST /globaleq/set (see _route).
+            elif path == "/globaleq/state":
+                try:
+                    self._json(200, session.globaleq_state())
+                except LiveError as e:
+                    self._json(e.status, {"error": str(e)})
+                except Exception as e:  # noqa: BLE001 — a bad blob must not 500 raw
+                    logger.exception("live editor: globaleq state failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
             # Mixer pane (81v.8): the device-global Matrix Mixer (per-output
             # monitor mix), read live over 2002. Read-only — no write route.

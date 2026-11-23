@@ -36,6 +36,7 @@ function boot() {
    "devicepane", "devtabs", "devnote", "devbody", "devrefresh",
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
    "mixerpane", "mxtabs", "mxbody", "mxrefresh",
+   "eqpane", "eqtabs", "eqnote", "eqbody", "eqrefresh",
    "cmdpane", "cmdbody", "cmdrefresh",
    "tunerpane", "tunerbody", "tuner-note", "tuner-needle", "tuner-pointer",
    "tuner-readout", "tuner-cents", "tuner-hz", "tuner-hint",

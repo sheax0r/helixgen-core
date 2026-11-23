@@ -860,6 +860,47 @@ class HelixClient:
             self._property_blob("/PropertyValueGet", "/getPropertyValue",
                                 _mixer.MIXER_KEY))
 
+    # per-output master-enable keys use the long "phones" spelling, not the
+    # codec's "pho" output key.
+    _GLOBALEQ_ENABLE = {"qtr": "global.eq.qtr.enable",
+                        "xlr": "global.eq.xlr.enable",
+                        "pho": "global.eq.phones.enable"}
+
+    def get_globaleq_state(self) -> dict:
+        """Read the device's **Global EQ** connect-time snapshot
+        (``global.eq.sync``) and decode it (see
+        :func:`helixgen.device.globaleq.decode_sync`), then overlay each output's
+        **live** master-enable read.
+
+        The band/level values come from ``global.eq.sync``, which is **static** —
+        it does not reflect ``set_globaleq`` writes (hardware-confirmed), so it is
+        the device's connect-time state, honestly a seed not live truth. The three
+        per-output master enables *are* live-readable (``global.eq.*.enable``), so
+        they are read fresh and overlaid. Raises :class:`PropertyUnavailable` if
+        the firmware lacks ``global.eq.sync``.
+        """
+        state = _globaleq.decode_sync(
+            self.get_property("global.eq.sync").value)
+        for okey, ekey in self._GLOBALEQ_ENABLE.items():
+            out = state["outputs"].get(okey)
+            if out is None:
+                continue
+            try:
+                out["enable"] = bool(self.get_property(ekey).value)
+            except (HelixError, OSError):
+                pass            # keep the snapshot's enab; a missing key is non-fatal
+        return state
+
+    def set_globaleq_enable(self, output: str, on: bool) -> bool:
+        """Toggle one output's **master** Global EQ enable (the live-readable
+        ``global.eq.{qtr,xlr,phones}.enable`` property, not a band). ``output`` ∈
+        ``qtr``/``xlr``/``pho``."""
+        ekey = self._GLOBALEQ_ENABLE.get(output)
+        if ekey is None:
+            raise ValueError(f"unknown output {output!r}; want one of "
+                             f"{list(self._GLOBALEQ_ENABLE)}")
+        return self.set_property(ekey, "i", 1 if on else 0)
+
     def get_property_def(self, key: str) -> _settings.PropertyDef:
         """Read a property's definition — name, type, range, enum, default
         (``/PropertyDefWithKeyGet``). Self-describing catalog straight from the

@@ -332,6 +332,29 @@ class FakeClient:
             raise self.fail
         return [dict(m) for m in self.setlist_contents.get(cid, [])]
 
+    # --- Global EQ (81v.6) ---
+    def get_globaleq_state(self):
+        if self.fail is not None:
+            raise self.fail
+        bands = ("lowcut", "lowshelf", "low", "mid", "high", "highshelf",
+                 "highcut")
+        return {"outputs": {o: {"enable": False, "level": 0.0,
+                                "bands": {b: {"enable": True, "freq": 100.0}
+                                          for b in bands}}
+                            for o in ("qtr", "xlr", "pho")}}
+
+    def set_globaleq(self, output, band, param, value):
+        self._next()
+        self.__dict__.setdefault("globaleq_sets", []).append(
+            (output, band, param, value))
+        return self.ack
+
+    def set_globaleq_enable(self, output, on):
+        self._next()
+        self.__dict__.setdefault("globaleq_enables", []).append(
+            (output, bool(on)))
+        return self.ack
+
 
 class FakeLease:
     def __init__(self):
@@ -1972,3 +1995,50 @@ def test_set_snapshot_color_device_failure_marks_disconnected(s):
     with pytest.raises(LiveError) as e:
         s.set_snapshot_color(0, 2)
     assert e.value.status == 502 and s.connected is False
+
+
+# --- Global EQ pane (81v.6) --------------------------------------------------
+
+def test_globaleq_state_returns_outputs(s):
+    st = s.globaleq_state()
+    assert set(st["outputs"]) == {"qtr", "xlr", "pho"}
+    assert st["outputs"]["qtr"]["bands"]["low"]["freq"] == 100.0
+
+
+def test_globaleq_state_is_lease_free(s):
+    # browsing globals must never take the write lease (mirrors mixer_state)
+    s.globaleq_state()
+    assert s.lease.transients == [] and s.lease.ensured == 0
+
+
+def test_globaleq_write_band_goes_through_set_globaleq(s):
+    out = s.globaleq_write("qtr", "low", "gain", -3.5)
+    assert s.client.globaleq_sets == [("qtr", "low", "gain", -3.5)]
+    assert out["value"] == -3.5
+    assert s.lease.transients == [("globals",)]       # globals scope, transient
+
+
+def test_globaleq_write_master_enable_uses_the_property_path(s):
+    out = s.globaleq_write("qtr", "", "enable", True)
+    assert s.client.globaleq_enables == [("qtr", True)]
+    assert getattr(s.client, "globaleq_sets", []) == []   # NOT a band write
+    assert out["value"] is True
+
+
+def test_globaleq_write_level(s):
+    s.globaleq_write("pho", "", "level", -2.0)
+    assert s.client.globaleq_sets == [("pho", "", "level", -2.0)]
+
+
+def test_globaleq_write_rejects_a_bad_band(s):
+    with pytest.raises(LiveError) as e:
+        s.globaleq_write("qtr", "nope", "gain", 1.0)
+    assert e.value.status == 400
+    assert getattr(s.client, "globaleq_sets", []) == []
+
+
+def test_globaleq_write_is_refused_while_another_process_holds_the_device(s):
+    s.lease.busy = "another helixgen process holds globals"
+    with pytest.raises(LiveError) as e:
+        s.globaleq_write("qtr", "low", "gain", 1.0)
+    assert e.value.status == 409

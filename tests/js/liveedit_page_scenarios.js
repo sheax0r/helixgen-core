@@ -569,7 +569,66 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.ids.mxbody.textContent);
   }
 
-  { // S32: Command Center pane — read-only commands view (81v.4)
+  { // S32: Global EQ pane — snapshot read + live write, shadow tagging (81v.6)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Global EQ")[0];
+    ok("S32 a Global EQ tab appears once the pane registers", !!tab,
+      x.ids.tabs.children.map((c) => c.textContent).join(","));
+    tab.onclick(); await x.tick();
+    const req = x.posts.find((p) => p.url === "/globaleq/state");
+    ok("S32 opening the pane fetches the state", !!req, JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { outputs: {
+      qtr: { enable: false, level: 0, bands: {
+        lowcut: { enable: true, freq: 20, slope: 1 },
+        low: { enable: true, freq: 150, gain: 0, q: 0.707 },
+        highcut: { enable: true, freq: 20000, slope: 1 } } },
+      xlr: { enable: true, level: -2, bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } },
+      pho: { enable: false, level: 0, bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } } } });
+    await x.tick(); await x.tick();
+    const tabs = x.ids.eqtabs.children.map((c) => c.textContent);
+    ok("S32 a tab per output", tabs.join(",") === '1/4",XLR,Phones', tabs.join(","));
+    ok("S32 band names render", x.ids.eqbody.textContent.includes("Low Cut")
+      && x.ids.eqbody.textContent.includes("High Cut"), x.ids.eqbody.textContent);
+    const gainInp = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Low Gain")[0];
+    ok("S32 a peaking band shows a Gain control", !!gainInp, "no gain input");
+    gainInp.value = "4.5"; gainInp.onchange();
+    const w = x.posts.find((p) => p.url === "/globaleq/set");
+    ok("S32 moving a band control writes /globaleq/set",
+      !!w && w.body.output === "qtr" && w.body.band === "low" && w.body.param === "gain" && w.body.value === 4.5,
+      JSON.stringify(w && w.body));
+    w.reply(200, { ok: true, output: "qtr", band: "low", param: "gain", value: 4.5 }); await x.tick();
+    ok("S32 the written control is marked set", gainInp._cls.has("eq-set"), [...gainInp._cls].join(","));
+    const masterCb = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Global EQ enabled")[0];
+    ok("S32 the master enable reflects the live read (Off)", !!masterCb && masterCb.checked === false, "master cb");
+    masterCb.checked = true; masterCb.onchange();
+    const mw = x.posts.filter((p) => p.url === "/globaleq/set").slice(-1)[0];
+    ok("S32 the master toggle writes band='' param='enable'",
+      mw.body.band === "" && mw.body.param === "enable" && mw.body.value === true, JSON.stringify(mw.body));
+    mw.reply(200, { ok: true, output: "qtr", band: "", param: "enable", value: true }); await x.tick();
+    x.ids.eqrefresh.onclick(); await x.tick();
+    const req2 = x.posts.filter((p) => p.url === "/globaleq/state").slice(-1)[0];
+    req2.reply(200, { outputs: {
+      qtr: { enable: false, level: 0, bands: { low: { enable: true, freq: 150, gain: 0, q: 0.707 } } },
+      xlr: { enable: false, level: 0, bands: {} }, pho: { enable: false, level: 0, bands: {} } } });
+    await x.tick(); await x.tick();
+    const gainInp2 = x.ids.eqbody.find((e) => e.tagName === "input" && e.attrs["aria-label"] === "Low Gain")[0];
+    ok("S32 a session edit survives Refresh over the static snapshot",
+      gainInp2 && String(gainInp2.value) === "4.5" && gainInp2._cls.has("eq-set"), gainInp2 && gainInp2.value);
+    // a band-enable toggle is write-only too, so it gets the same "set" marker
+    const lowEnWrap = x.ids.eqbody.find((e) => e.tagName === "label"
+      && e.find((c) => c.attrs && c.attrs["aria-label"] === "Low enabled").length)[0];
+    ok("S32 a band enable is a labelled checkbox", !!lowEnWrap, "no low-enable label");
+    const lowEnCb = lowEnWrap.find((c) => c.tagName === "input")[0];
+    lowEnCb.checked = false; lowEnCb.onchange();
+    const ew = x.posts.filter((p) => p.url === "/globaleq/set").slice(-1)[0];
+    ok("S32 toggling a band enable writes band enable",
+      ew.body.band === "low" && ew.body.param === "enable" && ew.body.value === false, JSON.stringify(ew.body));
+    ew.reply(200, { ok: true, output: "qtr", band: "low", param: "enable", value: false }); await x.tick();
+    ok("S32 a written band enable is marked set (provenance parity with numbers)",
+      lowEnWrap._cls.has("eq-set"), [...lowEnWrap._cls].join(","));
+  }
+
+  { // S33: Command Center pane — read-only commands view (81v.4)
     const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
     const tab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Command Center")[0];
     ok("S32 a Command Center tab appears once the pane registers", !!tab,
