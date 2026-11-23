@@ -1411,6 +1411,21 @@ class LiveSession:
             out["aborted_at"] = aborted
         return out
 
+    def mixer_state(self) -> dict:
+        """The Matrix Mixer (device-global per-output monitor mix), read live
+        over 2002. Read-only and lease-free, exactly like :meth:`device_values`
+        — browsing the mixer must not lock other verbs out of the device. The
+        mix lives outside the preset, so this does NOT consume the signal-flow
+        state. Raises :class:`LiveError` (502) if the read fails."""
+        with self.cond:
+            self._require_up()
+        with self.devlock:
+            try:
+                return self.client.get_mixer_state()
+            except (HelixError, OSError, ValueError) as e:
+                raise LiveError(f"could not read the mixer: {e}",
+                                status=502) from e
+
     def device_write(self, key: str, value: Any) -> dict:
         """Write one Global-Settings value live, then read it back. ``value`` is
         a number, or an enum index — coerced and range-checked against the

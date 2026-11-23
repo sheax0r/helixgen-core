@@ -112,6 +112,21 @@ body.down #devbody .dctl{opacity:.5;pointer-events:none}
 .ctl-fsel:focus,.ctl-cc:focus{outline:none;border-color:#5f84d6;box-shadow:0 0 0 2px rgba(61,107,255,.25)}
 .ctl-clear{margin-left:auto;font-size:11px;padding:3px 8px}
 body.down #ctlassign .btn,body.down #ctlassign select,body.down #ctlassign input{opacity:.5;pointer-events:none}
+/* ---------- Mixer pane (81v.8): read-only Matrix Mixer monitor mix ---------- */
+.mx-master{margin:0 0 14px;padding:9px 12px;background:var(--panel2);border:1px solid var(--edge);
+  border-radius:9px;font-size:13px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.mx-master b{font-size:14px}
+.mx-master .mx-db{font-variant-numeric:tabular-nums;color:var(--dim)}
+.mx-row{display:grid;grid-template-columns:minmax(0,1fr) 72px 92px auto;gap:12px;align-items:center;
+  padding:7px 0;border-bottom:1px solid var(--edge)}
+.mx-row.off{opacity:.45}
+.mx-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mx-db,.mx-pan{font-variant-numeric:tabular-nums;color:var(--dim);text-align:right;font-size:13px}
+.mx-flags{display:flex;gap:6px;justify-content:flex-end}
+.mx-flag{font-size:10px;font-weight:800;letter-spacing:.04em;padding:2px 6px;border-radius:999px;
+  border:1px solid var(--edge2);color:var(--faint)}
+.mx-flag.on-m{color:#1b1400;background:var(--warn);border-color:var(--warn)}
+.mx-flag.on-s{color:#04140c;background:var(--ok);border-color:var(--ok)}
 
 /* ---------- adjective search (highlight knobs, no writes) ---------- */
 .adjrow{display:flex;flex-wrap:wrap;gap:9px;align-items:center;padding:9px 20px;
@@ -402,6 +417,15 @@ body.down main{opacity:.55}
   </div>
   <div id="ctlassign"></div>
   <div id="ctlbody"></div>
+</section>
+<section class="pane" id="mixerpane" hidden aria-label="Matrix Mixer">
+  <div class="dhead">
+    <div><h2 class="dtitle">Matrix Mixer</h2>
+      <p class="dsub">The device-global monitor mix per physical output — not stored in the preset. Read-only; set levels on the hardware.</p></div>
+    <button class="btn" id="mxrefresh" type="button" title="Re-read the mixer from the device">Refresh</button>
+  </div>
+  <nav class="dtabs" id="mxtabs" aria-label="Output layers"></nav>
+  <div id="mxbody"></div>
 </section>
 <aside id="drawer" hidden aria-label="Tone library"><div id="drawerbody"></div></aside>
 <aside id="snappanel" hidden aria-label="Snapshots">
@@ -1358,6 +1382,83 @@ async function ctlLoad() {
 function ctlOnShow(active) { if (active) ctlLoad(); }
 $("ctlrefresh").onclick = ctlLoad;
 addPane({ id: "controllers", label: "Controllers", el: () => $("ctlpane"), onShow: ctlOnShow });
+
+/* ---------- Mixer pane (81v.8): read-only Matrix Mixer -----------------------
+ * The device-global per-physical-output monitor mix (server.mixer.state), read
+ * live over 2002 (GET /mixer/state). Outside the preset, so it does NOT consume
+ * the signal-flow state S. Read-only this increment — the write path is unproven
+ * (noted deferred). Every string here is device data: textContent only. */
+let MIX = null;          // last decoded {layers, link_mix}
+let mxActive = 0;        // index into the tab list (layers…, then Link Mix)
+function mxFmtDb(v) {
+  if (typeof v !== "number" || !isFinite(v)) return "";
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + " dB";
+}
+function mxFmtPan(v) {
+  if (typeof v !== "number" || !isFinite(v)) return "";
+  if (Math.abs(v) < 0.05) return "C";
+  // The device's pan unit is unconfirmed (every observed strip is centred), so
+  // format at a resolution that never collapses two distinct values whether the
+  // scale is ±1 or ±100: one decimal, trailing ".0" trimmed (L0.7 / R100).
+  return (v < 0 ? "L" : "R") + Math.abs(v).toFixed(1).replace(/\.0$/, "");
+}
+function mxTabList() {
+  const t = ((MIX && MIX.layers) || []).slice();
+  if (MIX && MIX.link_mix) t.push(MIX.link_mix);
+  return t;
+}
+function mxStrip(ch) {
+  const r = el("div", "mx-row" + (ch.enabled ? "" : " off"));
+  r.append(el("span", "mx-name", ch.name || ""),
+    el("span", "mx-db", mxFmtDb(ch.vol_db)),
+    el("span", "mx-pan", mxFmtPan(ch.pan)));
+  const flags = el("div", "mx-flags");
+  flags.append(el("span", "mx-flag" + (ch.mute ? " on-m" : ""), "M"),
+    el("span", "mx-flag" + (ch.solo ? " on-s" : ""), "S"));
+  r.append(flags);
+  return r;
+}
+function mxRenderLayer(layer) {
+  const body = $("mxbody"); body.textContent = "";
+  if (!layer) { body.append(el("p", "dhint", "No mixer data.")); return; }
+  const m = el("div", "mx-master");
+  m.append(el("b", null, layer.output || "Output"),
+    el("span", "mx-db", "master " + mxFmtDb(layer.master_db)));
+  if (layer.master_mute) m.append(el("span", "mx-flag on-m", "MUTE"));
+  if (layer.mute) m.append(el("span", "mx-flag on-m", "layer mute"));
+  if (layer.solo) m.append(el("span", "mx-flag on-s", "layer solo"));
+  body.append(m);
+  (layer.channels || []).forEach((ch) => body.append(mxStrip(ch)));
+}
+function mxShow(i) {
+  mxActive = i;
+  const tabs = $("mxtabs"), list = mxTabList();
+  Array.from(tabs.children).forEach((t, k) => t.classList.toggle("active", k === i));
+  mxRenderLayer(list[i]);
+}
+function mxRenderTabs() {
+  const tabs = $("mxtabs"); tabs.textContent = "";
+  const list = mxTabList();
+  list.forEach((layer, i) => {
+    const t = el("button", "dtab", layer.output || ("Output " + (i + 1)));
+    t.type = "button"; t.onclick = () => mxShow(i); tabs.append(t);
+  });
+  mxShow(list.length ? Math.min(mxActive, list.length - 1) : 0);
+}
+async function mxLoad() {
+  const body = $("mxbody"); body.textContent = "";
+  body.append(el("p", "dhint", "Reading the mixer…"));
+  try {
+    const r = await fetch("/mixer/state");
+    const j = await r.json();
+    if (!r.ok) { body.textContent = ""; body.append(el("p", "dhint", (j && j.error) || "could not read the mixer")); return; }
+    MIX = j; mxRenderTabs();
+    if (!mxTabList().length) { body.textContent = ""; body.append(el("p", "dhint", "The device reported no mixer layers.")); }
+  } catch (e) { body.textContent = ""; body.append(el("p", "dhint", "could not read the mixer")); }
+}
+function mxOnShow(active) { if (active) mxLoad(); }
+$("mxrefresh").onclick = mxLoad;
+addPane({ id: "mixer", label: "Mixer", el: () => $("mixerpane"), onShow: mxOnShow });
 
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours

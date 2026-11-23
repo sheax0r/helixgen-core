@@ -1,5 +1,15 @@
 # Matrix Mixer protocol — RE spike + `device matrix` verb design (`helixgen-81v.8`)
 
+> **SUPERSEDED (2026-11-23) for the READ side.** This spike concluded the matrix
+> is "not a device property" and won't-do — that was WRONG. The whole monitor mix
+> *is* a readable property, **`server.mixer.state`** (one `server.*` blob; the H1
+> glob below probed per-strip dotted keys and missed it). It is now decoded and
+> rendered read-only (`src/helixgen/device/mixer.py`, device-live Mixer pane,
+> `helix-protocol.md` §6). The **write** path is still unproven — that part of the
+> won't-do stands until a hardware-panel capture or a scratch write+read-back. The
+> rest of this doc (the verb-shape design, the capture methods, the write-side
+> escape hatches) is kept for provenance.
+
 **Status:** RE spike — driven on hardware (Stadium XL fw 1.4.1, 2026-11-22),
 incl. a validated **Frida** capture of the Helix Stadium **Debug** app. Three
 findings now **close the question**: **(1) H1 ruled out** — the matrix

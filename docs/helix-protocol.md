@@ -671,7 +671,7 @@ empty blob for `dsp.globaleq.*` (the app reads EQ state from the connect-time
 sync). Shipped as `device globaleq list|set`; codec
 `src/helixgen/device/globaleq.py`, hardware-validated 2026-07-14.
 
-### Matrix Mixer (per-output monitor mix) — RE spike, per-channel plane capture-pending
+### Matrix Mixer (per-output monitor mix) — READABLE as `server.mixer.state`
 
 The **Matrix Mixer** is the Stadium's **device-global, per-physical-output
 monitor mix** (one layer each for 1/4"/XLR/Phones), mixing **non-preset** sources
@@ -692,36 +692,48 @@ write path. Full RE findings + the `device matrix` verb design:
 | `global.out.groundlift.xlr`, `global.out.src.reamp.u7`/`.u8` | XLR ground lift; reamp send sources |
 | `global.midi.matrix.ch.{qtr,xlr,phones}` | the MIDI **channel** each output's Matrix layer listens on for CC remote control |
 
-**NOT a property — HW-confirmed (Stadium XL fw 1.4.1, 2026-11-22).** A live
-`/MatchingPropertyDefinitionsGet` glob of the **device's own** catalog (457 defs
-total) returned **zero** matrix per-channel keys — `dsp.matrix*` → 0, `dsp.out*`
-→ 0, `*.pan`/`*.solo`/`*.fader` → 0, `*.mute` → only global `hal.audio.mute`,
-`*matrix*` → only the three `global.midi.matrix.ch.*`. So the per-strip
-Level/Pan/Mute/Solo is **not a device property** (ruling out a Global-EQ-style
-`/PropertyValueSet` codec). Two hypotheses remain (see the spec §3):
+**READABLE over the LAN — HW-decoded (Stadium XL fw 1.4.1, 2026-11-22).** The
+whole monitor mix is a single **`type:"v"` property, `server.mixer.state`**, read
+with `/PropertyValueGet` like any Global Setting (it is in the device's catalog —
+a `/MatchingPropertyDefinitionsGet "*mixer*"` returns exactly this one key). The
+earlier RE spike globbed per-strip dotted keys (`dsp.matrix*`, `*.pan`, `*.solo`)
+and concluded "not a property" — the plane is **not per-strip keys**, it is one
+`server.*` blob, which that glob set missed. Codec
+`src/helixgen/device/mixer.py`; `HelixClient.get_mixer_state()`.
 
-- **H2 (leading)** — a dedicated opcode family (like `/doAgenda` for topology).
-- **H3** — not echoed on the 2001 PUB stream → decode needs a Frida outbound
-  capture (`tools/hook_sockets.js`, as for `/doAgenda`).
+The value blob is the usual `lavppgsm` + msgpack `{key_, type, val_}`, but `val_`
+is a nested **4-char-code-keyed** map (uint32-packed ASCII keys, the dialect-B
+convention — decode like the `_sbepgsm` tags) rather than a scalar:
 
-**No editor-protocol surface — CONFIRMED with Frida 2026-11-22.** The desktop
-editor (retail **and** the re-signed Debug build) has **no global Matrix-Mixer
-screen** — all five nav views (Home / Librarian / Command Center / Global EQ /
-Song) + the output endpoint + the Window/Devices menus were checked; the only
-"Matrix" is the **per-preset Output block's destination** (route a path into the
-matrix; `/setParamValue`), not the monitor-mix faders. A **Frida** hook on the
-Debug app (`tools/frida_run.py` + `hook_sockets.js`, over USB/IPv6) was validated
-working — toggling a block bypass captured `SEND 2002 /BlockEnableSet` (+ the 2001
-`/setBlockEnable` echo and 2002 `/status` ack), and param edits `/ParamValueSet` —
-so the no-matrix-traffic result is a genuine **absence**, not a missed capture.
-Separately, a LAN `device watch` sees **none** of the app's writes at all: the
-app↔device link is USB, not mirrored on the LAN 2001 PUB (5 min of driving → 0 LAN
-2001 frames; qualifies the §6 "the desktop editor echoes on 2001" note, which
-holds only for a LAN or hardware change). **Net: the Matrix Mixer is a
-hardware-front-panel feature; `device matrix` is a won't-do via the editor
-protocol** (only a future app build that adds the screen, or hardware-panel RE,
-could change that). `helixgen` emits no matrix write; full findings + the deferred
-verb design in the spec.
+```
+val_ = { atto, lom_, lmix:{…one layer…}, lyrs:[ …one layer per output… ] }
+
+one layer = { out_:{dst_, name, vol_, mute}, mute, solo,
+              home:{chan:[strip×4], mix_:strip},   # the 4 Home paths + summary
+              song:{chan:[strip×8], mix_:strip},   # 8 Song tracks + summary
+              nxus:[strip×4], usbn, auxn, bt__, clik, cntn }  # source strips
+strip = { name, vol_(dB float), pan_, mute, solo, enbl(-1 on / 0 off/greyed), src_ }
+```
+
+`lyrs` holds the three per-output layers (`out_.name` = `1/4"` / `XLR` / `Phones`,
+`dst_` 1/2/3, each with its own output-master `vol_`); `lmix` is the **"Link Mix"**
+layer (`dst_` 0) shown when outputs are linked. HW-read values round-tripped
+against the device screen (1/4" master −18.6 dB, XLR −22.2 dB, Phones −5.5 dB;
+Song tracks `enbl:0` greyed with no song loaded). Golden blob
+`tests/fixtures/mixer/mixer_state.blob`.
+
+**Read-only shipped** — the device-live editor's Mixer pane (81v.8) renders this.
+The **write path (`/PropertyValueSet server.mixer.state`) is UNPROVEN** and not
+sent: the desktop editor has no Matrix-Mixer screen (retail + Debug both checked
+2026-11-22 — it is a hardware-front-panel surface), so there is no app write to
+capture, and a blind write of the whole blob is risky. A future write needs a
+Frida capture of a hardware-panel edit, or a careful scratch write + read-back
+verify on an expendable value — owed to HW-RE, tracked as a bead. The adjacent
+output/routing/MIDI-channel governors (table above) stay the only matrix-side
+**writes** today, via `device settings`.
+
+Prior framing kept for provenance in the spec (`2026-11-22-matrix-mixer-re-spike.md`),
+whose "not a property / won't-do" conclusion is **superseded** by this read.
 
 ### Telemetry: tuner & meters (2003 `/dspEvent`)
 
@@ -1040,13 +1052,13 @@ footswitch/controller assignment commands are parameterised on the device.
   `/PropertyValueGet` with an **empty blob** — writes work (`device globaleq`),
   reads don't. The app sources EQ state from the connect-time sync; whether a
   bulk read exposes it is unexplored.
-- **Matrix Mixer per-channel plane.** The per-output monitor mix's per-strip
-  Level/Pan/Mute/Solo is **not in the property defs** and **not yet wire-decoded**
-  — see the "Matrix Mixer" subsection in §6 and
-  `docs/superpowers/specs/2026-11-22-matrix-mixer-re-spike.md` (H1/H2/H3 + the
-  read-only capture method + the `device matrix` verb design). The adjacent
-  output/routing/MIDI-channel keys (`global.out.*`, `global.midi.matrix.ch.*`) are
-  decoded and ship via `device settings`.
+- **Matrix Mixer WRITE path.** The per-output monitor mix is now **readable and
+  decoded** — `server.mixer.state`, see the "Matrix Mixer" subsection in §6 (the
+  earlier spike's "not a property" was wrong; it is one `server.*` blob, not
+  per-strip keys). Read-only ships (device-live Mixer pane). Still open: **writing**
+  it (`/PropertyValueSet server.mixer.state`) is unverified — no desktop-app write
+  to capture (hardware-panel surface), so it needs a Frida hardware-panel capture
+  or a scratch write + read-back verify before any write code ships.
 - **`.hss` filled-slot payload — RESOLVED 2026-07-15** (real non-empty export
   captured; `docs/superpowers/specs/2026-07-15-hss-and-cc-capture-findings.md`).
   A *filled* slot's manifest entry is `{"path":".N","type":"application/stadium-preset"}`

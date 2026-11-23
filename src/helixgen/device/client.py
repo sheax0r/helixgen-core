@@ -22,6 +22,7 @@ from . import content as _content
 from . import agenda as _agenda
 from . import settings as _settings
 from . import globaleq as _globaleq
+from . import mixer as _mixer
 from . import defs as _defs
 from . import irmd as _irmd
 
@@ -844,6 +845,20 @@ class HelixClient:
         """Read a property's **current** value (``/PropertyValueGet``)."""
         return _settings.decode_value_blob(
             self._property_blob("/PropertyValueGet", "/getPropertyValue", key))
+
+    def get_mixer_state(self) -> dict:
+        """Read the **Matrix Mixer** (``server.mixer.state``) and decode it into
+        the normalized per-output-layer shape (see
+        :func:`helixgen.device.mixer.decode_mixer_state`).
+
+        Read-only: the monitor mix is the device-global per-output monitor mix,
+        unrelated to preset content. The write path is unproven and not sent.
+        Raises :class:`PropertyUnavailable` if this firmware doesn't define the
+        key, :class:`HelixError` on a device error, ``ValueError`` on a bad blob.
+        """
+        return _mixer.decode_mixer_state(
+            self._property_blob("/PropertyValueGet", "/getPropertyValue",
+                                _mixer.MIXER_KEY))
 
     def get_property_def(self, key: str) -> _settings.PropertyDef:
         """Read a property's definition — name, type, range, enum, default
