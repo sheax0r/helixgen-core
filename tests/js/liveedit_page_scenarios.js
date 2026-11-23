@@ -580,7 +580,7 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       JSON.stringify(x.posts.map((p) => p.url)));
     req.reply(200, { sources: [
       { id: "FS3", label: "Footswitch 3 (top row, 3rd from left)", named: true, commands: [
-        { family: "MIDI", headline: "MIDI CC", action: "Press", behavior: "momentary",
+        { family: "MIDI", headline: "MIDI CC", action: "", behavior: "momentary",
           toggle: false, fields: [["Channel", "1"], ["CC#", "11"], ["Value", "0"]] }] },
       { id: "0x09990000", label: "source 0x09990000", named: false, commands: [
         { family: "Preset/Snapshot", headline: "Snapshot", action: "Press", behavior: "latching",
@@ -588,7 +588,8 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     await x.tick(); await x.tick();
     const txt = x.ids.cmdbody.textContent;
     ok("S32 a named source shows its English label", txt.includes("Footswitch 3 (top row, 3rd from left)"), txt);
-    ok("S32 the command headline and action render", txt.includes("MIDI CC") && txt.includes("Press"), txt);
+    ok("S32 the command headline renders", txt.includes("MIDI CC"), txt);
+    ok("S32 a PresetSnapshot Action chip renders", txt.includes("Press"), txt);
     ok("S32 a legitimate zero value is not hidden", txt.includes("Value") && txt.includes("0"), txt);
     ok("S32 the has-commands marker is drawn", txt.includes("▶"), txt);
     ok("S32 an unnameable source is shown, not dropped",

@@ -56,6 +56,14 @@ def test_midi_bank_program_fields():
                  ["LSB(CC32)", "2"]]
 
 
+def test_midi_bank_program_unset_slots_show_off_not_minus_one():
+    # The forward path writes -1 into an unset MSB/LSB/PC; show "Off", not -1.
+    f = _command_fields("MIDI", {"Command": 0, "MIDI Ch": 1, "PC": 5,
+                                 "MSB": -1, "LSB": -1}, CONTROLS)
+    assert f == [["Channel", "1"], ["PC", "5"], ["MSB(CC00)", "Off"],
+                 ["LSB(CC32)", "Off"]]
+
+
 def test_midi_note_resolves_note_name():
     f = _command_fields("MIDI", {"Command": 3, "MIDI Ch": 1, "Note": 0,
                                  "Velocity": 100}, CONTROLS)
@@ -80,13 +88,14 @@ def test_presetsnap_preset_vs_snapshot_fields():
 
 # --- _command_display: headline / action / subtype swap -----------------------
 
-def test_display_midi_cc_headline_and_action():
+def test_display_midi_cc_headline_no_action():
+    # The decoder populates "Action" only for PresetSnapshot, never for MIDI, so
+    # a MIDI command reaching this pane has no Action — the chip stays empty.
     rec = {"type": "MIDI", "behavior": "momentary", "toggle": False,
-           "params": {"Action": 0, "Command": 1, "MIDI Ch": 1, "CC#": 7,
-                      "Value": 127}}
+           "params": {"Command": 1, "MIDI Ch": 1, "CC#": 7, "Value": 127}}
     d = _command_display(rec, CONTROLS)
     assert d["family"] == "MIDI" and d["headline"] == "MIDI CC"
-    assert d["action"] == "Press" and d["behavior"] == "momentary"
+    assert d["action"] == "" and d["behavior"] == "momentary"
     assert ["CC#", "7"] in d["fields"]
 
 
@@ -98,11 +107,13 @@ def test_display_midi_note_subtype_not_mmc():
     assert d2["headline"] == "MIDI MMC"
 
 
-def test_display_presetsnapshot_headline():
+def test_display_presetsnapshot_headline_and_action():
+    # PresetSnapshot DOES carry Action (pvl0), so the chip renders here.
     d = _command_display({"type": "PresetSnapshot",
                           "params": {"Action": 0, "Command": 7, "Snapshot": 2}},
                          CONTROLS)
     assert d["family"] == "Preset/Snapshot" and d["headline"] == "Snapshot"
+    assert d["action"] == "Press"
 
 
 def test_display_unknown_family_passes_through():

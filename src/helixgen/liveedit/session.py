@@ -193,12 +193,17 @@ def _command_fields(typ: str, p: dict, controls: dict) -> List[List[str]]:
     def s(name: str) -> str:
         return str(p.get(name, 0))
 
+    def off(name: str) -> str:
+        # The forward path writes -1 into an unset Bank/Program slot; the manual
+        # shows that as "Off", not a raw -1 (a real PC/MSB/LSB is 0..127).
+        return "Off" if p.get(name, 0) == -1 else str(p.get(name, 0))
+
     if typ == "MIDI":
         cmd = p.get("Command")
         ch = ["Channel", s("MIDI Ch")]
         if cmd == 0:        # Bank/Program
-            return [ch, ["PC", s("PC")], ["MSB(CC00)", s("MSB")],
-                    ["LSB(CC32)", s("LSB")]]
+            return [ch, ["PC", off("PC")], ["MSB(CC00)", off("MSB")],
+                    ["LSB(CC32)", off("LSB")]]
         if cmd == 1:        # CC
             return [ch, ["CC#", s("CC#")], ["Value", s("Value")]]
         if cmd == 2:        # MMC
