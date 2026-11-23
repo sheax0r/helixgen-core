@@ -57,6 +57,14 @@ def test_page_has_library_browse_filter():
         assert marker in html, marker
 
 
+def test_page_has_library_import_control():
+    # 81v.9: the Tones tab imports a .hsp FILE into the library via base64 POST.
+    html = PAGE.read_text()
+    for marker in ("function libImportRow", '"/library/import_file"',
+                   "readAsDataURL", 'accept = ".hsp"'):
+        assert marker in html, marker
+
+
 def test_page_has_snapshot_panel_and_endpoints():
     html = PAGE.read_text()
     for marker in ('id="snappanel"', 'id="snapbody"', '"/snapshot/rename"', '"/snapshot"',

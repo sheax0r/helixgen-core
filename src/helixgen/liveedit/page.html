@@ -383,6 +383,8 @@ body.down main{opacity:.55}
 .lsearch:focus{outline:none;border-color:#5f84d6;box-shadow:0 0 0 2px rgba(61,107,255,.25)}
 .lsearch::placeholder{color:var(--faint)}
 .lempty{color:var(--dim);font-size:13px;padding:6px 0}
+.limportrow{display:flex;gap:8px;align-items:center;margin:0 0 12px;font-size:12px;color:var(--dim)}
+.limport{font:inherit;font-size:12px;color:var(--dim);min-width:0}
 /* ---------- snapshot management panel (81v.2) ---------- */
 #snap{cursor:pointer}
 #snappanel{position:fixed;top:0;right:0;bottom:0;width:min(380px,92vw);background:var(--panel);border-left:1px solid var(--edge2);
@@ -2283,6 +2285,29 @@ function setBadge(node, diff) { node.className = "lbadge " + (diff || "verifying
 function libAct(action, body, then) {
   send("/library/" + action, body, (j) => { toast(action + " done", true); if (then) then(j); }, () => {});
 }
+// Import a .hsp FILE into the on-disk library (library import over an upload):
+// read it client-side to base64 and POST to /library/import_file. Disk-only,
+// no device. The server validates the magic + structure and refuses a name
+// collision; a refusal is surfaced by send()'s own error toast.
+function libImportRow() {
+  const row = el("div", "limportrow");
+  row.append(el("span", "limportlbl", "Import a .hsp into the library:"));
+  const inp = el("input", "limport"); inp.type = "file"; inp.accept = ".hsp";
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const b64 = String(reader.result).split(",")[1] || "";   // strip the data: prefix
+      send("/library/import_file", { filename: f.name, content_b64: b64 },
+        () => { inp.value = ""; toast("Imported " + f.name, true); openDrawer(); },
+        () => { inp.value = ""; });                             // send() toasts the error
+    };
+    reader.onerror = () => { inp.value = ""; toast("could not read that file"); };
+    reader.readAsDataURL(f);
+  };
+  row.append(inp);
+  return row;
+}
 function libTone(t) {
   const box = el("div", "ltone"); box.dataset.slug = t.slug;
   // haystack for the live filter: name/artist/song/tags + every variant's
@@ -2396,6 +2421,7 @@ function renderLib(st) {
   search.placeholder = "Filter tones…"; search.value = libQuery;
   search.oninput = () => { libQuery = search.value; applyLibFilter(); };
   panels.Tones.append(search);
+  panels.Tones.append(libImportRow());
   const list = el("div", "ltones"); list.id = "ltones"; libListNode = list;
   (st.tones || []).forEach((t) => list.append(libTone(t)));
   panels.Tones.append(list);

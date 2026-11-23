@@ -28,7 +28,8 @@ def _meta(tmp_path, preset_name="Crunch - Prestige", write=True):
         created="2026-01-01", updated="2026-01-01")
 
 
-def _session(tmp_path, *, metas=None, offline=False, copy_fn=None, pull_fn=None):
+def _session(tmp_path, *, metas=None, offline=False, copy_fn=None, pull_fn=None,
+             import_fn=None):
     kw = dict(tone_loader=lambda: (metas if metas is not None else []),
               guitar_loader=lambda: [], ir_local_loader=lambda: [],
               library_root=tmp_path)
@@ -36,8 +37,113 @@ def _session(tmp_path, *, metas=None, offline=False, copy_fn=None, pull_fn=None)
         kw["copy_fn"] = copy_fn
     if pull_fn is not None:
         kw["pull_fn"] = pull_fn
+    if import_fn is not None:
+        kw["import_fn"] = import_fn
     factory = None if offline else (lambda: _FakeClient())
     return LibrarySession(factory, **kw)
+
+
+# -- import a .hsp FILE into the library (library import over an upload) -----
+
+def _b64(data: bytes) -> str:
+    import base64
+    return base64.b64encode(data).decode()
+
+
+_HSP_BYTES = b"rpshnosj" + b'{"meta": {"name": "Imported"}}'
+
+
+def test_import_file_decodes_and_calls_import(tmp_path):
+    seen = {}
+
+    def import_fn(filename, data, *, guitar=None):
+        seen.update(filename=filename, data=data, guitar=guitar)
+        return {"name": filename}
+
+    st = _session(tmp_path, import_fn=import_fn)
+    out = st.import_file("Crunch.hsp", _b64(_HSP_BYTES), guitar="Tele")
+    assert out == {"name": "Crunch.hsp"}
+    assert seen["data"] == _HSP_BYTES and seen["guitar"] == "Tele"
+
+
+def test_import_file_works_offline(tmp_path):
+    # importing a FILE into the on-disk library needs no device.
+    called = []
+    st = _session(tmp_path, offline=True,
+                  import_fn=lambda f, d, *, guitar=None: called.append(f) or {"name": f})
+    st.import_file("x.hsp", _b64(_HSP_BYTES))
+    assert called == ["x.hsp"]
+
+
+def test_import_file_strips_client_path(tmp_path):
+    seen = {}
+    st = _session(tmp_path,
+                  import_fn=lambda f, d, *, guitar=None: seen.update(f=f) or {"name": f})
+    st.import_file("/etc/../sneaky/Evil.hsp", _b64(_HSP_BYTES))
+    assert seen["f"] == "Evil.hsp"          # only the basename reaches the fn
+
+
+def test_import_file_rejects_non_hsp(tmp_path):
+    called = []
+    st = _session(tmp_path, import_fn=lambda *a, **k: called.append(1))
+    with pytest.raises(LibraryError) as ei:
+        st.import_file("tone.hlx", _b64(_HSP_BYTES))
+    assert ei.value.status == 400 and not called
+
+
+def test_import_file_rejects_bad_base64(tmp_path):
+    called = []
+    st = _session(tmp_path, import_fn=lambda *a, **k: called.append(1))
+    with pytest.raises(LibraryError) as ei:
+        st.import_file("tone.hsp", "not base64!!!")
+    assert ei.value.status == 400 and not called
+
+
+def test_import_file_rejects_wrong_magic(tmp_path):
+    called = []
+    st = _session(tmp_path, import_fn=lambda *a, **k: called.append(1))
+    with pytest.raises(LibraryError) as ei:
+        st.import_file("tone.hsp", _b64(b"NOTMAGIC{}"))
+    assert ei.value.status == 400 and not called
+
+
+def test_import_file_collision_is_409(tmp_path):
+    def import_fn(filename, data, *, guitar=None):
+        import click
+        raise click.ClickException("a tone with that name already exists")
+
+    st = _session(tmp_path, import_fn=import_fn)
+    with pytest.raises(LibraryError) as ei:
+        st.import_file("dup.hsp", _b64(_HSP_BYTES))
+    assert ei.value.status == 409
+
+
+def test_default_import_file_lands_in_the_library(tmp_home):
+    # exercise the REAL _default_import_file end to end: a valid .hsp uploaded
+    # as base64 is placed in home.tones_dir() under the naming schema.
+    from helixgen import home
+    from helixgen.hsp import read_hsp, write_hsp
+
+    src = tmp_home / "raw.hsp"
+    write_hsp(src, {"meta": {"name": "Imported Tone"}, "preset": {"flow": []}})
+    st = LibrarySession(None, tone_loader=lambda: [], guitar_loader=lambda: [],
+                        ir_local_loader=lambda: [])
+    out = st.import_file("raw.hsp", _b64(src.read_bytes()))
+    assert out["name"] == "raw.hsp"
+    landed = {read_hsp(f)["meta"]["name"]: f for f in home.tones_dir().glob("*.hsp")}
+    assert "Imported Tone" in landed
+
+
+def test_default_import_file_rejects_garbage_hsp(tmp_home):
+    # bytes with the right magic but an unreadable body -> 400 (not imported).
+    from helixgen import home
+
+    st = LibrarySession(None, tone_loader=lambda: [], guitar_loader=lambda: [],
+                        ir_local_loader=lambda: [])
+    with pytest.raises(LibraryError) as ei:
+        st.import_file("bad.hsp", _b64(b"rpshnosj" + b"\xff\xff not json"))
+    assert ei.value.status == 400
+    assert not list((home.tones_dir()).glob("*.hsp")) if home.tones_dir().is_dir() else True
 
 
 def test_copy_calls_device_copy_with_hsp(tmp_path):
