@@ -82,3 +82,13 @@ def test_page_registers_the_controllers_pane_and_endpoint():
                    'addPane({ id: "controllers"', "/controllers/state",
                    "/controllers/assign", "/controllers/clear"):
         assert marker in html, marker
+
+
+def test_page_registers_the_globaleq_pane_and_endpoints():
+    # 81v.6: the Global EQ pane mounts via addPane, reads the connect-time
+    # snapshot (GET /globaleq/state) and writes one control at a time
+    # (POST /globaleq/set).
+    html = PAGE.read_text()
+    for marker in ('id="eqpane"', 'id="eqtabs"', 'id="eqbody"',
+                   'addPane({ id: "globaleq"', "/globaleq/state", "/globaleq/set"):
+        assert marker in html, marker
