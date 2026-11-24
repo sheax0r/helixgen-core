@@ -1352,6 +1352,46 @@ class HelixClient:
         return _status0(self._rpc("/removeControllerSource",
                                   [("i", int(controller_cid))]))
 
+    def attach_block_bypass_controller(self, path: int, block: int) -> int:
+        """Create a (sourceless) BYPASS controller on a block in the live edit
+        buffer and return the device-allocated controller id (``cid_``).
+
+        ``/attachBlockBypassController [reqid, dsp, grid_slot, 1]`` — the block
+        sibling of :meth:`attach_param_controller`: it targets the block's
+        *bypass* rather than a param, so there is no param id. ``(path, block)``
+        is the same ``(dsp, grid_slot)`` coordinate as :meth:`set_param` /
+        :meth:`attach_param_controller`; the trailing ``1`` is the fixed bypass
+        sub-index the app sends (captured constant — a block has exactly one
+        bypass). The device allocates a ``cg__.entt.ctrl`` and replies
+        ``[reqid, cid_, cid_]`` (the id twice, like :meth:`attach_command` — NOT
+        :meth:`attach_param_controller`'s ``[reqid, cid_, status]``, so the
+        trailing field is the id, not a 0-is-ok status). To finish a
+        footswitch→bypass assignment, follow with :meth:`set_controller_source`
+        (``(locl, ctxt)`` from ``transcode._controller_locl_ctxt``, e.g. FS1 →
+        ``(25, 1)``) and :meth:`set_cid_behavior` (``0`` = latching, ``1`` =
+        momentary) — the exact cascade the app's Controller Assign dialog runs.
+        Clear it with :meth:`remove_controller_source` then
+        :meth:`remove_controller`. Captured 2026-11-24 from the Stadium Debug
+        app (frida app-MITM); see
+        ``docs/superpowers/specs/2026-11-24-fs-bypass-assign-re-findings.md``.
+        Raises :class:`HelixError` if the device does not return a controller
+        id."""
+        replies = self._rpc("/attachBlockBypassController",
+                            [("i", int(path)), ("i", _grid_slot(block)),
+                             ("i", 1)])
+        for addr, args in replies:
+            if addr == "/error":
+                raise HelixError(
+                    f"/attachBlockBypassController failed: {args}")
+            # Reply is [reqid, cid_, cid_]; read the first field after reqid as
+            # the id (both held it on the wire), consistent with attach_command.
+            if addr == "/attachBlockBypassController" and len(args) >= 2:
+                cid = args[1]
+                if isinstance(cid, int) and not isinstance(cid, bool):
+                    return cid
+        raise HelixError("the device did not return a controller id for "
+                         "/attachBlockBypassController")
+
     # -- Command Center authoring (captured 2026-11-23 from the Debug app) --
     # The app's command author/edit/clear flow: /attachCommandWithType creates
     # a command on a footswitch/Instant source (the device allocates the slot
