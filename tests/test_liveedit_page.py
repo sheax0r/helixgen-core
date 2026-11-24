@@ -129,10 +129,13 @@ def test_page_registers_the_globaleq_pane_and_endpoints():
 
 
 def test_page_registers_the_command_center_pane_and_endpoint():
-    # 81v.4: the Command Center pane mounts via addPane and reads /commands/state.
+    # 81v.4: the Command Center pane mounts via addPane, reads /commands/state,
+    # and authors MIDI commands on footswitches (write): the Add/Edit form reads
+    # the source catalogue and writes via /commands/add + /commands/remove.
     html = PAGE.read_text()
-    for marker in ('id="cmdpane"', 'id="cmdbody"',
-                   'addPane({ id: "commands"', "/commands/state"):
+    for marker in ('id="cmdpane"', 'id="cmdbody"', 'id="cmdassign"',
+                   'addPane({ id: "commands"', "/commands/state",
+                   "/commands/sources", '"/commands/add"', '"/commands/remove"'):
         assert marker in html, marker
 
 

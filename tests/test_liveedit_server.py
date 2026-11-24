@@ -84,6 +84,18 @@ def test_commands_state_endpoint(srv):
     assert isinstance(j.get("sources"), list)
 
 
+def test_commands_sources_endpoint(srv):
+    # 81v.4 write: the authorable-footswitch catalogue for the Add picker. Every
+    # entry is a footswitch (Instant/EXP are not authorable) with an English label.
+    code, ctype, data = req(srv[2], "GET", "/commands/sources")
+    j = _j(data)
+    assert code == 200 and ctype == "application/json"
+    ids = [s["id"] for s in j["sources"]]
+    assert ids and all(i.startswith("FS") for i in ids)
+    assert "FS6" not in ids and "FS12" not in ids          # reserved
+    assert all(s["label"] and s["label"] != s["id"] for s in j["sources"])  # English
+
+
 def test_tuner_reading_endpoint(srv):
     # 81v.10: read-only live pitch reading. No pitch has streamed into the fake
     # session, so it reports no-signal rather than erroring.
@@ -124,6 +136,48 @@ def test_controllers_clear_route(srv):
     code, _, data = req(server, "POST", "/controllers/clear",
                         {"path": 0, "block": 2, "pid": DRIVE})
     assert code == 200, data            # no controller on the rig -> clean no-op
+
+
+def test_commands_add_route(srv):
+    # 81v.4 write: author a MIDI CC command on FS1. FS1 -> (type 1, locl 25,
+    # ctxt 1); family 6; attach subtype 0; the CC pvl slots follow.
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/commands/add",
+                        {"switch": "FS1", "func": 1,
+                         "values": {"MIDI Ch": 1, "CC#": 7, "Value": 127}})
+    assert code == 200, data
+    assert c.cmd_attaches == [(1, 25, 1, 6, 0, 1)]
+    sets = {i: v for (_slot, i, v) in c.cmd_param_sets}
+    assert sets[6] == 7 and sets[7] == 127
+
+
+def test_commands_add_route_rejects_bad_body(srv):
+    c, s, server = srv
+    assert req(server, "POST", "/commands/add",
+               {"switch": "", "func": 1, "values": {}})[0] == 400
+    assert req(server, "POST", "/commands/add",
+               {"switch": "FS1", "func": 1, "values": "nope"})[0] == 400
+    assert req(server, "POST", "/commands/add",
+               {"switch": "FS1", "func": 1, "values": {"CC#": 999}})[0] == 400
+    assert c.cmd_attaches == []
+
+
+def test_commands_remove_route(srv, monkeypatch):
+    c, s, server = srv
+    from helixgen import controllers as _controllers
+    from helixgen import view as _view
+    from helixgen.device import bridge as _bridge
+    sid = _controllers.resolve_command_source("stadium_xl", "FS1")
+    monkeypatch.setattr("helixgen.device.untranscode.sbepgsm_to_hsp",
+                        lambda eb, **k: {"_marker": "body"})
+    monkeypatch.setattr(_bridge, "hsp_commands", lambda body: [
+        {"source": sid, "type": "MIDI", "params": {"Command": 1, "CC#": 1}}])
+    monkeypatch.setattr(_view, "_device_id", lambda body: "stadium_xl")
+    monkeypatch.setattr(_controllers, "controller_mapping", lambda dev: [])
+    code, _, data = req(server, "POST", "/commands/remove",
+                        {"switch": "FS1", "index": 0})
+    assert code == 200, data
+    assert c.cmd_removes == [1]
 
 
 def test_intents_endpoint_serves_the_adjective_map(srv):

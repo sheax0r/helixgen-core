@@ -23,7 +23,7 @@ class El {
   removeEventListener(t, f) { this.L[t] = (this.L[t] || []).filter((x) => x !== f); }
   fire(t, ev = {}) { ev.preventDefault = ev.preventDefault || (() => {}); ev.type = t; (this.L[t] || []).slice().forEach((f) => f(ev)); return ev; }
   remove() { this._blurOnTeardown(); if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; }
-  focus() { El.active = this; } select() {} setPointerCapture() {} get offsetWidth() { return 0; }
+  focus() { El.active = this; } select() {} setPointerCapture() {} scrollIntoView() {} get offsetWidth() { return 0; }
   get connected() { let n = this; while (n.parent) n = n.parent; return n === El.body; }
   get value() { return this._value; }
   set value(v) { if (this.tagName === "select") { const o = this.children.find((c) => String(c._value) === String(v)); this._value = o ? String(v) : ""; } else this._value = v; }
@@ -37,7 +37,7 @@ function boot() {
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
    "mixerpane", "mxtabs", "mxbody", "mxrefresh",
    "eqpane", "eqtabs", "eqnote", "eqbody", "eqrefresh",
-   "cmdpane", "cmdbody", "cmdrefresh",
+   "cmdpane", "cmdbody", "cmdrefresh", "cmdassign",
    "tunerpane", "tunerbody", "tuner-note", "tuner-needle", "tuner-pointer",
    "tuner-readout", "tuner-cents", "tuner-hz", "tuner-hint",
    "deviceinfopane", "dinfobody", "dinforefresh", "dinfonote",

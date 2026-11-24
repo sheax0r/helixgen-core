@@ -812,6 +812,78 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       y.ids.dinfobody.textContent);
   }
 
+  { // S36: Command Center — author / edit / remove MIDI commands on a footswitch (81v.4 write)
+    const aria = (host, a) => host.find((e) => e.getAttribute && e.getAttribute("aria-label") === a)[0];
+    const btn = (host, t) => host.find((e) => e.tagName === "button" && e.textContent === t)[0];
+    // Open the pane, serve the authoring catalogue + one editable MIDI CC on FS1.
+    const openCmd = async () => {
+      const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+      x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Command Center")[0].onclick();
+      await x.tick();
+      x.posts.find((p) => p.url === "/commands/sources").reply(200, { sources: [
+        { id: "FS1", label: "Footswitch 1 (top row, 1st from left)" },
+        { id: "FS3", label: "Footswitch 3 (top row, 3rd from left)" }] });
+      await x.tick(); await x.tick();
+      x.posts.find((p) => p.url === "/commands/state").reply(200, { sources: [
+        { id: "FS1", label: "Footswitch 1 (top row, 1st from left)", named: true, commands: [
+          { family: "MIDI", headline: "MIDI CC", action: "", behavior: "latching", toggle: false,
+            fields: [["Channel", "1"], ["CC#", "11"], ["Value", "0"]],
+            func: 1, params: { "MIDI Ch": 1, "CC#": 11, "Value": 0 },
+            index: 0, source: "FS1", editable: true }] }] });
+      await x.tick(); await x.tick();
+      return x;
+    };
+
+    // --- author ---
+    const xa = await openCmd();
+    const srcReq = xa.posts.find((p) => p.url === "/commands/sources");
+    ok("S36 the pane fetches the authoring catalogue", !!srcReq, "no /commands/sources");
+    const form = xa.ids.cmdassign;
+    const fsel = aria(form, "Footswitch"), tsel = aria(form, "MIDI command type");
+    ok("S36 the Add form renders a footswitch picker", !!fsel && fsel.children.length === 2,
+      fsel ? String(fsel.children.length) : "no picker");
+    ok("S36 the Add form offers the four MIDI subtypes", !!tsel && tsel.children.length === 4, "subtypes");
+    fsel.value = "FS3"; tsel.value = "1"; tsel.onchange();     // CC subtype -> Ch/CC#/Value fields
+    aria(form, "Ch").value = "2"; aria(form, "CC#").value = "7"; aria(form, "Value").value = "100";
+    btn(form, "Add command").onclick(); await xa.tick();
+    const addReq = xa.posts.find((p) => p.url === "/commands/add");
+    ok("S36 Add posts the command to the device", !!addReq, "no /commands/add");
+    ok("S36 Add carries the switch, subtype and field values",
+      addReq && addReq.body.switch === "FS3" && addReq.body.func === 1
+        && addReq.body.values["MIDI Ch"] === 2 && addReq.body.values["CC#"] === 7
+        && addReq.body.values.Value === 100, JSON.stringify(addReq && addReq.body));
+
+    // --- remove ---
+    const xr = await openCmd();
+    const rm = btn(xr.ids.cmdbody, "Remove");
+    ok("S36 an editable command shows a Remove button", !!rm, "no Remove");
+    rm.onclick(); await xr.tick();
+    const rmReq = xr.posts.find((p) => p.url === "/commands/remove");
+    ok("S36 Remove posts the switch + position index",
+      rmReq && rmReq.body.switch === "FS1" && rmReq.body.index === 0, JSON.stringify(rmReq && rmReq.body));
+
+    // --- edit (clear the old, author the new) ---
+    const xe = await openCmd();
+    const ed = btn(xe.ids.cmdbody, "Edit");
+    ok("S36 an editable command shows an Edit button", !!ed, "no Edit");
+    ed.onclick(); await xe.tick();
+    const form2 = xe.ids.cmdassign;
+    const ccPrefill = aria(form2, "CC#");
+    ok("S36 Edit prefills the form and arms Save changes",
+      !!btn(form2, "Save changes") && ccPrefill && String(ccPrefill.value) === "11",
+      ccPrefill ? String(ccPrefill.value) : "no prefill");
+    ccPrefill.value = "20";                               // nudge the CC number
+    btn(form2, "Save changes").onclick(); await xe.tick();
+    const eRm = xe.posts.find((p) => p.url === "/commands/remove");
+    ok("S36 Save first clears the existing command",
+      eRm && eRm.body.switch === "FS1" && eRm.body.index === 0, JSON.stringify(eRm && eRm.body));
+    eRm.reply(200, { ok: true }); await xe.tick();
+    const eAdd = xe.posts.find((p) => p.url === "/commands/add");
+    ok("S36 Save then re-authors it with the edited value",
+      eAdd && eAdd.body.switch === "FS1" && eAdd.body.func === 1 && eAdd.body.values["CC#"] === 20,
+      JSON.stringify(eAdd && eAdd.body));
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

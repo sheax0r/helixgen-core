@@ -175,6 +175,21 @@ def _route(session: LiveSession, path: str, b: dict):
     if path == "/controllers/clear":
         return session.clear_param_controllers(_int(b, "path"), _int(b, "block"),
                                                _int(b, "pid"), rev=_rev(b))
+    # Command Center pane (81v.4): author / clear a MIDI command on a footswitch.
+    # Read of the current commands is GET /commands/state (do_GET).
+    if path == "/commands/add":
+        sw = b.get("switch")
+        if not isinstance(sw, str) or not sw:
+            raise LiveError("field 'switch' must be a non-empty string")
+        vals = b.get("values")
+        if not isinstance(vals, dict):
+            raise LiveError("field 'values' must be an object")
+        return session.command_add(sw, _int(b, "func"), vals, rev=_rev(b))
+    if path == "/commands/remove":
+        sw = b.get("switch")
+        if not isinstance(sw, str) or not sw:
+            raise LiveError("field 'switch' must be a non-empty string")
+        return session.command_remove(sw, _int(b, "index"), rev=_rev(b))
     return None
 
 
@@ -292,6 +307,13 @@ def make_server(session: LiveSession, host: str = "127.0.0.1",
                     self._json(200, session.commands())
                 except Exception as e:  # noqa: BLE001 — a bad buffer must not 500 raw
                     logger.exception("live editor: command center state failed")
+                    self._json(500, {"error": f"{type(e).__name__}: {e}"})
+            elif path == "/commands/sources":
+                # the static footswitch catalogue for the Add-command picker (write)
+                try:
+                    self._json(200, session.command_sources())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("live editor: command sources failed")
                     self._json(500, {"error": f"{type(e).__name__}: {e}"})
             # Tuner pane (81v.10): the latest live pitch reading off the always-on
             # 2003 telemetry stream. Read-only; polled while the pane is open.
