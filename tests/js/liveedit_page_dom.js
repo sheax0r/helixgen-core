@@ -28,6 +28,43 @@ class El {
   get value() { return this._value; }
   set value(v) { if (this.tagName === "select") { const o = this.children.find((c) => String(c._value) === String(v)); this._value = o ? String(v) : ""; } else this._value = v; }
   find(pred, out = []) { if (pred(this)) out.push(this); this.children.forEach((c) => c.find && c.find(pred, out)); return out; }
+  // Minimal CSS selector support (real browsers have these; the page uses them).
+  querySelectorAll(sel) { return _qsa(this, sel); }
+  querySelector(sel) { return _qsa(this, sel)[0] || null; }
+  matches(sel) { return String(sel).split(",").some((s) => _matchCompound(this, _parseCompound(s.trim()))); }
+}
+function _parseCompound(c) {
+  const o = { tag: null, id: null, cls: [], attrs: [] };
+  (c.match(/[.#]?[\w-]+|\[[^\]]+\]/g) || []).forEach((t) => {
+    if (t[0] === ".") o.cls.push(t.slice(1));
+    else if (t[0] === "#") o.id = t.slice(1);
+    else if (t[0] === "[") { const m = /\[([\w-]+)(?:=["']?([^"'\]]*)["']?)?\]/.exec(t); if (m) o.attrs.push([m[1], m[2]]); }
+    else o.tag = t;
+  });
+  return o;
+}
+function _dsKey(a) { return a.replace(/^data-/, "").replace(/-([a-z])/g, (_, c) => c.toUpperCase()); }
+function _matchCompound(el, c) {
+  if (c.tag && el.tagName !== c.tag) return false;
+  if (c.id && el.id !== c.id) return false;
+  if (c.cls.some((cl) => !el._cls.has(cl))) return false;
+  for (const [k, v] of c.attrs) {
+    const av = k.indexOf("data-") === 0 ? (el.dataset ? el.dataset[_dsKey(k)] : undefined) : el.getAttribute(k);
+    if (v == null) { if (av == null) return false; } else if (String(av) !== v) return false;
+  }
+  return true;
+}
+function _qsa(root, sel) {
+  const chain = String(sel).trim().split(/\s+/).map(_parseCompound);
+  const last = chain[chain.length - 1];
+  const hits = root.find((e) => e !== root && _matchCompound(e, last));
+  if (chain.length === 1) return hits;
+  const anc = chain.slice(0, -1);
+  return hits.filter((e) => {
+    let i = anc.length - 1;
+    for (let n = e.parent; n && n !== root.parent; n = n.parent) { if (i >= 0 && _matchCompound(n, anc[i])) i--; if (i < 0) break; }
+    return i < 0;
+  });
 }
 function boot() {
   const ids = {}; El.body = new El("body");
@@ -42,7 +79,7 @@ function boot() {
    "tuner-readout", "tuner-cents", "tuner-hz", "tuner-hint",
    "deviceinfopane", "dinfobody", "dinforefresh", "dinfonote",
    "snappanel", "snapbody", "snapclose"].forEach((i) => { ids[i] = new El("div"); El.body.append(ids[i]); });
-  const document = { get body2(){return El.body}, getElementById: (i) => ids[i], createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
+  const document = { get body2(){return El.body}, getElementById: (i) => ids[i] || El.body.find((e) => e.id === i)[0] || null, createElement: (t) => new El(t), createElementNS: (n, t) => new El(t),
     createTextNode: (s) => { const t = new El("#text"); t._text = s; return t; }, body: El.body, title: "" };
   const win = {}; const posts = []; const toasts = ids.toasts; let es = null;
   const fetch = (url, opt) => new Promise((resolve, reject) => { posts.push({ url, body: (opt && opt.body) ? JSON.parse(opt.body) : null, reject,
@@ -60,7 +97,8 @@ function boot() {
   const tick = () => new Promise((r) => setImmediate(r));
   const sse = (m) => es.onmessage({ data: JSON.stringify(m) });
   const knobOf = (key) => { const root = ids.rig.find((e) => e.dataset && e.dataset.k === key)[0]; return { root, svg: root.children[0], val: root.children[1] }; };
-  return { api, ids, win, posts, sse, tick, knobOf, toasts, document, body: El.body, intervals };
+  const tileOf = (key) => ids.rig.find((e) => e._cls.has("tile") && e.dataset && e.dataset.b === key)[0] || null;
+  return { api, ids, win, posts, sse, tick, knobOf, tileOf, toasts, document, body: El.body, intervals };
 }
 const P_ = (o) => Object.assign({ pid: 1, name: "Drive", label: "Drive", type: "f", ctl: "knob", value: 0.5, min: 0, max: 1, default: 0.5,
   unit: "", scale: 10, display_min: null, display_max: null, labels: null, internal: false, snap: false }, o);

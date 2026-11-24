@@ -352,6 +352,56 @@ body.down main{opacity:.55}
 .c-wah,.c-filter,.c-pitch{--acc:#ff7eb6}.c-eq{--acc:#c5e86c}.c-ir,.c-cab,.c-cab_ir_interp{--acc:#c9a27a}
 .c-input,.c-output{--acc:#8fa3c8}.c-split,.c-join{--acc:#5b8cff}.c-volume,.c-send,.c-looper{--acc:#9aa6bd}
 
+/* ---------- signal-flow tiles + focus panel (canvas reframe) ---------- */
+.tile{--acc:#7c8aa8;align-self:center;position:relative;display:flex;align-items:center;gap:9px;
+  width:min(340px,100%);background:linear-gradient(180deg,var(--panel2),var(--panel));
+  border:1px solid var(--edge);border-radius:12px;padding:9px 13px 9px 15px;cursor:pointer;
+  box-shadow:0 4px 14px rgba(0,0,0,.3);user-select:none;-webkit-user-select:none;
+  transition:border-color .12s,box-shadow .12s}
+.tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:5px;background:var(--acc);
+  box-shadow:0 0 12px var(--acc);border-radius:12px 0 0 12px}
+.tile:hover{border-color:var(--acc)}
+.tile.sel{border-color:var(--acc);box-shadow:0 0 0 2px var(--acc),0 6px 18px rgba(0,0,0,.45)}
+.tile.off{filter:saturate(.25);opacity:.5}
+.tile.off::before{box-shadow:none;opacity:.4}
+.tile.node{width:auto;min-width:160px;border-style:dashed;border-color:#3a4a78;background:#121827;padding:7px 13px}
+.tile .ic{flex:none;width:20px;height:20px;color:var(--acc);display:flex;align-items:center;justify-content:center}
+.tile .ic svg{width:20px;height:20px}
+.tile .ti-cat{flex:none;font-size:9px;font-weight:800;letter-spacing:.11em;text-transform:uppercase;color:var(--acc)}
+.tile .ti-nm{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.tile .ti-byp{flex:none;width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 7px var(--ok)}
+.tile.off .ti-byp{background:#3a2020;box-shadow:none}
+.tile .ti-dir{flex:none;font-size:13px;font-weight:800;width:10px;text-align:center}
+.tile.drag{opacity:.4}
+.tile.dropbefore{box-shadow:0 -3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
+.tile.dropafter{box-shadow:0 3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
+/* tile adjective-search highlight (block-level glow + arrow) */
+.tile.hl-on{box-shadow:0 0 0 2px var(--wire),0 0 15px var(--wire-glow)}
+.tile.hl-up{box-shadow:0 0 0 2px var(--up),0 0 15px var(--up-glow)}
+.tile.hl-up .ti-dir{color:var(--up)}
+.tile.hl-down{box-shadow:0 0 0 2px var(--down),0 0 15px var(--down-glow)}
+.tile.hl-down .ti-dir{color:var(--down)}
+.tile.hl-off{opacity:.3;filter:grayscale(.6)}
+/* focus panel: the selected block's full controls, docked below the canvas */
+#focus{margin-top:30px;border-top:1px solid var(--edge2);padding-top:20px}
+#focus .blk{min-width:0}
+.focus-empty{color:var(--faint);font-size:13px;text-align:center;padding:34px 0}
+body.pane-other #focus{display:none}
+/* categorized model browser (two-column: category rail + model list) */
+.browser{display:grid;grid-template-columns:154px 1fr;gap:12px;min-height:0;max-height:54vh}
+.cat-rail{display:flex;flex-direction:column;gap:2px;overflow-y:auto;border-right:1px solid var(--edge2);padding-right:8px}
+.cat-tab{--acc:#8fa3c8;display:flex;align-items:center;gap:8px;text-align:left;background:transparent;border:0;
+  border-radius:8px;padding:7px 9px;cursor:pointer;color:var(--dim);font:inherit;font-size:13px;font-weight:700;white-space:nowrap}
+.cat-tab .ic{flex:none;width:18px;height:18px;color:var(--acc);display:flex;align-items:center;justify-content:center}
+.cat-tab .ic svg{width:18px;height:18px}
+.cat-tab:hover{background:rgba(255,255,255,.04);color:var(--ink)}
+.cat-tab.on{background:rgba(255,255,255,.07)}
+.cat-tab.on .cat-tab-nm{color:var(--acc)}
+.cat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.cat-filter{background:#0f1218;color:var(--ink);border:1px solid var(--edge2);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px;margin-bottom:8px}
+.cat-filter:focus{outline:none;border-color:#5f84d6;box-shadow:0 0 0 2px rgba(61,107,255,.25)}
+.cat-list{overflow-y:auto;min-height:0}
+
 /* ---------- toasts ---------- */
 #toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:30}
 .toast{background:#2a1215;border:1px solid #6b2229;color:#ffd7d7;border-radius:10px;padding:9px 13px;max-width:440px;
@@ -434,6 +484,29 @@ body.down main{opacity:.55}
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<symbol id="ic-amp" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="1.5"/><path d="M7 11v0M11 11v0M15 11v0M7 14h10"/></symbol>
+<symbol id="ic-preamp" viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="9" rx="1.5"/><path d="M9.5 12.5v0M14.5 12.5v0"/></symbol>
+<symbol id="ic-cab" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="1.5"/><circle cx="12" cy="13" r="4"/><circle cx="12" cy="13" r="1"/></symbol>
+<symbol id="ic-cab_ir_interp" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="1.5"/><circle cx="12" cy="13" r="4"/><circle cx="12" cy="13" r="1"/></symbol>
+<symbol id="ic-ir" viewBox="0 0 24 24"><path d="M4 9v6h3l4 3V6L7 9z"/><path d="M15 9a4 4 0 0 1 0 6M18 7a7 7 0 0 1 0 10"/></symbol>
+<symbol id="ic-distortion" viewBox="0 0 24 24"><path d="M3 15l3-7 3 9 3-11 3 9 3-5 3 3"/></symbol>
+<symbol id="ic-dynamics" viewBox="0 0 24 24"><path d="M3 18V6M3 18h18"/><path d="M3 15l6-7 5 2 7-5"/></symbol>
+<symbol id="ic-delay" viewBox="0 0 24 24"><circle cx="9" cy="12" r="5"/><circle cx="15" cy="12" r="5"/></symbol>
+<symbol id="ic-reverb" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></symbol>
+<symbol id="ic-modulation" viewBox="0 0 24 24"><path d="M3 12c3-6 6-6 9 0s6 6 9 0"/></symbol>
+<symbol id="ic-eq" viewBox="0 0 24 24"><path d="M7 20V4M12 20V4M17 20V4"/><path d="M4 9h6M9 15h6M14 7h6"/></symbol>
+<symbol id="ic-pitch" viewBox="0 0 24 24"><path d="M8 8l-3-3-3 3M5 5v14"/><path d="M16 16l3 3 3-3M19 19V5"/></symbol>
+<symbol id="ic-wah" viewBox="0 0 24 24"><path d="M3 17l16-9 2 3-16 9z"/><path d="M3 17v2h18v-2"/></symbol>
+<symbol id="ic-filter" viewBox="0 0 24 24"><path d="M3 18V6M3 18h18"/><path d="M3 16h8l3-10 2 6h5"/></symbol>
+<symbol id="ic-volume" viewBox="0 0 24 24"><path d="M3 16L21 6v10z"/></symbol>
+<symbol id="ic-send" viewBox="0 0 24 24"><path d="M12 5H5v14h14v-7"/><path d="M14 10l7-7M15 3h6v6"/></symbol>
+<symbol id="ic-looper" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v4h-4"/></symbol>
+<symbol id="ic-input" viewBox="0 0 24 24"><path d="M20 4l-2 2M17 7a3 3 0 0 1-3 3l-2 2a4 4 0 1 1-3-3l2-2a3 3 0 0 1 3-3z"/><path d="M14 10l-4 4"/></symbol>
+<symbol id="ic-output" viewBox="0 0 24 24"><path d="M3 12h13M11 7l5 5-5 5M20 4v16"/></symbol>
+<symbol id="ic-split" viewBox="0 0 24 24"><path d="M3 12h7M10 12c4 0 4-5 8-5M10 12c4 0 4 5 8 5"/><path d="M18 4l3 3-3 3M18 11l3 3-3 3"/></symbol>
+<symbol id="ic-join" viewBox="0 0 24 24"><path d="M3 7c4 0 4 5 8 5M3 17c4 0 4-5 8-5M11 12h7"/><path d="M15 8l3 4-3 4"/></symbol>
+</defs></svg>
 <header class="top">
   <span class="led" id="led" title="device connection"></span>
   <div class="who"><span class="preset" id="preset">Connecting…</span><span class="sub">Helix Live — every tweak writes to the device</span></div>
@@ -1166,6 +1239,106 @@ function blockEl(b) {
 }
 const wire = () => el("div", "wire");
 function conn(cls) { const c = el("div", cls); ["c", "h", "l", "r"].forEach((n) => c.append(el("i", n))); return c; }
+
+/* ---------- signal-flow tiles (compact canvas) + focus panel ---------------
+ * The canvas renders every block as a compact tileEl; selecting one renders
+ * its full blockEl (unchanged) into the focus panel below. So blockEl keeps
+ * every control/lens/button it had — it is just rendered one-at-a-time in
+ * #focus instead of inline per card. */
+function iconSvg(cat) {           // build an <svg><use/></svg> from the static sprite (no HTML strings)
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("width", "20"); svg.setAttribute("height", "20");
+  svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.6"); svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+  const use = document.createElementNS(NS, "use");
+  use.setAttribute("href", "#ic-" + String(cat || "x").replace(/[^a-z0-9_]/gi, ""));
+  svg.append(use); return svg;
+}
+const CAT_LABEL = { amp: "Amp", preamp: "Preamp", cab: "Cab", cab_ir_interp: "Cab", ir: "IR",
+  distortion: "Distortion", dynamics: "Dynamics", delay: "Delay", reverb: "Reverb",
+  modulation: "Modulation", eq: "EQ", pitch: "Pitch/Synth", wah: "Wah", filter: "Filter",
+  volume: "Volume/Pan", send: "Send/Return", looper: "Looper", input: "Input", output: "Output",
+  split: "Split", join: "Merge" };
+function catLabel(cat) { return CAT_LABEL[cat] || String(cat || "").replace(/_/g, " "); }
+// Stadium-ish category ordering for the model browser rail; unknowns sort after.
+const CAT_ORDER = ["amp", "preamp", "cab", "cab_ir_interp", "ir", "distortion", "dynamics",
+  "eq", "modulation", "delay", "reverb", "pitch", "wah", "filter", "volume", "send", "looper"];
+function catRank(c) { const i = CAT_ORDER.indexOf(c); return i < 0 ? 99 : i; }
+let SEL = null;                   // selected block key "path/block", or null
+const BLOCKS = new Map();         // "path/block" -> block object (rebuilt each render)
+function tileEl(b) {
+  const cat = String(b.category || "x").replace(/[^a-z0-9_]/gi, "");
+  const t = el("div", "tile c-" + cat + (STRUCT.has(b.category) ? " node" : "") + (b.enabled ? "" : " off"));
+  const key = b.path + "/" + b.block; t.dataset.b = key;
+  const ic = el("span", "ic"); ic.append(iconSvg(b.category)); t.append(ic);
+  if (STRUCT.has(b.category)) {
+    t.append(el("span", "ti-nm", b.name || b.category));
+  } else {
+    t.append(el("span", "ti-cat", catLabel(b.category)), el("span", "ti-nm", b.name || b.model || ""));
+    t.append(el("span", "ti-dir"));                        // adjective-search arrow slot
+    if (!NO_BYPASS.has(b.category)) t.append(el("span", "ti-byp"));
+  }
+  t.title = b.model || b.name || "";
+  if (key === SEL) t.classList.add("sel");
+  t.onclick = () => { if (down) return; selectTile(key); };
+  return t;
+}
+function tileFor(key) { const cv = $("flowcanvas"); return cv && cv.querySelector('.tile[data-b="' + key + '"]'); }
+function selectTile(key) {
+  SEL = key;
+  const cv = $("flowcanvas");
+  if (cv) { cv.querySelectorAll(".tile.sel").forEach((n) => n.classList.remove("sel"));
+    const n = cv.querySelector('.tile[data-b="' + key + '"]'); if (n) n.classList.add("sel"); }
+  renderFocus();
+}
+function syncTiles() {            // reflect live block.enabled on the tiles (follow-the-device)
+  BLOCKS.forEach((b, key) => { const n = tileFor(key); if (n) n.classList.toggle("off", !b.enabled); });
+}
+function renderFocus() {
+  const fp = $("focus"); if (!fp) return;
+  fp.textContent = "";
+  P.clear(); B.clear();           // only the focused block registers controls (onMsg patches the rest from BLOCKS)
+  const b = SEL && BLOCKS.get(SEL);
+  if (!b) { fp.append(el("p", "focus-empty", "Select a block above to edit it.")); return; }
+  fp.append(blockEl(b));          // the full card — every control, lens and action
+  applyHighlight();               // the freshly-built controls need their highlight classes
+}
+/* within-lane drag-reorder: a tile in a movable lane-A slot can be dragged to
+ * another movable slot in the SAME path (→ /move-block). Cross-lane moves need
+ * the topology engine and are simply not draggable here (Stage 2). */
+let dragKey = null;
+function wireTileDrag(canvas) {
+  const movable = (key) => { const p = key.split("/"); const o = MOVE_SLOTS.get(+p[0]); return !!o && o.includes(+p[1]); };
+  const clearDrop = () => canvas.querySelectorAll(".dropbefore").forEach((n) => n.classList.remove("dropbefore"));
+  canvas.querySelectorAll(".tile").forEach((t) => {
+    const key = t.dataset.b;
+    if (movable(key)) {
+      t.draggable = true;
+      t.addEventListener("dragstart", (e) => {
+        if (down) { e.preventDefault(); return; }
+        dragKey = key; t.classList.add("drag");
+        if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); }
+      });
+      t.addEventListener("dragend", () => { dragKey = null; t.classList.remove("drag"); clearDrop(); });
+    }
+    t.addEventListener("dragover", (e) => {
+      if (!dragKey || t.dataset.b === dragKey) return;
+      if (dragKey.split("/")[0] !== t.dataset.b.split("/")[0] || !movable(t.dataset.b)) return;  // same path, movable only
+      e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      clearDrop(); t.classList.add("dropbefore");
+    });
+    t.addEventListener("dragleave", () => t.classList.remove("dropbefore"));
+    t.addEventListener("drop", (e) => {
+      const tgt = t.dataset.b; clearDrop();
+      if (!dragKey || tgt === dragKey) { dragKey = null; return; }
+      const d = dragKey.split("/"), g = tgt.split("/");
+      if (d[0] !== g[0] || !movable(tgt)) { dragKey = null; return; }
+      e.preventDefault();
+      structSend("/move-block", { path: +g[0], src: +d[1], dst: +g[1] }, "Reordering…");
+      dragKey = null;
+    });
+  });
+}
 function lane(segs, tag, joined) {
   const l = el("div", "lane col " + tag.toLowerCase() + (joined ? "" : " end"));
   l.append(el("span", "lane-tag", "LANE " + tag));
@@ -1175,13 +1348,13 @@ function lane(segs, tag, joined) {
   return l;
 }
 function segEl(seg) {
-  if (seg.kind === "block") return blockEl(seg.block);
+  if (seg.kind === "block") return tileEl(seg.block);
   const w = el("div", "par col");
-  w.append(blockEl(seg.split), conn("fork"));
+  w.append(tileEl(seg.split), conn("fork"));
   const lanes = el("div", "lanes");
   lanes.append(lane(seg.a || [], "A", !!seg.join), lane(seg.b || [], "B", !!seg.join));
   w.append(lanes);
-  if (seg.join) w.append(conn("merge"), blockEl(seg.join));
+  if (seg.join) w.append(conn("merge"), tileEl(seg.join));
   return w;
 }
 function column(segs) {
@@ -2071,9 +2244,17 @@ function render() {
   renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
   const fkey = focused && focused.dataset.k;
-  P.clear(); B.clear(); dragging = null; lensLock = null;
+  P.clear(); B.clear(); BLOCKS.clear(); dragging = null; lensLock = null;
   const rig = $("rig"); rig.textContent = "";
-  if (!S.paths.length) { rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
+  if (!S.paths.length) { SEL = null; rig.append(el("p", "hint", "No tone is loaded on the device.")); return; }
+  (function indexBlocks() {       // index every block for selection + live-event patching
+    const add = (b) => { if (b) BLOCKS.set(b.path + "/" + b.block, b); };
+    const walk = (segs) => (segs || []).forEach((s) => {
+      if (s.kind === "block") add(s.block);
+      else { add(s.split); walk(s.a); walk(s.b); add(s.join); }
+    });
+    S.paths.forEach((p) => { walk(p.segments); walk(p.extra); });
+  })();
   SPLIT_PATHS = new Set(S.paths
     .filter((p) => p.extra.length || (p.segments || []).some((s) => s.split))
     .map((p) => p.path));
@@ -2093,6 +2274,17 @@ function render() {
       .sort((x, y) => x - y);
     MOVE_SLOTS.set(p.path, slots);
   });
+  // keep a valid selection across re-renders: preserve it if the block survived,
+  // else default to the first editable block (endpoints/routing excluded).
+  if (!SEL || !BLOCKS.has(SEL)) {
+    let first = null, any = null;
+    BLOCKS.forEach((b, k) => {
+      if (any == null) any = k;
+      if (first == null && !STRUCT.has(b.category) && b.category !== "input" && b.category !== "output") first = k;
+    });
+    SEL = first || any || null;
+  }
+  const canvas = el("div"); canvas.id = "flowcanvas";
   S.paths.forEach((pt) => {
     const sec = el("div", "path"), hd = el("div", "path-hd");
     hd.append(el("b", null, "Path " + (pt.path + 1)), el("i"));
@@ -2106,15 +2298,19 @@ function render() {
       h2.append(el("b", null, "Path " + (pt.path + 1) + " · second row"), el("i"));
       sec.append(h2, column(pt.extra));
     }
-    rig.append(sec);
+    canvas.append(sec);
   });
-  rig.append(el("p", "hint", "Drag a knob up/down (Shift = fine) · double-click or Delete = default · arrow keys nudge · Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z redo"));
+  canvas.append(el("p", "hint", "Click a block to edit it below · drag a block within its lane to reorder"));
+  rig.append(canvas);
+  const fp = el("div"); fp.id = "focus"; rig.append(fp);
+  renderFocus();                  // builds the selected block's full controls into #focus
   if (fkey) {                     // a re-render must not throw the keyboard user out
     const again = [...rig.querySelectorAll("[data-k]")].find((n) => n.dataset.k === fkey);
     const target = again && (again.matches("[tabindex],button") ? again : again.querySelector("button,select"));
     if (target) target.focus({ preventScroll: true });
   }
-  applyHighlight();               // rebuilt controls lost their highlight classes
+  syncTiles();                    // tiles reflect live bypass state
+  wireTileDrag(canvas);           // within-lane drag-reorder
 }
 
 /* ---------- adjective search: point at the knobs, never turn them ---------- */
@@ -2145,6 +2341,23 @@ function applyHighlight() {        // purely presentational: toggle classes, no 
     c.root.classList.toggle("hl-down", !!mv && mv.dir < 0);
     c.root.classList.toggle("hl-off", !!activeIntent && !mv);
     c.root.dataset.hldir = mv ? (mv.dir > 0 ? "↑" : mv.dir < 0 ? "↓" : "") : "";
+  });
+  // tile-level: light the tiles whose block has a matching knob (computed from
+  // state S, so it works even though those knobs aren't rendered right now).
+  BLOCKS.forEach((b, key) => {
+    const n = tileFor(key); if (!n) return;
+    const role = activeIntent && b.enabled && roleOf(b);
+    let match = false, dir = 0;
+    if (role) (b.params || []).forEach((p) => {
+      const mv = activeIntent.moves.find((m) => m.role === role && m.param === p.name);
+      if (mv) { match = true; if (mv.dir) dir = mv.dir; }
+    });
+    n.classList.toggle("hl-on", match && dir === 0);
+    n.classList.toggle("hl-up", match && dir > 0);
+    n.classList.toggle("hl-down", match && dir < 0);
+    n.classList.toggle("hl-off", !!activeIntent && !match);
+    const d = n.querySelector(".ti-dir");
+    if (d) d.textContent = match ? (dir > 0 ? "↑" : dir < 0 ? "↓" : "•") : "";
   });
 }
 function fillDatalist(terms) {
@@ -2429,7 +2642,14 @@ function onMsg(m) {
     const isP = m.t === "param";
     const key = m.path + "/" + m.block + (isP ? "/" + m.pid : "");
     const c = (isP ? P : B).get(key);
-    if (!c) return;
+    if (!c) {                     // block isn't in the focus panel: patch state (+ tile) directly
+      const b = BLOCKS.get(m.path + "/" + m.block);
+      if (b) {
+        if (isP) { const p = (b.params || []).find((x) => x.pid === m.pid); if (p) p.value = m.value; }
+        else { b.enabled = m.enabled; const n = tileFor(m.path + "/" + m.block); if (n) n.classList.toggle("off", !m.enabled); applyHighlight(); }
+      }
+      return;
+    }
     const v = isP ? m.value : m.enabled;
     c.dev = v;                    // what the device holds, whoever wrote it
     // never yank a control the user is holding or has a newer change queued for
@@ -2778,26 +2998,41 @@ async function openAddPicker(path) {
     MODELS = r;
   }
   const { body } = modal("Add a block to Path " + (path + 1));
-  body.append(el("p", "hint", "Appended to this path. The device applies the model's defaults — confirm on the rig. Volatile until Save."));
-  const cats = Object.keys(MODELS).filter((c) => !ADD_SKIP.has(c)).sort();
-  let any = false;
-  cats.forEach((cat) => {
-    const list = MODELS[cat] || [];
-    if (!list.length) return;
-    any = true;
-    body.append(el("div", "grp", cat));
-    list.forEach((m) => {
-      const btn = el("button", "pz", m.name);
-      btn.type = "button";
-      btn.onclick = () => {
-        closeOverlay();
+  const cats = Object.keys(MODELS)
+    .filter((c) => !ADD_SKIP.has(c) && (MODELS[c] || []).length)
+    .sort((a, b) => catRank(a) - catRank(b) || a.localeCompare(b));
+  if (!cats.length) { body.append(el("p", null, "No models available to add.")); return; }
+  body.append(el("p", "hint", "Appended to this path — the device applies the model's defaults. Volatile until Save."));
+  const wrap = el("div", "browser"), rail = el("div", "cat-rail"), main = el("div", "cat-main");
+  const filter = el("input", "cat-filter"); filter.type = "text"; filter.placeholder = "Search models…";
+  const listWrap = el("div", "cat-list");
+  main.append(filter, listWrap); wrap.append(rail, main); body.append(wrap);
+  let activeCat = cats[0];
+  const renderList = () => {
+    listWrap.textContent = "";
+    const q = filter.value.trim().toLowerCase();
+    const items = (MODELS[activeCat] || []).filter((m) => !q || (m.name || "").toLowerCase().includes(q));
+    if (!items.length) { listWrap.append(el("p", "hint", "No matching models.")); return; }
+    items.forEach((m) => {
+      const btn = el("button", "pz", m.name); btn.type = "button";
+      btn.onclick = () => { closeOverlay();
         send("/add-block", { path: path, model_id: m.id },
-          () => toast("Adding block on the device…", true), () => {});
-      };
-      body.append(btn);
+          () => toast("Adding block on the device…", true), () => {}); };
+      listWrap.append(btn);
     });
+  };
+  cats.forEach((cat) => {
+    const r = el("button", "cat-tab c-" + cat.replace(/[^a-z0-9_]/gi, "") + (cat === activeCat ? " on" : ""));
+    r.type = "button";
+    const ic = el("span", "ic"); ic.append(iconSvg(cat));
+    r.append(ic, el("span", "cat-tab-nm", catLabel(cat)));
+    r.onclick = () => { activeCat = cat; filter.value = "";
+      rail.querySelectorAll(".cat-tab.on").forEach((n) => n.classList.remove("on"));
+      r.classList.add("on"); renderList(); };
+    rail.append(r);
   });
-  if (!any) body.append(el("p", null, "No models available to add."));
+  filter.addEventListener("input", renderList);
+  renderList();
 }
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
 $("load").onclick = openPicker;

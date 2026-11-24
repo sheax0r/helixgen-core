@@ -167,19 +167,27 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       hl("0/2/1").contains("hl-down") && !hl("0/2/1").contains("hl-up"), cn("0/2/1"));
     ok("S19 a turn-up knob gets hl-up, not hl-down (amp Mid)",
       hl("0/2/2").contains("hl-up") && !hl("0/2/2").contains("hl-down"), cn("0/2/2"));
-    ok("S19 a non-affected knob (reverb Mix) is de-emphasised, not lit",
-      hl("0/3/1").contains("hl-off") && !hl("0/3/1").contains("hl-on"), cn("0/3/1"));
-    ok("S19 a matching knob in a BYPASSED block is not lit",
-      !hl("0/4/1").contains("hl-on"), cn("0/4/1"));
-    // un-bypass the second amp from the hardware -> its Drive must now light, with no re-render
+    // Non-focused blocks carry their emphasis on the TILE: only the selected
+    // block's knobs are rendered (canvas + focus reframe), so the across-chain
+    // "lit / de-emphasised / bypassed" checks read the tiles, not the knobs.
+    const til = (key) => x.tileOf(key).classList;
+    const tcn = (key) => x.tileOf(key).className;
+    ok("S19 the selected amp's tile is lit (it has matching knobs)",
+      til("0/2").contains("hl-up") || til("0/2").contains("hl-down") || til("0/2").contains("hl-on"), tcn("0/2"));
+    ok("S19 a non-affected block (reverb) tile is de-emphasised, not lit",
+      til("0/3").contains("hl-off") && !til("0/3").contains("hl-on"), tcn("0/3"));
+    ok("S19 a BYPASSED matching block's tile is not lit",
+      !til("0/4").contains("hl-on") && !til("0/4").contains("hl-up") && !til("0/4").contains("hl-down"), tcn("0/4"));
+    // un-bypass the second amp from the hardware -> its tile must now light, with no re-render
     x.sse({ t: "bypass", path: 0, block: 4, enabled: true });
-    ok("S19 un-bypassing a block re-evaluates the highlight", hl("0/4/1").contains("hl-on"), cn("0/4/1"));
-    // clearing the box removes every highlight
+    ok("S19 un-bypassing a block re-evaluates the tile highlight",
+      til("0/4").contains("hl-down") || til("0/4").contains("hl-up") || til("0/4").contains("hl-on"), tcn("0/4"));
+    // clearing the box removes every highlight (knob + tile)
     x.ids.adjsearch.value = ""; x.ids.adjsearch.fire("input");
     ok("S19 clearing the search removes all highlighting",
       !hl("0/2/1").contains("hl-on") && !hl("0/2/1").contains("hl-down") && !hl("0/2/2").contains("hl-up")
-      && !hl("0/2/1").contains("hl-off") && !hl("0/3/1").contains("hl-off"),
-      cn("0/2/1") + " | " + cn("0/3/1"));
+      && !hl("0/2/1").contains("hl-off") && !til("0/3").contains("hl-off") && !til("0/4").contains("hl-down"),
+      cn("0/2/1") + " | " + tcn("0/3"));
   }
   { // S20: library drawer
     const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
