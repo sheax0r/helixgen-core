@@ -818,8 +818,7 @@ the attach blob is empty. `pvlIndex` is exactly `transcode._command_payload`'s
 pvl layout (wire-confirmed: subtype=1, channel=2, CC#=6, Value=7). The device
 appends the command and returns the new slot — the slot is an opaque handle for
 the other two opcodes. Implemented: `client.attach_command` /
-`set_command_param` / `remove_command`. Type families 1=Preset/Snapshot,
-4=HotKey/Utility, 6=MIDI (MIDI subtype via param idx1: 0=PC,1=CC,3=Note,2=MMC).
+`set_command_param` / `remove_command`.
 MIDI controller assignment = `/attachParamController`/`/attachBlockBypassController` +
 `/ControllerMIDISourceAdd` (CC# is a BE uint16 at blob offset 12; no channel on
 the wire). XY zones activate via `/SetBatchedParamValues` (a 12-tuple

@@ -1395,9 +1395,12 @@ class HelixClient:
         for addr, args in replies:
             if addr == "/error":
                 raise HelixError(f"/attachCommandWithType failed: {args}")
-            # Reply [reqid, slot, slot]; args[0] is the reqid, the slot is last.
+            # Reply [reqid, slot, slot]: args[0] is the reqid, the slot follows
+            # (observed at both args[1] and args[-1]). Read args[1] — the first
+            # field after the reqid, consistent with attach_param_controller's
+            # cid read — so a future trailing field can't displace it.
             if addr == "/attachCommandWithType" and len(args) >= 2:
-                slot = args[-1]
+                slot = args[1]
                 if isinstance(slot, int) and not isinstance(slot, bool):
                     return slot
         raise HelixError("the device did not return a command slot for "
@@ -1409,9 +1412,12 @@ class HelixClient:
         ``/setCommandParamVal [reqid, slot, pvlIndex, value]`` (captured
         2026-11-23) → ``/status [reqid, 0, 0]``. ``slot`` is the handle from
         :meth:`attach_command`; ``pvl_index`` is the position in the command's
-        ``pvl`` array — **exactly** ``transcode._command_payload``'s layout
-        (HW-cross-checked on the wire: MIDI subtype = ``1``, channel = ``2``,
-        CC# = ``6``, Value = ``7``). Returns whether the device confirmed."""
+        ``pvl`` array — ``transcode._command_payload``'s layout. **The indices
+        depend on the source class** (``ctxt``): on a FOOTSWITCH (ctxt 1,
+        HW-cross-checked on the wire) MIDI subtype = ``1``, channel = ``2``,
+        CC# = ``6``, Value = ``7``; an INSTANT source (ctxt 0) uses the shifted
+        Instant layout (channel = ``1``, CC# = ``5``, Value = ``6``, no subtype
+        slot). Returns whether the device confirmed."""
         return self._ok(self._rpc(
             "/setCommandParamVal",
             [("i", int(slot)), ("i", int(pvl_index)), ("i", int(value))]))
@@ -1420,10 +1426,13 @@ class HelixClient:
         """Clear a command slot on the device (the app's command → ``None``).
 
         ``/removeCommand [reqid, slot]`` (captured 2026-11-23) → the echo
-        ``/removeCommand [reqid, slot, 0]`` (this family answers with the echo
-        spelling plus a trailing ``/status``-style code, as the controller-source
-        family does). ``slot`` is the handle from :meth:`attach_command`.
-        Returns whether the device confirmed."""
+        ``/removeCommand [reqid, slot, 0]`` — this family answers with the echo
+        spelling plus a **trailing** success code (the same shape as the
+        ``/setControllerSource`` / ``/setCidBehavior`` echo replies, where the
+        last arg is the code — NOT a plain ``/status``). ``slot`` is the handle
+        from :meth:`attach_command`. Returns whether the device confirmed.
+        (The trailing field read as a code here on fw 1.4.1; if a later firmware
+        reuses it as the edit-buffer dirty flag this would need a HW re-check.)"""
         for addr, args in self._rpc("/removeCommand", [("i", int(slot))]):
             if addr == "/error":
                 return False

@@ -2945,7 +2945,8 @@ def test_remove_controller_confirms_on_status_zero():
 def test_attach_command_returns_device_allocated_slot():
     from helixgen.device.osc import parse_osc_message
     h = HelixClient("10.0.0.99")
-    # /attachCommandWithType reply [reqid, slot, slot] — the slot is the LAST arg
+    # /attachCommandWithType reply is [reqid, slot, slot] — the device sends the
+    # slot at BOTH positions after the reqid; we read args[1].
     _wire(h, [osc_encode("/attachCommandWithType",
                          [("i", 1000), ("i", 2), ("i", 2)])])
     # FS1 source = (srcType=1, locl=25, ctxt=1); MIDI family 6, Bank/Program 0
@@ -2959,9 +2960,18 @@ def test_attach_command_returns_device_allocated_slot():
     assert any(t == "b" and v == b"" for t, v in args)
 
 
-def test_attach_command_raises_without_slot():
+def test_attach_command_raises_on_error_reply():
     h = HelixClient("10.0.0.99")
     _wire(h, [osc_encode("/error", [("i", 1000), ("i", 0), ("s", "no")])])
+    with pytest.raises(HelixError):
+        h.attach_command(1, 25, 1, 6, 0)
+
+
+def test_attach_command_raises_when_reply_has_no_slot():
+    # A non-error reply that carries only the reqid (no slot) must still raise,
+    # not silently return a bogus handle.
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/attachCommandWithType", [("i", 1000)])])
     with pytest.raises(HelixError):
         h.attach_command(1, 25, 1, 6, 0)
 

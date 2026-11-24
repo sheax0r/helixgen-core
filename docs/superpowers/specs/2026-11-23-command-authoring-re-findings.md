@@ -76,8 +76,9 @@ RECV 2002  /removeCommand                     [reqid, slot, 0]                 #
 ### `/removeCommand [reqid, slot]` → `/removeCommand [reqid, slot, 0]`
 
 - Clears the command slot (the app's command → **None**). Answers with the echo
-  spelling plus a trailing `/status`-style code (`0` = ok), like the
-  controller-source family — NOT a plain `/status`.
+  spelling plus a **trailing** code (`0` = ok) — the same shape as the
+  `/setControllerSource` / `/setCidBehavior` echo replies (last arg = code), NOT
+  a plain `/status`.
 
 ## Implemented
 
