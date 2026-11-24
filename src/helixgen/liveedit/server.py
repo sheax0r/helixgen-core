@@ -189,7 +189,7 @@ def _route(session: LiveSession, path: str, b: dict):
         sw = b.get("switch")
         if not isinstance(sw, str) or not sw:
             raise LiveError("field 'switch' must be a non-empty string")
-        return session.command_remove(sw, _int(b, "index"), rev=_rev(b))
+        return session.command_remove(sw, _int(b, "slot"), rev=_rev(b))
     return None
 
 

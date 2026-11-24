@@ -649,6 +649,9 @@ def hsp_commands(hsp_body: dict) -> List[Dict[str, Any]]:
                 "behavior": rec.get("behavior", "latching"),
                 "toggle": bool(rec.get("toggle", False)),
                 "params": params,
+                # device command slot (cmnd cid_) when the record came off a live
+                # buffer; None for a helixgen-authored .hsp (no device handle).
+                "slot": rec.get("cid_"),
             })
     return out
 

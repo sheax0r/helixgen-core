@@ -226,8 +226,10 @@ def _cmd_session():
 def test_command_add_footswitch_cc_writes_the_captured_pvl_slots():
     c, s = _cmd_session()
     s.command_add("FS1", 1, {"MIDI Ch": 2, "CC#": 11, "Value": 64})
-    # FS1 -> (type 1, locl 25, ctxt 1); family 6 (MIDI); attach at subtype 0.
-    assert c.cmd_attaches == [(1, 25, 1, 6, 0, 1)]
+    # FS1 -> (type 1, locl 25, ctxt 1); family 6 (MIDI). The command's func is
+    # set by the ATTACH subtype (HW: a later index-1 write does NOT change it),
+    # so CC attaches at device func 1 — slot 1 allocated.
+    assert c.cmd_attaches == [(1, 25, 1, 6, 1, 1)]
     # Footswitch CC layout (HW-captured): subtype@1=CC(1), channel@2, CC#@6, Value@7.
     sets = {i: v for (_slot, i, v) in c.cmd_param_sets}
     assert sets[1] == 1 and sets[2] == 2 and sets[6] == 11 and sets[7] == 64
@@ -242,6 +244,17 @@ def test_command_add_bank_program_writes_pc_and_bank_slots():
     # Footswitch Bank/Program: PC@0, subtype@1=0, channel@2, MSB@3, LSB@4.
     assert sets[0] == 5 and sets[1] == 0 and sets[2] == 1
     assert sets[3] == 0 and sets[4] == 2
+
+
+def test_command_add_attaches_at_the_device_func_with_note_mmc_swapped():
+    # func is set by the attach subtype; Note/MMC are swapped device<->.hsp
+    # (.hsp Note On=3 -> device 2; .hsp MMC=2 -> device 3).
+    c, s = _cmd_session()
+    s.command_add("FS1", 3, {"MIDI Ch": 1, "Note": 60, "Velocity": 100})  # Note On
+    assert c.cmd_attaches[0][4] == 2
+    c2, s2 = _cmd_session()
+    s2.command_add("FS1", 2, {"MIDI Ch": 1, "Message": 1})                # MMC
+    assert c2.cmd_attaches[0][4] == 3
 
 
 def test_command_add_rejects_instant_source_uncaptured():
@@ -275,7 +288,9 @@ def test_command_add_rejects_reserved_footswitch():
 
 
 def _stub_two_commands_on(monkeypatch, switch):
-    """Make commands() project two MIDI commands onto ``switch``."""
+    """Make commands() project two MIDI commands onto ``switch``, carrying the
+    device slots (cmnd cid_) the live read model exposes — the list is newest
+    first (slot 7 then slot 3), as the hardware orders them."""
     from helixgen import controllers as _controllers
     from helixgen import view as _view
     from helixgen.device import bridge as _bridge
@@ -283,25 +298,25 @@ def _stub_two_commands_on(monkeypatch, switch):
     monkeypatch.setattr("helixgen.device.untranscode.sbepgsm_to_hsp",
                         lambda eb, **k: {"_marker": "body"})
     monkeypatch.setattr(_bridge, "hsp_commands", lambda body: [
-        {"source": sid, "type": "MIDI", "params": {"Command": 1, "CC#": 1}},
-        {"source": sid, "type": "MIDI", "params": {"Command": 1, "CC#": 2}}])
+        {"source": sid, "type": "MIDI", "slot": 7, "params": {"Command": 1, "CC#": 1}},
+        {"source": sid, "type": "MIDI", "slot": 3, "params": {"Command": 1, "CC#": 2}}])
     monkeypatch.setattr(_view, "_device_id", lambda body: "stadium_xl")
     monkeypatch.setattr(_controllers, "controller_mapping", lambda dev: [])
 
 
-def test_command_remove_addresses_the_positional_slot(monkeypatch):
+def test_command_remove_addresses_the_device_slot(monkeypatch):
     c, s = _cmd_session()
     _stub_two_commands_on(monkeypatch, "FS3")
-    s.command_remove("FS3", 0)        # first command -> slot 1
-    s.command_remove("FS3", 1)        # second command -> slot 2
-    assert c.cmd_removes == [1, 2]
+    s.command_remove("FS3", 3)        # the stable cid_ handle, not a position
+    s.command_remove("FS3", 7)
+    assert c.cmd_removes == [3, 7]
 
 
-def test_command_remove_rejects_out_of_range_index(monkeypatch):
+def test_command_remove_rejects_a_slot_not_on_the_switch(monkeypatch):
     c, s = _cmd_session()
     _stub_two_commands_on(monkeypatch, "FS3")
     with pytest.raises(LiveError):
-        s.command_remove("FS3", 5)    # only two commands on the source
+        s.command_remove("FS3", 99)   # no command with that slot -> never deletes
     assert c.cmd_removes == []
 
 
@@ -310,4 +325,17 @@ def test_command_remove_surfaces_a_device_refusal(monkeypatch):
     _stub_two_commands_on(monkeypatch, "FS3")
     c.cmd_remove_fail = True
     with pytest.raises(LiveError):
-        s.command_remove("FS3", 0)
+        s.command_remove("FS3", 3)
+
+
+def test_command_read_model_marks_midi_footswitch_with_slot_editable():
+    from helixgen.liveedit.session import _format_commands
+    sid = __import__("helixgen.controllers", fromlist=["x"]).resolve_command_source(
+        "stadium_xl", "FS3")
+    out = _format_commands([
+        {"source": sid, "type": "MIDI", "slot": 5, "params": {"Command": 1, "CC#": 7}},
+        {"source": sid, "type": "MIDI", "slot": None, "params": {"Command": 1}},
+    ], "stadium_xl", CONTROLS, {})
+    cmds = out["sources"][0]["commands"]
+    assert cmds[0]["editable"] and cmds[0]["slot"] == 5 and cmds[0]["source"] == "FS3"
+    assert not cmds[1]["editable"]            # no device slot -> not addressable

@@ -829,7 +829,7 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
           { family: "MIDI", headline: "MIDI CC", action: "", behavior: "latching", toggle: false,
             fields: [["Channel", "1"], ["CC#", "11"], ["Value", "0"]],
             func: 1, params: { "MIDI Ch": 1, "CC#": 11, "Value": 0 },
-            index: 0, source: "FS1", editable: true }] }] });
+            slot: 5, source: "FS1", editable: true }] }] });
       await x.tick(); await x.tick();
       return x;
     };
@@ -859,8 +859,8 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S36 an editable command shows a Remove button", !!rm, "no Remove");
     rm.onclick(); await xr.tick();
     const rmReq = xr.posts.find((p) => p.url === "/commands/remove");
-    ok("S36 Remove posts the switch + position index",
-      rmReq && rmReq.body.switch === "FS1" && rmReq.body.index === 0, JSON.stringify(rmReq && rmReq.body));
+    ok("S36 Remove posts the switch + device slot",
+      rmReq && rmReq.body.switch === "FS1" && rmReq.body.slot === 5, JSON.stringify(rmReq && rmReq.body));
 
     // --- edit (clear the old, author the new) ---
     const xe = await openCmd();
@@ -875,8 +875,8 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ccPrefill.value = "20";                               // nudge the CC number
     btn(form2, "Save changes").onclick(); await xe.tick();
     const eRm = xe.posts.find((p) => p.url === "/commands/remove");
-    ok("S36 Save first clears the existing command",
-      eRm && eRm.body.switch === "FS1" && eRm.body.index === 0, JSON.stringify(eRm && eRm.body));
+    ok("S36 Save first clears the existing command by its slot",
+      eRm && eRm.body.switch === "FS1" && eRm.body.slot === 5, JSON.stringify(eRm && eRm.body));
     eRm.reply(200, { ok: true }); await xe.tick();
     const eAdd = xe.posts.find((p) => p.url === "/commands/add");
     ok("S36 Save then re-authors it with the edited value",

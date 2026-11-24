@@ -146,7 +146,7 @@ def test_commands_add_route(srv):
                         {"switch": "FS1", "func": 1,
                          "values": {"MIDI Ch": 1, "CC#": 7, "Value": 127}})
     assert code == 200, data
-    assert c.cmd_attaches == [(1, 25, 1, 6, 0, 1)]
+    assert c.cmd_attaches == [(1, 25, 1, 6, 1, 1)]   # CC attaches at device func 1
     sets = {i: v for (_slot, i, v) in c.cmd_param_sets}
     assert sets[6] == 7 and sets[7] == 127
 
@@ -171,13 +171,13 @@ def test_commands_remove_route(srv, monkeypatch):
     monkeypatch.setattr("helixgen.device.untranscode.sbepgsm_to_hsp",
                         lambda eb, **k: {"_marker": "body"})
     monkeypatch.setattr(_bridge, "hsp_commands", lambda body: [
-        {"source": sid, "type": "MIDI", "params": {"Command": 1, "CC#": 1}}])
+        {"source": sid, "type": "MIDI", "slot": 4, "params": {"Command": 1, "CC#": 1}}])
     monkeypatch.setattr(_view, "_device_id", lambda body: "stadium_xl")
     monkeypatch.setattr(_controllers, "controller_mapping", lambda dev: [])
     code, _, data = req(server, "POST", "/commands/remove",
-                        {"switch": "FS1", "index": 0})
+                        {"switch": "FS1", "slot": 4})
     assert code == 200, data
-    assert c.cmd_removes == [1]
+    assert c.cmd_removes == [4]
 
 
 def test_intents_endpoint_serves_the_adjective_map(srv):

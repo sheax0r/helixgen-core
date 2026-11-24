@@ -1785,13 +1785,13 @@ function cmdSend(url, body, okMsg) {
   send(url, body, () => { cmdBusy = false; if (okMsg) toast(okMsg, true); cmdEdit = null; cmdLoad(); },
                   () => { cmdBusy = false; });
 }
-// Edit = clear the old command, then author the new one (the hardware's own
-// model). Two writes; if the author fails after the clear, the reload shows the
-// real state. For one-command-per-switch (the norm) the order is unchanged.
-function cmdReplace(sw, index, body) {
+// Edit = clear the old command (by its device slot), then author the new one
+// (the hardware's own model). Two writes; if the author fails after the clear,
+// the reload shows the real state.
+function cmdReplace(sw, slot, body) {
   if (down || cmdBusy) return;
   cmdBusy = true;
-  send("/commands/remove", { switch: sw, index: index },
+  send("/commands/remove", { switch: sw, slot: slot },
     () => send("/commands/add", body,
       () => { cmdBusy = false; toast("Command updated", true); cmdEdit = null; cmdLoad(); },
       () => { cmdBusy = false; cmdLoad(); }),
@@ -1833,7 +1833,7 @@ function cmdRenderForm() {
   const addBtn = el("button", "btn", "Add command"); addBtn.type = "button";
   addBtn.onclick = () => {
     const body = { switch: ssel.value, func: +tsel.value, values: cmdCollect(inputs), rev: S ? S.rev : undefined };
-    if (cmdEdit) cmdReplace(cmdEdit.switch, cmdEdit.index, body);
+    if (cmdEdit) cmdReplace(cmdEdit.switch, cmdEdit.slot, body);
     else cmdSend("/commands/add", body, "Command added");
   };
   form.append(el("span", "ctl-flabel", "Footswitch"), ssel, el("span", "ctl-flabel", "sends MIDI"), tsel, fhost, addBtn);
@@ -1866,10 +1866,10 @@ function cmdCommandRow(c) {
   // Only the wire-captured surface (MIDI on a footswitch) is editable here.
   if (c.editable) {
     const edit = el("button", "btn cmd-mini", "Edit"); edit.type = "button";
-    edit.onclick = () => { cmdEdit = { switch: c.source, index: c.index, func: c.func, values: c.params || {} };
+    edit.onclick = () => { cmdEdit = { switch: c.source, slot: c.slot, func: c.func, values: c.params || {} };
       cmdRenderForm(); $("cmdassign").scrollIntoView({ block: "nearest" }); };
     const rm = el("button", "btn cmd-mini", "Remove"); rm.type = "button";
-    rm.onclick = () => cmdSend("/commands/remove", { switch: c.source, index: c.index }, "Command removed");
+    rm.onclick = () => cmdSend("/commands/remove", { switch: c.source, slot: c.slot }, "Command removed");
     det.append(edit, rm);
   }
   r.append(det);

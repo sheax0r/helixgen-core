@@ -198,8 +198,19 @@ def test_native_round_trip_recovers_commands_and_midi(tmp_path):
     sbe = transcode.hsp_to_sbepgsm(body_in)
     body_out = untranscode.sbe_bytes_to_hsp(sbe, name="RT", library=library)
 
-    # Commands come back identical to what the edit verb authored.
-    assert body_out["preset"]["commands"] == body_in["preset"]["commands"]
+    # Commands come back identical to what the edit verb authored, apart from the
+    # device slot handle (cmnd cid_) the recovered side carries for the live
+    # editor — it is assigned from the device bytes, so the authored side has
+    # none, and the forward path ignores it (the fixed-point assertion below
+    # proves it never reaches the .sbe).
+    def _no_cid(commands):
+        return {src: [{k: v for k, v in rec.items() if k != "cid_"} for rec in recs]
+                for src, recs in commands.items()}
+    assert _no_cid(body_out["preset"]["commands"]) == \
+        _no_cid(body_in["preset"]["commands"])
+    # the recovered side DOES carry the device slot handle
+    assert all(isinstance(rec.get("cid_"), int)
+               for recs in body_out["preset"]["commands"].values() for rec in recs)
 
     # MIDI records match on everything a re-install reads; ``block`` comes back
     # as the stable model id rather than the display name the author typed (the

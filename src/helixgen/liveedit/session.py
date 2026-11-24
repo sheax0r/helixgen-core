@@ -245,8 +245,9 @@ def _command_display(rec: dict, controls: dict) -> dict:
     return {"family": family, "headline": headline, "action": action,
             "behavior": rec.get("behavior", ""), "toggle": bool(rec.get("toggle")),
             "fields": _command_fields(typ, p, controls),
-            # raw subtype + field values the editor prefills an Edit with (81v.4)
-            "func": p.get("Command"), "params": dict(p)}
+            # the device command slot (cmnd cid_) + raw subtype & field values the
+            # editor addresses an edit/remove with and prefills an Edit from (81v.4)
+            "slot": rec.get("slot"), "func": p.get("Command"), "params": dict(p)}
 
 
 def _format_commands(cmds: List[dict], device_id: Any, controls: dict,
@@ -273,16 +274,15 @@ def _format_commands(cmds: List[dict], device_id: Any, controls: dict,
             by_source[key] = {"id": switch or key, "label": label,
                               "named": switch is not None, "commands": []}
             order.append(key)
-        cmds_list = by_source[key]["commands"]
         disp = _command_display(rec, controls)
-        # Authoring metadata (81v.4 write): only MIDI on a NAMED footswitch is the
-        # wire-captured write surface, so only those carry an editable handle. The
-        # index is the command's position in its source — the device slot order.
-        disp["index"] = len(cmds_list)
+        # Authoring metadata (81v.4 write): only MIDI on a NAMED footswitch with a
+        # known device slot (cmnd cid_) is the wire-captured, addressable write
+        # surface, so only those carry the editable handle.
         disp["source"] = switch
         disp["editable"] = bool(switch and switch.startswith("FS")
-                                and rec.get("type") == "MIDI")
-        cmds_list.append(disp)
+                                and rec.get("type") == "MIDI"
+                                and isinstance(disp.get("slot"), int))
+        by_source[key]["commands"].append(disp)
     return {"sources": [by_source[k] for k in order]}
 
 
@@ -1946,6 +1946,12 @@ class LiveSession:
             raise LiveError("could not build the command payload", status=400)
         pvl = [v for _k, v in sorted((k, payload[k]) for k in payload
                                      if k.startswith("pvl"))]
+        # The command's family func is set by the ATTACH subtype arg — NOT by a
+        # later set_command_param(slot, 1, …) (HW-confirmed 2026-11-24: attaching
+        # at 0 and switching the index-1 slot leaves func=0, a Bank/Program
+        # command). Attach at the device func (Note/MMC swapped vs the .hsp vocab);
+        # the subsequent pvl writes carry the channel + data slots.
+        dev_func = _tc._HSP_TO_DEVICE_MIDI_FUNC.get(f, f)
         self._ensure_lease(None)
         try:
             with self.devlock:
@@ -1953,7 +1959,7 @@ class LiveSession:
                     self._require_up()
                 try:
                     slot = self.client.attach_command(srtype, locl, ctxt, 6,
-                                                      subtype=0)
+                                                      subtype=dev_func)
                 except (HelixError, OSError) as e:
                     self._set_connected(False)
                     raise LiveError(f"device command attach failed: {e}",
@@ -1973,16 +1979,16 @@ class LiveSession:
         self.load()
         return self.public_state()
 
-    def command_remove(self, switch: str, index: int, *,
+    def command_remove(self, switch: str, slot: int, *,
                         rev: Optional[int] = None) -> dict:
-        """Clear the command at position ``index`` (0-based, as the read pane
-        lists them) on ``switch``, live (81v.4). Resolves the device slot from
-        the command's position in the current projection, then
-        ``/removeCommand``. Re-reads and returns fresh state. Volatile until
-        Save."""
-        idx = int(index)
-        if idx < 0:
-            raise LiveError("command index must be >= 0", status=400)
+        """Clear the command with device ``slot`` (its cmnd ``cid_``, as the read
+        model carries it) on ``switch``, live (81v.4). The slot is a stable
+        per-command handle (HW 2026-11-24: not renumbered when a sibling is
+        removed), so it addresses the exact command regardless of list position.
+        Confirms the slot really is a command on ``switch`` before ``/removeCommand``
+        (a stale slot → 404, never a wrong deletion). Re-reads and returns fresh
+        state. Volatile until Save."""
+        s = int(slot)
         self._ensure_lease(None)
         try:
             with self.cond:
@@ -1990,16 +1996,13 @@ class LiveSession:
             self.load()                      # refresh the cache we address against
             grp = next((g for g in self.commands()["sources"]
                         if g.get("id") == switch), None)
-            count = len(grp["commands"]) if grp else 0
-            if idx >= count:
-                raise LiveError(f"{switch} has no command #{idx + 1}", status=404)
-            # ponytail: slot = 1-based position in the source's command list — the
-            # device appends and numbers commands in order (HW-captured on fw
-            # 1.4.1). Re-verify if a later firmware leaves gaps after a remove.
-            slot = idx + 1
+            cmds = grp["commands"] if grp else []
+            if not any(c.get("slot") == s for c in cmds):
+                raise LiveError(f"{switch} has no command with slot {s} "
+                                "(did it already change?)", status=404)
             with self.devlock:
                 try:
-                    ok = self.client.remove_command(slot)
+                    ok = self.client.remove_command(s)
                 except (HelixError, OSError) as e:
                     self._set_connected(False)
                     raise LiveError(f"device command remove failed: {e}",
