@@ -132,6 +132,10 @@ body.down #devbody .dctl{opacity:.5;pointer-events:none}
 .ctl-fsel:focus,.ctl-cc:focus{outline:none;border-color:#5f84d6;box-shadow:0 0 0 2px rgba(61,107,255,.25)}
 .ctl-clear{margin-left:auto;font-size:11px;padding:3px 8px}
 body.down #ctlassign .btn,body.down #ctlassign select,body.down #ctlassign input{opacity:.5;pointer-events:none}
+body.down #cmdassign .btn,body.down #cmdassign select,body.down #cmdassign input,
+body.down #cmdbody .cmd-mini{opacity:.5;pointer-events:none}
+.cmd-mini{font-size:11px;padding:2px 8px;margin-left:8px}
+.cmd-field{display:inline-flex;align-items:center;gap:4px}
 /* ---------- Mixer pane (81v.8): read-only Matrix Mixer monitor mix ---------- */
 .mx-master{margin:0 0 14px;padding:9px 12px;background:var(--panel2);border:1px solid var(--edge);
   border-radius:9px;font-size:13px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
@@ -495,9 +499,10 @@ body.down main{opacity:.55}
 <section class="pane" id="cmdpane" hidden aria-label="Command Center">
   <div class="dhead">
     <div><h2 class="dtitle">Command Center</h2>
-      <p class="dsub">What each footswitch and Instant slot sends on the loaded tone — MIDI, preset &amp; snapshot recall. Read-only for now.</p></div>
+      <p class="dsub">What each footswitch and Instant slot sends on the loaded tone — MIDI, preset &amp; snapshot recall. Author MIDI commands on footswitches below.</p></div>
     <button class="btn" id="cmdrefresh" type="button" title="Refresh the commands shown here from the current tone">Refresh</button>
   </div>
+  <div id="cmdassign"></div>
   <div id="cmdbody"></div>
 </section>
 <section class="pane" id="tunerpane" hidden aria-label="Tuner">
@@ -1804,6 +1809,87 @@ addPane({ id: "globaleq", label: "Global EQ", el: () => $("eqpane"), onShow: geq
  * reverse-transcode read model (GET /commands/state). Read-only this increment
  * — author/edit/clear land on this surface next. Every string is device/user
  * data: textContent only (XSS discipline, like the other panes). */
+// The authorable MIDI subtypes (.hsp Command vocab) + the fields each one takes.
+// Field = [key sent to the server, label, min, max, default]. Wire-captured for
+// footswitch MIDI only (the capture: /attachCommandWithType + /setCommandParamVal).
+const CMD_SUBTYPES = [["CC", 1], ["Bank/Program", 0], ["Note On", 3], ["MMC", 2]];
+const CMD_FIELDS = {
+  1: [["MIDI Ch", "Ch", 1, 16, 1], ["CC#", "CC#", 0, 127, 0], ["Value", "Value", 0, 127, 0]],
+  0: [["MIDI Ch", "Ch", 1, 16, 1], ["PC", "PC", 0, 127, 0], ["MSB", "MSB(CC00)", 0, 127, 0], ["LSB", "LSB(CC32)", 0, 127, 0]],
+  3: [["MIDI Ch", "Ch", 1, 16, 1], ["Note", "Note", 0, 127, 60], ["Velocity", "Velocity", 0, 127, 100]],
+  2: [["MIDI Ch", "Ch", 1, 16, 1], ["Message", "Message", 0, 127, 0]],
+};
+let cmdBusy = false, CMDSOURCES = null, cmdEdit = null;   // cmdEdit: {switch, index, func, values}
+function cmdSend(url, body, okMsg) {
+  if (down || cmdBusy) return;
+  cmdBusy = true;
+  send(url, body, () => { cmdBusy = false; if (okMsg) toast(okMsg, true); cmdEdit = null; cmdLoad(); },
+                  () => { cmdBusy = false; });
+}
+// Edit = clear the old command (by its device slot), then author the new one
+// (the hardware's own model). Two writes; if the author fails after the clear,
+// the reload shows the real state.
+function cmdReplace(sw, slot, body) {
+  if (down || cmdBusy) return;
+  cmdBusy = true;
+  send("/commands/remove", { switch: sw, slot: slot },
+    () => send("/commands/add", body,
+      () => { cmdBusy = false; toast("Command updated", true); cmdEdit = null; cmdLoad(); },
+      () => { cmdBusy = false; cmdLoad(); }),
+    () => { cmdBusy = false; });
+}
+// Render the number inputs for one subtype and return them (keyed) so the Add
+// handler can read the values back without re-querying the DOM.
+function cmdFields(host, func, prefill) {
+  host.textContent = "";
+  const inputs = [];
+  (CMD_FIELDS[func] || []).forEach((f) => {
+    const [key, label, mn, mx, dflt] = f;
+    const inp = el("input", "ctl-cc"); inp.type = "number"; inp.min = mn; inp.max = mx;
+    inp.value = (prefill && prefill[key] != null && prefill[key] !== -1) ? prefill[key] : dflt;
+    inp.setAttribute("aria-label", label);
+    const wrap = el("span", "cmd-field");
+    wrap.append(el("span", "ctl-flabel", label), inp);
+    host.append(wrap);
+    inputs.push([key, inp]);
+  });
+  return inputs;
+}
+function cmdCollect(inputs) {
+  const v = {};
+  (inputs || []).forEach(([key, inp]) => { v[key] = +inp.value; });
+  return v;
+}
+function cmdRenderForm() {
+  const host = $("cmdassign"); host.textContent = "";
+  if (!(CMDSOURCES && CMDSOURCES.length)) return;   // no catalogue yet -> no form
+  const form = el("div", "ctl-form");
+  const ssel = el("select", "ctl-fsel"); ssel.setAttribute("aria-label", "Footswitch");
+  CMDSOURCES.forEach((s) => { const o = el("option", null, s.label); o.value = s.id; ssel.append(o); });
+  const tsel = el("select", "ctl-fsel"); tsel.setAttribute("aria-label", "MIDI command type");
+  CMD_SUBTYPES.forEach(([lbl, fn]) => { const o = el("option", null, lbl); o.value = fn; tsel.append(o); });
+  const fhost = el("span", "cmd-fields");
+  let inputs = [];
+  tsel.onchange = () => { inputs = cmdFields(fhost, +tsel.value, null); };
+  const addBtn = el("button", "btn", "Add command"); addBtn.type = "button";
+  addBtn.onclick = () => {
+    const body = { switch: ssel.value, func: +tsel.value, values: cmdCollect(inputs), rev: S ? S.rev : undefined };
+    if (cmdEdit) cmdReplace(cmdEdit.switch, cmdEdit.slot, body);
+    else cmdSend("/commands/add", body, "Command added");
+  };
+  form.append(el("span", "ctl-flabel", "Footswitch"), ssel, el("span", "ctl-flabel", "sends MIDI"), tsel, fhost, addBtn);
+  if (cmdEdit) {
+    addBtn.textContent = "Save changes";
+    ssel.value = cmdEdit.switch; tsel.value = cmdEdit.func;
+    inputs = cmdFields(fhost, +tsel.value, cmdEdit.values);
+    const cancel = el("button", "btn", "Cancel"); cancel.type = "button";
+    cancel.onclick = () => { cmdEdit = null; cmdRenderForm(); };
+    form.append(cancel);
+  } else {
+    inputs = cmdFields(fhost, +tsel.value, null);
+  }
+  host.append(form);
+}
 function cmdCommandRow(c) {
   const r = el("div", "ctl-row");
   const head = el("span", "ctl-src");
@@ -1818,6 +1904,15 @@ function cmdCommandRow(c) {
     det.append(el("span", "cmd-fv", f[1] != null ? String(f[1]) : ""));
   });
   if (c.behavior) det.append(el("span", "cmd-beh", (c.fields && c.fields.length ? " · " : "") + c.behavior));
+  // Only the wire-captured surface (MIDI on a footswitch) is editable here.
+  if (c.editable) {
+    const edit = el("button", "btn cmd-mini", "Edit"); edit.type = "button";
+    edit.onclick = () => { cmdEdit = { switch: c.source, slot: c.slot, func: c.func, values: c.params || {} };
+      cmdRenderForm(); $("cmdassign").scrollIntoView({ block: "nearest" }); };
+    const rm = el("button", "btn cmd-mini", "Remove"); rm.type = "button";
+    rm.onclick = () => cmdSend("/commands/remove", { switch: c.source, slot: c.slot }, "Command removed");
+    det.append(edit, rm);
+  }
   r.append(det);
   return r;
 }
@@ -1839,6 +1934,14 @@ function cmdRender(d) {
   });
 }
 async function cmdLoad() {
+  // Fetch the authoring catalogue once, without blocking the command read: the
+  // form appears when it lands; the read pane works meanwhile.
+  if (!CMDSOURCES) {
+    fetch("/commands/sources").then(async (r) => { const j = await r.json().catch(() => ({}));
+      if (r.ok && Array.isArray(j.sources) && j.sources.length) { CMDSOURCES = j.sources; cmdRenderForm(); }
+    }).catch(() => {});
+  }
+  cmdRenderForm();
   const body = $("cmdbody"); body.textContent = "";
   body.append(el("p", "dhint", "Reading the device…"));
   try {

@@ -270,7 +270,10 @@ def _command_display(rec: dict, controls: dict) -> dict:
         family = headline = typ or "Command"
     return {"family": family, "headline": headline, "action": action,
             "behavior": rec.get("behavior", ""), "toggle": bool(rec.get("toggle")),
-            "fields": _command_fields(typ, p, controls)}
+            "fields": _command_fields(typ, p, controls),
+            # the device command slot (cmnd cid_) + raw subtype & field values the
+            # editor addresses an edit/remove with and prefills an Edit from (81v.4)
+            "slot": rec.get("slot"), "func": p.get("Command"), "params": dict(p)}
 
 
 def _format_commands(cmds: List[dict], device_id: Any, controls: dict,
@@ -297,8 +300,51 @@ def _format_commands(cmds: List[dict], device_id: Any, controls: dict,
             by_source[key] = {"id": switch or key, "label": label,
                               "named": switch is not None, "commands": []}
             order.append(key)
-        by_source[key]["commands"].append(_command_display(rec, controls))
+        disp = _command_display(rec, controls)
+        # Authoring metadata (81v.4 write): only MIDI on a NAMED footswitch with a
+        # known device slot (cmnd cid_) is the wire-captured, addressable write
+        # surface, so only those carry the editable handle.
+        disp["source"] = switch
+        disp["editable"] = bool(switch and switch.startswith("FS")
+                                and rec.get("type") == "MIDI"
+                                and isinstance(disp.get("slot"), int))
+        by_source[key]["commands"].append(disp)
     return {"sources": [by_source[k] for k in order]}
+
+
+# The .hsp MIDI Command subtypes the editor authors (81v.4 write). The read pane
+# shows every family; only MIDI is wire-captured for authoring.
+_COMMAND_MIDI_FUNCS = frozenset({0, 1, 2, 3})
+
+
+def _cmd_int_in(name: str, v: Any, lo: int, hi: int) -> None:
+    if isinstance(v, bool) or not isinstance(v, int) or not (lo <= v <= hi):
+        raise LiveError(f"{name} must be an integer {lo}..{hi}", status=400)
+
+
+def _validate_command_values(func: int, values: dict) -> None:
+    """Bound the user-supplied MIDI command fields before they reach the device
+    (trust boundary). Only the slots the chosen subtype uses are checked; an
+    omitted field falls back to the forward path's default."""
+    if "MIDI Ch" in values:
+        _cmd_int_in("MIDI Ch", values["MIDI Ch"], 1, 16)
+    if func == 1:                       # CC
+        for k in ("CC#", "Value"):
+            if k in values:
+                _cmd_int_in(k, values[k], 0, 127)
+    elif func == 0:                     # Bank/Program
+        if "PC" in values:
+            _cmd_int_in("PC", values["PC"], 0, 127)
+        for k in ("MSB", "LSB"):        # -1 == "off" (no bank select)
+            if k in values and values[k] != -1:
+                _cmd_int_in(k, values[k], 0, 127)
+    elif func == 3:                     # Note On
+        for k in ("Note", "Velocity"):
+            if k in values:
+                _cmd_int_in(k, values[k], 0, 127)
+    elif func == 2:                     # MMC
+        if "Message" in values:
+            _cmd_int_in("Message", values["Message"], 0, 127)
 
 
 class LiveSession:
@@ -1833,9 +1879,15 @@ class LiveSession:
         family, headline, Action and fields. Follows the device: the SSE stream
         re-installs the buffer on any ``/setEditBuffer`` echo, and the pane
         re-reads on focus / Refresh."""
-        empty = {"sources": []}
         with self.cond:
             eb = self._eb
+        return self._project_commands(eb)
+
+    def _project_commands(self, eb: Any) -> dict:
+        """The grouped-by-source command projection of an edit buffer — shared by
+        :meth:`commands` (reads the cache) and :meth:`command_remove` (addresses
+        a command by its position in this projection)."""
+        empty = {"sources": []}
         if not isinstance(eb, dict):
             return empty
         from helixgen import view as _view
@@ -1858,6 +1910,136 @@ class LiveSession:
             labels = {}
         controls = _paraminfo.load_param_ui().get("controls", {})
         return _format_commands(cmds, device_id, controls, labels)
+
+    def command_sources(self) -> dict:
+        """The footswitches a command can be authored on (81v.4 write) — the
+        Add-command picker's catalogue. Only footswitch sources are wire-captured
+        for authoring, so Instant / expression sources are left out. Static, no
+        device I/O."""
+        from helixgen import controllers as _ctl
+        from helixgen.device import transcode as _tc
+        out = []
+        for r in _ctl.controller_mapping("stadium_xl"):
+            try:
+                sid = _ctl.resolve_command_source("stadium_xl", r["id"])
+            except _ctl.ControllerError:
+                continue
+            lct = _tc._command_locl_ctxt_type(sid)
+            if lct and lct[1] == 1:          # footswitch (ctxt 1)
+                out.append({"id": r["id"], "label": r.get("english") or r["id"]})
+        return {"sources": out}
+
+    # --- Command Center pane (81v.4): the authoring verbs ---------------------
+    def command_add(self, switch: str, func: int, values: dict, *,
+                    rev: Optional[int] = None) -> dict:
+        """Author a MIDI Command Center command on a FOOTSWITCH source, live
+        (81v.4). ``switch`` is ``FS1``..``FS11`` (FS6/FS12 reserved); ``func`` is
+        the ``.hsp`` MIDI subtype (0 Bank/Program, 1 CC, 2 MMC, 3 Note On) the
+        read pane shows; ``values`` carries the family's fields (``MIDI Ch``,
+        ``CC#``/``Value``, ``PC``/``MSB``/``LSB``, ``Note``/``Velocity``,
+        ``Message``).
+
+        Mirrors the device/app flow captured 2026-11-23 (hgc-cc1): the device
+        ALLOCATES the slot on ``/attachCommandWithType`` (attached at subtype 0,
+        family 6), then each ``pvl`` slot is written with ``/setCommandParamVal``
+        — ``pvlIndex`` is exactly ``transcode._command_payload``'s footswitch
+        layout, so the live write and the offline synth share one source of
+        truth. Heard at once, no reload. Volatile until Save.
+
+        Only MIDI on a footswitch is wire-captured; Instant sources and the
+        non-MIDI families (Preset/Snapshot, Utility, …) are refused here rather
+        than authored from an unverified layout (see the capture findings)."""
+        from helixgen import controllers as _ctl
+        from helixgen.device import transcode as _tc
+        f = int(func)
+        if f not in _COMMAND_MIDI_FUNCS:
+            raise LiveError("MIDI command subtype must be 0 (Bank/Program), "
+                            "1 (CC), 2 (MMC) or 3 (Note On)", status=400)
+        try:
+            source_id = _ctl.resolve_command_source("stadium_xl", switch)
+        except _ctl.ControllerError as e:
+            raise LiveError(str(e), status=400) from e
+        lct = _tc._command_locl_ctxt_type(source_id)
+        if lct is None or lct[1] != 1:
+            raise LiveError(
+                "command authoring is wire-captured for footswitch sources only "
+                "(FS1–FS5, FS7–FS11); Instant and expression commands are not "
+                "captured yet.", status=400)
+        locl, ctxt, srtype = lct
+        _validate_command_values(f, values)
+        payload = _tc._command_payload("MIDI", f, dict(values), ctxt=ctxt)
+        if payload is None:                       # unreachable for a valid func
+            raise LiveError("could not build the command payload", status=400)
+        pvl = [v for _k, v in sorted((k, payload[k]) for k in payload
+                                     if k.startswith("pvl"))]
+        # The command's family func is set by the ATTACH subtype arg — NOT by a
+        # later set_command_param(slot, 1, …) (HW-confirmed 2026-11-24: attaching
+        # at 0 and switching the index-1 slot leaves func=0, a Bank/Program
+        # command). Attach at the device func (Note/MMC swapped vs the .hsp vocab);
+        # the subsequent pvl writes carry the channel + data slots.
+        dev_func = _tc._HSP_TO_DEVICE_MIDI_FUNC.get(f, f)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                try:
+                    slot = self.client.attach_command(srtype, locl, ctxt, 6,
+                                                      subtype=dev_func)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device command attach failed: {e}",
+                                    status=502) from e
+                for i, val in enumerate(pvl):
+                    try:
+                        ok = self.client.set_command_param(slot, i, int(val))
+                    except (HelixError, OSError) as e:
+                        self._set_connected(False)
+                        raise LiveError(f"device command write failed: {e}",
+                                        status=502) from e
+                    if not ok:
+                        raise LiveError("the device did not confirm the command "
+                                        "write", status=502)
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
+
+    def command_remove(self, switch: str, slot: int, *,
+                        rev: Optional[int] = None) -> dict:
+        """Clear the command with device ``slot`` (its cmnd ``cid_``, as the read
+        model carries it) on ``switch``, live (81v.4). The slot is a stable
+        per-command handle (HW 2026-11-24: not renumbered when a sibling is
+        removed), so it addresses the exact command regardless of list position.
+        Confirms the slot really is a command on ``switch`` before ``/removeCommand``
+        (a stale slot → 404, never a wrong deletion). Re-reads and returns fresh
+        state. Volatile until Save."""
+        s = int(slot)
+        self._ensure_lease(None)
+        try:
+            with self.cond:
+                self._require_up()
+            self.load()                      # refresh the cache we address against
+            grp = next((g for g in self.commands()["sources"]
+                        if g.get("id") == switch), None)
+            cmds = grp["commands"] if grp else []
+            if not any(c.get("slot") == s for c in cmds):
+                raise LiveError(f"{switch} has no command with slot {s} "
+                                "(did it already change?)", status=404)
+            with self.devlock:
+                try:
+                    ok = self.client.remove_command(s)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device command remove failed: {e}",
+                                    status=502) from e
+            if not ok:
+                raise LiveError("the device did not confirm removing the command",
+                                status=502)
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
 
     # --- Tuner pane (81v.10): read-only live pitch readout --------------------
     def _note_tuner(self, args: Any) -> None:

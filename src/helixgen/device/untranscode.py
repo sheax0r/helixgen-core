@@ -887,6 +887,12 @@ def _recover_commands(doc: dict, lost: List[str]) -> Dict[str, Any]:
             continue
         bucket = out.setdefault(str(source), [])
         rec["ordinal"] = len(bucket)
+        # The device command slot == the cmnd record's cid_ (HW 2026-11-24): a
+        # stable per-command handle, NOT renumbered when a sibling is removed.
+        # It is the slot /removeCommand + /setCommandParamVal take; the live
+        # editor carries it so edit/remove address the exact command. The
+        # forward path ignores it, so it never affects a .hsp round-trip.
+        rec["cid_"] = cm.get("cid_")
         bucket.append(rec)
     return out
 

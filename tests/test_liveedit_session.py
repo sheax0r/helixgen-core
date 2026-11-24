@@ -77,6 +77,13 @@ class FakeClient:
         self.removed_srcs = []          # cid
         self.src_set_fail = False       # make set_controller_source return False
         self.behv_fail = False          # make set_cid_behavior return False
+        # Command Center authoring (81v.4 write)
+        self.cmd_attaches = []          # (source_type, locl, ctxt, family, subtype, slot)
+        self.cmd_param_sets = []        # (slot, pvl_index, value)
+        self.cmd_removes = []           # slot
+        self.next_cmd_slot = 1
+        self.cmd_param_fail = False     # make set_command_param return False
+        self.cmd_remove_fail = False    # make remove_command return False
         # per-param snapshot control (81v.2)
         self.snap_assigns = []          # (path, block, pid, value)
         self.snap_removes = []          # target_id
@@ -262,6 +269,26 @@ class FakeClient:
         self._next()
         self.removed_srcs.append(int(controller_cid))
         return True
+
+    # --- Command Center authoring (81v.4 write) ---
+    def attach_command(self, source_type, locl, ctxt, family, subtype=0):
+        self._next()
+        slot = self.next_cmd_slot
+        self.next_cmd_slot += 1
+        self.cmd_attaches.append((int(source_type), int(locl), int(ctxt),
+                                  int(family), int(subtype), slot))
+        return slot
+
+    def set_command_param(self, slot, pvl_index, value):
+        self._next()
+        self.cmd_param_sets.append((int(slot), int(pvl_index), int(value)))
+        return not self.cmd_param_fail
+
+    def remove_command(self, slot):
+        self._next()
+        self.cmd_removes.append(int(slot))
+        return not self.cmd_remove_fail
+
     # --- per-param snapshot control (81v.2) ---
     def assign_snap_param(self, path, block, pid, value, sub=0):
         self._next()
