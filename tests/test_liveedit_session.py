@@ -66,6 +66,7 @@ class FakeClient:
         self.snapshot_ebs = None  # {index: eb} -> read_edit_buffer follows _active
         # controller assignment (81v.3)
         self.attaches = []          # (path, block, pid, sub)
+        self.bypass_attaches = []   # (path, block) from attach_block_bypass_controller
         self.midi_sources = []      # (controller_cid, cc)
         self.removed_ctrls = []     # controller_cid
         self.next_ctrl_cid = 50
@@ -224,6 +225,13 @@ class FakeClient:
     def attach_param_controller(self, path, block, pid, sub=0):
         self._next()
         self.attaches.append((int(path), int(block), int(pid), int(sub)))
+        cid = self.next_ctrl_cid
+        self.next_ctrl_cid += 1
+        return cid
+
+    def attach_block_bypass_controller(self, path, block):
+        self._next()
+        self.bypass_attaches.append((int(path), int(block)))
         cid = self.next_ctrl_cid
         self.next_ctrl_cid += 1
         return cid

@@ -410,3 +410,93 @@ def test_assign_local_source_fresh_behv_fail_rolls_back_the_attach():
     with _pytest.raises(LiveError):
         s.assign_local_source(0, 2, DRIVE, "EXP1")
     assert c.removed_ctrls == [50]          # the just-attached controller removed
+
+
+# --- footswitch -> block bypass assignment (81v.3) ----------------------------
+
+def _eb_with_bypass_ctrl(block_id, path=0, slot=2):
+    """Edit buffer with a BYPASS controller (trgs type==1) on (path, slot)."""
+    return {
+        "sfg_": {"flow": [{"blks": [slot, {"id__": block_id,
+                                           "mdls": [{"id__": 758}]}]}]},
+        "cg__": {"entt": {
+            "trgs": [{"id__": 9, "eID_": block_id, "pid_": 0,
+                      "slot": path, "type": 1}],       # type 1 = bypass target
+            "ctrl": [{"cid_": 4, "tid_": 9, "type": 1}],
+        }},
+    }
+
+
+def test_bypass_controller_cids_for_matches_bypass_only():
+    from helixgen.liveedit.session import _bypass_controller_cids_for
+    eb = _eb_with_bypass_ctrl(block_id=5)
+    assert _bypass_controller_cids_for(eb, 0, 2) == [4]
+    # a param controller (type 2) on the same block must NOT match
+    eb["cg__"]["entt"]["trgs"][0]["type"] = 2
+    assert _bypass_controller_cids_for(eb, 0, 2) == []
+
+
+def test_assign_bypass_source_runs_the_cascade():
+    c, s = _live_session()
+    s.assign_bypass_source(0, 2, "FS3", 1)              # momentary
+    assert c.bypass_attaches == [(0, 2)]
+    # FS3 -> device (locl, ctxt) == (27, 1); behaviour 1 = momentary
+    assert c.src_sets and c.src_sets[0][0] == 50 and c.src_sets[0][1:3] == (27, 1)
+    assert c.behaviors == [(50, 1)]
+    assert c.removed_ctrls == []
+
+
+def test_assign_bypass_source_rejects_bad_behavior():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.assign_bypass_source(0, 2, "FS3", 2)          # only 0/1 allowed
+    assert c.bypass_attaches == []
+
+
+def test_assign_bypass_source_refuses_an_endpoint():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.assign_bypass_source(0, 0, "FS3", 0)          # slot 0 is the input
+    assert c.bypass_attaches == []
+
+
+def test_assign_bypass_source_refuses_stale_rev():
+    c, s = _live_session()
+    with _pytest.raises(LiveError) as ei:
+        s.assign_bypass_source(0, 2, "FS3", 0, rev=s.rev + 1)
+    assert ei.value.status == 409
+    assert c.bypass_attaches == []
+
+
+def test_clear_bypass_controllers_noop_when_none():
+    c, s = _live_session()
+    s.clear_bypass_controllers(0, 2)                    # rig has no bypass ctrl
+    assert c.removed_ctrls == []
+
+
+def test_assign_bypass_source_rejects_an_expression_pedal():
+    c, s = _live_session()
+    with _pytest.raises(LiveError):
+        s.assign_bypass_source(0, 2, "EXP1", 0)         # EXP drives a sweep, not a bypass
+    assert c.bypass_attaches == []
+
+
+def test_assign_bypass_source_reuses_existing_controller(monkeypatch):
+    c, s = _live_session()
+    import helixgen.liveedit.session as _sess
+    monkeypatch.setattr(_sess, "_bypass_controller_cids_for",
+                        lambda eb, p, b: [77])          # pretend one already exists
+    s.assign_bypass_source(0, 2, "FS3", 0)
+    assert c.bypass_attaches == []                       # reused, not re-attached
+    assert c.src_sets and c.src_sets[0][0] == 77         # re-sourced the existing cid
+    assert c.behaviors == [(77, 0)]
+
+
+def test_clear_bypass_drops_source_then_controller(monkeypatch):
+    c, s = _live_session()
+    import helixgen.liveedit.session as _sess
+    monkeypatch.setattr(_sess, "_bypass_controller_cids_for",
+                        lambda eb, p, b: [77])
+    s.clear_bypass_controllers(0, 2)
+    assert c.removed_srcs == [77]                        # source dropped first
+    assert c.removed_ctrls == [77]                       # then the whole controller

@@ -1410,6 +1410,21 @@ function ctlAssignables() {
   });
   return blocks;
 }
+// Every processing block that HAS a bypass to assign — unlike ctlAssignables, a
+// param-less block still has a bypass, so don't require params; endpoints and
+// routing nodes have no bypass control.
+const CTL_NOBYPASS = new Set(["input", "output", "split", "join", "none"]);
+function ctlBypassables() {
+  const out = [];
+  if (!S || !S.paths) return out;
+  const walk = (list) => (list || []).forEach((seg) => {
+    if (seg.kind === "block") out.push(seg.block);
+    else if (seg.kind === "parallel") { out.push(seg.split); walk(seg.a); walk(seg.b); if (seg.join) out.push(seg.join); }
+  });
+  S.paths.forEach((p) => { walk(p.segments); walk(p.extra); });
+  return out.filter((b) => !CTL_NOBYPASS.has(b.category))
+            .map((b) => ({ path: b.path, slot: b.block, name: b.name }));
+}
 let ctlBusy = false;
 let CTLSOURCES = null;   // cached local-source catalogue (FS/EXP/toe), fetched once
 function ctlSend(url, sel, extra) {
@@ -1460,6 +1475,32 @@ function ctlRenderForm() {
     form.append(el("span", "ctl-flabel", "or"), ssel, asrc);
   }
   host.append(form);
+  // Footswitch -> block BYPASS assign (its own row; a bypass targets the block,
+  // not a param, and takes latching/momentary). Footswitch + toe sources only.
+  const fsSources = (CTLSOURCES || []).filter((s) => s.kind !== "expression");
+  const bypBlocks = ctlBypassables();
+  if (fsSources.length && bypBlocks.length) {
+    const brow = el("div", "ctl-form");
+    const bbsel = el("select", "ctl-fsel"); bbsel.setAttribute("aria-label", "Block to bypass");
+    bypBlocks.forEach((b, i) => { const o = el("option", null, b.name); o.value = i; bbsel.append(o); });
+    const fssel = el("select", "ctl-fsel"); fssel.setAttribute("aria-label", "Footswitch");
+    fsSources.forEach((s) => { const o = el("option", null, s.name); o.value = s.id; fssel.append(o); });
+    const bhsel = el("select", "ctl-fsel"); bhsel.setAttribute("aria-label", "Behaviour");
+    [["0", "Latching"], ["1", "Momentary"]].forEach(([v, t]) => {
+      const o = el("option", null, t); o.value = v; bhsel.append(o); });
+    const bsel2 = () => { const b = bypBlocks[+bbsel.value];
+      return b ? { path: b.path, block: b.slot } : null; };
+    const abyp = el("button", "btn", "Assign bypass"); abyp.type = "button";
+    abyp.title = "Assign the footswitch to toggle this block's bypass";
+    abyp.onclick = () => ctlSend("/controllers/assign-bypass", bsel2(),
+      { source: fssel.value, behavior: +bhsel.value, rev: formRev });
+    const cbyp = el("button", "btn ctl-clear", "Clear bypass"); cbyp.type = "button";
+    cbyp.title = "Remove every bypass controller on this block";
+    cbyp.onclick = () => ctlSend("/controllers/clear-bypass", bsel2(), { rev: formRev });
+    brow.append(el("span", "ctl-flabel", "Bypass"), bbsel,
+      el("span", "ctl-flabel", "via"), fssel, bhsel, abyp, cbyp);
+    host.append(brow);
+  }
 }
 async function ctlLoad() {
   if (!CTLSOURCES) {
