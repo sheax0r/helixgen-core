@@ -2940,6 +2940,39 @@ def test_remove_controller_confirms_on_status_zero():
     assert h.remove_controller(7) is True
 
 
+# --- Footswitch->bypass assign (captured 2026-11-24) -------------------------
+
+def test_attach_block_bypass_controller_returns_device_cid():
+    from helixgen.device.osc import parse_osc_message
+    h = HelixClient("10.0.0.99")
+    # reply is [reqid, cid_, cid_] — the id at BOTH positions after the reqid
+    # (NOT [reqid, cid_, status]); we read args[1].
+    _wire(h, [osc_encode("/attachBlockBypassController",
+                         [("i", 1000), ("i", 3), ("i", 3)])])
+    # Scream 808 in the golden capture: path 0, grid slot 1
+    assert h.attach_block_bypass_controller(0, 1) == 3
+    addr, args, _ = parse_osc_message(h.sock.sent[0])
+    ints = [v for t, v in args if t == "i"]
+    assert addr == "/attachBlockBypassController"
+    # [reqid, dsp, grid_slot, bypass_sub=1] — matches the real capture [_,0,1,1]
+    assert ints == [1000, 0, 1, 1]
+
+
+def test_attach_block_bypass_controller_raises_on_error_reply():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/error", [("i", 1000), ("i", 0), ("s", "no")])])
+    with pytest.raises(HelixError):
+        h.attach_block_bypass_controller(0, 1)
+
+
+def test_attach_block_bypass_controller_raises_when_reply_has_no_cid():
+    # A non-error reply carrying only the reqid (no cid) must still raise.
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/attachBlockBypassController", [("i", 1000)])])
+    with pytest.raises(HelixError):
+        h.attach_block_bypass_controller(0, 1)
+
+
 # --- Command Center authoring (captured 2026-11-23) --------------------------
 
 def test_attach_command_returns_device_allocated_slot():

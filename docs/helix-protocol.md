@@ -843,6 +843,26 @@ spelling, not `/status`** (`/setControllerSource [reqid, cid, srcId]`,
 `/setCidBehavior [reqid, cid, behv, 0]`). Clear is `/removeControllerSource
 [reqid, cid]` then `/removeController [reqid, cid]` (both `/status`).
 
+**Footswitch/EXP → BLOCK BYPASS — captured 2026-11-24** (frida app-MITM,
+hgc-nxm; see
+`docs/superpowers/specs/2026-11-24-fs-bypass-assign-re-findings.md`). The app's
+right-click **Controller Assign** on a block (bypass → a Stomp switch) runs the
+**same** cascade as above, except the first op targets the block's *bypass*
+instead of a param — so it is **`/attachBlockBypassController [reqid, dsp,
+grid_slot, 1]`** (NOT `/attachParamController`): the block coordinate is the
+same `(dsp, grid_slot)` as PARAM SET, there is no param id, and the trailing
+`1` is the fixed bypass sub-index (a block has one bypass). Its 2002 reply is
+`[reqid, cid_, cid_]` — the device-allocated `cid` at **both** positions after
+the reqid (read `args[1]`; this is NOT `/attachParamController`'s `[reqid, cid_,
+status]`, so the trailing field is the id, not a 0-is-ok status). The 2001 echo
+of this op is the longer **`/attachBlockBypassControllerWithBlob`** (a block
+swap emits the same echo, see §MODEL SET). Then `/ControllerSourceSet` and
+`/CidBehaviorSet` as above (FS1 → `(25,1)`; **behv `0` = latching, `1` =
+momentary** — both wire-confirmed on the Latching/Momentary toggle). Clearing
+to "None" is `/removeControllerSource` then `/removeController` (both
+`/status [reqid, 0, 0]`). Implemented: `client.attach_block_bypass_controller`
+(source/behaviour/clear reuse the methods above).
+
 ### Connect-time / info commands
 
 | Op | Address | Args | Reply |
