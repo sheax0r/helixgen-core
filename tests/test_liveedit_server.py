@@ -873,3 +873,19 @@ def test_globaleq_apply_requires_bands_object(srv):
 def test_globaleq_reset_requires_output(srv):
     code, _, _ = req(srv[2], "POST", "/globaleq/reset", {})
     assert code == 400
+
+
+def test_controllers_assign_bypass_route(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/controllers/assign-bypass",
+                        {"path": 0, "block": 2, "source": "FS3", "behavior": 0})
+    assert code == 200, data
+    assert c.bypass_attaches == [(0, 2)]
+    assert c.behaviors == [(50, 0)]
+
+
+def test_controllers_clear_bypass_route(srv):
+    c, s, server = srv
+    code, _, data = req(server, "POST", "/controllers/clear-bypass",
+                        {"path": 0, "block": 2})
+    assert code == 200, data
