@@ -1352,6 +1352,85 @@ class HelixClient:
         return _status0(self._rpc("/removeControllerSource",
                                   [("i", int(controller_cid))]))
 
+    # -- Command Center authoring (captured 2026-11-23 from the Debug app) --
+    # The app's command author/edit/clear flow: /attachCommandWithType creates
+    # a command on a footswitch/Instant source (the device allocates the slot
+    # and returns it), /setCommandParamVal writes one pvl int slot, and
+    # /removeCommand clears a slot. See
+    # docs/superpowers/specs/2026-11-23-command-authoring-re-findings.md.
+    def attach_command(self, source_type: int, locl: int, ctxt: int,
+                       family: int, subtype: int = 0) -> int:
+        """Author a Command Center command on a footswitch/Instant source in the
+        live edit buffer and return the device-allocated command **slot**.
+
+        ``/attachCommandWithType [reqid, srcType, locl, ctxt, 0, family,
+        subtype, blob]`` (frida app-MITM capture 2026-11-23). ``(source_type,
+        locl, ctxt)`` is the command source — the SAME three ints
+        ``transcode._command_locl_ctxt_type`` returns, reordered to the wire's
+        ``(type, locl, ctxt)`` (a footswitch FS1 is ``(1, 25, 1)``, an Instant1
+        ``(4, 0, 0)``). ``family`` is the device command class — the ``cg__``
+        ``cmnd`` ``type``: ``1`` = Preset/Snapshot, ``6`` = MIDI (the other
+        Command Center families — Song/Looper/Utility/ExtAmp/HotKey — are
+        uncaptured). ``subtype`` is the family func (MIDI: ``0`` = Bank/Program,
+        ``1`` = CC, ``2`` = Note, ``3`` = MMC) — it becomes the command's
+        ``func`` (HW-confirmed 2026-11-23: attaching with ``subtype=1`` yields
+        ``func=1``). The app always attaches at ``subtype=0`` and then switches
+        via ``set_command_param(slot, 1, subtype)``, which also mirrors the
+        subtype into pvl index 1; a caller wanting state byte-identical to the
+        app's sets that too (``func`` is what the device and ``untranscode``
+        honour, so it is not required for a working command). The fifth int is a
+        reserved field (observed ``0``). An empty command blob is sent, as the
+        app does.
+
+        The device **appends** the command to the source's command list and
+        returns the new slot in its reply ``/attachCommandWithType [reqid, slot,
+        slot]`` (the 2001 echo ``/attachCommand`` carries it last too). The slot
+        is an opaque handle for :meth:`set_command_param` / :meth:`remove_command`
+        — do not assume a numbering; use what the device returns. Raises
+        :class:`HelixError` if the device does not return a slot."""
+        replies = self._rpc(
+            "/attachCommandWithType",
+            [("i", int(source_type)), ("i", int(locl)), ("i", int(ctxt)),
+             ("i", 0), ("i", int(family)), ("i", int(subtype)), ("b", b"")])
+        for addr, args in replies:
+            if addr == "/error":
+                raise HelixError(f"/attachCommandWithType failed: {args}")
+            # Reply [reqid, slot, slot]; args[0] is the reqid, the slot is last.
+            if addr == "/attachCommandWithType" and len(args) >= 2:
+                slot = args[-1]
+                if isinstance(slot, int) and not isinstance(slot, bool):
+                    return slot
+        raise HelixError("the device did not return a command slot for "
+                         "/attachCommandWithType")
+
+    def set_command_param(self, slot: int, pvl_index: int, value: int) -> bool:
+        """Write one int slot of a command's ``pvl`` payload on the device.
+
+        ``/setCommandParamVal [reqid, slot, pvlIndex, value]`` (captured
+        2026-11-23) → ``/status [reqid, 0, 0]``. ``slot`` is the handle from
+        :meth:`attach_command`; ``pvl_index`` is the position in the command's
+        ``pvl`` array — **exactly** ``transcode._command_payload``'s layout
+        (HW-cross-checked on the wire: MIDI subtype = ``1``, channel = ``2``,
+        CC# = ``6``, Value = ``7``). Returns whether the device confirmed."""
+        return self._ok(self._rpc(
+            "/setCommandParamVal",
+            [("i", int(slot)), ("i", int(pvl_index)), ("i", int(value))]))
+
+    def remove_command(self, slot: int) -> bool:
+        """Clear a command slot on the device (the app's command → ``None``).
+
+        ``/removeCommand [reqid, slot]`` (captured 2026-11-23) → the echo
+        ``/removeCommand [reqid, slot, 0]`` (this family answers with the echo
+        spelling plus a trailing ``/status``-style code, as the controller-source
+        family does). ``slot`` is the handle from :meth:`attach_command`.
+        Returns whether the device confirmed."""
+        for addr, args in self._rpc("/removeCommand", [("i", int(slot))]):
+            if addr == "/error":
+                return False
+            if addr == "/removeCommand" and len(args) >= 3 and args[-1] == 0:
+                return True
+        return False
+
     def add_split(self, path: int, block: int) -> bool:
         """Split the block at lane-A grid slot ``block`` onto a NEW parallel
         lane B — synthesized topology (the app's drag-down-to-parallel).
