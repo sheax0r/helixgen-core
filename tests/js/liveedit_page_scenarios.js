@@ -167,19 +167,27 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       hl("0/2/1").contains("hl-down") && !hl("0/2/1").contains("hl-up"), cn("0/2/1"));
     ok("S19 a turn-up knob gets hl-up, not hl-down (amp Mid)",
       hl("0/2/2").contains("hl-up") && !hl("0/2/2").contains("hl-down"), cn("0/2/2"));
-    ok("S19 a non-affected knob (reverb Mix) is de-emphasised, not lit",
-      hl("0/3/1").contains("hl-off") && !hl("0/3/1").contains("hl-on"), cn("0/3/1"));
-    ok("S19 a matching knob in a BYPASSED block is not lit",
-      !hl("0/4/1").contains("hl-on"), cn("0/4/1"));
-    // un-bypass the second amp from the hardware -> its Drive must now light, with no re-render
+    // Non-focused blocks carry their emphasis on the TILE: only the selected
+    // block's knobs are rendered (canvas + focus reframe), so the across-chain
+    // "lit / de-emphasised / bypassed" checks read the tiles, not the knobs.
+    const til = (key) => x.tileOf(key).classList;
+    const tcn = (key) => x.tileOf(key).className;
+    ok("S19 the selected amp's tile is lit (it has matching knobs)",
+      til("0/2").contains("hl-up") || til("0/2").contains("hl-down") || til("0/2").contains("hl-on"), tcn("0/2"));
+    ok("S19 a non-affected block (reverb) tile is de-emphasised, not lit",
+      til("0/3").contains("hl-off") && !til("0/3").contains("hl-on"), tcn("0/3"));
+    ok("S19 a BYPASSED matching block's tile is not lit",
+      !til("0/4").contains("hl-on") && !til("0/4").contains("hl-up") && !til("0/4").contains("hl-down"), tcn("0/4"));
+    // un-bypass the second amp from the hardware -> its tile must now light, with no re-render
     x.sse({ t: "bypass", path: 0, block: 4, enabled: true });
-    ok("S19 un-bypassing a block re-evaluates the highlight", hl("0/4/1").contains("hl-on"), cn("0/4/1"));
-    // clearing the box removes every highlight
+    ok("S19 un-bypassing a block re-evaluates the tile highlight",
+      til("0/4").contains("hl-down") || til("0/4").contains("hl-up") || til("0/4").contains("hl-on"), tcn("0/4"));
+    // clearing the box removes every highlight (knob + tile)
     x.ids.adjsearch.value = ""; x.ids.adjsearch.fire("input");
     ok("S19 clearing the search removes all highlighting",
       !hl("0/2/1").contains("hl-on") && !hl("0/2/1").contains("hl-down") && !hl("0/2/2").contains("hl-up")
-      && !hl("0/2/1").contains("hl-off") && !hl("0/3/1").contains("hl-off"),
-      cn("0/2/1") + " | " + cn("0/3/1"));
+      && !hl("0/2/1").contains("hl-off") && !til("0/3").contains("hl-off") && !til("0/4").contains("hl-down"),
+      cn("0/2/1") + " | " + tcn("0/3"));
   }
   { // S20: library drawer
     const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
@@ -886,6 +894,58 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     const eRm = xe.posts.find((p) => p.url === "/commands/remove");
     ok("S36 Save then clears the old command by its slot",
       eRm && eRm.body.switch === "FS1" && eRm.body.slot === 5, JSON.stringify(eRm && eRm.body));
+  }
+  { // S37: undo/redo work for a block that is NOT currently focused. Only the
+    //       focused block registers controls (canvas+focus reframe), so the
+    //       undo entry must re-focus its block and still apply — never be lost.
+    const x = boot();
+    x.sse(State([Blk({ block: 1, model: "AmpA", name: "A" }, [P_({ value: 0.5 })]),
+                 Blk({ block: 2, model: "AmpB", name: "B" }, [P_({ value: 0.5 })])]));
+    const drain = async () => { for (let i = 0; i < 30 && (x.api.inflight || x.api.pending.size); i++) {
+      const p = x.posts.find((q) => !q._r); if (p) { p._r = 1; p.reply(200, p.body); } await x.tick(); } };
+    const k = x.knobOf("0/1/1"); drag(k, 1, 300, 250); k.svg.fire("pointerup", { pointerId: 1 });
+    await drain();
+    ok("S37 editing the focused block records one undo entry", x.api.undoS.length === 1, x.api.undoS.length);
+    x.tileOf("0/2").onclick({});                       // switch focus to B → A leaves P
+    ok("S37 the previously-edited block is no longer registered", !x.api.P.get("0/1/1"), [...x.api.P.keys()].join());
+    const p0 = x.posts.length; x.api.undo(); await drain();
+    const rev = x.posts.slice(p0).find((p) => p.url === "/param" && p.body.block === 1);
+    ok("S37 undo of the non-focused block reverts it on the device", !!rev && rev.body.value === 0.5, JSON.stringify(rev && rev.body));
+    ok("S37 the undo entry survives (redo is available), not discarded", x.api.redoS.length === 1, "redoS=" + x.api.redoS.length);
+    ok("S37 undo re-focuses the affected block", (() => { const f = x.ids.rig.find((e) => e.id === "focus")[0]; const n = f && f.find((e) => e._cls.has("nm"))[0]; return n && n.textContent === "A"; })(), "focus not on A");
+  }
+  { // S38: a queued write is NOT dropped when focus switches before it drains.
+    const x = boot();
+    x.sse(State([Blk({ block: 1, model: "AmpA", name: "A" }, [P_({ value: 0.5 })]),
+                 Blk({ block: 2, model: "AmpB", name: "B" }, [P_({ value: 0.5 })])]));
+    const k = x.knobOf("0/1/1"); drag(k, 1, 300, 250, 200); k.svg.fire("pointerup", { pointerId: 1 });
+    ok("S38 one write in flight, the newest value queued", x.posts.length === 1 && x.api.pending.size === 1, x.posts.length + "/" + x.api.pending.size);
+    const finalVal = x.api.P.get("0/1/1").p.value;
+    x.tileOf("0/2").onclick({});                        // switch focus mid-flight → A leaves P
+    x.posts[0].reply(200, { value: x.posts[0].body.value }); await x.tick();   // in-flight resolves → queued drains
+    const sent = x.posts.filter((p) => p.url === "/param" && p.body.block === 1).map((p) => p.body.value);
+    ok("S38 the released value still reaches the device after the switch", sent.includes(finalVal), "device got " + JSON.stringify(sent) + "; final=" + finalVal);
+  }
+  { // S39: a bypass change keeps the FOCUSED block's tile in sync, not just the focus panel.
+    const x = boot();
+    x.sse(State([Blk({ block: 1, model: "AmpA", name: "A" }, [P_({ value: 0.5 })]),
+                 Blk({ block: 2, model: "AmpB", name: "B" }, [P_({ value: 0.5 })])]));
+    ok("S39 block A is the focused block (registered in B)", !!x.api.B.get("0/1"), [...x.api.B.keys()].join());
+    x.sse({ t: "bypass", path: 0, block: 1, enabled: false });   // device bypasses the focused block
+    ok("S39 the focused block's tile shows bypassed (.off)", x.tileOf("0/1")._cls.has("off"), [...x.tileOf("0/1")._cls].join(" "));
+    x.sse({ t: "bypass", path: 0, block: 2, enabled: false });
+    ok("S39 a non-focused block's tile also shows bypassed", x.tileOf("0/2")._cls.has("off"), [...x.tileOf("0/2")._cls].join(" "));
+  }
+  { // S40: after a user drag-reorder, selection follows the dragged block to its new slot.
+    const mk = (s, n) => Blk({ block: s, model: "M" + n, name: n }, [P_({ value: 0.5 })]);
+    const x = boot();
+    x.sse(State([mk(1, "A"), mk(2, "B"), mk(3, "C")]));
+    const focusName = () => { const f = x.ids.rig.find((e) => e.id === "focus")[0]; const n = f && f.find((e) => e._cls.has("nm"))[0]; return n && n.textContent; };
+    ok("S40 focus starts on the first block A", focusName() === "A", focusName());
+    x.tileOf("0/1").fire("dragstart", { dataTransfer: { setData() {} } });
+    x.tileOf("0/3").fire("drop", { preventDefault() {} });        // drag A onto slot 3
+    x.sse(State([mk(1, "B"), mk(2, "C"), mk(3, "A")]));           // device re-sends the reorder (A now at slot 3)
+    ok("S40 focus follows the dragged block to its new slot", focusName() === "A", "focus shows " + focusName());
   }
 
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
