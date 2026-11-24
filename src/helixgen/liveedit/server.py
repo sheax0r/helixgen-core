@@ -175,6 +175,15 @@ def _route(session: LiveSession, path: str, b: dict):
     if path == "/controllers/clear":
         return session.clear_param_controllers(_int(b, "path"), _int(b, "block"),
                                                _int(b, "pid"), rev=_rev(b))
+    if path == "/controllers/assign-bypass":
+        src = b.get("source")
+        if not isinstance(src, str) or not src:
+            raise LiveError("field 'source' must be a non-empty string")
+        return session.assign_bypass_source(_int(b, "path"), _int(b, "block"),
+                                            src, _int(b, "behavior"), rev=_rev(b))
+    if path == "/controllers/clear-bypass":
+        return session.clear_bypass_controllers(_int(b, "path"), _int(b, "block"),
+                                                rev=_rev(b))
     # Command Center pane (81v.4): author / clear a MIDI command on a footswitch.
     # Read of the current commands is GET /commands/state (do_GET).
     if path == "/commands/add":

@@ -113,7 +113,8 @@ def test_page_registers_the_controllers_pane_and_endpoint():
     html = PAGE.read_text()
     for marker in ('id="ctlpane"', 'id="ctlbody"', 'id="ctlassign"',
                    'addPane({ id: "controllers"', "/controllers/state",
-                   "/controllers/assign", "/controllers/clear"):
+                   "/controllers/assign", "/controllers/clear",
+                   "/controllers/assign-bypass", "/controllers/clear-bypass"):
         assert marker in html, marker
 
 

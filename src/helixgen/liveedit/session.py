@@ -109,8 +109,34 @@ def _controller_cids_for(eb: Any, path: int, grid_slot: int, pid: int) -> List[i
     entt = (eb.get("cg__") or {}).get("entt") or {}
     tids = {t.get("id__") for t in (entt.get("trgs") or [])
             if isinstance(t, dict) and t.get("eID_") == eid
-            and t.get("pid_") == pid and t.get("slot") == path
+            and t.get("pid_") == pid and t.get("slot") == 0
             and t.get("type") == 2}
+    return [c["cid_"] for c in (entt.get("ctrl") or [])
+            if isinstance(c, dict) and c.get("tid_") in tids
+            and isinstance(c.get("cid_"), int) and not isinstance(c.get("cid_"), bool)]
+
+
+def _bypass_controller_cids_for(eb: Any, path: int, grid_slot: int) -> List[int]:
+    """Device controller ids whose target is the BLOCK BYPASS of the block at
+    grid ``grid_slot`` of DSP ``path`` — the bypass sibling of
+    :func:`_controller_cids_for`. A bypass target is a ``trgs`` leaf of
+    ``type == 1`` (a param target is ``type == 2``); there is no param id."""
+    if not isinstance(eb, dict):
+        return []
+    flow = (eb.get("sfg_") or {}).get("flow")
+    if not (isinstance(flow, list) and 0 <= path < len(flow)):
+        return []
+    eid = None
+    for s, raw in _chain._blks_pairs(flow[path]):
+        if s == grid_slot:
+            eid = raw.get("id__")
+            break
+    if not isinstance(eid, int) or isinstance(eid, bool):
+        return []
+    entt = (eb.get("cg__") or {}).get("entt") or {}
+    tids = {t.get("id__") for t in (entt.get("trgs") or [])
+            if isinstance(t, dict) and t.get("eID_") == eid
+            and t.get("slot") == 0 and t.get("type") == 1}
     return [c["cid_"] for c in (entt.get("ctrl") or [])
             if isinstance(c, dict) and c.get("tid_") in tids
             and isinstance(c.get("cid_"), int) and not isinstance(c.get("cid_"), bool)]
@@ -2074,14 +2100,21 @@ class LiveSession:
         return any(p.get("pid") == pid for p in cur.get("params", []))
 
     def _rollback_controller(self, cid_: int) -> None:
-        """Best-effort removal of a just-attached controller whose source bind
-        failed. Never raises (the caller is already surfacing the real error);
-        a failure here is logged, not masked over."""
+        """Best-effort removal of a just-attached controller whose source/
+        behaviour step failed. Drops the source FIRST, then the controller: a
+        bypass controller that already took a source refuses a bare
+        ``/removeController`` (HW 2026-11-24), the same reason
+        :meth:`clear_bypass_controllers` clears source-then-whole. Harmless for a
+        still-sourceless controller (the source-drop is a no-op there). Never
+        raises — the caller is already surfacing the real error; a failure here
+        is logged, not masked over."""
         try:
+            with contextlib.suppress(Exception):
+                self.client.remove_controller_source(cid_)
             self.client.remove_controller(cid_)
         except Exception:  # noqa: BLE001 — the real error is the bind failure
-            logger.warning("could not roll back sourceless controller %s after "
-                           "a failed MIDI assign; it is harmless until Save", cid_)
+            logger.warning("could not roll back controller %s after a failed "
+                           "assign; it is harmless until Save", cid_)
 
     def assign_midi_cc(self, path: int, block: int, pid: int, cc: int, *,
                        rev: Optional[int] = None) -> dict:
@@ -2337,6 +2370,121 @@ class LiveSession:
                     raise LiveError("the controller source was set but the "
                                     "device did not confirm its behaviour; "
                                     "re-assign to finish", status=502)
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
+
+    def assign_bypass_source(self, path: int, block: int, source: str,
+                             behavior: int, *, rev: Optional[int] = None) -> dict:
+        """Assign a footswitch to a block's BYPASS, live (81v.3) — the Stadium
+        app's Controller Assign on the block's bypass.
+
+        Mirrors :meth:`assign_local_source` but targets the block's bypass, not a
+        param: if the block already has a bypass controller its cid is REUSED
+        (re-source, no orphan), else one is attached via
+        ``/attachBlockBypassController``. Then the local source is bound and the
+        behaviour set (``0`` = latching, ``1`` = momentary — the only two a
+        switch bypass takes; a continuous EXP sweep is a different assignment).
+        ``rev`` refuses a stale request (409). Re-reads; volatile until Save."""
+        pth, blk, b = int(path), int(block), int(behavior)
+        if b not in (0, 1):
+            raise LiveError("bypass behaviour must be 0 (latching) or 1 "
+                            "(momentary)", status=400)
+        locl, ctxt, src_behv = _local_source_wire(source)  # 400 on unknown
+        if src_behv == 2:          # continuous == an expression pedal
+            raise LiveError("a block bypass is driven by a footswitch, not a "
+                            "continuous expression pedal.", status=400)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                    self._require_rev(rev, None)
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                cur = self._block_at(eb, pth, blk)
+                if cur is None:
+                    raise LiveError("no such block on the loaded tone "
+                                    "(did the preset change?)", status=404)
+                if cur.get("category") in ("input", "output", "split", "join"):
+                    raise LiveError("only a processing block has a bypass to "
+                                    "assign — not an endpoint / routing node.",
+                                    status=400)
+                existing = _bypass_controller_cids_for(eb, pth, blk)
+                attached = not existing
+                try:
+                    cid_ = existing[0] if existing \
+                        else self.client.attach_block_bypass_controller(pth, blk)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device bypass-controller attach failed: "
+                                    f"{e}", status=502) from e
+                try:
+                    src_ok = self.client.set_controller_source(cid_, locl, ctxt)
+                    behv_ok = (self.client.set_cid_behavior(cid_, b)
+                               if src_ok else False)
+                except (HelixError, OSError) as e:
+                    if attached:
+                        self._rollback_controller(cid_)
+                    self._set_connected(False)
+                    raise LiveError(f"device source bind failed: {e}",
+                                    status=502) from e
+                if not src_ok:
+                    if attached:
+                        self._rollback_controller(cid_)
+                    raise LiveError("the device did not bind the bypass "
+                                    "controller source", status=502)
+                if not behv_ok:
+                    if attached:
+                        self._rollback_controller(cid_)
+                    raise LiveError("the bypass source was set but the device "
+                                    "did not confirm its behaviour; re-assign "
+                                    "to finish", status=502)
+        finally:
+            self.lease.done()
+        self.load()
+        return self.public_state()
+
+    def clear_bypass_controllers(self, path: int, block: int, *,
+                                 rev: Optional[int] = None) -> dict:
+        """Remove every bypass controller on the block at grid slot ``block``
+        (DSP ``path``), live (81v.3). A no-op when the block's bypass carries
+        none. ``rev`` refuses a stale request (409). Re-reads; volatile until
+        Save."""
+        pth, blk = int(path), int(block)
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                    self._require_rev(rev, None)
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                if self._block_at(eb, pth, blk) is None:
+                    raise LiveError("no such block on the loaded tone "
+                                    "(did the preset change?)", status=404)
+                for cid_ in _bypass_controller_cids_for(eb, pth, blk):
+                    try:
+                        # The app's clear cascade: drop the source, THEN the
+                        # controller — a sourced bypass controller refuses a bare
+                        # /removeController (HW 2026-11-24). Source-drop is
+                        # best-effort; the whole-removal is the confirmation gate.
+                        self.client.remove_controller_source(cid_)
+                        ok = self.client.remove_controller(cid_)
+                    except (HelixError, OSError) as e:
+                        self._set_connected(False)
+                        raise LiveError(f"device controller remove failed: {e}",
+                                        status=502) from e
+                    if not ok:
+                        raise LiveError("the device did not confirm clearing "
+                                        "the bypass controller", status=502)
         finally:
             self.lease.done()
         self.load()
