@@ -683,10 +683,19 @@ async function pump() {
   const map = job.kind === "param" ? P : B;
   const c = map.get(job.key);
   try {
-    if (c) {
-      const body = job.kind === "param"
-        ? { path: c.b.path, block: c.b.block, pid: c.p.pid, value: c.p.value }
-        : { path: c.b.path, block: c.b.block, enabled: c.b.enabled };
+    // Resolve the value from the live control, or — if a focus switch cleared it
+    // from P/B before this queued write drained — from state, so the value is
+    // never lost (only the focused block registers controls now).
+    let body = null;
+    if (c) body = job.kind === "param"
+      ? { path: c.b.path, block: c.b.block, pid: c.p.pid, value: c.p.value }
+      : { path: c.b.path, block: c.b.block, enabled: c.b.enabled };
+    else {
+      const pt = job.key.split("/"), b = BLOCKS.get(pt[0] + "/" + pt[1]);
+      if (b && job.kind === "bypass") body = { path: b.path, block: b.block, enabled: b.enabled };
+      else if (b) { const p = (b.params || []).find((x) => String(x.pid) === pt[2]); if (p) body = { path: b.path, block: b.block, pid: p.pid, value: p.value }; }
+    }
+    if (body) {
       body.client = ME; body.rev = S.rev;
       // look the control up AGAIN in the callbacks: a re-render while the
       // request was out replaces every control object
@@ -747,11 +756,18 @@ function applyHist(e, val) {      // false = the entry no longer names the same 
   if (!c || c.tag !== e.tag) return false;
   c.set(val); queue(e.kind, e.key); return true;
 }
+// An undo/redo entry's control only exists while its block is focused (only the
+// focused block registers controls). Select the owning block first, so applyHist
+// can resolve it — and the user sees which block the undo/redo touched.
+function focusEntryBlock(key) {
+  const pt = key.split("/"), bkey = pt[0] + "/" + pt[1];
+  if (SEL !== bkey && BLOCKS.has(bkey)) selectTile(bkey);
+}
 function undo() { if (down || activePane !== "flow") return; let e;
-  while ((e = undoS.pop())) if (applyHist(e, e.before)) { redoS.push(e); break; }
+  while ((e = undoS.pop())) { focusEntryBlock(e.key); if (applyHist(e, e.before)) { redoS.push(e); break; } }
   syncHist(); }
 function redo() { if (down || activePane !== "flow") return; let e;
-  while ((e = redoS.pop())) if (applyHist(e, e.after)) { undoS.push(e); break; }
+  while ((e = redoS.pop())) { focusEntryBlock(e.key); if (applyHist(e, e.after)) { undoS.push(e); break; } }
   syncHist(); }
 function syncHist() { $("undo").disabled = down || !undoS.length; $("redo").disabled = down || !redoS.length; }
 addEventListener("keydown", (ev) => {
@@ -1335,6 +1351,7 @@ function wireTileDrag(canvas) {
       if (d[0] !== g[0] || !movable(tgt)) { dragKey = null; return; }
       e.preventDefault();
       structSend("/move-block", { path: +g[0], src: +d[1], dst: +g[1] }, "Reordering…");
+      SEL = g[0] + "/" + g[1];   // follow the dragged block to its destination slot across the re-render
       dragKey = null;
     });
   });
@@ -2346,6 +2363,7 @@ function applyHighlight() {        // purely presentational: toggle classes, no 
   // state S, so it works even though those knobs aren't rendered right now).
   BLOCKS.forEach((b, key) => {
     const n = tileFor(key); if (!n) return;
+    n.classList.toggle("off", !b.enabled);   // keep the tile's bypass dot in sync (incl. the focused block)
     const role = activeIntent && b.enabled && roleOf(b);
     let match = false, dir = 0;
     if (role) (b.params || []).forEach((p) => {
