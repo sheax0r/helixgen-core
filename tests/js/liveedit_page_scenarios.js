@@ -874,14 +874,18 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       ccPrefill ? String(ccPrefill.value) : "no prefill");
     ccPrefill.value = "20";                               // nudge the CC number
     btn(form2, "Save changes").onclick(); await xe.tick();
-    const eRm = xe.posts.find((p) => p.url === "/commands/remove");
-    ok("S36 Save first clears the existing command by its slot",
-      eRm && eRm.body.switch === "FS1" && eRm.body.slot === 5, JSON.stringify(eRm && eRm.body));
-    eRm.reply(200, { ok: true }); await xe.tick();
+    // Add goes FIRST (so a failed re-author never loses the original); the old
+    // command is cleared by slot only after the add succeeds.
     const eAdd = xe.posts.find((p) => p.url === "/commands/add");
-    ok("S36 Save then re-authors it with the edited value",
+    ok("S36 Save authors the edited command first",
       eAdd && eAdd.body.switch === "FS1" && eAdd.body.func === 1 && eAdd.body.values["CC#"] === 20,
       JSON.stringify(eAdd && eAdd.body));
+    ok("S36 Save does not clear the original before the add succeeds",
+      !xe.posts.find((p) => p.url === "/commands/remove"), "remove fired before add reply");
+    eAdd.reply(200, { ok: true }); await xe.tick();
+    const eRm = xe.posts.find((p) => p.url === "/commands/remove");
+    ok("S36 Save then clears the old command by its slot",
+      eRm && eRm.body.switch === "FS1" && eRm.body.slot === 5, JSON.stringify(eRm && eRm.body));
   }
 
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");

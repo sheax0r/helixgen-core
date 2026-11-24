@@ -333,9 +333,7 @@ def _validate_command_values(func: int, values: dict) -> None:
             if k in values:
                 _cmd_int_in(k, values[k], 0, 127)
     elif func == 0:                     # Bank/Program
-        if "PC" in values:
-            _cmd_int_in("PC", values["PC"], 0, 127)
-        for k in ("MSB", "LSB"):        # -1 == "off" (no bank select)
+        for k in ("PC", "MSB", "LSB"):  # -1 == "off" (no program / bank select)
             if k in values and values[k] != -1:
                 _cmd_int_in(k, values[k], 0, 127)
     elif func == 3:                     # Note On
@@ -1983,6 +1981,10 @@ class LiveSession:
             with self.devlock:
                 with self.cond:
                     self._require_up()
+                    # Refuse a stale page (preset/snapshot changed since its
+                    # render), so a command never lands on the wrong tone —
+                    # mirrors every other live write verb.
+                    self._require_rev(rev, None)
                 try:
                     slot = self.client.attach_command(srtype, locl, ctxt, 6,
                                                       subtype=dev_func)
@@ -2023,9 +2025,17 @@ class LiveSession:
             grp = next((g for g in self.commands()["sources"]
                         if g.get("id") == switch), None)
             cmds = grp["commands"] if grp else []
-            if not any(c.get("slot") == s for c in cmds):
+            match = next((c for c in cmds if c.get("slot") == s), None)
+            if match is None:
                 raise LiveError(f"{switch} has no command with slot {s} "
                                 "(did it already change?)", status=404)
+            # Enforce the authoring contract server-side, not just in the UI: only
+            # a MIDI command on a footswitch is the wire-captured remove surface.
+            # (/removeCommand was captured for footswitch MIDI; Instant and the
+            # non-MIDI families are read-only.)
+            if not match.get("editable"):
+                raise LiveError("only a MIDI command on a footswitch can be "
+                                "removed here", status=400)
             with self.devlock:
                 try:
                     ok = self.client.remove_command(s)

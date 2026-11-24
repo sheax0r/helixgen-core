@@ -1813,9 +1813,14 @@ addPane({ id: "globaleq", label: "Global EQ", el: () => $("eqpane"), onShow: geq
 // Field = [key sent to the server, label, min, max, default]. Wire-captured for
 // footswitch MIDI only (the capture: /attachCommandWithType + /setCommandParamVal).
 const CMD_SUBTYPES = [["CC", 1], ["Bank/Program", 0], ["Note On", 3], ["MMC", 2]];
+// field = [key, label, min, max, default, offable?]. An offable field (PC / bank
+// select) treats a blank input as "Off" (-1, no message sent) — the real state a
+// Bank/Program command carries, which a forced 0 would silently turn into a bank
+// select to bank 0 / program 0.
 const CMD_FIELDS = {
   1: [["MIDI Ch", "Ch", 1, 16, 1], ["CC#", "CC#", 0, 127, 0], ["Value", "Value", 0, 127, 0]],
-  0: [["MIDI Ch", "Ch", 1, 16, 1], ["PC", "PC", 0, 127, 0], ["MSB", "MSB(CC00)", 0, 127, 0], ["LSB", "LSB(CC32)", 0, 127, 0]],
+  0: [["MIDI Ch", "Ch", 1, 16, 1], ["PC", "PC", 0, 127, 0, true],
+      ["MSB", "MSB(CC00)", 0, 127, 0, true], ["LSB", "LSB(CC32)", 0, 127, 0, true]],
   3: [["MIDI Ch", "Ch", 1, 16, 1], ["Note", "Note", 0, 127, 60], ["Velocity", "Velocity", 0, 127, 100]],
   2: [["MIDI Ch", "Ch", 1, 16, 1], ["Message", "Message", 0, 127, 0]],
 };
@@ -1826,17 +1831,17 @@ function cmdSend(url, body, okMsg) {
   send(url, body, () => { cmdBusy = false; if (okMsg) toast(okMsg, true); cmdEdit = null; cmdLoad(); },
                   () => { cmdBusy = false; });
 }
-// Edit = clear the old command (by its device slot), then author the new one
-// (the hardware's own model). Two writes; if the author fails after the clear,
-// the reload shows the real state.
+// Edit = author the new command, THEN clear the old one by its slot. Add goes
+// first so a failed/invalid re-author never loses the original (a failed clear
+// after a good add leaves a harmless, recoverable duplicate instead of nothing).
 function cmdReplace(sw, slot, body) {
   if (down || cmdBusy) return;
   cmdBusy = true;
-  send("/commands/remove", { switch: sw, slot: slot },
-    () => send("/commands/add", body,
+  send("/commands/add", body,
+    () => send("/commands/remove", { switch: sw, slot: slot },
       () => { cmdBusy = false; toast("Command updated", true); cmdEdit = null; cmdLoad(); },
-      () => { cmdBusy = false; cmdLoad(); }),
-    () => { cmdBusy = false; });
+      () => { cmdBusy = false; cmdLoad(); }),   // duplicate remains; reload shows it
+    () => { cmdBusy = false; });                // add refused: original untouched
 }
 // Render the number inputs for one subtype and return them (keyed) so the Add
 // handler can read the values back without re-querying the DOM.
@@ -1844,20 +1849,28 @@ function cmdFields(host, func, prefill) {
   host.textContent = "";
   const inputs = [];
   (CMD_FIELDS[func] || []).forEach((f) => {
-    const [key, label, mn, mx, dflt] = f;
+    const [key, label, mn, mx, dflt, off] = f;
     const inp = el("input", "ctl-cc"); inp.type = "number"; inp.min = mn; inp.max = mx;
-    inp.value = (prefill && prefill[key] != null && prefill[key] !== -1) ? prefill[key] : dflt;
+    const has = prefill && prefill[key] != null;
+    if (off) {
+      inp.placeholder = "Off";                       // blank = Off (-1)
+      inp.value = (has && prefill[key] !== -1) ? prefill[key] : "";
+    } else {
+      inp.value = has ? prefill[key] : dflt;
+    }
     inp.setAttribute("aria-label", label);
     const wrap = el("span", "cmd-field");
     wrap.append(el("span", "ctl-flabel", label), inp);
     host.append(wrap);
-    inputs.push([key, inp]);
+    inputs.push([key, inp, !!off]);
   });
   return inputs;
 }
 function cmdCollect(inputs) {
   const v = {};
-  (inputs || []).forEach(([key, inp]) => { v[key] = +inp.value; });
+  (inputs || []).forEach(([key, inp, off]) => {
+    v[key] = (off && inp.value === "") ? -1 : +inp.value;   // blank offable -> Off
+  });
   return v;
 }
 function cmdRenderForm() {

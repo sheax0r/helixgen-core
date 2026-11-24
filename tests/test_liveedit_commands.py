@@ -257,6 +257,24 @@ def test_command_add_attaches_at_the_device_func_with_note_mmc_swapped():
     assert c2.cmd_attaches[0][4] == 3
 
 
+def test_command_add_bank_program_preserves_off_for_pc_and_bank():
+    # -1 is the real "Off" (no program / bank select); it must reach the device
+    # as -1, not be clamped to 0 (which would transmit bank select to bank 0).
+    c, s = _cmd_session()
+    s.command_add("FS1", 0, {"MIDI Ch": 1, "PC": -1, "MSB": -1, "LSB": -1})
+    sets = {i: v for (_slot, i, v) in c.cmd_param_sets}
+    assert sets[0] == -1 and sets[3] == -1 and sets[4] == -1   # PC / MSB / LSB all Off
+
+
+def test_command_add_refuses_a_stale_rev():
+    # a page showing an older tone must not author onto whatever is loaded now
+    c, s = _cmd_session()
+    with pytest.raises(LiveError) as ei:
+        s.command_add("FS1", 1, {"CC#": 7, "Value": 1}, rev=s.rev + 1)
+    assert ei.value.status == 409
+    assert c.cmd_attaches == []            # refused before touching the device
+
+
 def test_command_add_rejects_instant_source_uncaptured():
     # The live capture drove a footswitch only; Instant command authoring is not
     # wire-captured, so the session refuses it rather than guessing the layout.
@@ -318,6 +336,27 @@ def test_command_remove_rejects_a_slot_not_on_the_switch(monkeypatch):
     with pytest.raises(LiveError):
         s.command_remove("FS3", 99)   # no command with that slot -> never deletes
     assert c.cmd_removes == []
+
+
+def test_command_remove_refuses_a_non_editable_command(monkeypatch):
+    # The editable gate is enforced server-side, not just in the UI: a direct
+    # POST naming an Instant (or non-MIDI) command with a real slot is refused —
+    # /removeCommand is wire-captured for footswitch MIDI only.
+    from helixgen import controllers as _controllers
+    from helixgen import view as _view
+    from helixgen.device import bridge as _bridge
+    sid = _controllers.resolve_command_source("stadium_xl", "Instant1")
+    monkeypatch.setattr("helixgen.device.untranscode.sbepgsm_to_hsp",
+                        lambda eb, **k: {"_marker": "body"})
+    monkeypatch.setattr(_bridge, "hsp_commands", lambda body: [
+        {"source": sid, "type": "MIDI", "slot": 2, "params": {"Command": 1, "CC#": 1}}])
+    monkeypatch.setattr(_view, "_device_id", lambda body: "stadium_xl")
+    monkeypatch.setattr(_controllers, "controller_mapping", lambda dev: [])
+    c, s = _cmd_session()
+    with pytest.raises(LiveError) as ei:
+        s.command_remove("Instant1", 2)
+    assert ei.value.status == 400
+    assert c.cmd_removes == []            # never fired /removeCommand
 
 
 def test_command_remove_surfaces_a_device_refusal(monkeypatch):
