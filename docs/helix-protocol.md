@@ -746,14 +746,20 @@ Song tracks `enbl:0` greyed with no song loaded). Golden blob
 `tests/fixtures/mixer/mixer_state.blob`.
 
 **Read-only shipped** — the device-live editor's Mixer pane (81v.8) renders this.
-The **write path (`/PropertyValueSet server.mixer.state`) is UNPROVEN** and not
-sent: the desktop editor has no Matrix-Mixer screen (retail + Debug both checked
-2026-11-22 — it is a hardware-front-panel surface), so there is no app write to
-capture, and a blind write of the whole blob is risky. A future write needs a
-Frida capture of a hardware-panel edit, or a careful scratch write + read-back
-verify on an expendable value — owed to HW-RE, tracked as a bead. The adjacent
-output/routing/MIDI-channel governors (table above) stay the only matrix-side
-**writes** today, via `device settings`.
+The **write path is a confirmed NO-OP / hardware-front-panel-only** (probed
+2026-11-23, Stadium XL fw 1.4.1): a whole-blob `/PropertyValueSet
+server.mixer.state` (the read blob round-tripped through msgpack with one field
+mutated) **acks `/status [reqid, 0, 0]` but changes nothing** — a master output
+level, a source-strip level, with `ctx=0` and `ctx=3`, all read back unchanged;
+the original was restored byte-for-byte. The device treats `server.mixer.state`
+as a **read-only aggregate**. It is also the ONLY mixer key the device exposes
+(`/MatchingPropertyDefinitionsGet "server.mixer*"` / `"*mixer*"` return just
+`server.mixer.state` — no per-channel/per-output settable sub-key). Combined
+with the two 2026-11-22 findings that the desktop editor (retail + Debug) has no
+Matrix-Mixer screen, there is **no LAN write path** for the matrix mixer — it is
+a hardware-front-panel surface. Do not re-attempt a `/PropertyValueSet` write:
+the ack is meaningless. The adjacent output/routing/MIDI-channel governors
+(table above) stay the only matrix-side **writes**, via `device settings`.
 
 Prior framing kept for provenance in the spec (`2026-11-22-matrix-mixer-re-spike.md`),
 whose "not a property / won't-do" conclusion is **superseded** by this read.
@@ -792,11 +798,28 @@ stream is always live regardless, so a network tuner needs no engage.
 
 ### Command Center, MIDI/XY controllers
 
-Decoded 2026-07-14 (see the findings spec §5–§7 for byte detail): Command Center
-uses `/attachCommandWithType` (2-byte-length-prefixed framing) →
-`/setCommandParamVal`; type families 1=Preset/Snapshot, 4=HotKey/Utility,
-6=MIDI (MIDI subtype via param idx1: 0=PC,1=CC,3=Note,2=MMC). MIDI controller
-assignment = `/attachParamController`/`/attachBlockBypassController` +
+Command Center command authoring was **captured on the wire 2026-11-23** (frida
+app-MITM; see `2026-11-23-command-authoring-re-findings.md`), superseding the
+2026-07-14 "2-byte-length-prefixed framing" sketch. The three opcodes:
+
+```
+/attachCommandWithType ,iiiiiiib [reqid, srcType, locl, ctxt, 0, family, subtype, blob=[]]
+      -> /attachCommandWithType   [reqid, slot, slot]   # the DEVICE allocates the slot
+/setCommandParamVal    ,iiii      [reqid, slot, pvlIndex, value]  -> /status [reqid, 0, 0]
+/removeCommand         ,ii        [reqid, slot]  -> /removeCommand [reqid, slot, 0]
+```
+
+`(srcType, locl, ctxt)` = `transcode._command_locl_ctxt_type` reordered to
+`(type, locl, ctxt)` (FS1 = `1,25,1`; Instant1 = `4,0,0`). `family` is the
+`cg__` `cmnd` `type`: **1=Preset/Snapshot, 6=MIDI** (Song/Looper/Utility/ExtAmp/
+HotKey uncaptured); `subtype` = the device MIDI func (0=PC/Bank, 1=CC, 2=Note,
+3=MMC — Note/MMC swapped vs `.hsp`). The 5th int is reserved (observed 0) and
+the attach blob is empty. `pvlIndex` is exactly `transcode._command_payload`'s
+pvl layout (wire-confirmed: subtype=1, channel=2, CC#=6, Value=7). The device
+appends the command and returns the new slot — the slot is an opaque handle for
+the other two opcodes. Implemented: `client.attach_command` /
+`set_command_param` / `remove_command`.
+MIDI controller assignment = `/attachParamController`/`/attachBlockBypassController` +
 `/ControllerMIDISourceAdd` (CC# is a BE uint16 at blob offset 12; no channel on
 the wire). XY zones activate via `/SetBatchedParamValues` (a 12-tuple
 `[dsp,block,sub,paramId,valueF64]` batch = the block's whole param set; no

@@ -2938,3 +2938,79 @@ def test_remove_controller_confirms_on_status_zero():
     h = HelixClient("10.0.0.99")
     _wire(h, [osc_encode("/status", [("i", 1000), ("i", 7), ("i", 0)])])
     assert h.remove_controller(7) is True
+
+
+# --- Command Center authoring (captured 2026-11-23) --------------------------
+
+def test_attach_command_returns_device_allocated_slot():
+    from helixgen.device.osc import parse_osc_message
+    h = HelixClient("10.0.0.99")
+    # /attachCommandWithType reply is [reqid, slot, slot] — the device sends the
+    # slot at BOTH positions after the reqid; we read args[1].
+    _wire(h, [osc_encode("/attachCommandWithType",
+                         [("i", 1000), ("i", 2), ("i", 2)])])
+    # FS1 source = (srcType=1, locl=25, ctxt=1); MIDI family 6, Bank/Program 0
+    assert h.attach_command(1, 25, 1, 6, 0) == 2
+    addr, args, _ = parse_osc_message(h.sock.sent[0])
+    ints = [v for t, v in args if t == "i"]
+    assert addr == "/attachCommandWithType"
+    # [reqid, srcType, locl, ctxt, reserved=0, family, subtype]
+    assert ints == [1000, 1, 25, 1, 0, 6, 0]
+    # an empty command blob is sent
+    assert any(t == "b" and v == b"" for t, v in args)
+
+
+def test_attach_command_raises_on_error_reply():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/error", [("i", 1000), ("i", 0), ("s", "no")])])
+    with pytest.raises(HelixError):
+        h.attach_command(1, 25, 1, 6, 0)
+
+
+def test_attach_command_raises_when_reply_has_no_slot():
+    # A non-error reply that carries only the reqid (no slot) must still raise,
+    # not silently return a bogus handle.
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/attachCommandWithType", [("i", 1000)])])
+    with pytest.raises(HelixError):
+        h.attach_command(1, 25, 1, 6, 0)
+
+
+def test_set_command_param_confirms_on_status_zero():
+    from helixgen.device.osc import parse_osc_message
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 0), ("i", 0)])])
+    # slot 2, pvl index 6 (CC#), value 42
+    assert h.set_command_param(2, 6, 42) is True
+    addr, args, _ = parse_osc_message(h.sock.sent[0])
+    assert addr == "/setCommandParamVal"
+    assert [v for _t, v in args] == [1000, 2, 6, 42]
+
+
+def test_set_command_param_false_on_status_nonzero():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/status", [("i", 1000), ("i", 3), ("i", 0)])])
+    assert h.set_command_param(2, 6, 42) is False
+
+
+def test_remove_command_confirms_on_echo_zero():
+    from helixgen.device.osc import parse_osc_message
+    h = HelixClient("10.0.0.99")
+    # echo spelling + trailing 0 code: /removeCommand [reqid, slot, 0]
+    _wire(h, [osc_encode("/removeCommand", [("i", 1000), ("i", 2), ("i", 0)])])
+    assert h.remove_command(2) is True
+    addr, args, _ = parse_osc_message(h.sock.sent[0])
+    assert addr == "/removeCommand"
+    assert [v for _t, v in args] == [1000, 2]
+
+
+def test_remove_command_false_on_nonzero_code():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/removeCommand", [("i", 1000), ("i", 2), ("i", 5)])])
+    assert h.remove_command(2) is False
+
+
+def test_remove_command_false_on_error():
+    h = HelixClient("10.0.0.99")
+    _wire(h, [osc_encode("/error", [("i", 1000), ("i", 0), ("s", "no")])])
+    assert h.remove_command(2) is False
