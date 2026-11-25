@@ -305,6 +305,16 @@ body.down .lenspad{opacity:.5;pointer-events:none}
 .eqh.xy{cursor:move}
 .eqh:hover{fill:#5f84d6}
 body.down .eqsvg{opacity:.5;pointer-events:none}
+/* user-IR frequency-response plot */
+.irplot{margin-top:12px}
+.irplot-h{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--faint);margin-bottom:6px}
+.irplot-body{min-height:20px;font-size:12px;color:var(--dim)}
+.irsvg{border:1px solid var(--edge2);border-radius:10px;background:var(--panel2);display:block}
+.irsvg .irgrid{stroke:var(--edge2);stroke-width:1;opacity:.5}
+.irsvg .irlab{fill:var(--dim);font-size:9px}
+.irsvg .irtrace{fill:none;stroke:#2c66d6;stroke-width:2;stroke-linejoin:round;filter:drop-shadow(0 0 3px rgba(44,102,214,.5))}
+.irplot-note{font-size:12px;color:var(--dim);max-width:300px;line-height:1.4}
+.irplot-name{font-size:10px;color:var(--faint);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px}
 .secondmodel{margin-top:12px;padding-top:10px;border-top:1px dashed var(--faint);opacity:.72}
 .sm-head{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--faint);margin-bottom:6px}
 .sm-head.swap2{cursor:pointer;text-decoration:underline dotted var(--faint);text-underline-offset:3px}
@@ -1241,6 +1251,56 @@ function eqParamLensEl(b, bands) {
 /* ---------- blocks + chain ---------- */
 const STRUCT = new Set(["split", "join"]);
 const NO_BYPASS = new Set(["split", "join", "input", "output"]);
+// User-IR frequency-response plot (81v.23). The server resolves the block's
+// loaded IR to the user's local .wav and returns a smoothed log-spaced
+// magnitude curve; built-in cab IRs are DSP-internal and never an "ir" block.
+// Lazy: fetched once when the IR block is focused. A missing local IR, an empty
+// slot or an unreadable file come back as a plain-language note, not a crash.
+function irPlotEl(b) {
+  const box = el("div", "irplot");
+  box.append(el("div", "irplot-h", "IR frequency response"));
+  const body = el("div", "irplot-body", "Reading the IR…");
+  box.append(body);
+  fetch("/ir-response", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: b.path, block: b.block }) })
+    .then((r) => r.json().catch(() => ({ reason: "The editor server did not answer." })))
+    .then((j) => {
+      body.textContent = "";
+      if (!j || j.error || !Array.isArray(j.freq) || !j.freq.length) {
+        body.append(el("div", "irplot-note", (j && j.reason) || "No response to plot."));
+        return;
+      }
+      body.append(irPlotSvg(j.freq, j.db, j.rate));
+      if (j.name) body.append(el("div", "irplot-name", j.name));
+    })
+    .catch(() => { body.textContent = ""; body.append(el("div", "irplot-note", "Could not load the IR response.")); });
+  return box;
+}
+function irPlotSvg(freq, db, rate) {
+  const W = 300, H = 134, x0 = 30, y0 = 6, x1 = 294, y1 = 116;
+  const TOP = 3, BOT = -45;                      // dB window (data is peak-normalised to 0)
+  const nyq = rate ? rate / 2 : 20000;
+  const lmin = Math.log(20), lmax = Math.log(20000);
+  const fx = (f) => x0 + (Math.log(f) - lmin) / (lmax - lmin) * (x1 - x0);
+  const fy = (d) => y0 + (TOP - Math.max(BOT, Math.min(TOP, d))) / (TOP - BOT) * (y1 - y0);
+  const svg = sv("svg", { class: "irsvg", width: W, height: H, viewBox: "0 0 " + W + " " + H });
+  [0, -12, -24, -36].forEach((d) => {            // dB gridlines + labels
+    const y = fy(d);
+    svg.append(sv("line", { class: "irgrid", x1: x0, y1: y, x2: x1, y2: y }));
+    const t = sv("text", { class: "irlab", x: x0 - 4, y: y + 3, "text-anchor": "end" }); t.textContent = d;
+    svg.append(t);
+  });
+  [[100, "100"], [1000, "1k"], [10000, "10k"]].filter(([f]) => f < nyq).forEach(([f, lab]) => {   // freq gridlines (skip past Nyquist)
+    const x = fx(f);
+    svg.append(sv("line", { class: "irgrid", x1: x, y1: y0, x2: x, y2: y1 }));
+    const t = sv("text", { class: "irlab", x, y: H - 4, "text-anchor": "middle" }); t.textContent = lab;
+    svg.append(t);
+  });
+  let d = "";
+  for (let i = 0; i < freq.length; i++) d += (i ? "L" : "M") + fx(freq[i]).toFixed(1) + " " + fy(db[i]).toFixed(1) + " ";
+  svg.append(sv("path", { class: "irtrace", d: d.trim() }));
+  return svg;
+}
 function blockEl(b) {
   const root = el("section", "blk c-" + String(b.category || "x").replace(/[^a-z0-9_]/gi, "") +
     (STRUCT.has(b.category) ? " node" : "") + (b.enabled ? "" : " off"));
@@ -1336,6 +1396,7 @@ function blockEl(b) {
     if (dist && pos && dist.pid !== pos.pid)
       root.append(lensEl(b, dist, pos, { cls: "cab", lab: "Mic placement" }));
   }
+  if (b.category === "ir") root.append(irPlotEl(b));   // user-IR frequency-response plot
   // Dual-cab SECOND model (hgc-5gh): now EDITABLE — writes land on the 2nd cab
   // via /ParamValueSet sub=1 (HW-confirmed 2026-11-25). Its knobs register in P
   // under path/block/s1/pid keys so they never collide with the 1st cab's pids.

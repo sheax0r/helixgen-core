@@ -147,6 +147,11 @@ def _route(session: LiveSession, path: str, b: dict):
         if "value" not in b:
             raise LiveError("missing field 'value'")
         return session.device_write(key, b["value"])
+    # IR frequency-response plot (81v.23): the smoothed magnitude curve of the
+    # user IR loaded in an "ir" block. Read-only and fully local (resolves the
+    # block's irhash to a local .wav) — no device I/O.
+    if path == "/ir-response":
+        return session.ir_response(_int(b, "path"), _int(b, "block"))
     # Global EQ pane (81v.6): write one Global EQ control live. The read of the
     # connect-time snapshot is GET /globaleq/state (do_GET).
     if path == "/globaleq/set":
