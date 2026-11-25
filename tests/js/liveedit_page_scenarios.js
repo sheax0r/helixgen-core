@@ -1050,6 +1050,19 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       !!req && req.body.path === 0 && req.body.block === 1 && req.body.pid === 4, JSON.stringify(req && req.body));
     ok("S44 the 1st cab's identical pid 4 is untouched (no /param leak)",
       !x.posts.find((p) => p.url === "/param" && p.body.pid === 4), "leaked to the 1st cab");
+    // undo regression (applyHist fix): undoing the scparam edit must revert the
+    // 2nd-cab knob, NOT fall through to the 1st cab's identical pid.
+    if (req) req.reply(200, { ok: true, value: req.body.value });
+    await x.tick();
+    ok("S44 the scparam edit left one scparam undo entry",
+      x.api.undoS.length === 1 && x.api.undoS[0].kind === "scparam", JSON.stringify(x.api.undoS));
+    x.api.undo();
+    ok("S44 undo reverts the 2nd-cab knob to 45", x.api.P.get("0/1/s1/4").p.value === 45,
+      x.api.P.get("0/1/s1/4").p.value);
+    ok("S44 undo did NOT touch the 1st cab's pid-4 knob (still 5)",
+      x.api.P.get("0/1/4").p.value === 5, x.api.P.get("0/1/4").p.value);
+    ok("S44 the undo write went to /second-cab-param",
+      x.posts.filter((p) => p.url === "/second-cab-param").length === 2, "undo wrote elsewhere");
   }
 
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");

@@ -768,7 +768,7 @@ function dropHist(kind, key) {
   syncHist();
 }
 function applyHist(e, val) {      // false = the entry no longer names the same control
-  const c = (e.kind === "param" ? P : B).get(e.key);
+  const c = (e.kind === "bypass" ? B : P).get(e.key);   // param + scparam live in P
   if (!c || c.tag !== e.tag) return false;
   c.set(val); queue(e.kind, e.key); return true;
 }

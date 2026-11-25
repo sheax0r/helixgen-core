@@ -2789,8 +2789,10 @@ class LiveSession:
         Returns ``False`` — the caller then falls back to a full re-read — when
         ``index`` is out of range or a ``sub == 0`` delta names a control this
         page does not model, so a switch never leaves stale values on screen.
-        Deltas with ``sub != 0`` (a dual-cab second model or harness param,
-        hgc-5gh — no known live-write address) are skipped, not a failure."""
+        Deltas with ``sub != 0`` (a dual-cab second model or harness param) are
+        skipped here, not a failure: the 2nd cab rides the dedicated scparam path
+        (:meth:`set_second_cab_param`), so snapshot recall won't move its knobs —
+        a known minor gap, not the old "no live-write address" (resolved 2026-11-25)."""
         with self.cond:
             resolved = []
             for dsp, block, sub, pid, value in deltas:

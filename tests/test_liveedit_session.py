@@ -478,12 +478,22 @@ def _drain(sess, version, rev):
 # --- events.decode_event -----------------------------------------------------
 
 def test_decode_param_and_bypass_carry_seq():
-    # layouts captured on a Stadium XL (fw 1.4): [origin, seq, path, block, snap, pid, value]
+    # layouts captured on a Stadium XL (fw 1.4): [origin, seq, path, block, sub, pid, value]
     assert events.decode_event("/setParamValue", [78129, 1005, 0, 2, 0, 2, 0.55]) == \
         ("param", 1005, 0, 2, 2, 0.55)
     # [origin, seq, path, block, enable]
     assert events.decode_event("/setBlockEnable", [12593, 1004, 0, 2, 1]) == \
         ("bypass", 1004, 0, 2, True)
+
+
+def test_decode_drops_a_sub1_param_echo():
+    # a dual-cab 2nd-cab write echoes /setParamValue with sub=1 at args[4]
+    # (HW-confirmed 2026-11-25). It must NOT decode as a primary-model param
+    # (same pid as the 1st cab) — it rides the dedicated scparam path instead.
+    assert events.decode_event("/setParamValue", [96890, 1007, 0, 1, 1, 4, 56.0]) is None
+    # the sub=0 (1st cab) echo for the same pid still decodes normally
+    assert events.decode_event("/setParamValue", [96890, 1006, 0, 1, 0, 4, 44.0]) == \
+        ("param", 1006, 0, 1, 4, 44.0)
 
 
 def test_decode_structural_events():
@@ -815,7 +825,7 @@ def test_save_reports_a_device_refusal(s):
 
 def test_param_event_from_the_device_updates_one_control(s):
     v, r = s.version, s.rev
-    s.handle_events([_ev("/setParamValue", 3341, 77, 0, 1, 1, 1, 0.61)])
+    s.handle_events([_ev("/setParamValue", 3341, 77, 0, 1, 0, 1, 0.61)])
     assert _value(s, 0, 1, 1) == pytest.approx(0.61)
     _, rev, msgs = _drain(s, v, r)
     assert rev == r                                        # no restructure
@@ -825,7 +835,7 @@ def test_param_event_from_the_device_updates_one_control(s):
 
 
 def test_bool_param_event_is_normalised(s):
-    s.handle_events([_ev("/setParamValue", 1, 77, 0, 0, 1, 4, False)])
+    s.handle_events([_ev("/setParamValue", 1, 77, 0, 0, 0, 4, False)])
     assert _value(s, 0, 0, 4) == 0.0
 
 
@@ -834,7 +844,7 @@ def test_own_echo_is_dropped_even_when_it_arrives_stale(s):
     s.set_param(0, 1, 1, 0.40)                             # rid 1000
     s.set_param(0, 1, 1, 0.50)                             # rid 1001
     v, r = s.version, s.rev
-    s.handle_events([_ev("/setParamValue", 9, 1000, 0, 1, 1, 1, 0.40)])
+    s.handle_events([_ev("/setParamValue", 9, 1000, 0, 1, 0, 1, 0.40)])
     assert _value(s, 0, 1, 1) == 0.50                      # not dragged back
     assert _drain(s, v, r)[2] == []
 
@@ -848,7 +858,7 @@ def test_foreign_event_reusing_one_of_our_request_ids_still_applies(s):
 
 def test_event_for_an_unknown_control_is_ignored(s):
     v, r = s.version, s.rev
-    s.handle_events([_ev("/setParamValue", 1, 77, 0, 9, 1, 1, 0.5)])
+    s.handle_events([_ev("/setParamValue", 1, 77, 0, 9, 0, 1, 0.5)])
     assert _drain(s, v, r)[2] == []
 
 
@@ -949,7 +959,7 @@ def test_changes_since_sends_full_state_on_restructure(s):
 def test_changes_since_falls_back_to_full_state_when_the_log_overflowed(s):
     v, r = s.version, s.rev
     for i in range(LiveSession.LOG_MAX + 10):
-        s.handle_events([_ev("/setParamValue", 1, 77, 0, 1, 1, 1, i / 1000.0)])
+        s.handle_events([_ev("/setParamValue", 1, 77, 0, 1, 0, 1, i / 1000.0)])
     _, _, msgs = _drain(s, v, r)
     assert len(msgs) == 1 and msgs[0]["t"] == "state"
 
