@@ -43,6 +43,7 @@ import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from helixgen.device import defs, paraminfo
+from helixgen.device.irmd import irmd_to_irhash
 
 ROW1_INPUT, ROW1_OUTPUT = 14, 27
 MAX_SNAPSHOTS = 64        # the device has 8; a wild index must not size a list
@@ -165,6 +166,15 @@ def _block(path: int, slot: int, raw: dict) -> Optional[dict]:
         "xlink": None,
         "params": _params(mid, model, m0),
     }
+    # An IR-loader block ("ir") carries the loaded IR's content hash as the raw
+    # 16-byte mdls[0]["irmd"] blob (no slot indirection). Surface it as a hex
+    # irhash so the editor can resolve the user's local .wav and plot its
+    # frequency response (built-in cab IRs are DSP-internal; see bead 81v.23).
+    if block["category"] == "ir":
+        irmd = m0.get("irmd") if isinstance(m0, dict) else None
+        block["ir_hash"] = (irmd_to_irhash(irmd)
+                            if isinstance(irmd, (bytes, bytearray)) and len(irmd) == 16
+                            else None)
     # Dual-cab SECOND model (mdls[1]): surface it READ-ONLY (hgc-5gh). Its param
     # values are already in the edit buffer, so they can be shown, but it has no
     # known live-write address (that needs a hardware probe — the state model

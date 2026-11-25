@@ -507,6 +507,39 @@ class LiveSession:
         with self.cond:
             return dict(self._blocks[(path, block)])
 
+    def ir_response(self, path: int, block: int) -> dict:
+        """Frequency response of the user IR loaded in an ``"ir"`` block, for the
+        editor's IR plot. Fully LOCAL — the IR's content hash is already in the
+        cached block and the samples come from the user's local IR library, so
+        there is no device I/O and no lease. Returns ``{"freq","db","rate",
+        "name"}`` on success, or ``{"error", "reason"}`` with a user-facing
+        reason (an IR missing from the local library is the common miss; a
+        built-in cab is not an ``"ir"`` block and never reaches here)."""
+        with self.cond:
+            b = self._blocks.get((path, block))
+            if b is None:
+                raise LiveError(f"no block at {path}/{block}", status=404)
+            b = dict(b)
+        if b.get("category") != "ir":
+            raise LiveError("not an IR-loader block", status=400)
+        h = b.get("ir_hash")
+        if not h:
+            return {"error": "empty", "reason": "No IR is loaded in this block."}
+        from helixgen.ir import IrMapping, IrMappingError
+        from helixgen.liveedit import irplot
+        try:
+            wav = IrMapping.load().resolve_by_hash(h)
+        except IrMappingError:
+            return {"error": "unmapped", "hash": h, "reason": (
+                "This IR isn't in your local helixgen IR library, so its "
+                "frequency response can't be plotted. Import the IR to see it.")}
+        try:
+            resp = irplot.ir_response(wav)
+        except irplot.IrReadError as e:
+            return {"error": "unreadable", "reason": f"Could not read this IR: {e}"}
+        resp["name"] = wav.name
+        return resp
+
     # --- change log -----------------------------------------------------------
     def changes_since(self, version: int, rev: int) -> Tuple[int, int, List[dict]]:
         """Messages a page at ``(version, rev)`` is missing, as

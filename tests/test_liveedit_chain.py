@@ -382,3 +382,45 @@ def test_snapshot_colours_align_with_names_by_index():
     assert st["snapshot_colors"] == [2, 0, 5]    # same index order as snapshots
     assert len(st["snapshot_colors"]) == len(st["snapshots"])
     assert chain.build_chain(_split_join())["snapshot_colors"] == []
+
+
+# --- IR-loader block: surface the loaded IR's content hash (81v.23) ----------
+def _ir_eb(irmd):
+    """A serial chain whose slot-1 block is an IR loader; ``irmd`` is its raw
+    16-byte hash blob (or None for an empty IR slot)."""
+    m0 = {"id__": IR, "enbl": 1, "parm": []}
+    if irmd is not None:
+        m0["irmd"] = irmd
+    return _eb({
+        0: _blk(IN_INST1), 1: {"enbl": 1, "mdls": [m0]},
+        13: _blk(OUT_MATRIX), 14: _blk(IN_NONE), 27: _blk(OUT_NONE),
+    })
+
+
+def _ir_block(st):
+    return next(b for b in (s["block"] for s in st["paths"][0]["segments"]
+                            if s["kind"] == "block") if b["category"] == "ir")
+
+
+def test_ir_loader_surfaces_hex_irhash():
+    h = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    b = _ir_block(chain.build_chain(_ir_eb(bytes.fromhex(h))))
+    assert b["category"] == "ir"
+    assert b["ir_hash"] == h
+
+
+def test_ir_loader_empty_slot_has_none_hash():
+    b = _ir_block(chain.build_chain(_ir_eb(None)))
+    assert b["ir_hash"] is None
+
+
+def test_ir_loader_rejects_wrong_length_blob():
+    # a blob that is not exactly 16 bytes is not a real irmd -> no hash
+    b = _ir_block(chain.build_chain(_ir_eb(b"\x01\x02\x03")))
+    assert b["ir_hash"] is None
+
+
+def test_non_ir_block_has_no_irhash_key():
+    amp = chain.block_index(chain.build_chain(_serial()))[(0, 2)]
+    assert amp["category"] == "amp"
+    assert "ir_hash" not in amp
