@@ -691,28 +691,33 @@ async function pump() {
   const it = pending.entries().next();
   if (it.done) { const w = idleWaiters; idleWaiters = []; w.forEach((r) => r()); return; }
   const [qk, job] = it.value; pending.delete(qk); inflight = true;
-  const map = job.kind === "param" ? P : B;
+  const map = job.kind === "bypass" ? B : P;   // param + scparam (2nd cab) live in P
   const c = map.get(job.key);
   try {
     // Resolve the value from the live control, or — if a focus switch cleared it
     // from P/B before this queued write drained — from state, so the value is
     // never lost (only the focused block registers controls now).
     let body = null;
-    if (c) body = job.kind === "param"
-      ? { path: c.b.path, block: c.b.block, pid: c.p.pid, value: c.p.value }
-      : { path: c.b.path, block: c.b.block, enabled: c.b.enabled };
+    if (c) body = job.kind === "bypass"
+      ? { path: c.b.path, block: c.b.block, enabled: c.b.enabled }
+      : { path: c.b.path, block: c.b.block, pid: c.p.pid, value: c.p.value };
     else {
       const pt = job.key.split("/"), b = BLOCKS.get(pt[0] + "/" + pt[1]);
       if (b && job.kind === "bypass") body = { path: b.path, block: b.block, enabled: b.enabled };
-      else if (b) { const p = (b.params || []).find((x) => String(x.pid) === pt[2]); if (p) body = { path: b.path, block: b.block, pid: p.pid, value: p.value }; }
+      else if (b && job.kind === "scparam" && pt[2] === "s1") {   // 2nd-cab param: path/block/s1/pid
+        const sm = b.second_model, pd = +pt[3];
+        const p = sm && (sm.params || []).find((x) => x.pid === pd);
+        if (p) body = { path: b.path, block: b.block, pid: p.pid, value: p.value };
+      } else if (b) { const p = (b.params || []).find((x) => String(x.pid) === pt[2]); if (p) body = { path: b.path, block: b.block, pid: p.pid, value: p.value }; }
     }
     if (body) {
       body.client = ME; body.rev = S.rev;
       // look the control up AGAIN in the callbacks: a re-render while the
       // request was out replaces every control object
-      await send(job.kind === "param" ? "/param" : "/bypass", body,
+      const url = job.kind === "bypass" ? "/bypass" : job.kind === "scparam" ? "/second-cab-param" : "/param";
+      await send(url, body,
         (j) => { const n = map.get(job.key); if (!n) return;
-          const v = job.kind === "param" ? j.value : j.enabled;
+          const v = job.kind === "bypass" ? j.enabled : j.value;
           if (v == null) return;
           n.dev = v;
           if (!paramLocked(job.key) && !pending.has(qk)) n.set(v); },
@@ -748,7 +753,7 @@ function structSend(url, body, okMsg) {
 /* ---------- undo / redo (one entry per committed change) ---------- */
 function record(kind, key, before, after, how) {
   if (before === after) return;
-  const c = (kind === "param" ? P : B).get(key);
+  const c = (kind === "bypass" ? B : P).get(key);   // param + scparam live in P
   const top = undoS[undoS.length - 1], now = Date.now();
   // key auto-repeat / a burst of nudges on one control is ONE step
   if (how === "key" && top && top.how === "key" && top.kind === kind && top.key === key && now - top.at < 900) {
@@ -828,7 +833,8 @@ function reg(key, p, b, root, paint) {
     fail(v) { p.value = (v != null) ? v : c.dev; if (v != null) c.dev = v; paint(); blip(root, "err"); } };
   P.set(key, c); root.dataset.k = key; return c;
 }
-function knob(p, b, key) {
+function knob(p, b, key, kind) {
+  kind = kind || "param";
   const root = el("div", "k"); root.tabIndex = 0;
   root.setAttribute("role", "slider"); root.setAttribute("aria-label", p.label);
   const R = 22, C = 30, A0 = 135, SW = 270;
@@ -855,7 +861,7 @@ function knob(p, b, key) {
     root.setAttribute("aria-valuenow", shown(p, p.value)); root.setAttribute("aria-valuetext", val.textContent);
   }
   const c = reg(key, p, b, root, paint);
-  const live = (v) => { v = clampV(p, v); if (v !== p.value) { c.set(v); queue("param", key); } };
+  const live = (v) => { v = clampV(p, v); if (v !== p.value) { c.set(v); queue(kind, key); } };
   svg.addEventListener("pointerdown", (e) => {
     if (e.button || dragging || down) return;       // one pointer, one knob
     e.preventDefault(); root.focus();
@@ -871,12 +877,12 @@ function knob(p, b, key) {
       ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.removeEventListener(n, up));
       root.classList.remove("drag"); if (dragging === key) dragging = null;
       // ONE undo step per drag, at release; a click that moved nothing writes nothing
-      if (p.value !== v0) { queue("param", key); record("param", key, v0, p.value); } };
+      if (p.value !== v0) { queue(kind, key); record(kind, key, v0, p.value); } };
     svg.addEventListener("pointermove", move);
     ["pointerup", "pointercancel", "lostpointercapture"].forEach((n) => svg.addEventListener(n, up));
   });
   svg.addEventListener("dblclick", () => {        // double-click: back to the model default
-    if (down || p.default == null) return; const v0 = p.value; live(p.default); record("param", key, v0, p.value); });
+    if (down || p.default == null) return; const v0 = p.value; live(p.default); record(kind, key, v0, p.value); });
   root.addEventListener("keydown", (e) => {
     if (down || e.metaKey || e.ctrlKey || e.altKey) return;
     const step = (p.type === "i" ? 1 : span(p) / 100) * (e.shiftKey ? 10 : 1);
@@ -886,21 +892,23 @@ function knob(p, b, key) {
     else if (e.key === "Home") v = p.min; else if (e.key === "End") v = p.max;
     else if (e.key === "Delete" || e.key === "Backspace") v = p.default;   // keyboard "reset to default"
     if (v == null) return;
-    e.preventDefault(); const v0 = p.value; live(v); record("param", key, v0, p.value, "key");
+    e.preventDefault(); const v0 = p.value; live(v); record(kind, key, v0, p.value, "key");
   });
   paint(); return root;
 }
-function toggle(p, b, key) {
+function toggle(p, b, key, kind) {
+  kind = kind || "param";
   const root = el("div", "t"), sw = el("button", "sw"), val = el("div", "val");
   sw.setAttribute("role", "switch"); sw.setAttribute("aria-label", p.label);
   root.append(sw, val, label(p, b));
   const paint = () => { const on = p.value >= 0.5; sw.classList.toggle("on", on);
     sw.setAttribute("aria-checked", on); val.textContent = p.labels ? (p.labels[on ? 1 : 0] ?? (on ? "On" : "Off")) : (on ? "On" : "Off"); };
   const c = reg(key, p, b, root, paint);
-  sw.onclick = () => { if (down) return; const v0 = p.value; c.set(v0 >= 0.5 ? 0 : 1); queue("param", key); record("param", key, v0, p.value); };
+  sw.onclick = () => { if (down) return; const v0 = p.value; c.set(v0 >= 0.5 ? 0 : 1); queue(kind, key); record(kind, key, v0, p.value); };
   paint(); return root;
 }
-function select(p, b, key) {
+function select(p, b, key, kind) {
+  kind = kind || "param";
   const root = el("div", "s"), sel = el("select");
   sel.setAttribute("aria-label", p.label);
   p.labels.forEach((t, i) => { const o = el("option", null, t); o.value = p.min + i; sel.append(o); });
@@ -908,12 +916,18 @@ function select(p, b, key) {
   const paint = () => { sel.value = String(Math.round(p.value)); };
   const c = reg(key, p, b, root, paint);
   sel.onchange = () => { if (down) { paint(); return; }
-    const v0 = p.value; c.set(clampV(p, +sel.value)); queue("param", key); record("param", key, v0, p.value); };
+    const v0 = p.value; c.set(clampV(p, +sel.value)); queue(kind, key); record(kind, key, v0, p.value); };
   paint(); return root;
 }
-function control(p, b) {
-  const key = b.path + "/" + b.block + "/" + p.pid;
-  return p.ctl === "toggle" ? toggle(p, b, key) : p.ctl === "select" ? select(p, b, key) : knob(p, b, key);
+function control(p, b, kind) {
+  kind = kind || "param";
+  // scparam (dual-cab 2nd cab) keys as path/block/s1/pid so its pids never
+  // collide with the primary cab's identical pids.
+  const key = kind === "scparam"
+    ? b.path + "/" + b.block + "/s1/" + p.pid
+    : b.path + "/" + b.block + "/" + p.pid;
+  return p.ctl === "toggle" ? toggle(p, b, key, kind)
+    : p.ctl === "select" ? select(p, b, key, kind) : knob(p, b, key, kind);
 }
 
 /* ---------- amp lens: a 2D pad over the amp's Drive × Level (81v.1) ---------
@@ -1247,19 +1261,22 @@ function blockEl(b) {
     if (dist && pos && dist.pid !== pos.pid)
       root.append(lensEl(b, dist, pos, { cls: "cab", lab: "Mic placement" }));
   }
-  // Dual-cab SECOND model (hgc-5gh): shown READ-ONLY — its values are in the
-  // edit buffer, but it has no known live-write address yet, so no knobs.
+  // Dual-cab SECOND model (hgc-5gh): now EDITABLE — writes land on the 2nd cab
+  // via /ParamValueSet sub=1 (HW-confirmed 2026-11-25). Its knobs register in P
+  // under path/block/s1/pid keys so they never collide with the 1st cab's pids.
   if (b.second_model) {
     const sm = b.second_model;
     const box = el("div", "secondmodel");
     const h = el("div", "sm-head swap2", sm.name + " · 2nd cab");
-    h.title = sm.model + " · click to replace the 2nd cab (its params stay read-only — hgc-5gh)";
+    h.title = sm.model + " · click to replace the 2nd cab";
     h.onclick = () => openSecondCabPicker(b, sm.model_id);
     box.append(h);
-    const vals = el("div", "sm-vals");
-    (sm.params || []).filter((p) => !p.internal).forEach((p) =>
-      vals.append(el("span", "sm-v", p.name + ": " + fmt(p, p.value))));
-    box.append(vals);
+    const scMain = (sm.params || []).filter((p) => !p.internal && p.ctl);
+    if (scMain.length) {
+      const row = el("div", "ctl");
+      scMain.forEach((p) => row.append(control(p, b, "scparam")));
+      box.append(row);
+    }
     root.append(box);
   }
   return root;
@@ -2760,6 +2777,17 @@ function onMsg(m) {
     if (S) Object.assign(S, m);
     if (snapChanged) renderSnaps();   // an in-place snapshot switch moves the bar highlight
     meta(m);
+  } else if (m.t === "scparam") {        // dual-cab 2nd-cab param echo (sub=1)
+    const key = m.path + "/" + m.block + "/s1/" + m.pid;
+    const c = P.get(key);
+    if (!c) {                            // 2nd cab not in the focus panel: patch state
+      const b = BLOCKS.get(m.path + "/" + m.block), sm = b && b.second_model;
+      if (sm) { const p = (sm.params || []).find((x) => x.pid === m.pid); if (p) p.value = m.value; }
+      return;
+    }
+    c.dev = m.value;
+    if (paramLocked(key) || pending.has("scparam:" + key)) return;
+    if (c.p.value !== m.value) c.set(m.value, m.client === ME ? undefined : "remote");
   } else if (m.t === "param" || m.t === "bypass") {
     const isP = m.t === "param";
     const key = m.path + "/" + m.block + (isP ? "/" + m.pid : "");

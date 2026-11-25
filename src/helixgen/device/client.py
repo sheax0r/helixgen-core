@@ -1911,9 +1911,16 @@ class HelixClient:
 
     def set_param(self, path: int, block: int, param_id: int, value: float,
                   *, force: bool = False, fast: bool = False,
-                  ptype: Optional[str] = None) -> bool:
+                  ptype: Optional[str] = None, sub: int = 0) -> bool:
         """Set a param in the edit buffer:
-        ``/ParamValueSet [_, path, grid_slot, 0, paramId, value, -1]``.
+        ``/ParamValueSet [_, path, grid_slot, sub, paramId, value, -1]``.
+
+        ``sub`` is the model's sub-position within the block: ``0`` (default) is
+        the primary model; ``1`` addresses a **dual-cab 2nd cab** (HW-confirmed
+        2026-11-25: writing the 2nd cab's ``Angle`` pid 4 under ``sub=1`` landed
+        and read back there while the 1st cab stayed put). The range check is
+        sub-0 only, so a ``sub=1`` write must pass ``force=True`` with a ``ptype``
+        (the caller range-checks against the 2nd model's own defs).
 
         ``block`` is the grid slot printed by ``device blocks`` (sent
         unchanged; see :func:`_grid_slot` for the 2026-07-15 indexing
@@ -1955,7 +1962,7 @@ class HelixClient:
                 ptype = checked
         elif ptype is None and not fast:
             ptype = self._param_type(path, slot, param_id)
-        args = [("i", path), ("i", slot), ("i", 0), ("i", param_id),
+        args = [("i", path), ("i", slot), ("i", int(sub)), ("i", param_id),
                 self._param_arg(ptype, value), ("i", -1)]
         if fast:
             return self._ok(self._rpc_fast("/ParamValueSet", args))

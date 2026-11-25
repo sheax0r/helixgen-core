@@ -133,9 +133,11 @@ class FakeClient:
         return self.pool_of.get(cid)
 
     def set_param(self, path, block, pid, value, *, force=False, fast=False,
-                  ptype=None):
+                  ptype=None, sub=0):
         self._next()
         self.params.append((path, block, pid, value, force, fast))
+        self.param_subs = getattr(self, "param_subs", [])
+        self.param_subs.append(int(sub))
         self.ptypes.append(ptype)
         if self.on_write is not None:
             hook, self.on_write = self.on_write, None
@@ -1833,6 +1835,31 @@ def test_set_second_cab_rejects_a_non_cab_block():
     assert e.value.status == 400
     assert "cab block" in str(e.value)
     assert c.second_cabs == []
+
+
+def test_set_second_cab_param_writes_at_sub1():
+    from helixgen.device import defs as _defs
+    c = FakeClient(eb=_dual_cab_rig(453))
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    # a float param the 2nd cab (453) actually advertises
+    pid = next(v["id"] for v in _defs.model_params_for(453).values()
+               if v.get("type") == "f" and isinstance(v.get("id"), int))
+    st = sess.set_second_cab_param(0, 1, pid, 3.0)
+    assert c.params[-1][:3] == (0, 1, pid)       # wrote the 2nd cab's own param
+    assert c.param_subs[-1] == 1                   # ...at sub=1 (the dual-cab write)
+    assert c.params[-1][4] is True                 # force=True (range from 2nd cab defs)
+    assert "value" in st
+
+
+def test_set_second_cab_param_rejects_a_block_without_a_2nd_cab():
+    c = FakeClient(eb=_cab_rig())                  # a cab, but no 2nd cab
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.set_second_cab_param(0, 1, 4, 3.0)
+    assert e.value.status == 404
+    assert getattr(c, "param_subs", []) == []      # never wrote
 
 
 def test_set_second_cab_rejects_a_non_cab_model():

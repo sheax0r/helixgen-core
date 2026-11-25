@@ -701,6 +701,63 @@ class LiveSession:
                         self._end_write()
         return {"value": v}
 
+    def set_second_cab_param(self, path: int, block: int, pid: int, value: Any,
+                             *, client: Optional[str] = None) -> dict:
+        """Write one param of a block's dual-cab SECOND cab (``sub=1``).
+
+        The 2nd cab's params live outside the primary param model (they ride the
+        block's ``second_model``), so this is a dedicated write: validate the pid
+        against the 2nd cab's OWN model defs, clamp to its advertised range, and
+        issue ``/ParamValueSet`` with ``sub=1`` (HW-confirmed 2026-11-25 — the
+        2nd cab's value changes while the 1st cab's stays put). Returns
+        ``{"value": <written>}``; the page updates its knob optimistically."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError, OverflowError):
+            raise LiveError("value must be a number") from None
+        if not math.isfinite(v):
+            raise LiveError("value must be a finite number")
+        pth, blk, pd = int(path), int(block), int(pid)
+        with self.devlock:
+            with self.cond:
+                self._require_up()
+            try:
+                eb = self.client.read_edit_buffer(fast=True)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"device read failed: {e}", status=502) from e
+            blk_d = _chain.block_index(_chain.build_chain(eb)).get((pth, blk))
+            sm = (blk_d or {}).get("second_model")
+            if not sm:
+                raise LiveError("no 2nd cab at that block (did it change?)",
+                                status=404)
+            pdef = next((p for p in sm.get("params", []) if p.get("pid") == pd),
+                        None)
+            if pdef is None:
+                raise LiveError("no such param on the 2nd cab", status=404)
+            v = _chain.clamp(pdef, v)
+            ptype = pdef.get("type")
+            self._ensure_lease(None)
+            try:
+                ok = self.client.set_param(pth, blk, pd, v, sub=1,
+                                           force=True, fast=True, ptype=ptype)
+            except (HelixError, OSError) as e:
+                self._set_connected(False)
+                raise LiveError(f"device write failed: {e}", status=502) from e
+            finally:
+                self.lease.done()
+            if not ok:
+                raise LiveError("the device did not acknowledge the 2nd-cab write",
+                                status=502)
+            with self.cond:
+                msg = {"t": "scparam", "path": pth, "block": blk,
+                       "pid": pd, "value": v}
+                if client:
+                    msg["client"] = client
+                self._emit(msg)
+                self._set_dirty(True)
+        return {"value": v}
+
     def swap_model(self, path: int, block: int, model_id: int) -> dict:
         """Swap a block's model in place (hgc-cc4).
 
