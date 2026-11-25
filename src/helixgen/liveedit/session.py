@@ -847,11 +847,12 @@ class LiveSession:
         delay ↔ its Stereo version), a same-category model swap. `swap_model`
         applies the twin's DEFAULTS, so this captures the source params first and
         re-applies the ones the twin shares — matched by NAME, because the pid
-        for a given param differs between the two models. The mono param set is a
-        subset of the stereo one, so a stereo-only param (e.g. Spread) keeps its
-        default and nothing is lost going the other way. Controller/snapshot
-        assignments are not carried (Stadium drops them too). Volatile until
-        Save; confirm on the rig."""
+        for a given param differs between the two models. A stereo-only param
+        (e.g. Spread) keeps its default; going mono→stereo a few params with a
+        narrower stereo range (a long delay Time — stereo uses ~2× memory, so
+        its max is lower) are clamped to that range, as on the hardware.
+        Controller/snapshot assignments are not carried (Stadium drops them
+        too). Volatile until Save; confirm on the rig."""
         pth, blk = int(path), int(block)
         with self.cond:
             self._require_up()
@@ -872,8 +873,14 @@ class LiveSession:
             if nm in by_name and isinstance(meta, dict) and meta.get("id") is not None:
                 try:
                     self.set_param(pth, blk, int(meta["id"]), by_name[nm])
-                except (LiveError, TypeError, ValueError):
-                    pass                         # a value the twin's param rejects: skip
+                except LiveError as e:
+                    # a pid the twin lacks (404) is a benign skip; a genuine
+                    # device failure (502) must SURFACE, not silently drop the
+                    # rest while reporting a clean convert (cf. paste_block).
+                    if e.status not in (400, 404):
+                        raise
+                except (TypeError, ValueError):
+                    pass                         # a malformed captured value: skip
         return self.public_state()
 
     def set_second_cab(self, path: int, block: int, model_id: int) -> dict:

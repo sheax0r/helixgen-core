@@ -90,6 +90,31 @@ def test_convert_stereo_to_mono():
     assert (0, 1, ADRIATIC_MONO) in s.client.swaps
 
 
+def test_convert_surfaces_a_device_failure_during_re_apply(monkeypatch):
+    # a 502 mid-reapply must NOT be swallowed (would silently drop the rest and
+    # report a clean convert) — same contract as paste_block.
+    s, _ = _sess(ADRIATIC_MONO)
+    real_swap = s.swap_model
+    monkeypatch.setattr(s, "swap_model", lambda *a, **k: real_swap(*a, **k))
+
+    def boom(path, block, pid, value, **k):
+        raise LiveError("device write failed", status=502)
+    monkeypatch.setattr(s, "set_param", boom)
+    with pytest.raises(LiveError) as e:
+        s.convert_mono_stereo(0, 1)
+    assert e.value.status == 502
+
+
+def test_convert_skips_a_pid_the_twin_lacks(monkeypatch):
+    s, _ = _sess(ADRIATIC_MONO)
+
+    def notfound(path, block, pid, value, **k):
+        raise LiveError("no such control", status=404)
+    monkeypatch.setattr(s, "set_param", notfound)
+    s.convert_mono_stereo(0, 1)                   # must NOT raise — 404 is a benign skip
+    assert (0, 1, ADRIATIC_STEREO) in s.client.swaps
+
+
 def test_convert_rejects_a_block_without_a_twin():
     eb = _eb({0: _blk(IN_INST1), 2: _blk(758), 13: _blk(OUT_MATRIX)})  # amp
     s = LiveSession(FakeClient(eb=eb), lease=FakeLease())
