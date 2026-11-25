@@ -377,9 +377,10 @@ body.down main{opacity:.55}
 .tile .ti-meter.clip .ti-meter-fill{background:var(--bad);width:100%!important}
 .tile.drag{opacity:.4}
 .tile.dropbefore{box-shadow:0 -3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
-.splitzone{display:none;align-self:center;width:min(340px,100%);margin-top:12px;padding:11px 12px;
+.splitzone{display:none;align-self:center;width:min(340px,100%);margin-top:36px;padding:11px 12px;
   border:1px dashed #5b8cff;border-radius:12px;color:var(--faint);font-size:12px;text-align:center;background:rgba(91,140,255,.06)}
 .splitzone.armed{display:block}
+.splitzone span{pointer-events:none}
 .splitzone.over{border-style:solid;color:var(--ink);background:rgba(91,140,255,.18);box-shadow:0 0 0 2px #5b8cff}
 .tile.dropafter{box-shadow:0 3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
 /* tile adjective-search highlight (block-level glow + arrow) */
@@ -1382,6 +1383,7 @@ function wireTileDrag(canvas) {
       dragKey = null; z.classList.remove("over"); armZones(false);
     });
   });
+  if (dragKey && splittable(dragKey)) armZones(true, +dragKey.split("/")[0]);   // re-arm across a mid-drag re-render
 }
 function lane(segs, tag, joined) {
   const l = el("div", "lane col " + tag.toLowerCase() + (joined ? "" : " end"));
@@ -2365,14 +2367,15 @@ function render() {
       h2.append(el("b", null, "Path " + (pt.path + 1) + " · second row"), el("i"));
       sec.append(h2, column(pt.extra));
     }
-    if (!SPLIT_PATHS.has(pt.path)) {   // drag-to-split drop zone (revealed while dragging a splittable block)
+    const _spl = MOVE_SLOTS.get(pt.path);   // drag-to-split zone only where a block can actually be split
+    if (_spl && _spl.some((s) => s <= 11)) {
       const sz = el("div", "splitzone"); sz.dataset.sp = pt.path;
       sz.append(el("span", null, "\u2283 drop here to split this block onto a parallel lane"));
       sec.append(sz);
     }
     canvas.append(sec);
   });
-  canvas.append(el("p", "hint", "Click a block to edit it below · drag a block within its lane to reorder"));
+  canvas.append(el("p", "hint", "Click a block to edit it below · drag within a lane to reorder, or onto the parallel zone to split"));
   rig.append(canvas);
   const fp = el("div"); fp.id = "focus"; rig.append(fp);
   renderFocus();                  // builds the selected block's full controls into #focus

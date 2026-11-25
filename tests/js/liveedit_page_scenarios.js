@@ -985,6 +985,16 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     const req = x.posts.find((p) => p.url === "/add-split");
     ok("S42 dropping on the zone splits that block onto a parallel lane",
       !!req && req.body.path === 0 && req.body.block === 2, JSON.stringify(req && req.body));
+    // a non-splittable block (lane-A slot 12) must NOT arm the zone or split
+    const y = boot();
+    y.sse(State([Blk({ block: 2, category: "amp", name: "Amp" }, [P_({ value: 0.5 })]),
+                 Blk({ block: 12, category: "cab_ir_interp", name: "Cab" }, [P_({ value: 0.5 })])]));
+    const yz = y.ids.rig.find((e) => e._cls.has("splitzone"))[0];
+    ok("S42 the zone still renders (a splittable block exists on the path)", !!yz, "no zone");
+    y.tileOf("0/12").fire("dragstart", { dataTransfer: { setData() {} } });
+    ok("S42 dragging a slot-12 block does not arm the zone", !yz._cls.has("armed"), [...yz._cls].join(" "));
+    yz.fire("drop", { preventDefault() {} });
+    ok("S42 dropping a slot-12 block does not split", !y.posts.find((p) => p.url === "/add-split"), "unexpected /add-split");
   }
 
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
