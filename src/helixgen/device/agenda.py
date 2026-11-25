@@ -95,6 +95,30 @@ def split_out(col: int, later_cols, flow: int = 0):
     return ops
 
 
+def move_into_split(src: int, split_col: int, join_col: int, flow: int = 0):
+    """Agenda that moves the lane-A block at grid slot ``src`` INTO an existing
+    split's lane B, appending it to the parallel series (the app's drag-a-block-
+    into-a-parallel-lane).
+
+    A bare ``movb`` into a lane-B slot ORPHANS the block — the device commits a
+    lane-B move only when the ``movb`` rides in the SAME ``/doAgenda`` as the
+    ``spld``/``jono`` wiring (exactly like :func:`split_out`). HW-validated on a
+    Stadium XL 2026-11-24: on a fresh split (split@2, join@3, lane-B amp@16) this
+    moved lane-A slot 4 → lane-B slot 17, yielding a sound 2-wide series lane B.
+
+    The new block lands at ``join_col + 14`` (the join's lane-B merge slot, which
+    was empty); the join re-wires to merge from it, and the split's lane-B entry
+    (``split_col + 14``) is re-asserted unchanged. Covers the common append case
+    (1-wide → 2-wide parallel). An already-full join merge slot (N-wide → N+1)
+    needs the join + later lane-A blocks shifted right first — not handled here."""
+    new_lane_b = join_col + LANE_B_OFFSET
+    return [
+        move(src, new_lane_b, flow, flow),
+        split(split_col, split_col + LANE_B_OFFSET, flow),
+        merge(join_col, new_lane_b, flow),
+    ]
+
+
 def clear(bloc: int, flow: int = 0) -> Dict[str, int]:
     """``clrb`` — the clear-block op as recorded in ``docs/helix-protocol.md``.
 

@@ -154,6 +154,18 @@ def test_split_out_builder():
     ]
 
 
+def test_move_into_split_builder():
+    # Move lane-A slot 4 into an existing split (split@2, join@3) — append to its
+    # lane-B series. Pinned to the HW-validated bundled transaction (2026-11-24):
+    # move + re-asserted split + re-pointed join, all in one /doAgenda.
+    ops = agenda.move_into_split(4, 2, 3, flow=0)
+    assert ops == [
+        agenda.move(4, 17),   # block -> the join's lane-B merge slot (3+14)
+        agenda.split(2, 16),  # re-assert split@2 -> lane B 16 (2+14)
+        agenda.merge(3, 17),  # join@3 now merges from the new block at 17
+    ]
+
+
 def _flow(*slots):
     """A stubbed edit buffer whose flow 0 occupies the given grid slots."""
     blks = []
