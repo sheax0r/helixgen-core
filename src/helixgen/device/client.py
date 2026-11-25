@@ -2012,12 +2012,18 @@ class HelixClient:
         on/off) and there is no ``/HarnessParamValueGet`` — so this is a
         write-only control from a live read's point of view. ``value`` is
         encoded by ``ptype`` (``'b'`` → the ``T``/``F`` boolean tags, the Trails
-        case). The device acks nothing (fire-and-forget), so this returns
-        ``True`` unless the send itself fails."""
+        case). The device sends NO reply (HW-observed: the RPC returns no
+        frames), so this goes through the FAST path — like a live
+        ``set_param(fast=True)`` — waiting only the brief ack window, not the
+        full ``_rpc`` timeout + 0.4 s settle: ``set_trails`` holds the
+        ``devlock`` across the call, and the longer wait would stall the live
+        re-read loop and every concurrent device op. Returns ``True`` once the
+        send completes; a genuine send failure (connection dropped) raises
+        :class:`HelixError`, which ``set_trails`` surfaces as a 502."""
         slot = _grid_slot(block)
         args = [("i", int(path)), ("i", slot), ("i", int(param_id)),
                 self._param_arg(ptype, value), ("i", -1)]
-        self._rpc("/HarnessParamValueSet", args)
+        self._rpc_fast("/HarnessParamValueSet", args)
         return True
 
     def _param_type(self, path: int, slot: int, param_id: int) -> Optional[str]:
