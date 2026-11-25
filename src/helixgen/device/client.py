@@ -1568,9 +1568,11 @@ class HelixClient:
         # +1 lane-A shift of later blocks never moves an existing split/join node
         # (which would break its bblk wiring). A split with no join — e.g. an
         # output split to two outputs — is caught here precisely because its
-        # column is counted even though it has no join.
+        # column is counted even though it has no join. Match by CATEGORY, not a
+        # hardcoded id: the device has four split models (SplitDyn/Y/XOver/AB,
+        # 474-477) — keying off 475 alone would miss the other three.
         nodes = sorted(s for s, raw in self._blks_pairs(flow[p])
-                       if _model_at(raw) in (_agenda.SPLIT_MODEL, _agenda.JOIN_MODEL))
+                       if _defs.category_for(_model_at(raw)) in ("split", "join"))
         lane_b = col + _agenda.LANE_B_OFFSET
         if any(_agenda.LANE_B_OFFSET < s < 27 for s in occupied):   # a section exists
             if not nodes or col <= max(nodes):
