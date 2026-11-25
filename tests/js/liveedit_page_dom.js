@@ -68,7 +68,7 @@ function _qsa(root, sel) {
 }
 function boot() {
   const ids = {}; El.body = new El("body");
-  ["led", "preset", "snap", "undo", "redo", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
+  ["led", "preset", "snap", "undo", "redo", "knobview", "reread", "save", "load", "banner", "snaprow", "rig", "toasts",
    "adjsearch", "adjlist", "adjhint", "libtoggle", "drawer", "drawerbody", "tabs",
    "devicepane", "devtabs", "devnote", "devbody", "devrefresh",
    "ctlpane", "ctlbody", "ctlrefresh", "ctlassign",
@@ -92,7 +92,7 @@ function boot() {
   const clearInterval_ = (id) => { intervals.delete(id); };
   const src = fs.readFileSync(PAGE, "utf8").split("<script>")[1].split("</script>")[0];
   const api = new Function("document", "addEventListener", "fetch", "EventSource", "setTimeout", "setInterval", "clearInterval", "console",
-    src + "\n;return {P,B,pending,onMsg,undo,redo,get undoS(){return undoS},get redoS(){return redoS},get dragging(){return dragging},get down(){return down},drained,get inflight(){return inflight}};")(
+    src + "\n;return {P,B,pending,onMsg,undo,redo,get undoS(){return undoS},get redoS(){return redoS},get dragging(){return dragging},get down(){return down},drained,get inflight(){return inflight},get knobview(){return KNOBVIEW},set knobview(v){KNOBVIEW=v;renderFocus()}};")(
     document, (t, f) => (win[t] = f), fetch, EventSource, () => {}, setInterval_, clearInterval_, console);
   const tick = () => new Promise((r) => setImmediate(r));
   const sse = (m) => es.onmessage({ data: JSON.stringify(m) });

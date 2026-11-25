@@ -1065,6 +1065,28 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
       x.posts.filter((p) => p.url === "/second-cab-param").length === 2, "undo wrote elsewhere");
   }
 
+  { // S45: slider view renders a horizontal slider for continuous params, and a
+    // horizontal drag writes + records exactly as the knob does (Stadium parity)
+    const x = boot(); x.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    ok("S45 default view renders a knob (.k)", x.knobOf(K).root._cls.has("k"), [...x.knobOf(K).root._cls]);
+    x.api.knobview = "sliders";            // flip and re-render the focused block
+    const root = x.ids.rig.find((e) => e.dataset && e.dataset.k === K)[0];
+    ok("S45 slider view re-renders the control as a .sld", !!root && root._cls.has("sld"), root && [...root._cls]);
+    const svg = root.children[0];
+    svg.fire("pointerdown", { button: 0, clientX: 300, pointerId: 1 });
+    svg.fire("pointermove", { clientX: 360, pointerId: 1 });
+    const moved = x.api.P.get(K).p.value;
+    svg.fire("pointerup", { pointerId: 1 });
+    ok("S45 a rightward drag raises the value", moved > 0.5, moved);
+    ok("S45 the whole slider drag is ONE undo step", x.api.undoS.length === 1 && x.api.undoS[0].before === 0.5, JSON.stringify(x.api.undoS));
+    ok("S45 the write carries the structure revision", x.posts.length >= 1 && x.posts[0].body.rev === 1, JSON.stringify(x.posts[0] && x.posts[0].body));
+    // a click that moves nothing writes nothing (same contract as the knob)
+    const x2 = boot(); x2.api.knobview = "sliders"; x2.sse(State([Blk({}, [P_({ value: 0.5 })])]));
+    const s2 = x2.ids.rig.find((e) => e.dataset && e.dataset.k === K)[0].children[0];
+    s2.fire("pointerdown", { button: 0, clientX: 300, pointerId: 1 }); s2.fire("pointerup", { pointerId: 1 });
+    ok("S45 a slider click that moves nothing writes nothing", x2.posts.length === 0 && x2.api.undoS.length === 0, x2.posts.length);
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();
