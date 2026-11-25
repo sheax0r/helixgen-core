@@ -978,6 +978,7 @@ class LiveSession:
                                     status=502) from e
         finally:
             self.lease.done()
+        self._last_add = (pth, slot)             # the exact slot used, for paste_block
         self.load()                              # re-read: the appended block
         return self.public_state()
 
@@ -1000,39 +1001,50 @@ class LiveSession:
         except (KeyError, TypeError, ValueError):
             raise LiveError("paste spec needs a model_id", status=400) from None
 
-        def _row0_slots(p: int):
-            with self.cond:
-                return {b for (pp, b) in self._blocks
-                        if pp == p and b < _chain.ROW1_INPUT}
-        before = _row0_slots(int(path))
+        self._last_add = None
         self.add_block(path, model_id)           # appends + re-reads (guards addable)
-        new = _row0_slots(int(path)) - before
-        if len(new) != 1:
-            # a concurrent edit moved the row; the block was added but we can't
-            # safely pick it to populate — leave it at the model's defaults.
-            return self.public_state()
-        slot = next(iter(new))
+        last = self._last_add                    # the exact slot add_block used (no fragile diff)
+        if not last or last[0] != int(path):
+            raise LiveError("the block was added but the chain changed underneath "
+                            "the paste — re-read, then set its controls, or remove "
+                            "the added block.", status=409)
+        slot = last[1]
+
+        # A pid the pasted model doesn't expose (404) or a malformed clipboard
+        # entry (400) is skipped; a genuine device failure (502) must SURFACE —
+        # a paste that silently drops half its params after a mid-write
+        # disconnect would otherwise report success.
+        def _skippable(e: LiveError) -> bool:
+            return e.status in (400, 404)
+
         for p in spec.get("params") or []:
             try:
                 self.set_param(path, slot, int(p["pid"]), p["value"])
-            except (LiveError, KeyError, TypeError, ValueError):
-                pass                             # pid the model lacks / bad entry: skip
+            except LiveError as e:
+                if not _skippable(e):
+                    raise
+            except (KeyError, TypeError, ValueError):
+                pass
         sm = spec.get("second_model")
         if isinstance(sm, dict) and sm.get("model_id") is not None:
             try:
                 self.set_second_cab(path, slot, int(sm["model_id"]))
+            except LiveError as e:
+                if not _skippable(e):            # non-cab primary (400) skips; device failure surfaces
+                    raise
+            except (TypeError, ValueError):
+                pass
+            else:
                 for p in sm.get("params") or []:
                     try:
                         self.set_second_cab_param(path, slot, int(p["pid"]), p["value"])
-                    except (LiveError, KeyError, TypeError, ValueError):
+                    except LiveError as e:
+                        if not _skippable(e):
+                            raise
+                    except (KeyError, TypeError, ValueError):
                         pass
-            except (LiveError, TypeError, ValueError):
-                pass
         if spec.get("enabled") is False:
-            try:
-                self.set_bypass(path, slot, False)
-            except LiveError:
-                pass
+            self.set_bypass(path, slot, False)   # a failure here surfaces (not swallowed)
         return self.public_state()
 
     def split_block(self, path: int, block: int) -> dict:

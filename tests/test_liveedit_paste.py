@@ -82,6 +82,32 @@ def test_paste_skips_a_pid_the_model_lacks():
     assert 3 in _row0(sess)                    # block still landed
 
 
+def test_paste_surfaces_a_device_failure_during_replay(monkeypatch):
+    # a mid-paste device error (502) must NOT be swallowed like a pid-skip —
+    # otherwise a disconnect silently drops params yet reports success.
+    sess = _sess()
+
+    def boom(path, block, pid, value, **k):
+        raise LiveError("device write failed", status=502)
+    monkeypatch.setattr(sess, "set_param", boom)
+    with pytest.raises(LiveError) as e:
+        sess.paste_block(0, {"model_id": SCREAM, "enabled": True,
+                             "params": [{"pid": 1, "value": 0.2}]})
+    assert e.value.status == 502
+
+
+def test_paste_skips_unknown_pid_but_not_device_error(monkeypatch):
+    # a 404 (pid the model lacks) is skipped; the paste still completes
+    sess = _sess()
+
+    def notfound(path, block, pid, value, **k):
+        raise LiveError("no such control", status=404)
+    monkeypatch.setattr(sess, "set_param", notfound)
+    sess.paste_block(0, {"model_id": SCREAM, "enabled": True,
+                         "params": [{"pid": 1, "value": 0.2}]})   # must not raise
+    assert 3 in _row0(sess)
+
+
 def test_paste_rejects_non_addable_model():
     sess = _sess()
     with pytest.raises(LiveError):
