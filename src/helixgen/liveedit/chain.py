@@ -166,6 +166,11 @@ def _block(path: int, slot: int, raw: dict) -> Optional[dict]:
         "xlink": None,
         "params": _params(mid, model, m0),
     }
+    # mono↔stereo twin: if this model comes in both forms, surface its current
+    # form so the editor can offer "convert to stereo/mono" (Stadium parity). A
+    # model with no twin (amps, cabs, mono/stereo-only effects) carries nothing.
+    if defs.mono_stereo_twin(mid) is not None:
+        block["ms_form"] = "mono" if (model or "").endswith("Mono") else "stereo"
     # An IR-loader block ("ir") carries the loaded IR's content hash as the raw
     # 16-byte mdls[0]["irmd"] blob (no slot indirection). Surface it as a hex
     # irhash so the editor can resolve the user's local .wav and plot its

@@ -91,6 +91,8 @@ def _route(session: LiveSession, path: str, b: dict):
     if path == "/swap":
         return session.swap_model(_int(b, "path"), _int(b, "block"),
                                   _int(b, "model_id"))
+    if path == "/convert-mono-stereo":
+        return session.convert_mono_stereo(_int(b, "path"), _int(b, "block"))
     if path == "/add-block":
         return session.add_block(_int(b, "path"), _int(b, "model_id"))
     if path == "/paste-block":

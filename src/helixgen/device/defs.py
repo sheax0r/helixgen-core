@@ -106,6 +106,36 @@ def model_params_for(model_id: Any) -> dict:
     return _params_for(model_id) or {}
 
 
+def mono_stereo_twin(model_id: Any) -> Optional[int]:
+    """The model id of a model's mono↔stereo twin, or ``None`` if it has none.
+
+    A twin is the same model in the opposite channel count — e.g.
+    ``HD2_DelayAdriaticDelayMono`` (130) ↔ ``…Stereo`` (93). Found by swapping
+    the trailing ``Mono``/``Stereo`` in the model-id string and confirming the
+    twin exists in the SAME category. ``None`` for a model with no such suffix
+    (amps, cabs, mono-only or stereo-only effects) or no matching twin. This is
+    how the editor offers Stadium's "convert mono↔stereo in place": swap to the
+    twin, then carry the shared params over by name (the mono param set is a
+    subset of the stereo one).
+    """
+    name = model_name_for(model_id) if not isinstance(model_id, str) else model_id
+    if not name:
+        return None
+    if name.endswith("Mono"):
+        twin = name[:-4] + "Stereo"
+    elif name.endswith("Stereo"):
+        twin = name[:-6] + "Mono"
+    else:
+        return None
+    tid = model_id_for(twin)
+    if tid is None:
+        return None
+    src_id = model_id if not isinstance(model_id, str) else model_id_for(model_id)
+    if category_for(tid) != category_for(src_id):   # defensive: never cross categories
+        return None
+    return tid
+
+
 def category_for(model_id: Any) -> Optional[str]:
     """Editor category (``amp``/``cab``/``drive``/…) for a model.
 
