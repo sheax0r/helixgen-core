@@ -576,7 +576,7 @@ is the stream to follow for live tracking — polling `/EditBufferStateGet` is
 
 | Address | Args | Meaning |
 |---|---|---|
-| `/setParamValue` | `[origin, seq, path, grid_slot, snap, pid, value]` | One param changed. `value` is in raw units and typed like the param: `f`, `i`, or — for a bool — the OSC `T`/`F` tag in the last position (`,iiiiiiT`), which carries no payload (`HelixSubscriber` hands it over as `True`/`False`). Captured 2026-10-28, re-confirmed 2026-11-12/13: `[78129, 1005, 0, 2, 0, 2, 0.55]`. A write to a snapshot-assigned param is additionally announced with `/setSnapshotValue`. |
+| `/setParamValue` | `[origin, seq, path, grid_slot, sub, pid, value]` | One param changed. `value` is in raw units and typed like the param: `f`, `i`, or — for a bool — the OSC `T`/`F` tag in the last position (`,iiiiiiT`), which carries no payload (`HelixSubscriber` hands it over as `True`/`False`). Field 4 is the model **sub-position**, NOT the active snapshot — HW-confirmed 2026-11-25: a 1st-cab (sub=0) write echoes `sub=0` on snapshots 0/2/5 alike, while a dual-cab 2nd-cab (sub=1) write echoes `sub=1`; `decode_event` drops `sub!=0` echoes (the 2nd cab rides the scparam path). Captured 2026-10-28, re-confirmed 2026-11-12/13: `[78129, 1005, 0, 2, 0, 2, 0.55]`. A write to a snapshot-assigned param is additionally announced with `/setSnapshotValue` (not yet decoded — a known minor snapshot-sync gap). |
 | `/setBlockEnable` | `[origin, seq, path, grid_slot, enable]` | A block was bypassed/enabled. Confirmed 2026-11-12: `[12593, 1004, 0, 2, 1]`. |
 | `/activateSnapshot` | `[origin, seq, index]` | The active snapshot changed (followed by `/setBatchedParamVals`, the batch of values the recall applied). |
 | `/setEditBuffer` | `[origin, seq, <_sbepgsm blob>]` | The WHOLE new live buffer — sent when a preset is loaded (then `/loadContentRef` follows) **and** as the echo of a `/doAgenda` structural edit (no `/loadContentRef`; see *Structural edits*). The blob is decodable exactly like the `/EditBufferStateGet` reply — a preset switch needs no read. |
@@ -1167,8 +1167,10 @@ footswitch/controller assignment commands are parameterised on the device.
 - ~~**`/ModelSet` leading args.**~~ **Decoded 2026-07-14**:
   `[cmd, dsp, grid_slot, subpos, modelId]` (see §6 "Live device control";
   block coordinate corrected to the grid slot 2026-07-15).
-  (`/ParamValueSet`'s `[reqid, path, grid_slot, 0, paramId, value, -1]`
-  layout is also confirmed live, plus its read twin `/ParamValueGet`.)
+  (`/ParamValueSet`'s `[reqid, path, grid_slot, sub, paramId, value, -1]`
+  layout is also confirmed live, plus its read twin `/ParamValueGet`. The 4th
+  field is the model sub-position: `0` = primary; `1` writes a dual-cab 2nd cab's
+  param, HW-confirmed 2026-11-25 — see `HelixClient.set_param(sub=)`.)
 - **`/status` error codes.** For the `[reqid, code, n]` writes, only `code == 0`
   (OK) is confirmed; the non-zero error taxonomy is **still uncatalogued**, so
   do **not** treat a non-zero `code` as success there.
