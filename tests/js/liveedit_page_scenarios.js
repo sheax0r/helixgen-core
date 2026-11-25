@@ -789,7 +789,7 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     // leaving the pane stops the poll timer
     const flowTab = x.ids.tabs.find((e) => e.tagName === "button" && e.textContent === "Signal flow")[0];
     flowTab.onclick();
-    ok("S34 leaving the pane clears the poll timer", x.intervals.size === 0, "timer leaked");
+    ok("S34 leaving the tuner pane clears its poll (the flow pane now runs the I/O meter poll)", x.intervals.size === 1, "timer leaked: " + x.intervals.size);
   }
 
   { // S35: Device Info pane — read-only identity strip (81v.11)
@@ -946,6 +946,28 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     x.tileOf("0/3").fire("drop", { preventDefault() {} });        // drag A onto slot 3
     x.sse(State([mk(1, "B"), mk(2, "C"), mk(3, "A")]));           // device re-sends the reorder (A now at slot 3)
     ok("S40 focus follows the dragged block to its new slot", focusName() === "A", "focus shows " + focusName());
+  }
+
+  { // S41: I/O metering — the flow pane polls /meters/reading and drives the
+    //       input/output tiles' level bars (read-only telemetry, no writes).
+    const x = boot();
+    x.sse(State([Blk({ block: 0, category: "input", name: "In" }, []),
+                 Blk({ block: 13, category: "output", name: "Out" }, [])]));
+    const mi = [...x.intervals.values()][0];            // the flow meter poll
+    mi(); await x.tick();
+    const req = x.posts.find((p) => p.url === "/meters/reading");
+    ok("S41 the flow pane polls /meters/reading", !!req, JSON.stringify(x.posts.map((p) => p.url)));
+    req.reply(200, { connected: true, input: 0.5, output: 0.8, clip_in: false, clip_out: true });
+    await x.tick();
+    const inFill = x.tileOf("0/0").find((e) => e._cls.has("ti-meter-fill"))[0];
+    const outMeter = x.tileOf("0/13").find((e) => e._cls.has("ti-meter"))[0];
+    ok("S41 the input meter bar fills to the level", inFill.style.width === "50%", inFill.style.width);
+    ok("S41 the output meter flags clip", outMeter._cls.has("clip"), [...outMeter._cls].join(" "));
+    // a stale reading drops the bars to zero (no frozen meter)
+    mi(); await x.tick();
+    x.posts.filter((p) => p.url === "/meters/reading").slice(-1)[0].reply(200, { connected: true, stale: true });
+    await x.tick();
+    ok("S41 a stalled stream recentres the bars", inFill.style.width === "0%" && !outMeter._cls.has("clip"), inFill.style.width);
   }
 
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
