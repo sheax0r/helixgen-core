@@ -93,6 +93,11 @@ def _route(session: LiveSession, path: str, b: dict):
                                   _int(b, "model_id"))
     if path == "/add-block":
         return session.add_block(_int(b, "path"), _int(b, "model_id"))
+    if path == "/paste-block":
+        spec = b.get("spec")
+        if not isinstance(spec, dict):
+            raise LiveError("field 'spec' must be an object")
+        return session.paste_block(_int(b, "path"), spec)
     if path == "/second-cab":
         return session.set_second_cab(_int(b, "path"), _int(b, "block"),
                                       _int(b, "model_id"))

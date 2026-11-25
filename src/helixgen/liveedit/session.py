@@ -981,6 +981,60 @@ class LiveSession:
         self.load()                              # re-read: the appended block
         return self.public_state()
 
+    def paste_block(self, path: int, spec: dict) -> dict:
+        """Paste a copied block onto DSP ``path`` (Stadium's block copy/paste):
+        add the model, then reproduce its params, bypass and — for a dual cab —
+        the 2nd model + its params.
+
+        The block APPENDS at the next free row-0 slot, because the engine has no
+        insert-and-shift primitive (``move_block`` SWAPS, it does not shift); the
+        user repositions it afterwards by dragging. ``spec`` is a block capture:
+        ``{model_id, params:[{pid,value}], enabled, second_model?:{model_id,
+        params:[...]}}``. A pid the pasted model doesn't expose is skipped rather
+        than failing the whole paste. Volatile until Save.
+        """
+        if not isinstance(spec, dict):
+            raise LiveError("paste spec must be an object", status=400)
+        try:
+            model_id = int(spec["model_id"])
+        except (KeyError, TypeError, ValueError):
+            raise LiveError("paste spec needs a model_id", status=400) from None
+
+        def _row0_slots(p: int):
+            with self.cond:
+                return {b for (pp, b) in self._blocks
+                        if pp == p and b < _chain.ROW1_INPUT}
+        before = _row0_slots(int(path))
+        self.add_block(path, model_id)           # appends + re-reads (guards addable)
+        new = _row0_slots(int(path)) - before
+        if len(new) != 1:
+            # a concurrent edit moved the row; the block was added but we can't
+            # safely pick it to populate — leave it at the model's defaults.
+            return self.public_state()
+        slot = next(iter(new))
+        for p in spec.get("params") or []:
+            try:
+                self.set_param(path, slot, int(p["pid"]), p["value"])
+            except (LiveError, KeyError, TypeError, ValueError):
+                pass                             # pid the model lacks / bad entry: skip
+        sm = spec.get("second_model")
+        if isinstance(sm, dict) and sm.get("model_id") is not None:
+            try:
+                self.set_second_cab(path, slot, int(sm["model_id"]))
+                for p in sm.get("params") or []:
+                    try:
+                        self.set_second_cab_param(path, slot, int(p["pid"]), p["value"])
+                    except (LiveError, KeyError, TypeError, ValueError):
+                        pass
+            except (LiveError, TypeError, ValueError):
+                pass
+        if spec.get("enabled") is False:
+            try:
+                self.set_bypass(path, slot, False)
+            except LiveError:
+                pass
+        return self.public_state()
+
     def split_block(self, path: int, block: int) -> dict:
         """Split the block at grid slot ``block`` onto a NEW parallel lane B —
         synthesized topology (the app's drag-down-to-parallel).

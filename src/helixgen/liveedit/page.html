@@ -541,6 +541,7 @@ body.pane-other #focus{display:none}
   <span class="chip dirty" title="the tone has changes that are not saved on the device">Unsaved</span>
   <button class="btn" id="undo" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
   <button class="btn" id="redo" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
+  <button class="btn" id="paste" title="Paste the copied block onto the focused path" disabled>Paste</button>
   <button class="btn" id="knobview" title="Switch between knobs and sliders for the controls">Sliders</button>
   <button class="btn" id="libtoggle" title="Browse the tone library and the device's presets">&#8801; Library</button>
   <button class="btn" id="load" title="Load a different preset from the device">Load…</button>
@@ -650,6 +651,7 @@ const P = new Map();              // "path/block/pid" -> control {p, b, tag, dev
 const B = new Map();              // "path/block"     -> control {b, tag, dev, set, fail}
 let dragging = null;              // key of the knob under the user's hand
 let lensLock = null;             // {x,y}: the two param keys an amp-lens drag holds
+let PASTECLIP = null;            // {name, spec} copied block, for the Paste button
 // a param is "held" by the hand if its knob is being dragged OR the lens is
 // driving it — so an echo / remote update of that param isn't applied mid-drag
 const paramLocked = (key) => dragging === key
@@ -1344,6 +1346,24 @@ function blockEl(b) {
     dc.type = "button"; dc.title = "Add a parallel 2nd cab (dual cab)";
     dc.onclick = () => openSecondCabPicker(b, null);
     hd.append(dc);
+  }
+  // copy this block to the paste clipboard (model + params + bypass + 2nd cab).
+  // Paste (header button) appends a duplicate on the focused path.
+  if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output") {
+    const cp = el("button", "splitbtn", "⧉ Copy");
+    cp.type = "button"; cp.title = "Copy this block — then Paste to duplicate it";
+    cp.onclick = () => {
+      PASTECLIP = { name: b.name, spec: {
+        model_id: b.model_id, enabled: b.enabled,
+        params: (b.params || []).map((p) => ({ pid: p.pid, value: p.value })),
+        second_model: b.second_model ? {
+          model_id: b.second_model.model_id,
+          params: (b.second_model.params || []).map((p) => ({ pid: p.pid, value: p.value })),
+        } : null,
+      } };
+      syncPaste(); toast("Copied " + b.name + " — Paste to duplicate it", true);
+    };
+    hd.append(cp);
   }
   // remove a processing block from the chain (81v.1 remove-block). The device
   // drops it (ModelSet to the null model), leaving a hole — nothing else moves.
@@ -2662,7 +2682,7 @@ function setDown(isDown, why) {
   $("save").disabled = down; $("reread").disabled = false; $("load").disabled = down;
   if (why) $("banner").textContent = why;
   if (down) pending.clear();
-  syncHist();
+  syncHist(); syncPaste();
 }
 function meta(m) {
   setDown(!m.connected, "Device disconnected — retrying. Controls are paused.");
@@ -3323,6 +3343,18 @@ async function openAddPicker(path) {
 addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeOverlay(); });
 $("load").onclick = openPicker;
 $("undo").onclick = undo; $("redo").onclick = redo;
+function syncPaste() {
+  $("paste").disabled = down || !PASTECLIP;
+  $("paste").title = PASTECLIP ? ("Paste " + PASTECLIP.name + " onto the focused path")
+                               : "Copy a block first, then Paste duplicates it";
+}
+$("paste").onclick = () => {
+  if (down || !PASTECLIP) return;
+  const b = SEL && BLOCKS.get(SEL);          // paste onto the focused block's path (else path 0)
+  structSend("/paste-block", { path: b ? b.path : 0, spec: PASTECLIP.spec },
+             "Pasted " + PASTECLIP.name + "…");
+};
+syncPaste();
 function syncKnobView() { $("knobview").textContent = KNOBVIEW === "sliders" ? "Knobs" : "Sliders"; }
 $("knobview").onclick = () => {
   KNOBVIEW = KNOBVIEW === "sliders" ? "knobs" : "sliders";
