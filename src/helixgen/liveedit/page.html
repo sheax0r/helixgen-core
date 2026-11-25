@@ -377,11 +377,12 @@ body.down main{opacity:.55}
 .tile .ti-meter.clip .ti-meter-fill{background:var(--bad);width:100%!important}
 .tile.drag{opacity:.4}
 .tile.dropbefore{box-shadow:0 -3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
-.splitzone{display:none;align-self:center;width:min(340px,100%);margin-top:36px;padding:11px 12px;
+.splitzone,.lanebzone{display:none;align-self:center;width:min(340px,100%);margin-top:36px;padding:11px 12px;
   border:1px dashed #5b8cff;border-radius:12px;color:var(--faint);font-size:12px;text-align:center;background:rgba(91,140,255,.06)}
-.splitzone.armed{display:block}
-.splitzone span{pointer-events:none}
-.splitzone.over{border-style:solid;color:var(--ink);background:rgba(91,140,255,.18);box-shadow:0 0 0 2px #5b8cff}
+.lanebzone{margin-top:14px}
+.splitzone.armed,.lanebzone.armed{display:block}
+.splitzone span,.lanebzone span{pointer-events:none}
+.splitzone.over,.lanebzone.over{border-style:solid;color:var(--ink);background:rgba(91,140,255,.18);box-shadow:0 0 0 2px #5b8cff}
 .tile.dropafter{box-shadow:0 3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
 /* tile adjective-search highlight (block-level glow + arrow) */
 .tile.hl-on{box-shadow:0 0 0 2px var(--wire),0 0 15px var(--wire-glow)}
@@ -1331,26 +1332,30 @@ function renderFocus() {
   fp.append(blockEl(b));          // the full card — every control, lens and action
   applyHighlight();               // the freshly-built controls need their highlight classes
 }
-/* within-lane drag-reorder: a tile in a movable lane-A slot can be dragged to
- * another movable slot in the SAME path (→ /move-block). Cross-lane moves need
- * the topology engine and are simply not draggable here (Stage 2). */
+/* block drag: within a simple chain a lane-A tile drags to another movable slot
+ * (→ /move-block reorder) or onto the parallel zone to split (→ /add-split); on a
+ * path that already has a split, a lane-A tile drags onto the lane-B zone to move
+ * it into the parallel lane (→ /move-into-split, the bundled topology edit). */
 let dragKey = null;
 function wireTileDrag(canvas) {
   const movable = (key) => { const p = key.split("/"); const o = MOVE_SLOTS.get(+p[0]); return !!o && o.includes(+p[1]); };
   const splittable = (key) => { const p = key.split("/"); return movable(key) && +p[1] <= 11; };  // add-split: a lane-A block 1..11
-  const clearDrop = () => canvas.querySelectorAll(".dropbefore,.splitzone.over").forEach((n) => n.classList.remove("dropbefore", "over"));
+  const laneBSrc = (key) => { const p = key.split("/"); const o = LANEB_MOVE.get(+p[0]); return !!o && o.has(+p[1]); };  // a lane-A block that can move INTO an existing split's lane B
+  const clearDrop = () => canvas.querySelectorAll(".dropbefore,.splitzone.over,.lanebzone.over").forEach((n) => n.classList.remove("dropbefore", "over"));
   const armZones = (on, path) => canvas.querySelectorAll(".splitzone").forEach((z) => z.classList.toggle("armed", !!on && +z.dataset.sp === path));
+  const armLaneB = (on, path) => canvas.querySelectorAll(".lanebzone").forEach((z) => z.classList.toggle("armed", !!on && +z.dataset.lb === path));
   canvas.querySelectorAll(".tile").forEach((t) => {
     const key = t.dataset.b;
-    if (movable(key)) {
+    if (movable(key) || laneBSrc(key)) {
       t.draggable = true;
       t.addEventListener("dragstart", (e) => {
         if (down) { e.preventDefault(); return; }
         dragKey = key; t.classList.add("drag");
         if (splittable(key)) armZones(true, +key.split("/")[0]);   // reveal this path's split drop zone
+        if (laneBSrc(key)) armLaneB(true, +key.split("/")[0]);     // reveal this split's lane-B drop zone
         if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); }
       });
-      t.addEventListener("dragend", () => { dragKey = null; t.classList.remove("drag"); clearDrop(); armZones(false); });
+      t.addEventListener("dragend", () => { dragKey = null; t.classList.remove("drag"); clearDrop(); armZones(false); armLaneB(false); });
     }
     t.addEventListener("dragover", (e) => {
       if (!dragKey || t.dataset.b === dragKey) return;
@@ -1383,7 +1388,21 @@ function wireTileDrag(canvas) {
       dragKey = null; z.classList.remove("over"); armZones(false);
     });
   });
+  // cross-lane move: drop a lane-A block onto an existing split's lane-B zone (\u2192 /move-into-split)
+  canvas.querySelectorAll(".lanebzone").forEach((z) => {
+    const ok = () => dragKey && laneBSrc(dragKey) && +dragKey.split("/")[0] === +z.dataset.lb;
+    z.addEventListener("dragover", (e) => { if (!ok()) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; z.classList.add("over"); });
+    z.addEventListener("dragleave", () => z.classList.remove("over"));
+    z.addEventListener("drop", (e) => {
+      if (!ok()) { dragKey = null; return; }
+      e.preventDefault();
+      const d = dragKey.split("/");
+      structSend("/move-into-split", { path: +d[0], src: +d[1] }, "Moving onto the parallel lane\u2026");
+      dragKey = null; z.classList.remove("over"); armLaneB(false);
+    });
+  });
   if (dragKey && splittable(dragKey)) armZones(true, +dragKey.split("/")[0]);   // re-arm across a mid-drag re-render
+  if (dragKey && laneBSrc(dragKey)) armLaneB(true, +dragKey.split("/")[0]);
 }
 function lane(segs, tag, joined) {
   const l = el("div", "lane col " + tag.toLowerCase() + (joined ? "" : " end"));
@@ -2309,6 +2328,7 @@ addPane({ id: "deviceinfo", label: "Device Info", el: () => $("deviceinfopane"),
 
 let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
+let LANEB_MOVE = new Map();    // path -> {split, join, srcs:Set} : cross-lane move into an existing split's lane B
 function render() {
   renderSnaps();
   const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-k]");
@@ -2343,6 +2363,27 @@ function render() {
       .sort((x, y) => x - y);
     MOVE_SLOTS.set(p.path, slots);
   });
+  // cross-lane move: on a path with EXACTLY ONE split whose lane B is a single
+  // block (the HW-validated 1-wide→2-wide append — the engine does not shift the
+  // join, so a wider lane B would collide), a lane-A processing block AFTER the
+  // join can be dragged INTO the split's lane B (→ /move-into-split; the server
+  // derives the split/join slots and re-validates). Value is the source slot set.
+  LANEB_MOVE = new Map();
+  S.paths.forEach((p) => {
+    const splits = (p.segments || []).filter((s) => s.split && s.join);
+    if (splits.length !== 1) return;                 // unambiguous single split only
+    const laneB = (splits[0].b || []).filter((s) => s.kind === "block");
+    if (laneB.length !== 1) return;                  // 1-wide only
+    const join = splits[0].join.block;
+    const srcs = new Set();
+    (p.segments || []).forEach((s) => {
+      const b = s.kind === "block" ? s.block : null;
+      if (b && b.row === 0 && !STRUCT.has(b.category)
+          && b.category !== "input" && b.category !== "output"
+          && b.block > join && b.block <= 12 && !b.xlink) srcs.add(b.block);  // after the join
+    });
+    if (srcs.size) LANEB_MOVE.set(p.path, srcs);
+  });
   // keep a valid selection across re-renders: preserve it if the block survived,
   // else default to the first editable block (endpoints/routing excluded).
   if (!SEL || !BLOCKS.has(SEL)) {
@@ -2366,6 +2407,11 @@ function render() {
       const h2 = el("div", "path-hd"); h2.style.marginTop = "26px";
       h2.append(el("b", null, "Path " + (pt.path + 1) + " · second row"), el("i"));
       sec.append(h2, column(pt.extra));
+    }
+    if (LANEB_MOVE.has(pt.path)) {   // a lane-A block can be dragged into this split's lane B
+      const lz = el("div", "lanebzone"); lz.dataset.lb = pt.path;
+      lz.append(el("span", null, "⊃ drop here to move a block onto this parallel lane"));
+      sec.append(lz);
     }
     const _spl = MOVE_SLOTS.get(pt.path);   // drag-to-split zone only where a block can actually be split
     if (_spl && _spl.some((s) => s <= 11)) {

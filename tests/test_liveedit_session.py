@@ -10,8 +10,8 @@ from helixgen.device.client import HelixError
 from helixgen.device.subscribe import Event
 from helixgen.liveedit import events
 from helixgen.liveedit.session import LiveError, LiveSession
-from tests.test_liveedit_chain import (AMP, IN_INST1, IN_MIC, OUT_MATRIX,
-                                       SCREAM, _blk, _eb, _split_join)
+from tests.test_liveedit_chain import (AMP, IN_INST1, IN_MIC, JOIN, OUT_MATRIX,
+                                       SCREAM, SPLIT_Y, _blk, _eb, _split_join)
 
 DRIVE = 2          # Agoura_AmpBrit2203MV "Drive" pid (see defs)
 
@@ -198,6 +198,45 @@ class FakeClient:
                 elif si is not None:
                     blks[si - 1] = int(dst)                        # plain move to empty dst
         return self.ack
+
+    def move_block_into_split(self, path, src, split_col, join_col):
+        self._next()
+        if getattr(self, "move_split_fail", None) is not None:
+            raise self.move_split_fail
+        self.__dict__.setdefault("move_splits", []).append(
+            (int(path), int(src), int(split_col), int(join_col)))
+        if getattr(self, "move_split_noop", False):
+            return self.ack
+        # simulate: relocate the src block to the join's lane-B merge slot
+        flow = (self.eb.get("sfg_") or {}).get("flow") or []
+        if 0 <= int(path) < len(flow):
+            blks = flow[int(path)].get("blks")
+            if isinstance(blks, list):
+                dst = int(join_col) + 14
+                for i in range(0, len(blks) - 1, 2):
+                    if (blks[i] == int(src) and isinstance(blks[i], int)
+                            and not isinstance(blks[i], bool)):
+                        bd = blks[i + 1]
+                        del blks[i:i + 2]
+                        blks += [dst, bd]
+                        break
+        return self.ack
+
+    def edit_buffer_blocks(self):
+        out = []
+        flow = (self.eb.get("sfg_") or {}).get("flow") or []
+        for path, dsp in enumerate(flow):
+            blks = dsp.get("blks")
+            if not isinstance(blks, list):
+                continue
+            for i in range(0, len(blks) - 1, 2):
+                slot, bd = blks[i], blks[i + 1]
+                if not isinstance(slot, int) or isinstance(slot, bool):
+                    continue
+                mdls = bd.get("mdls") if isinstance(bd, dict) else None
+                mid = mdls[0].get("id__") if isinstance(mdls, list) and mdls else None
+                out.append({"path": path, "block": slot, "model_id": mid})
+        return out
 
     def remove_block(self, path, block):
         self._next()
@@ -1619,6 +1658,54 @@ def test_move_block_surfaces_engine_guard_error_as_400():
         sess.move_block(0, 2, 1)                    # valid slots; engine refuses
     assert e.value.status == 400
     assert "cannot move here" in str(e.value)
+
+
+# _split_join() (from test_liveedit_chain) is a REAL edit buffer that build_chain
+# parses into one parallel segment: split@4, join@6, lane-B block@15 (1-wide),
+# top-level blocks amp@3 (before split) and distortion@7 (after join). The server
+# derives split/join from the buffer; a cross-lane move takes only `src`.
+
+def test_move_block_into_split_derives_the_split_and_verifies_landing():
+    c = FakeClient(_split_join())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    st = sess.move_block_into_split(0, 7)            # distortion@7 (after join@6)
+    assert c.move_splits == [(0, 7, 4, 6)]           # split/join DERIVED server-side
+    assert "paths" in st
+
+
+def test_move_block_into_split_502_when_the_device_ignores_it():
+    c = FakeClient(_split_join())
+    c.move_split_noop = True                          # device records but drops it
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block_into_split(0, 7)
+    assert e.value.status == 502                      # verify-landed caught the no-op
+
+
+def test_move_block_into_split_rejects_before_join_and_nodes():
+    # only a lane-A processing block AFTER the join is a valid source; the split
+    # (4) and join (6) NODES and a before-split block (amp@3) are all refused
+    # before any device write.
+    c = FakeClient(_split_join())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    for src in [3, 4, 6, 0, 13]:
+        with pytest.raises(LiveError) as e:
+            sess.move_block_into_split(0, src)
+        assert e.value.status == 400
+    assert getattr(c, "move_splits", []) == []
+
+
+def test_move_block_into_split_rejects_a_path_without_a_single_split():
+    c = FakeClient()                                 # default _rig(): no split
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block_into_split(0, 2)
+    assert e.value.status == 400
+    assert getattr(c, "move_splits", []) == []
 
 
 def test_move_block_raises_502_when_the_device_ignores_the_agenda():

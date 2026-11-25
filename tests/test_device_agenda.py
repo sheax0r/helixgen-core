@@ -129,6 +129,27 @@ def test_move_block_sends_movb():
         agenda.move(bl_s=6, bl_d=8, fl_s=1, fl_d=1)]
 
 
+def test_move_block_into_split_sends_bundled_transaction():
+    h = HelixClient("10.0.0.99")
+    _wire(h)
+    # move lane-A slot 4 into the split@2/join@3 lane B — one bundled /doAgenda
+    assert h.move_block_into_split(0, 4, 2, 3) is True
+    _, vals = _sent_doagenda(h)
+    assert msgpack.unpackb(vals[1], raw=False) == agenda.move_into_split(4, 2, 3)
+
+
+@pytest.mark.parametrize("args", [
+    (0, 0, 2, 3),    # src is the input slot
+    (0, 14, 2, 3),   # src is a lane-B I/O slot
+    (0, 4, 3, 2),    # join not above split
+    (0, 4, 2, 2),    # split == join
+])
+def test_move_block_into_split_rejects_bad_args(args):
+    h = HelixClient("10.0.0.99")
+    with pytest.raises(HelixError):
+        h.move_block_into_split(*args)  # guarded before any wire send
+
+
 def test_set_block_model_sub_wire():
     h = HelixClient("10.0.0.99")
     _wire(h)
@@ -151,6 +172,18 @@ def test_split_out_builder():
         agenda.split(3, 17),         # spld: split@3 -> lane B 17
         agenda.set_model(4, 478, 4), # join node
         agenda.merge(4, 18),         # jono: join@4 <- lane B 18
+    ]
+
+
+def test_move_into_split_builder():
+    # Move lane-A slot 4 into an existing split (split@2, join@3) — append to its
+    # lane-B series. Pinned to the HW-validated bundled transaction (2026-11-24):
+    # move + re-asserted split + re-pointed join, all in one /doAgenda.
+    ops = agenda.move_into_split(4, 2, 3, flow=0)
+    assert ops == [
+        agenda.move(4, 17),   # block -> the join's lane-B merge slot (3+14)
+        agenda.split(2, 16),  # re-assert split@2 -> lane B 16 (2+14)
+        agenda.merge(3, 17),  # join@3 now merges from the new block at 17
     ]
 
 

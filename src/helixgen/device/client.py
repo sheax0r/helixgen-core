@@ -1185,6 +1185,36 @@ class HelixClient:
         return self.do_agenda([_agenda.move(
             bl_s=src_s, bl_d=dst_s, fl_s=int(path), fl_d=int(path))])
 
+    def move_block_into_split(self, path: int, src: int, split_col: int,
+                              join_col: int) -> bool:
+        """Move the lane-A block at grid slot ``src`` INTO an existing split's
+        lane B, appending it to the parallel series (the editor's drag-a-block-
+        onto-a-parallel-lane). ``split_col``/``join_col`` are the split and join
+        nodes' lane-A grid slots.
+
+        Unlike a bare :meth:`move_block` into lane B — which ORPHANS the block —
+        this bundles the ``movb`` with the ``spld``/``jono`` wiring in one
+        ``/doAgenda`` so the device commits it (HW-validated; see
+        :func:`helixgen.device.agenda.move_into_split`). The device echoes
+        ``/setEditBuffer``; the caller re-reads to confirm.
+
+        Raises :class:`HelixError` unless ``src`` is a lane-A processing slot
+        (1..12) and ``split_col`` is a lane-A node below ``join_col``. This is the
+        low-level op builder; the live-edit session derives the split/join slots
+        from the buffer and enforces the 1-wide / after-join preconditions."""
+        src_s = _grid_slot(src)
+        last = _agenda.LANE_A_LAST - 1            # 12 = last lane-A processing slot
+        if not 1 <= src_s <= last:
+            raise HelixError(
+                f"move_block_into_split: src must be a lane-A processing slot "
+                f"1..{last} (got {src})")
+        if not 1 <= split_col < join_col <= last:
+            raise HelixError(
+                f"move_block_into_split: need a lane-A split below its join in "
+                f"1..{last} (got split={split_col}, join={join_col})")
+        return self.do_agenda(
+            _agenda.move_into_split(src_s, split_col, join_col, flow=int(path)))
+
     #: Node categories that are routing/endpoint, not a removable processing
     #: block. ``remove_block`` refuses these so a direct caller (the CLI verb,
     #: a script) cannot null a split/join node and orphan a parallel lane, or a

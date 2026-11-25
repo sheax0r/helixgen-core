@@ -997,6 +997,41 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S42 dropping a slot-12 block does not split", !y.posts.find((p) => p.url === "/add-split"), "unexpected /add-split");
   }
 
+  { // S43: cross-lane MOVE — on a single-split path whose lane B is 1-wide, a
+    //      lane-A block AFTER the join drags onto the lane-B drop zone →
+    //      /move-into-split (server derives the split/join + commits the bundle).
+    //      The lane-B block lives in the parallel segment's `b` (extra stays
+    //      empty), exactly as build_chain emits it — the earlier S43 wrongly put
+    //      it in `extra`, which hid that the zone never rendered on a real split.
+    const splitState = () => State([], { paths: [{ path: 0, segments: [
+        { kind: "block", block: Blk({ block: 1, category: "distortion", name: "Dist" }, [P_()]) },  // before split — NOT a source
+        { split: Blk({ block: 2, category: "split", name: "Split" }, []), a: [],
+          b: [{ kind: "block", block: Blk({ block: 16, row: 1, category: "cab_ir_interp", name: "Cab" }, [P_()]) }],
+          join: Blk({ block: 3, category: "join", name: "Join" }, []) },
+        { kind: "block", block: Blk({ block: 4, category: "amp", name: "Amp" }, [P_()]) }],  // AFTER join — a valid source
+      extra: [] }] });
+    const x = boot();
+    x.sse(splitState());
+    const lz = x.ids.rig.find((e) => e._cls.has("lanebzone"))[0];
+    ok("S43 a lane-B drop zone renders on a real split (extra empty)", !!lz, "no lanebzone");
+    ok("S43 the zone is hidden until a lane-B drag", !lz._cls.has("armed"), [...lz._cls].join(" "));
+    x.tileOf("0/4").fire("dragstart", { dataTransfer: { setData() {} } });   // amp, after the join
+    ok("S43 dragging an after-join block arms the lane-B zone", lz._cls.has("armed"), [...lz._cls].join(" "));
+    lz.fire("drop", { preventDefault() {} });
+    const req = x.posts.find((p) => p.url === "/move-into-split");
+    ok("S43 dropping sends path+src (server derives the split)",
+      !!req && req.body.path === 0 && req.body.src === 4
+        && req.body.split_col === undefined && req.body.join_col === undefined, JSON.stringify(req && req.body));
+    // a BEFORE-join block is not a valid source: dragging it doesn't arm or move
+    const y = boot();
+    y.sse(splitState());
+    const yz = y.ids.rig.find((e) => e._cls.has("lanebzone"))[0];
+    y.tileOf("0/1").fire("dragstart", { dataTransfer: { setData() {} } });
+    ok("S43 a before-join block does not arm the zone", !yz._cls.has("armed"), [...yz._cls].join(" "));
+    yz.fire("drop", { preventDefault() {} });
+    ok("S43 and sends no move", !y.posts.find((p) => p.url === "/move-into-split"), "unexpected /move-into-split");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();
