@@ -1317,9 +1317,13 @@ function blockEl(b) {
   }
   if (b.xlink) hd.append(el("span", "xl", "⇄ path " + (b.xlink.path + 1)));
   hd.append(el("span", "grow"));
-  // split a lane-A processing block onto a new parallel lane (81v.1 add-split)
+  // split a lane-A processing block onto a new parallel lane (81v.1 add-split).
+  // A path with no section yet: any lane-A 1..11 block. A path that already has
+  // one: only a block past the last join whose lane-B slots are free (a SERIAL
+  // 2nd section — SPLIT2_SLOTS).
   if (!STRUCT.has(b.category) && b.category !== "input" && b.category !== "output"
-      && b.row === 0 && b.block >= 1 && b.block <= 11 && !SPLIT_PATHS.has(b.path)) {
+      && b.row === 0 && b.block >= 1 && b.block <= 11
+      && (!SPLIT_PATHS.has(b.path) || (SPLIT2_SLOTS.get(b.path) || new Set()).has(b.block))) {
     const sp = el("button", "splitbtn", "⑃ Split");
     sp.type = "button"; sp.title = "Split this block onto a new parallel lane";
     sp.onclick = () => structSend("/add-split", { path: b.path, block: b.block },
@@ -2499,7 +2503,8 @@ function diOnShow(active) { if (active) diLoad(); }
 $("dinforefresh").onclick = diLoad;
 addPane({ id: "deviceinfo", label: "Device Info", el: () => $("deviceinfopane"), onShow: diOnShow });
 
-let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane — no second split
+let SPLIT_PATHS = new Set();   // paths that already carry a parallel lane
+let SPLIT2_SLOTS = new Map();  // path -> lane-A slots past the last join that can start a SERIAL 2nd split
 let MOVE_SLOTS = new Map();    // path -> sorted lane-A row-0 movable slots, for reorder neighbours
 let LANEB_MOVE = new Map();    // path -> {split, join, srcs:Set} : cross-lane move into an existing split's lane B
 function render() {
@@ -2556,6 +2561,35 @@ function render() {
           && b.block > join && b.block <= 12 && !b.xlink) srcs.add(b.block);  // after the join
     });
     if (srcs.size) LANEB_MOVE.set(p.path, srcs);
+  });
+  // SERIAL 2nd split: on a path that already has a parallel section, a lane-A
+  // block PAST the last join can start a new section when its lane-B slots
+  // (block+14/+15) are free. The 2-row grid runs sections in series, not nested;
+  // the device re-validates via add_split — this just offers the handle.
+  SPLIT2_SLOTS = new Map();
+  S.paths.forEach((p) => {
+    const joins = [], occupied = new Set();
+    const scan = (segs) => (segs || []).forEach((s) => {
+      if (s.kind === "block") occupied.add(s.block.block);
+      else {
+        if (s.split) occupied.add(s.split.block);
+        if (s.join) { occupied.add(s.join.block); joins.push(s.join.block); }
+        (s.b || []).forEach((x) => x.kind === "block" && occupied.add(x.block.block));
+        (s.a || []).forEach((x) => x.kind === "block" && occupied.add(x.block.block));
+      }
+    });
+    scan(p.segments); scan(p.extra);
+    if (!joins.length) return;                       // no split here (first-split path)
+    const lastJoin = Math.max.apply(null, joins);
+    const ok = new Set();
+    (p.segments || []).forEach((s) => {
+      const b = s.kind === "block" ? s.block : null;
+      if (b && b.row === 0 && !STRUCT.has(b.category)
+          && b.category !== "input" && b.category !== "output"
+          && b.block >= 1 && b.block <= 11 && b.block > lastJoin && !b.xlink
+          && !occupied.has(b.block + 14) && !occupied.has(b.block + 15)) ok.add(b.block);
+    });
+    if (ok.size) SPLIT2_SLOTS.set(p.path, ok);
   });
   // keep a valid selection across re-renders: preserve it if the block survived,
   // else default to the first editable block (endpoints/routing excluded).
