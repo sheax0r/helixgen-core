@@ -1198,19 +1198,20 @@ class HelixClient:
         :func:`helixgen.device.agenda.move_into_split`). The device echoes
         ``/setEditBuffer``; the caller re-reads to confirm.
 
-        Raises :class:`HelixError` for an I/O slot or an out-of-order split/join
-        (``split_col`` must be a lane-A block below ``join_col``)."""
+        Raises :class:`HelixError` unless ``src`` is a lane-A processing slot
+        (1..12) and ``split_col`` is a lane-A node below ``join_col``. This is the
+        low-level op builder; the live-edit session derives the split/join slots
+        from the buffer and enforces the 1-wide / after-join preconditions."""
         src_s = _grid_slot(src)
-        io = {0, 13, 14, 27}
-        if src_s in io:
+        last = _agenda.LANE_A_LAST - 1            # 12 = last lane-A processing slot
+        if not 1 <= src_s <= last:
             raise HelixError(
-                f"move_block_into_split: slot {src} is a fixed input/output "
-                "block and cannot be moved")
-        if not 1 <= split_col < join_col <= _agenda.LANE_A_LAST - 1:
+                f"move_block_into_split: src must be a lane-A processing slot "
+                f"1..{last} (got {src})")
+        if not 1 <= split_col < join_col <= last:
             raise HelixError(
                 f"move_block_into_split: need a lane-A split below its join in "
-                f"1..{_agenda.LANE_A_LAST - 1} (got split={split_col}, "
-                f"join={join_col})")
+                f"1..{last} (got split={split_col}, join={join_col})")
         return self.do_agenda(
             _agenda.move_into_split(src_s, split_col, join_col, flow=int(path)))
 

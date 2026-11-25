@@ -1660,43 +1660,52 @@ def test_move_block_surfaces_engine_guard_error_as_400():
     assert "cannot move here" in str(e.value)
 
 
-def _split_rig():
-    # lane A: input, scream, split@2, join@3, amp@4, output; lane B: input, a
-    # block@16, output. Moving amp@4 into the split lands it at 3+14 = 17.
-    return _eb({
-        0: _blk(IN_INST1), 1: _blk(SCREAM), 2: _blk(SPLIT_Y, bblk=16),
-        3: _blk(JOIN, bblk=17), 4: _blk(AMP), 13: _blk(OUT_MATRIX),
-        14: _blk(IN_INST1), 16: _blk(SCREAM), 27: _blk(OUT_MATRIX)})
+# _split_join() (from test_liveedit_chain) is a REAL edit buffer that build_chain
+# parses into one parallel segment: split@4, join@6, lane-B block@15 (1-wide),
+# top-level blocks amp@3 (before split) and distortion@7 (after join). The server
+# derives split/join from the buffer; a cross-lane move takes only `src`.
 
-
-def test_move_block_into_split_delegates_and_verifies_landing():
-    c = FakeClient(_split_rig())
+def test_move_block_into_split_derives_the_split_and_verifies_landing():
+    c = FakeClient(_split_join())
     sess = LiveSession(c, lease=FakeLease())
     sess.load()
-    st = sess.move_block_into_split(0, 4, 2, 3)     # amp@4 -> split@2/join@3 lane B
-    assert c.move_splits == [(0, 4, 2, 3)]           # delegated with the split slots
-    assert "paths" in st                             # re-read fresh state returned
+    st = sess.move_block_into_split(0, 7)            # distortion@7 (after join@6)
+    assert c.move_splits == [(0, 7, 4, 6)]           # split/join DERIVED server-side
+    assert "paths" in st
 
 
 def test_move_block_into_split_502_when_the_device_ignores_it():
-    c = FakeClient(_split_rig())
+    c = FakeClient(_split_join())
     c.move_split_noop = True                          # device records but drops it
     sess = LiveSession(c, lease=FakeLease())
     sess.load()
     with pytest.raises(LiveError) as e:
-        sess.move_block_into_split(0, 4, 2, 3)
+        sess.move_block_into_split(0, 7)
     assert e.value.status == 502                      # verify-landed caught the no-op
 
 
-def test_move_block_into_split_rejects_bad_slots_before_any_write():
-    c = FakeClient(_split_rig())
+def test_move_block_into_split_rejects_before_join_and_nodes():
+    # only a lane-A processing block AFTER the join is a valid source; the split
+    # (4) and join (6) NODES and a before-split block (amp@3) are all refused
+    # before any device write.
+    c = FakeClient(_split_join())
     sess = LiveSession(c, lease=FakeLease())
     sess.load()
-    for args in [(0, 0, 2, 3), (0, 14, 2, 3), (0, 4, 3, 2), (0, 4, 2, 2)]:
+    for src in [3, 4, 6, 0, 13]:
         with pytest.raises(LiveError) as e:
-            sess.move_block_into_split(*args)
+            sess.move_block_into_split(0, src)
         assert e.value.status == 400
-    assert getattr(c, "move_splits", []) == []       # never reached the device
+    assert getattr(c, "move_splits", []) == []
+
+
+def test_move_block_into_split_rejects_a_path_without_a_single_split():
+    c = FakeClient()                                 # default _rig(): no split
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block_into_split(0, 2)
+    assert e.value.status == 400
+    assert getattr(c, "move_splits", []) == []
 
 
 def test_move_block_raises_502_when_the_device_ignores_the_agenda():

@@ -1014,30 +1014,29 @@ class LiveSession:
         self.load()                              # re-read: the reordered chain
         return self.public_state()
 
-    def move_block_into_split(self, path: int, src: int, split_col: int,
-                              join_col: int) -> dict:
-        """Move the lane-A block at ``src`` INTO an existing split's lane B,
-        appending it to the parallel series (the editor's drag-onto-lane-B).
+    def move_block_into_split(self, path: int, src: int) -> dict:
+        """Move the lane-A block at ``src`` INTO the path's split, appending it to
+        the parallel lane B (the editor's drag-onto-lane-B).
 
-        Delegates to :meth:`HelixClient.move_block_into_split`, which bundles the
-        ``movb`` with the ``spld``/``jono`` wiring in one ``/doAgenda`` so the
-        device commits the lane-B move (a bare move would ORPHAN the block). The
-        LIVE buffer is read under the lock so a stale page / direct caller cannot
-        move a non-existent block; after the write the block is verified to have
-        landed in lane B at ``join_col + 14`` (else 502). Re-reads and returns
-        fresh state. Volatile until Save; confirm on the rig."""
+        The split and join node slots are DERIVED from the live buffer, never the
+        caller. Only the HW-validated shape is accepted (else 400): the path has
+        EXACTLY ONE split, its lane B is a single block (1-wide → 2-wide append —
+        the builder does not shift the join, so a wider lane B would collide at
+        the merge slot), the join's merge slot ``join+14`` is free, and ``src`` is
+        a lane-A processing block AFTER the join (so it is not a node and not
+        inside the split's A-branch). Delegates to
+        :meth:`HelixClient.move_block_into_split`, which bundles the ``movb`` with
+        the ``spld``/``jono`` wiring so the device commits the move (a bare move
+        orphans). Verifies the block landed at ``join+14`` (else 502). Volatile
+        until Save; confirm on the rig."""
         pth, s = int(path), int(src)
-        sc, jc = int(split_col), int(join_col)
         last = _chain.ROW1_INPUT - 1              # 13 = lane-A output slot
         if not 1 <= s < last:
             raise LiveError("the block to move must be a lane-A processing slot",
                             status=400)
-        if not 1 <= sc < jc < last:
-            raise LiveError("split and join must be lane-A nodes, split before join",
-                            status=400)
-        new_slot = jc + _chain.ROW1_INPUT         # the join's lane-B merge slot
         err: Optional[Exception] = None
         applied = True
+        captured = sc = jc = new_slot = None
         self._ensure_lease(None)
         try:
             with self.devlock:
@@ -1048,13 +1047,26 @@ class LiveSession:
                 except (HelixError, OSError) as e:
                     self._set_connected(False)
                     raise LiveError(f"device read failed: {e}", status=502) from e
-                real = self._lane_a_models(eb, pth)
-                if real is None:
-                    raise LiveError(f"no DSP path {path}.", status=404)
-                if s not in real:
-                    raise LiveError("no movable block at the source slot "
-                                    "(did the chain change?)", status=400)
-                captured = real[s]
+                seg, tops = self._single_split(_chain.build_chain(eb), pth)
+                sc = seg["split"]["block"]
+                jc = seg["join"]["block"]
+                new_slot = jc + _chain.ROW1_INPUT
+                laneb = [e["block"]["block"] for e in seg["b"]
+                         if e.get("kind") == "block"]
+                if len(laneb) != 1:
+                    raise LiveError("that split's parallel lane already has more "
+                                    "than one block (not supported yet)", status=400)
+                if new_slot in laneb:
+                    raise LiveError("the parallel lane's merge slot is occupied",
+                                    status=400)
+                blk = tops.get(s)
+                if blk is None or blk.get("category") in _NOT_ADDABLE:
+                    raise LiveError("no movable block at that slot on this path",
+                                    status=400)
+                if s <= jc:
+                    raise LiveError("only a block after the split's join can move "
+                                    "into its parallel lane", status=400)
+                captured = blk.get("model_id")
                 try:
                     self.client.move_block_into_split(pth, s, sc, jc)
                 except (HelixError, OSError) as e:
@@ -1078,6 +1090,25 @@ class LiveSession:
                             "(chain unchanged)", status=502)
         self.load()
         return self.public_state()
+
+    @staticmethod
+    def _single_split(built: dict, path: int):
+        """The path's ONE parallel segment + its ``{slot: block}`` top-level map.
+
+        Raises 400 unless the path exists and carries exactly one split — the
+        feature is defined only for an unambiguous single parallel lane."""
+        for p in built.get("paths", []):
+            if p.get("path") != path:
+                continue
+            segs = p.get("segments", [])
+            splits = [sg for sg in segs if sg.get("split") and sg.get("join")]
+            if len(splits) != 1:
+                raise LiveError("cross-lane move needs the path to have exactly "
+                                "one split", status=400)
+            tops = {sg["block"]["block"]: sg["block"]
+                    for sg in segs if sg.get("kind") == "block"}
+            return splits[0], tops
+        raise LiveError(f"no DSP path {path}.", status=404)
 
     @staticmethod
     def _lane_a_occupied(eb: Any, path: int) -> set:
