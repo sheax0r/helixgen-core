@@ -970,6 +970,23 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S41 a stalled stream recentres the bars", inFill.style.width === "0%" && !outMeter._cls.has("clip"), inFill.style.width);
   }
 
+  { // S42: drag-to-split — dropping a splittable lane-A block on its path's
+    //       parallel drop zone calls /add-split (the Stadium "drag to go
+    //       parallel" gesture; cross-lane MOVE between existing lanes is engine-gated).
+    const x = boot();
+    x.sse(State([Blk({ block: 2, category: "amp", name: "Amp" }, [P_({ value: 0.5 })]),
+                 Blk({ block: 3, category: "distortion", name: "Dist" }, [P_({ value: 0.5 })])]));
+    const zone = x.ids.rig.find((e) => e._cls.has("splitzone"))[0];
+    ok("S42 a parallel drop zone exists for a non-split path", !!zone, "no splitzone");
+    ok("S42 the zone is hidden until a split-drag", !zone._cls.has("armed"), [...zone._cls].join(" "));
+    x.tileOf("0/2").fire("dragstart", { dataTransfer: { setData() {} } });
+    ok("S42 dragging a splittable block arms the zone", zone._cls.has("armed"), [...zone._cls].join(" "));
+    zone.fire("drop", { preventDefault() {} });
+    const req = x.posts.find((p) => p.url === "/add-split");
+    ok("S42 dropping on the zone splits that block onto a parallel lane",
+      !!req && req.body.path === 0 && req.body.block === 2, JSON.stringify(req && req.body));
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();

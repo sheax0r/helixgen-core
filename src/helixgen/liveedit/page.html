@@ -377,6 +377,10 @@ body.down main{opacity:.55}
 .tile .ti-meter.clip .ti-meter-fill{background:var(--bad);width:100%!important}
 .tile.drag{opacity:.4}
 .tile.dropbefore{box-shadow:0 -3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
+.splitzone{display:none;align-self:center;width:min(340px,100%);margin-top:12px;padding:11px 12px;
+  border:1px dashed #5b8cff;border-radius:12px;color:var(--faint);font-size:12px;text-align:center;background:rgba(91,140,255,.06)}
+.splitzone.armed{display:block}
+.splitzone.over{border-style:solid;color:var(--ink);background:rgba(91,140,255,.18);box-shadow:0 0 0 2px #5b8cff}
 .tile.dropafter{box-shadow:0 3px 0 0 var(--wire),0 4px 14px rgba(0,0,0,.3)}
 /* tile adjective-search highlight (block-level glow + arrow) */
 .tile.hl-on{box-shadow:0 0 0 2px var(--wire),0 0 15px var(--wire-glow)}
@@ -1332,7 +1336,9 @@ function renderFocus() {
 let dragKey = null;
 function wireTileDrag(canvas) {
   const movable = (key) => { const p = key.split("/"); const o = MOVE_SLOTS.get(+p[0]); return !!o && o.includes(+p[1]); };
-  const clearDrop = () => canvas.querySelectorAll(".dropbefore").forEach((n) => n.classList.remove("dropbefore"));
+  const splittable = (key) => { const p = key.split("/"); return movable(key) && +p[1] <= 11; };  // add-split: a lane-A block 1..11
+  const clearDrop = () => canvas.querySelectorAll(".dropbefore,.splitzone.over").forEach((n) => n.classList.remove("dropbefore", "over"));
+  const armZones = (on, path) => canvas.querySelectorAll(".splitzone").forEach((z) => z.classList.toggle("armed", !!on && +z.dataset.sp === path));
   canvas.querySelectorAll(".tile").forEach((t) => {
     const key = t.dataset.b;
     if (movable(key)) {
@@ -1340,9 +1346,10 @@ function wireTileDrag(canvas) {
       t.addEventListener("dragstart", (e) => {
         if (down) { e.preventDefault(); return; }
         dragKey = key; t.classList.add("drag");
+        if (splittable(key)) armZones(true, +key.split("/")[0]);   // reveal this path's split drop zone
         if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", key); }
       });
-      t.addEventListener("dragend", () => { dragKey = null; t.classList.remove("drag"); clearDrop(); });
+      t.addEventListener("dragend", () => { dragKey = null; t.classList.remove("drag"); clearDrop(); armZones(false); });
     }
     t.addEventListener("dragover", (e) => {
       if (!dragKey || t.dataset.b === dragKey) return;
@@ -1357,9 +1364,22 @@ function wireTileDrag(canvas) {
       const d = dragKey.split("/"), g = tgt.split("/");
       if (d[0] !== g[0] || !movable(tgt)) { dragKey = null; return; }
       e.preventDefault();
-      structSend("/move-block", { path: +g[0], src: +d[1], dst: +g[1] }, "Reordering…");
+      structSend("/move-block", { path: +g[0], src: +d[1], dst: +g[1] }, "Reordering\u2026");
       SEL = g[0] + "/" + g[1];   // follow the dragged block to its destination slot across the re-render
       dragKey = null;
+    });
+  });
+  // drag-to-split: drop a splittable block onto its path's parallel zone (\u2192 /add-split)
+  canvas.querySelectorAll(".splitzone").forEach((z) => {
+    const ok = () => dragKey && splittable(dragKey) && +dragKey.split("/")[0] === +z.dataset.sp;
+    z.addEventListener("dragover", (e) => { if (!ok()) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "move"; z.classList.add("over"); });
+    z.addEventListener("dragleave", () => z.classList.remove("over"));
+    z.addEventListener("drop", (e) => {
+      if (!ok()) { dragKey = null; return; }
+      e.preventDefault();
+      const d = dragKey.split("/");
+      structSend("/add-split", { path: +d[0], block: +d[1] }, "Splitting onto a parallel lane\u2026");
+      dragKey = null; z.classList.remove("over"); armZones(false);
     });
   });
 }
@@ -2344,6 +2364,11 @@ function render() {
       const h2 = el("div", "path-hd"); h2.style.marginTop = "26px";
       h2.append(el("b", null, "Path " + (pt.path + 1) + " · second row"), el("i"));
       sec.append(h2, column(pt.extra));
+    }
+    if (!SPLIT_PATHS.has(pt.path)) {   // drag-to-split drop zone (revealed while dragging a splittable block)
+      const sz = el("div", "splitzone"); sz.dataset.sp = pt.path;
+      sz.append(el("span", null, "\u2283 drop here to split this block onto a parallel lane"));
+      sec.append(sz);
     }
     canvas.append(sec);
   });
