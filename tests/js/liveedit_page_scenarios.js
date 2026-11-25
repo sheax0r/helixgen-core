@@ -997,6 +997,38 @@ const drag = (k, id, ...ys) => { k.svg.fire("pointerdown", { button: 0, clientY:
     ok("S42 dropping a slot-12 block does not split", !y.posts.find((p) => p.url === "/add-split"), "unexpected /add-split");
   }
 
+  { // S43: cross-lane MOVE — on a path that already has a split, dragging a
+    //      lane-A processing block onto the lane-B drop zone calls
+    //      /move-into-split (the engine commits it as one bundled transaction).
+    const splitState = () => State([], { paths: [{ path: 0, segments: [
+        { kind: "block", block: Blk({ block: 1, category: "distortion", name: "Scream" }, [P_()]) },
+        { split: Blk({ block: 2, category: "split", name: "Split" }, []),
+          a: [], b: [{ kind: "block", block: Blk({ block: 16, row: 1, category: "cab_ir_interp", name: "Cab" }, [P_()]) }],
+          join: Blk({ block: 3, category: "join", name: "Join" }, []) },
+        { kind: "block", block: Blk({ block: 4, category: "amp", name: "Amp" }, [P_()]) }],
+      extra: [{ kind: "block", block: Blk({ block: 16, row: 1, category: "cab_ir_interp", name: "Cab" }, [P_()]) }] }] });
+    const x = boot();
+    x.sse(splitState());
+    const lz = x.ids.rig.find((e) => e._cls.has("lanebzone"))[0];
+    ok("S43 a lane-B drop zone renders on a split path", !!lz, "no lanebzone");
+    ok("S43 the zone is hidden until a lane-B drag", !lz._cls.has("armed"), [...lz._cls].join(" "));
+    x.tileOf("0/1").fire("dragstart", { dataTransfer: { setData() {} } });
+    ok("S43 dragging a lane-A block arms the lane-B zone", lz._cls.has("armed"), [...lz._cls].join(" "));
+    lz.fire("drop", { preventDefault() {} });
+    const req = x.posts.find((p) => p.url === "/move-into-split");
+    ok("S43 dropping moves the block into the split's lane B",
+      !!req && req.body.path === 0 && req.body.src === 1
+        && req.body.split_col === 2 && req.body.join_col === 3, JSON.stringify(req && req.body));
+    // the split node itself is a routing block, not a movable source
+    const y = boot();
+    y.sse(splitState());
+    const yz = y.ids.rig.find((e) => e._cls.has("lanebzone"))[0];
+    y.tileOf("0/2").fire("dragstart", { dataTransfer: { setData() {} } });
+    ok("S43 dragging the split node does not arm the lane-B zone", !yz._cls.has("armed"), [...yz._cls].join(" "));
+    yz.fire("drop", { preventDefault() {} });
+    ok("S43 and sends no move", !y.posts.find((p) => p.url === "/move-into-split"), "unexpected /move-into-split");
+  }
+
   console.log(fails ? `\n${fails} FAILED` : "\nall page scenarios pass");
   process.exit(fails ? 1 : 0);
 })();
