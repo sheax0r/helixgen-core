@@ -44,6 +44,13 @@ _OWN_MAX = 256        # own write echoes remembered
 _SEQ_MOD = 1 << 32    # the 2001 header sequence is a uint32; wraps at 2**32
 TUNER_STALE = 1.5     # s since the last 2003 pitch event = stale -> no-signal
 METER_STALE = 1.5     # s since the last 2003 meter event = stale -> no meters
+# I/O meter BAR calibration. The 2003 envelope is a small linear amplitude
+# (observed ~0.0-0.08; see device/meters.py), so a raw 0-1 bar barely moves and
+# never clips — map it on a dB scale like device/measure.py does. The floor/top
+# (hence the clip point) are PROVISIONAL and want tuning against a played signal
+# on the Stadium XL; the mapping (not the exact ceiling) is the correctness fix.
+METER_BAR_FLOOR_DB = -54.0   # bottom of the bar
+METER_BAR_TOP_DB = -18.0     # full bar / clip point
 # Endpoint / routing / harness categories that are NOT user-addable as chain
 # blocks — adding one on row 0 corrupts the grid or routing (swap_model refuses
 # the same set for in-place swaps).
@@ -2103,18 +2110,27 @@ class LiveSession:
             self._meter_at = now
 
     def meters_reading(self) -> dict:
-        """The latest input/output levels for the editor's I/O meters. Pure
-        in-memory projection of the cached 2003 meter stream — NO device I/O, no
-        lease. Reports ``stale`` when the stream has stalled (older than
+        """The latest input/output meter positions for the editor's I/O meters.
+        Pure in-memory projection of the cached 2003 meter stream — NO device
+        I/O, no lease. Reports ``stale`` when the stream has stalled (older than
         ``METER_STALE`` s) so a dead stream shows no level, not a frozen bar.
-        Levels are linear amplitude 0.0-1.0; ``clip`` flags a near-full-scale
-        reading."""
+        ``input``/``output`` are 0.0-1.0 BAR FRACTIONS (the raw linear envelope
+        dB-mapped between ``METER_BAR_FLOOR_DB`` and ``METER_BAR_TOP_DB``, so the
+        bar spans the usable range); ``clip`` flags reaching the dB ceiling."""
+        from helixgen.device import meters as _meters
+
+        def bar(lin: float) -> float:
+            db = _meters.to_db(lin)
+            span = METER_BAR_TOP_DB - METER_BAR_FLOOR_DB
+            return max(0.0, min(1.0, (db - METER_BAR_FLOOR_DB) / span))
+
         with self.cond:
             li, lo, at, up = self._meter_in, self._meter_out, self._meter_at, self._connected
         if (self._clock() - at) > METER_STALE:
             return {"connected": up, "stale": True}
-        return {"connected": up, "input": round(li, 4), "output": round(lo, 4),
-                "clip_in": li >= 0.99, "clip_out": lo >= 0.99}
+        return {"connected": up, "input": round(bar(li), 4), "output": round(bar(lo), 4),
+                "clip_in": _meters.to_db(li) >= METER_BAR_TOP_DB,
+                "clip_out": _meters.to_db(lo) >= METER_BAR_TOP_DB}
 
     # --- Device Info pane (81v.11): read-only device identity -----------------
     # device_id is deliberately omitted: the pane shows helixgen_model (derived
