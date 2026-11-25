@@ -1014,6 +1014,71 @@ class LiveSession:
         self.load()                              # re-read: the reordered chain
         return self.public_state()
 
+    def move_block_into_split(self, path: int, src: int, split_col: int,
+                              join_col: int) -> dict:
+        """Move the lane-A block at ``src`` INTO an existing split's lane B,
+        appending it to the parallel series (the editor's drag-onto-lane-B).
+
+        Delegates to :meth:`HelixClient.move_block_into_split`, which bundles the
+        ``movb`` with the ``spld``/``jono`` wiring in one ``/doAgenda`` so the
+        device commits the lane-B move (a bare move would ORPHAN the block). The
+        LIVE buffer is read under the lock so a stale page / direct caller cannot
+        move a non-existent block; after the write the block is verified to have
+        landed in lane B at ``join_col + 14`` (else 502). Re-reads and returns
+        fresh state. Volatile until Save; confirm on the rig."""
+        pth, s = int(path), int(src)
+        sc, jc = int(split_col), int(join_col)
+        last = _chain.ROW1_INPUT - 1              # 13 = lane-A output slot
+        if not 1 <= s < last:
+            raise LiveError("the block to move must be a lane-A processing slot",
+                            status=400)
+        if not 1 <= sc < jc < last:
+            raise LiveError("split and join must be lane-A nodes, split before join",
+                            status=400)
+        new_slot = jc + _chain.ROW1_INPUT         # the join's lane-B merge slot
+        err: Optional[Exception] = None
+        applied = True
+        self._ensure_lease(None)
+        try:
+            with self.devlock:
+                with self.cond:
+                    self._require_up()
+                try:
+                    eb = self.client.read_edit_buffer(fast=True)
+                except (HelixError, OSError) as e:
+                    self._set_connected(False)
+                    raise LiveError(f"device read failed: {e}", status=502) from e
+                real = self._lane_a_models(eb, pth)
+                if real is None:
+                    raise LiveError(f"no DSP path {path}.", status=404)
+                if s not in real:
+                    raise LiveError("no movable block at the source slot "
+                                    "(did the chain change?)", status=400)
+                captured = real[s]
+                try:
+                    self.client.move_block_into_split(pth, s, sc, jc)
+                except (HelixError, OSError) as e:
+                    err = e
+                else:
+                    try:
+                        after = self.client.edit_buffer_blocks()
+                    except (HelixError, OSError) as e:
+                        err = e
+                    else:
+                        applied = any(
+                            b.get("path") == pth and b.get("block") == new_slot
+                            and b.get("model_id") == captured for b in after)
+        finally:
+            self.lease.done()
+        if err is not None:
+            self._raise_structural(err, "move")
+        if not applied:
+            self._reread_quiet()
+            raise LiveError("the device did not apply the lane-B move "
+                            "(chain unchanged)", status=502)
+        self.load()
+        return self.public_state()
+
     @staticmethod
     def _lane_a_occupied(eb: Any, path: int) -> set:
         """Grid slots occupied by ANY block on ``path``'s lane A (row 0)."""

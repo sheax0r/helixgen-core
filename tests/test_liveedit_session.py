@@ -10,8 +10,8 @@ from helixgen.device.client import HelixError
 from helixgen.device.subscribe import Event
 from helixgen.liveedit import events
 from helixgen.liveedit.session import LiveError, LiveSession
-from tests.test_liveedit_chain import (AMP, IN_INST1, IN_MIC, OUT_MATRIX,
-                                       SCREAM, _blk, _eb, _split_join)
+from tests.test_liveedit_chain import (AMP, IN_INST1, IN_MIC, JOIN, OUT_MATRIX,
+                                       SCREAM, SPLIT_Y, _blk, _eb, _split_join)
 
 DRIVE = 2          # Agoura_AmpBrit2203MV "Drive" pid (see defs)
 
@@ -198,6 +198,45 @@ class FakeClient:
                 elif si is not None:
                     blks[si - 1] = int(dst)                        # plain move to empty dst
         return self.ack
+
+    def move_block_into_split(self, path, src, split_col, join_col):
+        self._next()
+        if getattr(self, "move_split_fail", None) is not None:
+            raise self.move_split_fail
+        self.__dict__.setdefault("move_splits", []).append(
+            (int(path), int(src), int(split_col), int(join_col)))
+        if getattr(self, "move_split_noop", False):
+            return self.ack
+        # simulate: relocate the src block to the join's lane-B merge slot
+        flow = (self.eb.get("sfg_") or {}).get("flow") or []
+        if 0 <= int(path) < len(flow):
+            blks = flow[int(path)].get("blks")
+            if isinstance(blks, list):
+                dst = int(join_col) + 14
+                for i in range(0, len(blks) - 1, 2):
+                    if (blks[i] == int(src) and isinstance(blks[i], int)
+                            and not isinstance(blks[i], bool)):
+                        bd = blks[i + 1]
+                        del blks[i:i + 2]
+                        blks += [dst, bd]
+                        break
+        return self.ack
+
+    def edit_buffer_blocks(self):
+        out = []
+        flow = (self.eb.get("sfg_") or {}).get("flow") or []
+        for path, dsp in enumerate(flow):
+            blks = dsp.get("blks")
+            if not isinstance(blks, list):
+                continue
+            for i in range(0, len(blks) - 1, 2):
+                slot, bd = blks[i], blks[i + 1]
+                if not isinstance(slot, int) or isinstance(slot, bool):
+                    continue
+                mdls = bd.get("mdls") if isinstance(bd, dict) else None
+                mid = mdls[0].get("id__") if isinstance(mdls, list) and mdls else None
+                out.append({"path": path, "block": slot, "model_id": mid})
+        return out
 
     def remove_block(self, path, block):
         self._next()
@@ -1619,6 +1658,45 @@ def test_move_block_surfaces_engine_guard_error_as_400():
         sess.move_block(0, 2, 1)                    # valid slots; engine refuses
     assert e.value.status == 400
     assert "cannot move here" in str(e.value)
+
+
+def _split_rig():
+    # lane A: input, scream, split@2, join@3, amp@4, output; lane B: input, a
+    # block@16, output. Moving amp@4 into the split lands it at 3+14 = 17.
+    return _eb({
+        0: _blk(IN_INST1), 1: _blk(SCREAM), 2: _blk(SPLIT_Y, bblk=16),
+        3: _blk(JOIN, bblk=17), 4: _blk(AMP), 13: _blk(OUT_MATRIX),
+        14: _blk(IN_INST1), 16: _blk(SCREAM), 27: _blk(OUT_MATRIX)})
+
+
+def test_move_block_into_split_delegates_and_verifies_landing():
+    c = FakeClient(_split_rig())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    st = sess.move_block_into_split(0, 4, 2, 3)     # amp@4 -> split@2/join@3 lane B
+    assert c.move_splits == [(0, 4, 2, 3)]           # delegated with the split slots
+    assert "paths" in st                             # re-read fresh state returned
+
+
+def test_move_block_into_split_502_when_the_device_ignores_it():
+    c = FakeClient(_split_rig())
+    c.move_split_noop = True                          # device records but drops it
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    with pytest.raises(LiveError) as e:
+        sess.move_block_into_split(0, 4, 2, 3)
+    assert e.value.status == 502                      # verify-landed caught the no-op
+
+
+def test_move_block_into_split_rejects_bad_slots_before_any_write():
+    c = FakeClient(_split_rig())
+    sess = LiveSession(c, lease=FakeLease())
+    sess.load()
+    for args in [(0, 0, 2, 3), (0, 14, 2, 3), (0, 4, 3, 2), (0, 4, 2, 2)]:
+        with pytest.raises(LiveError) as e:
+            sess.move_block_into_split(*args)
+        assert e.value.status == 400
+    assert getattr(c, "move_splits", []) == []       # never reached the device
 
 
 def test_move_block_raises_502_when_the_device_ignores_the_agenda():
