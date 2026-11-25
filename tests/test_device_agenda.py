@@ -240,6 +240,64 @@ def test_add_split_rejects_occupied_lane_b():
         h.add_split(0, 2)
 
 
+def _flow_m(models):
+    """A stubbed flow 0 whose {slot: model_id} are occupied with that model
+    (so the split/join node detection in add_split sees real ids)."""
+    blks = []
+    for s, mid in sorted(models.items()):
+        blks += [s, {"mdls": [{"id__": mid}]}]
+    return {"sfg_": {"flow": [{"blks": blks}]}}
+
+
+# split=475, join=478; 770 input, 758 amp, 310 scream, 783 output, 425/426 cabs
+def test_add_split_allows_serial_second_split_past_the_last_join():
+    h = HelixClient("10.0.0.99")
+    # split@2 / join@3 / lane-B block@16 already present; split block@5 (main path)
+    before = _flow_m({0: 770, 1: 758, 2: 475, 3: 478, 5: 310, 13: 783, 16: 425})
+    after = _flow_m({0: 770, 1: 758, 2: 475, 3: 478, 5: 475, 13: 783, 16: 425, 19: 310})
+    reads = iter([before, after])
+    h.read_edit_buffer = lambda **k: next(reads)
+    _wire(h)
+    assert h.add_split(0, 5) is True        # 5 > last join (3); lane-B 19/20 free
+    _, vals = _sent_doagenda(h)
+    assert msgpack.unpackb(vals[1], raw=False) == agenda.split_out(5, [], flow=0)
+
+
+def test_add_split_rejects_a_second_split_before_the_section():
+    h = HelixClient("10.0.0.99")
+    h.read_edit_buffer = lambda **k: _flow_m(
+        {0: 770, 1: 758, 2: 475, 3: 478, 13: 783, 16: 425})
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 1)                   # block@1 is before the join@3
+
+
+def test_add_split_rejects_a_second_split_when_its_lane_b_slot_is_taken():
+    h = HelixClient("10.0.0.99")
+    # block@5 is past join@3, but its lane-B slot 19 is already occupied
+    h.read_edit_buffer = lambda **k: _flow_m(
+        {0: 770, 1: 758, 2: 475, 3: 478, 5: 310, 13: 783, 16: 425, 19: 426})
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 5)
+
+
+@pytest.mark.parametrize("split_model", [474, 475, 476, 477])
+def test_add_split_rejects_a_second_split_before_a_later_split_node(split_model):
+    h = HelixClient("10.0.0.99")
+    # split@2/join@3 section, series@5, then an OUTPUT split@8 (splits to two
+    # outputs, NO join) of ANY of the four split models. A split at 5 is past
+    # join@3 but BEFORE split@8 — its later-shift would move split@8 and break
+    # its wiring. Must refuse — the guard counts split columns by CATEGORY, so
+    # a non-Y split (474/476/477) is seen, not just SplitY (475).
+    h.read_edit_buffer = lambda **k: _flow_m(
+        {0: 770, 1: 758, 2: 475, 3: 478, 5: 310, 8: split_model,
+         13: 783, 16: 425, 22: 783, 27: 785})
+    _wire(h)
+    with pytest.raises(HelixError):
+        h.add_split(0, 5)
+
+
 def test_add_split_rejects_no_block_there():
     h = HelixClient("10.0.0.99")
     h.read_edit_buffer = lambda **k: _flow(0, 1, 13)  # nothing at slot 2

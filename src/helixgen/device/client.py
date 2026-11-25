@@ -1525,12 +1525,16 @@ class HelixClient:
         the live buffer and **refuses** (raising :class:`HelixError`) unless the
         split is unambiguously safe — no DSP flow ``path``; ``block`` out of
         1..11; no block at ``block``; a later block would be shifted onto the
-        output; or **lane B already carries content** (any of slots 15..26
-        occupied). The lane-B rule keeps this to the FIRST parallel section on a
-        series chain: an existing split already occupies lane B and breaks the
-        ``col``→``col+14`` mapping and the shift invariant. After sending, it
-        re-reads and confirms the block reached lane B — the 2002 reply code is
-        not a success gate — raising if the device did not apply it.
+        output; or, when a parallel section already exists, ``block`` is not
+        strictly past the last join, or the lane-B slots it needs
+        (``block+14``/``block+15``) are occupied. A SERIAL 2nd (or 3rd…) split
+        IS allowed past the last join: the 2-row grid can't nest, but it holds
+        several parallel sections in series, each branch keyed to its own column
+        (``bblk = 14 + split_col``); ``split_out``'s geometry is correct for any
+        column and leaves the earlier, lower-column sections untouched. After
+        sending, it re-reads and confirms the block reached lane B — the 2002
+        reply code is not a success gate — raising if the device did not apply
+        it.
         """
         col = _grid_slot(block)
         # Valid lane-A columns: 1..11. 0/13 are I/O; 12 would put the join on the
@@ -1547,14 +1551,40 @@ class HelixClient:
         occupied = {s for s, _ in self._blks_pairs(flow[p])}
         if col not in occupied:
             raise HelixError(f"no block at path {path} slot {block} to split")
-        # Lane B content (slots 15..26) must be empty: this op builds the FIRST
-        # parallel section on a series chain. An existing split occupies lane B,
-        # and its presence breaks the col->col+14 mapping this op relies on.
-        if any(_agenda.LANE_B_OFFSET < s < 27 for s in occupied):
-            raise HelixError(
-                "lane B already carries a parallel section — add_split builds "
-                "the first split on a series chain only (slots 15..26 must be "
-                "free)")
+        # An existing parallel section is OK as long as this is a SERIAL 2nd
+        # split PAST the last join: the 2-row grid can't nest, but it holds
+        # several parallel sections in turn, each branch keyed to its own column
+        # (bblk = 14 + split_col — the known-good multi-split rule the offline
+        # transcoder uses). split_out's geometry is correct for any column and
+        # never touches split1's lower-column lane-B blocks; the only unsafe
+        # cases are splitting a block before/inside an existing section, or
+        # landing on an occupied lane-B slot.
+        def _model_at(raw: Any):
+            m = raw.get("mdls") if isinstance(raw, dict) else None
+            return (m[0].get("id__") if isinstance(m, list) and m
+                    and isinstance(m[0], dict) else None)
+        # ALL routing nodes (splits AND joins), not just joins: the new split
+        # must sit past every existing section so (a) it can't nest and (b) the
+        # +1 lane-A shift of later blocks never moves an existing split/join node
+        # (which would break its bblk wiring). A split with no join — e.g. an
+        # output split to two outputs — is caught here precisely because its
+        # column is counted even though it has no join. Match by CATEGORY, not a
+        # hardcoded id: the device has four split models (SplitDyn/Y/XOver/AB,
+        # 474-477) — keying off 475 alone would miss the other three.
+        nodes = sorted(s for s, raw in self._blks_pairs(flow[p])
+                       if _defs.category_for(_model_at(raw)) in ("split", "join"))
+        lane_b = col + _agenda.LANE_B_OFFSET
+        if any(_agenda.LANE_B_OFFSET < s < 27 for s in occupied):   # a section exists
+            if not nodes or col <= max(nodes):
+                raise HelixError(
+                    "a 2nd parallel split must come after the existing "
+                    "section(s) — split a block past the last split/join on the "
+                    "main path (the grid runs parallel sections in series, not "
+                    "nested, and the shift must not disturb a routing node)")
+            if lane_b in occupied or (lane_b + 1) in occupied:
+                raise HelixError(
+                    f"no room on lane B for the split (slots {lane_b}/"
+                    f"{lane_b + 1} are occupied)")
         later = sorted(s for s in occupied if col < s < _agenda.LANE_A_LAST)
         # Later blocks shift +1 (to make room for the join); the highest must not
         # land on the output at slot 13.
